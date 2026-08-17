@@ -215,6 +215,59 @@ that §7.3 projected from the step 0 harness.
 
 ---
 
+## Result 8 — `MergeJoinBy` does not fit the 1.5 ns budget, and cannot
+
+This is the one operator so far that misses the per-stage ceiling. The figure is
+recorded rather than smoothed over, because the reason is structural.
+
+| Measurement | Cost |
+|---|---|
+| Hand-written merge join, no output materialized | 1.10 ns/element |
+| Hand-written, materializing `EitherOrBoth` into a batch | **3.40 ns/element** |
+| `MergeJoinBy`, no keys match | 11.6 ns/element |
+| `MergeJoinBy`, every key matches | 14.7 ns/element |
+| `MergeJoinBy`, 8×8 duplicate keys (cross product) | 24.2 ns/element |
+
+**The floor is 3.4 ns, not 1.5.** Two reasons, both inherent:
+
+1. **A merge join is element-at-a-time by nature.** `Map` runs a tight loop the
+   compiler can vectorize; a merge join compares one key pair, decides which side
+   advances, and cannot know the next step until it has. There is no tight loop
+   to optimize.
+2. **Each output row is 32 bytes** (two values plus two flags) against 8 for an
+   `int64`. Materializing them costs 2.3 ns of the 3.4 — measured by writing the
+   same rows from hand-written code.
+
+The operator sits ~3.4× above that floor. Two hypotheses for the gap were tested
+and **both were wrong**:
+
+- *Memoizing the key in the cursor.* Profiling put 44% of runtime in `peek`,
+  which re-extracted the key on every call. Caching it gained 33% (16.6 → 11.1
+  ns) — real, and kept — but `peek` still holds 39%.
+- *The indirect `cmp` call.* The line profile attributed 320 ms to `cmp(lk, rk)`,
+  suggesting an unelidable indirect call. Measured against a hand-written join
+  calling `cmp` through a function value: **1.45 ns vs 1.50 ns direct — no
+  difference.** Go devirtualizes a locally-known closure. Those 320 ms are memory
+  stall attributed to the line, not call overhead.
+
+A third attempt — splitting `peek` so the hot path would inline — made it
+*slower* (12.2 vs 11.1) and was reverted.
+
+> **Where this leaves the operator.** It is correct, O(1) in memory on unique
+> keys, and works on infinite streams. It is also the wrong tool for a hot inner
+> loop over millions of rows. What remains unexplained is the gap between 3.4 and
+> 11.6 ns; closing it needs a different approach from the three tried here, not
+> another round of micro-optimization.
+
+### The sort check costs nothing measurable
+
+§7.2 wanted the monotonicity check behind a debug flag. Measured, one comparison
+per element against the several the merge already performs is lost in the noise —
+and the failure it prevents is a silently wrong result. **The check is always
+on**, and the debug mode the spec asked for is not worth building.
+
+---
+
 ## Synthesis — what the measurements change in the spec
 
 | # | Finding | Effect |
@@ -227,6 +280,8 @@ that §7.3 projected from the step 0 harness.
 | 6 | Per-stage cost **linear** (2.6 ns element / 1.5 ns batch) | Deep pipelines **predictable** |
 | 7 | `Split` lock-step: **0.27 ns** partition, **0.94 ns** broadcast, 0 alloc | §6.3 **confirmed**, no longer theoretical |
 | 8 | `Merge` operator: **0.40 ns** for 2 sources, **0.43 ns** for 8 | §7.3 **confirmed** on the real operator, and flat in source count |
+| 9 | `MergeJoinBy`: **11.6 ns**, floor 3.4 ns — misses the budget | §7.2: the ceiling **does not apply** to an element-at-a-time operator |
+| 10 | Sort check: **no measurable cost** | §7.2: the debug mode is **unnecessary**, the check is always on |
 
 ### The most important point going forward
 

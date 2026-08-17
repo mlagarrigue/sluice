@@ -525,10 +525,20 @@ operator that merges two infinite streams without state.
 > separate implementation. The hash join (§8.1) remains a distinct primitive: it
 > does not assume sorted inputs, but materializes one side.
 
-> **Documented pitfall.** On inputs that are **not actually sorted**,
-> `MergeJoinBy` produces a wrong result **with no error whatsoever**. A debug mode
-> must check key monotonicity. This is a silent failure, of the same kind as Kafka
-> co-partitioning (§8.1) — unacceptable as it stands.
+> **Pitfall, now closed.** On inputs that are **not actually sorted**,
+> `MergeJoinBy` would produce a wrong result with no error whatsoever — a silent
+> failure of the same kind as Kafka co-partitioning (§8.1), and unacceptable.
+>
+> Resolved by checking key monotonicity **always**, not behind a debug flag: the
+> check costs nothing measurable against the comparisons the merge already
+> performs, and a check that only runs in debug builds is absent exactly when it
+> matters. Out-of-order input panics with `ErrUnsorted`.
+>
+> The signature also departs from the sketch above: values rather than pointers,
+> and two key functions rather than a cross-side comparator. See
+> [ADR 0002](adr/0002-mergejoinby-signature.md) — a pointer into a reused batch
+> buffer dangles, and `cmp(L, R)` cannot compare two elements of the same side,
+> which both the sort check and the cross product need.
 
 ### 7.3 `Merge` — why the batch redeems the cost
 
@@ -925,7 +935,7 @@ inject, no global registry, no implicit runtime (but a stratified context, see
 | 0 | ✅ **Done** — [BENCHMARK-STEP-0.md](BENCHMARK-STEP-0.md): ceiling 0.31 ns, batch ×1.9, `iter.Pull` 68.6 ns | §2.4 — the denominator |
 | 1 | `Stream`, `Batch`, `Diagnostic`, `Path`, `Source`, O(1) operators, terminals | The core |
 | 2 | Single `Split` + `Parallel` + O(k) operators + S9/S10/S11 tests | §6, S1, S6 |
-| 3 | N→1 operators: ✅ `Concat`, ✅ `Merge`, `MergeJoinBy`, `ZipLongest`, ✅ `Coalesce` | §7 |
+| 3 | N→1 operators: ✅ `Concat`, ✅ `Merge`, ✅ `MergeJoinBy`, `ZipLongest`, ✅ `Coalesce` | §7 |
 | 4 | `Join` (bounded hash, interval) — merge join derives from §7.2 | §9 |
 | 5 | End-to-end HTTP vertical, diagnostics included | §1.1 |
 | 6 | PostgreSQL connector: v3 protocol, `= ANY`, COPY, generated hydration | §8 |

@@ -19,6 +19,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Architecture specification (`docs/ARCHITECTURE.md`) and measured performance
   ceiling (`docs/BENCHMARK-STEP-0.md`).
 - Testable examples for every exported operator.
+- `MergeJoinBy`, the sorted-merge primitive: it walks two sorted streams once
+  and emits an `EitherOrBoth` per key, from which every join semantics — inner,
+  left, full outer, intersect, except — follows as a downstream filter. O(1)
+  memory except on keys duplicated on both sides, where the cross product costs
+  O(n+m) for that key.
+- `ErrUnsorted`, panicked by `MergeJoinBy` when an input goes backwards. The
+  check is always on rather than behind a debug flag: it costs nothing
+  measurable, and what it prevents is a silently wrong result.
 - `Merge`, which interleaves several streams a batch at a time in O(1) memory,
   with the completion condition as an explicit `Completion` argument — `WhenAll`
   or `WhenAny`, never an implicit default. Measured at 0.40 ns/element for two
