@@ -60,7 +60,7 @@ for b := range s {
 The batch is the unit of transport, never the element. A function that handles
 N elements efficiently handles 1 without effort; the converse does not hold.
 
-Measured on this repository ([full results](docs/BENCHMARK-ETAPE-0.md)):
+Measured on this repository ([full results](docs/BENCHMARK-STEP-0.md)):
 
 | | Element-wise | Batched | Gain |
 |---|---|---|---|
@@ -101,9 +101,9 @@ costs 68.6 ns per value, which disqualifies any hot path that uses it.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — the reference specification (French),
-  with the reasoning, the sources and the trade-offs behind each decision.
-- [Benchmarks](docs/BENCHMARK-ETAPE-0.md) — the measured ceiling every figure is
+- [Architecture](docs/ARCHITECTURE.md) — the reference specification, with the
+  reasoning, the sources and the trade-offs behind each decision.
+- [Benchmarks](docs/BENCHMARK-STEP-0.md) — the measured ceiling every figure is
   expressed against.
 - [Contributing](CONTRIBUTING.md)
 

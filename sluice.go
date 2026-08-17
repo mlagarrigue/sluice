@@ -24,7 +24,7 @@
 // not hold. Measured in this repository: a batched pipeline is ~2x faster than
 // an element-wise one for identical useful work, and the gap widens to 179x for
 // operators that must pull from several streams at once. See
-// docs/BENCHMARK-ETAPE-0.md.
+// docs/BENCHMARK-STEP-0.md.
 //
 // # Zero dependencies
 //
@@ -35,7 +35,7 @@ import "iter"
 
 // DefaultBatchSize is the default number of elements per batch.
 //
-// Measurement (docs/BENCHMARK-ETAPE-0.md) shows a performance plateau from 8
+// Measurement (docs/BENCHMARK-STEP-0.md) shows a performance plateau from 8
 // elements upward, flat through one million: this setting is safe but not
 // critical. A batch thinned to a few dozen elements by a selective filter does
 // not degrade throughput.

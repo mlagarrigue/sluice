@@ -6,10 +6,10 @@ contributions right now are **arguments about the design**, not just patches.
 
 ## Before you write code
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). It is in French, it is long,
-and it cites its sources — including the ones that argue against the choices
-made here. If you disagree with a decision, that document is where the reasoning
-lives, and where a counter-argument belongs.
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). It is long, and it cites its
+sources — including the ones that argue against the choices made here. If you
+disagree with a decision, that document is where the reasoning lives, and where
+a counter-argument belongs.
 
 Open an issue before a substantial change. A pull request that contradicts a
 documented decision without addressing the reasoning behind it is hard to
@@ -23,7 +23,7 @@ against the design, not work around it.
 1. **Zero production dependencies.** The standard library only. Test and tooling
    dependencies are fine as long as they cannot reach a user's binary.
 2. **The batch is the unit of transport.** Not the element. See
-   [docs/BENCHMARK-ETAPE-0.md](docs/BENCHMARK-ETAPE-0.md) for why.
+   [docs/BENCHMARK-STEP-0.md](docs/BENCHMARK-STEP-0.md) for why.
 3. **No unbounded allocation.** Every blocking operator takes its bound as a
    required parameter, so unbounded state is not expressible.
 4. **No silent failure.** A wrong answer with no signal is worse than a crash.
@@ -35,7 +35,7 @@ against the design, not work around it.
 
 Performance is a stated goal, so it is measured, never asserted.
 
-`docs/BENCHMARK-ETAPE-0.md` establishes the ceiling — a native loop at
+`docs/BENCHMARK-STEP-0.md` establishes the ceiling — a native loop at
 0.310 ns/element — and every other figure is expressed against it. A core
 operator has a budget of **~1.5 ns per stage per element**.
 
@@ -53,8 +53,8 @@ go test -run=XXX -bench=. ./internal/bench/
 
 ## Style
 
-- **Code, comments, tests and commit messages in English.**
-- Documentation under `docs/` is in French — keep it that way.
+- Everything in the repository is in English: code, comments, tests,
+  documentation and commit messages.
 - Commit messages: imperative mood, and explain *why*. The diff already shows
   what changed.
 - Do not add `Co-Authored-By` trailers.
@@ -63,7 +63,7 @@ go test -run=XXX -bench=. ./internal/bench/
 
 - **Arguments against a design decision**, with the reasoning or a benchmark.
 - **Benchmarks of what is not yet measured** — the open list is at the end of
-  `docs/BENCHMARK-ETAPE-0.md`.
+  `docs/BENCHMARK-STEP-0.md`.
 - **Adversarial tests** on the core invariants: prompt finalization, early stop
   propagation, absence of unbounded buffers.
 

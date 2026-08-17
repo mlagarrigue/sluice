@@ -64,6 +64,6 @@ jobs:
 
       # Runs the harness to catch compile breakage and crashes. CI timings are
       # too noisy to gate on: the reference figures come from a controlled run,
-      # recorded in docs/BENCHMARK-ETAPE-0.md.
+      # recorded in docs/BENCHMARK-STEP-0.md.
       - name: Benchmarks (smoke)
         run: go test -run=XXX -bench=. -benchtime=10x ./internal/bench/

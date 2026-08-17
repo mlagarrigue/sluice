@@ -1,225 +1,239 @@
 # Architecture — sluice
 
-> Statut : **spec v0.3**
-> Module : `github.com/mlagarrigue/sluice`
-> Go 1.26 · 0 dépendance de production · pull-based, tout-batch
+> Status: **spec v0.3**
+> Module: `github.com/mlagarrigue/sluice`
+> Go 1.26 · 0 production dependencies · pull-based, all-batch
 >
-> La v0.3 intègre sept recherches et les retours de relecture de la v0.2.
-> Décisions révisées et sources en §14.
+> v0.3 incorporates seven research efforts and the review feedback on v0.2.
+> Revised decisions and sources in §14.
 
 ---
 
-## 1. Principe fondateur
+## 1. Founding principle
 
-Le framework a **un seul concept** : le `Stream`, une séquence potentiellement
-infinie de **lots** de valeurs, dont le consommateur contrôle le débit.
+The framework has **a single concept**: the `Stream`, a potentially infinite
+sequence of **batches** of values, whose throughput is controlled by the consumer.
 
-**Tout est opération de stream.** Ce n'est pas une façon de parler : le parsing
-HTTP, le routage, la sécurité, les règles métier, la lecture SQL, l'hydratation
-d'objets et la sérialisation sont **tous** des opérateurs de la même algèbre. Il
-n'y a pas de « handler » au milieu du pipeline qui serait d'une autre nature — le
-traitement métier est un opérateur comme `Map` ou `Filter`.
+**Everything is a stream operation.** This is not a figure of speech: HTTP
+parsing, routing, security, business rules, SQL reads, object hydration and
+serialization are **all** operators of the same algebra. There is no "handler" in
+the middle of the pipeline that would be of some other nature — business
+processing is an operator just like `Map` or `Filter`.
 
-### 1.1 Exemple web complet — un PATCH
+### 1.1 A complete web example — a PATCH
 
-Chaque flèche est un opérateur de stream, sans exception :
-
-```
-Stream[Batch[byte]]        ← lecture socket, tampons poolés
-  → Stream[Batch[Frame]]      parsing protocole
-  → Stream[Batch[Request]]    décodage, limites
-  → Stream[Batch[Route]]      routage
-  → Stream[Batch[Params]]     extraction + validation des paramètres
-  → Stream[Batch[Params]]     sécurité (authn/authz)          ← opérateur
-  → Stream[Batch[Params]]     middleware métier de sécurité   ← opérateur
-  → Stream[Batch[Entity]]     lecture DB à partir du batch de params
-  → Stream[Batch[Entity]]     amendement de la donnée         ← opérateur
-  → Stream[Batch[Entity]]     règles métier (ligne.qteVente > 0)
-  → Stream[Batch[Entity]]     sauvegarde
-  → Stream[Batch[Response]]   projection du résultat
-  → Stream[Batch[byte]]       sérialisation
-```
-
-Les diagnostics (§4) circulent **avec** les entités tout au long de ce pipeline —
-un élément peut être valide, porter trois avertissements, et continuer d'avancer.
-
-### 1.2 Exemple base de données
-
-Le connecteur suit exactement la même forme :
+Every arrow is a stream operator, without exception:
 
 ```
-Stream[Batch[byte]]     ← protocole wire PostgreSQL
-  → Stream[Batch[Row]]      décodage des DataRow, format binaire
-  → Stream[Batch[Entity]]   hydratation générée, colonne par colonne
+Stream[Batch[byte]]        ← socket read, pooled buffers
+  → Stream[Batch[Frame]]      protocol parsing
+  → Stream[Batch[Request]]    decoding, limits
+  → Stream[Batch[Route]]      routing
+  → Stream[Batch[Params]]     parameter extraction + validation
+  → Stream[Batch[Params]]     security (authn/authz)          ← operator
+  → Stream[Batch[Params]]     business security middleware    ← operator
+  → Stream[Batch[Entity]]     DB read from the batch of params
+  → Stream[Batch[Entity]]     data amendment                  ← operator
+  → Stream[Batch[Entity]]     business rules (line.saleQty > 0)
+  → Stream[Batch[Entity]]     save
+  → Stream[Batch[Response]]   result projection
+  → Stream[Batch[byte]]       serialization
 ```
 
-Cela implique de **réimplémenter les connecteurs** : `database/sql` ne sait pas
-batcher (§8.1). C'est un coût assumé et budgété.
+Diagnostics (§4) travel **alongside** the entities through this whole pipeline —
+an element can be valid, carry three warnings, and keep moving forward.
 
-| Domaine | Lecture en termes de stream |
+### 1.2 A database example
+
+The connector follows exactly the same shape:
+
+```
+Stream[Batch[byte]]     ← PostgreSQL wire protocol
+  → Stream[Batch[Row]]      DataRow decoding, binary format
+  → Stream[Batch[Entity]]   generated hydration, column by column
+```
+
+This implies **reimplementing the connectors**: `database/sql` cannot batch
+(§8.1). That is an accepted and budgeted cost.
+
+| Domain | Reading it in stream terms |
 |---|---|
 | Web | `byte → Frame → Request → … → Response → byte` |
-| Base de données | `byte → Row → Entity`, jointures = opérateurs |
-| ETL | source → transformations → sink, la définition littérale |
-| Messaging | `Message` avec jointure par intervalle temporel |
+| Database | `byte → Row → Entity`, joins = operators |
+| ETL | source → transformations → sink, the literal definition |
+| Messaging | `Message` with a time-interval join |
 
-**Positionnement vérifié.** Aucun framework web Go n'est bâti sur une abstraction
-stream de bout en bout ; aucun framework, dans aucun langage, n'unifie web + BDD +
-ETL sur un stream unique. Akka Streams est le précédent le plus proche sans couvrir
-les trois. Le terrain est libre — ce n'est ni une garantie ni une preuve que l'idée
-est bonne.
+**Verified positioning.** No Go web framework is built on an end-to-end stream
+abstraction; no framework, in any language, unifies web + DB + ETL on a single
+stream. Akka Streams is the closest precedent without covering all three. The
+ground is clear — that is neither a guarantee nor a proof that the idea is good.
 
 ---
 
-## 2. Le type central — tout-batch
+## 2. The central type — all-batch
 
-### 2.1 Décision : une seule forme, le lot
+### 2.1 Decision: a single shape, the batch
 
 ```go
-// Stream est une séquence de lots dont le consommateur contrôle le débit.
+// Stream is a sequence of batches whose throughput is controlled by the consumer.
 type Stream[T any] iter.Seq[Batch[T]]
 
 type Batch[T any] struct {
-    Items []T          // longueur variable, capacité stable (pool)
-    Ctx   *Context     // contexte porté AU NIVEAU DU LOT, pas de l'élément
+    Items []T          // variable length, stable capacity (pool)
+    Ctx   *Context     // context carried AT THE BATCH LEVEL, not the element level
 }
 ```
 
-**La v0.2 proposait deux formes (`Stream[T]` et `BatchStream[T]`). C'était une
-erreur**, pour trois raisons :
+> **Divergence from the implementation — undecided.** The core as shipped has a
+> bare `Batch` holding only `Items`. `Ctx` was left out on the dependency test:
+> nothing in the core reads it, and a pure in-memory ETL pipeline has no use for
+> it, so carrying it would make every user pay for a field most do not need.
+>
+> Against that: §7.6 leans on `Batch.Ctx` to make context merging trivial, and
+> without the field, context has to travel as an ordinary payload — which pushes
+> the problem into every N→1 operator instead of solving it once.
+>
+> The cost is one pointer per batch, amortised over ~1024 elements, so this is
+> not a performance question. It is a question of what the core is allowed to
+> assume. **To be settled before the core API is frozen.**
 
-1. **Un lot de taille 1 est un cas dégénéré, pas un type distinct.** Si une
-   fonction traite N éléments efficacement, elle en traite 1 sans effort.
-2. **Deux formes = chaque opérateur écrit deux fois**, une frontière à arbitrer
-   partout, et la tentation permanente de rester sur la forme lente « pour la
-   lisibilité ».
-3. **L'algorithme est bien plus optimisable en lot** : décodage colonnaire,
-   vérification du contexte amortie, pushdown à granularité du lot, un aller-retour
-   réseau par lot.
+**v0.2 proposed two shapes (`Stream[T]` and `BatchStream[T]`). That was a
+mistake**, for three reasons:
 
-C'est aussi ce que fait X100 : `next()` retourne **toujours** un vecteur.
+1. **A batch of size 1 is a degenerate case, not a distinct type.** If a function
+   processes N elements efficiently, it processes 1 without effort.
+2. **Two shapes = every operator written twice**, a boundary to arbitrate
+   everywhere, and the permanent temptation to stay on the slow shape "for
+   readability".
+3. **The algorithm is far more optimizable in batch form**: columnar decoding,
+   amortized context checking, batch-granularity pushdown, one network round-trip
+   per batch.
 
-### 2.2 Effet de bord bénéfique : le signal d'arrêt cesse d'être ambigu
+This is also what X100 does: `next()` **always** returns a vector.
 
-Avec `iter.Seq[T]`, la signature `func(yield func(T) bool)` mélange deux canaux :
-la valeur transportée et le signal de continuation. Sur un `Stream[bool]`, on ne
-les distingue plus, et un opérateur générique inspectant le retour de `yield` ne
-peut pas savoir s'il lit une donnée ou un signal.
+### 2.2 Beneficial side effect: the stop signal stops being ambiguous
 
-En tout-batch, la signature devient `func(yield func(Batch[T]) bool)` : **le `bool`
-de contrôle n'est jamais du même type que les éléments transportés.** L'ambiguïté
-disparaît par construction.
+With `iter.Seq[T]`, the signature `func(yield func(T) bool)` mixes two channels:
+the value being carried and the continuation signal. On a `Stream[bool]`, they
+can no longer be told apart, and a generic operator inspecting the return value
+of `yield` cannot know whether it is reading data or a signal.
 
-### 2.3 Taille de lot : ~1024 par défaut
+In all-batch form, the signature becomes `func(yield func(Batch[T]) bool)`: **the
+control `bool` is never of the same type as the elements being carried.** The
+ambiguity disappears by construction.
 
-Critère : *l'ensemble des lots vivants simultanément* doit tenir en cache CPU.
+### 2.3 Batch size: ~1024 by default
 
-**Mesuré** (étape 0) : le plateau est atteint dès **8 éléments** et reste plat jusqu'à
-1M — 1,2 % d'écart entre 8 et 1024. Le choix de 1024 est sûr mais **non critique**, et
-un lot qui descend à 64 après un filtre ne dégrade rien.
+Criterion: *the set of batches alive simultaneously* must fit in CPU cache.
 
-*Réserve : ce test ne mesure qu'un seul flux d'`int64`. Le dimensionnement par le cache
-reste à vérifier avec plusieurs lots vivants simultanément.*
+**Measured** (stage 0): the plateau is reached from **8 elements** on and stays
+flat up to 1M — 1.2% spread between 8 and 1024. Choosing 1024 is safe but **not
+critical**, and a batch that drops to 64 after a filter degrades nothing.
 
-### 2.4 Coût réel — ce qui est promis et ce qui ne l'est pas
+*Caveat: this test measures only a single `int64` stream. Cache-driven sizing
+remains to be verified with several batches alive simultaneously.*
 
-- `iter.Seq` est **push-style côté machine** : le compilateur Go inline la closure
-  `yield`, rendant `for v := range seq` proche d'une boucle native.
-- Go n'a **pas** de monomorphisation. Rust est un modèle conceptuel, **pas un
-  modèle de coût** — aucune promesse de « zéro-coût » n'est faite ici.
-- `iter.Pull` coûte une coroutine runtime et un changement de contexte **par valeur
-  tirée** : **68,6 ns/élément mesurés** (×221 le plafond), contre 1,4 ns en push
-  direct. Il est réservé aux jointures en lockstep et au merge, et alors **sur des
-  lots** — jamais sur des éléments. Ce n'est pas une recommandation mais une
-  **obligation** : voir [BENCHMARK-ETAPE-0.md](BENCHMARK-ETAPE-0.md).
+### 2.4 Real cost — what is promised and what is not
 
-Le tout-batch amortit l'appel indirect sur ~1024 éléments : le coût par étage
-devient négligeable devant le travail utile.
+- `iter.Seq` is **push-style at the machine level**: the Go compiler inlines the
+  `yield` closure, making `for v := range seq` close to a native loop.
+- Go has **no** monomorphization. Rust is a conceptual model, **not a cost
+  model** — no "zero-cost" promise is made here.
+- `iter.Pull` costs a runtime coroutine and a context switch **per value
+  pulled**: **68.6 ns/element measured** (×221 the ceiling), against 1.4 ns in
+  direct push. It is reserved for lockstep joins and merge, and then **on
+  batches** — never on elements. This is not a recommendation but an
+  **obligation**: see [BENCHMARK-STEP-0.md](BENCHMARK-STEP-0.md).
+
+All-batch amortizes the indirect call over ~1024 elements: the per-stage cost
+becomes negligible next to the useful work.
 
 ---
 
-## 3. Contexte, annulation et arrêt
+## 3. Context, cancellation and stopping
 
-### 3.1 Correction de la v0.2
+### 3.1 Correction to v0.2
 
-La v0.2 affirmait qu'un `Stream` « n'embarque ni runtime, ni contexte, ni registre
-global ». **C'était mal écrit et faux tel quel.** Ce qui est vrai : il n'y a ni
-registre global ni conteneur d'injection à configurer. Mais un contexte HTTP, un
-contexte utilisateur, un tenant — évidemment que ça circule.
+v0.2 claimed that a `Stream` "carries neither runtime, nor context, nor global
+registry". **That was badly written and false as stated.** What is true: there is
+neither a global registry nor an injection container to configure. But an HTTP
+context, a user context, a tenant — of course those travel.
 
-**Le contexte est porté au niveau du lot** (`Batch.Ctx`), pas répété sur chaque
-élément. C'est un bénéfice direct du tout-batch.
+**Context is carried at the batch level** (`Batch.Ctx`), not repeated on each
+element. That is a direct benefit of all-batch.
 
-Les contextes sont **stratifiés** : le contexte HTTP existe jusqu'à la couche HTTP,
-le contexte utilisateur/métier au-delà. Un opérateur ne voit que la strate qui le
-concerne.
+Contexts are **stratified**: the HTTP context exists up to the HTTP layer, the
+user/business context beyond it. An operator sees only the stratum that concerns
+it.
 
-### 3.2 Trois causes d'arrêt, à ne pas confondre
+### 3.2 Three causes of stopping, not to be confused
 
-| Cause | Origine | Mécanisme |
+| Cause | Origin | Mechanism |
 |---|---|---|
-| Fin normale | la source est épuisée, ou LIMIT atteinte | la génératrice retourne |
-| Arrêt consommateur | l'aval n'a plus besoin de rien | `yield` → `false` |
-| **Arrêt interne** | un étage échoue (parsing HTTP KO) | `yield` → `false` **+ cause** |
-| **Annulation externe** | l'utilisateur annule | `ctx` capturé à la source |
+| Normal end | the source is exhausted, or LIMIT reached | the generator returns |
+| Consumer stop | downstream no longer needs anything | `yield` → `false` |
+| **Internal stop** | a stage fails (HTTP parsing KO) | `yield` → `false` **+ cause** |
+| **External cancellation** | the user cancels | `ctx` captured at the source |
 
-**Le patron retenu est celui de `context`** : signal binaire rapide dans la boucle
-chaude, **cause consultée après coup** via un accesseur `Err() error`. `errors.Is`
-suffit à discriminer `nil` (fin normale) / erreur métier / `context.Canceled`.
+**The pattern adopted is that of `context`**: a fast binary signal in the hot
+loop, **cause consulted after the fact** via an `Err() error` accessor.
+`errors.Is` is enough to discriminate `nil` (normal end) / business error /
+`context.Canceled`.
 
-C'est nécessaire parce qu'un étage du **milieu** qui décide d'arrêter peut couper
-l'amont (en retournant), mais ne peut signaler l'aval qu'en terminant sa séquence —
-ce qui est indistinguable d'une fin normale. Aucun des systèmes étudiés ne mélange
-erreur et annulation dans le même signal.
+This is necessary because a **middle** stage deciding to stop can cut upstream
+(by returning), but can only signal downstream by ending its sequence — which is
+indistinguishable from a normal end. None of the systems studied mixes error and
+cancellation in the same signal.
 
-> **Garantie du runtime.** Le contrat `iter` impose que `yield` **panique** s'il est
-> appelé après avoir renvoyé `false`. La propagation d'arrêt n'est donc pas une
-> convention : elle est vérifiée par le runtime.
+> **Runtime guarantee.** The `iter` contract requires `yield` to **panic** if it
+> is called after having returned `false`. Stop propagation is therefore not a
+> convention: it is checked by the runtime.
 
-### 3.3 Fréquence de vérification
+### 3.3 Checking frequency
 
-**Une vérification de `ctx` par lot, jamais par élément.** C'est le pattern
-universel des moteurs de BDD (PostgreSQL sème ses `CHECK_FOR_INTERRUPTS()` « at safe
-places »). Hoister `done := ctx.Done()` hors de la boucle.
+**One `ctx` check per batch, never per element.** This is the universal pattern
+of DB engines (PostgreSQL scatters its `CHECK_FOR_INTERRUPTS()` "at safe
+places"). Hoist `done := ctx.Done()` out of the loop.
 
-`context.Context` est un **paramètre de la fonction constructrice**, jamais un champ
-caché non lu.
+`context.Context` is a **parameter of the constructor function**, never a hidden
+field that is never read.
 
-### 3.4 Signal d'arrêt enrichi — le pushdown
+### 3.4 Enriched stop signal — pushdown
 
-Un consommateur peut vouloir dire mieux que « stop » : *« saute jusqu'à la clé X »*,
-*« je n'ai plus besoin de la colonne Y »*. Ce mécanisme existe et porte un nom :
-**sideways information passing**.
+A consumer may want to say something better than "stop": *"skip ahead to key X"*,
+*"I no longer need column Y"*. This mechanism exists and has a name: **sideways
+information passing**.
 
-L'implémentation moderne de référence est les *dynamic filters* de DataFusion : un
-opérateur `TopK` en aval transmet au scan en amont le seuil courant, **qui se
-resserre au fil de l'exécution** ; le scan saute alors des lignes, puis des fichiers
-entiers. Gains mesurés jusqu'à **22×** (ClickBench Q23) et **25×** sur jointures.
+The modern reference implementation is DataFusion's *dynamic filters*: a
+downstream `TopK` operator passes the current threshold to the upstream scan,
+**which tightens as execution proceeds**; the scan then skips rows, then whole
+files. Gains measured up to **22×** (ClickBench Q23) and **25×** on joins.
 
-Mécanisme transposable et compatible 0dep : un objet de demande partagé plus un
-**compteur de génération atomique** que le lecteur compare sans verrou. Le chemin
-chaud ne paie qu'une lecture atomique **par lot**.
+The mechanism is transposable and 0dep-compatible: a shared demand object plus an
+**atomic generation counter** that the reader compares without a lock. The hot
+path pays only one atomic read **per batch**.
 
 ```go
 type Demand struct {
-    generation atomic.Uint64   // le scan compare, sans verrou
-    // seuils, colonnes requises, limite restante…
+    generation atomic.Uint64   // the scan compares, without a lock
+    // thresholds, required columns, remaining limit…
 }
 ```
 
-> Voir §13 pour le rattachement à l'étape d'implémentation. C'est la piste de
-> performance à plus fort levier identifiée par les recherches.
+> See §13 for the attachment to the implementation stage. This is the
+> highest-leverage performance lead identified by the research.
 
 ---
 
-## 4. Diagnostics — erreurs, avertissements et affordances
+## 4. Diagnostics — errors, warnings and affordances
 
-C'est le sujet le plus riche de la v0.3, et le besoin réel dépasse largement un
+This is the richest topic in v0.3, and the real need goes far beyond a
 `Result[T]`.
 
-### 4.1 Le besoin
+### 4.1 The need
 
-Dans un flux PATCH, on veut pouvoir produire, **sans interrompre le flux** :
+In a PATCH stream, we want to be able to produce, **without interrupting the
+stream**:
 
 ```
 Error    1000  QteMustBeOverZero  commande[42].ligne[7].qteVente
@@ -227,248 +241,251 @@ Critical 0001  ClientMustExists   commande[42].idClient
 Warning  2010  PrixInhabituel     commande[42].ligne[3].prixUnitaire
 ```
 
-avec, dans les logs, la trace lisible permettant de remonter de
-`Critical 0001 ClientMustExists` jusqu'à son origine réelle — une contrainte SQL
-`NOT NULL` à la lecture, ou un échec d'hydratation.
+with, in the logs, the readable trace allowing one to go from
+`Critical 0001 ClientMustExists` back to its real origin — a `NOT NULL` SQL
+constraint at read time, or a hydration failure.
 
-### 4.2 Ce modèle existe déjà — deux fois
+### 4.2 This model already exists — twice
 
-**FHIR OperationOutcome** (HL7) porte exactement cette forme : `severity`
-(`fatal | error | warning | information`), `code`, `details`, et `expression` — un
-chemin avec index, `Patient.identifier[2].value`. Point qui résout l'hésitation
-« code 1000 » contre « classification Vente\Commande » : FHIR utilise **les deux**,
-un code issu d'un vocabulaire fermé *et* un code applicatif dans `details`.
+**FHIR OperationOutcome** (HL7) carries exactly this shape: `severity`
+(`fatal | error | warning | information`), `code`, `details`, and `expression` — a
+path with indices, `Patient.identifier[2].value`. A point that settles the
+hesitation between "code 1000" and "classification Sales\Order": FHIR uses
+**both**, a code from a closed vocabulary *and* an application code in `details`.
 
-**SARIF 2.1.0** (OASIS) apporte les deux pièces manquantes :
+**SARIF 2.1.0** (OASIS) brings the two missing pieces:
 
-- **i18n** : un objet `message` avec `id` (la clé) et `arguments` (les valeurs) ; le
-  catalogue de règles est séparé des occurrences. **La clé voyage, pas le texte rendu.**
-- **traçabilité causale** : `codeFlows` / `threadFlows` avec ordre d'exécution et
-  niveau d'importance.
+- **i18n**: a `message` object with `id` (the key) and `arguments` (the values);
+  the rule catalog is separate from the occurrences. **The key travels, not the
+  rendered text.**
+- **causal traceability**: `codeFlows` / `threadFlows` with execution order and
+  importance level.
 
-Contre-exemple utile : `ValidationProblemDetails` (.NET) a la bonne forme de chemin
-(`Order.Lines[3].Quantity`) mais une charge trop pauvre — un tableau de messages
-déjà rendus, sans niveau, sans code, sans clé. **N'en reprendre que le chemin.**
+A useful counter-example: `ValidationProblemDetails` (.NET) has the right path
+shape (`Order.Lines[3].Quantity`) but too poor a payload — an array of
+already-rendered messages, with no level, no code, no key. **Take only the path
+from it.**
 
-### 4.3 Le modèle retenu
+### 4.3 The model adopted
 
 ```go
 type Severity uint8   // Info, Warning, Error, Critical
 
 type Diagnostic struct {
     Severity  Severity
-    Code      string          // "Vente.Commande.QteInvalide" — hiérarchique
-    RuleID    string          // clé dans le catalogue de règles
-    MessageID string          // clé i18n : "QteMustBeOverZero"
-    Args      map[string]any  // arguments NOMMÉS, pas positionnels
-    Path      Path            // structuré, PAS une chaîne
-    Origin    Origin          // SQL | Hydratation | RègleMétier | Protocole
-    Affords   []Affordance    // ce qui est modifiable, par quelle action
-    cause     error           // NON exporté — jamais sérialisé
+    Code      string          // "Sales.Order.InvalidQty" — hierarchical
+    RuleID    string          // key in the rule catalog
+    MessageID string          // i18n key: "QteMustBeOverZero"
+    Args      map[string]any  // NAMED arguments, not positional
+    Path      Path            // structured, NOT a string
+    Origin    Origin          // SQL | Hydration | BusinessRule | Protocol
+    Affords   []Affordance    // what is modifiable, by which action
+    cause     error           // NOT exported — never serialized
 }
 ```
 
-Quatre décisions, chacune motivée :
+Four decisions, each motivated:
 
-**`Path` est une structure typée, pas une chaîne.** Concaténer des chaînes piège sur
-l'échappement (JSON Pointer impose `~0`/`~1`) et interdit le regroupement par
-sous-arbre. On rend ensuite en FHIRPath **ou** en JSON Pointer selon le consommateur.
-Le chemin est celui du **modèle métier**, pas du document JSON entrant — deux espaces
-de noms à ne pas confondre. FHIR a d'ailleurs déprécié son champ `location`, lié au
-format de sérialisation, au profit d'`expression`, lié au modèle.
+**`Path` is a typed structure, not a string.** Concatenating strings traps you on
+escaping (JSON Pointer mandates `~0`/`~1`) and precludes grouping by subtree. It
+is then rendered as FHIRPath **or** JSON Pointer depending on the consumer. The
+path is that of the **business model**, not of the incoming JSON document — two
+namespaces not to be confused. FHIR in fact deprecated its `location` field, tied
+to the serialization format, in favor of `expression`, tied to the model.
 
-**Arguments nommés.** C'est la faiblesse reconnue de SARIF avec ses `{0}`/`{1}` : les
-langues réordonnent, et un traducteur ne s'en sort pas sans ambiguïté.
+**Named arguments.** This is the acknowledged weakness of SARIF with its
+`{0}`/`{1}`: languages reorder, and a translator cannot manage without ambiguity.
 
-**La cause reste non exportée**, avec `Unwrap() error`. Le sérialiseur HTTP ne peut
-alors **structurellement pas** fuiter l'interne : la garantie S7 devient impossible à
-violer au lieu d'être recommandée. À la frontière réseau, la cause est remplacée par
-un identifiant de corrélation que seul le log résout.
+**The cause stays unexported**, with `Unwrap() error`. The HTTP serializer is then
+**structurally unable** to leak internals: the S7 guarantee becomes impossible to
+violate instead of being recommended. At the network boundary, the cause is
+replaced by a correlation identifier that only the log resolves.
 
-**La gravité n'est pas la décision de flux.** FHIR distingue `fatal` et `error` ;
-SARIF sépare `level` et `kind`. « À quel point c'est grave » et « faut-il s'arrêter »
-sont deux axes orthogonaux.
+**Severity is not the flow decision.** FHIR distinguishes `fatal` and `error`;
+SARIF separates `level` and `kind`. "How serious is it" and "should we stop" are
+two orthogonal axes.
 
-### 4.4 Affordances — le trou à combler
+### 4.4 Affordances — the gap to fill
 
-Aucun format ne fusionne validation et affordances. Les briques existent séparément :
-HAL-FORMS a `readOnly`, `regex`, `required` par propriété ; Siren a `method`, `href`
-et `fields` pour l'action.
+No format merges validation and affordances. The building blocks exist
+separately: HAL-FORMS has `readOnly`, `regex`, `required` per property; Siren has
+`method`, `href` and `fields` for the action.
 
-**La jointure que personne n'a standardisée : attacher l'affordance au même `Path`
-que le diagnostic.** Le même `commande[42].ligne[7].qteVente` porte à la fois « voici
-pourquoi c'est invalide » et « voici comment le corriger, par quelle action, avec quel
-type ». C'est la valeur ajoutée du modèle, et c'est un pari — aucun précédent à copier.
+**The join nobody has standardized: attaching the affordance to the same `Path`
+as the diagnostic.** The same `commande[42].ligne[7].qteVente` carries both "here
+is why this is invalid" and "here is how to fix it, by which action, with which
+type". That is the model's added value, and it is a bet — no precedent to copy.
 
-### 4.5 Diagnostics dans un stream : ce qu'aucun standard ne fait
+### 4.5 Diagnostics in a stream: what no standard does
 
-SARIF, FHIR et Problem Details sont tous des **documents finis**. Sur 1000 entités ×
-N diagnostics, la mémoire explose.
+SARIF, FHIR and Problem Details are all **finite documents**. On 1000 entities ×
+N diagnostics, memory blows up.
 
-> **Invariant.** Plafond de diagnostics par élément **et** par lot, avec ordre stable.
-> Au-delà, un compteur de troncature. Sans cela, un lot pathologique noie le signal.
+> **Invariant.** A diagnostics ceiling per element **and** per batch, with stable
+> ordering. Beyond it, a truncation counter. Without this, a pathological batch
+> drowns the signal.
 
-**Capture de trace conditionnelle** : `runtime.Callers` est coûteux et le package
-`errors` de Go ne capture rien. Trace uniquement si `Severity >= Error` ou en mode
-debug.
+**Conditional trace capture**: `runtime.Callers` is expensive and Go's `errors`
+package captures nothing. Trace only if `Severity >= Error` or in debug mode.
 
-### 4.6 Articulation avec `Result[T]`
+### 4.6 Articulation with `Result[T]`
 
-`Diagnostic` **ne remplace pas** la gestion d'erreur du flux, il la complète :
+`Diagnostic` **does not replace** the stream's error handling, it complements it:
 
-| Mécanisme | Rôle |
+| Mechanism | Role |
 |---|---|
-| `[]Diagnostic` porté par l'élément | diagnostic **métier** — n'interrompt jamais |
-| `Result[T]` dans le flux | l'élément n'a **pas pu** être produit |
-| `Source.Err()` hors flux | échec de **setup / teardown** (§4.7) |
-| `Stream.Err()` | **cause d'arrêt** du flux (§3.2) |
+| `[]Diagnostic` carried by the element | **business** diagnostic — never interrupts |
+| `Result[T]` in the stream | the element **could not** be produced |
+| `Source.Err()` outside the stream | **setup / teardown** failure (§4.7) |
+| `Stream.Err()` | **stop cause** of the stream (§3.2) |
 
-Ne pas réutiliser `error` pour un diagnostic métier : un avertissement n'est pas une
-erreur de traitement.
+Do not reuse `error` for a business diagnostic: a warning is not a processing
+error.
 
-### 4.7 Erreurs hors flux
+### 4.7 Errors outside the stream
 
-Un `Result[T]` **dans** le flux ne peut porter ni l'échec d'ouverture d'un fichier
-(aucun élément n'a existé) ni l'échec d'un `Close()` (après le dernier élément).
+A `Result[T]` **inside** the stream can carry neither the failure to open a file
+(no element ever existed) nor the failure of a `Close()` (after the last
+element).
 
 ```go
 type Source[T any] struct {
     Stream Stream[T]
-    Err    func() error   // setup + teardown ; consulté APRÈS consommation
+    Err    func() error   // setup + teardown; consulted AFTER consumption
 }
 ```
 
-> **Invariant de terminalité.** Un `Result` porteur d'erreur **n'arrête pas** le flux.
-> Un opérateur qui doit s'arrêter à la première erreur le déclare via `OrFail`. Cette
-> règle n'étant pas exprimable dans la signature, elle est **vérifiée par test**.
+> **Terminality invariant.** A `Result` carrying an error **does not stop** the
+> stream. An operator that must stop at the first error declares it via `OrFail`.
+> Since this rule is not expressible in the signature, it is **checked by test**.
 
 ---
 
-## 5. Taxonomie des opérateurs
+## 5. Operator taxonomy
 
-Classer par **comportement mémoire** est le socle : c'est ce qui détermine si un
-pipeline peut traiter un flux infini.
+Classifying by **memory behavior** is the foundation: it is what determines
+whether a pipeline can process an infinite stream.
 
-**Sans état — O(1).** `Map` · `Filter` · `FlatMap` · `Peek` · `Scan` · `Take` ·
+**Stateless — O(1).** `Map` · `Filter` · `FlatMap` · `Peek` · `Scan` · `Take` ·
 `Drop` · `TakeWhile` · `DropWhile` · `Concat` · `Merge` · `Interleave` ·
-`MergeJoinBy` · `ZipLongest`. Composables à l'infini.
+`MergeJoinBy` · `ZipLongest`. Composable indefinitely.
 
-Les cinq derniers sont les opérateurs N→1 (§7) : ils fusionnent plusieurs flux **sans
-état**, `MergeJoinBy` et `ZipLongest` sous condition d'entrées triées ou consommées
-en lockstep.
+The last five are the N→1 operators (§7): they merge several streams **without
+state**, `MergeJoinBy` and `ZipLongest` on condition that inputs are sorted or
+consumed in lockstep.
 
-**État borné — O(k), k fixé à la construction.** `Rebatch(n)` · `Coalesce(n)` ·
-`Window(durée)` · `Distinct(n)` · `Buffer(n)` · `Split` · `Parallel`. Chacun **déclare sa politique de
-débordement** (bloquer, jeter l'ancien, jeter le récent, erreur) — la back-pressure ne
-supprime pas la pression, elle la remonte jusqu'à un point où on peut la traiter, et
-ces opérateurs *sont* ce point.
+**Bounded state — O(k), k fixed at construction.** `Rebatch(n)` · `Coalesce(n)` ·
+`Window(duration)` · `Distinct(n)` · `Buffer(n)` · `Split` · `Parallel`. Each one
+**declares its overflow policy** (block, drop oldest, drop newest, error) —
+back-pressure does not remove pressure, it propagates it up to a point where it
+can be handled, and these operators *are* that point.
 
-**Bloquants — O(n).** `Sort` · `GroupBy` · `Collect` · `Join` (côté build) ·
-`Materialize`. **Incompatibles avec un flux infini.**
+**Blocking — O(n).** `Sort` · `GroupBy` · `Collect` · `Join` (build side) ·
+`Materialize`. **Incompatible with an infinite stream.**
 
-> **Leçon Java 8.** Ne jamais laisser une contrainte de parallélisme amputer l'API
-> séquentielle : Java s'est privé de `zip`, `foldLeft` et `takeWhile` pour préserver
-> la parallélisabilité, et une étude sur 5,5 MLOC montre que le parallélisme y est
-> très peu utilisé. Tout le monde a payé pour presque personne.
+> **Java 8 lesson.** Never let a parallelism constraint amputate the sequential
+> API: Java deprived itself of `zip`, `foldLeft` and `takeWhile` to preserve
+> parallelizability, and a study over 5.5 MLOC shows parallelism is very rarely
+> used there. Everyone paid for almost nobody.
 
 ---
 
-## 6. Split — une primitive unique
+## 6. Split — a single primitive
 
-### 6.1 Trois usages, une fonction
+### 6.1 Three uses, one function
 
-Partition (succès/erreurs), fan-out parallèle et clonage sont **la même opération**
-paramétrée par une fonction de routage. C'est le modèle Akka Streams :
+Partition (successes/errors), parallel fan-out and cloning are **the same
+operation** parameterized by a routing function. This is the Akka Streams model:
 
-| Mode | Qui reçoit | Ordre | Route |
+| Mode | Who receives | Order | Route |
 |---|---|---|---|
-| **Partition** | une branche, choisie | préservé par branche | `[i]` |
-| **Balance** | une branche, la première libre | **aucune garantie** | round-robin |
-| **Broadcast** | toutes les branches | préservé par branche | `[0..N-1]` |
+| **Partition** | one branch, chosen | preserved per branch | `[i]` |
+| **Balance** | one branch, the first free one | **no guarantee** | round-robin |
+| **Broadcast** | all branches | preserved per branch | `[0..N-1]` |
 
 ```go
 func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T]
 ```
 
-> **Réserve à documenter.** Partition et Broadcast préservent l'ordre par branche ;
-> **Balance ne garantit aucun ordre** et est non déterministe. Unifier les trois est
-> justifié, mais les garanties **diffèrent** et doivent être annoncées par mode.
+> **Caveat to document.** Partition and Broadcast preserve order per branch;
+> **Balance guarantees no order** and is non-deterministic. Unifying the three is
+> justified, but the guarantees **differ** and must be stated per mode.
 
-### 6.2 Le théorème d'impossibilité
+### 6.2 The impossibility theorem
 
-Avec une source non rejouable, on ne peut pas avoir simultanément :
-**branches indépendantes**, **source lue une seule fois**, **mémoire bornée**.
-Il faut en sacrifier un.
+With a non-replayable source, you cannot have simultaneously:
+**independent branches**, **source read only once**, **bounded memory**.
+One must be sacrificed.
 
-| Stratégie | Sacrifice | Qui |
+| Strategy | Sacrifice | Who |
 |---|---|---|
-| Buffer non borné | **mémoire** | Web Streams, Python `tee`, Rust `itertools::tee` |
-| Buffer borné + blocage | **indépendance** | Akka `Broadcast` |
-| Buffer borné + drop | **complétude** | Akka `OverflowStrategy` |
-| Re-exécution de la source | **CPU/IO ×N** | rejeu de `iter.Seq` |
-| Matérialisation O(n) | **mémoire = total** | Python recommande `list()` |
+| Unbounded buffer | **memory** | Web Streams, Python `tee`, Rust `itertools::tee` |
+| Bounded buffer + blocking | **independence** | Akka `Broadcast` |
+| Bounded buffer + drop | **completeness** | Akka `OverflowStrategy` |
+| Re-running the source | **CPU/IO ×N** | `iter.Seq` replay |
+| O(n) materialization | **memory = total** | Python recommends `list()` |
 
-MDN est explicite sur le choix de Web Streams : *« unread data is enqueued internally
-on the slower consumed ReadableStream without any limit or backpressure »*. **C'est
-l'anti-modèle** au regard de notre garantie S1.
+MDN is explicit about the Web Streams choice: *"unread data is enqueued
+internally on the slower consumed ReadableStream without any limit or
+backpressure"*. **That is the anti-pattern** with respect to our S1 guarantee.
 
-### 6.3 La cinquième option — celle qu'on retient
+### 6.3 The fifth option — the one we adopt
 
-**Le buffer n'est pas le prix de la duplication, c'est le prix du désalignement.**
+**The buffer is not the price of duplication, it is the price of misalignment.**
 
-En mono-goroutine, si `Split` **pousse** vers N handlers en lock-step au lieu
-d'exposer N `iter.Seq` indépendants, le backlog reste **O(1)** sans le couplage
-pathologique d'Akka. C'est le levier qui réconcilie nos trois objectifs, et il n'est
-disponible que parce qu'on est pull et mono-goroutine.
+In a single goroutine, if `Split` **pushes** to N handlers in lock-step instead of
+exposing N independent `iter.Seq`, the backlog stays **O(1)** without Akka's
+pathological coupling. This is the lever that reconciles our three objectives, and
+it is only available because we are pull-based and single-goroutine.
 
-Corollaire pour le clonage (§10.1) : si la source est rejouable, la re-exécuter ; sinon
-`Materialize` **explicite**. Ne jamais construire un tee non borné implicite.
+Corollary for cloning (§10.1): if the source is replayable, re-run it; otherwise
+**explicit** `Materialize`. Never build an implicit unbounded tee.
 
-### 6.4 `Parallel` — limite structurelle
+### 6.4 `Parallel` — structural limit
 
-Rayon (Rust) parallélise parce que ses sources sont *splittables* (`split_at`). Une
-`iter.Seq` opaque **ne l'est pas**. Notre seule option est le fan-out par lot, d'où :
+Rayon (Rust) parallelizes because its sources are *splittable* (`split_at`). An
+opaque `iter.Seq` **is not**. Our only option is per-batch fan-out, hence:
 
-- soit la perte de l'ordre (`Parallel`), soit un tampon de réordonnancement O(k) ;
-- perte locale des traces natives → enrichir le contexte d'erreur au franchissement ;
-- `Parallel(1)` doit être un no-op explicite, jamais un chemin concurrent silencieux.
+- either loss of ordering (`Parallel`), or an O(k) reordering buffer;
+- local loss of native traces → enrich the error context at the crossing;
+- `Parallel(1)` must be an explicit no-op, never a silent concurrent path.
 
-Le lot est ici un avantage : le fan-out se fait par lot de ~1024, donc le coût de
-coordination est amorti.
+The batch is an advantage here: fan-out happens per batch of ~1024, so the
+coordination cost is amortized.
 
 ---
 
-## 7. Opérateurs N→1 — fusionner plusieurs flux
+## 7. N→1 operators — merging several streams
 
-`Split` (§6) décompose un flux en N. Cette section couvre l'opération inverse. Ce sont
-deux familles distinctes, et **la fusion n'est pas la jointure** : joindre apparie des
-éléments sur une clé, fusionner combine des séquences.
+`Split` (§6) decomposes one stream into N. This section covers the inverse
+operation. These are two distinct families, and **merging is not joining**:
+joining pairs elements on a key, merging combines sequences.
 
-### 7.1 Taxonomie
+### 7.1 Taxonomy
 
-| Opérateur | Sémantique | Mémoire | Ordre |
+| Operator | Semantics | Memory | Order |
 |---|---|---|---|
-| `Concat` | A entier, puis B entier | O(1) | déterministe |
-| `Merge` | entrelacement, par lot | O(1) | non déterministe |
-| `Interleave` | alternance stricte N de A, N de B | O(1) | strictement alterné |
-| `MergeJoinBy` | fusion ordonnée de flux triés | **O(1)** | trié |
-| `ZipLongest` | paires positionnelles, va au plus long | O(1) | positionnel |
-| `Coalesce` | recombine les lots à une taille cible | O(k) | préservé |
-| ~~`Union`/`Intersect`/`Except` non triés~~ | déduplication par HashSet | **O(distinct)** | — |
+| `Concat` | all of A, then all of B | O(1) | deterministic |
+| `Merge` | interleaving, per batch | O(1) | non-deterministic |
+| `Interleave` | strict alternation, N from A, N from B | O(1) | strictly alternating |
+| `MergeJoinBy` | ordered merge of sorted streams | **O(1)** | sorted |
+| `ZipLongest` | positional pairs, goes to the longest | O(1) | positional |
+| `Coalesce` | recombines batches to a target size | O(k) | preserved |
+| ~~unsorted `Union`/`Intersect`/`Except`~~ | HashSet deduplication | **O(distinct)** | — |
 
-Les trois derniers **n'existent pas** comme opérateurs de flux : un HashSet non borné
-viole S1. Ils sont fournis uniquement en variante triée, dérivée de `MergeJoinBy`
-(§7.2) — c'est la stratégie sort-merge des moteurs SQL.
+The last three **do not exist** as stream operators: an unbounded HashSet
+violates S1. They are provided only in a sorted variant, derived from
+`MergeJoinBy` (§7.2) — this is the sort-merge strategy of SQL engines.
 
-### 7.2 `MergeJoinBy` — la primitive centrale
+### 7.2 `MergeJoinBy` — the central primitive
 
-Un seul opérateur subsume six sémantiques, en mémoire O(1), sur des flux
-**potentiellement infinis** à condition qu'ils soient triés sur la clé.
+A single operator subsumes six semantics, in O(1) memory, over **potentially
+infinite** streams provided they are sorted on the key.
 
 ```go
 type EitherOrBoth[L, R any] struct {
-    Left  *L   // nil si absent
-    Right *R   // nil si absent
+    Left  *L   // nil if absent
+    Right *R   // nil if absent
 }
 
 func MergeJoinBy[L, R any](
@@ -478,477 +495,481 @@ func MergeJoinBy[L, R any](
 ) Stream[EitherOrBoth[L, R]]
 ```
 
-Chaque sémantique est un **filtrage en aval**, pas un opérateur distinct :
+Each semantics is a **downstream filter**, not a distinct operator:
 
-| Sémantique | Filtre |
+| Semantics | Filter |
 |---|---|
-| Inner join | garder `Both` |
-| Left join | garder `Both` + `Left` |
-| Full outer join | tout garder |
-| Intersect | garder `Both` |
-| Except (A \ B) | garder `Left` |
-| Union | tout garder |
+| Inner join | keep `Both` |
+| Left join | keep `Both` + `Left` |
+| Full outer join | keep everything |
+| Intersect | keep `Both` |
+| Except (A \ B) | keep `Left` |
+| Union | keep everything |
 
-C'est le meilleur rapport puissance/code de toute la taxonomie, et le seul opérateur
-binaire qui fusionne deux flux infinis sans état.
+This is the best power-to-code ratio in the entire taxonomy, and the only binary
+operator that merges two infinite streams without state.
 
-> **Articulation avec §8.** `MergeJoinBy` **est** la primitive du merge join ; l'entrée
-> « merge join » de la table des stratégies (§8.2) y renvoie et n'est pas une
-> implémentation séparée. Le hash join (§8.1) reste une primitive distincte : il ne
-> suppose pas d'entrées triées, mais matérialise un côté.
+> **Articulation with §8.** `MergeJoinBy` **is** the merge-join primitive; the
+> "merge join" entry in the strategy table (§8.2) refers to it and is not a
+> separate implementation. The hash join (§8.1) remains a distinct primitive: it
+> does not assume sorted inputs, but materializes one side.
 
-> **Piège documenté.** Sur des entrées **non réellement triées**, `MergeJoinBy` produit
-> un résultat faux **sans aucune erreur**. Un mode debug doit vérifier la monotonie des
-> clés. C'est un échec silencieux, du même registre que le co-partitionnement Kafka
-> (§8.1) — inacceptable en l'état.
+> **Documented pitfall.** On inputs that are **not actually sorted**,
+> `MergeJoinBy` produces a wrong result **with no error whatsoever**. A debug mode
+> must check key monotonicity. This is a silent failure, of the same kind as Kafka
+> co-partitioning (§8.1) — unacceptable as it stands.
 
-### 7.3 `Merge` — pourquoi le lot rachète le coût
+### 7.3 `Merge` — why the batch redeems the cost
 
-En pull mono-goroutine, un merge équitable **à l'élément** est impossible sans buffer
-ni `iter.Pull`. Au grain du **lot**, il devient trivial : un `iter.Pull` par source, et
-on alterne.
+In single-goroutine pull, a fair merge **at the element level** is impossible
+without a buffer or `iter.Pull`. At **batch** grain, it becomes trivial: one
+`iter.Pull` per source, and you alternate.
 
-**Mesuré** (étape 0) : le merge de deux flux coûte **69,8 ns/élément** en tuple-à-tuple
-contre **0,39 ns/élément** par lot de 1024 — un facteur **179**. À 1,3× le plafond,
-l'opérateur est essentiellement gratuit en batch, et inutilisable sans lui.
+**Measured** (stage 0): merging two streams costs **69.8 ns/element** tuple-at-a-
+time against **0.39 ns/element** per batch of 1024 — a factor of **179**. At 1.3×
+the ceiling, the operator is essentially free in batch, and unusable without it.
 
-> En tuple-à-tuple, ce coût est rédhibitoire et `Merge` exigerait une inversion de
-> contrôle. **C'est le tout-batch qui rend l'opérateur possible**, pas seulement plus
-> rapide — mesuré, pas projeté.
+> Tuple-at-a-time, this cost is prohibitive and `Merge` would require an inversion
+> of control. **It is all-batch that makes the operator possible**, not merely
+> faster — measured, not projected.
 
-**Condition de complétion : paramètre explicite.** Le flux fusionné se termine-t-il
-quand *une* source se termine, ou quand *toutes* le font ? Akka en fait un paramètre
-(`eagerComplete`, défaut « toutes »). Jamais un choix implicite.
+**Completion condition: an explicit parameter.** Does the merged stream end when
+*one* source ends, or when *all* of them do? Akka makes it a parameter
+(`eagerComplete`, default "all"). Never an implicit choice.
 
-### 7.4 `ZipLongest` primitif, `Zip` dérivé
+### 7.4 `ZipLongest` primitive, `Zip` derived
 
-`Zip` qui s'arrête silencieusement au plus court **masque des bugs**. Rust a jugé
-nécessaire d'ajouter `zip_eq`, qui **panique** sur des longueurs inégales — le signe
-que la sémantique par défaut est tenue pour dangereuse.
+A `Zip` that silently stops at the shortest **hides bugs**. Rust deemed it
+necessary to add `zip_eq`, which **panics** on unequal lengths — the sign that the
+default semantics is considered dangerous.
 
-**Décision : `ZipLongest` est la primitive**, `Zip` un filtrage de `Both`. L'utilisateur
-qui veut l'arrêt au plus court le demande explicitement.
+**Decision: `ZipLongest` is the primitive**, `Zip` a `Both` filter. The user who
+wants stopping at the shortest asks for it explicitly.
 
-> **Avantage structurel à documenter.** En push, `Zip` est une bombe mémoire : RxJava a
-> un ticket dédié montrant qu'une file non bornée par source est nécessaire, et qu'**un
-> seul producteur lent force tous les autres à bufferiser**. Notre modèle pull en est
-> immunisé par construction.
+> **Structural advantage to document.** In push, `Zip` is a memory bomb: RxJava
+> has a dedicated ticket showing that an unbounded queue per source is necessary,
+> and that **a single slow producer forces all the others to buffer**. Our pull
+> model is immune to this by construction.
 
-### 7.5 Rebatching — les lots ne s'alignent pas
+### 7.5 Rebatching — batches do not align
 
-Deux flux produisent des lots de tailles différentes et non alignées. **Personne ne
-cherche à les aligner** — ni DuckDB, ni DataFusion, ni Arrow.
+Two streams produce batches of different, unaligned sizes. **Nobody tries to
+align them** — neither DuckDB, nor DataFusion, nor Arrow.
 
-Le modèle établi : les opérateurs binaires travaillent sur un **curseur `(lot, offset)`
-par entrée**, consomment les lots partiellement, et produisent une sortie de taille
-cible.
+The established model: binary operators work on a **`(batch, offset)` cursor per
+input**, consume batches partially, and produce output at a target size.
 
-DataFusion a un opérateur physique dédié à la recomposition, `CoalesceBatchesExec`,
-visible dans les plans d'exécution, dont le rôle documenté est de recombiner les petits
-lots après un filtre sélectif ou une jointure.
+DataFusion has a dedicated physical operator for recomposition,
+`CoalesceBatchesExec`, visible in execution plans, whose documented role is to
+recombine small batches after a selective filter or a join.
 
 ```go
 func Coalesce[T any](s Stream[T], targetSize int) Stream[T]
 ```
 
-> **Règle.** Placer un `Coalesce` après tout opérateur sélectif — `Filter`, inner join,
-> `Split`/Partition — sous peine de propager des lots minuscules qui annulent le
-> bénéfice de la vectorisation.
+> **Rule.** Place a `Coalesce` after any selective operator — `Filter`, inner
+> join, `Split`/Partition — on pain of propagating tiny batches that cancel out
+> the benefit of vectorization.
 
-**Taille cible : mesurée.** Le plateau commence à 8 éléments et ne se dégrade pas
-jusqu'à 1M (§2.3). L'écart avec DuckDB (2048) et DataFusion (8192) est sans effet ici.
-Sur un filtre à 1 % de sélectivité, le batch reste **×3,6 plus rapide** que l'élément
-même sans `Coalesce`, et sans allocation — `Coalesce` est donc utile pour éviter la
-propagation de lots creux sur plusieurs étages, mais **ce n'est pas une urgence**.
+**Target size: measured.** The plateau starts at 8 elements and does not degrade
+up to 1M (§2.3). The gap with DuckDB (2048) and DataFusion (8192) has no effect
+here. On a filter at 1% selectivity, the batch remains **3.6× faster** than the
+element even without `Coalesce`, and without allocation — `Coalesce` is therefore
+useful to avoid propagating sparse batches across several stages, but **it is not
+urgent**.
 
-### 7.6 Fusion des contextes
+### 7.6 Merging contexts
 
-Il n'existe pas de `context.Merge` dans la stdlib Go. La proposition
-[golang/go#36503](https://github.com/golang/go/issues/36503) a été **fermée**.
+There is no `context.Merge` in the Go stdlib. The proposal
+[golang/go#36503](https://github.com/golang/go/issues/36503) was **closed**.
 
-*Réserve : le fil de discussion n'a pas pu être lu, le motif exact du rejet n'est donc
-pas établi.*
+*Caveat: the discussion thread could not be read, so the exact reason for the
+rejection is not established.*
 
-Le point dur est connu : fusionner **annulation et deadline** est bien défini (le plus
-tôt gagne), mais fusionner les **valeurs** ne l'est pas — les implémentations tierces
-prennent arbitrairement celles d'un seul parent.
+The hard point is known: merging **cancellation and deadline** is well defined
+(the earliest wins), but merging **values** is not — third-party implementations
+arbitrarily take those of a single parent.
 
-**Notre `Batch.Ctx` (§3.1) rend la question sans objet** : chaque lot sortant d'un merge
-**conserve le contexte de son lot d'origine**. Rien à fusionner, O(1), sémantiquement
-correct.
+**Our `Batch.Ctx` (§3.1) makes the question moot**: each batch coming out of a
+merge **keeps the context of its originating batch**. Nothing to merge, O(1),
+semantically correct.
 
-| Aspect | Règle |
+| Aspect | Rule |
 |---|---|
-| Contexte de lot | conservé tel quel — jamais fusionné |
-| Annulation du pipeline | canal séparé ; union des sources, via `context.AfterFunc` (sans goroutine) |
-| Deadline | le minimum |
-| Valeurs | **jamais fusionnées** |
+| Batch context | kept as is — never merged |
+| Pipeline cancellation | separate channel; union of sources, via `context.AfterFunc` (no goroutine) |
+| Deadline | the minimum |
+| Values | **never merged** |
 
-### 7.7 Erreurs et diagnostics à la fusion
+### 7.7 Errors and diagnostics at merge time
 
-Rx distingue explicitement deux stratégies, et la distinction est la bonne :
+Rx explicitly distinguishes two strategies, and the distinction is the right one:
 
-| Stratégie | Comportement |
+| Strategy | Behavior |
 |---|---|
-| `merge` | la première erreur propage immédiatement, les autres sources sont abandonnées |
-| `mergeDelayError` | les autres sources vont à leur terme, les erreurs sont agrégées |
+| `merge` | the first error propagates immediately, the other sources are abandoned |
+| `mergeDelayError` | the other sources run to completion, errors are aggregated |
 
-**Défaut retenu : `mergeDelayError`.** Nos diagnostics par élément (§4) rendent
-l'agrégation naturelle — une source en échec produit des `Diagnostic` de sévérité
-`Critical` sans interrompre les autres, ce qui est cohérent avec l'invariant de
-terminalité (§4.7).
+**Default adopted: `mergeDelayError`.** Our per-element diagnostics (§4) make
+aggregation natural — a failing source produces `Diagnostic`s of severity
+`Critical` without interrupting the others, which is consistent with the
+terminality invariant (§4.7).
 
 ---
 
-## 8. Connecteurs de base de données
+## 8. Database connectors
 
-### 8.1 `database/sql` ne convient pas — constat vérifié
+### 8.1 `database/sql` does not fit — a verified finding
 
-- **Aucun batching** : chaque statement est exécuté sérialement, un aller-retour
-  réseau chacun.
-- `rows.Next()` est **intrinsèquement ligne à ligne**.
-- Boxing en `interface{}` par valeur scannée — c'est le vrai coût, plus encore que
-  la réflexion.
+- **No batching**: each statement is executed serially, one network round-trip
+  each.
+- `rows.Next()` is **intrinsically row by row**.
+- Boxing into `interface{}` per scanned value — that is the real cost, even more
+  than reflection.
 
-Incompatible avec le modèle vectorisé. **Le connecteur parle donc le protocole
-PostgreSQL v3 directement.**
+Incompatible with the vectorized model. **The connector therefore speaks the
+PostgreSQL v3 protocol directly.**
 
-### 8.2 Budget honnête du 0dep
+### 8.2 Honest budget for 0dep
 
-Le framing est trivial : ~20 types de messages utiles, 1 octet de type + longueur
-int32. **Le vrai budget est ailleurs** :
+Framing is trivial: ~20 useful message types, 1 type byte + an int32 length.
+**The real budget is elsewhere**:
 
-- **SCRAM-SHA-256** (PBKDF2-HMAC-SHA256 + HMAC) — faisable en `crypto/*` stdlib ;
-- **les codecs binaires par type** (numeric, timestamptz, arrays) — travail long et
-  piégeux.
+- **SCRAM-SHA-256** (PBKDF2-HMAC-SHA256 + HMAC) — feasible with stdlib
+  `crypto/*`;
+- **the per-type binary codecs** (numeric, timestamptz, arrays) — long and
+  treacherous work.
 
-Budgéter les codecs, pas le parsing.
+Budget the codecs, not the parsing.
 
-### 8.3 Le « truc à la LINQ » : `= ANY($1)`
+### 8.3 The "LINQ-style trick": `= ANY($1)`
 
-`IN` exige une liste d'expressions scalaires : N valeurs → N placeholders → **un plan
-distinct par valeur de N**. Sur des lots de 1 à 1024, c'est jusqu'à 1024 plans pour
-une seule requête logique.
+`IN` requires a list of scalar expressions: N values → N placeholders → **a
+distinct plan per value of N**. On batches from 1 to 1024, that is up to 1024
+plans for a single logical query.
 
-`= ANY($1)` prend **un tableau en un seul paramètre** : forme de requête unique quel
-que soit N, donc **un seul plan préparé**.
+`= ANY($1)` takes **an array in a single parameter**: a single query shape
+whatever N is, hence **a single prepared plan**.
 
-> **Règle.** Le builder produit **une forme canonique par requête logique, jamais
-> paramétrée par N.**
+> **Rule.** The builder produces **one canonical shape per logical query, never
+> parameterized by N.**
 
-| Backend | Stratégie |
+| Backend | Strategy |
 |---|---|
-| PostgreSQL | `= ANY($1)` — un paramètre tableau, un plan |
-| SQL Server | TVP, avec réserves (§8.4) |
-| MySQL | `JSON_TABLE` — un placeholder, joignable avec index |
-| Sans tableaux | padding à la puissance de 2 (~11 variantes pour N ≤ 1024) |
+| PostgreSQL | `= ANY($1)` — one array parameter, one plan |
+| SQL Server | TVP, with caveats (§8.4) |
+| MySQL | `JSON_TABLE` — one placeholder, joinable with an index |
+| Without arrays | padding to a power of 2 (~11 variants for N ≤ 1024) |
 
-Le padding duplique la **dernière valeur liée** (`(1,2,3,3)`), pas du texte : la
-sécurité est intacte. À proscrire sur les SGBD sans plan cache, où c'est un surcoût net.
+Padding duplicates the **last bound value** (`(1,2,3,3)`), not text: security is
+intact. To be avoided on DBMSs without a plan cache, where it is a net overhead.
 
-### 8.4 Réserve sur les TVP SQL Server
+### 8.4 Caveat on SQL Server TVPs
 
-Estimation de cardinalité **10 % pour l'égalité, 30 % pour l'inégalité, 9 % pour un
-range**, indépendamment du nombre réel de lignes ; aucune statistique par colonne ; et
-sur les **jointures**, parameter sniffing bidirectionnel — un premier plan bâti sur
-100k lignes reste jusqu'à recompilation. Mitigations : `OPTION (RECOMPILE)` ou trace
-flag 2453.
+Cardinality estimation of **10% for equality, 30% for inequality, 9% for a
+range**, independent of the actual number of rows; no per-column statistics; and
+on **joins**, bidirectional parameter sniffing — a first plan built on 100k rows
+persists until recompilation. Mitigations: `OPTION (RECOMPILE)` or trace flag
+2453.
 
-### 8.5 Pipelining et COPY
+### 8.5 Pipelining and COPY
 
-**Pipelining** : envoyer Parse/Bind/Execute pour tout le lot, puis **un seul `Sync`**.
-En cas d'erreur le backend saute tous les messages jusqu'au Sync suivant — d'où une
-**frontière d'erreur naturelle par lot**. Gain documenté côté pgx : 11 allers-retours
-réduits à 2.
+**Pipelining**: send Parse/Bind/Execute for the whole batch, then **a single
+`Sync`**. On error the backend skips all messages up to the next Sync — hence a
+**natural per-batch error boundary**. Gain documented on the pgx side: 11
+round-trips reduced to 2.
 
-**COPY binaire** : signature 11 octets, puis par tuple un compteur de champs 16 bits et
-par champ une longueur 32 bits (`-1` = NULL), trailer `-1`. Les frontières de messages
-**n'ont pas à coïncider avec les lignes** : un `Batch[Row]` mappe sur un `CopyData`.
-~200 lignes de code pour le meilleur ratio effort/gain du projet.
+**Binary COPY**: an 11-byte signature, then per tuple a 16-bit field count and per
+field a 32-bit length (`-1` = NULL), trailer `-1`. Message boundaries **need not
+coincide with rows**: a `Batch[Row]` maps onto a `CopyData`. ~200 lines of code
+for the best effort-to-gain ratio in the project.
 
-### 8.6 Hydratation
+### 8.6 Hydration
 
-L'argument décisif pour le codegen n'est **pas** « `reflect` est lent » : c'est que la
-réflexion travaille **ligne par ligne et champ par champ**, ce qui casse la
-vectorisation.
+The decisive argument for codegen is **not** "`reflect` is slow": it is that
+reflection works **row by row and field by field**, which breaks vectorization.
 
-- une fonction d'hydratation générée **par entité**, bouclant sur les 1024 lignes en
-  interne — une indirection par lot, pas par ligne ;
-- **décodage colonnaire** : la boucle sur 1024 valeurs d'un même type est monomorphe et
-  prédictible — le principe X100 appliqué à l'hydratation ;
-- **zéro `interface{}`** dans le chemin chaud ; format **binaire** obligatoire ;
-- pré-allocation à la taille du lot, réutilisation des tampons entre lots.
+- a generated hydration function **per entity**, looping over the 1024 rows
+  internally — one indirection per batch, not per row;
+- **columnar decoding**: the loop over 1024 values of the same type is monomorphic
+  and predictable — the X100 principle applied to hydration;
+- **zero `interface{}`** in the hot path; **binary** format mandatory;
+- pre-allocation at batch size, buffer reuse between batches.
 
-### 8.7 Collections : jamais de produit cartésien
+### 8.7 Collections: never a cartesian product
 
-Deux `Include` de collections **au même niveau** produisent un produit croisé (10 posts
-× 10 contributeurs = 100 lignes pour un blog). En moteur batch, on a déjà les clés
-parentes : **requêtes séparées + jointure en mémoire**. L'ordre de tri doit être rendu
-déterministe par construction.
+Two collection `Include`s **at the same level** produce a cross product (10 posts
+× 10 contributors = 100 rows for a blog). In a batch engine, we already have the
+parent keys: **separate queries + in-memory join**. Sort order must be made
+deterministic by construction.
 
-### 8.8 Sécurité par construction
+### 8.8 Security by construction
 
-1. **Les valeurs ne transitent jamais par le texte SQL** — uniquement en Bind. Avec
-   `= ANY($1)`, 1024 valeurs restent **un paramètre** : surface d'injection nulle.
-2. **Les identifiants viennent d'un catalogue généré** à la compilation — un nom de
-   colonne est un *symbole Go*, pas une chaîne.
-3. **Builder typé** : un état invalide n'est pas représentable. Aucun `Raw(string)`
-   public dans le chemin nominal.
+1. **Values never travel through SQL text** — only in Bind. With `= ANY($1)`,
+   1024 values remain **one parameter**: zero injection surface.
+2. **Identifiers come from a catalog generated** at compile time — a column name
+   is a *Go symbol*, not a string.
+3. **Typed builder**: an invalid state is not representable. No public
+   `Raw(string)` in the nominal path.
 
 ---
 
-## 9. Jointures
+## 9. Joins
 
-### 9.1 Hash join — le build est une table
+### 9.1 Hash join — the build side is a table
 
-Le côté build **est** une table, le côté probe pilote la jointure et produit seul les
-sorties (dualité stream/table de Kafka Streams). Nommer les deux côtés dans l'API lève
-l'ambiguïté sur lequel est matérialisé.
+The build side **is** a table, the probe side drives the join and alone produces
+the outputs (Kafka Streams' stream/table duality). Naming both sides in the API
+removes the ambiguity about which one is materialized.
 
 ```go
 func JoinStreamTable[A, B any, K comparable, R any](
-    probe Stream[A],        // streamé — peut être infini
-    build Stream[B],        // matérialisé — DOIT être fini
+    probe Stream[A],        // streamed — may be infinite
+    build Stream[B],        // materialized — MUST be finite
     keyA  func(A) K,
     keyB  func(B) K,
     merge func(A, B) R,
-    limit BuildLimit,       // OBLIGATOIRE — paramètre positionnel requis
+    limit BuildLimit,       // MANDATORY — required positional parameter
 ) Stream[R]
 ```
 
-**`limit` est requis, pas une option.** Rendre l'état non borné *inexprimable* vaut
-mieux que le détecter à l'exécution. Spark **refuse à la planification** un outer join
-flux-flux sans watermark ; Kafka a **déprécié** son grace period implicite de 24 h
-(KIP-633). Le défaut sûr est zéro tolérance, élargie sur demande.
+**`limit` is required, not an option.** Making unbounded state *inexpressible* is
+better than detecting it at runtime. Spark **refuses at planning time** a
+stream-stream outer join without a watermark; Kafka **deprecated** its implicit
+24 h grace period (KIP-633). The safe default is zero tolerance, widened on
+request.
 
-**Le dépassement est bruyant** : `Diagnostic` de sévérité `Critical` et compteur
-observable — jamais un silence, jamais un OOM. Rompre le co-partitionnement dans Kafka
-Streams ne lève aucune exception et ne produit aucune sortie : c'est le pire mode de
-défaillance, et le contre-exemple à ne pas reproduire.
+**Overflow is loud**: a `Diagnostic` of severity `Critical` and an observable
+counter — never silence, never an OOM. Breaking co-partitioning in Kafka Streams
+raises no exception and produces no output: that is the worst failure mode, and
+the counter-example not to reproduce.
 
-**La limite est globale au plan**, pas locale à l'opérateur : quand plusieurs jointures
-cohabitent, la somme des tables doit tenir. Un budget partagé.
+**The limit is global to the plan**, not local to the operator: when several joins
+coexist, the sum of the tables must fit. A shared budget.
 
-**Le stockage est une interface** — map mémoire par défaut, spill optionnel. Ne jamais
-câbler une politique de persistance dans un opérateur : Kafka Streams a fini par imposer
-RocksDB dans son foreign-key join, en contradiction avec son propre objectif
-d'agnosticisme. Pour le spill, la référence est le partitionnement radix avec
-augmentation récursive des bits (DuckDB), avec son garde-fou connu : sur données très
-biaisées, le sous-partitionnement récursif provoque du *I/O thrashing*.
+**Storage is an interface** — an in-memory map by default, optional spill. Never
+hardwire a persistence policy into an operator: Kafka Streams ended up mandating
+RocksDB in its foreign-key join, in contradiction with its own agnosticism goal.
+For spill, the reference is radix partitioning with recursive bit increase
+(DuckDB), with its known guardrail: on very skewed data, recursive
+sub-partitioning causes *I/O thrashing*.
 
-### 9.2 Stratégies
+### 9.2 Strategies
 
-| Stratégie | Condition | Mémoire |
+| Strategy | Condition | Memory |
 |---|---|---|
-| Hash join | clés `comparable` | O(build) |
-| Merge join (§7.2) | les deux flux triés sur la clé | O(1) |
-| Interval join | flux temporels ordonnés | O(débit × intervalle) |
-| Nested loop | dernier recours, côté droit rejouable | O(1), CPU O(n·m) |
+| Hash join | `comparable` keys | O(build) |
+| Merge join (§7.2) | both streams sorted on the key | O(1) |
+| Interval join | ordered temporal streams | O(throughput × interval) |
+| Nested loop | last resort, replayable right side | O(1), CPU O(n·m) |
 
-**Clés de type identique, imposé à la compilation.** Materialize documente que les casts
-implicites dans les contraintes de jointure sont très coûteux en mémoire ; le typage
-générique rend le problème inexistant — avantage net sur les moteurs SQL.
+**Keys of identical type, enforced at compile time.** Materialize documents that
+implicit casts in join constraints are very expensive in memory; generic typing
+makes the problem non-existent — a clear advantage over SQL engines.
 
-### 9.3 Flux infinis : interval join
+### 9.3 Infinite streams: interval join
 
-L'état est borné par un **prédicat temporel**, pas par un découpage — une fenêtre
-glissante duplique chaque élément dans N fenêtres.
+State is bounded by a **temporal predicate**, not by a slicing — a sliding window
+duplicates each element into N windows.
 
 ```go
-// a se joint à b ssi : a.ts + lower <= b.ts <= a.ts + upper
+// a joins b iff: a.ts + lower <= b.ts <= a.ts + upper
 func IntervalJoin[A, B any, K comparable, R any](
     left, right Stream[A], /* ... */
     lower, upper time.Duration,
 ) Stream[R]
 ```
 
-**Restrictions assumées, reprises de Flink : inner join et temps d'événement
-uniquement.** Un outer join fenêtré exige de savoir *quand renoncer à trouver un
-partenaire*, donc un watermark. Sans lui la sémantique est **indéfinie**, et l'exposer
-serait mentir à l'utilisateur.
+**Accepted restrictions, taken from Flink: inner join and event time only.** A
+windowed outer join requires knowing *when to give up finding a partner*, hence a
+watermark. Without one the semantics is **undefined**, and exposing it would be
+lying to the user.
 
-> Si des watermarks sont introduits : prévoir dès la conception un **idle timeout par
-> source**. Une source inactive fige le watermark, les fenêtres ne ferment jamais,
-> l'état croît sans fin.
+> If watermarks are introduced: plan from the design stage for a **per-source idle
+> timeout**. An inactive source freezes the watermark, windows never close, state
+> grows without end.
 
-### 9.4 Jointures n-aires
+### 9.4 n-ary joins
 
-**Ne jamais matérialiser les résultats binaires intermédiaires** — c'est l'amplification
-d'état qui contraint Materialize et RisingWave au *delta join*. Un chaînage
-`.Join().Join()` **ment sur le coût réel** : soit jointure n-aire, soit coût documenté.
+**Never materialize intermediate binary results** — that is the state
+amplification that forces Materialize and RisingWave into *delta join*. A
+`.Join().Join()` chain **lies about the real cost**: either an n-ary join, or a
+documented cost.
 
-### 9.5 Portée : pas de rétractations
+### 9.5 Scope: no retractions
 
-Trois modes d'accumulation existent (Dataflow Model) ; *accumulating & retracting* — la
-révision d'un résultat déjà émis — est de loin le plus coûteux. **Ce framework fait du
-`discarding` uniquement.** C'est ce qui fait exploser la complexité de Beam, et c'est
-hors de portée d'un moteur mono-processus sans état durable.
+Three accumulation modes exist (Dataflow Model); *accumulating & retracting* — the
+revision of an already-emitted result — is by far the most expensive. **This
+framework does `discarding` only.** That is what blows up Beam's complexity, and
+it is out of reach for a single-process engine without durable state.
 
-*Réserve : aucune source ne montre l'équipe Beam qualifiant les rétractations d'erreur
-de conception. C'est un coût assumé de leur part, pas un regret documenté — notre choix
-est un choix de portée, pas une correction.*
+*Caveat: no source shows the Beam team calling retractions a design error. It is
+an accepted cost on their part, not a documented regret — our choice is a scope
+choice, not a correction.*
 
 ---
 
-## 10. Pièges d'API
+## 10. API pitfalls
 
-### 10.1 Un flux ne se relit pas — il se clone
+### 10.1 A stream is not re-read — it is cloned
 
-Un `Stream` consommé deux fois s'exécute deux fois, ou rend zéro élément s'il capture un
-`*bufio.Scanner`. **Aucun signal.** Java lève `IllegalStateException` ; .NET a créé une
-règle d'analyse dédiée (CA1851). **Go ne fait ni l'un ni l'autre.**
+A `Stream` consumed twice runs twice, or yields zero elements if it captures a
+`*bufio.Scanner`. **No signal at all.** Java raises `IllegalStateException`; .NET
+created a dedicated analysis rule (CA1851). **Go does neither.**
 
-Réponse : pas de `Memoize` implicite qui masquerait le coût, mais `Split` en mode
-Broadcast (§6) pour le clonage, `Materialize` **explicite** quand la source n'est pas
-rejouable, et une convention de nommage pour les sources à passage unique.
+Response: no implicit `Memoize` that would hide the cost, but `Split` in Broadcast
+mode (§6) for cloning, **explicit** `Materialize` when the source is not
+replayable, and a naming convention for single-pass sources.
 
-### 10.2 Nom du type central — tranché
+### 10.2 Name of the central type — settled
 
-La RFC Rust 2996 a renommé `Stream` en `AsyncIterator` parce que « stream » est trop
-générique — `io.Reader`, `net.Conn` et les flux réseau sont tous des « streams ».
+Rust RFC 2996 renamed `Stream` to `AsyncIterator` because "stream" is too generic
+— `io.Reader`, `net.Conn` and network streams are all "streams".
 
-**Décision : on garde `Stream`.** La collision est moins gênante en Go qu'en Rust,
-parce que le paquet qualifie l'usage à la lecture : `sluice.Stream[T]` est sans
-ambiguïté là où Rust importait `Stream` dans un espace de noms partagé. `AsyncIterator`
-serait de surcroît un contresens — notre modèle est **synchrone** : pas de `Future`,
-pas de point de suspension, tout se passe sur la même pile. C'est précisément ce qui
-donne les traces d'exécution natives et le `defer` exécuté à l'arrêt anticipé.
+**Decision: we keep `Stream`.** The collision is less troublesome in Go than in
+Rust, because the package qualifies the usage at the point of reading:
+`sluice.Stream[T]` is unambiguous where Rust imported `Stream` into a shared
+namespace. `AsyncIterator` would moreover be a misnomer — our model is
+**synchronous**: no `Future`, no suspension point, everything happens on the same
+stack. That is precisely what gives native execution traces and the `defer`
+executed on early stop.
 
-### 10.3 Chaînage : wrapper retenu
+### 10.3 Chaining: wrapper adopted
 
-Go n'a pas de méthodes génériques. Deux options :
+Go has no generic methods. Two options:
 
 ```go
-Map(Filter(s, pred), f)        // imbriqué : lecture à l'envers
-s.Filter(pred).Map(f)          // chaîné : exige un wrapper struct
+Map(Filter(s, pred), f)        // nested: read backwards
+s.Filter(pred).Map(f)          // chained: requires a struct wrapper
 ```
 
-**Décision : wrapper.** Le tout-batch réduit le nombre d'opérateurs à écrire, ce qui
-rend le coût du wrapper plus facile à absorber.
+**Decision: wrapper.** All-batch reduces the number of operators to write, which
+makes the wrapper's cost easier to absorb.
 
-> **Leçon transversale (conduit, pipes, Node.js).** L'élégance théorique ne compense
-> jamais une API non familière, et la dette d'API s'accumule vite. **Geler tôt le
-> noyau** (`Stream`, `Batch`, `Diagnostic`), garder le reste en opérateurs
-> remplaçables. Et **jamais de mode implicite** : un stream dont le comportement change
-> selon qu'un consommateur s'est abonné a coûté trois versions majeures à Node.js.
+> **Cross-cutting lesson (conduit, pipes, Node.js).** Theoretical elegance never
+> compensates for an unfamiliar API, and API debt accumulates fast. **Freeze the
+> core early** (`Stream`, `Batch`, `Diagnostic`), keep the rest as replaceable
+> operators. And **never an implicit mode**: a stream whose behavior changes
+> depending on whether a consumer has subscribed cost Node.js three major
+> versions.
 
 ---
 
-## 11. Sécurité — propriétés vérifiables
+## 11. Security — verifiable properties
 
-| # | Garantie | Vérification |
+| # | Guarantee | Verification |
 |---|---|---|
-| S1 | Aucune allocation non bornée. Toute borne est un paramètre requis. | Dépassement → erreur, pas OOM |
-| S2 | Aucun `panic` ne traverse une frontière publique. | Fuzzing des parseurs |
-| S3 | Limites par défaut restrictives. | Revue des défauts |
-| S4 | `unsafe` interdit sauf audit nommé. | `go vet` + revue |
-| S5 | Timeouts obligatoires sur toute I/O. | Connexion muette → libérée |
-| S6 | Pas de fuite de goroutine. | Détecteur maison |
-| S7 | Les erreurs internes ne fuient pas vers le client. | **Garanti par la structure** : `cause` non exporté (§4.3) |
-| S8 | Toute entrée réseau est bornée avant allocation. | Fuzzing |
-| S9 | Tout `iter.Pull` interne appelle `stop()` sur tous les chemins. | Test avec panic injectée |
-| S10 | Tout opérateur propage `false` et laisse la génératrice se dérouler. | Test de finalisation prompte |
-| S11 | Aucun buffer non borné entre deux opérateurs. | Revue + test de pression |
-| **S12** | **Plafond de diagnostics par élément et par lot.** | Lot pathologique → troncature comptée |
-| **S13** | **Aucune valeur ne transite par le texte SQL.** | Revue du builder + fuzzing |
+| S1 | No unbounded allocation. Every bound is a required parameter. | Overflow → error, not OOM |
+| S2 | No `panic` crosses a public boundary. | Fuzzing of the parsers |
+| S3 | Restrictive default limits. | Review of the defaults |
+| S4 | `unsafe` forbidden except under a named audit. | `go vet` + review |
+| S5 | Mandatory timeouts on all I/O. | Silent connection → released |
+| S6 | No goroutine leak. | In-house detector |
+| S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported (§4.3) |
+| S8 | Every network input is bounded before allocation. | Fuzzing |
+| S9 | Every internal `iter.Pull` calls `stop()` on all paths. | Test with injected panic |
+| S10 | Every operator propagates `false` and lets the generator unwind. | Prompt finalization test |
+| S11 | No unbounded buffer between two operators. | Review + pressure test |
+| **S12** | **Diagnostics ceiling per element and per batch.** | Pathological batch → counted truncation |
+| **S13** | **No value travels through SQL text.** | Builder review + fuzzing |
 
-**S9** — si la séquence n'est pas épuisée et que `stop()` n'est pas appelé, la coroutine
-ne se termine **jamais**.
+**S9** — if the sequence is not exhausted and `stop()` is not called, the
+coroutine **never** terminates.
 
-**S10** — c'est le problème n°1 du streaming, avant la performance. L'auteur de `conduit`
-a documenté son propre échec : avec un `take 4`, le handle de fichier **restait ouvert**
-pendant tout le reste du pipeline. `iter.Seq` gère bien ce cas — un `defer f.Close()`
-s'exécute dès l'arrêt anticipé — **mais uniquement si tous les opérateurs propagent
-honnêtement le `false`**. Invariant testé, pas convention.
+**S10** — this is streaming's problem #1, ahead of performance. The author of
+`conduit` documented his own failure: with a `take 4`, the file handle **stayed
+open** for the whole rest of the pipeline. `iter.Seq` handles this case well — a
+`defer f.Close()` runs as soon as there is an early stop — **but only if all
+operators honestly propagate the `false`**. A tested invariant, not a convention.
 
-**S11** — avant la 1.5, Flink reposait sur TCP pour sa contre-pression : un consommateur
-lent bloquait *toutes* les connexions logiques du multiplex. Notre `yield` **est** le
-crédit ; tout buffer non borné réintroduit ce bug.
+**S11** — before 1.5, Flink relied on TCP for its back-pressure: one slow consumer
+blocked *all* the logical connections of the multiplex. Our `yield` **is** the
+credit; any unbounded buffer reintroduces this bug.
 
-### 0dep — la règle exacte
+### 0dep — the exact rule
 
-- **Production : zéro dépendance.** Stdlib uniquement, sans exception.
-- **Tests/outils : autorisés** s'ils ne peuvent pas remonter dans le binaire final.
-
----
-
-## 12. Architecture applicative
-
-Le framework n'impose aucune structure de projet. Un `Stream` est une fonction : rien à
-injecter, aucun registre global, aucun runtime implicite (mais un contexte stratifié,
-cf. §3.1).
-
-- **DDD / Clean** — le domaine manipule `Stream[Entity]` sans importer le package web ;
-  les adaptateurs vivent en périphérie.
-- **Monolithe** — composition en mémoire, sans sérialisation.
-- **Microservices** — la frontière réseau est un opérateur de plus ; le pipeline logique
-  est identique, seul le transport change.
+- **Production: zero dependencies.** Stdlib only, no exception.
+- **Tests/tooling: allowed** if they cannot end up in the final binary.
 
 ---
 
-## 13. Plan d'implémentation
+## 12. Application architecture
 
-| Étape | Contenu | Valide |
+The framework imposes no project structure. A `Stream` is a function: nothing to
+inject, no global registry, no implicit runtime (but a stratified context, see
+§3.1).
+
+- **DDD / Clean** — the domain manipulates `Stream[Entity]` without importing the
+  web package; adapters live at the periphery.
+- **Monolith** — in-memory composition, without serialization.
+- **Microservices** — the network boundary is one more operator; the logical
+  pipeline is identical, only the transport changes.
+
+---
+
+## 13. Implementation plan
+
+| Stage | Content | Validates |
 |---|---|---|
-| 0 | ✅ **Fait** — [BENCHMARK-ETAPE-0.md](BENCHMARK-ETAPE-0.md) : plafond 0,31 ns, batch ×1,9, `iter.Pull` 68,6 ns | §2.4 — le dénominateur |
-| 1 | `Stream`, `Batch`, `Diagnostic`, `Path`, `Source`, opérateurs O(1), terminaux | Le cœur |
-| 2 | `Split` unique + `Parallel` + opérateurs O(k) + tests S9/S10/S11 | §6, S1, S6 |
-| 3 | Opérateurs N→1 : `Concat`, `Merge`, `MergeJoinBy`, `ZipLongest`, `Coalesce` | §7 |
-| 4 | `Join` (hash borné, interval) — le merge join dérive de §7.2 | §9 |
-| 5 | Vertical HTTP de bout en bout, diagnostics compris | §1.1 |
-| 6 | Connecteur PostgreSQL : protocole v3, `= ANY`, COPY, hydratation générée | §8 |
-| 7 | Pushdown dynamique (`Demand` + génération atomique) | §3.4 |
+| 0 | ✅ **Done** — [BENCHMARK-STEP-0.md](BENCHMARK-STEP-0.md): ceiling 0.31 ns, batch ×1.9, `iter.Pull` 68.6 ns | §2.4 — the denominator |
+| 1 | `Stream`, `Batch`, `Diagnostic`, `Path`, `Source`, O(1) operators, terminals | The core |
+| 2 | Single `Split` + `Parallel` + O(k) operators + S9/S10/S11 tests | §6, S1, S6 |
+| 3 | N→1 operators: `Concat`, `Merge`, `MergeJoinBy`, `ZipLongest`, `Coalesce` | §7 |
+| 4 | `Join` (bounded hash, interval) — merge join derives from §7.2 | §9 |
+| 5 | End-to-end HTTP vertical, diagnostics included | §1.1 |
+| 6 | PostgreSQL connector: v3 protocol, `= ANY`, COPY, generated hydration | §8 |
+| 7 | Dynamic pushdown (`Demand` + atomic generation) | §3.4 |
 
-**L'étape 0 est faite.** Le tout-batch est validé (×1,9 à ×2,0 dès deux étages), le
-coût de `iter.Pull` corrigé (68,6 ns et non 20 ns), et le budget d'un opérateur du
-noyau établi : **~1,5 ns par étage et par élément**. Tout nouvel opérateur se mesure
-contre ce budget.
+**Stage 0 is done.** All-batch is validated (×1.9 to ×2.0 from two stages on), the
+cost of `iter.Pull` corrected (68.6 ns and not 20 ns), and the budget of a core
+operator established: **~1.5 ns per stage and per element**. Every new operator is
+measured against this budget.
 
-**L'étape 7 est volontairement tardive** : le pushdown est la piste à plus fort levier
-(20×+), mais il suppose des opérateurs stabilisés pour avoir un sens.
+**Stage 7 is deliberately late**: pushdown is the highest-leverage lead (20×+),
+but it presupposes stabilized operators to make sense.
 
 ---
 
-## 14. Journal des révisions v0.2 → v0.3
+## 14. Revision log v0.2 → v0.3
 
-| # | Changement | Origine |
+| # | Change | Origin |
 |---|---|---|
-| 1 | **Tout-batch : `Stream[T] = iter.Seq[Batch[T]]`, forme unique** | Relecture — « si une méthode traite N éléments, elle en traite 1 » |
-| 2 | **§1 : tout est opération de stream**, exemple PATCH complet | Relecture — le point n'était pas dit |
-| 3 | **§1.2 : le connecteur DB suit la même forme** ; connecteurs à réimplémenter | Relecture |
-| 4 | **§2.2 : l'ambiguïté du signal d'arrêt disparaît** avec le lot | Relecture — cas `Stream[bool]` |
-| 5 | **§3.1 : correction — le contexte circule bien**, stratifié, porté par le lot | Relecture — §6 v0.2 mal écrite |
-| 6 | **§3.2 : quatre causes d'arrêt distinguées**, patron `context` | Relecture (arrêt interne) + recherche |
-| 7 | **§4 : modèle `Diagnostic` complet** | FHIR OperationOutcome + SARIF 2.1.0 |
-| 8 | **§4.4 : affordances jointes au même `Path`** | Trou identifié en relecture — sans précédent |
-| 9 | **§6 : `Split` unique à trois modes** | Relecture + Akka Streams |
-| 10 | **§6.3 : lock-step mono-goroutine → buffer O(1)** | La 5e option, non identifiée avant |
-| 11 | **§8.3 : `= ANY($1)`** — une forme canonique, un plan | Relecture (« truc à la LINQ ») |
-| 12 | **§8.1 : `database/sql` écarté** — pas de batching possible | Recherche |
-| 13 | **§3.4 : pushdown dynamique** (sideways information passing) | Recherche — gains 22×/25× |
-| 14 | **§10.1 : un flux se clone, ne se relit pas** ; `Memoize` implicite retiré | Relecture |
-| 15 | **§10.3 : wrapper retenu pour le chaînage** | Relecture |
-| 16 | **S12, S13 ajoutés** | §4.5, §8.8 |
-| 17 | **§7 : famille N→1 complète** (Concat, Merge, Interleave, ZipLongest) | Relecture — « 2 flux, comment n'en faire qu'un » |
-| 18 | **§7.2 : `MergeJoinBy` primitive centrale** — 6 sémantiques par filtrage | Rust `itertools::merge_join_by` |
-| 19 | **`Union`/`Intersect`/`Except` non triés écartés** — HashSet non borné, viole S1 | Sort-merge des moteurs SQL |
-| 20 | **§7.5 : `Coalesce`** — les lots ne s'alignent pas, on recompose | DataFusion `CoalesceBatchesExec` |
-| 21 | **§7.6 : contextes jamais fusionnés**, chaque lot garde le sien | `context.Merge` rejeté en Go |
-| 22 | **§7.7 : `mergeDelayError` par défaut** | Rx `merge` vs `mergeDelayError` |
+| 1 | **All-batch: `Stream[T] = iter.Seq[Batch[T]]`, single shape** | Review — "if a method processes N elements, it processes 1" |
+| 2 | **§1: everything is a stream operation**, complete PATCH example | Review — the point was not stated |
+| 3 | **§1.2: the DB connector follows the same shape**; connectors to reimplement | Review |
+| 4 | **§2.2: the stop-signal ambiguity disappears** with the batch | Review — `Stream[bool]` case |
+| 5 | **§3.1: correction — context does travel**, stratified, carried by the batch | Review — §6 of v0.2 badly written |
+| 6 | **§3.2: four stop causes distinguished**, `context` pattern | Review (internal stop) + research |
+| 7 | **§4: complete `Diagnostic` model** | FHIR OperationOutcome + SARIF 2.1.0 |
+| 8 | **§4.4: affordances joined to the same `Path`** | Gap identified in review — without precedent |
+| 9 | **§6: single `Split` with three modes** | Review + Akka Streams |
+| 10 | **§6.3: single-goroutine lock-step → O(1) buffer** | The 5th option, not identified before |
+| 11 | **§8.3: `= ANY($1)`** — one canonical shape, one plan | Review ("LINQ-style trick") |
+| 12 | **§8.1: `database/sql` ruled out** — no batching possible | Research |
+| 13 | **§3.4: dynamic pushdown** (sideways information passing) | Research — gains 22×/25× |
+| 14 | **§10.1: a stream is cloned, not re-read**; implicit `Memoize` removed | Review |
+| 15 | **§10.3: wrapper adopted for chaining** | Review |
+| 16 | **S12, S13 added** | §4.5, §8.8 |
+| 17 | **§7: complete N→1 family** (Concat, Merge, Interleave, ZipLongest) | Review — "2 streams, how to make just one" |
+| 18 | **§7.2: `MergeJoinBy` central primitive** — 6 semantics by filtering | Rust `itertools::merge_join_by` |
+| 19 | **Unsorted `Union`/`Intersect`/`Except` ruled out** — unbounded HashSet, violates S1 | Sort-merge of SQL engines |
+| 20 | **§7.5: `Coalesce`** — batches do not align, we recompose | DataFusion `CoalesceBatchesExec` |
+| 21 | **§7.6: contexts never merged**, each batch keeps its own | `context.Merge` rejected in Go |
+| 22 | **§7.7: `mergeDelayError` by default** | Rx `merge` vs `mergeDelayError` |
 
-### Ce qui n'a pas changé
+### What did not change
 
-Le choix **pull-based** reste renforcé : Kersten et al. établissent que pull/push et
-granularité sont orthogonaux et qu'aucune direction ne domine ; DuckDB est passé au push
-pour des raisons d'architecture, **sans invoquer la performance du pull** ; et le README
-de Timely Dataflow propose comme correctif à sa sortie push non bornée… de faire
-retourner un itérateur par les opérateurs.
+The **pull-based** choice comes out reinforced: Kersten et al. establish that
+pull/push and granularity are orthogonal and that neither direction dominates;
+DuckDB moved to push for architectural reasons, **without invoking pull
+performance**; and the Timely Dataflow README proposes, as a fix for its unbounded
+push output… having operators return an iterator.
 
 ---
 
-## Annexe — sources
+## Appendix — sources
 
-**Moteurs de requêtes**
+**Query engines**
 [MonetDB/X100 (CIDR 2005)](https://www.cidrdb.org/cidr2005/papers/P19.pdf) ·
 [Kersten et al., PVLDB 11(13), 2018](https://www.vldb.org/pvldb/vol11/p2209-kersten.pdf) ·
 [Neumann, PVLDB 4(9), 2011](https://www.vldb.org/pvldb/vol4/p539-neumann.pdf) ·
@@ -958,7 +979,7 @@ retourner un itérateur par les opérateurs.
 [DataFusion — Dynamic Filters](https://datafusion.apache.org/blog/2025/09/10/dynamic-filters/) ·
 [Sideways Information Passing, ICDE 2008](https://dl.acm.org/doi/10.1109/ICDE.2008.4497486)
 
-**Moteurs de flux**
+**Stream engines**
 [Flink — Network Stack](https://flink.apache.org/2019/06/05/a-deep-dive-into-flinks-network-stack/) ·
 [Flink — Joining](https://nightlies.apache.org/flink/flink-docs-master/docs/dev/datastream/operators/joining/) ·
 [Kafka Streams — Core Concepts](https://kafka.apache.org/42/streams/core-concepts/) ·
@@ -967,7 +988,7 @@ retourner un itérateur par les opérateurs.
 [Materialize — Four Thoughts](https://materialize.com/blog/four-thoughts-four-years-materialize/) ·
 [Akka Streams — Graphs](https://doc.akka.io/libraries/akka-core/current/stream/stream-graphs.html)
 
-**Itérateurs, split, annulation**
+**Iterators, split, cancellation**
 [Go Blog — Range Over Function Types](https://go.dev/blog/range-functions) ·
 [Go Blog — Pipelines](https://go.dev/blog/pipelines) ·
 [Russ Cox — Coroutines for Go](https://research.swtch.com/coro) ·
@@ -991,7 +1012,7 @@ retourner un itérateur par les opérateurs.
 [Siren](https://github.com/kevinswiber/siren) ·
 [ICU MessageFormat](https://unicode-org.github.io/icu/userguide/format_parse/messages/)
 
-**Bases de données**
+**Databases**
 [PG protocol-flow](https://www.postgresql.org/docs/current/protocol-flow.html) ·
 [PG message-formats](https://www.postgresql.org/docs/current/protocol-message-formats.html) ·
 [PG COPY](https://www.postgresql.org/docs/current/sql-copy.html) ·
