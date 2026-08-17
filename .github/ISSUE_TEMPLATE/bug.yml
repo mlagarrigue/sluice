@@ -1,0 +1,43 @@
+name: Bug
+description: Something behaves differently from what is documented
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: >
+        What you observed, and what the documentation led you to expect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        A failing test or a short program. Runnable code is worth more than a
+        description.
+      render: go
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA or module version, and your Go version.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Does this break a stated invariant?
+      description: See docs/ARCHITECTURE.md §11. Tick any that apply.
+      options:
+        - label: Unbounded allocation where a bound was promised
+        - label: A panic crossing a public boundary
+        - label: A goroutine or iter.Pull leak
+        - label: Resources not released on early stop
+        - label: Silently wrong results

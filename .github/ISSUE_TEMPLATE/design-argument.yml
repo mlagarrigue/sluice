@@ -1,0 +1,47 @@
+name: Design argument
+description: Argue against a documented decision, or propose a different one
+labels: ["design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most valuable contribution to this project right now is an argument
+        about the design. `docs/ARCHITECTURE.md` states its reasoning and cites
+        its sources — including the ones that argue against the choices made.
+
+  - type: input
+    id: section
+    attributes:
+      label: Which decision
+      description: Section of docs/ARCHITECTURE.md, e.g. §7.2 or §9.1
+      placeholder: "§"
+    validations:
+      required: true
+
+  - type: textarea
+    id: argument
+    attributes:
+      label: The argument
+      description: >
+        What does the current decision get wrong, and what would you do instead?
+        Address the reasoning already in the document — a proposal that does not
+        engage with it is hard to weigh.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        A benchmark, a prior system that solved this differently, a paper, a
+        failing case. Say plainly which parts you verified and which you are
+        recalling.
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it would cost
+      description: >
+        What breaks if this changes — API, invariants, other sections of the
+        spec. An honest cost makes a proposal easier to accept, not harder.
