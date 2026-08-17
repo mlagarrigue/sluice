@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -361,6 +362,220 @@ func TestCompletionString(t *testing.T) {
 		if got := tt.in.String(); got != tt.want {
 			t.Errorf("Completion(%d).String() = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// zipRows renders a ZipLongest result: B(l,r) a pair, L(l) or R(r) a tail row.
+func zipRows(s Stream[EitherOrBoth[int, string]]) []string {
+	var out []string
+	s(func(b Batch[EitherOrBoth[int, string]]) bool {
+		for _, e := range b.Items {
+			switch {
+			case e.Both():
+				out = append(out, fmt.Sprintf("B(%d,%s)", e.Left, e.Right))
+			case e.HasLeft:
+				out = append(out, fmt.Sprintf("L(%d)", e.Left))
+			default:
+				out = append(out, fmt.Sprintf("R(%s)", e.Right))
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func TestZipLongest(t *testing.T) {
+	tests := []struct {
+		name  string
+		left  []int
+		right []string
+		want  []string
+	}{
+		{
+			"equal lengths",
+			[]int{1, 2},
+			[]string{"a", "b"},
+			[]string{"B(1,a)", "B(2,b)"},
+		},
+		{
+			"left longer",
+			[]int{1, 2, 3},
+			[]string{"a"},
+			[]string{"B(1,a)", "L(2)", "L(3)"},
+		},
+		{
+			"right longer",
+			[]int{1},
+			[]string{"a", "b", "c"},
+			[]string{"B(1,a)", "R(b)", "R(c)"},
+		},
+		{
+			"left empty", nil,
+			[]string{"a", "b"},
+			[]string{"R(a)", "R(b)"},
+		},
+		{
+			"right empty",
+			[]int{1, 2},
+			nil,
+			[]string{"L(1)", "L(2)"},
+		},
+		{"both empty", nil, nil, nil},
+		{
+			"single pair",
+			[]int{1},
+			[]string{"a"},
+			[]string{"B(1,a)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Different batch sizes on each side: the two inputs are not
+			// aligned, which is the case §7.5 says nobody tries to fix.
+			got := zipRows(ZipLongest(Of(tt.left, 2), Of(tt.right, 3)))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("batch 2/3: got %v, want %v", got, tt.want)
+			}
+			got = zipRows(ZipLongest(Of(tt.left, 1), Of(tt.right, 1)))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("batch 1/1: got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Zip — stopping at the shorter stream — is a filter over ZipLongest rather
+// than an operator. That is the claim §7.4 rests on.
+func TestZipLongestDerivesZip(t *testing.T) {
+	zipped := ZipLongest(Of([]int{1, 2, 3}, 2), Of([]string{"a", "b"}, 2))
+	got := zipRows(Filter(zipped, EitherOrBoth[int, string].Both))
+
+	if want := []string{"B(1,a)", "B(2,b)"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// Once a stream is exhausted it must not be restarted on later rounds.
+func TestZipLongestDoesNotRestart(t *testing.T) {
+	runs := 0
+	short := Stream[int](func(yield func(Batch[int]) bool) {
+		runs++
+		yield(Batch[int]{Items: []int{1}})
+	})
+
+	got := zipRows(ZipLongest(short, Of([]string{"a", "b", "c"}, 1)))
+
+	if want := []string{"B(1,a)", "R(b)", "R(c)"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if runs != 1 {
+		t.Errorf("exhausted source ran %d times, want 1", runs)
+	}
+}
+
+func TestZipLongestSinglePass(t *testing.T) {
+	left, consumedL := singlePass(t, []int{1, 2, 3}, 2)
+	right, consumedR := singlePass(t, []int{10, 20}, 2)
+
+	var got []string
+	ZipLongest(left, right)(func(b Batch[EitherOrBoth[int, int]]) bool {
+		for _, e := range b.Items {
+			if e.Both() {
+				got = append(got, fmt.Sprintf("%d+%d", e.Left, e.Right))
+			} else {
+				got = append(got, fmt.Sprintf("%d+_", e.Left))
+			}
+		}
+		return true
+	})
+
+	if want := []string{"1+10", "2+20", "3+_"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if consumedL() != 3 || consumedR() != 2 {
+		t.Errorf("consumed %d and %d, want 3 and 2", consumedL(), consumedR())
+	}
+}
+
+// Filter emits empty batches; a zip fed by one must not mistake them for the
+// end of the stream.
+func TestZipLongestEmptyBatches(t *testing.T) {
+	left := Filter(Of([]int{1, 2, 3, 4}, 2), func(v int) bool { return v%2 == 0 })
+	got := zipRows(ZipLongest(left, Of([]string{"a", "b"}, 1)))
+
+	if want := []string{"B(2,a)", "B(4,b)"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// Rows are buffered until a batch is full, so an early stop is observable past
+// DefaultBatchSize. Both sources must be released whichever tail is running.
+func TestZipLongestEarlyStopReleasesBoth(t *testing.T) {
+	tests := []struct {
+		name         string
+		leftN, right int
+	}{
+		{"both running", DefaultBatchSize + 100, DefaultBatchSize + 100},
+		{"left tail", DefaultBatchSize + 100, 1},
+		{"right tail", 1, DefaultBatchSize + 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var closedL, closedR bool
+			mkL := func(n int) Stream[int] {
+				return func(yield func(Batch[int]) bool) {
+					defer func() { closedL = true }()
+					for i := range n {
+						if !yield(Batch[int]{Items: []int{i}}) {
+							return
+						}
+					}
+				}
+			}
+			mkR := func(n int) Stream[string] {
+				return func(yield func(Batch[string]) bool) {
+					defer func() { closedR = true }()
+					for i := range n {
+						if !yield(Batch[string]{Items: []string{strconv.Itoa(i)}}) {
+							return
+						}
+					}
+				}
+			}
+
+			batches := 0
+			ZipLongest(mkL(tt.leftN), mkR(tt.right))(func(Batch[EitherOrBoth[int, string]]) bool {
+				batches++
+				return false
+			})
+
+			if batches != 1 {
+				t.Errorf("consumer saw %d batches, want 1", batches)
+			}
+			if !closedL || !closedR {
+				t.Errorf("sources not released: left=%v right=%v", closedL, closedR)
+			}
+		})
+	}
+}
+
+func TestZipLongestBatchesOutput(t *testing.T) {
+	const n = 2500
+	left := make([]int, n)
+	for i := range left {
+		left[i] = i
+	}
+
+	var sizes []int
+	ZipLongest(Of(left, 100), Empty[string]())(func(b Batch[EitherOrBoth[int, string]]) bool {
+		sizes = append(sizes, b.Len())
+		return true
+	})
+
+	if want := []int{DefaultBatchSize, DefaultBatchSize, n - 2*DefaultBatchSize}; !slices.Equal(sizes, want) {
+		t.Errorf("batch sizes = %v, want %v", sizes, want)
 	}
 }
 

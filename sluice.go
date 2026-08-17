@@ -528,6 +528,101 @@ func (e *emitter[T]) flush() {
 	}
 }
 
+// ZipLongest pairs two streams positionally: first with first, second with
+// second, and so on until the longer one runs out.
+//
+// The output carries [EitherOrBoth] rows, like [MergeJoinBy]: Both() while
+// both streams still have elements, then HasLeft or HasRight alone for the tail
+// of whichever is longer. Nothing is dropped.
+//
+// This is the primitive rather than a Zip that stops at the shorter stream,
+// because stopping at the shorter one hides bugs: two streams that were meant
+// to be the same length quietly produce a truncated result. Rust found it
+// necessary to add zip_eq, which panics on unequal lengths — a sign the
+// stop-at-shortest default is considered dangerous. A caller who wants it asks:
+//
+//	pairs := Filter(ZipLongest(a, b), EitherOrBoth[A, B].Both)
+//
+// Memory is O(1): one [iter.Pull] per stream, no queue. In a push model a zip
+// needs an unbounded buffer per source, because a single slow producer forces
+// the others to keep their values somewhere; pulling makes that impossible by
+// construction.
+//
+// Output batches reuse an internal buffer: retaining Items beyond the call that
+// receives it requires a copy. Rows accumulate until a batch is full, so an
+// early stop takes effect at the next batch boundary rather than the next row.
+func ZipLongest[L, R any](left Stream[L], right Stream[R]) Stream[EitherOrBoth[L, R]] {
+	return func(yield func(Batch[EitherOrBoth[L, R]]) bool) {
+		lc := newWalker[L](left)
+		defer lc.stop()
+		rc := newWalker[R](right)
+		defer rc.stop()
+
+		out := newEmitter(yield)
+
+		for {
+			lv, lok := lc.next()
+			rv, rok := rc.next()
+
+			switch {
+			case !lok && !rok:
+				out.flush()
+				return
+			case lok && rok:
+				if !out.push(EitherOrBoth[L, R]{
+					Left: lv, Right: rv, HasLeft: true, HasRight: true,
+				}) {
+					return
+				}
+			case lok:
+				if !out.push(EitherOrBoth[L, R]{Left: lv, HasLeft: true}) {
+					return
+				}
+			default:
+				if !out.push(EitherOrBoth[L, R]{Right: rv, HasRight: true}) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// walker reads one input element by element, without the key extraction and
+// lookahead a merge join needs. [cursor] does more and costs more; positional
+// pairing needs neither.
+type walker[T any] struct {
+	next0 func() (Batch[T], bool)
+	stop  func()
+	batch []T
+	pos   int
+	done  bool
+}
+
+func newWalker[T any](s Stream[T]) *walker[T] {
+	n, stop := iter.Pull(iter.Seq[Batch[T]](s))
+	return &walker[T]{next0: n, stop: stop}
+}
+
+// next returns the next element and consumes it. Upstream operators may emit
+// empty batches — [Filter] does — so the advance loops rather than testing once.
+func (w *walker[T]) next() (elem T, ok bool) {
+	for w.pos >= len(w.batch) {
+		if w.done {
+			var zero T
+			return zero, false
+		}
+		b, ok := w.next0()
+		if !ok {
+			w.done = true
+			continue
+		}
+		w.batch, w.pos = b.Items, 0
+	}
+	v := w.batch[w.pos]
+	w.pos++
+	return v, true
+}
+
 // Concat chains streams end to end: the first in full, then the next.
 //
 // An early stop breaks the chain without consuming the remaining streams.

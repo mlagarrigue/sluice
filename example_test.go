@@ -208,6 +208,49 @@ func ExampleMergeJoinBy() {
 	// cy spent 75
 }
 
+// ZipLongest pairs two streams positionally and carries on to the longer one,
+// so nothing is silently dropped when the lengths differ.
+func ExampleZipLongest() {
+	ids := sluice.Of([]int{1, 2, 3}, 2)
+	names := sluice.Of([]string{"ana", "bo"}, 2)
+
+	for b := range sluice.ZipLongest(ids, names) {
+		for _, row := range b.Items {
+			if row.Both() {
+				fmt.Printf("%d: %s\n", row.Left, row.Right)
+			} else {
+				fmt.Printf("%d: (no name)\n", row.Left)
+			}
+		}
+	}
+	// Output:
+	// 1: ana
+	// 2: bo
+	// 3: (no name)
+}
+
+// Zip — stopping at the shorter stream — is a filter rather than an operator.
+// Asking for it explicitly is what keeps a length mismatch from passing
+// unnoticed.
+func ExampleZipLongest_zip() {
+	ids := sluice.Of([]int{1, 2, 3}, 2)
+	names := sluice.Of([]string{"ana", "bo"}, 2)
+
+	pairs := sluice.Filter(
+		sluice.ZipLongest(ids, names),
+		sluice.EitherOrBoth[int, string].Both,
+	)
+
+	for b := range pairs {
+		for _, row := range b.Items {
+			fmt.Printf("%d: %s\n", row.Left, row.Right)
+		}
+	}
+	// Output:
+	// 1: ana
+	// 2: bo
+}
+
 // Split traverses the source once, so it works on a stream that cannot be
 // replayed — a cursor, a network read, anything consumed as it is produced.
 func ExampleSplit_singlePass() {
