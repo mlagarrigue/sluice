@@ -58,8 +58,9 @@ func TestMapFilterConvert(t *testing.T) {
 		t.Errorf("Filter = %v, want %v", got, want)
 	}
 
+	letters := []string{"", "a", "b", "c", "d", "e", "f"}
 	strs := collect(Convert(Of(src, 4), func(v int) string {
-		return string(rune('a' + v - 1))
+		return letters[v]
 	}))
 	if want := []string{"a", "b", "c", "d", "e", "f"}; !slices.Equal(strs, want) {
 		t.Errorf("Convert = %v, want %v", strs, want)
