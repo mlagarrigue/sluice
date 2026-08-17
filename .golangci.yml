@@ -1,0 +1,58 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused.
+  # Not "all": on a library that produces unmanageable noise.
+  default: standard
+  enable:
+    - errorlint      # Go 1.13 error wrapping done right
+    - gocritic
+    - gosec
+    - perfsprint     # this is a performance-sensitive library
+    - copyloopvar
+    - intrange
+    - predeclared
+    - thelper
+    - usetesting
+    - unconvert
+    - wastedassign
+    - makezero
+    - nilerr
+    - godot          # doc comments end in a period, as go/doc expects
+
+  settings:
+    errorlint:
+      errorf: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # The core deliberately reuses batch buffers; this check fires on the
+        # idiomatic way to do that.
+        - appendAssign
+    godot:
+      scope: declarations
+
+  exclusions:
+    generated: lax
+    rules:
+      # Benchmarks assign to a package-level sink to defeat dead-code
+      # elimination. That is the point, not an accident.
+      - path: internal/bench/
+        linters:
+          - wastedassign
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mlagarrigue/sluice
