@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets a run be re-triggered by hand without an empty commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
