@@ -6,6 +6,20 @@
 > AMD Ryzen AI 9 465 (15 visible cores) · L1d 48 KiB/core · L2 1 MiB/core · L3 16 MiB
 > `-benchtime=300ms -count=3`, median of 3 · code: [internal/bench/](../internal/bench/)
 
+> **Reading these figures.** The first benchmark of a process absorbs the CPU
+> frequency ramp and the first traversal of a freshly allocated dataset. Left
+> alone, that inflated the baseline — the denominator of every other figure — by
+> ~24%, and made the same measurement land at ×225 on one run and ×183 on the
+> next. `TestMain` now spins for a second and faults in a dataset before any
+> measurement runs; the baseline holds 0.305 ns ± 1%.
+>
+> A second effect survives the warm-up: in a full-suite run, a fast benchmark
+> placed right after a slow one (`iter.Pull` at 68 ns/element) starts on a
+> down-clocked core and decays over its repetitions. **Figures below 1 ns are
+> therefore taken from runs restricted to the fast benchmarks**, where they are
+> stable to within a few percent. A whole-suite median is not trustworthy at that
+> scale.
+
 Without a measured denominator, "high performance" is not falsifiable
 ([ARCHITECTURE.md §13](ARCHITECTURE.md)). This document establishes that denominator and
 confirms — or refutes — the assumptions in the spec.
@@ -150,6 +164,35 @@ per-element indirection cost.
 
 ---
 
+## Result 6 — `Split` in lock-step: the O(1) promise holds
+
+§6.3 claimed a fan-out with an O(1) backlog. It was theoretical — this is the
+measurement, taken against a plain batched traversal of the same data
+(`BenchmarkSplitBaseline`, 0.325 ns/element).
+
+| Mode | Cost | vs ceiling | Allocations |
+|---|---|---|---|
+| Baseline (no `Split`) | 0.324 ns/element | ×1.1 | 0 |
+| Partition, one branch consumed | **0.272 ns/element** | ×0.9 | 1 per batch, from `route` |
+| Broadcast, two branches in alternation | **0.929 ns/element** | ×3.0 | 1 per batch, from `route` |
+
+**Partition costs nothing** — it lands below the baseline because half the
+batches are dropped rather than summed. **Broadcast costs ~2.9× the baseline**,
+which is expected: every element is visited twice, once per branch, and the
+`iter.Pull` alternation sits on top.
+
+Both stay far under the 1.5 ns per-stage budget, and `Split` itself allocates
+nothing: the allocations counted above are the `[]int` that the benchmark's own
+`route` returns per batch. A caller who returns a preallocated slice drops them
+to zero — measured at 29 allocations per million elements, i.e. setup only.
+
+> **Caveat.** `route` is called **once** per batch, by construction. That matters
+> for round-robin routing, which is stateful: an implementation calling it twice
+> would double-advance the counter and misroute the data. Pinned by
+> `TestSplitRoutesOncePerBatch`.
+
+---
+
 ## Synthesis — what the measurements change in the spec
 
 | # | Finding | Effect |
@@ -160,6 +203,7 @@ per-element indirection cost.
 | 4 | Batch-size plateau from **8** elements onward | §2.3: 1024 confirmed, but **not critical** |
 | 5 | 1% filter: batch stays ×3.6 faster, 0 alloc | §7.5: `Coalesce` **useful, not urgent** |
 | 6 | Per-stage cost **linear** (2.6 ns element / 1.5 ns batch) | Deep pipelines **predictable** |
+| 7 | `Split` lock-step: **0.27 ns** partition, **0.94 ns** broadcast, 0 alloc | §6.3 **confirmed**, no longer theoretical |
 
 ### The most important point going forward
 
@@ -178,6 +222,5 @@ and the budget not to exceed for any new core operator.
 1. **Cache-based sizing** with several live batches (cf. Result 4).
 2. **The cost of diagnostics** carried per element (§4) — probably the biggest
    regression risk in the model.
-3. **`Split` and lock-step** (§6.3), whose O(1) promise remains theoretical.
-4. **The bounded hash join** (§9.1) and its materialization cost.
-5. **Columnar decoding** versus row-by-row decoding (§8.6).
+3. **The bounded hash join** (§9.1) and its materialization cost.
+4. **Columnar decoding** versus row-by-row decoding (§8.6).

@@ -433,10 +433,21 @@ backpressure"*. **That is the anti-pattern** with respect to our S1 guarantee.
 
 **The buffer is not the price of duplication, it is the price of misalignment.**
 
-In a single goroutine, if `Split` **pushes** to N handlers in lock-step instead of
-exposing N independent `iter.Seq`, the backlog stays **O(1)** without Akka's
-pathological coupling. This is the lever that reconciles our three objectives, and
+In a single goroutine, `Split` drives **one** traversal of the source and hands
+each branch a slot of **one batch**, instead of exposing N independent
+`iter.Seq`. The backlog stays **O(1)** without Akka's pathological coupling, and
 it is only available because we are pull-based and single-goroutine.
+
+This does **not** escape the theorem in §6.2 — nothing does. The sacrifice is
+**branch independence**: a branch whose slot is still full blocks the shared
+pull, so branches read at the same time must be advanced in alternation. What
+the fifth option buys is the *size* of that sacrifice: one batch of slack rather
+than an unbounded queue, and independence lost only between branches that are
+genuinely concurrent.
+
+Draining one branch while another lags panics with `ErrSplitStalled` rather than
+yielding a silent prefix of the data. Rationale, alternatives and cost:
+[ADR 0001](adr/0001-split-bounded-slot.md).
 
 Corollary for cloning (§10.1): if the source is replayable, re-run it; otherwise
 **explicit** `Materialize`. Never build an implicit unbounded tee.
