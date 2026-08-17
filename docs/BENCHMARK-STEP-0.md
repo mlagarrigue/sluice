@@ -313,6 +313,49 @@ the gap is per-element cursor overhead, not the cost of being a join.
 
 ---
 
+## Result 10 — `Coalesce` costs ~0.7 ns, and the deferred buffer is free
+
+§7.5 concluded `Coalesce` was "useful, not urgent" from the filter figures of
+Result 5 alone; the operator itself had never been measured. It is now.
+
+| Measurement | Cost |
+|---|---|
+| Batched traversal baseline, no `Coalesce` | 0.325 ns/element |
+| `Coalesce` over already-full batches (nothing to regroup) | **0.92 ns/element** |
+| `Coalesce` regrouping 8-element batches into 1024 | **1.05 ns/element** |
+| `Coalesce` with a 65536-element target | 1.04 ns/element |
+
+The operator costs ~0.6 ns over the baseline and one allocation for the whole
+stream, whatever the target size. Regrouping heavily fragmented input adds
+0.13 ns on top of that — the copy into the buffer — so recompacting is close to
+free next to the sparse batches it removes downstream. Well inside the 1.5 ns
+per-stage budget.
+
+**The buffer is claimed on the first element, not at construction.** `size` is
+the caller's number and often comes from configuration, so claiming it eagerly
+allocated on a stream that may yield nothing at all: an empty stream with
+`size = 1<<20` cost **8 MB and 1.13 ms**; it is now **0.29 ns and zero
+allocations**.
+
+**Where the shape of the guard turned out to matter.** The first version tested
+`buf == nil && len(b.Items) > 0` at the top of the batch callback and cost
+0.92 → 1.21 ns/element on the pass-through case, a 32% regression on batches
+needing no regrouping (p=0.002, n=6). Returning early on the empty batch and
+testing `buf == nil` separately measures flat against the pre-change tree.
+Both are correct; only one is free. The empty batch is not a rare path —
+`Filter` emits them by contract to hold the upstream cadence — so it is worth
+its own branch.
+
+> **Method note.** These figures come from interleaved A/B rounds of two frozen
+> binaries, one per tree state, alternated in a single session. Sequential runs
+> on this machine drifted enough to show +124% on `BenchmarkSplitPartition`,
+> code that was not touched at all; under alternation the untouched
+> `SplitBaseline` reproduces to 342.3 vs 342.2 µs. Any comparison here that does
+> not also show the untouched baselines flat should be re-run before it is
+> believed.
+
+---
+
 ## Synthesis — what the measurements change in the spec
 
 | # | Finding | Effect |
@@ -328,6 +371,7 @@ the gap is per-element cursor overhead, not the cost of being a join.
 | 9 | `MergeJoinBy`: **11.6 ns**, floor 3.4 ns — misses the budget | §7.2: the ceiling **does not apply** to an element-at-a-time operator |
 | 10 | Sort check: **no measurable cost** | §7.2: the debug mode is **unnecessary**, the check is always on |
 | 11 | `ZipLongest`: **2.95 ns**, and a disjoint-range join still costs 10.7 | §7.4 cheap; the join's gap is **cursor overhead**, not join logic |
+| 12 | `Coalesce`: **0.92 ns** pass-through, **1.05 ns** regrouping, 1 alloc | §7.5 **confirmed** and now measured on the operator, not inferred from the filter |
 
 ### The most important point going forward
 
