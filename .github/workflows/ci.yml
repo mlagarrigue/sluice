@@ -42,6 +42,12 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      # The per-stage budget is a timing assertion, so it is skipped under
+      # -race: the detector instruments every memory access and the measurement
+      # would report the instrumentation rather than the code.
+      - name: Performance budget
+        run: go test -run TestStageBudget ./internal/bench/
+
       - name: Build
         run: go build ./...
 
