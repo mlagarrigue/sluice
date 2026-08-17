@@ -1093,6 +1093,91 @@ func TestCoalesceEarlyStopDiscards(t *testing.T) {
 	}
 }
 
+// Coalesce claims its buffer on the first element rather than up front, so a
+// large size costs nothing on a stream that yields nothing. size is often a
+// configuration value, and claiming it eagerly turned a large number into a
+// large allocation before a single element had flowed.
+func TestCoalesceDoesNotPreallocate(t *testing.T) {
+	const huge = 1 << 20 // 8 MB if claimed eagerly for int64
+
+	allocs := testing.AllocsPerRun(10, func() {
+		Coalesce(Empty[int64](), huge)(func(Batch[int64]) bool { return true })
+	})
+
+	if allocs > 0 {
+		t.Errorf("an empty stream allocated %.0f times with size=%d: the buffer is claimed up front", allocs, huge)
+	}
+}
+
+// The other half of the deferred allocation: once an element does arrive, the
+// buffer is claimed once at full size rather than grown into it. Letting append
+// reach size would cost log(size) reallocations, each copying what is already
+// buffered — paid on the nominal path, where data actually flows.
+func TestCoalesceClaimsBufferOnce(t *testing.T) {
+	const size = 1 << 16
+
+	src := make([]int64, size)
+	allocs := testing.AllocsPerRun(10, func() {
+		Coalesce(Of(src, 64), size)(func(Batch[int64]) bool { return true })
+	})
+
+	// One allocation for the buffer. Growing into the same capacity would take
+	// roughly log2(size) of them.
+	if allocs > 1 {
+		t.Errorf("Coalesce allocated %.0f times for one buffer of %d: it is growing rather than claiming once",
+			allocs, size)
+	}
+}
+
+// Filter emits empty batches by contract, to hold the upstream cadence, so
+// Coalesce must skip them rather than treat them as anything. Worth its own
+// case: an empty batch is the one input that reaches Coalesce carrying no
+// element, and it must neither emit nor claim a buffer.
+func TestCoalesceSkipsEmptyBatches(t *testing.T) {
+	// Nothing passes the filter: every batch reaching Coalesce is empty.
+	none := Filter(Of([]int{1, 2, 3, 4, 5, 6}, 2), func(int) bool { return false })
+
+	var got [][]int
+	Coalesce(none, 3)(func(b Batch[int]) bool {
+		got = append(got, slices.Clone(b.Items))
+		return true
+	})
+	if len(got) != 0 {
+		t.Errorf("Coalesce emitted %v over empty batches, want nothing", got)
+	}
+
+	// Empty batches interleaved with real ones must not break the regrouping.
+	odd := Filter(Of([]int{1, 2, 3, 4, 5, 6, 7, 8}, 2), func(v int) bool { return v%2 == 1 })
+	if out := collect(Coalesce(odd, 3)); !slices.Equal(out, []int{1, 3, 5, 7}) {
+		t.Errorf("Coalesce = %v, want [1 3 5 7]", out)
+	}
+}
+
+// Deferring the allocation must not change what Coalesce emits: the batches it
+// produces are still exactly size elements until the tail.
+func TestCoalesceFillsToSize(t *testing.T) {
+	const size = 300
+	src := make([]int, 700)
+	for i := range src {
+		src[i] = i
+	}
+
+	var sizes []int
+	got := make([]int, 0, len(src))
+	Coalesce(Of(src, 7), size)(func(b Batch[int]) bool {
+		sizes = append(sizes, b.Len())
+		got = append(got, b.Items...)
+		return true
+	})
+
+	if want := []int{300, 300, 100}; !slices.Equal(sizes, want) {
+		t.Errorf("batch sizes = %v, want %v", sizes, want)
+	}
+	if !slices.Equal(got, src) {
+		t.Error("Coalesce altered the data while growing its buffer")
+	}
+}
+
 // Filter and Convert reuse one buffer across batches and let it grow, so a
 // source whose batches get bigger must not corrupt or truncate anything. The
 // growth path is the one a fixed-size source never exercises.
