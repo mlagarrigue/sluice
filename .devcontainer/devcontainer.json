@@ -1,0 +1,56 @@
+{
+  "name": "sluice",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "dev",
+  "workspaceFolder": "/workspaces/goframeworkweb",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "anthropic.claude-code",
+        "ms-azuretools.vscode-docker",
+        "github.vscode-github-actions",
+        "eamodio.gitlens",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": false,
+        "go.useLanguageServer": true,
+        "go.lintTool": "golangci-lint",
+        "go.formatTool": "custom",
+        "go.alternateTools": {
+          "customFormatter": "gofumpt"
+        },
+        "go.testFlags": ["-race", "-count=1"],
+        "gopls": {
+          "ui.semanticTokens": true,
+          "ui.diagnostic.staticcheck": true
+        },
+        "[go]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        },
+        "editor.rulers": [100],
+        "files.eol": "\n"
+      }
+    }
+  },
+
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/dev/.claude,type=bind,consistency=cached"
+  ],
+
+  "remoteEnv": {
+    "GOFLAGS": "-mod=mod"
+  },
+
+  "postCreateCommand": "go mod download && go version"
+}

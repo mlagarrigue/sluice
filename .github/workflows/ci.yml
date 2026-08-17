@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # Zero production dependencies is a project rule, not an aspiration:
+      # fail the build if a require block ever appears.
+      - name: Verify zero dependencies
+        run: |
+          if grep -qE '^\s*require' go.mod; then
+            echo "go.mod declares dependencies; sluice is stdlib-only." >&2
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: go build ./...
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: gofumpt
+        run: |
+          go install mvdan.cc/gofumpt@latest
+          unformatted=$(gofumpt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofumpt-formatted:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # Runs the harness to catch compile breakage and crashes. CI timings are
+      # too noisy to gate on: the reference figures come from a controlled run,
+      # recorded in docs/BENCHMARK-ETAPE-0.md.
+      - name: Benchmarks (smoke)
+        run: go test -run=XXX -bench=. -benchtime=10x ./internal/bench/

@@ -1,0 +1,9 @@
+bin/
+*.exe
+*.test
+*.out
+.env
+.claude/settings.local.json
+
+# Local agent instructions — not shared.
+CLAUDE.md
