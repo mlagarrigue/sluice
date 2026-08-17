@@ -1,12 +1,12 @@
-// Package bench établit le plafond de performance des primitives d'itération
-// Go 1.26, préalable à toute décision d'architecture (cf. docs/ARCHITECTURE.md §13,
-// étape 0).
+// Package bench establishes the performance ceiling of Go 1.26 iteration
+// primitives, a prerequisite to any architecture decision (see docs/ARCHITECTURE.md §13,
+// step 0).
 //
-// Quatre questions :
-//  1. Quel est le plafond ? (boucle native = dénominateur de toutes les mesures)
-//  2. Combien coûte un étage d'opérateur, et le coût est-il linéaire ?
-//  3. Combien coûte réellement iter.Pull par valeur ?
-//  4. Le tout-batch tient-il sa promesse face au tuple-à-tuple ?
+// Four questions:
+//  1. What is the ceiling? (native loop = denominator of every measurement)
+//  2. How much does an operator stage cost, and is the cost linear?
+//  3. How much does iter.Pull really cost per value?
+//  4. Does all-batch keep its promise against tuple-at-a-time?
 package bench
 
 import (
@@ -15,9 +15,9 @@ import (
 	"testing"
 )
 
-// N est la taille du jeu de données pour tous les benchmarks à volume fixe.
-// Assez grand pour sortir du cache L2 et mesurer un régime réaliste.
-const N = 1 << 20 // 1 048 576 éléments
+// N is the dataset size for all fixed-volume benchmarks.
+// Large enough to fall out of the L2 cache and measure a realistic regime.
+const N = 1 << 20 // 1,048,576 elements
 
 func data(n int) []int64 {
 	s := make([]int64, n)
@@ -27,12 +27,12 @@ func data(n int) []int64 {
 	return s
 }
 
-// sink empêche le compilateur d'éliminer les calculs mesurés.
+// sink prevents the compiler from eliminating the measured computations.
 var sink int64
 
 // ---------------------------------------------------------------------------
-// Q1 — Le plafond : la boucle native.
-// Toutes les autres mesures s'expriment en pourcentage de celle-ci.
+// Q1 — The ceiling: the native loop.
+// Every other measurement is expressed as a percentage of this one.
 // ---------------------------------------------------------------------------
 
 func BenchmarkBaselineLoop(b *testing.B) {
@@ -51,7 +51,7 @@ func BenchmarkBaselineLoop(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Q2 — Coût d'un étage : iter.Seq élément par élément, 0 à 4 étages de Map.
+// Q2 — Cost of a stage: element-wise iter.Seq, 0 to 4 Map stages.
 // ---------------------------------------------------------------------------
 
 type Seq[T any] iter.Seq[T]
@@ -85,9 +85,9 @@ func filterSeq[T any](s Seq[T], pred func(T) bool) Seq[T] {
 
 func inc(v int64) int64 { return v + 1 }
 
-// BenchmarkSeqStages mesure le surcoût marginal de chaque étage ajouté.
-// La pente de la droite est le coût d'un étage ; l'ordonnée à l'origine
-// est le coût d'entrée dans iter.Seq.
+// BenchmarkSeqStages measures the marginal overhead of each added stage.
+// The slope of the line is the cost of one stage; the y-intercept
+// is the cost of entering iter.Seq.
 func BenchmarkSeqStages(b *testing.B) {
 	src := data(N)
 	for _, stages := range []int{0, 1, 2, 4} {
@@ -97,7 +97,7 @@ func BenchmarkSeqStages(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				s := seqOf(src)
-				for i := 0; i < stages; i++ {
+				for range stages {
 					s = mapSeq(s, inc)
 				}
 				var acc int64
@@ -113,7 +113,7 @@ func BenchmarkSeqStages(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Q4 — Le cœur du sujet : lot contre élément, à travail utile identique.
+// Q4 — The heart of the matter: batch against element, at identical useful work.
 // ---------------------------------------------------------------------------
 
 type Batch[T any] struct {
@@ -133,9 +133,9 @@ func batchesOf[T any](s []T, size int) BatchSeq[T] {
 	}
 }
 
-// mapBatch applique f à tout le lot. C'est le point clé du modèle :
-// une seule indirection de closure par lot, et une boucle interne serrée
-// que le compilateur peut optimiser.
+// mapBatch applies f to the whole batch. This is the key point of the model:
+// a single closure indirection per batch, and a tight inner loop
+// that the compiler can optimize.
 func mapBatch[T any](s BatchSeq[T], f func(T) T) BatchSeq[T] {
 	return func(yield func(Batch[T]) bool) {
 		s(func(b Batch[T]) bool {
@@ -148,8 +148,8 @@ func mapBatch[T any](s BatchSeq[T], f func(T) T) BatchSeq[T] {
 	}
 }
 
-// BenchmarkBatchVsElement compare les deux modèles à nombre d'étages égal.
-// C'est la mesure qui valide ou invalide la §2.1 de la spec.
+// BenchmarkBatchVsElement compares the two models at an equal number of stages.
+// This is the measurement that validates or invalidates §2.1 of the spec.
 func BenchmarkBatchVsElement(b *testing.B) {
 	for _, stages := range []int{1, 2, 4} {
 		b.Run(fmt.Sprintf("element/stages=%d", stages), func(b *testing.B) {
@@ -159,7 +159,7 @@ func BenchmarkBatchVsElement(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				s := seqOf(src)
-				for i := 0; i < stages; i++ {
+				for range stages {
 					s = mapSeq(s, inc)
 				}
 				var acc int64
@@ -179,7 +179,7 @@ func BenchmarkBatchVsElement(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				s := batchesOf(src, 1024)
-				for i := 0; i < stages; i++ {
+				for range stages {
 					s = mapBatch(s, inc)
 				}
 				var acc int64
@@ -196,8 +196,8 @@ func BenchmarkBatchVsElement(b *testing.B) {
 	}
 }
 
-// BenchmarkBatchSize balaie la taille de lot pour situer le plateau optimal.
-// La spec retient 1024 ; DuckDB utilise 2048, DataFusion 8192.
+// BenchmarkBatchSize sweeps the batch size to locate the optimal plateau.
+// The spec settles on 1024; DuckDB uses 2048, DataFusion 8192.
 func BenchmarkBatchSize(b *testing.B) {
 	sizes := []int{1, 8, 64, 256, 512, 1024, 2048, 4096, 8192, 65536, N}
 	for _, size := range sizes {
@@ -225,8 +225,8 @@ func BenchmarkBatchSize(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Q3 — iter.Pull : le coût réel par valeur, et son amortissement par lot.
-// La spec cite ~20ns/next() de source communautaire, non documenté par Go.
+// Q3 — iter.Pull: the real cost per value, and its amortization per batch.
+// The spec quotes ~20ns/next() from a community source, undocumented by Go.
 // ---------------------------------------------------------------------------
 
 func BenchmarkPullPerElement(b *testing.B) {
@@ -250,8 +250,8 @@ func BenchmarkPullPerElement(b *testing.B) {
 	reportPerElem(b, N)
 }
 
-// BenchmarkPullPerBatch : le même Pull, mais tiré par lots.
-// C'est l'argument de la §7.3 — le coût de la coroutine amorti sur 1024.
+// BenchmarkPullPerBatch: the same Pull, but pulled in batches.
+// This is the argument of §7.3 — the coroutine cost amortized over 1024.
 func BenchmarkPullPerBatch(b *testing.B) {
 	src := data(N)
 	b.SetBytes(N * 8)
@@ -275,9 +275,9 @@ func BenchmarkPullPerBatch(b *testing.B) {
 	reportPerElem(b, N)
 }
 
-// BenchmarkMergeTwoStreams mesure le coût réel d'un opérateur N->1 dans les
-// deux modèles. C'est la validation directe de la §7.3 : le merge par lot
-// est-il vraiment négligeable ?
+// BenchmarkMergeTwoStreams measures the real cost of an N->1 operator in both
+// models. This is the direct validation of §7.3: is the batch merge
+// really negligible?
 func BenchmarkMergeTwoStreams(b *testing.B) {
 	b.Run("element", func(b *testing.B) {
 		a, c := data(N/2), data(N/2)
@@ -347,12 +347,12 @@ func BenchmarkMergeTwoStreams(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// Cas réaliste : filtre sélectif suivi d'une transformation.
-// Vérifie que le modèle batch résiste quand les lots se vident (cf. Coalesce, §7.5).
+// Realistic case: selective filter followed by a transformation.
+// Checks that the batch model holds up when batches empty out (see Coalesce, §7.5).
 // ---------------------------------------------------------------------------
 
 func BenchmarkSelectiveFilter(b *testing.B) {
-	// keep=1 sur 100 : le cas qui motive Coalesce.
+	// keep=1 in 100: the case that motivates Coalesce.
 	keep := func(v int64) bool { return v%100 == 0 }
 
 	b.Run("element", func(b *testing.B) {
@@ -379,7 +379,7 @@ func BenchmarkSelectiveFilter(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for b.Loop() {
-			// Filtre par lot : produit des lots creux (10 éléments sur 1024).
+			// Batch filter: produces sparse batches (10 elements out of 1024).
 			out := make([]int64, 0, 1024)
 			var acc int64
 			batchesOf(src, 1024)(func(bt Batch[int64]) bool {
@@ -400,8 +400,9 @@ func BenchmarkSelectiveFilter(b *testing.B) {
 	})
 }
 
-// reportPerElem exprime le résultat en nanosecondes par élément — l'unité
-// qui permet de comparer des benchmarks de volumes différents.
+// reportPerElem expresses the result in nanoseconds per element — the unit
+// that allows comparing benchmarks of different volumes.
 func reportPerElem(b *testing.B, elems int) {
+	b.Helper()
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*elems), "ns/elem")
 }

@@ -3,7 +3,9 @@ bin/
 *.test
 *.out
 .env
-.claude/settings.local.json
 
-# Local agent instructions — not shared.
+# Agent configuration and working notes — local only, never shared.
+.claude/
 CLAUDE.md
+CLAUDE.local.md
+setup-signing.sh
