@@ -579,6 +579,43 @@ func TestZipLongestBatchesOutput(t *testing.T) {
 	}
 }
 
+// emitter is the shared way an N-to-1 operator batches its output, and flush is
+// its last call. Today's callers return whatever it says, but a future operator
+// with work left after the flush must be able to see a refusal — so the result
+// is reported rather than dropped. Pinned here because nothing else observes it.
+func TestEmitterFlushReportsRefusal(t *testing.T) {
+	tests := []struct {
+		name   string
+		accept bool
+		want   bool
+	}{
+		{"consumer accepts", true, true},
+		{"consumer refuses", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEmitter(func(Batch[int]) bool { return tt.accept })
+			e.push(1) // one row, far short of a full batch: only flush emits it
+
+			if got := e.flush(); got != tt.want {
+				t.Errorf("flush() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// An empty buffer yields nothing and reports success: there was nothing to
+	// refuse.
+	called := false
+	e := newEmitter(func(Batch[int]) bool { called = true; return false })
+	if !e.flush() {
+		t.Error("flush() on an empty buffer = false, want true")
+	}
+	if called {
+		t.Error("flush() emitted a batch with nothing buffered")
+	}
+}
+
 // joinRows renders a merge-join result compactly: L(x) unmatched left, R(x)
 // unmatched right, B(x,y) a matched pair.
 func joinRows(s Stream[EitherOrBoth[int, int]]) []string {
@@ -1056,6 +1093,61 @@ func TestCoalesceEarlyStopDiscards(t *testing.T) {
 	}
 }
 
+// Filter and Convert reuse one buffer across batches and let it grow, so a
+// source whose batches get bigger must not corrupt or truncate anything. The
+// growth path is the one a fixed-size source never exercises.
+func TestGrowingBatchesAreNotTruncated(t *testing.T) {
+	// Batches of 1, 2, 3, ... elements: every batch is a new high-water mark.
+	growing := Stream[int](func(yield func(Batch[int]) bool) {
+		n := 1
+		for v := 0; v < 60; {
+			b := make([]int, 0, n)
+			for range n {
+				if v >= 60 {
+					break
+				}
+				b = append(b, v)
+				v++
+			}
+			if !yield(Batch[int]{Items: b}) {
+				return
+			}
+			n++
+		}
+	})
+
+	want := make([]int, 60)
+	for i := range want {
+		want[i] = i
+	}
+
+	if got := collect(Filter(growing, func(int) bool { return true })); !slices.Equal(got, want) {
+		t.Errorf("Filter over growing batches = %v, want %v", got, want)
+	}
+
+	// Rebuild: the stream above is single-pass by construction.
+	growing2 := Stream[int](func(yield func(Batch[int]) bool) {
+		n := 1
+		for v := 0; v < 60; {
+			b := make([]int, 0, n)
+			for range n {
+				if v >= 60 {
+					break
+				}
+				b = append(b, v)
+				v++
+			}
+			if !yield(Batch[int]{Items: b}) {
+				return
+			}
+			n++
+		}
+	})
+	if got := collect(Convert(growing2, func(v int) int { return v })); !slices.Equal(got, want) {
+		t.Errorf("Convert over growing batches = %v, want %v", got, want)
+	}
+}
+
 // The operators that own a buffer reuse it between batches. That is the one
 // core rule a caller can break silently — retaining Items without copying — so
 // it is pinned here in both directions: a change either way is a contract
@@ -1090,6 +1182,70 @@ func TestBufferReuseContract(t *testing.T) {
 				t.Error("batches no longer share a buffer: the documented contract changed")
 			}
 		})
+	}
+}
+
+// emitter is the buffer behind every N-to-1 operator, and it is reused between
+// batches exactly like Filter's. Pinned separately because the operators above
+// cannot reach it: it only fills past DefaultBatchSize.
+func TestEmitterBufferReuseContract(t *testing.T) {
+	const n = 2 * DefaultBatchSize
+	left := make([]int, n)
+	for i := range left {
+		left[i] = i
+	}
+
+	build := map[string]func() Stream[EitherOrBoth[int, int]]{
+		"MergeJoinBy": func() Stream[EitherOrBoth[int, int]] {
+			return MergeJoinBy(Of(left, 100), Empty[int](), identity, identity, cmp.Compare[int])
+		},
+		"ZipLongest": func() Stream[EitherOrBoth[int, int]] {
+			return ZipLongest(Of(left, 100), Empty[int]())
+		},
+	}
+
+	for name, mk := range build {
+		t.Run(name, func(t *testing.T) {
+			var kept [][]EitherOrBoth[int, int]
+			mk()(func(b Batch[EitherOrBoth[int, int]]) bool {
+				kept = append(kept, b.Items) // deliberately not copied
+				return true
+			})
+			if len(kept) < 2 {
+				t.Fatalf("need at least 2 batches to observe reuse, got %d", len(kept))
+			}
+			if &kept[0][0] != &kept[1][0] {
+				t.Error("emitter batches no longer share a buffer: the documented contract changed")
+			}
+		})
+	}
+}
+
+// Split hands the same batch to every destination without copying, so a branch
+// that mutates it changes what the others see. That is documented and cheap; it
+// is pinned because a defensive copy would look like an improvement and would
+// silently double the operator's cost.
+func TestSplitSharesBatchWithoutCopying(t *testing.T) {
+	src, _ := singlePass(t, []int{1, 2, 3}, 1)
+	branches := Split(src, 2, func(Batch[int]) []int { return []int{0, 1} })
+
+	next0, stop0 := pullBranch(branches[0])
+	defer stop0()
+	next1, stop1 := pullBranch(branches[1])
+	defer stop1()
+
+	b0, ok0 := next0()
+	b1, ok1 := next1()
+	if !ok0 || !ok1 {
+		t.Fatal("both branches should have received the first batch")
+	}
+	if &b0.Items[0] != &b1.Items[0] {
+		t.Fatal("branches no longer share the batch: the documented contract changed")
+	}
+
+	b0.Items[0] = 99
+	if b1.Items[0] != 99 {
+		t.Error("a mutation through one branch is not visible in the other")
 	}
 }
 
@@ -1334,6 +1490,235 @@ func TestSplitNilRoute(t *testing.T) {
 		}
 	}()
 	Split(Of([]int{1}, 1), 1, nil)
+}
+
+// Split documents that every branch belongs to one goroutine, and that the
+// legitimate way to drive two branches is iter.Pull. That is worth pinning
+// because iter.Pull runs each branch body on its own coroutine: the branches
+// genuinely execute on different goroutines, they simply never run at the same
+// time. Under -race this test fails if that stops being true — which is also
+// why the concurrent misuse cannot be detected from inside Split.
+func TestSplitAlternationIsRaceFree(t *testing.T) {
+	src, consumed := singlePass(t, []int{1, 2, 3, 4, 5, 6}, 1)
+	branches := Split(src, 2, func(Batch[int]) []int { return []int{0, 1} })
+
+	got0, got1 := alternate(branches[0], branches[1])
+
+	want := []int{1, 2, 3, 4, 5, 6}
+	if !slices.Equal(got0, want) || !slices.Equal(got1, want) {
+		t.Errorf("branches = %v and %v, want %v each", got0, got1, want)
+	}
+	if consumed() != 6 {
+		t.Errorf("source produced %d elements, want 6", consumed())
+	}
+}
+
+// Consuming branches one after the other lets the first drain the source, and
+// every later branch would yield nothing at all — the silent prefix this
+// operator exists to remove, simply moved from broadcast to partition. It must
+// be reported, not returned.
+func TestSplitLateBranchPanics(t *testing.T) {
+	tests := []struct {
+		name string
+		// order is the branches to drain to exhaustion, one after the other.
+		// The first drains the source; the second must be refused.
+		order []int
+	}{
+		{"two branches, reverse order", []int{1, 0}},
+		{"three branches, one after another", []int{1, 2}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				switch r := recover(); r {
+				case ErrSplitDrained:
+				case nil:
+					t.Error("a late branch yielded nothing instead of panicking")
+				default:
+					t.Errorf("panicked with %v, want ErrSplitDrained", r)
+				}
+			}()
+
+			src, _ := singlePass(t, []int{1, 2, 3, 4, 5, 6}, 1)
+			branches := Split(src, 3, func(b Batch[int]) []int {
+				return []int{b.Items[0] % 3}
+			})
+			for _, i := range tt.order {
+				collect(branches[i])
+			}
+		})
+	}
+}
+
+// The panic above must not fire on a branch that is empty for a legitimate
+// reason. Each case here consumes branches in a supported way and must stay
+// silent — this is what keeps ErrSplitDrained from becoming a nuisance.
+func TestSplitLateBranchFalsePositives(t *testing.T) {
+	tests := []struct {
+		name string
+		// values feeds the source; empty means a source that yields nothing.
+		values []int
+		// run consumes the branches and returns what each one received, so the
+		// case asserts on the data as well as on the absence of a panic.
+		run func(branches []Stream[int]) [][]int
+		// route wires the split; nil means broadcast to both branches.
+		route func(Batch[int]) []int
+		// want is the expected content of each returned branch.
+		want [][]int
+	}{
+		{
+			name:   "empty source: nothing was ever routed",
+			values: nil,
+			run: func(b []Stream[int]) [][]int {
+				return [][]int{collect(b[0]), collect(b[1])}
+			},
+			want: [][]int{nil, nil},
+		},
+		{
+			name:   "a branch consumed twice is single-pass, not late",
+			values: []int{1, 2, 3},
+			run: func(b []Stream[int]) [][]int {
+				return [][]int{collect(b[0]), collect(b[0])}
+			},
+			want: [][]int{{1, 2, 3}, nil},
+		},
+		{
+			name:   "early stop leaves the sibling usable",
+			values: []int{1, 2, 3},
+			run: func(b []Stream[int]) [][]int {
+				b[0](func(Batch[int]) bool { return false })
+				return [][]int{collect(b[1])}
+			},
+			want: [][]int{{1, 2, 3}},
+		},
+		{
+			// The branch route never chose is empty for the same reason every
+			// branch over an empty source is: nothing was addressed to it. It
+			// is not late, and reporting it would turn the documented partition
+			// mode — where a branch matching nothing is routine — into a crash.
+			name:   "a branch route never chose was never a destination",
+			values: []int{1, 2, 3},
+			run: func(b []Stream[int]) [][]int {
+				return [][]int{collect(b[0]), collect(b[1])}
+			},
+			route: func(Batch[int]) []int { return []int{0} },
+			want:  [][]int{{1, 2, 3}, nil},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("panicked with %v on a legitimate consumption", r)
+				}
+			}()
+
+			route := tt.route
+			if route == nil {
+				route = func(Batch[int]) []int { return []int{0, 1} }
+			}
+
+			src, _ := singlePass(t, tt.values, 1)
+			branches := Split(src, 2, route)
+
+			got := tt.run(branches)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d branches, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if !slices.Equal(got[i], tt.want[i]) {
+					t.Errorf("branch %d = %v, want %v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// A partition read one branch at a time is the documented single-branch use,
+// and it must stay silent: only the branch actually consumed receives anything.
+func TestSplitSingleBranchOfPartitionIsSilent(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("panicked with %v on the documented single-branch use", r)
+		}
+	}()
+
+	src, _ := singlePass(t, []int{1, 2, 3, 4, 5, 6}, 1)
+	branches := Split(src, 2, func(b Batch[int]) []int {
+		if b.Items[0]%2 == 0 {
+			return []int{1}
+		}
+		return []int{0}
+	})
+
+	if got := collect(branches[0]); !slices.Equal(got, []int{1, 3, 5}) {
+		t.Errorf("got %v, want [1 3 5]", got)
+	}
+}
+
+// A partition branch that matches nothing is empty because nothing was
+// addressed to it, not because it arrived late — the same reason every branch
+// over an empty source is empty. Reading it after its sibling must stay silent.
+//
+// This is the case that decides the grain of the check: whether the source
+// produced anything says nothing about whether *this* branch was ever a
+// destination, so lateness is tracked per branch.
+func TestSplitUnmatchedPartitionBranchIsSilent(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("panicked with %v on a branch route never chose", r)
+		}
+	}()
+
+	// Only odd values: branch 1 is never a destination.
+	src, _ := singlePass(t, []int{1, 3, 5}, 1)
+	branches := Split(src, 2, func(b Batch[int]) []int {
+		if b.Items[0]%2 == 0 {
+			return []int{1}
+		}
+		return []int{0}
+	})
+
+	if got := collect(branches[0]); !slices.Equal(got, []int{1, 3, 5}) {
+		t.Errorf("matched branch = %v, want [1 3 5]", got)
+	}
+	if got := collect(branches[1]); len(got) != 0 {
+		t.Errorf("unmatched branch = %v, want nothing", got)
+	}
+}
+
+// Reading the unmatched branch first is a different story: it drives the source
+// to exhaustion, and the batches addressed to its sibling are written off as
+// they arrive. The sibling would then yield nothing despite having been a
+// destination — real data loss, so it is still reported.
+//
+// The pair with the test above is the point: the same wiring is silent or loud
+// depending on whether data was actually lost, which is what the check is for.
+func TestSplitUnmatchedBranchFirstStillReportsLoss(t *testing.T) {
+	defer func() {
+		switch r := recover(); r {
+		case ErrSplitDrained:
+		case nil:
+			t.Error("the sibling yielded nothing instead of panicking: its batches were dropped")
+		default:
+			t.Errorf("panicked with %v, want ErrSplitDrained", r)
+		}
+	}()
+
+	src, _ := singlePass(t, []int{1, 3, 5}, 1)
+	branches := Split(src, 2, func(b Batch[int]) []int {
+		if b.Items[0]%2 == 0 {
+			return []int{1}
+		}
+		return []int{0}
+	})
+
+	if got := collect(branches[1]); len(got) != 0 {
+		t.Errorf("unmatched branch = %v, want nothing", got)
+	}
+	collect(branches[0]) // had three batches addressed to it: must not be silent
 }
 
 // A batch routed nowhere stops nothing: the remaining batches still flow.

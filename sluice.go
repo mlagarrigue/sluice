@@ -34,6 +34,7 @@ package sluice
 import (
 	"errors"
 	"iter"
+	"slices"
 	"strconv"
 )
 
@@ -46,6 +47,26 @@ import (
 // yielding a silent prefix of the data would be worse. Recover on it only to
 // improve the diagnostic.
 var ErrSplitStalled = errors.New("sluice: Split branch stalled — consume branches in alternation, not one after the other")
+
+// ErrSplitDrained reports that a [Split] branch was consumed after a sibling
+// had already drained the source.
+//
+// The source is single-pass and traversed once, so a branch attached after it
+// runs dry has nothing left to receive: it would yield nothing at all. That is
+// the silent-prefix failure this operator exists to remove, so it panics here
+// too rather than return an empty stream that reads like a legitimate one.
+//
+// It separates two cases a caller cannot otherwise tell apart: a branch that is
+// empty because nothing was ever addressed to it — no panic — and a branch that
+// is empty because it arrived too late. Only a branch that was named a
+// destination at least once can be late, so a branch route never chose stays
+// silent, as does every branch over an empty source. Consume branches in
+// alternation, or accept that only the first one consumed receives anything and
+// do not attach the others.
+//
+// Recover on it only to improve the diagnostic. It signals a consumption-order
+// mistake, not a runtime condition.
+var ErrSplitDrained = errors.New("sluice: Split branch consumed after the source was drained — consume branches in alternation, not one after the other")
 
 // DefaultBatchSize is the default number of elements per batch.
 //
@@ -143,10 +164,10 @@ func Convert[A, B any](s Stream[A], f func(A) B) Stream[B] {
 	return func(yield func(Batch[B]) bool) {
 		var out []B
 		s(func(b Batch[A]) bool {
-			if cap(out) < len(b.Items) {
-				out = make([]B, len(b.Items))
-			}
-			out = out[:len(b.Items)]
+			// Convert writes by index, so it needs the length rather than
+			// append's growth. Grow amortizes it: a source whose batches get
+			// bigger reallocates log(n) times instead of once per new maximum.
+			out = slices.Grow(out[:0], len(b.Items))[:len(b.Items)]
 			for i, v := range b.Items {
 				out[i] = f(v)
 			}
@@ -167,9 +188,9 @@ func Filter[T any](s Stream[T], keep func(T) bool) Stream[T] {
 	return func(yield func(Batch[T]) bool) {
 		var out []T
 		s(func(b Batch[T]) bool {
-			if cap(out) < len(b.Items) {
-				out = make([]T, 0, len(b.Items))
-			}
+			// No explicit sizing: append grows the buffer in amortized time and
+			// it is reused across batches, so a source whose batches grow costs
+			// log(n) reallocations rather than one per new high-water mark.
 			out = out[:0]
 			for _, v := range b.Items {
 				if keep(v) {
@@ -190,6 +211,13 @@ type Completion int
 const (
 	// WhenAll ends the merged stream once every source is exhausted. Sources
 	// that end early simply stop contributing.
+	//
+	// A source that never ends never ends the merge: an endless one, or one that
+	// keeps yielding empty batches — which [Filter] does by contract, to hold the
+	// upstream cadence. Merge then spins without progressing until the consumer
+	// stops it. That is the requested semantics, not a defect, but it shows up on
+	// a profile as CPU with no allocation and no output; use [WhenAny] when a
+	// source running dry is meant to end the merge.
 	WhenAll Completion = iota
 
 	// WhenAny ends the merged stream as soon as one source is exhausted, and
@@ -359,7 +387,7 @@ func MergeJoinBy[L, R any, K any](
 
 			switch {
 			case !lok && !rok:
-				out.flush()
+				_ = out.flush() // nothing follows: both inputs are exhausted
 				return
 
 			case !rok: // right exhausted: the rest of left is unmatched
@@ -415,7 +443,7 @@ func MergeJoinBy[L, R any, K any](
 // operator's runtime. The cache is invalidated by [cursor.next], the only thing
 // that moves the cursor.
 type cursor[T, K any] struct {
-	next0 func() (Batch[T], bool)
+	pull  func() (Batch[T], bool)
 	stop  func()
 	batch []T
 	pos   int
@@ -433,7 +461,7 @@ type cursor[T, K any] struct {
 
 func newCursor[T any, K any](s Stream[T], key func(T) K, cmp func(K, K) int) *cursor[T, K] {
 	n, stop := iter.Pull(iter.Seq[Batch[T]](s))
-	return &cursor[T, K]{next0: n, stop: stop, key: key, cmp: cmp}
+	return &cursor[T, K]{pull: n, stop: stop, key: key, cmp: cmp}
 }
 
 // peek returns the current element and its key without consuming it. Repeated
@@ -453,7 +481,7 @@ func (c *cursor[T, K]) peek() (elem T, key K, ok bool) {
 			)
 			return zeroT, zeroK, false
 		}
-		b, ok := c.next0()
+		b, ok := c.pull()
 		if !ok {
 			c.done = true
 			continue
@@ -520,12 +548,18 @@ func (e *emitter[T]) push(v T) bool {
 	return ok
 }
 
-// flush emits what is left, if anything. It is the last call on the way out, so
-// there is nothing to propagate a refusal to — the caller returns either way.
-func (e *emitter[T]) flush() {
-	if len(e.buf) > 0 {
-		e.yield(Batch[T]{Items: e.buf})
+// flush emits what is left, if anything, and reports whether the consumer took
+// it. Today's callers return immediately either way, but emitter is the shared
+// way for an N-to-1 operator to batch its output: the next one to have work
+// after the flush would silently lose the refusal if the result were dropped
+// here. Returning it costs nothing and keeps that from being a new bug.
+func (e *emitter[T]) flush() bool {
+	if len(e.buf) == 0 {
+		return true
 	}
+	ok := e.yield(Batch[T]{Items: e.buf})
+	e.buf = e.buf[:0]
+	return ok
 }
 
 // ZipLongest pairs two streams positionally: first with first, second with
@@ -566,7 +600,7 @@ func ZipLongest[L, R any](left Stream[L], right Stream[R]) Stream[EitherOrBoth[L
 
 			switch {
 			case !lok && !rok:
-				out.flush()
+				_ = out.flush() // nothing follows: both streams are exhausted
 				return
 			case lok && rok:
 				if !out.push(EitherOrBoth[L, R]{
@@ -591,7 +625,7 @@ func ZipLongest[L, R any](left Stream[L], right Stream[R]) Stream[EitherOrBoth[L
 // lookahead a merge join needs. [cursor] does more and costs more; positional
 // pairing needs neither.
 type walker[T any] struct {
-	next0 func() (Batch[T], bool)
+	pull  func() (Batch[T], bool)
 	stop  func()
 	batch []T
 	pos   int
@@ -600,7 +634,7 @@ type walker[T any] struct {
 
 func newWalker[T any](s Stream[T]) *walker[T] {
 	n, stop := iter.Pull(iter.Seq[Batch[T]](s))
-	return &walker[T]{next0: n, stop: stop}
+	return &walker[T]{pull: n, stop: stop}
 }
 
 // next returns the next element and consumes it. Upstream operators may emit
@@ -611,7 +645,7 @@ func (w *walker[T]) next() (elem T, ok bool) {
 			var zero T
 			return zero, false
 		}
-		b, ok := w.next0()
+		b, ok := w.pull()
 		if !ok {
 			w.done = true
 			continue
@@ -700,9 +734,21 @@ func Coalesce[T any](s Stream[T], size int) Stream[T] {
 // # Branches only receive while they are being consumed
 //
 // A branch nobody consumes is not a destination: batches routed to it are
-// dropped, so a partition can be consumed one branch at a time without the
-// unread branches stalling the pipeline. Consuming a branch a second time
-// yields nothing — a branch is single-pass, like the stream it comes from.
+// dropped, so one branch of a partition can be read on its own without the
+// unread ones stalling the pipeline. Consuming a branch a second time yields
+// nothing — a branch is single-pass, like the stream it comes from.
+//
+// "One branch on its own" means exactly that: the branch you read gets its
+// batches, the others get nothing and must not be read afterwards. Reading a
+// second branch once the first has run the source dry panics with
+// [ErrSplitDrained] rather than yield an empty stream that looks legitimate.
+// Two branches that must both receive have to be consumed in alternation, as
+// below.
+//
+// A branch route never chose is not "read afterwards" in that sense: nothing
+// was ever addressed to it, so it is empty for the same reason every branch
+// over an empty source is, and reading it yields nothing without panicking. A
+// partition branch that matches none of the data is the ordinary case of this.
 //
 // # Consume concurrent branches in alternation
 //
@@ -724,6 +770,24 @@ func Coalesce[T any](s Stream[T], size int) Stream[T] {
 // The bounded slot is what keeps memory at one batch per branch. The cost is
 // that concurrent branches are not independent — the trade-off every
 // single-goroutine fan-out must make, and the one this package chooses.
+//
+// # Every branch belongs to the same goroutine
+//
+// "In alternation" above means interleaved from one goroutine, as
+// [ExampleSplit_broadcast] shows. It does not mean in parallel: Split keeps its
+// routing state in variables shared by every branch, with no synchronization,
+// so consuming two branches from two goroutines is a data race — undefined
+// behaviour, not merely a slower path.
+//
+// This one is not detected, unlike the stall above. The legitimate way to drive
+// two branches is [iter.Pull], which suspends each branch inside its yield
+// between calls; a branch parked that way cannot be told apart from one running
+// in another goroutine, so any check strict enough to catch the mistake also
+// rejects correct code. Build with -race to catch it.
+//
+// To feed goroutines from a Split, consume the branches in one goroutine and
+// hand the batches on through channels — copying each batch, since the slot is
+// reused.
 //
 // The batch is shared between branches without copying: a branch that mutates
 // it affects the ones after it. Copy when that matters.
@@ -754,7 +818,34 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 		dests   []int             // held's destinations, routed once when pulled
 		holding bool
 		drained bool // the source has no batch left
+
+		// named a destination at least once. This is what separates a branch
+		// that is empty because it arrived too late from one that is empty
+		// because route never chose it — a partition branch that matches
+		// nothing is legitimately empty, and reading it must stay silent.
+		//
+		// Tracked per branch rather than globally: whether the source produced
+		// anything says nothing about whether *this* branch was ever a
+		// destination.
+		routed = make([]bool, n)
+
+		// written off by detach rather than consumed: the branch never ran, and
+		// consuming it now would silently yield nothing. Kept apart from done,
+		// which a branch also reaches by being consumed normally.
+		detached = make([]bool, n)
 	)
+
+	// Every variable above is shared by the branches and unsynchronized, so
+	// consuming two branches concurrently is a data race. That is documented on
+	// Split rather than detected, and deliberately so: the legitimate way to
+	// drive two branches is iter.Pull, which runs each branch body on its own
+	// coroutine and leaves it suspended inside yield between calls. A branch
+	// held that way is indistinguishable — by entry counter or by goroutine
+	// identity — from a branch running concurrently in another goroutine. Any
+	// detector precise enough to catch the mistake also rejects
+	// ExampleSplit_broadcast, so the check would cost more than it buys.
+	//
+	// The race detector does catch it, which is what the test suite relies on.
 
 	// release ends the shared traversal once no branch can consume from it, so
 	// the source's deferred calls run promptly rather than at GC time.
@@ -807,6 +898,7 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 			}
 			slot[dst] = held
 			pending[dst] = true
+			routed[dst] = true
 		}
 		held, holding, dests = Batch[T]{}, false, nil
 		return true
@@ -824,7 +916,7 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 		for i := range done {
 			if !started[i] && !done[i] && pending[i] {
 				slot[i], pending[i] = Batch[T]{}, false
-				done[i] = true
+				done[i], detached[i] = true, true
 				freed = true
 			}
 		}
@@ -853,6 +945,20 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 	out := make([]Stream[T], n)
 	for i := range out {
 		out[i] = func(yield func(Batch[T]) bool) {
+			// Attached too late: a sibling has already driven the source past
+			// this branch, either draining it or forcing this one to be written
+			// off. Either way it can only yield nothing, which is the silent
+			// prefix this operator exists to remove — so it is reported.
+			//
+			// routed[i] keeps this apart from the legitimate empty branch, and it
+			// is the branch's own history that decides: a branch route never
+			// chose is empty because nothing was addressed to it, exactly as
+			// every branch over an empty source is. Only a branch that did have
+			// batches addressed to it can be late. Checked before done, because
+			// detach reaches done by a different route than ordinary consumption.
+			if routed[i] && !pending[i] && (detached[i] || (drained && !holding && !started[i] && !done[i])) {
+				panic(ErrSplitDrained)
+			}
 			if done[i] {
 				return // already consumed or stopped: a branch is single-pass too
 			}
