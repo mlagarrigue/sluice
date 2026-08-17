@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets a run be re-triggered by hand without an empty commit.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,9 +20,13 @@ jobs:
       matrix:
         # Both ends of the supported range: the minimum go.mod promises, and
         # whatever is current. Everything between is interpolation.
+        #
+        # Linux only. The core is pure computation over slices with no syscalls,
+        # no filesystem and no path handling, so there is nothing for another OS
+        # to break. Add macOS and Windows back when the HTTP and database layers
+        # land and that stops being true.
         go: ['1.24', 'stable']
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
