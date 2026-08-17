@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Go modules are deliberately absent: sluice has no production dependencies,
+  # and CI fails if a require block appears. Only the Actions used by CI are
+  # tracked here — they are the one supply chain this project does have.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
