@@ -15,7 +15,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `Stream[T]` and `Batch[T]`, the two core types.
 - Operators: `Of`, `Empty`, `Map`, `Convert`, `Filter`, `Concat`, `Coalesce`,
-  `Split`.
+  `Split`, `Merge`, `MergeJoinBy`, `ZipLongest`.
 - Architecture specification (`docs/ARCHITECTURE.md`) and measured performance
   ceiling (`docs/BENCHMARK-STEP-0.md`).
 - Testable examples for every exported operator.
@@ -37,6 +37,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sources and 0.43 for eight, against a 0.33 ns baseline.
 - `ErrSplitStalled`, reported when `Split` branches are drained one after the
   other instead of in alternation.
+- `ErrSplitDrained`, reported when a `Split` branch is consumed after a sibling
+  has already run the source dry. `ErrSplitStalled` only covered the case where
+  a sibling sits mid-consumption; a branch attached after exhaustion stalls
+  nothing and would have yielded an empty stream indistinguishable from a
+  legitimate one. A branch `route` never chose stays silent: it is empty because
+  nothing was addressed to it, not because it arrived late.
 - A test asserting the documented per-stage budget, so a performance regression
   fails the build instead of living on in a Markdown file.
 - [ADR 0001](docs/adr/0001-split-bounded-slot.md), recording the `Split`
@@ -53,6 +59,11 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `Split` called `route` several times for the same batch, which double-advanced
   a stateful routing function: round-robin — a documented mode — misrouted its
   data. `route` is now called exactly once per batch.
+- `Coalesce` claimed its whole buffer before a single element had flowed. `size`
+  is often a configuration value, so a large one allocated eagerly on a stream
+  that may yield nothing at all. The buffer is now claimed when the first
+  element arrives — once, at full size, rather than grown into across log(size)
+  reallocations.
 - Documented the contracts that could previously only be found by reading the
   implementation: `Coalesce` discards what it has buffered on an early stop and
   reuses its buffer between batches, and `Map` composed with `Of` writes through

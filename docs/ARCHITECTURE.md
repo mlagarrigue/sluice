@@ -495,26 +495,38 @@ infinite** streams provided they are sorted on the key.
 
 ```go
 type EitherOrBoth[L, R any] struct {
-    Left  *L   // nil if absent
-    Right *R   // nil if absent
+    Left     L
+    Right    R
+    HasLeft  bool
+    HasRight bool
 }
 
-func MergeJoinBy[L, R any](
+func MergeJoinBy[L, R any, K any](
     left  Stream[L],
     right Stream[R],
-    cmp   func(L, R) int,
+    keyL  func(L) K,
+    keyR  func(R) K,
+    cmp   func(K, K) int,
 ) Stream[EitherOrBoth[L, R]]
 ```
+
+> The sketch this section originally carried — `Left *L` / `Right *R` and a
+> single `cmp func(L, R) int` — did not survive implementation: a pointer into a
+> reused batch buffer dangles, and a cross-side comparator cannot compare two
+> elements of the same side, which both the sort check and the cross product
+> need. The signature above is the one that shipped. See
+> [ADR 0002](adr/0002-mergejoinby-signature.md).
 
 Each semantics is a **downstream filter**, not a distinct operator:
 
 | Semantics | Filter |
 |---|---|
-| Inner join | keep `Both` |
-| Left join | keep `Both` + `Left` |
+| Inner join | keep `Both()` |
+| Left join | keep `HasLeft` |
+| Right join | keep `HasRight` |
 | Full outer join | keep everything |
-| Intersect | keep `Both` |
-| Except (A \ B) | keep `Left` |
+| Intersect | keep `Both()` |
+| Except (A \ B) | keep `HasLeft && !HasRight` |
 | Union | keep everything |
 
 This is the best power-to-code ratio in the entire taxonomy, and the only binary
@@ -533,12 +545,6 @@ operator that merges two infinite streams without state.
 > check costs nothing measurable against the comparisons the merge already
 > performs, and a check that only runs in debug builds is absent exactly when it
 > matters. Out-of-order input panics with `ErrUnsorted`.
->
-> The signature also departs from the sketch above: values rather than pointers,
-> and two key functions rather than a cross-side comparator. See
-> [ADR 0002](adr/0002-mergejoinby-signature.md) — a pointer into a reused batch
-> buffer dangles, and `cmp(L, R)` cannot compare two elements of the same side,
-> which both the sort check and the cross product need.
 
 ### 7.3 `Merge` — why the batch redeems the cost
 
