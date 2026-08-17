@@ -134,6 +134,37 @@ func ExampleSplit_partition() {
 	// [3]
 }
 
+// Merge interleaves streams a batch at a time. WhenAll drains every source.
+func ExampleMerge() {
+	a := sluice.Of([]int{1, 2, 3}, 1)
+	b := sluice.Of([]int{10, 20}, 1)
+
+	for batch := range sluice.Merge(sluice.WhenAll, a, b) {
+		fmt.Println(batch.Items)
+	}
+	// Output:
+	// [1]
+	// [10]
+	// [2]
+	// [20]
+	// [3]
+}
+
+// WhenAny ends the merged stream as soon as one source runs out — useful when
+// the sources are meant to advance together and a short one signals the end.
+func ExampleMerge_whenAny() {
+	a := sluice.Of([]int{1, 2, 3}, 1)
+	b := sluice.Of([]int{10}, 1)
+
+	for batch := range sluice.Merge(sluice.WhenAny, a, b) {
+		fmt.Println(batch.Items)
+	}
+	// Output:
+	// [1]
+	// [10]
+	// [2]
+}
+
 // Split traverses the source once, so it works on a stream that cannot be
 // replayed — a cursor, a network read, anything consumed as it is produced.
 func ExampleSplit_singlePass() {

@@ -34,6 +34,7 @@ package sluice
 import (
 	"errors"
 	"iter"
+	"strconv"
 )
 
 // ErrSplitStalled reports that a [Split] branch cannot advance because a
@@ -177,6 +178,93 @@ func Filter[T any](s Stream[T], keep func(T) bool) Stream[T] {
 			}
 			return yield(Batch[T]{Items: out})
 		})
+	}
+}
+
+// Completion decides when a merged stream ends. There is no sensible default:
+// stopping at the first exhausted source silently drops the rest, and waiting
+// for all of them stalls a pipeline whose point was the first result. The
+// caller states which one it wants.
+type Completion int
+
+const (
+	// WhenAll ends the merged stream once every source is exhausted. Sources
+	// that end early simply stop contributing.
+	WhenAll Completion = iota
+
+	// WhenAny ends the merged stream as soon as one source is exhausted, and
+	// releases the others. Batches already pulled from the other sources in the
+	// same round are still emitted: a source is never read and discarded.
+	WhenAny
+)
+
+// String implements [fmt.Stringer].
+func (c Completion) String() string {
+	switch c {
+	case WhenAll:
+		return "WhenAll"
+	case WhenAny:
+		return "WhenAny"
+	default:
+		return "Completion(" + strconv.Itoa(int(c)) + ")"
+	}
+}
+
+// Merge interleaves several streams, one batch at a time from each.
+//
+// Sources are pulled in round-robin: one batch from the first, one from the
+// second, and so on. Order within a batch is preserved; order between sources
+// is not a guarantee, only the current behaviour.
+//
+// done says when the merged stream ends — see [WhenAll] and [WhenAny]. Merging
+// no streams yields nothing, whatever done says.
+//
+// Cost is O(1) in memory whatever the stream length: one [iter.Pull] per
+// source, no buffering. The batch is what makes this affordable — the pull
+// machinery costs ~68 ns per call, which a 1024-element batch amortizes to
+// ~0.07 ns per element. Element-wise, the same operator would be unusable.
+//
+// Batches are passed through untouched, so an operator upstream that reuses its
+// buffer keeps that contract here: retaining Items requires a copy.
+func Merge[T any](done Completion, streams ...Stream[T]) Stream[T] {
+	if len(streams) == 0 {
+		return Empty[T]()
+	}
+	return func(yield func(Batch[T]) bool) {
+		next := make([]func() (Batch[T], bool), len(streams))
+		stops := make([]func(), len(streams))
+		// One deferred call for the whole set rather than one per source: the
+		// sources must be released together however this function returns —
+		// exhaustion, early stop, or a panic crossing the yield.
+		defer func() {
+			for _, stop := range stops {
+				stop()
+			}
+		}()
+		for i, s := range streams {
+			next[i], stops[i] = iter.Pull(iter.Seq[Batch[T]](s))
+		}
+
+		live := len(streams)
+		for live > 0 {
+			for i, n := range next {
+				if n == nil {
+					continue
+				}
+				b, ok := n()
+				if !ok {
+					next[i] = nil
+					live--
+					if done == WhenAny {
+						return
+					}
+					continue
+				}
+				if !yield(b) {
+					return
+				}
+			}
+		}
 	}
 }
 

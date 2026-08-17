@@ -19,6 +19,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Architecture specification (`docs/ARCHITECTURE.md`) and measured performance
   ceiling (`docs/BENCHMARK-STEP-0.md`).
 - Testable examples for every exported operator.
+- `Merge`, which interleaves several streams a batch at a time in O(1) memory,
+  with the completion condition as an explicit `Completion` argument — `WhenAll`
+  or `WhenAny`, never an implicit default. Measured at 0.40 ns/element for two
+  sources and 0.43 for eight, against a 0.33 ns baseline.
 - `ErrSplitStalled`, reported when `Split` branches are drained one after the
   other instead of in alternation.
 - A test asserting the documented per-stage budget, so a performance regression

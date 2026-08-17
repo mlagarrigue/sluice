@@ -925,7 +925,7 @@ inject, no global registry, no implicit runtime (but a stratified context, see
 | 0 | ✅ **Done** — [BENCHMARK-STEP-0.md](BENCHMARK-STEP-0.md): ceiling 0.31 ns, batch ×1.9, `iter.Pull` 68.6 ns | §2.4 — the denominator |
 | 1 | `Stream`, `Batch`, `Diagnostic`, `Path`, `Source`, O(1) operators, terminals | The core |
 | 2 | Single `Split` + `Parallel` + O(k) operators + S9/S10/S11 tests | §6, S1, S6 |
-| 3 | N→1 operators: `Concat`, `Merge`, `MergeJoinBy`, `ZipLongest`, `Coalesce` | §7 |
+| 3 | N→1 operators: ✅ `Concat`, ✅ `Merge`, `MergeJoinBy`, `ZipLongest`, ✅ `Coalesce` | §7 |
 | 4 | `Join` (bounded hash, interval) — merge join derives from §7.2 | §9 |
 | 5 | End-to-end HTTP vertical, diagnostics included | §1.1 |
 | 6 | PostgreSQL connector: v3 protocol, `= ANY`, COPY, generated hydration | §8 |

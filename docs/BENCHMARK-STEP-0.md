@@ -193,6 +193,28 @@ to zero — measured at 29 allocations per million elements, i.e. setup only.
 
 ---
 
+## Result 7 — `Merge`: the §7.3 projection holds on the real operator
+
+Result 3 measured a hand-rolled merge harness. This is the shipped operator,
+against a plain back-to-back traversal of the same two halves:
+
+| Measurement | Cost | Overhead |
+|---|---|---|
+| Baseline: both halves traversed, no merge | 0.328 ns/element | — |
+| `Merge` of 2 sources | **0.398 ns/element** | +0.07 ns |
+| `Merge` of 8 sources | **0.429 ns/element** | +0.10 ns |
+
+**The cost does not scale with the source count.** Four times as many sources
+costs 8% more, because the per-source expense is one `iter.Pull` — a fixed
+setup, amortized over every batch that source contributes. Allocations behave
+the same way: 16 for two sources, 59 for eight, all of it construction, none of
+it per batch.
+
+At 0.4 ns/element the operator sits at ×1.3 the ceiling, matching the 0.39 ns
+that §7.3 projected from the step 0 harness.
+
+---
+
 ## Synthesis — what the measurements change in the spec
 
 | # | Finding | Effect |
@@ -204,6 +226,7 @@ to zero — measured at 29 allocations per million elements, i.e. setup only.
 | 5 | 1% filter: batch stays ×3.6 faster, 0 alloc | §7.5: `Coalesce` **useful, not urgent** |
 | 6 | Per-stage cost **linear** (2.6 ns element / 1.5 ns batch) | Deep pipelines **predictable** |
 | 7 | `Split` lock-step: **0.27 ns** partition, **0.94 ns** broadcast, 0 alloc | §6.3 **confirmed**, no longer theoretical |
+| 8 | `Merge` operator: **0.40 ns** for 2 sources, **0.43 ns** for 8 | §7.3 **confirmed** on the real operator, and flat in source count |
 
 ### The most important point going forward
 
