@@ -2,30 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+env:
+  GO_LATEST: 'stable'
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range: the minimum go.mod promises, and
+        # whatever is current. Everything between is interpolation.
+        go: ['1.24', 'stable']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
-
-      # Zero production dependencies is a project rule, not an aspiration:
-      # fail the build if a require block ever appears.
-      - name: Verify zero dependencies
-        run: |
-          if grep -qE '^\s*require' go.mod; then
-            echo "go.mod declares dependencies; sluice is stdlib-only." >&2
-            exit 1
-          fi
+          go-version: ${{ matrix.go }}
+          # No dependencies means nothing to cache, and no go.sum to key on.
+          cache: false
 
       - name: Vet
         run: go vet ./...
@@ -36,20 +39,52 @@ jobs:
       - name: Build
         run: go build ./...
 
+  # Zero production dependencies is a project rule, not an aspiration. Checked
+  # two ways: go.mod must declare nothing, and no non-test file may import
+  # anything outside the standard library.
+  no-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
+      - name: go.mod declares no dependencies
+        run: |
+          if grep -qE '^\s*require' go.mod; then
+            echo "::error file=go.mod::go.mod declares dependencies; sluice is stdlib-only" >&2
+            exit 1
+          fi
+
+      - name: No non-stdlib imports
+        run: |
+          module=$(go list -m)
+          external=$(go list -deps ./... \
+            | grep -E '^[^/]+\.[^/]+/' \
+            | grep -v "^${module}\(/\|$\)" || true)
+          if [ -n "$external" ]; then
+            echo "::error::non-stdlib packages in the dependency graph:" >&2
+            echo "$external" >&2
+            exit 1
+          fi
+
   format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
 
       - name: gofumpt
         run: |
           go install mvdan.cc/gofumpt@latest
           unformatted=$(gofumpt -l .)
           if [ -n "$unformatted" ]; then
-            echo "Not gofumpt-formatted:" >&2
+            echo "::error::not gofumpt-formatted:" >&2
             echo "$unformatted" >&2
             exit 1
           fi
@@ -57,21 +92,23 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
-      - uses: golangci/golangci-lint-action@v7
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
 
       # Runs the harness to catch compile breakage and crashes. CI timings are
       # too noisy to gate on: the reference figures come from a controlled run,
