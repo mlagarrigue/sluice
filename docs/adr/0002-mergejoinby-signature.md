@@ -87,7 +87,15 @@ input is a wiring mistake, not a runtime condition.
 
 ## What would change our mind
 
-A profile showing the 3.4 → 11.6 ns gap is one identifiable cost rather than
-diffuse overhead. Three hypotheses were tested and two were refuted (key
-memoization helped and was kept; the indirect `cmp` call and manual inlining did
-not). A fourth should be measured before any further rewrite, not assumed.
+The 3.4 → 11.6 ns gap has since been located, and it is **not** the cost of
+joining (Result 9). `ZipLongest` runs the same cursors, the same emitter and the
+same 32-byte output rows at 2.95 ns; a join on inputs with disjoint key ranges,
+where the equal-key and cross-product paths never execute, still costs 10.7 ns.
+
+What separates them is `cursor` against `walker`: the join peeks both sides on
+every turn even when only one advances, and each peek carries a key cache and a
+monotonicity check. Reworking the cursor so a turn touches only the side that
+moves is the change worth measuring — a rework, not a tweak, and not attempted
+here. The three earlier hypotheses (key memoization, kept; indirect `cmp` call
+and manual inlining, both refuted) are recorded in Result 8 so they are not
+retried.

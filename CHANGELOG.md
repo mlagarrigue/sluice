@@ -19,6 +19,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Architecture specification (`docs/ARCHITECTURE.md`) and measured performance
   ceiling (`docs/BENCHMARK-STEP-0.md`).
 - Testable examples for every exported operator.
+- `ZipLongest`, which pairs two streams positionally and carries on to the
+  longer one. It is the primitive rather than a `Zip` stopping at the shorter
+  stream, because silent truncation hides bugs; `Zip` is a `Both` filter over
+  it. O(1) memory, where a push-based zip needs an unbounded queue per source.
 - `MergeJoinBy`, the sorted-merge primitive: it walks two sorted streams once
   and emits an `EitherOrBoth` per key, from which every join semantics — inner,
   left, full outer, intersect, except — follows as a downstream filter. O(1)

@@ -255,9 +255,24 @@ A third attempt — splitting `peek` so the hot path would inline — made it
 
 > **Where this leaves the operator.** It is correct, O(1) in memory on unique
 > keys, and works on infinite streams. It is also the wrong tool for a hot inner
-> loop over millions of rows. What remains unexplained is the gap between 3.4 and
-> 11.6 ns; closing it needs a different approach from the three tried here, not
-> another round of micro-optimization.
+> loop over millions of rows.
+
+**The remaining gap is located** (see Result 9). `ZipLongest` runs the same
+cursor-and-emitter machinery over the same volume, materializing the same 32-byte
+rows, at **2.95 ns/element** — a quarter of the join's cost. Two measurements
+narrow it down:
+
+- A join whose inputs share no key range, so the equal-key and cross-product
+  paths never run, still costs **10.7 ns** — within noise of the general case.
+  **The join's own logic is not what is expensive.**
+- The structural difference left is `cursor` against `walker`: the join peeks
+  *both* sides on every turn of the loop, even when only one advances, and each
+  peek carries the key cache and the monotonicity check. `ZipLongest` calls
+  `next` once per element and holds no state.
+
+So the ~8 ns is per-element cursor overhead, not join semantics. That is a
+concrete, testable target — unlike the three hypotheses above — but it is a
+rework of the cursor rather than a tweak, and it is not attempted here.
 
 ### The sort check costs nothing measurable
 
@@ -265,6 +280,36 @@ A third attempt — splitting `peek` so the hot path would inline — made it
 per element against the several the merge already performs is lost in the noise —
 and the failure it prevents is a silently wrong result. **The check is always
 on**, and the debug mode the spec asked for is not worth building.
+
+---
+
+## Result 9 — `ZipLongest`, and what it says about the join
+
+Positional pairing over the same volume, materializing the same `EitherOrBoth`
+rows as `MergeJoinBy`, but with no key extraction, no comparison and no sort
+check:
+
+| Measurement | Cost |
+|---|---|
+| Index-walk baseline, nothing materialized | 0.165 ns/element |
+| `ZipLongest`, equal lengths | **2.95 ns/element** |
+| `ZipLongest`, one side twice the other | 3.04 ns/element |
+| `MergeJoinBy`, same volume | 10.9 ns/element |
+
+The tail path costs the same as the paired path — 3.04 against 2.95 — so
+exhausting one side does not degrade the operator.
+
+**The comparison is the useful part.** Same cursors, same emitter, same output
+rows, a quarter of the cost. To find out whether the difference is join *logic*
+or join *bookkeeping*, a join was run on inputs whose key ranges do not overlap,
+so the equal-key and cross-product paths never execute: **10.7 ns**, essentially
+unchanged. The expensive part is not the joining.
+
+What is left is `cursor` versus `walker`. The join peeks both sides on every
+turn even when only one advances, and each peek carries a key cache and a
+monotonicity check; `ZipLongest` calls `next` once per element and keeps no
+state. That is where the ~8 ns lives, and it corrects the reading in Result 8:
+the gap is per-element cursor overhead, not the cost of being a join.
 
 ---
 
@@ -282,6 +327,7 @@ on**, and the debug mode the spec asked for is not worth building.
 | 8 | `Merge` operator: **0.40 ns** for 2 sources, **0.43 ns** for 8 | §7.3 **confirmed** on the real operator, and flat in source count |
 | 9 | `MergeJoinBy`: **11.6 ns**, floor 3.4 ns — misses the budget | §7.2: the ceiling **does not apply** to an element-at-a-time operator |
 | 10 | Sort check: **no measurable cost** | §7.2: the debug mode is **unnecessary**, the check is always on |
+| 11 | `ZipLongest`: **2.95 ns**, and a disjoint-range join still costs 10.7 | §7.4 cheap; the join's gap is **cursor overhead**, not join logic |
 
 ### The most important point going forward
 
