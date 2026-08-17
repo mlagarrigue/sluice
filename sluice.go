@@ -268,6 +268,266 @@ func Merge[T any](done Completion, streams ...Stream[T]) Stream[T] {
 	}
 }
 
+// ErrUnsorted reports that a [MergeJoinBy] input went backwards.
+//
+// The operator walks both inputs once and never looks back, so an out-of-order
+// key silently produces a wrong result — rows that should have matched are
+// emitted as unmatched, and no error surfaces anywhere. Rather than document
+// that as a caveat, MergeJoinBy checks the order it depends on and panics with
+// this value. The check costs one comparison per element against the several
+// the merge already performs; it is not worth making optional.
+//
+// Recover on it only to improve the diagnostic. It signals unsorted input — a
+// wiring mistake — not a runtime condition to handle.
+var ErrUnsorted = errors.New("sluice: MergeJoinBy input is not sorted by its key")
+
+// EitherOrBoth carries one row of a [MergeJoinBy] result: a left row, a right
+// row, or a matched pair.
+//
+// Values are held directly rather than behind pointers. A pointer into an
+// operator's reused buffer dangles as soon as the next batch arrives, which is
+// exactly the mistake the Batch contract warns about; carrying values keeps
+// each row valid on its own terms.
+type EitherOrBoth[L, R any] struct {
+	Left     L
+	Right    R
+	HasLeft  bool
+	HasRight bool
+}
+
+// Both reports whether the row matched on both sides.
+func (e EitherOrBoth[L, R]) Both() bool { return e.HasLeft && e.HasRight }
+
+// MergeJoinBy merges two streams sorted on a common key, in O(1) memory over
+// streams of any length — including infinite ones.
+//
+// keyL and keyR extract the key each side is sorted by, and cmp orders two
+// keys: negative if the first sorts before the second, zero if they are equal,
+// positive otherwise — the convention of [cmp.Compare] and [strings.Compare].
+// Both inputs must be sorted ascending by that key.
+//
+// The output carries every row exactly once, tagged with what was found. Each
+// join semantics is a filter over it rather than a separate operator:
+//
+//	inner join   keep Both()
+//	left join    keep Both() or HasLeft
+//	full outer   keep everything
+//	intersect    keep Both()
+//	except A\B   keep HasLeft && !HasRight
+//
+// Rows sharing a key on both sides produce their full cross product, as SQL
+// requires. That is the one place memory grows: a key repeated n times on the
+// left and m times on the right buffers those runs to pair them, costing
+// O(n+m). Keys unique on at least one side — the usual case for a join on an
+// identifier — cost O(1).
+//
+// Output batches reuse an internal buffer, like [Filter] and [Convert]:
+// retaining Items beyond the call that receives it requires a copy.
+//
+// Rows accumulate until a batch is full, so the inputs run ahead of what the
+// consumer has seen: an early stop takes effect at the next batch boundary, not
+// at the next row. That is the cost of emitting full batches rather than
+// one-row ones, and it is what makes the operator worth its name.
+//
+// MergeJoinBy panics with [ErrUnsorted] if either input goes backwards, and
+// with a plain message if cmp, keyL or keyR is nil.
+func MergeJoinBy[L, R any, K any](
+	left Stream[L],
+	right Stream[R],
+	keyL func(L) K,
+	keyR func(R) K,
+	cmp func(K, K) int,
+) Stream[EitherOrBoth[L, R]] {
+	if keyL == nil || keyR == nil {
+		panic("sluice: MergeJoinBy requires non-nil key functions")
+	}
+	if cmp == nil {
+		panic("sluice: MergeJoinBy requires a non-nil cmp function")
+	}
+
+	return func(yield func(Batch[EitherOrBoth[L, R]]) bool) {
+		lc := newCursor[L](left, keyL, cmp)
+		defer lc.stop()
+		rc := newCursor[R](right, keyR, cmp)
+		defer rc.stop()
+
+		out := newEmitter(yield)
+
+		for {
+			lv, lk, lok := lc.peek()
+			rv, rk, rok := rc.peek()
+
+			switch {
+			case !lok && !rok:
+				out.flush()
+				return
+
+			case !rok: // right exhausted: the rest of left is unmatched
+				lc.next()
+				if !out.push(EitherOrBoth[L, R]{Left: lv, HasLeft: true}) {
+					return
+				}
+
+			case !lok: // left exhausted: the rest of right is unmatched
+				rc.next()
+				if !out.push(EitherOrBoth[L, R]{Right: rv, HasRight: true}) {
+					return
+				}
+
+			default:
+				switch c := cmp(lk, rk); {
+				case c < 0:
+					lc.next()
+					if !out.push(EitherOrBoth[L, R]{Left: lv, HasLeft: true}) {
+						return
+					}
+				case c > 0:
+					rc.next()
+					if !out.push(EitherOrBoth[L, R]{Right: rv, HasRight: true}) {
+						return
+					}
+				default:
+					// Equal keys: emit the cross product of the two runs. This
+					// is the only path that holds more than one element.
+					lrun := lc.takeRun(lk)
+					rrun := rc.takeRun(rk)
+					for _, l := range lrun {
+						for _, r := range rrun {
+							if !out.push(EitherOrBoth[L, R]{
+								Left: l, Right: r, HasLeft: true, HasRight: true,
+							}) {
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// cursor reads one input of a merge join element by element, checking as it
+// goes that the keys never go backwards.
+//
+// The current element and its key are cached: the merge loop peeks the same
+// element several times before consuming it — once to compare, once more to
+// gather a run — and extracting the key each time was measured at 44% of the
+// operator's runtime. The cache is invalidated by [cursor.next], the only thing
+// that moves the cursor.
+type cursor[T, K any] struct {
+	next0 func() (Batch[T], bool)
+	stop  func()
+	batch []T
+	pos   int
+	done  bool
+	key   func(T) K
+	cmp   func(K, K) int
+
+	cur     T
+	curKey  K
+	cached  bool
+	lastKey K
+	hasLast bool
+	run     []T // scratch for takeRun, reused between calls
+}
+
+func newCursor[T any, K any](s Stream[T], key func(T) K, cmp func(K, K) int) *cursor[T, K] {
+	n, stop := iter.Pull(iter.Seq[Batch[T]](s))
+	return &cursor[T, K]{next0: n, stop: stop, key: key, cmp: cmp}
+}
+
+// peek returns the current element and its key without consuming it. Repeated
+// calls return the cached value rather than re-extracting the key.
+//
+// Upstream operators may emit empty batches — [Filter] does, to keep the
+// cadence — so the advance loops rather than testing once.
+func (c *cursor[T, K]) peek() (elem T, key K, ok bool) {
+	if c.cached {
+		return c.cur, c.curKey, true
+	}
+	for c.pos >= len(c.batch) {
+		if c.done {
+			var (
+				zeroT T
+				zeroK K
+			)
+			return zeroT, zeroK, false
+		}
+		b, ok := c.next0()
+		if !ok {
+			c.done = true
+			continue
+		}
+		c.batch, c.pos = b.Items, 0
+	}
+
+	v := c.batch[c.pos]
+	k := c.key(v)
+
+	// Check monotonicity as each element is first seen, so every element is
+	// checked exactly once whichever path goes on to consume it.
+	if c.hasLast && c.cmp(c.lastKey, k) > 0 {
+		panic(ErrUnsorted)
+	}
+	c.lastKey, c.hasLast = k, true
+
+	c.cur, c.curKey, c.cached = v, k, true
+	return v, k, true
+}
+
+// next consumes the current element, invalidating the cache.
+func (c *cursor[T, K]) next() {
+	c.pos++
+	c.cached = false
+}
+
+// takeRun consumes every consecutive element sharing the current key and
+// returns them. The returned slice is reused by the next call.
+// It is only called with an element available — the equal-keys branch has just
+// peeked one — so the run is never empty.
+func (c *cursor[T, K]) takeRun(k K) []T {
+	c.run = c.run[:0]
+	for {
+		v, vk, ok := c.peek()
+		if !ok || c.cmp(vk, k) != 0 {
+			return c.run
+		}
+		c.run = append(c.run, v)
+		c.next()
+	}
+}
+
+// emitter batches rows on their way out, so a merge join produces full batches
+// rather than one-element ones.
+type emitter[T any] struct {
+	yield func(Batch[T]) bool
+	buf   []T
+}
+
+func newEmitter[T any](yield func(Batch[T]) bool) *emitter[T] {
+	return &emitter[T]{yield: yield, buf: make([]T, 0, DefaultBatchSize)}
+}
+
+// push adds a row, flushing when the buffer fills. It reports false once the
+// consumer has stopped.
+func (e *emitter[T]) push(v T) bool {
+	e.buf = append(e.buf, v)
+	if len(e.buf) < DefaultBatchSize {
+		return true
+	}
+	ok := e.yield(Batch[T]{Items: e.buf})
+	e.buf = e.buf[:0]
+	return ok
+}
+
+// flush emits what is left, if anything. It is the last call on the way out, so
+// there is nothing to propagate a refusal to — the caller returns either way.
+func (e *emitter[T]) flush() {
+	if len(e.buf) > 0 {
+		e.yield(Batch[T]{Items: e.buf})
+	}
+}
+
 // Concat chains streams end to end: the first in full, then the next.
 //
 // An early stop breaks the chain without consuming the remaining streams.
