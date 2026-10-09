@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/mlagarrigue/sluice/net/httpstream"
@@ -68,26 +69,37 @@ func BenchmarkRenderOneExchange(b *testing.B) {
 
 // TestRenderAllocationCeiling is the assertion the benchmarks above cannot
 // make: a benchmark only reports, and a figure nobody compares regresses in
-// silence. Measured: 4 allocations for a lone exchange (the headers slice,
-// the JSON body's, the response slice), with or without the race detector;
-// 193 for a batch of 64 (~3 per exchange — some of the lone exchange's cost
-// amortizes), 240 under the race detector. The batch ceiling of 4 per
-// exchange absorbs both, while one added per-exchange allocation lands at
-// least batchSize over the measured figure and cannot pass. Allocation
-// counts do not depend on machine speed, so unlike the timing assertions in
-// this package this needs no -short gate.
+// silence. Per exchange Render pays json.Marshal (the boxing of the body
+// and the encoder's own allocations, which differ between Go releases:
+// one allocation up to Go 1.26, three from Go 1.27's encoding/json) plus
+// its own headers slice; the response slice is paid once per batch. The
+// ceiling is therefore stated relative to json.Marshal's cost measured on
+// the toolchain at hand — that cost plus two per exchange — so that one
+// added per-exchange allocation lands batchSize over the measured figure
+// and cannot pass, on any toolchain. Allocation counts do not depend on
+// machine speed, so unlike the timing assertions in this package this needs
+// no -short gate.
 func TestRenderAllocationCeiling(t *testing.T) {
 	serve := func(i int) (int, any) {
 		return 200, renderBody{ID: int64(i), Label: "ok"}
 	}
+
+	// Boxing the body into an any and encoding it, as Render does per
+	// exchange. The ID varies so the body is built at run time: a constant
+	// literal would be boxed statically and the boxing would not be counted.
+	var id int64
+	marshal := int64(testing.AllocsPerRun(100, func() {
+		id++
+		_, _ = json.Marshal(renderBody{ID: id, Label: "ok"})
+	}))
 
 	for _, tc := range []struct {
 		name    string
 		n       int
 		ceiling int64
 	}{
-		{"one exchange", 1, 4},
-		{"a served batch", 64, 64 * 4},
+		{"one exchange", 1, marshal + 2},
+		{"a served batch", 64, 64 * (marshal + 2)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exchanges := renderBatch(tc.n)
