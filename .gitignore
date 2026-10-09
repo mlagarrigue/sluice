@@ -1,0 +1,22 @@
+bin/
+*.exe
+*.test
+*.out
+.env
+
+# Personal working notes and tool configuration stay out of the repository;
+# `scripts/check-hygiene.sh` refuses them. Add your own to .git/info/exclude.
+
+# A workspace file makes `go list -deps ./...` resolve across modules, which
+# would turn the zero-dependency check into a formality. Local only.
+go.work
+go.work.sum
+
+# Build artefact of the generator; `go build ./cmd/sluicegen` recreates it.
+cmd/sluicegen/sluicegen
+
+# Personal devcontainer overlay and editor state. Only the project's own
+# workspace settings are shared.
+.devcontainer/local/
+.vscode/*
+!.vscode/settings.json

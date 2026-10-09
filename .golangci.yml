@@ -1,0 +1,113 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused.
+  # Not "all": on a library that produces unmanageable noise.
+  default: standard
+  enable:
+    - errorlint      # Go 1.13 error wrapping done right
+    - gocritic
+    - gosec
+    - perfsprint     # this is a performance-sensitive library
+    - copyloopvar
+    - intrange
+    - predeclared
+    - thelper
+    - usetesting
+    - unconvert
+    - wastedassign
+    - makezero
+    - nilerr
+    - godot          # doc comments end in a period, as go/doc expects
+
+  settings:
+    errorlint:
+      errorf: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # The core deliberately reuses batch buffers; this check fires on the
+        # idiomatic way to do that.
+        - appendAssign
+        # Diagnostic is 112 bytes and its With methods take it by value, which
+        # is what makes a diagnostic held as a template safe to reuse: a pointer
+        # receiver would let one caller's change reach another's copy. Measured
+        # at 5.69 ns either way, so the check reports a size rather than a cost.
+        - hugeParam
+    godot:
+      scope: declarations
+      exclude:
+        # A doc link definition ("[Name]: pkg.Symbol") is a reference, not a
+        # sentence, and go/doc requires it to stand alone at the end.
+        - '^ ?\[[^]]+\]: '
+
+  exclusions:
+    generated: lax
+    rules:
+      # Benchmarks assign to a package-level sink to defeat dead-code
+      # elimination. That is the point, not an accident.
+      - path: internal/bench/
+        linters:
+          - wastedassign
+          - gosec
+
+      # G115 flags integer conversions that could overflow. In a test the
+      # values are the test's own constants — a two-element array's length, a
+      # loop index, a key a table literal chose — so the check reports the
+      # shape of the conversion rather than a risk. Production code keeps it,
+      # which is where a length arrives from the network.
+      - path: _test\.go
+        text: "G115"
+        linters:
+          - gosec
+
+      # G704 flags dialling an address that came from outside the program. The
+      # integration tests take theirs from SLUICE_PG, which is the harness's
+      # own configuration and the only way to say which server to run against
+      # — the same reasoning as G115 above. Production code keeps the check,
+      # and this package dials nothing anyway: it takes an established
+      # connection.
+      - path: _test\.go
+        text: "G704"
+        linters:
+          - gosec
+
+      # A test that closes a connection, or writes a canned reply to a test
+      # server's ResponseWriter, has nothing to do with the error: a failure
+      # there surfaces as the assertion that follows. Only those calls are
+      # excused; any other dropped error in a test is still reported.
+      - path: _test\.go
+        text: "Error return value of `[^`]*\\.(Close|Fprint|Fprintf|SetReadDeadline)` is not checked"
+        linters:
+          - errcheck
+
+      # gosec's G104 is errcheck again, without the narrowing above; errcheck
+      # keeps reporting every other dropped error in tests.
+      - path: _test\.go
+        text: "G104"
+        linters:
+          - gosec
+
+      # gocritic's style checks (named results, combined appends, a bytes
+      # comparison spelled as strings) read as taste in a test, whose job is
+      # to be obvious line by line. The diagnostic and performance checks
+      # still run on tests.
+      - path: _test\.go
+        text: "^(unnamedResult|appendCombine|builtinShadow|emptyStringTest|stringXbytes|paramTypeCombine|httpNoBody|unlambda):"
+        linters:
+          - gocritic
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mlagarrigue/sluice
