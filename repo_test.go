@@ -296,3 +296,137 @@ func TestCommitMessageFaults(t *testing.T) {
 		}
 	}
 }
+
+// The package list is written in three places a reader meets before the
+// code — the README's table, the experimental guide's opening sentence and
+// the exit conditions in the limits guide — and each is checked against the
+// tree and the godoc, so a package added, removed or relabelled fails here
+// rather than waiting for a reader to notice.
+func modulePackages(t *testing.T) (module string, docs map[string]string) {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not installed")
+	}
+	out, err := exec.Command("go", "list", "-f", "{{.ImportPath}}\t{{.Doc}}", "./...").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	docs = map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		path, doc, _ := strings.Cut(line, "\t")
+		if module == "" {
+			module = path // the root is listed first
+		}
+		if strings.Contains(path, "/internal/") || strings.Contains(path, "/example/") {
+			continue
+		}
+		docs[path] = doc
+	}
+	return module, docs
+}
+
+// readmePackageRows reads the README's package table: each row names one
+// package (or two, joined by " · ") in the first cell and says in the last
+// whether it is supported or experimental.
+func readmePackageRows(t *testing.T, module string) (status map[string]string) {
+	t.Helper()
+	b, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile("^\\| (`[^`]+`(?: · `[^`]+`)*) \\|.*\\| ([^|]+) \\|$")
+	status = map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		m := row.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		for _, name := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(m[1], -1) {
+			n := name[1]
+			switch {
+			case n == "sluice":
+				n = module
+			case strings.HasPrefix(n, "sluice/"):
+				n = module + strings.TrimPrefix(n, "sluice")
+			default:
+				n = module + "/" + n
+			}
+			status[n] = strings.TrimSpace(m[2])
+		}
+	}
+	return status
+}
+
+func TestREADMEPackageTableFollowsTheTree(t *testing.T) {
+	module, docs := modulePackages(t)
+	rows := readmePackageRows(t, module)
+	for path := range docs {
+		if _, ok := rows[path]; !ok {
+			t.Errorf("%s: not in the README's package table", path)
+		}
+	}
+	for path, st := range rows {
+		doc, ok := docs[path]
+		if !ok {
+			t.Errorf("README: row %q names a package that is not in the tree", path)
+			continue
+		}
+		labelled := strings.Contains(strings.ToLower(doc), "experiment")
+		if labelled != strings.Contains(st, "experimental") {
+			t.Errorf("%s: README says %q, the godoc's first sentence %s the experimental label", path, st, map[bool]string{true: "carries", false: "lacks"}[labelled])
+		}
+	}
+}
+
+func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
+	module, docs := modulePackages(t)
+	labelled := map[string]bool{}
+	for path, doc := range docs {
+		if strings.Contains(strings.ToLower(doc), "experiment") {
+			labelled[path] = true
+		}
+	}
+	// The guide's opening paragraph, up to the first blank line after the
+	// title, names every labelled package in backticks.
+	b, err := os.ReadFile("docs/guide/experimental.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening, _, _ := strings.Cut(strings.TrimPrefix(string(b), "# Experimental\n\n"), "\n\n")
+	named := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(opening, -1) {
+		named[module+"/"+m[1]] = true
+	}
+	// The limits guide gives each one its exit conditions, one bullet each.
+	b, err = os.ReadFile("docs/guide/limits.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, exits, ok := strings.Cut(string(b), "## Experimental: the exit conditions\n")
+	if !ok {
+		t.Fatal("docs/guide/limits.md: no section \"Experimental: the exit conditions\"")
+	}
+	exits, _, _ = strings.Cut(exits, "\n## ")
+	conditioned := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^- \\*\\*`([^`]+)`\\*\\*").FindAllStringSubmatch(exits, -1) {
+		conditioned[module+"/"+m[1]] = true
+	}
+	for path := range labelled {
+		if !named[path] {
+			t.Errorf("%s: labelled experimental in its godoc, not named in docs/guide/experimental.md's opening", path)
+		}
+		if !conditioned[path] {
+			t.Errorf("%s: labelled experimental in its godoc, no exit conditions in docs/guide/limits.md", path)
+		}
+	}
+	for path := range named {
+		if !labelled[path] {
+			t.Errorf("%s: named in docs/guide/experimental.md, its godoc's first sentence does not say so", path)
+		}
+	}
+	for path := range conditioned {
+		if !labelled[path] {
+			t.Errorf("%s: has exit conditions in docs/guide/limits.md, its godoc's first sentence does not say so", path)
+		}
+	}
+}

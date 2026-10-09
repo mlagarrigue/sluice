@@ -1,8 +1,9 @@
-// Package pushdown lets a consumer tell its source something better than
-// "stop": how many rows it still needs, and how far ahead it may skip.
+// Package pushdown is experimental: a consumer tells its source something
+// better than "stop" — how many rows it still needs, and how far ahead it
+// may skip.
 //
-// It is experimental: the mechanism is tested and measured on its own, but
-// no supported path uses it yet, so its shape may change before v1.
+// The mechanism is tested and measured on its own, but no supported path
+// uses it yet, so its shape may change before v1.
 //
 // The mechanism has a name — sideways information passing — and a modern
 // reference: DataFusion's dynamic filters, where a TopK operator hands its
