@@ -2,6 +2,8 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mlagarrigue/sluice.svg)](https://pkg.go.dev/github.com/mlagarrigue/sluice)
 [![CI](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml/badge.svg)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mlagarrigue/sluice)](https://goreportcard.com/report/github.com/mlagarrigue/sluice)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mlagarrigue/sluice/badges/coverage.json)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mlagarrigue/sluice)](https://github.com/mlagarrigue/sluice/releases)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8)
 ![Status](https://img.shields.io/badge/status-v0.1%20·%20unstable%20API-orange)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
