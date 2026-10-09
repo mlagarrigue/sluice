@@ -69,6 +69,53 @@ jobs:
       - name: Build
         run: go build ./...
 
+  # The coverage figure behind the README badge, computed here rather than by
+  # a third-party service: nothing outside GitHub and pkg.go.dev reads the
+  # repository. The total is written as a shields.io "endpoint" JSON file on
+  # the orphan branch `badges`, which holds that one file and no history
+  # (each run force-pushes a fresh root commit), so the badge reads it from
+  # raw.githubusercontent.com. The workflow's own token can write the branch;
+  # no extra secret is involved. Only main's pushes publish: a pull request
+  # must not move the figure before it is merged.
+  coverage:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+
+      # Without SLUICE_PG the integration tests skip, so the figure is the
+      # scripted-server suite's: the same code paths the test job measures,
+      # minus the few lines that only a live server reaches.
+      - name: Measure
+        run: |
+          go test -coverprofile=cover.out ./...
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')
+          echo "total=$total" >> "$GITHUB_ENV"
+          echo "coverage: $total%"
+
+      - name: Publish the badge endpoint
+        run: |
+          # shields.io's endpoint schema: https://shields.io/badges/endpoint-badge
+          color=$(awk -v t="$total" 'BEGIN {
+            if (t >= 90) print "brightgreen"; else if (t >= 80) print "green";
+            else if (t >= 70) print "yellowgreen"; else if (t >= 60) print "yellow";
+            else print "orange" }')
+          mkdir badges && cd badges
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' \
+            "$total" "$color" > coverage.json
+          git init -q -b badges
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add coverage.json
+          git commit -q -m "ci: coverage $total% at ${GITHUB_SHA::7}"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" badges
+
   # net/quic/udp is the one package whose code differs per operating system:
   # socket options with a different name and errno on each, which a Linux
   # run never executes. This job runs that package, and only it, on the two
