@@ -1,0 +1,65 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Nightly. The seed corpora already run on every push as ordinary tests;
+    # this is the part that searches beyond them, which no PR run has time for.
+    - cron: '43 2 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Time per fuzz target (go test -fuzztime)'
+        default: '30s'
+
+permissions:
+  contents: read
+
+jobs:
+  # Targets are discovered, not listed by hand: a fuzz target added without
+  # touching this file is fuzzed the next night rather than never.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 'stable'
+      - id: list
+        run: |
+          packages=$(.github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u | jq -R . | jq -sc .)
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "$packages"
+
+  # One job per package so the largest corpus (postgres) does not serialise
+  # behind the others, and one package's finding does not cancel the rest.
+  fuzz:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.discover.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 'stable'
+
+      - name: Fuzz every target in ${{ matrix.package }}
+        env:
+          FUZZTIME: ${{ inputs.fuzztime || '30s' }}
+          FUZZ_OUT: fuzz-failures
+        run: .github/scripts/fuzz.sh '${{ matrix.package }}'
+
+      # The reproducers only — the files the run added under testdata/fuzz.
+      # Committing one turns it into a regression test that runs on every push.
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-failures-${{ strategy.job-index }}
+          path: fuzz-failures/
+          if-no-files-found: ignore

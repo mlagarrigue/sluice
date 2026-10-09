@@ -1,0 +1,32 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    container_name: sluice-dev
+    volumes:
+      - ..:/workspaces/sluice:cached
+    command: sleep infinity
+    # The integration suite reads these; without them it skips, cleanly.
+    environment:
+      SLUICE_PG: postgres:5432
+      SLUICE_PG_USER: sluice
+      SLUICE_PG_DB: sluice
+      SLUICE_PG_PASSWORD: sluicepass
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The same server CI runs, initialised by the same file.
+  postgres:
+    image: postgres:17
+    container_name: sluice-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

@@ -1,0 +1,17 @@
+{
+  "name": "sluice",
+  "dockerComposeFile": "compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/sluice",
+  "remoteUser": "dev",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  },
+
+  // No GOFLAGS here: the default -mod=readonly fails a build that would
+  // rewrite go.mod and leaves that change to `go mod tidy`.
+  "postCreateCommand": "go mod download && go version"
+}

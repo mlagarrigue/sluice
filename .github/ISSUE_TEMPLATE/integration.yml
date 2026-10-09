@@ -1,0 +1,74 @@
+name: Integration request
+description: Ask for a provider or a consumer for an external system (a database, a queue, a file format, a protocol)
+labels: ["integration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sluice.go reads from and writes to external systems through
+        *providers* (a source of batches) and *consumers* (a sink of
+        batches). Only PostgreSQL has one today. This template is how the
+        next ones get chosen; docs/README.md says what exists and what the
+        batch model asks of an integration.
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: >
+        Every production dependency is a recorded decision, and the goal is
+        the least useless code. Can this be built on the standard library
+        (plus golang.org/x/crypto)? If not, which maintained module would it
+        need, what does that module pull in, and why is writing it here the
+        worse option?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Direction
+      options:
+        - Provider (read batches from the system)
+        - Consumer (write batches to the system)
+        - Both
+    validations:
+      required: true
+
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Name and version, and the protocol or format it speaks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: batch
+    attributes:
+      label: What a batch buys
+      description: >
+        What the system offers that handles N items at once (a bulk read, a
+        multi-row insert, a COPY, a multiplexed protocol), and roughly what
+        it costs per item against one call per item. A number from your own
+        setup is better than a guess.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use
+    attributes:
+      label: Your use
+      description: >
+        What you would build with it, and at what volume. Say if you would
+        test an early version against a real instance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing
+    attributes:
+      label: Existing Go clients
+      description: >
+        The clients people use today for this system, and what they do that
+        a batch-shaped one could not.

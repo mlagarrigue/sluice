@@ -1,0 +1,23 @@
+name: Release
+
+# release-please reads the conventional commits on main, keeps a release
+# pull request up to date with the next version and its CHANGELOG, and tags
+# the release when that pull request is merged. In v0 a `feat!` bumps the
+# minor and a `feat` the patch (release-please-config.json); v1.0.0 is
+# tagged by hand, once.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

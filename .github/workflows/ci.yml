@@ -1,0 +1,292 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets a run be re-triggered by hand without an empty commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_LATEST: 'stable'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range: the minimum go.mod promises, and
+        # whatever is current. Everything between is interpolation. While the
+        # floor is the current release the two legs run the same toolchain;
+        # 'stable' is kept so the newest release is tested the day it ships,
+        # without anyone having to remember to add it.
+        #
+        # Tests run on Linux only, but the code is not Linux-only: net/quic/udp
+        # carries per-OS socket options (configure_windows.go,
+        # configure_darwin.go). The cross-OS vet steps below type-check those
+        # files and their tests, which a Linux build never compiles.
+        go: ['1.26', 'stable']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Vet
+        run: go vet ./...
+
+      - name: Vet (Windows, macOS)
+        run: |
+          GOOS=windows go vet ./...
+          GOOS=darwin go vet ./...
+          # vet type-checks the Windows test; linking it proves it builds.
+          GOOS=windows go test -c -o /dev/null ./net/quic/udp/
+
+      # -shuffle=on randomises test order so a test that only passes after
+      # another one has run fails here instead of on a contributor's machine.
+      # The seed is printed at the top of the output: rerun with
+      # -shuffle=<seed> to reproduce.
+      - name: Test
+        run: go test -race -shuffle=on ./...
+
+      # The per-stage budget is a timing assertion, so it is skipped under
+      # -race: the detector instruments every memory access and the measurement
+      # would report the instrumentation rather than the code. It keeps the
+      # fastest of many short rounds, so a noisy neighbour on the runner
+      # inflates some rounds but not the minimum.
+      - name: Performance budget
+        run: go test -run TestStageBudget ./internal/bench/
+
+      - name: Build
+        run: go build ./...
+
+  # The comparison module lives on the benchmarks branch, beside the root
+  # module as benchmarks/, and is excluded from the root's ./... on purpose.
+  # One workflow serves both branches: here the steps are skipped when the
+  # module is absent, so the file never diverges between them.
+  benchmarks-module:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: hashFiles('benchmarks/go.mod') != ''
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache-dependency-path: benchmarks/go.sum
+      - name: Vet
+        if: hashFiles('benchmarks/go.mod') != ''
+        working-directory: benchmarks
+        run: go vet ./...
+
+  # The connector against a real server. Everything else in database/postgres/ talks
+  # to a scripted server, which cannot disagree with the implementation about
+  # what the protocol means. The integration tests skip when SLUICE_PG is
+  # unset, so this job is the only place they run.
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Pinned major: a new major changes catalogs and error texts, and that
+        # should arrive as a reviewed bump, not overnight.
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    # Same shape as internal/bench/scripts/pgdev.sh prints. The image's
+    # default host authentication is scram-sha-256, so SCRAM runs for real.
+    env:
+      SLUICE_PG: 127.0.0.1:5432
+      SLUICE_PG_USER: sluice
+      SLUICE_PG_DB: sluice
+      SLUICE_PG_PASSWORD: sluicepass
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+
+      # A non-superuser role, as pgdev.sh creates: row-level security does
+      # not apply to a superuser, and the RLS suites skip rather than pass
+      # vacuously when run as one.
+      - name: Create the test role and database
+        run: |
+          docker exec -i ${{ job.services.postgres.id }} \
+            psql -U postgres -v ON_ERROR_STOP=1 < .devcontainer/postgres/init.sql
+
+      # A skipped integration test reads exactly like a passing one, so the
+      # skips that mean "no server" or "wrong role" fail the job.
+      - name: Integration tests
+        shell: bash
+        run: |
+          go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
+          if grep -E 'SLUICE_PG is not set|is a superuser' test.log; then
+            echo "::error::integration tests skipped: the server or the role is not what they need" >&2
+            exit 1
+          fi
+
+  # Every production dependency is a recorded decision (ADR 0002): today the
+  # standard library plus golang.org/x/crypto (which brings golang.org/x/sys
+  # for CPU feature detection), nothing else. Checked two ways: go.mod may
+  # require nothing beyond that allowlist, and no non-test package in the
+  # build graph may come from anywhere else.
+  deps:
+    runs-on: ubuntu-latest
+    # A go.work at the root would make `go list -deps ./...` resolve through
+    # the workspace rather than through this module's go.mod — pulling in the
+    # comparison module of the benchmarks branch and every competitor it pins
+    # — and this job would go
+    # green while the isolation it exists to check was gone.
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+
+      - name: go.mod requires only the allowlist
+        run: |
+          # go.mod's require lines, not `go list -m all`: the module graph also
+          # carries what x/crypto's own go.mod names (x/net, x/term, x/text)
+          # without any package of theirs being built, and go.sum does not
+          # even list them. Read from .Require only: every "Path" in the JSON
+          # would also take in tool, exclude and replace entries, which are
+          # not requirements and would fail the job for the wrong reason.
+          json=$(go mod edit -json)
+          extra=$(jq -r '.Require[]?.Path' <<<"$json" \
+            | grep -vE '^golang\.org/x/(crypto|sys)$' || true)
+          if [ -n "$extra" ]; then
+            echo "::error file=go.mod::modules outside the allowlist (golang.org/x/crypto and the x/sys it brings):" >&2
+            echo "$extra" >&2
+            exit 1
+          fi
+          # A replace directive swaps where an allowlisted path's source comes
+          # from, which neither check here would see under the same name.
+          replaced=$(jq -r '.Replace[]? | "\(.Old.Path) => \(.New.Path)"' <<<"$json")
+          if [ -n "$replaced" ]; then
+            echo "::error file=go.mod::replace directives redirect a dependency's source:" >&2
+            echo "$replaced" >&2
+            exit 1
+          fi
+
+      - name: No imports outside the allowlist
+        run: |
+          module=$(go list -m)
+          external=$(go list -deps ./... \
+            | grep -E '^[^/]+\.[^/]+/' \
+            | grep -v "^${module}\(/\|$\)" \
+            | grep -vE '^golang\.org/x/(crypto|sys)(/|$)' || true)
+          if [ -n "$external" ]; then
+            echo "::error::packages outside the allowlist in the dependency graph:" >&2
+            echo "$external" >&2
+            exit 1
+          fi
+
+  # Nothing personal enters the repository (scripts/check-hygiene.sh), and
+  # the exported API does not break without a commit saying so
+  # (scripts/check-api.sh). Both read the history, hence the full fetch.
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+      - name: No tool traces, no attributions
+        run: scripts/check-hygiene.sh
+      - name: Commit messages, links, decision records
+        run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList' .
+      - name: Exported API against the last tag
+        if: github.event_name == 'pull_request'
+        run: scripts/check-api.sh ${{ github.event.pull_request.base.sha }}
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
+      # Pinned, like golangci-lint below and in the devcontainer: two
+      # gofumpt releases have disagreed on the same file, and @latest would
+      # turn the next one into a red build nobody changed code for.
+      - name: gofumpt
+        run: |
+          go install mvdan.cc/gofumpt@v0.12.0
+          unformatted=$(gofumpt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofumpt-formatted:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
+      # Runs the harness to catch compile breakage and crashes. Absolute CI
+      # timings are too noisy to gate on — the reference figures come from a
+      # controlled run, recorded in docs/benchmarks.md — but *relative*
+      # regressions are gated by the paired job below, whose protocol cancels
+      # the noise instead of trusting the runner.
+      - name: Benchmarks (smoke)
+        run: go test -run=XXX -bench=. -benchtime=10x ./internal/bench/
+
+  # The regression gate the budget check cannot be: TestStageBudget guards an
+  # absolute ceiling with a tolerance wide enough for runner variance, so a
+  # change can regress by half the budget and still pass it. This job builds
+  # the PR tree and its merge base, runs them as interleaved paired rounds on
+  # one core, and fails on any benchmark the sign test declares SLOWER —
+  # pairing cancels the drift shared runners are famous for, and one wild
+  # round cannot swing a sign test. The gated set is curated to
+  # single-goroutine hot paths; the concurrent operators are measured locally
+  # where the core count means something (see gate.sh).
+  bench-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The gate builds the merge base too.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
+      - name: Paired regression gate against the merge base
+        run: internal/bench/scripts/gate.sh ${{ github.event.pull_request.base.sha }}

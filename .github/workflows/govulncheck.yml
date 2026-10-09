@@ -1,0 +1,35 @@
+name: Vulnerability check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily: an advisory is published against code that has not changed, so
+    # waiting for the next commit would leave it unreported. The standard
+    # library and golang.org/x/crypto (with the x/sys it brings) are the whole
+    # attack surface, and both get advisories.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          # The current release rather than go.mod's 1.26.0: a standard
+          # library advisory is fixed in a patch release, and checking the
+          # .0 floor would report every one of them forever. What matters is
+          # whether the toolchain a user installs today is affected.
+          go-version: 'stable'
+      # The root module only. The comparison module on the benchmarks branch
+      # pins competitors; it never ships, and its advisories are theirs.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

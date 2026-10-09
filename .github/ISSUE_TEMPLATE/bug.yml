@@ -1,0 +1,70 @@
+name: Bug
+description: Something behaves differently from what is documented
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - core
+        - join
+        - window
+        - parallel
+        - distinct
+        - postgres
+        - quic
+        - httpstream
+        - web
+        - gateway
+        - diagnostics
+        - bench
+        - docs
+        - ci
+        - devcontainer
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: >
+        What you observed, and what the documentation led you to expect.
+        The documentation starts at docs/README.md.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        A failing test or a short program. Runnable code is worth more than a
+        description.
+      render: go
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Module version or commit SHA, your Go version, your OS.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Does this break a stated guarantee?
+      description: >
+        The architecture lists the guarantees the library makes (reach it
+        from docs/README.md, "Security — verifiable properties"). Tick any
+        that apply.
+      options:
+        - label: Unbounded allocation where a bound was promised
+        - label: A panic crossing a public boundary other than through Try
+        - label: A goroutine or iterator leak
+        - label: Resources not released on early stop
+        - label: Silently wrong results

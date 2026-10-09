@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # The production dependencies (golang.org/x/crypto, with the x/sys it
+  # brings). A bump that raises the go directive past the oldest version CI
+  # builds is caught by TestGoModVersionMatchesTheOldestCIBuild, not merged
+  # blindly.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
