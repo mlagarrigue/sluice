@@ -60,9 +60,11 @@ jobs:
       # -race: the detector instruments every memory access and the measurement
       # would report the instrumentation rather than the code. It keeps the
       # fastest of many short rounds, so a noisy neighbour on the runner
-      # inflates some rounds but not the minimum.
+      # inflates some rounds but not the minimum. The allocation ceiling
+      # joins it: the detector also drops sync.Pool entries at random, which
+      # turns an allocation count into a fraction (see render_test.go).
       - name: Performance budget
-        run: go test -run TestStageBudget ./internal/bench/
+        run: go test -run 'TestStageBudget|TestRenderAllocationCeiling' ./internal/bench/
 
       - name: Build
         run: go build ./...
