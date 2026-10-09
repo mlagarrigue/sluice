@@ -1,9 +1,9 @@
 # Experimental
 
-Four packages carry the **experimental** label, in the first sentence of
-their documentation: `net/httpstream`, `net/quic`, `web/stream` and
-`pushdown`. This page first says what the word means here, then what each
-one does and what not to expect from it.
+Five packages carry the **experimental** label, in the first sentence of
+their documentation: `net/httpstream`, `net/quic` and its helper
+`net/quic/udp`, `web/stream` and `pushdown`. This page first says what the
+word means here, then what each one does and what not to expect from it.
 
 ## What "experimental" means
 
@@ -101,6 +101,11 @@ a connection with no credit at all, unable to send anything.
 > algorithm (ChaCha20-Poly1305) that `crypto/tls` uses but does not expose.
 > It is for this that the project depends on `golang.org/x/crypto`, its only
 > module outside the standard library.
+
+`net/quic/udp` is its helper, experimental with it: it opens the UDP socket
+with the options a QUIC endpoint needs (no IP fragmentation, one IPv6 flow
+label per path) and, on Linux, lets a server on a host with several
+addresses answer from the address a datagram reached.
 
 What is missing is stated: **key update** (RFC 9001 §6, changing the
 encryption keys mid-connection) is not implemented; a peer that does it

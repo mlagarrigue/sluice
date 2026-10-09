@@ -19,8 +19,10 @@ import (
 //
 // Nothing cryptographic is written here. The key schedule is HKDF from
 // [crypto/hkdf] with the labels §5.1 publishes, the packet protection is
-// AES-128-GCM from [crypto/cipher], and header protection is one AES block
-// over a sample of the ciphertext. What this file contributes is the order
+// the negotiated suite's AEAD (AES-GCM from [crypto/cipher] or
+// ChaCha20-Poly1305 from golang.org/x/crypto), and header protection is one
+// block of that suite's cipher over a sample of the ciphertext. What this
+// file contributes is the order
 // the pieces go in, which is the part that can be got wrong and the part a
 // test can check.
 

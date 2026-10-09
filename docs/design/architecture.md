@@ -1632,7 +1632,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | # | Guarantee | Verification |
 |---|---|---|
 | S1 | No unbounded allocation. Every bound is a required parameter. | Overflow → error, not OOM |
-| S2 | No `panic` crosses a public boundary. | Fuzzing of the parsers — `Path.JSONPointer` covered |
+| S2 | No `panic` crosses a public boundary, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzing of the parsers — `Path.JSONPointer` covered; every sentinel goes through one constructor |
 | S3 | Restrictive default limits. | Review of the defaults |
 | S4 | `unsafe` forbidden except under a named audit. | `go vet` + review |
 | S5 | Mandatory timeouts on all I/O. | Silent connection → released |

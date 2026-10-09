@@ -1,5 +1,6 @@
-// Package udp opens UDP sockets configured the way a QUIC endpoint needs
-// them, which [net] alone cannot express.
+// Package udp is experimental, as the [quic] package it serves is: it opens
+// UDP sockets configured the way a QUIC endpoint needs them, which [net]
+// alone cannot express.
 //
 // RFC 9000 §14 forbids IP fragmentation of QUIC datagrams and asks that the
 // IPv4 Don't Fragment bit be set "if possible"; §9.7 asks that IPv6 flow

@@ -121,11 +121,14 @@
 // # On the cryptography
 //
 // None of it is invented here. The key schedule is HKDF from [crypto/hkdf]
-// with the labels RFC 9001 §5.1 publishes, the packet protection is AES-GCM
-// from [crypto/cipher], and the header protection is AES-ECB over a sample,
-// as §5.4 specifies. What this package contributes is the plumbing, and the
-// plumbing is pinned two ways: Appendix A.1's published derivation vectors,
-// and seal/open round trips for what the vectors do not reach.
+// with the labels RFC 9001 §5.1 publishes, the packet protection is the
+// AEAD of the negotiated suite — AES-GCM from [crypto/cipher], or
+// ChaCha20-Poly1305 from golang.org/x/crypto, the module's one dependency
+// (ADR 0002) — and the header protection is one block of the same suite's
+// cipher over a sample, as §5.4 specifies. What this package contributes is
+// the plumbing, and the plumbing is pinned two ways: Appendix A.1's
+// published derivation vectors, and seal/open round trips for what the
+// vectors do not reach.
 package quic
 
 import (
