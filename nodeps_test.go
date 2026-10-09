@@ -114,12 +114,39 @@ func TestGoModVersionMatchesTheOldestCIBuild(t *testing.T) {
 			"if the workflow changed shape, update this test's regexp with it")
 	}
 
-	if got, want := majorMinor(string(declared[1])), majorMinor(string(matrix[1])); got != want {
+	floor := majorMinor(string(declared[1]))
+	if want := majorMinor(string(matrix[1])); floor != want {
 		t.Errorf("go.mod declares go %s but CI builds the oldest supported version as %s.\n"+
 			"If the bump was deliberate, move the CI matrix with it. If it appeared on its own, "+
 			"a dependency that needs a newer Go was resolved — golang.org/x/crypto raises its go line "+
 			"with each Go release — and the choice between pinning it and dropping the older Go is a decision, "+
-			"not a side effect.", got, want)
+			"not a side effect.", floor, want)
+	}
+
+	// The format and lint jobs pin a release by hand (their linters are built
+	// with it); 'stable' legs are the other end of the range and are not
+	// floors. Every literal pin is the floor or the matrix lies about it.
+	for _, pin := range regexp.MustCompile(`go-version: '(\d[^']*)'`).FindAllSubmatch(workflow, -1) {
+		if got := majorMinor(string(pin[1])); got != floor {
+			t.Errorf("ci.yml pins go-version %s in a job while the floor is %s; move them together", got, floor)
+		}
+	}
+
+	// The floor is published for contributors; the sentence must name the
+	// same release the build enforces, or the policy is only stated.
+	contributing, err := os.ReadFile("CONTRIBUTING.md")
+	if err != nil {
+		t.Fatalf("reading CONTRIBUTING.md: %v", err)
+	}
+	if want := "Go " + floor + " today"; !strings.Contains(string(contributing), want) {
+		t.Errorf("CONTRIBUTING.md does not say %q under \"Releases and versions\"; the published floor must follow go.mod", want)
+	}
+	started, err := os.ReadFile("docs/guide/getting-started.md")
+	if err != nil {
+		t.Fatalf("reading docs/guide/getting-started.md: %v", err)
+	}
+	if want := "Go " + floor + " or newer"; !strings.Contains(string(started), want) {
+		t.Errorf("docs/guide/getting-started.md does not say %q next to go get; the published floor must follow go.mod", want)
 	}
 }
 

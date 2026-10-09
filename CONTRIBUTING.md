@@ -236,6 +236,13 @@ In review, comments follow
   published by mistake is withdrawn with the `retract` directive in `go.mod`.
 - Deprecating: `// Deprecated: use X instead.` on the symbol, kept at least
   one minor before removal.
+- Go versions: the `go` line of `go.mod` is the floor, Go 1.26 today, and
+  CI builds every pull request on that floor and on the latest stable
+  release. Nothing in between is tested; it is interpolation. Raising the
+  floor is a deliberate `build` commit that moves `go.mod`, the CI matrix
+  and this line together; a test (`TestGoModVersionMatchesTheOldestCIBuild`)
+  fails when one of them moves alone, which is how a dependency bump that
+  silently needs a newer Go gets caught.
 
 ## What is genuinely useful right now
 
