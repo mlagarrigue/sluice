@@ -243,7 +243,10 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 			t.Errorf("%s: subject %q is not `<type>(<scope>): <subject>` without a trailing period", sha, subj)
 			continue
 		}
-		if m[3] != "" && !slices.Contains(scopes, m[3]) {
+		// release-please's own commits are "chore(main): release X.Y.Z";
+		// that scope is its, not ours, and only that shape is let through.
+		releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
+		if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
 			t.Errorf("%s: scope %q is not in the closed list", sha, m[3])
 		}
 		if len(subj) > 72 {
