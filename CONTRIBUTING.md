@@ -167,9 +167,22 @@ transfer between sessions; only ratios within a session carry.
 - **Everything in the repository is in English**: code, comments, tests,
   documentation, commit messages. Discussion may happen in any language; the
   repository does not.
-- **A constructor panics on a programming error** (nil argument, impossible
-  configuration) **and returns an `error` on an environment error** (socket,
-  server, file).
+- **A constructor panics on a programming error and returns an `error` on
+  an environment error.** The test is where the bad value comes from. A
+  value written in the program — a nil function, a non-positive size, a
+  route pattern — cannot be wrong in production without being wrong in the
+  first test, so the constructor panics, naming the argument, as
+  `regexp.MustCompile` and `http.ServeMux` do: `gateway.New` on a zero
+  `Within`, `stream.NewRouter` on a pattern it cannot read. A value that
+  reaches the program at run time — a socket, a secret, a certificate, a
+  server's reply — can be wrong on one machine and right on the next, so the
+  constructor returns an `error` for the caller to report: `quic.NewListener`,
+  `web.NewHMACVerifier` on a short secret. A constructor that can fail on its
+  environment returns an `error` for all its refusals, programming errors
+  included, so the caller has one path to handle rather than two. The reason
+  is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
+  program itself wrote is a silent failure waiting for its first request,
+  while a panic at startup is a crash with a name.
 - **The godoc of every exported symbol starts with its name**, says what it
   retains and what it costs where that matters, and links to the
   architecture's named anchors, never to section numbers.

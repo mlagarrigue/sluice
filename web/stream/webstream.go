@@ -28,7 +28,7 @@
 //
 // A handler over these stages reads top to bottom:
 //
-//	rt, _ := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
+//	rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
 //	handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 //	    ex := stream.Exchanges(nil, b)
 //	    rt.Route(ex)

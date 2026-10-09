@@ -19,16 +19,13 @@ func FuzzRoute(f *testing.F) {
 		f.Add("PATCH", s)
 		f.Add("HEAD", s)
 	}
-	rt, err := NewRouter(
+	rt := NewRouter(
 		Route{Method: "PATCH", Pattern: "/orders/{order}/lines/{line}"},
 		Route{Method: "GET", Pattern: "/orders/{order}"},
 		Route{Method: "GET", Pattern: "/health"},
 		Route{Method: "GET", Pattern: "/"},
 		Route{Method: "DELETE", Pattern: "/a/{x}"},
 	)
-	if err != nil {
-		f.Fatal(err)
-	}
 	f.Fuzz(func(t *testing.T, method, target string) {
 		ex := []Exchange{exchangeFor(method, target)}
 		rt.Route(ex)

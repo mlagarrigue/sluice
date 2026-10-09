@@ -151,7 +151,7 @@ principal, a refusal) travels in the element itself, an `Exchange` that
 wraps the request.
 
 ```go
-rt, _ := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
+rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
 handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
     ex := stream.Exchanges(nil, b)       // one envelope per request
     rt.Route(ex)                         // which route for each

@@ -219,10 +219,7 @@ func TestStreamHandler(t *testing.T) {
 		return Result{Line: line, Accepted: len(diags) == 0 || diags[0].Severity < diagnostics.Error, Diagnostics: diags, Affordances: remedies}, nil
 	})
 	v := tokens{"acme": {Subject: "u", Tenant: "acme"}, "nobody": {Subject: "u"}}
-	h, err := StreamHandler(s, v, web.ClaimAuthorizer{}, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := StreamHandler(s, v, web.ClaimAuthorizer{}, 5*time.Second)
 
 	req := func(method, target, tok, body string) httpstream.Request {
 		r := httpstream.Request{Method: []byte(method), Target: []byte(target), Body: []byte(body)}

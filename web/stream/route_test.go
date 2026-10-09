@@ -16,15 +16,11 @@ func exchangeFor(method, target string) Exchange {
 
 func table(t *testing.T) *Router {
 	t.Helper()
-	rt, err := NewRouter(
+	return NewRouter(
 		Route{Method: "PATCH", Pattern: "/orders/{order}/lines/{line}"},
 		Route{Method: "GET", Pattern: "/orders/{order}"},
 		Route{Method: "GET", Pattern: "/health"},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rt
 }
 
 func TestRouteMatches(t *testing.T) {
@@ -148,13 +144,10 @@ func TestRouteHeadSendsNoBody(t *testing.T) {
 // An explicit HEAD route is preferred over the GET it would otherwise borrow,
 // wherever it sits in the table.
 func TestRouteHeadPrefersItsOwnRoute(t *testing.T) {
-	rt, err := NewRouter(
+	rt := NewRouter(
 		Route{Method: "GET", Pattern: "/a"},
 		Route{Method: "HEAD", Pattern: "/a"},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ex := []Exchange{exchangeFor("HEAD", "/a")}
 	rt.Route(ex)
 	if ex[0].Route != 1 {
@@ -166,13 +159,10 @@ func TestRouteHeadPrefersItsOwnRoute(t *testing.T) {
 // /a/b/c, each matches paths the other does not — are both reachable, and the
 // overlap goes to the first. A row covered whole is refused by NewRouter.
 func TestRouteFirstMatchWins(t *testing.T) {
-	rt, err := NewRouter(
+	rt := NewRouter(
 		Route{Method: "GET", Pattern: "/a/{x}/c"},
 		Route{Method: "GET", Pattern: "/a/b/{y}"},
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ex := []Exchange{exchangeFor("GET", "/a/b/c"), exchangeFor("GET", "/a/b/d")}
 	rt.Route(ex)
 	if ex[0].Route != 0 {
@@ -202,13 +192,29 @@ func TestNewRouterRefusesWhatItCannotRead(t *testing.T) {
 		{Method: "", Pattern: "/orders"},
 	}
 	for _, r := range bad {
-		if _, err := NewRouter(r); err == nil {
+		if _, err := compile([]Route{r}); err == nil {
 			t.Errorf("NewRouter accepted %+v", r)
 		}
 	}
-	if _, err := NewRouter(); err == nil {
+	if _, err := compile(nil); err == nil {
 		t.Error("NewRouter accepted an empty table")
 	}
+}
+
+// The table is written in the program, so a bad row is a programming error
+// and NewRouter panics, naming the row, rather than returning an error a
+// caller could ignore.
+func TestNewRouterPanicsOnABadTable(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("NewRouter returned instead of panicking")
+		}
+		if s, ok := r.(string); !ok || !strings.Contains(s, "/orders/{}") {
+			t.Errorf("panic = %v, want the bad pattern named", r)
+		}
+	}()
+	NewRouter(Route{Method: "GET", Pattern: "/orders/{}"})
 }
 
 // First match wins, so a row an earlier row of the same method covers is dead
@@ -224,7 +230,7 @@ func TestNewRouterRefusesAnUnreachableRoute(t *testing.T) {
 		{"duplicate", []Route{{"GET", "/health"}, {"POST", "/health"}, {"GET", "/health"}}},
 		{"partly literal", []Route{{"PATCH", "/{t}/{id}"}, {"PATCH", "/orders/7"}}},
 	} {
-		if _, err := NewRouter(tc.routes...); err == nil || !strings.Contains(err.Error(), "unreachable") {
+		if _, err := compile(tc.routes); err == nil || !strings.Contains(err.Error(), "unreachable") {
 			t.Errorf("%s: err = %v, want the route refused as unreachable", tc.name, err)
 		}
 	}
@@ -240,7 +246,7 @@ func TestNewRouterRefusesAnUnreachableRoute(t *testing.T) {
 		// A wildcard never matches an empty segment, so /a/ stays reachable.
 		{"empty segment", []Route{{"GET", "/a/{x}"}, {"GET", "/a/"}}},
 	} {
-		if _, err := NewRouter(tc.routes...); err != nil {
+		if _, err := compile(tc.routes); err != nil {
 			t.Errorf("%s: a reachable table was refused: %v", tc.name, err)
 		}
 	}

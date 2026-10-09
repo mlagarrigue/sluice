@@ -392,13 +392,10 @@ func (s *Service) Close() error { return s.gw.Close() }
 // timeout bounds one batch's wait on the gateway, the deadline r.Context()
 // carried on the supported path; the handler has no request context because
 // the transport correlates by position, not by goroutine.
-func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Duration) (httpstream.Handler, error) {
-	rt, err := stream.NewRouter(
+func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Duration) httpstream.Handler {
+	rt := stream.NewRouter(
 		stream.Route{Method: "PATCH", Pattern: "/orders/{order}/lines/{line}"},
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	return func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		ex := stream.Exchanges(nil, b)
@@ -457,5 +454,5 @@ func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Du
 				"remedies": web.Remedies(o.Out.Affordances),
 			}
 		})
-	}, nil
+	}
 }
