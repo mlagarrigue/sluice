@@ -111,7 +111,7 @@ func TestH3The65thConcurrentStreamIsRefused(t *testing.T) {
 		t.Fatalf("failed = %v, want stream %d refused", failed, id65)
 	}
 	if !errors.Is(failed[0].Err, ErrH3Protocol) {
-		t.Errorf("refusal error = %v, want it to wrap ErrH3", failed[0].Err)
+		t.Errorf("refusal error = %v, want it to wrap ErrH3Protocol", failed[0].Err)
 	}
 	if failed[0].Code != h3RequestRejected {
 		t.Errorf("refused with code %#x, want H3_REQUEST_REJECTED (%#x)", failed[0].Code, h3RequestRejected)
@@ -400,7 +400,7 @@ func connErr(t *testing.T, err error, code uint64) {
 		t.Fatalf("connection error code %#x, want %#x", ce.Code, code)
 	}
 	if !errors.Is(err, ErrH3Protocol) {
-		t.Fatalf("err = %v, want it to wrap ErrH3", err)
+		t.Fatalf("err = %v, want it to wrap ErrH3Protocol", err)
 	}
 }
 

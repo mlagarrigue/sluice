@@ -289,7 +289,7 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 				t.Fatalf("Frames failed the connection over one stream: %v", err)
 			}
 			if len(failed) != 1 || !errors.Is(failed[0].Err, ErrH3Protocol) {
-				t.Fatalf("Frames reported %v, want one stream error wrapping ErrH3", failed)
+				t.Fatalf("Frames reported %v, want one stream error wrapping ErrH3Protocol", failed)
 			}
 			if failed[0].Code != h3MessageError {
 				t.Errorf("stream reset with code %#x, want H3_MESSAGE_ERROR (%#x)", failed[0].Code, h3MessageError)
@@ -592,7 +592,7 @@ func TestQPACKDecodesNeverIndexedLiterals(t *testing.T) {
 // but by then the peer had bought a full decode — ~50× the advertised header
 // budget per attempt. The literal is all 0xff, thirty ones of which are EOS:
 // decoding it at all fails with an HPACK Huffman error, so a refusal that is
-// ErrH3 and not that is what proves the budget check came first.
+// ErrH3Protocol and not that is what proves the budget check came first.
 func TestQPACKRefusesOversizedLiteralsBeforeDecoding(t *testing.T) {
 	const maxList = 1 << 10
 	d := newQPACKDecoder(nil, maxList)
@@ -877,7 +877,7 @@ func TestH3RefusesHostDisagreeingWithAuthority(t *testing.T) {
 		t.Fatalf("one malformed request failed the connection: %v", err)
 	}
 	if len(failed) != 1 || !errors.Is(failed[0].Err, ErrH3Protocol) {
-		t.Errorf("a request naming two hosts returned %v, want one stream error wrapping ErrH3", failed)
+		t.Errorf("a request naming two hosts returned %v, want one stream error wrapping ErrH3Protocol", failed)
 	}
 }
 
@@ -1501,7 +1501,7 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 	for _, name := range []string{"x bad", "x:y", "x\x00", ""} {
 		r := Response{Status: 200, Headers: []Header{{Name: []byte(name), Value: []byte("v")}}}
 		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}); !errors.Is(err, ErrH3Protocol) {
-			t.Errorf("h3, name %q: got %v, want ErrH3", name, err)
+			t.Errorf("h3, name %q: got %v, want ErrH3Protocol", name, err)
 		}
 		s := newBenchH2Server(H2Config{})
 		if _, err := s.appendHead(nil, 1, []byte("GET"), r, defaultMaxFrameSize); !errors.Is(err, ErrH2Protocol) {
@@ -1521,7 +1521,7 @@ func TestH3RefusesConnectionSpecificResponseFields(t *testing.T) {
 	for _, field := range []string{"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "content-length"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(field), Value: []byte("1")}}}
 		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, ErrH3Protocol) {
-			t.Errorf("%s: got %v, want ErrH3", field, err)
+			t.Errorf("%s: got %v, want ErrH3Protocol", field, err)
 		}
 	}
 }

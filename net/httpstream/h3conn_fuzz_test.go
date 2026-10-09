@@ -54,7 +54,7 @@ func fuzzFrameBatches(data []byte) [][]quic.Frame {
 }
 
 // isWellFormedH3Error reports whether err is one of this package's own named
-// errors — ErrH3 for the frame and request-shape refusals H3Assembler makes
+// errors — ErrH3Protocol for the frame and request-shape refusals H3Assembler makes
 // itself, ErrTooLarge for the bounds it enforces, or ErrHPACK, because QPACK
 // string decoding (qpackString, in h3.go) reuses HPACK's integer and Huffman
 // code and its errors with it. Anything else would mean a plain, unclassified
