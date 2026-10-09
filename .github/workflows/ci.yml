@@ -24,10 +24,11 @@ jobs:
         # 'stable' is kept so the newest release is tested the day it ships,
         # without anyone having to remember to add it.
         #
-        # Tests run on Linux only, but the code is not Linux-only: net/quic/udp
-        # carries per-OS socket options (configure_windows.go,
-        # configure_darwin.go). The cross-OS vet steps below type-check those
-        # files and their tests, which a Linux build never compiles.
+        # The whole suite runs on Linux only. The code is not Linux-only:
+        # net/quic/udp carries per-OS socket options (configure_windows.go,
+        # configure_darwin.go), which test-udp below runs on their own
+        # platforms. The cross-OS vet steps here type-check everything else
+        # for those targets, which a Linux build never compiles.
         go: ['1.26', 'stable']
     runs-on: ubuntu-latest
     steps:
@@ -43,8 +44,10 @@ jobs:
         run: |
           GOOS=windows go vet ./...
           GOOS=darwin go vet ./...
-          # vet type-checks the Windows test; linking it proves it builds.
+          # vet type-checks the per-OS tests; linking them proves they
+          # build on the floor toolchain too, which test-udp does not run.
           GOOS=windows go test -c -o /dev/null ./net/quic/udp/
+          GOOS=darwin go test -c -o /dev/null ./net/quic/udp/
 
       # -shuffle=on randomises test order so a test that only passes after
       # another one has run fails here instead of on a contributor's machine.
@@ -63,6 +66,25 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  # net/quic/udp is the one package whose code differs per operating system:
+  # socket options with a different name and errno on each, which a Linux
+  # run never executes. This job runs that package, and only it, on the two
+  # other platforms. Not the whole suite: PostgreSQL is not there, and the
+  # rest of the module is covered by the Linux job above.
+  test-udp:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: Test
+        run: go test -race -shuffle=on ./net/quic/udp/...
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.
