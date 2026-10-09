@@ -3,6 +3,7 @@ package sluice_test
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -231,29 +232,67 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 	if err != nil {
 		t.Skipf("not a git checkout: %v", err)
 	}
-	subject := regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
 	for rec := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x1e\n"), "\x1e\n") {
 		parts := strings.SplitN(rec, "\x00", 3)
 		if len(parts) < 2 {
 			continue
 		}
-		sha, subj := parts[0][:7], parts[1]
-		m := subject.FindStringSubmatch(subj)
-		if m == nil {
-			t.Errorf("%s: subject %q is not `<type>(<scope>): <subject>` without a trailing period", sha, subj)
-			continue
+		body := ""
+		if len(parts) == 3 {
+			body = parts[2]
 		}
-		// release-please's own commits are "chore(main): release X.Y.Z";
-		// that scope is its, not ours, and only that shape is let through.
-		releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
-		if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
-			t.Errorf("%s: scope %q is not in the closed list", sha, m[3])
+		for _, fault := range commitMessageFaults(parts[1], body) {
+			t.Errorf("%s: %s", parts[0][:7], fault)
 		}
-		if len(subj) > 72 {
-			t.Errorf("%s: subject is %d characters, 72 at most", sha, len(subj))
-		}
-		if len(parts) == 3 && regexp.MustCompile(`(?mi)^co-authored-by:`).MatchString(parts[2]) {
-			t.Errorf("%s: a Co-Authored-By trailer", sha)
+	}
+}
+
+var (
+	commitSubject = regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
+	commitTrailer = regexp.MustCompile(`(?mi)^co-authored-by:`)
+)
+
+// commitMessageFaults says what is wrong with one commit message, subject
+// and body apart, or nothing. release-please's own commits are
+// "chore(main): release X.Y.Z": that scope is its, not ours, and so is the
+// trailer naming the bot that opened the pull request — both are let
+// through on that one shape of subject and refused on every other.
+func commitMessageFaults(subj, body string) (faults []string) {
+	m := commitSubject.FindStringSubmatch(subj)
+	if m == nil {
+		return []string{fmt.Sprintf("subject %q is not `<type>(<scope>): <subject>` without a trailing period", subj)}
+	}
+	releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
+	if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
+		faults = append(faults, fmt.Sprintf("scope %q is not in the closed list", m[3]))
+	}
+	if len(subj) > 72 {
+		faults = append(faults, fmt.Sprintf("subject is %d characters, 72 at most", len(subj)))
+	}
+	if !releaseCommit && commitTrailer.MatchString(body) {
+		faults = append(faults, "a Co-Authored-By trailer")
+	}
+	return faults
+}
+
+// The release commit's trailer is let through for release-please's
+// commits alone: the same trailer under any other subject is still refused.
+func TestCommitMessageFaults(t *testing.T) {
+	const trailer = "Release PR.\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n"
+	for _, tc := range []struct {
+		subj, body string
+		want       int
+	}{
+		{"chore(main): release 0.1.1 (#11)", trailer, 0},
+		{"chore(main): release 0.1.1 (#11)", "", 0},
+		{"fix(web): bound the int conversion explicitly", "", 0},
+		{"fix(web): bound the int conversion explicitly", trailer, 1},
+		{"chore(main): tidy the release notes", trailer, 2},
+		{"docs: a trailing period.", "", 1},
+		{"feat(nowhere): an unknown scope", "", 1},
+	} {
+		if got := commitMessageFaults(tc.subj, tc.body); len(got) != tc.want {
+			t.Errorf("%q: %d faults %v, want %d", tc.subj, len(got), got, tc.want)
 		}
 	}
 }

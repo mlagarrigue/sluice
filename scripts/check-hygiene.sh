@@ -17,7 +17,11 @@ if git ls-files -z -- . ':!scripts/check-hygiene.sh' ':!repo_test.go' \
   echo "check-hygiene: the lines above carry an attribution" >&2
   status=1
 fi
-if git log --format='%h %b' | grep -iE "$pattern"; then
+# release-please's own commits, "chore(main): release X.Y.Z", name the bot
+# that opened the pull request; that one shape is skipped here, as in
+# repo_test.go, and every other commit is read.
+if git log --format='%h %b' --invert-grep --grep='^chore(main): release ' \
+    | grep -iE "$pattern"; then
   echo "check-hygiene: the commits above carry an attribution" >&2
   status=1
 fi
