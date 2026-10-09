@@ -79,7 +79,18 @@ func BenchmarkRenderOneExchange(b *testing.B) {
 // and cannot pass, on any toolchain. Allocation counts do not depend on
 // machine speed, so unlike the timing assertions in this package this needs
 // no -short gate.
+//
+// It is skipped under the race detector, which makes every sync.Pool drop
+// three Puts in four (sync/pool.go, race.Enabled): json.Marshal's pooled
+// encoder state then costs a fraction of an allocation per call, and both
+// AllocsPerRun and AllocsPerOp truncate their average to an integer. With
+// Go 1.27's encoding/json pooling more objects, the two truncations landed
+// one apart on a cost that had not changed. CI runs this test in the same
+// race-free step as TestStageBudget.
 func TestRenderAllocationCeiling(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector drops sync.Pool entries at random: allocation counts become fractional")
+	}
 	serve := func(i int) (int, any) {
 		return 200, renderBody{ID: int64(i), Label: "ok"}
 	}

@@ -19,15 +19,16 @@
 //     on IPv6 sockets so the kernel assigns a flow label from the flow
 //     hash of each datagram, which gives one label per peer address and a
 //     fresh one when the peer moves (§9.7). Tested here.
-//   - macOS: IP_DONTFRAG / IPV6_DONTFRAG. No flow-label control exists;
-//     the label stays whatever the kernel chooses. Written from the
-//     documented constants, NOT yet run on a Mac.
+//   - macOS: IP_DONTFRAG / IPV6_DONTFRAG. The kernel refuses, with
+//     EMSGSIZE at send time, a datagram larger than the outgoing interface
+//     MTU. No flow-label control exists; the label stays whatever the
+//     kernel chooses. Tested here.
 //   - Windows: IP_DONTFRAGMENT / IPV6_DONTFRAG. Winsock refuses, with
 //     WSAEMSGSIZE at send time, a datagram larger than the outgoing
 //     interface MTU. No flow-label control exists. SIO_UDP_CONNRESET is
-//     turned off, so an ICMP port-unreachable for an earlier send no
-//     longer surfaces as WSAECONNRESET on the next read (best-effort; the
-//     test exists but no CI job runs it on Windows).
+//     turned off, best-effort, so an ICMP port-unreachable for an earlier
+//     send no longer surfaces as WSAECONNRESET on the next read. Tested
+//     here.
 //   - Anything else: [Configure] returns [errors.ErrUnsupported] and
 //     changes nothing. The socket still works; it just may be fragmented.
 //

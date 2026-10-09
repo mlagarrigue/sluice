@@ -371,7 +371,11 @@ func TestH3OverARealConnection(t *testing.T) {
 
 	sizes := make(chan int, 4)
 	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	// Reaped before the next test starts, as in startH3.
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err
@@ -908,7 +912,11 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	defer func() { _ = clientPC.Close() }()
 
 	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	// Reaped before the next test starts, as in startH3.
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err
@@ -1145,7 +1153,11 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 
 	serverUp := make(chan error, 1)
 	largeSeen := make(chan struct{})
+	serverDone := make(chan struct{})
+	// Reaped before the next test starts, as in startH3.
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err
@@ -1265,7 +1277,11 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 
 	serverUp := make(chan error, 1)
 	got := make(chan int, 1)
+	serverDone := make(chan struct{})
+	// Reaped before the next test starts, as in startH3.
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err
@@ -1352,7 +1368,11 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	defer func() { _ = clientPC.Close() }()
 
 	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	// Reaped before the next test starts, as in startH3.
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err

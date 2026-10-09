@@ -394,3 +394,9 @@ func BenchmarkCoalesceWithinEmptyStream(b *testing.B) {
 		})
 	}
 }
+
+// The first garbage collection of the process starts the runtime's mark
+// worker goroutines, which runtime.NumGoroutine counts. Running one up
+// front keeps the goroutine baselines in this package from blaming a leak
+// on the runtime when that first cycle happens to land inside a test.
+func init() { runtime.GC() }
