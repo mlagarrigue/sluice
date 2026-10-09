@@ -74,10 +74,16 @@ Three reasons come up, and the difference matters:
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,
-  `macaddr`, `bit`) and arrays of the most frequent. **Missing** — not yet:
-  `money` (its scale depends on a server setting, a trap more than a type),
-  `tsvector`, ranges, composite types, and arrays of the remaining types.
-  Each addition needs vectors taken from a real server.
+  `macaddr`, `bit`). Thirteen of them — `bool`, `int2/4/8`, `float4/8`,
+  `text`, `bytea`, `uuid`, `timestamptz`, `timestamp`, `date`, `numeric` —
+  also have a one-dimensional array, the same array with NULL elements, and
+  a column scanner; the table in the [PostgreSQL guide](postgres.md#the-codecs-in-one-table)
+  says which has what. **Missing** — not yet: `money` (its scale depends on
+  a server setting, a trap more than a type), `tsvector`, ranges, composite
+  types, multi-dimensional arrays, and arrays and scanners of the other
+  types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
+  `macaddr`, `bit`) — on demand, as no use has asked for them yet. Each
+  addition needs vectors taken from a real server.
 - **TLS is yours.** The connector dials nothing and negotiates no TLS: you
   hand it an already open connection, encrypted or not. On purpose: which
   host, which certificate, which timeout are deployment decisions.

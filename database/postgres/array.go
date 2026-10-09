@@ -31,6 +31,11 @@ const (
 // connector with a hole in it. Encoders come with them for symmetry and
 // because a round trip is the cheapest test either half has.
 //
+// Every type here has four functions — plain and nullable, each way — so the
+// table in docs/guide/postgres.md reads the same on every row: a column that
+// is nullable in one schema is not nullable in another, and which one a
+// caller gets is not this package's to guess.
+//
 // They are built on one generic skeleton rather than copied six times. The
 // four hand-written ones are deliberately *not* converted to it: they sit on
 // the batched-read hot path, two of them are watched by the regression gate,
@@ -184,6 +189,16 @@ func DecodeFloat4Array(dst []float32, b []byte) ([]float32, error) {
 	return decodeArrayOf(dst, b, OIDFloat4, DecodeFloat4)
 }
 
+// AppendNullableFloat4Array appends a real[] whose elements may be NULL.
+func AppendNullableFloat4Array(dst []byte, values []Null[float32]) []byte {
+	return appendNullableArrayOf(dst, OIDFloat4, values, AppendFloat4)
+}
+
+// DecodeNullableFloat4Array decodes a real[], NULLs included.
+func DecodeNullableFloat4Array(dst []Null[float32], b []byte) ([]Null[float32], error) {
+	return decodeNullableArrayOf(dst, b, OIDFloat4, DecodeFloat4)
+}
+
 // AppendFloat8Array appends a one-dimensional double precision[].
 func AppendFloat8Array(dst []byte, values []float64) []byte {
 	return appendArrayOf(dst, OIDFloat8, values, AppendFloat8)
@@ -224,11 +239,30 @@ func AppendByteaArray(dst []byte, values [][]byte) []byte {
 // Elements are copied out: the wire buffer is reused per batch, so a borrowed
 // slice would change under whoever kept it.
 func DecodeByteaArray(dst [][]byte, b []byte) ([][]byte, error) {
-	return decodeArrayOf(dst, b, OIDBytea, func(v []byte) ([]byte, error) {
-		out := make([]byte, len(v))
-		copy(out, v)
-		return out, nil
-	})
+	return decodeArrayOf(dst, b, OIDBytea, cloneBytes)
+}
+
+// AppendNullableByteaArray appends a bytea[] whose elements may be NULL.
+//
+// A NULL and an empty value are both zero-length on the wire and are not the
+// same thing: an empty bytea is a value of no bytes, a NULL is no value. The
+// element length is what tells them apart (0 against -1), and this is the
+// encoder that writes the second.
+func AppendNullableByteaArray(dst []byte, values []Null[[]byte]) []byte {
+	return appendNullableArrayOf(dst, OIDBytea, values, AppendBytea)
+}
+
+// DecodeNullableByteaArray decodes a bytea[], NULLs included. Elements are
+// copied out, for the reason [DecodeByteaArray] gives.
+func DecodeNullableByteaArray(dst []Null[[]byte], b []byte) ([]Null[[]byte], error) {
+	return decodeNullableArrayOf(dst, b, OIDBytea, cloneBytes)
+}
+
+// cloneBytes is the element decoder for bytea: a copy, never the wire buffer.
+func cloneBytes(v []byte) ([]byte, error) {
+	out := make([]byte, len(v))
+	copy(out, v)
+	return out, nil
 }
 
 // AppendTimestampTZArray appends a one-dimensional timestamptz[].
@@ -248,6 +282,17 @@ func DecodeTimestampTZArray(dst []time.Time, b []byte) ([]time.Time, error) {
 	return decodeArrayOf(dst, b, OIDTimestampTZ, DecodeTimestampTZ)
 }
 
+// AppendNullableTimestampTZArray appends a timestamptz[] whose elements may
+// be NULL.
+func AppendNullableTimestampTZArray(dst []byte, values []Null[time.Time]) []byte {
+	return appendNullableArrayOf(dst, OIDTimestampTZ, values, AppendTimestampTZ)
+}
+
+// DecodeNullableTimestampTZArray decodes a timestamptz[], NULLs included.
+func DecodeNullableTimestampTZArray(dst []Null[time.Time], b []byte) ([]Null[time.Time], error) {
+	return decodeNullableArrayOf(dst, b, OIDTimestampTZ, DecodeTimestampTZ)
+}
+
 // AppendTimestampArray appends a one-dimensional timestamp[] — without time
 // zone, which is a clock reading rather than an instant. Its bytes are
 // identical to timestamptz[]'s, which is why the element OID in the header is
@@ -261,6 +306,17 @@ func DecodeTimestampArray(dst []time.Time, b []byte) ([]time.Time, error) {
 	return decodeArrayOf(dst, b, OIDTimestamp, DecodeTimestamp)
 }
 
+// AppendNullableTimestampArray appends a timestamp[] whose elements may be
+// NULL.
+func AppendNullableTimestampArray(dst []byte, values []Null[time.Time]) []byte {
+	return appendNullableArrayOf(dst, OIDTimestamp, values, AppendTimestamp)
+}
+
+// DecodeNullableTimestampArray decodes a timestamp[], NULLs included.
+func DecodeNullableTimestampArray(dst []Null[time.Time], b []byte) ([]Null[time.Time], error) {
+	return decodeNullableArrayOf(dst, b, OIDTimestamp, DecodeTimestamp)
+}
+
 // AppendDateArray appends a one-dimensional date[].
 func AppendDateArray(dst []byte, values []time.Time) []byte {
 	return appendArrayOf(dst, OIDDate, values, AppendDate)
@@ -271,6 +327,16 @@ func DecodeDateArray(dst []time.Time, b []byte) ([]time.Time, error) {
 	return decodeArrayOf(dst, b, OIDDate, DecodeDate)
 }
 
+// AppendNullableDateArray appends a date[] whose elements may be NULL.
+func AppendNullableDateArray(dst []byte, values []Null[time.Time]) []byte {
+	return appendNullableArrayOf(dst, OIDDate, values, AppendDate)
+}
+
+// DecodeNullableDateArray decodes a date[], NULLs included.
+func DecodeNullableDateArray(dst []Null[time.Time], b []byte) ([]Null[time.Time], error) {
+	return decodeNullableArrayOf(dst, b, OIDDate, DecodeDate)
+}
+
 // AppendNumericArray appends a one-dimensional numeric[].
 func AppendNumericArray(dst []byte, values []Numeric) []byte {
 	return appendArrayOf(dst, OIDNumeric, values, AppendNumeric)
@@ -279,4 +345,18 @@ func AppendNumericArray(dst []byte, values []Numeric) []byte {
 // DecodeNumericArray decodes a one-dimensional numeric[], appending to dst.
 func DecodeNumericArray(dst []Numeric, b []byte) ([]Numeric, error) {
 	return decodeArrayOf(dst, b, OIDNumeric, DecodeNumeric)
+}
+
+// AppendNullableNumericArray appends a numeric[] whose elements may be NULL.
+//
+// As with float8, NULL and NaN are different absences: numeric has its own
+// NaN ([NumericNaN]), which is a value the column holds, and a NULL is no
+// value at all. Both survive the round trip as what they are.
+func AppendNullableNumericArray(dst []byte, values []Null[Numeric]) []byte {
+	return appendNullableArrayOf(dst, OIDNumeric, values, AppendNumeric)
+}
+
+// DecodeNullableNumericArray decodes a numeric[], NULLs included.
+func DecodeNullableNumericArray(dst []Null[Numeric], b []byte) ([]Null[Numeric], error) {
+	return decodeNullableArrayOf(dst, b, OIDNumeric, DecodeNumeric)
 }

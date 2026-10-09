@@ -1351,10 +1351,12 @@ reflection works **row by row and field by field**, which breaks vectorization.
 >
 > Measured at 47 ns/row on a six-column entity with a nullable string — a
 > different entity from the figures above, so not comparable to them. What the
-> number does say directly: **a nullable field costs an
+> number does say directly: **a nullable `*T` field costs an
 > allocation per row**, because the pointer the generated code takes escapes to
-> the heap. Pointers are for columns that are genuinely nullable, not for
-> optionality in the Go sense.
+> the heap. A `postgres.Null[T]` field says "may be NULL" without the pointer
+> and without the allocation (measured as a difference, present against
+> absent: zero). Pointers are for columns that are genuinely nullable and
+> callers that want a pointer, not for optionality in the Go sense.
 
 ### Collections: never a cartesian product
 

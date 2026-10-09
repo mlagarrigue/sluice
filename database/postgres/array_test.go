@@ -411,3 +411,97 @@ func TestGenericArraysMatchTheServerBytes(t *testing.T) {
 		}
 	})
 }
+
+// The six nullable pairs added for the codec table, held to what the int2
+// one is held to: the round trip keeps every element, NULL included; the
+// header's flag says a NULL is present; the plain decoder refuses the same
+// bytes rather than writing a zero; and an empty array decodes to nothing.
+func TestNullableArrayRoundTrips(t *testing.T) {
+	at := time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)
+	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
+	price, err := ParseNumeric("19.90")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nullableRoundTrip(t, "float4", OIDFloat4,
+		[]Null[float32]{Some[float32](1.5), {}, Some[float32](-math.MaxFloat32)},
+		AppendNullableFloat4Array, DecodeNullableFloat4Array, DecodeFloat4Array,
+		func(a, b float32) bool { return a == b })
+	nullableRoundTrip(t, "bytea", OIDBytea,
+		[]Null[[]byte]{Some([]byte{1, 2, 3}), {}, Some([]byte{})},
+		AppendNullableByteaArray, DecodeNullableByteaArray, DecodeByteaArray,
+		bytes.Equal)
+	nullableRoundTrip(t, "timestamptz", OIDTimestampTZ,
+		[]Null[time.Time]{Some(at), {}, Some(InfinityTime())},
+		AppendNullableTimestampTZArray, DecodeNullableTimestampTZArray, DecodeTimestampTZArray,
+		time.Time.Equal)
+	nullableRoundTrip(t, "timestamp", OIDTimestamp,
+		[]Null[time.Time]{Some(at), {}, Some(at.Add(time.Hour))},
+		AppendNullableTimestampArray, DecodeNullableTimestampArray, DecodeTimestampArray,
+		time.Time.Equal)
+	nullableRoundTrip(t, "date", OIDDate,
+		[]Null[time.Time]{Some(day), {}, Some(day.AddDate(0, 0, 1))},
+		AppendNullableDateArray, DecodeNullableDateArray, DecodeDateArray,
+		time.Time.Equal)
+	nullableRoundTrip(t, "numeric", OIDNumeric,
+		[]Null[Numeric]{Some(price), {}, Some(Numeric{Sign: NumericNaN})},
+		AppendNullableNumericArray, DecodeNullableNumericArray, DecodeNumericArray,
+		func(a, b Numeric) bool { return a.String() == b.String() })
+
+	// An empty bytea element and a NULL one are both zero-length and must
+	// not be confused: the first is a value, the second is not.
+	got, err := DecodeNullableByteaArray(nil, AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{}), {}}))
+	if err != nil || len(got) != 2 || !got[0].Valid || got[1].Valid {
+		t.Errorf("bytea empty-vs-NULL = %v, %v; want [valid empty, invalid]", got, err)
+	}
+	// What comes back is a copy, not a window on the wire buffer.
+	raw := AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{7})})
+	got, _ = DecodeNullableByteaArray(nil, raw)
+	raw[len(raw)-1] = 9
+	if got[0].Value[0] != 7 {
+		t.Error("a nullable bytea element aliased the wire buffer")
+	}
+
+	// The buffer survives a bad batch, like every other decoder's.
+	keepsBuffer(t, "nullable float4", AppendNullableFloat4Array(nil, []Null[float32]{Some[float32](1), {}, Some[float32](2)}), DecodeNullableFloat4Array)
+	keepsBuffer(t, "nullable bytea", AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{1}), {}, Some([]byte{2})}), DecodeNullableByteaArray)
+	keepsBuffer(t, "nullable timestamptz", AppendNullableTimestampTZArray(nil, []Null[time.Time]{Some(at), {}, Some(at)}), DecodeNullableTimestampTZArray)
+	keepsBuffer(t, "nullable timestamp", AppendNullableTimestampArray(nil, []Null[time.Time]{Some(at), {}, Some(at)}), DecodeNullableTimestampArray)
+	keepsBuffer(t, "nullable date", AppendNullableDateArray(nil, []Null[time.Time]{Some(day), {}, Some(day)}), DecodeNullableDateArray)
+	keepsBuffer(t, "nullable numeric", AppendNullableNumericArray(nil, []Null[Numeric]{Some(price), {}, Some(price)}), DecodeNullableNumericArray)
+}
+
+func nullableRoundTrip[T any](t *testing.T, name string, elem uint32, in []Null[T],
+	enc func([]byte, []Null[T]) []byte,
+	dec func([]Null[T], []byte) ([]Null[T], error),
+	plain func([]T, []byte) ([]T, error),
+	eq func(a, b T) bool,
+) {
+	t.Helper()
+	raw := enc(nil, in)
+	if flags := binary.BigEndian.Uint32(raw[4:8]); flags != 1 {
+		t.Errorf("%s: has-NULL flag = %d, want 1", name, flags)
+	}
+	if oid := binary.BigEndian.Uint32(raw[8:12]); oid != elem {
+		t.Errorf("%s: element OID = %d, want %d", name, oid, elem)
+	}
+	got, err := dec(nil, raw)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if len(got) != len(in) {
+		t.Fatalf("%s: round trip = %v, want %v", name, got, in)
+	}
+	for i := range in {
+		if got[i].Valid != in[i].Valid || (in[i].Valid && !eq(got[i].Value, in[i].Value)) {
+			t.Errorf("%s: element %d = %v, want %v", name, i, got[i], in[i])
+		}
+	}
+	if _, err := plain(nil, raw); !errors.Is(err, ErrCodec) {
+		t.Errorf("%s: the plain decoder over a NULL element = %v, want ErrCodec", name, err)
+	}
+	if got, err := dec([]Null[T]{{}}, enc(nil, nil)); err != nil || len(got) != 0 {
+		t.Errorf("%s: empty = %v, %v", name, got, err)
+	}
+}

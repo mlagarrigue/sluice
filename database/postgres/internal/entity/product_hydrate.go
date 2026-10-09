@@ -22,6 +22,7 @@ type ProductPlan struct {
 	colThumbnail int
 	colPrice     int
 	colReleased  int
+	colWeight    int
 }
 
 // BindProduct resolves the columns Product needs in the result described
@@ -34,6 +35,7 @@ func BindProduct(fields []postgres.Field) (ProductPlan, error) {
 	p.colThumbnail = -1
 	p.colPrice = -1
 	p.colReleased = -1
+	p.colWeight = -1
 	for i, f := range fields {
 		switch f.Name {
 		case "sku":
@@ -108,6 +110,18 @@ func BindProduct(fields []postgres.Field) (ProductPlan, error) {
 				return p, fmt.Errorf("column %q is OID %d, which Product.Released cannot hold", f.Name, f.TypeOID)
 			}
 			p.colReleased = i
+		case "weight":
+			if p.colWeight >= 0 {
+				// Two columns of this name in one result — an ordinary join
+				// does it. Last-wins binding would pick one silently, and
+				// which one is a property of the SELECT's column order:
+				// wrong data with no error. Alias one side instead.
+				return p, fmt.Errorf("column %q appears more than once in the result and Product.Weight cannot choose between them — alias one in the query", f.Name)
+			}
+			if f.TypeOID != postgres.OIDFloat8 {
+				return p, fmt.Errorf("column %q is OID %d, which Product.Weight cannot hold", f.Name, f.TypeOID)
+			}
+			p.colWeight = i
 		}
 	}
 	if p.colSKU < 0 {
@@ -127,6 +141,9 @@ func BindProduct(fields []postgres.Field) (ProductPlan, error) {
 	}
 	if p.colReleased < 0 {
 		return p, fmt.Errorf("the result has no column %q for Product.Released", "released")
+	}
+	if p.colWeight < 0 {
+		return p, fmt.Errorf("the result has no column %q for Product.Weight", "weight")
 	}
 	return p, nil
 }
@@ -197,6 +214,16 @@ func HydrateProduct(dst []Product, rows *postgres.Rows, p ProductPlan) ([]Produc
 				return dst[:before], fmt.Errorf("row %d, column %q: %w", i, "released", err)
 			}
 			e.Released = v
+		}
+		{
+			b, isNull := rows.Value(i, p.colWeight)
+			if !isNull {
+				v, err := postgres.DecodeFloat8(b)
+				if err != nil {
+					return dst[:before], fmt.Errorf("row %d, column %q: %w", i, "weight", err)
+				}
+				e.Weight = postgres.Some(v)
+			}
 		}
 		dst = append(dst, e)
 	}

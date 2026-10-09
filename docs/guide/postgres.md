@@ -127,6 +127,47 @@ the same for **a whole column** of a batch in one pass
 (`ScanInt8(dst, rows, col)`) — the shape that produces the next array of
 keys to send as `= ANY`.
 
+### The codecs, in one table
+
+Every type below has the same pair, `AppendX`/`DecodeX`, named after the
+PostgreSQL type. The first thirteen also have a one-dimensional array
+(`AppendXArray`/`DecodeXArray`), the same array with NULL elements
+(`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
+column scanner (`ScanX`). The others have the scalar pair only; what is
+missing is listed in [Limits](limits.md), not discovered at use.
+
+| PostgreSQL | Go | X | Array | Array with NULLs | Scan |
+|---|---|---|---|---|---|
+| `bool` | `bool` | `Bool` | yes | yes | yes |
+| `int2` | `int16` | `Int2` | yes | yes | yes |
+| `int4` | `int32` | `Int4` | yes | yes | yes |
+| `int8` | `int64` | `Int8` | yes | yes | yes |
+| `float4` | `float32` | `Float4` | yes | yes | yes |
+| `float8` | `float64` | `Float8` | yes | yes | yes |
+| `text`, `varchar`, `char(n)`, `name` | `string` | `Text` | yes | yes | yes |
+| `bytea` | `[]byte` | `Bytea` | yes | yes | yes |
+| `uuid` | `[16]byte` | `UUID` | yes | yes | yes |
+| `timestamptz` | `time.Time` (UTC) | `TimestampTZ` | yes | yes | yes |
+| `timestamp` | `time.Time` (no zone) | `Timestamp` | yes | yes | yes |
+| `date` | `time.Time` (midnight UTC) | `Date` | yes | yes | yes |
+| `numeric` | `Numeric` (exact) | `Numeric` | yes | yes | yes |
+| `json` | `[]byte` | `JSON` | — | — | as text |
+| `jsonb` | `[]byte` | `JSONB` | — | — | — |
+| `inet`, `cidr` | `netip.Prefix` | `Inet`, `CIDR` (one decoder) | — | — | — |
+| `interval` | `Interval` | `Interval` | — | — | — |
+| `time` | `TimeOfDay` | `Time` | — | — | — |
+| `timetz` | `TimeTZ` | `TimeTZ` | — | — | — |
+| `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
+| `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
+
+**NULL has one form in this package: `Null[T]`** — the value beside a
+`Valid` bit, no pointer, so no allocation. The nullable arrays carry
+`[]Null[T]`, and a generated hydrator (next section) fills a
+`postgres.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
+zero; `ScanNulls` gives the mask of a column that may hold one. In your own
+structs, `*T` is accepted too, because the struct is yours; it costs the
+allocation `Null[T]` does not.
+
 > **In plain terms: `numeric`.** A `numeric(12,2)` column is chosen
 > precisely when a floating-point number would lose something (cents).
 > Sluice.go keeps those values **exact**, and every lossy conversion is
@@ -150,12 +191,13 @@ that hydrates a **whole batch** in one loop:
 //go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type Order -in order.go
 
 type Order struct {
-    ID        int64     `db:"id"`
-    Total     float64   `db:"total_amount"`
-    Label     string    // no tag: the column is named label, by convention
-    CreatedAt time.Time `db:"created_at"`
-    Note      *string   `db:"note"` // nullable: a pointer is how to say "may be NULL"
-    Computed  int64     `db:"-"`    // not a column
+    ID        int64                  `db:"id"`
+    Total     float64                `db:"total_amount"`
+    Label     string                 // no tag: the column is named label, by convention
+    CreatedAt time.Time              `db:"created_at"`
+    Note      *string                `db:"note"`   // nullable: a pointer is one way to say "may be NULL"
+    Weight    postgres.Null[float64] `db:"weight"` // nullable: the other way, without a pointer
+    Computed  int64                  `db:"-"`      // not a column
 }
 ```
 
@@ -183,9 +225,9 @@ values. `HydrateOrder` then fills a slice from each batch.
 > **In plain terms.** The generated file is committed with your code, and a
 > test regenerates it and compares: if someone changes the struct without
 > rerunning the generator, the build fails instead of leaving a silent
-> difference. Measured: 47 ns per row for six columns. A nullable field
-> costs one allocation per row (the pointer): keep pointers for columns that
-> are genuinely nullable.
+> difference. Measured: 47 ns per row for six columns. A `*T` field costs
+> one allocation per row (the pointer); a `postgres.Null[T]` field costs
+> none, which is why it is the form to prefer when rows are many.
 
 ## Writing
 
@@ -247,7 +289,8 @@ outside the transaction under nobody's identity.
 ## What is not there
 
 No connection pool, no automatic resumption of an interrupted load, `md5`
-refused, no `money` or `tsvector` types, and passwords with characters
+refused, no `money` or `tsvector` types, arrays and column scanners for
+thirteen types only (the table above), and passwords with characters
 outside printable ASCII may fail cleanly (SASLprep normalisation is not
 applied). The detail: [Limits](limits.md).
 
