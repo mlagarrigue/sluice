@@ -119,8 +119,6 @@ to a separate module before a v1.
   then the public *QUIC Interop Runner*); implementing key update
   (RFC 9001 §6), without which a long connection eventually dies; an
   external cryptographic review.
-- **`net/quic/udp`**: the macOS code run in continuous integration (it is
-  written, never run there).
 - **`net/httpstream`**: HTTP/2 and /3 confronted with third-party clients
   (curl, browsers, h2spec); parser fuzzing in continuous integration; a
   streamed HTTP/2 response that does not block the responder, or that limit
