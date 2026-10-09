@@ -14,7 +14,10 @@
 // table can be honoured end to end, and that doing so can be measured. It has
 // not been fuzzed against a corpus, run in production, or reviewed by anyone
 // who does this for a living. Put it behind something you trust, or do not
-// expose it at all.
+// expose it at all. Which deployments it is written for — HTTP/1.1 exposed
+// directly, cleartext only behind a terminating proxy, clients with a
+// reduced HPACK table — is gathered in docs/guide/experimental.md
+// ("Supported deployments"); each row names where the code decides it.
 //
 // # The thesis
 //

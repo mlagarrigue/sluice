@@ -11,6 +11,10 @@
 // and against a test harness that drops, reorders and forges datagrams —
 // which is a real standard and still not the same as interoperating. Treat
 // interoperability as unproven until a peer that shares no code has agreed.
+// The deployments it is written for — a client behind a NAT that rebinds,
+// a server on a host with several addresses (Linux only, through
+// [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported
+// deployments"); each row names where the code decides it.
 //
 // # Why it exists
 //

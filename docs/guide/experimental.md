@@ -107,6 +107,34 @@ encryption keys mid-connection) is not implemented; a peer that does it
 shows up in `Stats().KeyPhaseSuspects` and its connection eventually times
 out.
 
+## Supported deployments
+
+The two packages make deployment choices, and each one is carried at the
+place in the code that decides it. This section gathers them: what is
+supported as it is, what is only supported behind something else, what is
+not supported yet.
+
+| Situation | Supported? | Where it is decided |
+|---|---|---|
+| HTTP/1.1 exposed directly, with no proxy in front | Yes, by construction: parsing refuses anything two hops could read differently (obsolete line folding, a space before the colon, control characters, `Transfer-Encoding` next to `Content-Length`, absolute-form targets). A proxy that re-splits chunks is not required. | `net/httpstream/request.go`, `splitRequestLine` and `parseHeaders` |
+| HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2` |
+| HTTP/2 clients with a reduced HPACK table (nghttp2, Envoy) | Yes: the table size requested by `SETTINGS_HEADER_TABLE_SIZE` is honored from the next header block, in the same critical section as the acknowledgement. | `net/httpstream/h2write.go`, `ackSettings` |
+| QUIC clients behind a mobile NAT (address change in the middle of a connection) | Yes: four active connection IDs per endpoint, enough for a NAT rebind and a deliberate rotation to overlap; the new path is validated by `PATH_CHALLENGE` before it is believed. | `net/quic/migration.go`, `maxLocalActiveCIDs` and `migrateLocked` |
+| QUIC server on a host with several addresses | **Linux only**: `net/quic/udp` learns which address a datagram arrived on and answers from it. Elsewhere, `EnablePacketInfo` returns `errors.ErrUnsupported` and the kernel picks the source by route: the client sees a reply come from an address it never wrote to, which for QUIC is a different path. Bind the socket to one specific address, or stay on Linux. | `net/quic/udp/udp.go`, `EnablePacketInfo` |
+
+Two behaviors of `ServeH3` complete the table without fitting in it: manual
+stream credit only turns on if the announced windows cover the admission
+bounds, and otherwise falls back to the transport's automatic credit,
+bounded by the ceilings of `Config` (`net/httpstream/h3serve.go`, at the
+top of `ServeH3`); `Config.TransportParameters` produces accepted windows.
+And everything that "[What "experimental"
+means](#what-experimental-means)" says applies to every row: the table
+says what the code decides, not what an external review has confirmed.
+
+> **In plain terms.** "Supported" means here: the code makes this choice
+> explicitly, a test covers it, and the row says where to read the reason.
+> It takes nothing away from the *experimental* label of the two packages.
+
 ## `web/stream` — the same middle, for the other transport
 
 `web` provides the middle of the supported path (route, authenticate,
