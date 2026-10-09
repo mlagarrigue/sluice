@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -286,7 +287,7 @@ func PathInt(e *Exchange, i int, name string) (int, bool) {
 		return 0, false
 	}
 	// Dead on 64-bit platforms, where int is int64; it is the 32-bit guard.
-	if int64(int(v)) != v {
+	if v < math.MinInt || v > math.MaxInt {
 		refuseInteger(e, i, name)
 		return 0, false
 	}
