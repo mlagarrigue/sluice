@@ -74,9 +74,9 @@
 //     answers; a client offered a preferred address by its server probes
 //     it once the handshake confirms and moves there on its own when the
 //     path validates. Both reset congestion and round-trip state as §9.4
-//     asks. The server side — a [Listener] announcing a second socket —
-//     is implemented and tested inside the package but not exposed: no
-//     [ListenerConfig] field turns it on yet.
+//     asks. The server side is [ListenerConfig.PreferredAddress]: a second
+//     socket the listener reads alongside its main one and announces in
+//     every handshake.
 //   - Datagram coalescing (§12.2): the ACK a datagram earns and the CRYPTO
 //     flight it provokes leave together, Initial and Handshake packets in
 //     one datagram, with §14.1's padding carried by the packet that closes
@@ -98,8 +98,8 @@
 //     its packets discarded as unauthenticated; the connection then dies by
 //     idle timeout, and the discard counter is the diagnostic. Peers
 //     ordinarily rotate only on very long-lived connections.
-//   - **Server migration.** A server never changes its own address (§9);
-//     announcing a preferred_address is not exposed (see above), and a
+//   - **Server migration.** A server never changes its own address (§9):
+//     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
 //   - [Dial] and standalone [Accept] connections issue no connection
 //     identifiers of their own — only a [Listener] has a demux table to

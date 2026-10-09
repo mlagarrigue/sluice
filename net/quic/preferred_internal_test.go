@@ -265,7 +265,7 @@ func TestListenerRefusesAnUnspecifiedPreferredAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unspecified.Close()
-	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{preferredAddress: unspecified}); err == nil {
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: unspecified}); err == nil {
 		l.Close()
 		t.Fatal("a preferred socket on 0.0.0.0 was accepted")
 	}
@@ -287,7 +287,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		main.Close()
 		t.Skipf("no 127.0.0.2 on this host: %v", err)
 	}
-	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{preferredAddress: pref})
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: pref})
 	if err != nil {
 		t.Fatal(err)
 	}

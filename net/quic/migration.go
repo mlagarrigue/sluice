@@ -116,8 +116,9 @@ type pathProbe struct {
 // was offered, or this is a server. The move itself is automatic once the
 // handshake confirms — a validated preferred path becomes the connection's
 // path, counted in [Conn.Migrations]; one that never validates leaves the
-// connection on the handshake's path. Internal, like the listener's
-// preferredAddress configuration: only this package's tests read it.
+// connection on the handshake's path. Internal: a caller sees the move
+// through [Conn.Migrations], and only this package's tests need the
+// address itself.
 func (c *Conn) preferredAddress() net.Addr {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -62,25 +62,21 @@ type ListenerConfig struct {
 	// overload. Zero means [defaultMaxPendingConns].
 	MaxPendingConns int
 
-	// preferredAddress is a second socket, bound to the address clients
+	// PreferredAddress is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
 	// server reached through a shared or load-balanced address that would
 	// rather carry the connection directly, for instance. The listener
 	// reads it alongside its main socket and announces its local address
 	// — which must therefore be a concrete IPv4 or IPv6 address, not the
-	// unspecified one — in every handshake, with a connection identifier
-	// minted per connection. A client that validates the path moves there
-	// on its own, and its connection then sends from this socket (§8.2.2:
-	// the answer to a probe must leave by the path it arrived on, which is
-	// what this socket is for). nil announces nothing. The listener owns
-	// the socket from here and closes it with [Listener.Close].
-	//
-	// Not exported yet: the review of the exported surface kept everything
-	// only this package's own tests used out of the API, and this field was
-	// one. The server side of §9.6 is implemented and tested here, but no
-	// caller outside the package can turn it on; exporting it is a
-	// deliberate API decision still to be taken.
-	preferredAddress net.PacketConn
+	// unspecified one, or [NewListener] fails — in every handshake, with a
+	// connection identifier minted per connection. A client that validates
+	// the path moves there on its own (counted in [Conn.Migrations] on both
+	// sides), and its connection then sends from this socket (§8.2.2: the
+	// answer to a probe must leave by the path it arrived on, which is what
+	// this socket is for). A client that never validates it simply stays
+	// where it is. nil announces nothing. The listener owns the socket from
+	// here and closes it with [Listener.Close].
+	PreferredAddress net.PacketConn
 }
 
 // Listener owns one [net.PacketConn] shared by many connections, the thing a
@@ -105,7 +101,7 @@ type Listener struct {
 	// (udp.EnablePacketInfo); nil otherwise. Its read loop then hands every
 	// datagram a via that answers from the address it arrived on.
 	sourced *net.UDPConn
-	// preferred is ListenerConfig.preferredAddress, read by its own
+	// preferred is ListenerConfig.PreferredAddress, read by its own
 	// loop and dispatched into the same demux table; preferredAddr is what
 	// each handshake announces for it.
 	preferred     net.PacketConn
@@ -176,16 +172,16 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		return nil, err
 	}
 	var preferredAddr *net.UDPAddr
-	if lcfg.preferredAddress != nil {
-		ua, ok := lcfg.preferredAddress.LocalAddr().(*net.UDPAddr)
+	if lcfg.PreferredAddress != nil {
+		ua, ok := lcfg.PreferredAddress.LocalAddr().(*net.UDPAddr)
 		if !ok || ua == nil || ua.IP == nil || ua.IP.IsUnspecified() {
 			return nil, fmt.Errorf("%w: PreferredAddress must be bound to a concrete IPv4 or IPv6 address, not %v — a client has to know where to send",
-				ErrQUIC, lcfg.preferredAddress.LocalAddr())
+				ErrQUIC, lcfg.PreferredAddress.LocalAddr())
 		}
 		preferredAddr = ua
 	}
 	l := &Listener{
-		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.preferredAddress, preferredAddr: preferredAddr,
+		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredAddr: preferredAddr,
 		cfg: cfg, params: params, lcfg: lcfg, key: key, resetKey: resetKey,
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),
