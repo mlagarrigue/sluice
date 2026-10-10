@@ -53,14 +53,17 @@ impls="$RUNNER_DIR/implementations_quic.json"
 jq --arg image "$image" '. + {sluice: {image: $image, url: "https://github.com/mlagarrigue/sluice", role: "both"}}' \
   "$impls" >"$impls.tmp" && mv "$impls.tmp" "$impls"
 
-# run <server> <client>: one direction; the runner exits non-zero when a
-# case fails, which is a result here, not an error.
+# run <server> <client>: one direction, with the runner's debug output,
+# which is the only place each container's own output and the compliance
+# check's verdict appear (the runner keeps no log of a case it skipped).
+# The runner exits non-zero when a case fails, which is a result here, not
+# an error.
 run() {
   echo "## server $1, client $2"
   (
     cd "$RUNNER_DIR"
     rm -rf "logs/$1_$2"
-    .venv/bin/python run.py -s "$1" -c "$2" -t "$TESTS" -l logs -j "results_$1_$2.json" || true
+    .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l logs -j "results_$1_$2.json" || true
   )
 }
 run sluice "$peer"
