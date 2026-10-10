@@ -1731,6 +1731,34 @@ func TestH2RefusesInvalidTrailerFields(t *testing.T) {
 	}
 }
 
+// RFC 9113 §8.1: a trailer section is the field block that ends the stream.
+// A second HEADERS without END_STREAM is a malformed request — a stream
+// error — not a block to decode and then wait behind. h2spec 8.1/1 found the
+// wait: the stream stayed open, and its slot with it, until the idle timeout.
+func TestH2RefusesTrailersWithoutEndStream(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: headBlock("POST", "/t", [2]string{"te", "trailers"}),
+	})
+	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("hi")})
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: literal(nil, "x-sum", "1"),
+	})
+	c.request(3, "GET", "/after")
+	c.flush()
+
+	if code := c.waitReset(1); code != 0x1 {
+		t.Errorf("stream 1 was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
+	}
+	if got := c.bodies(1)[3]; got != "/after" {
+		t.Errorf("stream 3 answered %q; the open-ended trailer took its neighbour", got)
+	}
+}
+
 // RFC 9113 §8.2.2's output half: a response generated with a connection-
 // specific field is malformed, and a conformant client MUST reject it — so a
 // handler's HTTP/1.1 habit is answered as the caller's bug, a 500 on its own

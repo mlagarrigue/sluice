@@ -784,6 +784,17 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		// pretending to be the end of this one.
 		s.trailers = fields
 		st.gotTrailers = true
+		// §8.1: the trailer block is the one that ends the stream, so a
+		// second HEADERS without END_STREAM is a malformed request, a stream
+		// error. Found by h2spec (8.1/1): before this check the block was
+		// decoded and the server then waited for a DATA or HEADERS that
+		// never came, holding the stream and its slot in the concurrency
+		// bound until the idle timeout — one of several such requests
+		// would quietly pin MaxConcurrentStreams.
+		if !st.endStream {
+			return nil, streamFail(st.id, errProtocolError,
+				"%w: a trailer section on stream %d without END_STREAM", ErrH2Protocol, st.id)
+		}
 		for _, h := range fields {
 			if len(h.Name) > 0 && h.Name[0] == ':' {
 				return nil, streamFail(st.id, errProtocolError,
@@ -801,10 +812,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 					"%w: the trailer %q holds a control character", ErrH2Protocol, h.Name)
 			}
 		}
-		if st.endStream {
-			return s.finish(st)
-		}
-		return nil, nil
+		return s.finish(st)
 	}
 
 	st.headers = fields
