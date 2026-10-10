@@ -66,18 +66,23 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 	}
 }
 
-// The comparison module (benchmarks/, on the benchmarks branch) has to keep
-// pointing at this tree by a replace directive rather than at a published version. Without it the comparison
-// silently measures whatever was last tagged, which is not what the person
-// running it is trying to find out.
-func TestBenchmarksModuleReplacesThisOne(t *testing.T) {
-	src, err := os.ReadFile("benchmarks/go.mod")
-	if err != nil {
-		t.Skipf("no benchmarks module here: %v", err)
-	}
-	if !strings.Contains(string(src), "replace github.com/mlagarrigue/sluice => ../") {
-		t.Error("benchmarks/go.mod no longer replaces the root module with this tree, " +
-			"so it is measuring a published version rather than the working one")
+// The nested modules — the comparison module (benchmarks/, on the benchmarks
+// branch) and the interop module (interop/, on main) — have to keep pointing
+// at this tree by a replace directive rather than at a published version.
+// Without it the comparison silently measures whatever was last tagged, and
+// the interop test silently proves a quic-go handshake against it, which is
+// not what the person running either is trying to find out.
+func TestNestedModulesReplaceThisOne(t *testing.T) {
+	for _, dir := range []string{"benchmarks", "interop"} {
+		src, err := os.ReadFile(dir + "/go.mod") //nolint:gosec // G304: the two paths are the literals above
+		if err != nil {
+			t.Logf("no %s module here: %v", dir, err)
+			continue
+		}
+		if !strings.Contains(string(src), "replace github.com/mlagarrigue/sluice => ../") {
+			t.Errorf("%s/go.mod no longer replaces the root module with this tree, "+
+				"so it is exercising a published version rather than the working one", dir)
+		}
 	}
 }
 
