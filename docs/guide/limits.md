@@ -126,7 +126,25 @@ to a separate module before a v1.
   2026-10-10: key update (RFC 9001 §6) — both sides rotate, and a long
   connection no longer dies of its packet count — and the first
   third-party peer: quic-go, on each side of the handshake, in continuous
-  integration (the `interop/` module, job `interop-quic`).
+  integration (the `interop/` module, job `interop-quic`). The runner
+  itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
+  the `Interop runner` workflow). As a server, sluice passes handshake,
+  transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
+  amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port
+  and rebind-addr, and fails handshakeloss, handshakecorruption (a
+  handshake that stalls under 30 % loss or corruption) and
+  connectionmigration (the server closes with INTERNAL_ERROR once the
+  client moves to the preferred address). As a client it passes handshake,
+  transfer, longrtt, multiplexing, retry, blackhole, transferloss,
+  transfercorruption and ipv6, and fails amplificationlimit, handshakeloss
+  and handshakecorruption (the handshake gives up at its 10-second timeout)
+  and rebind-port and rebind-addr (the connection dies of its idle timeout
+  after the NAT rebinds). The cases it refuses, as the runner's exit status
+  127 asks, are the features documented as not there — 0-RTT, resumption,
+  ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to restrict the
+  cipher suites), a forced key update and HTTP/3 on the client side (no
+  HTTP/3 client in the module). Green means every one of these passed
+  against at least two peers.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`web/stream`**: a real consumer of its stages. Its transport,
