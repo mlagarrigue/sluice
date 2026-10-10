@@ -47,7 +47,7 @@ done
 # Hidden files at the root: the same rule, with the project's own list.
 for f in $(git ls-files | grep -E '^\.[^/]+$'); do
   case "$f" in
-    .gitignore|.golangci.yml|.release-please-manifest.json|.gitattributes|.editorconfig) ;;
+    .gitignore|.dockerignore|.golangci.yml|.release-please-manifest.json|.gitattributes|.editorconfig) ;;
     *) echo "check-hygiene: $f is tracked" >&2; status=1 ;;
   esac
 done
