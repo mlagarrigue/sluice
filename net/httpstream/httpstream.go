@@ -1,5 +1,5 @@
-// Package httpstream is an experiment: HTTP/1.1, /2 and /3 where the
-// transport is a stream stage rather than a thing that calls you.
+// Package httpstream serves HTTP/1.1, /2 and /3 where the transport is a
+// stream stage rather than a thing that calls you.
 //
 // # Read this before using it
 //
@@ -12,8 +12,9 @@
 //
 // What is claimed for this code is narrower: that the architecture's own
 // table can be honoured end to end, and that doing so can be measured. It has
-// not been fuzzed against a corpus, run in production, or reviewed by anyone
-// who does this for a living. Put it behind something you trust, or do not
+// faced curl, h2spec and quic-go's HTTP/3 client in continuous integration,
+// and its parsers are fuzzed there; it has not run in production, nor been
+// reviewed by anyone who does this for a living. Put it behind something you trust, or do not
 // expose it at all. Which deployments it is written for — HTTP/1.1 exposed
 // directly, cleartext only behind a terminating proxy, clients with a
 // reduced HPACK table — is gathered in docs/guide/experimental.md
@@ -155,7 +156,7 @@
 // [ServeH3] runs over [github.com/mlagarrigue/sluice/net/quic] — a real
 // TLS 1.3 handshake on a UDP socket, RFC 9001 packet protection, RFC 9002
 // recovery — not on a dependency, since the standard library has no QUIC.
-// That package is experimental in the same sense this one is: checked
+// That package is still experimental, in a sense this one has left: checked
 // against itself, against published vectors, against a harness that drops,
 // reorders and forges datagrams, and against one peer that shares no code
 // (quic-go, in the interop/ module, where its HTTP/3 client also reads

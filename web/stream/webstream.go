@@ -1,6 +1,6 @@
-// Package stream is the middle of the architecture's request table, for the
-// experimental transport: routing, authentication, authorization, decoding
-// and rendering as batch-shaped stages over [httpstream]'s requests.
+// Package stream is experimental: the middle of the architecture's request
+// table for the native transport — routing, authentication, authorization,
+// decoding and rendering as batch-shaped stages over [httpstream]'s requests.
 //
 // # Where it sits
 //
@@ -14,8 +14,9 @@
 // spellings of the same boundary would drift apart.
 //
 // It lives outside the core by the library's own test: nothing in the core
-// stops compiling if this package is removed. And it inherits the caveat of
-// the transport it serves — nothing here is on the supported path.
+// stops compiling if this package is removed. Nothing here is on the
+// supported path, and no real consumer has built its request path on these
+// stages yet: that is what keeps the label.
 //
 // # The element is the exchange
 //

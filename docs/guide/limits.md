@@ -129,20 +129,10 @@ to a separate module before a v1.
   integration (the `interop/` module, job `interop-quic`).
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
-- **`net/httpstream`**: nothing left open. The last condition — the
-  per-batch cost of a streamed HTTP/2 response, about 70 µs seen from a real
-  client whatever the size of the batch — was explained and divided by two on
-  2026-10-10 (`h2Writer.extend`, `docs/benchmarks.md`, "HTTP/2 and HTTP/3,
-  from a real client"); what remains — the first batch leaves alone, the
-  following ones are gathered — is owned in the experimental guide.
-  Interoperability had left this list the same day: HTTP/1.1 and /2 have
-  faced curl and h2spec in continuous integration
-  (`scripts/interop-http.sh`); HTTP/3 has faced quic-go's client
-  (`interop/h3_test.go`, job `interop-quic`) — a plain response, a streamed
-  one, two streamed at once arriving whole; the parsers are fuzzed; the
-  limit on streamed HTTP/2 responses is owned in the experimental guide.
-  Removing the label is the next brief.
-- **`web/stream`**: follows `httpstream`, plus a real consumer.
+- **`web/stream`**: a real consumer of its stages. Its transport,
+  `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
+  client in continuous integration, fuzzed parsers, the per-batch cost of a
+  streamed response measured.
 
 ## Measurements: what is missing
 
