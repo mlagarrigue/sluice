@@ -1433,11 +1433,20 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 		return false, err
 	}
 	// After arming, as in readLoop: a Close that expired the deadline
-	// before this call re-armed it would otherwise be waited out.
+	// before this call re-armed it would otherwise be waited out. A
+	// refusal wake (hsWake) that landed before the arming is taken the
+	// same way: the re-armed deadline erased its expiry.
 	select {
 	case <-c.closed:
 		return false, net.ErrClosed
 	default:
+	}
+	c.mu.Lock()
+	woke := c.hsWake
+	c.hsWake = false
+	c.mu.Unlock()
+	if woke {
+		return false, os.ErrDeadlineExceeded
 	}
 	n, addr, err := c.pc.ReadFrom(buf)
 	if err != nil {

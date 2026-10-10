@@ -77,6 +77,13 @@ type Conn struct {
 	// to the refusals its reads see. Guarded by mu.
 	writeRefusals int
 	writeRefusal  error
+	// hsSyncRead is true while handshake() reads the socket itself; hsWake
+	// asks that read to return early so the loop re-counts refusals: on
+	// Linux a closed port's ICMP is reported by whichever syscall comes
+	// next, and when that is a probe's second send the read would
+	// otherwise block until the handshake deadline. Guarded by mu.
+	hsSyncRead bool
+	hsWake     bool
 	// writeFailures counts every failed send, refusal or not. Guarded by mu.
 	writeFailures uint64
 
@@ -728,6 +735,14 @@ func (c *Conn) handshake(ctx context.Context) error {
 		close(fired)
 	})
 	defer stop()
+	c.mu.Lock()
+	c.hsSyncRead = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.hsSyncRead = false
+		c.mu.Unlock()
+	}()
 	// ctxErr turns a deadline the context set into the context's error,
 	// rather than a bare timeout — even when the socket's read deadline
 	// fires a hair before the context's own timer marks it done.
@@ -839,6 +854,11 @@ func (c *Conn) handshake(ctx context.Context) error {
 			if readFails > 1 && !c.readBackoff(readFails) {
 				return c.endedDuringHandshakeErr()
 			}
+			continue
+		}
+		if !got && errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil && time.Now().Before(deadline) {
+			// Not the deadline: a send refusal woke the read (hsWake) so
+			// the refusal count at the top of the loop is re-taken now.
 			continue
 		}
 		if !got && sockErr != nil && !heard && errors.Is(err, os.ErrDeadlineExceeded) {

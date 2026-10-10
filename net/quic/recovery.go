@@ -289,10 +289,39 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (lost 
 	return lost, lostBytes, latestSent
 }
 
-// oldestEliciting is what the probe timeout resends and what it is armed on.
+// oldestEliciting is what the probe timeout is armed on.
 func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 	for _, p := range s.packets {
 		if p.ackEliciting {
+			return p, true
+		}
+	}
+	return sentPacket{}, false
+}
+
+// liftOldestResendable removes and returns the oldest packet whose payload
+// a probe can resend. The probe timeout lifts a packet out of the flight
+// record before sending its payload again as a new packet, so that the
+// copy's acknowledgement retires the data: with the original left in place,
+// a probe copy of the same payload is anonymous — acknowledged under its
+// own number, it tells the record nothing about the packet it copied, which
+// stays the oldest unacknowledged, is copied again on the next timeout, and
+// shadows every packet behind it. A server whose two-packet Initial flight
+// is lost then resends the first packet at every backoff step and never the
+// second, and the client, holding half a ServerHello, waits out the
+// handshake. RFC 9002 §6.2.4 permits either resending or marking in flight
+// as lost on a timeout; this does the first with the bookkeeping of the
+// second — minus the congestion event, which a timeout is not (§6.2.4,
+// §7.6: only a later acknowledgement proves what was lost).
+//
+// An acknowledgement of the original that arrives after it was lifted
+// names a number no longer recorded and is ignored; the copy then waits
+// for its own, or for the time threshold. A probe interval is what bounds
+// the acknowledgement's lateness, so that case is the rare one.
+func (s *sentTracker) liftOldestResendable() (sentPacket, bool) {
+	for i, p := range s.packets {
+		if p.ackEliciting && len(p.payload) > 0 {
+			s.packets = append(s.packets[:i], s.packets[i+1:]...)
 			return p, true
 		}
 	}
@@ -340,6 +369,12 @@ func newNewReno(maxDatagram int) newReno {
 func (c *newReno) canSend(bytes int) bool { return c.inFlight+bytes <= c.cwnd }
 
 func (c *newReno) onSent(bytes int) { c.inFlight += bytes }
+
+// onLifted releases the bytes of a packet the probe timeout lifted from the
+// flight record to resend: its copy re-enters through onSent, so the flight
+// stays the same size, and the window does not move — a probe timeout is
+// not a congestion event (RFC 9002 §6.2.4).
+func (c *newReno) onLifted(bytes int) { c.inFlight -= bytes }
 
 // paceWindow is the window the pacer prices sends against: doubled in slow
 // start, where the window itself doubles per round trip and pacing at the

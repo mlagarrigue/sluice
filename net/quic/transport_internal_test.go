@@ -368,26 +368,68 @@ func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 	}
 }
 
-// A probe with lost payloads queued resends the head of that queue —
+// A probe with lost payloads queued sends from the head of that queue — two
+// of them (RFC 9002 §6.2.4 allows two datagrams), the third waits — each
 // recorded for recovery like any packet, since it is the only copy.
 func TestProbeSendsTheRetransmissionQueueFirst(t *testing.T) {
 	c := newIdleServerConn(t)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	sp := &c.spaces[spaceInitial]
-	first, second := []byte{framePing, 1}, []byte{framePing, 2}
-	sp.retrans = [][]byte{first, second}
+	first, second, third := []byte{framePing, 1}, []byte{framePing, 2}, []byte{framePing, 3}
+	sp.retrans = [][]byte{first, second, third}
 
 	c.sendProbeLocked(spaceInitial)
 
-	if len(sp.retrans) != 1 || !bytes.Equal(sp.retrans[0], second) {
-		t.Fatalf("retrans = %x, want only the second payload left", sp.retrans)
+	if len(sp.retrans) != 1 || !bytes.Equal(sp.retrans[0], third) {
+		t.Fatalf("retrans = %x, want only the third payload left", sp.retrans)
 	}
-	if sp.nextPN != 1 {
-		t.Fatalf("nextPN = %d, want one probe sent", sp.nextPN)
+	if sp.nextPN != 2 {
+		t.Fatalf("nextPN = %d, want two probes sent", sp.nextPN)
 	}
-	if len(sp.sent.packets) != 1 || !bytes.Contains(sp.sent.packets[0].payload, first) {
-		t.Errorf("the probe's payload is not tracked for recovery: %+v", sp.sent.packets)
+	if len(sp.sent.packets) != 2 || !bytes.Contains(sp.sent.packets[0].payload, first) || !bytes.Contains(sp.sent.packets[1].payload, second) {
+		t.Errorf("the probes' payloads are not tracked for recovery: %+v", sp.sent.packets)
+	}
+}
+
+// A probe with nothing queued lifts the oldest unacknowledged packets out of
+// the flight record and resends their payloads as new packets: the copies
+// are what the record now tracks, so an acknowledgement of a copy retires
+// the data, and the next timeout moves on to what is still unacknowledged
+// instead of copying the same packet again (liftOldestResendable). The
+// bytes in flight do not change: a timeout is not a loss.
+func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
+	c := newIdleServerConn(t)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceInitial]
+	now := time.Now()
+	for pn := range uint64(3) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing, byte(pn)}})
+	}
+	sp.nextPN = 3
+	c.cc.inFlight = 300
+
+	c.sendProbeLocked(spaceInitial)
+
+	if sp.nextPN != 5 {
+		t.Fatalf("nextPN = %d, want two probes sent", sp.nextPN)
+	}
+	var pns []uint64
+	for _, p := range sp.sent.packets {
+		pns = append(pns, p.pn)
+	}
+	if len(pns) != 3 || pns[0] != 2 || pns[1] != 3 || pns[2] != 4 {
+		t.Fatalf("packets tracked = %v, want the untouched 2 and the copies 3 and 4", pns)
+	}
+	if !bytes.Contains(sp.sent.packets[1].payload, []byte{framePing, 0}) || !bytes.Contains(sp.sent.packets[2].payload, []byte{framePing, 1}) {
+		t.Errorf("the copies do not carry the lifted payloads: %+v", sp.sent.packets[1:])
+	}
+	// 100 bytes of untouched packet 2, plus two probes that each left the
+	// record and re-entered at their sealed size.
+	want := 100 + sp.sent.packets[1].size + sp.sent.packets[2].size
+	if c.cc.inFlight != want {
+		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.cc.inFlight, want)
 	}
 }
 

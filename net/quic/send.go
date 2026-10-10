@@ -663,10 +663,17 @@ func (c *Conn) retransmitLocked() {
 	}
 }
 
-// sendProbeLocked answers a probe timeout in one space: resend the oldest
-// unacknowledged payload — it is the most likely lost, and probes may exceed
-// the congestion window (RFC 9002 §6.2.4, §7) — or ping if there is nothing
-// to resend but an answer is still owed.
+// sendProbeLocked answers a probe timeout in one space: resend the two
+// oldest unacknowledged payloads — they are the most likely lost, probes
+// may exceed the congestion window (RFC 9002 §6.2.4, §7), and §6.2.4 allows
+// two datagrams so that one lost probe does not cost a whole doubled
+// interval — or ping if there is nothing to resend but an answer is still
+// owed. The queue of declared losses goes first; the rest is lifted out of
+// the flight record (liftOldestResendable says why) and sent as new packets.
+//
+// Two is what a server's first flight needs: a ServerHello with a
+// post-quantum key share spans two Initial packets, and a client that
+// holds only the first cannot read anything the server sends after it.
 // A probe carries old data, not new (RFC 9002 §6.2.4 prefers new data but
 // permits this): writers here are synchronous — unsent data lives in a
 // blocked Stream.Write's own stack, not in a queue a probe could pull from —
@@ -677,17 +684,32 @@ func (c *Conn) sendProbeLocked(space int) {
 	if sp.discarded || sp.sealer == nil {
 		return
 	}
-	if len(sp.retrans) > 0 {
+	const probes = 2
+	sent := 0
+	for ; sent < probes && len(sp.retrans) > 0; sent++ {
 		payload := sp.retrans[0]
 		sp.retrans = sp.retrans[1:]
 		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
-		return
 	}
-	if p, ok := sp.sent.oldestEliciting(); ok && len(p.payload) > 0 {
-		_ = c.sendPacketLocked(space, p.payload, sendOpts{noRetrans: true})
-		return
+	// Lifted before any is sent: the copies are recorded as they go, and
+	// the newest of them must not be the next one lifted.
+	var lifted [probes][]byte
+	n := 0
+	for ; sent+n < probes; n++ {
+		p, ok := sp.sent.liftOldestResendable()
+		if !ok {
+			break
+		}
+		c.cc.onLifted(p.size)
+		lifted[n] = p.payload
 	}
-	_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
+	for _, payload := range lifted[:n] {
+		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
+		sent++
+	}
+	if sent == 0 {
+		_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
+	}
 }
 
 // waitForCreditLocked parks the caller until credit arrives or the
@@ -819,6 +841,12 @@ func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
 		if isRefusal(err) {
 			c.writeRefusals++
 			c.writeRefusal = err
+			if c.hsSyncRead && c.incoming == nil {
+				// Wake the handshake's blocking read so it re-counts the
+				// refusals now rather than at its deadline (hsWake).
+				c.hsWake = true
+				_ = c.pc.SetReadDeadline(time.Now())
+			}
 		}
 	}
 	return err
