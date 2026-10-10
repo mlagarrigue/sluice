@@ -62,8 +62,9 @@ run() {
   echo "## server $1, client $2"
   (
     cd "$RUNNER_DIR"
+    # The runner refuses a log directory that exists: one per direction.
     rm -rf "logs/$1_$2"
-    .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l logs -j "results_$1_$2.json" || true
+    .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
   )
 }
 run sluice "$peer"
