@@ -82,7 +82,7 @@ var errUnsupported = errors.New("unsupported test case")
 var supported = map[string]map[string]bool{
 	"server": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
-		"http3": true, "ipv6": true, "connectionmigration": true,
+		"http3": true, "connectionmigration": true,
 	},
 	"client": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
@@ -146,13 +146,10 @@ func runServer(testcase string) error {
 		KeyLogWriter: kl,
 	}
 
-	// One address family per case: the ipv6 case must see no IPv4 packet
-	// from the server, and every other case reaches it as server4.
-	network := "udp4"
-	if testcase == "ipv6" {
-		network = "udp6"
-	}
-	pc, err := udp.Listen(network, net.JoinHostPort("", serverPort))
+	// Dual-stack: the runner reaches the server as server4 or server6 and
+	// names the ipv6 case "transfer" on this side, so the family cannot be
+	// chosen per case.
+	pc, err := udp.Listen("udp", net.JoinHostPort("", serverPort))
 	if err != nil {
 		return err
 	}
@@ -171,7 +168,7 @@ func runServer(testcase string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("server %s on %s %s, ALPN %s", testcase, network, pc.LocalAddr(), alpn)
+	log.Printf("server %s on %s, ALPN %s", testcase, pc.LocalAddr(), alpn)
 	for {
 		c, err := l.Accept()
 		if err != nil {
