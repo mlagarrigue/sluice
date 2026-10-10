@@ -158,10 +158,10 @@
 // That package is experimental in the same sense this one is: checked
 // against itself, against published vectors, against a harness that drops,
 // reorders and forges datagrams, and against one peer that shares no code
-// (quic-go, in the interop/ module) — not yet against the public QUIC
-// Interop Runner, and the HTTP/3 layer here not yet against a third-party
-// client. Keep [ServeH3] off the supported path for the same reason as the
-// rest of this package.
+// (quic-go, in the interop/ module, where its HTTP/3 client also reads
+// [ServeH3]'s responses) — not yet against the public QUIC Interop Runner.
+// Keep [ServeH3] off the supported path for the same reason as the rest of
+// this package.
 //
 // # The codec layer is not exported
 //

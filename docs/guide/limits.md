@@ -129,11 +129,14 @@ to a separate module before a v1.
   integration (the `interop/` module, job `interop-quic`).
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
-- **`net/httpstream`**: HTTP/3 confronted with a third-party client (a
-  curl built with HTTP/3, a browser). HTTP/1.1 and /2 have been, against
-  curl and h2spec, in continuous integration (`scripts/interop-http.sh`)
-  since 2026-10-10; the parsers are fuzzed there too, and the limit on
-  streamed HTTP/2 responses is owned in the experimental guide.
+- **`net/httpstream`**: nothing left on the list — a decision to drop the
+  label, not a condition. HTTP/1.1 and /2 have faced curl and h2spec in
+  continuous integration (`scripts/interop-http.sh`) since 2026-10-10;
+  HTTP/3 has faced quic-go's client (`interop/h3_test.go`, job
+  `interop-quic`) since the same day, a plain response, a streamed one and
+  two streamed at once arriving whole; the parsers are fuzzed; the limit on
+  streamed HTTP/2 responses is owned in the experimental guide. A browser
+  or a curl built with HTTP/3 would be a third witness, not a condition.
 - **`web/stream`**: follows `httpstream`, plus a real consumer.
 
 ## Measurements: what is missing

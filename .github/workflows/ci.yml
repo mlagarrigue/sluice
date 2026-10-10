@@ -228,7 +228,8 @@ jobs:
   # net/quic against a peer that shares none of its code: the interop/ module
   # (its own go.mod, excluded from the root's ./... and so from the deps job's
   # graph) runs sluice's client against a quic-go server and the reverse —
-  # handshake, an echo across flow-control windows, a close the peer sees.
+  # handshake, an echo across flow-control windows, a close the peer sees —
+  # and quic-go's HTTP/3 client against ServeH3.
   # The public QUIC Interop Runner is not here yet (docs/guide/limits.md).
   interop-quic:
     runs-on: ubuntu-latest

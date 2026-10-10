@@ -254,9 +254,9 @@ preparation** — scenarios, method and results will be published together.
 - **PostgreSQL only** for now; SCRAM-SHA-256, cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
-- **The native HTTP/QUIC transport is experimental**: the QUIC transport
-  has been confronted with one other implementation (quic-go, in CI), the
-  HTTP/3 layer with none.
+- **The native HTTP/QUIC transport is experimental**: QUIC and HTTP/3
+  have been confronted with one other implementation (quic-go, in CI),
+  not yet with the public QUIC Interop Runner.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
 

@@ -57,10 +57,9 @@ import (
 //
 // It returns when the connection ends. Everything it does not serve is the
 // connection's own limitation and is documented there — the transport
-// retransmits, enforces flow control and interoperates with quic-go (the
-// interop/ module, in CI), but this HTTP/3 layer has never faced a
-// third-party client, and the server side is one connection per packet
-// socket.
+// retransmits, enforces flow control and interoperates with quic-go, whose
+// HTTP/3 client reads this layer's responses too (the interop/ module, in
+// CI) — and the server side is one connection per packet socket.
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
