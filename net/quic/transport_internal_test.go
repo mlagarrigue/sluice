@@ -56,9 +56,10 @@ func TestPTOCountsOncePerExpiryNotPerSpace(t *testing.T) {
 	if c.ptoCount != 1 {
 		t.Errorf("ptoCount = %d after one expiry covering two spaces, want 1", c.ptoCount)
 	}
+	// A probe is two datagrams (§6.2.4), here two copies of the one payload.
 	for _, space := range []int{spaceInitial, spaceHandshake} {
-		if c.spaces[space].nextPN != 2 {
-			t.Errorf("space %d: nextPN = %d, want a probe sent (2)", space, c.spaces[space].nextPN)
+		if c.spaces[space].nextPN != 3 {
+			t.Errorf("space %d: nextPN = %d, want a two-packet probe sent (3)", space, c.spaces[space].nextPN)
 		}
 	}
 }

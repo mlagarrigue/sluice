@@ -663,52 +663,65 @@ func (c *Conn) retransmitLocked() {
 	}
 }
 
-// sendProbeLocked answers a probe timeout in one space: resend the two
-// oldest unacknowledged payloads — they are the most likely lost, probes
-// may exceed the congestion window (RFC 9002 §6.2.4, §7), and §6.2.4 allows
-// two datagrams so that one lost probe does not cost a whole doubled
-// interval — or ping if there is nothing to resend but an answer is still
-// owed. The queue of declared losses goes first; the rest is lifted out of
-// the flight record (liftOldestResendable says why) and sent as new packets.
+// sendProbeLocked answers a probe timeout in one space with two datagrams
+// (RFC 9002 §6.2.4 allows two, so that one lost probe does not cost a whole
+// doubled interval; probes may exceed the congestion window, §7): the two
+// oldest unacknowledged payloads — they are the most likely lost — or, when
+// only one is left to resend, that one twice. A ping goes out alone when
+// there is nothing to resend but an answer is still owed. The queue of
+// declared losses goes first; the rest is lifted out of the flight record
+// (liftOldestResendable says why) and sent as new packets.
 //
-// Two is what a server's first flight needs: a ServerHello with a
+// Two datagrams every time, not only when two payloads wait: a client whose
+// ClientHello spans two Initial packets and whose second one is lost holds
+// exactly one payload to resend, and an amplification-limited server can
+// send nothing until that payload arrives. Each interval doubles, so the
+// eighth datagram leaves after 7 intervals at two per probe and after 63 at
+// one — past the five seconds a server waits for a handshake, on a path of
+// 30 ms. Two copies of one payload cost one spurious duplicate per probe on
+// a flight of one packet, the price §6.2.4 names for the same payload
+// "ensuring the highest priority frames arrive first".
+//
+// Two is also what a server's first flight needs: a ServerHello with a
 // post-quantum key share spans two Initial packets, and a client that
 // holds only the first cannot read anything the server sends after it.
-// A probe carries old data, not new (RFC 9002 §6.2.4 prefers new data but
-// permits this): writers here are synchronous — unsent data lives in a
-// blocked Stream.Write's own stack, not in a queue a probe could pull from —
-// and what a probe answers is "did my oldest packet die?", which resending
-// that packet answers in one round trip where new data would take two.
+// A probe carries old data, not new (§6.2.4 prefers new data but permits
+// this): writers here are synchronous — unsent data lives in a blocked
+// Stream.Write's own stack, not in a queue a probe could pull from — and
+// what a probe answers is "did my oldest packet die?", which resending that
+// packet answers in one round trip where new data would take two.
 func (c *Conn) sendProbeLocked(space int) {
 	sp := &c.spaces[space]
 	if sp.discarded || sp.sealer == nil {
 		return
 	}
 	const probes = 2
-	sent := 0
-	for ; sent < probes && len(sp.retrans) > 0; sent++ {
-		payload := sp.retrans[0]
+	var payloads [probes][]byte
+	n := 0
+	for ; n < probes && len(sp.retrans) > 0; n++ {
+		payloads[n] = sp.retrans[0]
 		sp.retrans = sp.retrans[1:]
-		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
 	}
 	// Lifted before any is sent: the copies are recorded as they go, and
 	// the newest of them must not be the next one lifted.
-	var lifted [probes][]byte
-	n := 0
-	for ; sent+n < probes; n++ {
+	for ; n < probes; n++ {
 		p, ok := sp.sent.liftOldestResendable()
 		if !ok {
 			break
 		}
 		c.cc.onLifted(p.size)
-		lifted[n] = p.payload
+		payloads[n] = p.payload
 	}
-	for _, payload := range lifted[:n] {
-		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
-		sent++
-	}
-	if sent == 0 {
+	switch n {
+	case 0:
 		_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
+		return
+	case 1:
+		payloads[1] = payloads[0]
+		n = probes
+	}
+	for _, payload := range payloads[:n] {
+		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
 	}
 }
 
