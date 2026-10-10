@@ -80,17 +80,17 @@ func h3Bulk(yield func(sluice.Batch[[]byte]) bool) {
 // startH3Server runs ServeH3 behind a quic.Listener and returns the URL
 // prefix to reach it. Every accepted connection is served until the test
 // ends; what ServeH3 returned is reported through served.
-func startH3Server(t testing.TB) (base string, served <-chan error) {
-	t.Helper()
-	pc := listenUDP(t)
+func startH3Server(tb testing.TB) (base string, served <-chan error) {
+	tb.Helper()
+	pc := listenUDP(tb)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
-	ln, err := quic.NewListener(pc, serverTLS(t), cfg.TransportParameters(), quic.ListenerConfig{})
+	ln, err := quic.NewListener(pc, serverTLS(tb), cfg.TransportParameters(), quic.ListenerConfig{})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	tb.Cleanup(func() { _ = ln.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	tb.Cleanup(cancel)
 	out := make(chan error, 16)
 	go func() {
 		for {
@@ -106,8 +106,8 @@ func startH3Server(t testing.TB) (base string, served <-chan error) {
 
 // h3Client is quic-go's HTTP/3 client over a 1-RTT handshake: sluice speaks
 // no 0-RTT, and the default dialer would try early data first.
-func h3Client(t testing.TB) *http.Client {
-	t.Helper()
+func h3Client(tb testing.TB) *http.Client {
+	tb.Helper()
 	tr := &http3.Transport{
 		TLSClientConfig: clientTLS(),
 		QUICConfig:      &quicgo.Config{MaxIdleTimeout: timeout},
@@ -115,23 +115,23 @@ func h3Client(t testing.TB) *http.Client {
 			return quicgo.DialAddr(ctx, addr, tlsCfg, cfg)
 		},
 	}
-	t.Cleanup(func() { _ = tr.Close() })
+	tb.Cleanup(func() { _ = tr.Close() })
 	return &http.Client{Transport: tr, Timeout: timeout}
 }
 
-func h3Get(t testing.TB, client *http.Client, url string) string {
-	t.Helper()
+func h3Get(tb testing.TB, client *http.Client, url string) string {
+	tb.Helper()
 	resp, err := client.Get(url)
 	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
+		tb.Fatalf("GET %s: %v", url, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("GET %s: reading the body: %v", url, err)
+		tb.Fatalf("GET %s: reading the body: %v", url, err)
 	}
 	if resp.StatusCode != http.StatusOK || resp.ProtoMajor != 3 {
-		t.Fatalf("GET %s: %s over %s", url, resp.Status, resp.Proto)
+		tb.Fatalf("GET %s: %s over %s", url, resp.Status, resp.Proto)
 	}
 	return string(body)
 }

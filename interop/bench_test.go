@@ -26,18 +26,18 @@ import (
 // the standard library's client then speaks HTTP/2 from the first byte,
 // with no upgrade dance, and Serve routes the connection to ServeH2 on its
 // preface. Serve returns when ctx ends.
-func startH2Server(b testing.TB) (base string) {
-	b.Helper()
+func startH2Server(tb testing.TB) (base string) {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	tlsCfg := serverTLS(b)
+	tlsCfg := serverTLS(tb)
 	tlsCfg.NextProtos = []string{"h2"}
 	tlsLn := tls.NewListener(ln, tlsCfg)
-	b.Cleanup(func() { _ = tlsLn.Close() })
+	tb.Cleanup(func() { _ = tlsLn.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	b.Cleanup(cancel)
+	tb.Cleanup(cancel)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
 	go func() { _ = httpstream.Serve(ctx, tlsLn, cfg, h3Handle) }()
 	return "https://" + ln.Addr().String()
@@ -45,12 +45,12 @@ func startH2Server(b testing.TB) (base string) {
 
 // h2Client is net/http's transport pinned to HTTP/2: the TLS config offers
 // only h2, so a response over anything else is a failure, not a fallback.
-func h2Client(b testing.TB) *http.Client {
-	b.Helper()
+func h2Client(tb testing.TB) *http.Client {
+	tb.Helper()
 	tlsCfg := clientTLS()
 	tlsCfg.NextProtos = []string{"h2"}
 	tr := &http.Transport{TLSClientConfig: tlsCfg, ForceAttemptHTTP2: true}
-	b.Cleanup(tr.CloseIdleConnections)
+	tb.Cleanup(tr.CloseIdleConnections)
 	return &http.Client{Transport: tr, Timeout: timeout}
 }
 

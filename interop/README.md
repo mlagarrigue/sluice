@@ -19,6 +19,12 @@ What runs here, and in the CI job `interop-quic` on every push:
 | `TestQuicGoClientAgainstSluiceServer` | `quic.NewListener` listens, quic-go dials | the mirror, with the peer's application close surfaced by `PeerClosed` |
 | `TestQuicGoHTTP3ClientAgainstServeH3` | `httpstream.ServeH3` serves, `quic-go/http3` requests | a plain response, a streamed one, several on one connection, two streamed at once |
 
+The first of these found a bug on its first day: one echo in twenty came
+back a frame short, because `quic.Stream.Read` reported EOF between the
+read loop marking the stream finished and the last delta reaching the read
+buffer (`net/quic/readend_internal_test.go`). Nothing in the root module's
+own tests had the timing to see it.
+
 Two benchmarks, not run in CI, measure the same servers from the same
 clients — `net/http` pinned to HTTP/2 by ALPN, `quic-go/http3` — on a
 plain response, the three-line streamed one and a 64 KiB streamed one.
@@ -30,12 +36,6 @@ publishes their figures.
 cd interop
 go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
 ```
-
-The first of these found a bug on its first day: one echo in twenty came
-back a frame short, because `quic.Stream.Read` reported EOF between the
-read loop marking the stream finished and the last delta reaching the read
-buffer (`net/quic/readend_internal_test.go`). Nothing in the root module's
-own tests had the timing to see it.
 
 The root module's `TestNestedModulesReplaceThisOne` keeps this module pointing
 at the working tree by a `replace` directive rather than at a published tag,
