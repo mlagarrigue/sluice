@@ -154,7 +154,25 @@ to a separate module before a v1.
   preferred_address identifier (sequence 1, RFC 9000 §5.1.1) from the
   Handshake packets that carry its Finished, and a server dropping them
   resent its own Handshake until its deadline closed the connection with
-  INTERNAL_ERROR (`interop/preferred_test.go`). The cases
+  INTERNAL_ERROR (`interop/preferred_test.go`). The second peer, ngtcp2,
+  was crossed the same day: every case above passes on both sides, and
+  connectionmigration splits. ngtcp2's client does move to a preferred
+  address, but only to one of the family its connection already uses
+  (RFC 9000 §9.6.1), and it had connected over IPv6 to a server announcing
+  IPv4 alone — the endpoint now announces one address per family from a
+  dual-stack socket (`ListenerConfig.PreferredIPs`). The runner then wants
+  the first server packet on the new path to carry a PATH_CHALLENGE, which
+  is §9.6.2's own demand ("the server MUST probe on the path toward the
+  client from its preferred address"): the server now puts that probe in
+  the packet that answers the client's challenge, under an identifier
+  never used on the old path (§9.5). The reverse direction stays red for
+  a reason outside sluice: the client validates the preferred address
+  before moving, as §9.6.2 requires, so the first packet it sends there
+  carries nothing but a PATH_CHALLENGE, and ngtcp2's server answers such a
+  packet with a PATH_RESPONSE alone, probing in turn only once a
+  non-probing packet arrives — no client that validates first can hand
+  the runner the PATH_CHALLENGE it wants in that first packet (ngtcp2's
+  own client probes the same way, `conn_write_path_challenge`). The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
   resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
