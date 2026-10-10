@@ -2,6 +2,7 @@ package quic_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -779,5 +780,76 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the transfer wedged — credit is not flowing back")
+	}
+}
+
+// A server whose whole first flight is lost — the ServerHello spans two
+// Initial packets since the post-quantum key shares, the second coalesced
+// with the Handshake flight — must resend *both* on its probe timeout. The
+// probe used to copy only the oldest unacknowledged packet, and the copy was
+// anonymous to the flight record: with the client's acknowledgements lost
+// too, the original stayed the oldest, every doubled timeout re-sent the
+// first half, and the client, holding half a ServerHello, never got the
+// rest. The QUIC Interop Runner's handshakeloss case against quic-go is
+// where it showed. Here the client's own datagrams are held back once the
+// server's flight is dropped, until the client proves it read the whole
+// ServerHello by sending at the Handshake level, so the only thing that can
+// complete the handshake is the server's probe carrying both halves.
+func TestServerProbeResendsItsWholeInitialFlight(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer serverPC.Close()
+	defer clientPC.Close()
+
+	serverHooked := &hookedConn{PacketConn: serverPC}
+	serverDatagrams := 0
+	serverHooked.mu.Lock()
+	serverHooked.filterWrite = func(b []byte) [][]byte {
+		// The server's first datagram acknowledges the ClientHello; the
+		// second and third carry the ServerHello and the Handshake flight.
+		serverDatagrams++
+		if serverDatagrams == 2 || serverDatagrams == 3 {
+			return nil
+		}
+		return [][]byte{b}
+	}
+	serverHooked.mu.Unlock()
+
+	clientHooked := &hookedConn{PacketConn: clientPC}
+	clientDatagrams := 0
+	clientHeldBack := 0
+	clientHooked.mu.Lock()
+	clientHooked.filterWrite = func(b []byte) [][]byte {
+		clientDatagrams++
+		isHandshake := b[0]&0x80 != 0 && (b[0]>>4)&0x03 == 0x02
+		if clientDatagrams <= 2 || isHandshake {
+			return [][]byte{b} // the ClientHello, then whatever follows the full ServerHello
+		}
+		clientHeldBack++
+		return nil
+	}
+	clientHooked.mu.Unlock()
+
+	connCh, errCh := startEchoServer(t, serverHooked)
+	// The server has no round-trip sample: its first probe fires at the
+	// 1-second initial PTO (RFC 9002 §6.2.2), the next two seconds later.
+	// One probe must be enough; the deadline leaves no room for a second.
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	conn, err := quic.DialContext(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("the handshake did not complete on the server's first probe: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case sc := <-connCh:
+		defer sc.Close()
+	case err := <-errCh:
+		t.Fatalf("the server: %v", err)
+	}
+	clientHooked.mu.Lock()
+	held := clientHeldBack
+	clientHooked.mu.Unlock()
+	if held == 0 {
+		t.Fatal("no client datagram was held back; the test proved nothing")
 	}
 }
