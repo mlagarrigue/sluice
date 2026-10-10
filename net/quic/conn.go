@@ -259,10 +259,10 @@ type Conn struct {
 	amplRecv   int64
 	amplSent   int64
 
-	// registrar is non-nil only for a [Listener]-managed connection: the
-	// hook that lets this connection add and remove its own additional
-	// identifiers in the shared demux table. Without one, no identifiers
-	// are issued (RFC 9000 §5.1.1's SHOULD) and the peer keeps sequence 0.
+	// registrar issues this connection's additional identifiers: the
+	// [Listener]'s demux table for a connection it manages, an
+	// ownerRegistrar for one that owns its socket. The peer needs them to
+	// follow this end across a NAT rebind (RFC 9000 §9.5).
 	registrar cidRegistrar
 	// localCIDs are the identifiers this end currently answers to, sequence
 	// 0 being scid; nextLocalSeq numbers the next one issued.
@@ -469,7 +469,12 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	if err != nil {
 		return nil, err
 	}
+	owner, err := newOwnerRegistrar()
+	if err != nil {
+		return nil, err
+	}
 	c := newConn(pc, addr, dcid, scid, true, params)
+	c.registrar = owner
 	c.initialDCID = dcid
 	c.params.initialSourceCID = scid
 
@@ -579,6 +584,15 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 		c.params.originalDCID = c.odcid
 		c.params.retrySourceCID = append([]byte(nil), h.DCID...)
 	}
+	// Standalone, the connection owns its socket and issues identifiers
+	// through an ownerRegistrar; a listener's prepare replaces it with the
+	// demux table.
+	owner, err := newOwnerRegistrar()
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	c.registrar = owner
 	if prepare != nil {
 		if err := prepare(c); err != nil {
 			_ = c.Close()
@@ -921,9 +935,8 @@ func (c *Conn) confirmLocked() {
 	c.handshakeConfirmed = true
 	c.peerAddrValidated = true
 	c.discardSpaceLocked(spaceHandshake)
-	// A listener-managed server now offers the alternatives a migrating or
-	// rotation-forcing peer will need; everyone else issues nothing
-	// (issueLocalCIDsLocked is a no-op without a registrar).
+	// Both ends now offer the alternatives a migrating, rebinding or
+	// rotation-forcing peer will need.
 	c.issueLocalCIDsLocked()
 	// A client whose server would rather be reached elsewhere starts
 	// validating that path now (§9.6.2) — the earliest moment the section

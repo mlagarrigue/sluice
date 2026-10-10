@@ -55,8 +55,9 @@
 //     path change to its clients. [Accept] remains for the
 //     one-connection-per-socket case.
 //   - Connection-identifier rotation and server-side passive migration
-//     (RFC 9000 §5.1, §9): a Listener-managed connection issues additional
-//     identifiers once its handshake confirms, every connection pools what
+//     (RFC 9000 §5.1, §9): every connection issues additional identifiers
+//     once its handshake confirms — a client's are what let a server
+//     follow it across a NAT rebind (§9.5) — every connection pools what
 //     its peer issues and honours RETIRE_CONNECTION_ID and Retire Prior To
 //     — switching what it sends under when a peer (a load balancer,
 //     typically) forces rotation — and a server whose client's packets
@@ -105,10 +106,6 @@
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - [Dial] and standalone [Accept] connections issue no connection
-//     identifiers of their own — only a [Listener] has a demux table to
-//     route an alternative through. Issuing is a SHOULD (§5.1.1); their
-//     peers simply keep using sequence 0.
 //   - 0-RTT, ECN and session resumption.
 //
 // # The socket is the caller's

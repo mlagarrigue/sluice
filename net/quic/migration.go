@@ -2,6 +2,9 @@ package quic
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -11,11 +14,13 @@ import (
 // Connection-identifier rotation and server-side passive migration, RFC 9000
 // §5.1 and §9.
 //
-// The shape in one paragraph: a [Listener]-managed server connection issues
-// alternative identifiers for itself (NEW_CONNECTION_ID) once its handshake
-// confirms, registered in the listener's demux table so a packet naming any
-// of them still routes; every connection pools the identifiers its *peer*
-// issues and honours Retire Prior To by switching what it sends under; and a
+// The shape in one paragraph: every connection issues alternative
+// identifiers for itself (NEW_CONNECTION_ID) once its handshake confirms — a
+// [Listener]-managed one registers them in the listener's demux table so a
+// packet naming any of them still routes, one that owns its socket needs no
+// table, every datagram on it being its own; every connection pools the
+// identifiers its *peer* issues and honours Retire Prior To by switching
+// what it sends under; and a
 // server that sees a 1-RTT packet arrive from a new address follows the
 // client there — new path unvalidated and amplification-limited until a
 // PATH_CHALLENGE round trip proves it, congestion and round-trip state reset
@@ -36,11 +41,18 @@ const maxLocalActiveCIDs = 4
 // timer is the one deadline that already exists for exactly that silence.
 const pathProbeMaxRetransmits = 3
 
-// cidRegistrar is what a [Listener] gives each connection it manages: the
-// ability to add and remove routing entries for additional local connection
-// identifiers in the shared demux table. A connection without one — [Dial],
-// standalone [Accept] — never issues identifiers, which RFC 9000 §5.1.1
-// permits (issuing is a SHOULD): its peer simply keeps using sequence 0.
+// cidRegistrar is what a connection issues its additional identifiers
+// through. A [Listener] gives each connection it manages the ability to add
+// and remove routing entries in the shared demux table; a connection that
+// owns its socket — [Dial], standalone [Accept] — gets an [ownerRegistrar],
+// which routes nothing. Issuing is only a SHOULD (RFC 9000 §5.1.1), but a
+// peer that got no identifier cannot follow this end across a NAT rebind:
+// §9.5 forbids sending under one identifier to two destination addresses,
+// so a server with no spare one cannot probe the client's new address —
+// quic-go logs "skipping validation of new path … since no connection ID is
+// available" and keeps sending to the address the NAT abandoned, until the
+// idle timer ends the connection (the runner's rebind-port and rebind-addr
+// cases, 2026-10-10, before Dial issued any).
 //
 // Lock order: these are called with the connection's mu held and take the
 // listener's own lock inside — Conn.mu before Listener.mu, never the
@@ -58,6 +70,41 @@ type cidRegistrar interface {
 	// trace of the connection is gone, which only a key the registrar
 	// keeps for its own lifetime can honour.
 	resetTokenFor(cid []byte) [16]byte
+}
+
+// ownerRegistrar is the registrar of a connection that owns its socket —
+// [Dial], standalone [Accept]. Routing is nothing: every datagram the socket
+// yields belongs to this one connection whatever identifier it names, and
+// receive already matches any entry of localCIDs. What remains is minting
+// identifiers of scid's length (the short header is parsed at that length)
+// and deriving the reset token each NEW_CONNECTION_ID must carry (§19.15)
+// from a per-connection key, so none is stored. No reset is ever sent from
+// here — the socket goes with the connection — which §10.3 allows: the
+// token only has to be unpredictable.
+type ownerRegistrar struct {
+	resetKey [32]byte
+}
+
+func newOwnerRegistrar() (*ownerRegistrar, error) {
+	r := &ownerRegistrar{}
+	if _, err := rand.Read(r.resetKey[:]); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *ownerRegistrar) addLocalCID(c *Conn) ([]byte, error) {
+	return randomID(len(c.scid))
+}
+
+func (r *ownerRegistrar) removeLocalCID([]byte) {}
+
+func (r *ownerRegistrar) resetTokenFor(cid []byte) [16]byte {
+	mac := hmac.New(sha256.New, r.resetKey[:])
+	mac.Write(cid)
+	var token [16]byte
+	copy(token[:], mac.Sum(nil))
+	return token
 }
 
 // localCID is one identifier this end answers to. Sequence 0 is the
@@ -156,9 +203,9 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // min(the peer's active_connection_id_limit, [maxLocalActiveCIDs]), issuing
 // each new one as a NEW_CONNECTION_ID on the control queue — which rides the
 // next packet's retransmittable payload, so a lost one is resent like any
-// other control frame. No-op without a registrar (nowhere to route the new
-// identifier) or before the handshake confirms (§5.1.1 wants them in 1-RTT
-// packets the peer is known able to read). Callers hold mu.
+// other control frame. No-op before the handshake confirms (§5.1.1 wants
+// them in 1-RTT packets the peer is known able to read), or on a connection
+// a test built by hand with no registrar at all. Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
 		return
