@@ -22,7 +22,6 @@ func newBenchH2Server(cfg H2Config) *h2Server {
 		streams:  make(map[uint32]*h2Stream),
 		recvWind: connRecvWindow,
 		w:        newH2Writer(&memConn{}, cfg),
-		one:      make([]*h2Job, 1),
 	}
 }
 
@@ -121,8 +120,9 @@ func chunkStream(chunks [][]byte) sluice.Stream[[]byte] {
 // BenchmarkH2StreamBody measures streamBody's write side: how many syscalls
 // (via countingConn) and how much it allocates to frame one streamed
 // response's chunks onto the wire. Candidate 3 of the performance pass claims
-// one write per DATA frame; this is the harness that number is checked
-// against.
+// one write per DATA frame, and the END_STREAM that rides on the last of them
+// rather than on a write of its own; this is the harness those numbers are
+// checked against.
 func BenchmarkH2StreamBody(b *testing.B) {
 	for _, chunksPerBatch := range []int{1, 8, 64} {
 		b.Run(fmt.Sprintf("chunks=%d", chunksPerBatch), func(b *testing.B) {
@@ -139,7 +139,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()
-			s := &h2Server{cfg: cfg, w: w, one: make([]*h2Job, 1)}
+			s := &h2Server{cfg: cfg, w: w}
 
 			spent := int32(chunksPerBatch * len(payload)) //nolint:gosec // G115: a few KB
 			b.ReportAllocs()

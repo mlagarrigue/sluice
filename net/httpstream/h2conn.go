@@ -248,14 +248,20 @@ type h2Server struct {
 
 	// The responder's own scratch, reused across batches. Nothing here is
 	// touched by the reader: the responder is the only goroutine in answer.
-	out       []byte
-	block     []byte
-	answers   []h2Answer
-	jobs      []h2Job
-	ptrs      []*h2Job
-	one       []*h2Job
-	chunk     h2Job
-	streamBuf []byte // streamBody's scratch: one producer batch, framed as one job
+	out     []byte
+	block   []byte
+	answers []h2Answer
+	jobs    []h2Job
+	ptrs    []*h2Job
+	// streamBody's state, kept here rather than in locals its pull closure
+	// would move to the heap on every call: two jobs, alternating — one may
+	// be queued or in flight while the other, done, is ready to be reused
+	// with its buffer (see h2Writer.extend for why two and never more) — the
+	// one the last batch went to, and the scratch a multi-chunk batch is
+	// flattened into.
+	streamJobs [2]h2Job
+	streamCur  *h2Job
+	streamBuf  []byte
 }
 
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
@@ -287,7 +293,6 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		streams:  make(map[uint32]*h2Stream),
 		recvWind: connRecvWindow,
 		w:        newH2Writer(c, cfg),
-		one:      make([]*h2Job, 1),
 	}
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
@@ -1478,25 +1483,35 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 }
 
 // streamBody pulls a streamed response and hands each producer batch to the
-// writer as one job, which frames it as however many DATA frames it takes
-// and waits for the credit it needs.
+// writer, which frames what has accumulated as however many DATA frames the
+// credit and the round's budget allow.
 //
-// The hand-off blocks until the bytes are on the wire, which is what makes
-// the batch safe to borrow into streamBuf — the batch contract forbids
-// retaining it — and what makes the producer run at the socket's pace rather
-// than ahead of it. A chunk the writer refuses because the stream is gone
-// stops the pull: that is a peer's RST_STREAM reaching a handler that is
-// still working for it. Every batch, empty or not, is also checked against the
-// stream's and the connection's state first, since an empty one is never
-// handed to the writer and so could not be refused by it.
+// The hand-off copies the batch into the job's own buffer — the batch
+// contract forbids retaining it — and returns without waiting for the wire:
+// a batch that arrives while the writer is in a write joins the job still
+// queued and leaves in the next write with it, and END_STREAM rides on the
+// last DATA frame when the end catches that job in time. The producer still
+// cannot run away: [h2Writer.extend] makes it wait once a queued job holds a
+// round's budget of unframed bytes, so what is held is bounded by
+// [H2Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
+// pull after [H2Config.WriteTimeout] as before.
 //
-// One job per producer batch rather than one per chunk is the same "one
-// write per batch" thesis h1 and h3 already honour: [h2Writer.fill] frames
-// everything a job's window and the round's budget allow into one buffer, so
-// a job spanning several chunks costs the syscalls its size needs and no
-// more — instead of one write per chunk, blocking in between for no reason
-// the wire required.
+// Before that, the hand-off blocked until the bytes were written, and a
+// streamed response paid one write, two goroutine hand-offs and one TCP
+// segment per batch plus one for the end: measured from the standard
+// library's client over loopback, about 70 µs per batch of eight bytes
+// (docs/benchmarks.md, "HTTP/2 and HTTP/3, from a real client"), a cost the
+// HTTP/3 path never had because quic-go's Stream.Write does not wait.
+//
+// A batch the writer refuses because the stream is gone stops the pull: that
+// is a peer's RST_STREAM reaching a handler that is still working for it.
+// Every batch, empty or not, is also checked against the stream's and the
+// connection's state first, since an empty one is never handed to the writer
+// and so could not be refused by it.
 func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
+	// Both jobs start free: done is what marks a job as reusable.
+	s.streamJobs[0].done, s.streamJobs[1].done = true, true
+	s.streamCur = nil
 	stopped := false
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
 		// Asked on every batch, empty ones included: an empty batch is never
@@ -1506,23 +1521,34 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
 			stopped = true // cut short: no END_STREAM may claim the body whole
 			return false
 		}
-		s.streamBuf = s.streamBuf[:0]
+		// A single chunk is handed over as it is; several are flattened
+		// first, so the writer appends once under its lock.
+		var data []byte
+		n := 0
 		for _, chunk := range b.Items {
 			if len(chunk) == 0 {
 				continue // an empty batch is cadence, not an end
 			}
-			s.streamBuf = append(s.streamBuf, chunk...)
+			n++
+			data = chunk
 		}
-		if len(s.streamBuf) == 0 {
+		if n == 0 {
 			return true
 		}
-		s.chunk = h2Job{id: id, head: nil, headSent: true, data: s.streamBuf}
-		s.one[0] = &s.chunk
-		if err := s.w.deliver(s.one); err != nil {
+		if n > 1 {
+			s.streamBuf = s.streamBuf[:0]
+			for _, chunk := range b.Items {
+				s.streamBuf = append(s.streamBuf, chunk...)
+			}
+			data = s.streamBuf
+		}
+		j, err := s.w.extend(id, s.streamCur, s.streamSpare(), data)
+		s.streamCur = j
+		if err != nil || j.err != nil {
 			stopped = true
 			return false
 		}
-		return s.chunk.err == nil
+		return true
 	})
 	if stopped {
 		return
@@ -1535,11 +1561,17 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
 		s.w.forget(id)
 		return
 	}
-	// The end: an empty DATA carrying END_STREAM, which costs no credit and
-	// therefore always goes out.
-	s.chunk = h2Job{id: id, headSent: true, end: true, closes: true}
-	s.one[0] = &s.chunk
-	_ = s.w.deliver(s.one)
+	// The end: END_STREAM on the last DATA frame still queued, or on an empty
+	// one of its own, which costs no credit and therefore always goes out.
+	_ = s.w.finish(id, s.streamCur, s.streamSpare())
+}
+
+// streamSpare is the streamed-body job the last batch did not go to.
+func (s *h2Server) streamSpare() *h2Job {
+	if s.streamCur == &s.streamJobs[0] {
+		return &s.streamJobs[1]
+	}
+	return &s.streamJobs[0]
 }
 
 // addWindow moves a flow-control window, refusing the overflow RFC 9113
