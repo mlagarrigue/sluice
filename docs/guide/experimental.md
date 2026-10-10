@@ -71,6 +71,21 @@ your code supply batches of bytes that the transport pulls at the client's
 pace; if the client leaves, your producer sees it (`yield` returns `false`)
 and stops.
 
+One limit is owned rather than hidden, and it follows from the second
+architecture rule (the batch is the unit of transport). Over HTTP/2 the
+buffered responses of one batch are framed at once and interleave on the
+wire. A **streamed** response is different: its producer is pulled by the
+goroutine that answers the batch, one producer at a time. Two streamed
+responses that arrived in the same batch therefore go out one after the
+other, not interleaved, and the second starts when the first producer has
+finished. The client receives both, whole and in request order; what it
+loses is simultaneity, and a slow reader of the first delays the second.
+Where that matters, give long-lived streamed responses a connection of
+their own, or serve them over HTTP/3, where each stream has its own
+transport. `scripts/interop-http.sh` checks the two-stream case against
+curl; the decision record on the multiplexed connection records the trade
+and what would reverse it.
+
 ## `net/quic` — a recent transport, reimplemented
 
 **QUIC** is the protocol HTTP/3 runs on. Unlike TCP, it runs over **UDP**

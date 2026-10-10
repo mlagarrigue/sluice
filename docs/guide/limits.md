@@ -127,10 +127,11 @@ to a separate module before a v1.
   external cryptographic review.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
-- **`net/httpstream`**: HTTP/2 and /3 confronted with third-party clients
-  (curl, browsers, h2spec); parser fuzzing in continuous integration; a
-  streamed HTTP/2 response that does not block the responder, or that limit
-  owned in the documentation.
+- **`net/httpstream`**: HTTP/3 confronted with a third-party client (a
+  curl built with HTTP/3, a browser). HTTP/1.1 and /2 have been, against
+  curl and h2spec, in continuous integration (`scripts/interop-http.sh`)
+  since 2026-10-10; the parsers are fuzzed there too, and the limit on
+  streamed HTTP/2 responses is owned in the experimental guide.
 - **`web/stream`**: follows `httpstream`, plus a real consumer.
 
 ## Measurements: what is missing
