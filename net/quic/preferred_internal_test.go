@@ -426,3 +426,176 @@ func TestServerAcceptsItsPreferredIdentifierInLongHeaders(t *testing.T) {
 		}
 	}
 }
+
+// §9.6.2 on the server: a PATH_CHALLENGE that arrives on the preferred
+// socket from the client's address is the client validating the offered
+// path, and "the server MUST probe on the path toward the client from its
+// preferred address". The first datagram the server sends from that socket
+// carries the answer and its own PATH_CHALLENGE together, under a pooled
+// identifier never used on the main path (§9.5); the main socket sends
+// nothing for it, and nothing moves until the client's first non-probing
+// packet arrives there — which then also adopts that identifier. The public
+// interop runner checks exactly this: the first server packet on the new
+// path must carry a PATH_CHALLENGE (ngtcp2 client, 2026-10-10).
+func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
+	c, main := newMigratableServer(t, "pref")
+	pref := &recordingPC{addr: fakeFuzzAddr("pref:preferred")}
+	tok := make([]byte, 16)
+	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	peer := fakeFuzzAddr("pref:peerA")
+
+	rxVia := func(via net.PacketConn) {
+		c.mu.Lock()
+		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, via, 1200, true
+		c.mu.Unlock()
+	}
+	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	rxVia(pref)
+	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := len(main.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left by the main socket, want none", n)
+	}
+	writes := pref.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("%d datagrams left by the preferred socket, want 1", len(writes))
+	}
+	if !sameAddr(writes[0].to, peer) || len(writes[0].data) < 1200 {
+		t.Errorf("the datagram went to %v in %d bytes, want %v in 1200", writes[0].to, len(writes[0].data), peer)
+	}
+	if !bytes.HasPrefix(writes[0].data[1:], []byte("cli-cid1")) {
+		t.Errorf("the datagram names identifier %x, want the fresh cli-cid1 (§9.5)", writes[0].data[1:9])
+	}
+	frames := openShort(t, writes[0].data, len("cli-cid1"))
+	var response, probe bool
+	for _, f := range frames {
+		switch f.Type {
+		case framePathResponse:
+			response = bytes.Equal(f.Data, []byte{1, 2, 3, 4, 5, 6, 7, 8})
+		case framePathChallenge:
+			probe = true
+		}
+	}
+	if !response || !probe {
+		t.Fatalf("the first datagram from the preferred socket carries response=%v challenge=%v, want both", response, probe)
+	}
+	c.mu.Lock()
+	pending, via, pc, migrations := c.pathProbe.pending, c.pathProbe.via, c.pc, c.migrations
+	c.mu.Unlock()
+	if !pending || via != net.PacketConn(pref) {
+		t.Errorf("probe pending=%v via=%v, want pending from the preferred socket", pending, via)
+	}
+	if pc != net.PacketConn(main) || migrations != 0 {
+		t.Errorf("a probing-only packet moved the connection (pc=%v, migrations=%d)", pc, migrations)
+	}
+
+	// The client moves: its first non-probing packet on the preferred socket.
+	rxVia(pref)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	pc, dcid, migrations := c.pc, c.dcid, c.migrations
+	c.mu.Unlock()
+	if pc != net.PacketConn(pref) || migrations != 1 {
+		t.Errorf("after the client's data: pc=%v migrations=%d, want the preferred socket and 1", pc, migrations)
+	}
+	if string(dcid) != "cli-cid1" {
+		t.Errorf("the connection sends under %q, want the identifier it probed under", dcid)
+	}
+}
+
+// openShort decrypts a 1-RTT packet a test Conn sealed with installAppSealer
+// and returns its frames.
+func openShort(t *testing.T, packet []byte, dcidLen int) []Frame {
+	t.Helper()
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _, err := opener.Open(packet, 1+dcidLen, 0)
+	if err != nil {
+		t.Fatalf("the datagram does not open: %v", err)
+	}
+	frames, err := parseFrames(nil, payload)
+	if err != nil {
+		t.Fatalf("the payload does not parse: %v", err)
+	}
+	return frames
+}
+
+// A dual-stack preferred socket announces one address per family, named in
+// PreferredIPs; the parameter then offers each client the address of its
+// own family (§9.6.1 — a client reached over IPv6 never moves to an IPv4
+// address, which is what left ngtcp2 on the handshake path, 2026-10-10).
+// The refusals: two addresses of one family, an address a concretely bound
+// socket does not answer at, and an unspecified address.
+func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
+	main, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer main.Close()
+	dual, err := net.ListenUDP("udp", &net.UDPAddr{})
+	if err != nil {
+		t.Skipf("no dual-stack socket on this host: %v", err)
+	}
+	defer dual.Close()
+	port := dual.LocalAddr().(*net.UDPAddr).Port
+
+	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+		PreferredAddress: dual, PreferredIPs: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	c := newConn(main, fakeFuzzAddr("fam:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	if err := l.prepareConn(c); err != nil {
+		t.Fatal(err)
+	}
+	pa := c.params.preferredAddress
+	if pa == nil || pa.ipv4 == nil || pa.ipv6 == nil {
+		t.Fatalf("announced %+v, want both families", pa)
+	}
+	if !pa.ipv4.IP.Equal(net.IPv4(127, 0, 0, 1)) || pa.ipv4.Port != port || !pa.ipv6.IP.Equal(net.IPv6loopback) || pa.ipv6.Port != port {
+		t.Errorf("announced %v and %v, want 127.0.0.1 and ::1 on port %d", pa.ipv4, pa.ipv6, port)
+	}
+	v4 := pa.addrFor(&net.UDPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 1})
+	v6 := pa.addrFor(&net.UDPAddr{IP: net.ParseIP("fd00::1"), Port: 1})
+	if !sameAddr(v4, pa.ipv4) || !sameAddr(v6, pa.ipv6) {
+		t.Errorf("a v4 client is offered %v and a v6 one %v", v4, v6)
+	}
+
+	refused := []struct {
+		name string
+		ips  []net.IP
+	}{
+		{"two IPv4", []net.IP{net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 2)}},
+		{"unspecified", []net.IP{net.IPv4zero}},
+	}
+	for _, r := range refused {
+		if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: dual, PreferredIPs: r.ips}); err == nil {
+			l.Close()
+			t.Errorf("PreferredIPs %s was accepted", r.name)
+		}
+	}
+	concrete, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer concrete.Close()
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+		PreferredAddress: concrete, PreferredIPs: []net.IP{net.IPv4(127, 0, 0, 2)},
+	}); err == nil {
+		l.Close()
+		t.Error("an address the concretely bound socket does not answer at was accepted")
+	}
+}
