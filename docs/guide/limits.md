@@ -129,21 +129,19 @@ to a separate module before a v1.
   integration (the `interop/` module, job `interop-quic`).
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
-- **`net/httpstream`**: the per-batch cost of a streamed HTTP/2 response,
-  explained in the code and brought down or owned in the experimental
-  guide. The measurement that revealed it — HTTP/2 and HTTP/3 against a
-  client that shares no code, the standard library's and quic-go's — is
-  published in `docs/benchmarks.md` since 2026-10-10 (`interop/`, "HTTP/2
-  and HTTP/3, from a real client"): about 70 µs per batch pulled, whatever
-  its size, which HTTP/3 does not pay for small batches. Decided on
-  2026-10-10: interoperability alone does not drop the label, a stable API
-  that turns out too slow is harder to fix than an experimental one.
-  Interoperability itself left this list the same day: HTTP/1.1 and
-  /2 have faced curl and h2spec in continuous integration
+- **`net/httpstream`**: nothing left open. The last condition — the
+  per-batch cost of a streamed HTTP/2 response, about 70 µs seen from a real
+  client whatever the size of the batch — was explained and divided by two on
+  2026-10-10 (`h2Writer.extend`, `docs/benchmarks.md`, "HTTP/2 and HTTP/3,
+  from a real client"); what remains — the first batch leaves alone, the
+  following ones are gathered — is owned in the experimental guide.
+  Interoperability had left this list the same day: HTTP/1.1 and /2 have
+  faced curl and h2spec in continuous integration
   (`scripts/interop-http.sh`); HTTP/3 has faced quic-go's client
-  (`interop/h3_test.go`, job `interop-quic`), a plain response, a streamed
-  one and two streamed at once arriving whole; the parsers are fuzzed; the
+  (`interop/h3_test.go`, job `interop-quic`) — a plain response, a streamed
+  one, two streamed at once arriving whole; the parsers are fuzzed; the
   limit on streamed HTTP/2 responses is owned in the experimental guide.
+  Removing the label is the next brief.
 - **`web/stream`**: follows `httpstream`, plus a real consumer.
 
 ## Measurements: what is missing

@@ -126,34 +126,52 @@ cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
 ```
 
 Median of three passes on 2026-10-10, on the same machine as the rest of
-this document (laptop, WSL2, not pinned: a socket bench cannot be pinned).
+this document (laptop, WSL2, not pinned: a socket bench cannot be pinned),
+after the commit `perf(httpstream): coalesce streamed batches into one
+write` (1ed3551). This session is slower than the one of the morning
+(`plain` over HTTP/2 at 196 µs against 118): only the ratios can be compared
+from one session to the next, which is why the earlier figures are recalled.
 
-| benchmark | median | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkH2FromNetHTTP/plain` | 118 µs | ±17% ** | 5.8 KB | 56 |
-| `BenchmarkH2FromNetHTTP/stream` | 334 µs | ±17% ** | 5.6 KB | 67 |
-| `BenchmarkH2FromNetHTTP/bulk` | 1184 µs · 55 MB/s | ±2% | 6.5 KB | 119 |
-| `BenchmarkH3FromQuicGo/plain` | 345 µs | ±3% | 11 KB | 163 |
-| `BenchmarkH3FromQuicGo/stream` | 348 µs | ±1% | 12 KB | 207 |
-| `BenchmarkH3FromQuicGo/bulk` | 1053 µs · 62 MB/s | ±2% | 117 KB | 857 |
+| benchmark | median | spread | B/op | allocs/op | before 1ed3551 |
+|---|---|---|---|---|---|
+| `BenchmarkH2FromNetHTTP/plain` | 196 µs | ±9% | 5.8 KB | 56 | 118 µs |
+| `BenchmarkH2FromNetHTTP/stream` | 309 µs | ±2% | 5.4 KB | 59 | 334 µs (2.8 × plain) |
+| `BenchmarkH2FromNetHTTP/bulk` | 516 µs · 127 MB/s | ±2% | 5.4 KB | 78 | 1184 µs · 55 MB/s |
+| `BenchmarkH3FromQuicGo/plain` | 378 µs | ±3% | 11 KB | 163 | 345 µs |
+| `BenchmarkH3FromQuicGo/stream` | 406 µs | ±2% | 12 KB | 208 | 348 µs |
+| `BenchmarkH3FromQuicGo/bulk` | 1179 µs · 56 MB/s | ±2% | 120 KB | 860 | 1053 µs · 62 MB/s |
 
 B/op and allocs/op count both sides, the third-party client included: read
 them as an order of magnitude, not as the cost of the server.
 
-**What the figures say.** The two short HTTP/2 rows exceed the 15% threshold
-and are not quoted in absolute terms; the ratios, however, hold across the
-three passes. A streamed HTTP/2 response of three batches costs nearly three
-times the plain response: about 70 µs per batch pulled, whatever its size,
-and `bulk` confirms it at sixteen batches on both protocols. In HTTP/3, the
-three small batches cost nothing more than the plain response; the extra
-cost only appears with `bulk`, when the 64 KiB cross the flow windows. At
-4 KiB per batch, both protocols top out around 60 MB/s over loopback.
+**What the figures say.** Before 1ed3551, a streamed HTTP/2 response of three
+batches cost nearly three times the plain response: about 70 µs per batch
+pulled, whatever its size, which HTTP/3 did not pay for small batches. The
+mechanism is traced in `h2Writer.extend`: handing a batch to the HTTP/2 writer
+blocked the producer until the bytes were on the wire, so one TLS write, two
+hand-overs between goroutines and one TCP segment per batch, plus an empty
+DATA frame for END_STREAM; quic-go, for its part, copies and gives control
+back, and its send loop gathers what has piled up into one packet. Since
+then, the producer appends its bytes to the job still in the queue and only
+waits if that job holds one round's budget (`MaxWriteBufferBytes`) of unframed
+bytes; END_STREAM rides on the last DATA frame. Three batches now cost 1.6
+times the plain response (about 38 µs per batch) and `bulk` goes from 55 to
+127 MB/s, twice the throughput of HTTP/3 over loopback.
 
-**Verdict.** These figures do not yet allow the label to be removed: a fixed
-cost per batch of a streamed HTTP/2 response, which HTTP/3 does not pay for
-small batches, is a mechanism to explain before promising a stable API;
-`docs/guide/limits.md` carries it as the one condition left. Nothing here
-says the path is slow by nature: a bigger batch divides the cost by as much.
+What remains is a cost of rhythm, not of code: the first batch leaves as soon
+as it arrives — holding it back would be delay added to a response that
+streams — and those that arrive while it is being written leave together on
+the next pass, so at most one write per round of the writer instead of one per
+batch; on the client side, each DATA frame received wakes up the body reader.
+HTTP/3 does not know this step for three batches of eight bytes because its
+first packet waits for its turn in the send loop, and pays back the QUIC
+windows on `bulk`, twice as dearly.
+
+**Verdict.** The cost per batch is explained, divided by two, and what remains
+is owned: `docs/guide/experimental.md` says it in one sentence for whoever
+sizes their batches, and `docs/guide/limits.md` no longer carries an exit
+condition on `net/httpstream`. A bigger batch still divides the cost by as
+much.
 
 ---
 

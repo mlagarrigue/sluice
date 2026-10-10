@@ -88,6 +88,20 @@ transport. `scripts/interop-http.sh` checks the two-stream case against
 curl; the decision record on the multiplexed connection records the trade
 and what would reverse it.
 
+The cost of a streamed batch over HTTP/2 is measured, not promised
+(`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real client"). The first
+batch of a response leaves as soon as the producer yields it; those it
+yields during that write are gathered and leave together on the next one,
+END_STREAM on the last. Seen from a real client over loopback, three batches
+of eight bytes cost about 1.6 times a response yielded whole, and sixteen
+batches of 4 KiB exceed 120 MB/s. What remains per batch is the price of not
+holding back the first one: a producer that yields tiny batches at a high
+rate pays one write per round of the writer and one wake-up of the reader on
+the client side per DATA frame. Size your batches accordingly — a bigger
+batch divides that cost by as much — and remember that
+`H2Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
+producer may be, per stream.
+
 ## `net/quic` — a recent transport, reimplemented
 
 **QUIC** is the protocol HTTP/3 runs on. Unlike TCP, it runs over **UDP**
