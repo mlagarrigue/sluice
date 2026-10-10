@@ -327,15 +327,22 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		if len(ready) > 0 {
 			in <- h2Batch{reqs: ready, ids: ids}
 		}
-		// A peer's GOAWAY does not stop the reader while answers are still
-		// owed: the WINDOW_UPDATE and PING an in-flight response depends on
+		// A peer's GOAWAY does not stop the reader. While answers are still
+		// owed, the WINDOW_UPDATE and PING an in-flight response depends on
 		// arrive on this goroutine and nowhere else, so stopping at the
 		// GOAWAY stalled every response larger than its remaining send
 		// window until WriteTimeout reset it — a client that said "finish
-		// what you have and close" got its streams killed instead. New
-		// streams are refused (see stream); the reader stops once nothing is
-		// owed.
-		return !s.goingAway || s.open > 0 || s.inFlight.Load() > 0
+		// what you have and close" got its streams killed instead. Once
+		// nothing is owed it keeps reading too, until the peer hangs up or
+		// IdleTimeout does, and the GOAWAY this end owes (§6.8) goes out at
+		// that close as on every other. It used to close here: found by
+		// h2spec (generic/3.8/1), a peer whose PING follows its GOAWAY on
+		// the wire had the PING sitting unread in the socket when the close
+		// happened, which TCP answers with a reset — the peer saw ECONNRESET
+		// on a connection it had ended cleanly, or a clean close, depending
+		// on which arrived first. New streams are refused either way (see
+		// stream).
+		return true
 	})
 	s.readEnded.Store(true)
 
