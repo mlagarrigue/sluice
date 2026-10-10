@@ -10,6 +10,14 @@ updates:
       interval: weekly
     commit-message:
       prefix: "build"
+  # The interop module pins quic-go (interop/go.mod); a bump that breaks the
+  # handshake fails the interop-quic job, which is the point of running it.
+  - package-ecosystem: gomod
+    directory: "/interop"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

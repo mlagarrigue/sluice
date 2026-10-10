@@ -225,6 +225,27 @@ jobs:
       - name: curl and h2spec against the server
         run: scripts/interop-http.sh
 
+  # net/quic against a peer that shares none of its code: the interop/ module
+  # (its own go.mod, excluded from the root's ./... and so from the deps job's
+  # graph) runs sluice's client against a quic-go server and the reverse —
+  # handshake, an echo across flow-control windows, a close the peer sees.
+  # The public QUIC Interop Runner is not here yet (docs/guide/limits.md).
+  interop-quic:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache-dependency-path: |
+            go.sum
+            interop/go.sum
+      - name: sluice and quic-go, each side of the handshake
+        run: go test -race -count=1 ./...
+        working-directory: interop
+
   # Every production dependency is a recorded decision (ADR 0002): today the
   # standard library plus golang.org/x/crypto (which brings golang.org/x/sys
   # for CPU feature detection), nothing else. Checked two ways: go.mod may
