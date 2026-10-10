@@ -25,8 +25,12 @@ import (
 func h3Handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for _, r := range b.Items {
-		if string(r.Target) == "/stream" {
+		switch string(r.Target) {
+		case "/stream":
 			out = append(out, httpstream.Response{Status: 200, Stream: h3Streamed})
+			continue
+		case "/bulk":
+			out = append(out, httpstream.Response{Status: 200, Stream: h3Bulk})
 			continue
 		}
 		out = append(out, httpstream.Response{
@@ -48,10 +52,35 @@ func h3Streamed(yield func(sluice.Batch[[]byte]) bool) {
 
 const h3Stream = "batch 1\nbatch 2\nbatch 3\n"
 
+// h3Bulk is the streamed body the benchmarks pull: bulkBatches batches of
+// bulkChunk bytes, enough to cross several flow-control windows, so that a
+// throughput figure measures the transport and not one frame.
+const (
+	bulkBatches = 16
+	bulkChunk   = 4096
+	bulkSize    = bulkBatches * bulkChunk
+)
+
+var bulkPayload = func() []byte {
+	p := make([]byte, bulkChunk)
+	for i := range p {
+		p[i] = byte(i)
+	}
+	return p
+}()
+
+func h3Bulk(yield func(sluice.Batch[[]byte]) bool) {
+	for range bulkBatches {
+		if !yield(sluice.Batch[[]byte]{Items: [][]byte{bulkPayload}}) {
+			return
+		}
+	}
+}
+
 // startH3Server runs ServeH3 behind a quic.Listener and returns the URL
 // prefix to reach it. Every accepted connection is served until the test
 // ends; what ServeH3 returned is reported through served.
-func startH3Server(t *testing.T) (base string, served <-chan error) {
+func startH3Server(t testing.TB) (base string, served <-chan error) {
 	t.Helper()
 	pc := listenUDP(t)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
@@ -77,7 +106,7 @@ func startH3Server(t *testing.T) (base string, served <-chan error) {
 
 // h3Client is quic-go's HTTP/3 client over a 1-RTT handshake: sluice speaks
 // no 0-RTT, and the default dialer would try early data first.
-func h3Client(t *testing.T) *http.Client {
+func h3Client(t testing.TB) *http.Client {
 	t.Helper()
 	tr := &http3.Transport{
 		TLSClientConfig: clientTLS(),
@@ -90,7 +119,7 @@ func h3Client(t *testing.T) *http.Client {
 	return &http.Client{Transport: tr, Timeout: timeout}
 }
 
-func h3Get(t *testing.T, client *http.Client, url string) string {
+func h3Get(t testing.TB, client *http.Client, url string) string {
 	t.Helper()
 	resp, err := client.Get(url)
 	if err != nil {

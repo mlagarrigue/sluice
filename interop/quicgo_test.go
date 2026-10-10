@@ -41,7 +41,7 @@ const (
 // serverTLS mints a self-signed certificate for 127.0.0.1 and configures
 // TLS 1.3 with ALPN, which QUIC makes mandatory (RFC 9001 §8.1). No cipher
 // suite is forced: the two implementations must agree on one by themselves.
-func serverTLS(t *testing.T) *tls.Config {
+func serverTLS(t testing.TB) *tls.Config {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -75,7 +75,7 @@ func clientTLS() *tls.Config {
 	}
 }
 
-func listenUDP(t *testing.T) *net.UDPConn {
+func listenUDP(t testing.TB) *net.UDPConn {
 	t.Helper()
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
