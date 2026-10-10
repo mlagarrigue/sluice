@@ -1,0 +1,39 @@
+# h2spec cases scripts/interop-http.sh expects to fail, one per line as
+# <group>/<section>/<case>, exactly as the script prints them. Every entry
+# names the RFC passage and the reason; an entry that starts passing fails
+# the script so the list cannot go stale.
+#
+# h2spec v2.6.0 encodes RFC 7540. RFC 9113 obsoletes it and relaxed or
+# removed four of the rules below; the fifth is a server design choice
+# the specification allows.
+
+# RFC 9113 §3.4: an invalid preface is a connection error, and "a GOAWAY
+# frame MAY be omitted in this case, since an invalid preface indicates
+# that the peer is not using HTTP/2". Serve sniffs the preface on a bare
+# listener (serve.go), so a stream that does not start with it is served
+# as HTTP/1.1 and refused by that parser; h2spec reads the HTTP/1.1
+# refusal as a truncated frame.
+http2/3.5/2
+
+# RFC 9113 §5.1, "closed": a peer that sent RST_STREAM and then sends on
+# the stream has broken a MUST NOT, and the receiver "MAY treat receipt of
+# any other type of frame on a closed stream as a connection error".
+# RFC 7540 made the stream error mandatory; this server takes the other
+# branch of the MAY and tolerates the frame for a while, because the
+# RST_STREAM and the DATA may have crossed on the wire (h2conn.go, retire).
+http2/5.1/8
+http2/5.1/9
+
+# RFC 9113 §5.1, "closed": same MAY. The case closes a stream by
+# END_STREAM both ways and sends HEADERS again; this server answers with a
+# stream error STREAM_CLOSED (RST_STREAM) rather than the connection error
+# RFC 7540 required. One misbehaving stream costs that stream, and it is
+# charged against the rapid-reset allowance like any other reset.
+http2/5.1/12
+
+# RFC 9113 §5.3.2 deprecates the priority scheme and §6.2/§6.3 no longer
+# say that a stream cannot depend on itself: the dependency fields are
+# skipped, unread (h2conn.go, headers; frame, PRIORITY). The ADR on
+# priorities records that RFC 9218 is not implemented either.
+http2/5.3.1/1
+http2/5.3.1/2

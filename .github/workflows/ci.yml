@@ -207,6 +207,24 @@ jobs:
             exit 1
           fi
 
+  # net/httpstream against clients it did not write: curl over HTTP/1.1 and
+  # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server
+  # built from the tree. A peer that did not read the specification with our
+  # eyes is the one check the scripted tests cannot be. The expected h2spec
+  # failures are listed, each with its reason, in
+  # net/httpstream/testdata/h2spec-exclusions.txt; the script fails on any
+  # other red case and on a listed case that passes. HTTP/3 is not here yet:
+  # the runner's curl is built without it.
+  interop-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: curl and h2spec against the server
+        run: scripts/interop-http.sh
+
   # Every production dependency is a recorded decision (ADR 0002): today the
   # standard library plus golang.org/x/crypto (which brings golang.org/x/sys
   # for CPU feature detection), nothing else. Checked two ways: go.mod may
