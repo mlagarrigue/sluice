@@ -8,9 +8,11 @@
 # The runner is cloned into RUNNER_DIR (default: a directory under the
 # system temporary directory) at RUNNER_REF (default: master); TESTS
 # narrows the cases (comma separated, the runner's names). The image is
-# built from the working tree and the sluice entry is added to the runner's
-# implementation list; the runner's own directories are left as it leaves
-# them, so a second run reuses the clone and its virtual environment.
+# built from the working tree, or pulled when IMAGE names a published one
+# (ghcr.io/mlagarrigue/sluice-interop:latest, what the public matrix runs),
+# and the sluice entry is added to the runner's implementation list; the
+# runner's own directories are left as it leaves them, so a second run
+# reuses the clone and its virtual environment.
 #
 # The exit status says whether the runner ran, not whether sluice is green:
 # a red case is a result this script reports, a 127 is an unsupported case
@@ -23,7 +25,7 @@ peer=${1:-quic-go}
 RUNNER_DIR=${RUNNER_DIR:-${TMPDIR:-/tmp}/quic-interop-runner}
 RUNNER_REF=${RUNNER_REF:-master}
 TESTS=${TESTS:-handshake,transfer,longrtt,chacha20,multiplexing,retry,resumption,zerortt,http3,blackhole,keyupdate,ecn,amplificationlimit,handshakeloss,transferloss,handshakecorruption,transfercorruption,ipv6,v2,rebind-port,rebind-addr,connectionmigration}
-image=sluice-interop:local
+image=${IMAGE:-sluice-interop:local}
 
 fail() {
   echo "interop-runner: $*" >&2
@@ -34,8 +36,13 @@ for tool in docker python3 tshark jq git; do
 done
 
 echo "## image"
-docker build -q -f interop/Dockerfile -t "$image" . >/dev/null
-echo "built $image"
+if [ -n "${IMAGE:-}" ]; then
+  docker pull -q "$image" >/dev/null
+  echo "pulled $image"
+else
+  docker build -q -f interop/Dockerfile -t "$image" . >/dev/null
+  echo "built $image"
+fi
 
 echo "## runner"
 if [ ! -d "$RUNNER_DIR/.git" ]; then

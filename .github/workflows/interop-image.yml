@@ -1,0 +1,51 @@
+# The interop endpoint's public image, ghcr.io/mlagarrigue/sluice-interop,
+# which the public QUIC Interop Runner pulls to cross sluice with every
+# registered implementation. Built from a release tag only, never from a
+# commit of main: the matrix tests the state the release notes and
+# docs/guide/limits.md describe. `latest` moves with each release; the
+# version tag stays. The dispatch form rebuilds a tag whose image was lost
+# or whose base image moved; given a branch, it refuses.
+name: Interop image
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  interop-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require a release tag
+        if: github.ref_type != 'tag'
+        run: |
+          echo "::error::the interop image is built from a tag, not from ${{ github.ref }}"
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The online runner wants linux/amd64; arm64 serves a local run on an
+      # Apple or Graviton machine. The base image ships both.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: interop/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mlagarrigue/sluice-interop:${{ github.ref_name }}
+            ghcr.io/mlagarrigue/sluice-interop:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/mlagarrigue/sluice
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.description=sluice's endpoint for the QUIC Interop Runner

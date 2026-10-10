@@ -14,6 +14,9 @@ on:
       tests:
         description: comma-separated cases; empty means every case
         default: ''
+      image:
+        description: published image to run instead of building the working tree (ghcr.io/mlagarrigue/sluice-interop:latest)
+        default: ''
 
 permissions:
   contents: read
@@ -46,6 +49,7 @@ jobs:
         run: |
           set -o pipefail
           if [ -n '${{ inputs.tests }}' ]; then export TESTS='${{ inputs.tests }}'; fi
+          if [ -n '${{ inputs.image }}' ]; then export IMAGE='${{ inputs.image }}'; fi
           scripts/interop-runner.sh '${{ inputs.peer }}' | tee "$RUNNER_DIR-output.txt"
       - name: Keep the runner's logs
         if: always()
