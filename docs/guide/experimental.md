@@ -105,7 +105,7 @@ level.
 conn, err := quic.Dial(pc, addr, tlsConfig, quic.DefaultParameters())                     // client side
 ln, err := quic.NewListener(pc, tlsConfig, quic.DefaultParameters(), quic.ListenerConfig{}) // server side
 conn, err := ln.Accept()
-stats := conn.Stats() // discarded packets, write failures, key-rotation suspects
+stats := conn.Stats() // discarded packets, write failures, key updates
 ```
 
 The **transport parameters** are the limits each end announces to the
@@ -123,10 +123,11 @@ with the options a QUIC endpoint needs (no IP fragmentation, one IPv6 flow
 label per path) and, on Linux, lets a server on a host with several
 addresses answer from the address a datagram reached.
 
-What is missing is stated: **key update** (RFC 9001 §6, changing the
-encryption keys mid-connection) is not implemented; a peer that does it
-shows up in `Stats().KeyPhaseSuspects` and its connection eventually times
-out.
+**Key update** (RFC 9001 §6, changing the encryption keys mid-connection)
+is handled both ways: a peer's rotation is followed, and this end rotates
+its own keys before the cipher's packet budget runs out, so a long
+connection no longer dies of its packet count. `Stats().KeyUpdates`
+counts the rotations.
 
 ## Supported deployments
 

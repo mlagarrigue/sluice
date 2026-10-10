@@ -122,9 +122,9 @@ These packages leave the label only by meeting these conditions, or move
 to a separate module before a v1.
 
 - **`net/quic`**: having talked to a third-party implementation (quic-go,
-  then the public *QUIC Interop Runner*); implementing key update
-  (RFC 9001 §6), without which a long connection eventually dies; an
-  external cryptographic review.
+  then the public *QUIC Interop Runner*); an external cryptographic
+  review. Key update (RFC 9001 §6) left this list on 2026-10-10: both
+  sides rotate, and a long connection no longer dies of its packet count.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`net/httpstream`**: HTTP/3 confronted with a third-party client (a
