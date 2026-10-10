@@ -15,11 +15,13 @@ from the received byte all the way to PostgreSQL and back, counting its own
 round trips.
 
 **What is not promised.** That names and signatures stay the same from one
-version to the next. Production use. For QUIC, **interoperability**:
-everything is checked against itself, against the examples published in
-the standard (RFC 9001) and against a test harness that loses, shuffles and
-forges packets — which is serious, but not the same as having talked to a
-server written by someone else. A review by security specialists. Fuzzing
+version to the next. Production use. For QUIC, **interoperability** beyond
+one peer: everything is checked against itself, against the examples
+published in the standard (RFC 9001), against a test harness that loses,
+shuffles and forges packets, and against one implementation written by
+someone else (quic-go, in continuous integration) — which is serious, but
+not the same as the public matrix where many implementations are crossed
+two by two. A review by security specialists. Fuzzing
 (sending masses of random inputs to find flaws) against a public corpus.
 
 > **In plain terms: then why do these packages exist?** A **parser** (the

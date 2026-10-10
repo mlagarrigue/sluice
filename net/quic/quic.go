@@ -6,11 +6,14 @@
 //
 // # Read this before using it
 //
-// It has not been run against another implementation. Everything here is
-// checked against itself, against RFC 9001 Appendix A's published vectors,
-// and against a test harness that drops, reorders and forges datagrams —
-// which is a real standard and still not the same as interoperating. Treat
-// interoperability as unproven until a peer that shares no code has agreed.
+// Interoperability is proven against exactly one peer that shares no code:
+// quic-go, on each side of the handshake, in continuous integration since
+// 2026-10-10 (the interop/ module — handshake, an echo across flow-control
+// windows, a close the peer sees). Everything else is checked against
+// itself, against RFC 9001 Appendix A's published vectors, and against a
+// test harness that drops, reorders and forges datagrams. One peer is not
+// the public QUIC Interop Runner, whose matrix crosses many; until this
+// package is green there, treat a second implementation as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
 // a server on a host with several addresses (Linux only, through
 // [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported

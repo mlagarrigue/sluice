@@ -27,8 +27,8 @@ import (
 // than believed. The *listener* side of a server — connection-identifier
 // demultiplexing, address validation, amplification limits, Retry
 // generation — lives in [Listener], its own design unit on top of this one.
-// Interoperation with another implementation remains unproven until it is
-// tested against one.
+// Interoperation is proven against quic-go, both ways, in continuous
+// integration (interop/); against any other implementation it is not.
 //
 // # Failure model
 //

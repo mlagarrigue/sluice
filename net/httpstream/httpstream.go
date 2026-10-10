@@ -156,10 +156,12 @@
 // TLS 1.3 handshake on a UDP socket, RFC 9001 packet protection, RFC 9002
 // recovery — not on a dependency, since the standard library has no QUIC.
 // That package is experimental in the same sense this one is: checked
-// against itself, against published vectors and against a harness that
-// drops, reorders and forges datagrams, and not yet against a peer that
-// shares no code. Keep [ServeH3] off the supported path for the same reason
-// as the rest of this package.
+// against itself, against published vectors, against a harness that drops,
+// reorders and forges datagrams, and against one peer that shares no code
+// (quic-go, in the interop/ module) — not yet against the public QUIC
+// Interop Runner, and the HTTP/3 layer here not yet against a third-party
+// client. Keep [ServeH3] off the supported path for the same reason as the
+// rest of this package.
 //
 // # The codec layer is not exported
 //
