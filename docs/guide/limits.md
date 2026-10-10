@@ -90,8 +90,8 @@ Three reasons come up, and the difference matters:
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
-- **`pushdown` is not wired**: the connector does not yet read a `Demand`
-  (see Experimental).
+- **`pushdown` pushes the limit and the key bound, not the column set**:
+  the SQL is the caller's and its select list is not rewritten.
 
 ## Web and gateway
 
@@ -132,8 +132,6 @@ to a separate module before a v1.
   streamed HTTP/2 response that does not block the responder, or that limit
   owned in the documentation.
 - **`web/stream`**: follows `httpstream`, plus a real consumer.
-- **`pushdown`**: at least one source that reads the `Demand` (PostgreSQL
-  or the gateway); otherwise the API is frozen on a guessed need.
 
 ## Measurements: what is missing
 

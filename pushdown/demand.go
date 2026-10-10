@@ -1,9 +1,5 @@
-// Package pushdown is experimental: a consumer tells its source something
-// better than "stop" — how many rows it still needs, and how far ahead it
-// may skip.
-//
-// The mechanism is tested and measured on its own, but no supported path
-// uses it yet, so its shape may change before v1.
+// Package pushdown lets a consumer tell its source something better than
+// "stop" — how many rows it still needs, and how far ahead it may skip.
 //
 // The mechanism has a name — sideways information passing — and a modern
 // reference: DataFusion's dynamic filters, where a TopK operator hands its
@@ -34,14 +30,15 @@
 // and reported by [Demand.Violations], where a test can see it, rather than
 // silently producing a result that is missing rows.
 //
-// # Status: experimental
+// # Who reads a demand
 //
-// No source in this repository consumes a [Demand] yet: the operators here
-// publish, and the postgres and gateway sources do not yet read. The package
-// exists anyway because the design is the part worth recording — what a
-// demand is, why it only tightens, what one atomic load per batch buys — and
-// docs/design/architecture.md ("Enriched stop signal — pushdown") records it against this code rather than against
-// a sketch. Treat the API as one that may still move.
+// The PostgreSQL connector does: a [Demand] handed to its QueryConfig is
+// consulted once per batch, the limit becomes the row count the server is
+// asked for and the lower bound re-binds the query's key parameter, so the
+// rows below it are never produced. The operators here publish; that source
+// reads. The design itself — what a demand is, why it only tightens, what one
+// atomic load per batch buys — is recorded in docs/design/architecture.md
+// ("Enriched stop signal — pushdown") against this code.
 package pushdown
 
 import (

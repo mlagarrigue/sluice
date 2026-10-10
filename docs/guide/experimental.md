@@ -1,9 +1,10 @@
 # Experimental
 
-Five packages carry the **experimental** label, in the first sentence of
+Four packages carry the **experimental** label, in the first sentence of
 their documentation: `net/httpstream`, `net/quic` and its helper
-`net/quic/udp`, `web/stream` and `pushdown`. This page first says what the
-word means here, then what each one does and what not to expect from it.
+`net/quic/udp`, and `web/stream`. This page first says what the word means
+here, then what each one does and what not to expect from it, and ends
+with the package that left the list and what it took to leave.
 
 ## What "experimental" means
 
@@ -165,7 +166,7 @@ handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Respo
 }
 ```
 
-## `pushdown` — saying better than "stop"
+## `pushdown` — no longer experimental
 
 A reader that knows where it is can help its source: "skip to key X", "I
 only need a hundred more". That is what database engines call *pushing* a
@@ -175,19 +176,27 @@ little to measure), and downstream operators **tighten** it — never the
 reverse, because a source that has already skipped a thousand rows cannot
 go back.
 
+The package left this list the day a source in the library read it: the
+PostgreSQL connector takes a `Demand` in its `QueryConfig`. The limit
+becomes the number of rows the server is asked for next; the lower bound is
+bound to the key parameter the query names, and the query resumes above it
+without an extra round trip.
+
 ```go
 var d pushdown.Demand                      // the zero value means "everything"
-rows := scan(&d)                           // a source that consults the demand
-rows = pushdown.AdvanceBy(rows, &d, keyOf) // publishes the key reached
+src := conn.Query(ctx,
+    "SELECT id, total FROM orders WHERE id > $1 ORDER BY id",
+    [][]byte{postgres.AppendInt8(nil, 0)},
+    postgres.QueryConfig{Demand: &d, KeyParam: 1})
+rows := pushdown.AdvanceBy(src.Stream(), &d, keyOf) // publishes the key reached
 ```
 
 Measured on the case it exists for — a reader advancing in key order, a
 source skipping whole pages — ×6.9.
 
-> **In plain terms.** No source in the library listens to a `Demand` yet:
-> the PostgreSQL connector does not. It is a ready and measured mechanism,
-> not a feature you can use today without writing the source yourself.
-> That is why it is experimental.
+> **In plain terms.** What is pushed down is the limit and the key bound;
+> the column set is published but not acted on, because the SQL is yours
+> and the connector does not rewrite it.
 
 ## The end-to-end example
 

@@ -131,7 +131,7 @@ special "handler" in the middle that would be of another nature.
 | `sluice/database/postgres` | PostgreSQL by speaking its protocol: binary codecs, `= ANY($1)`, COPY | supported |
 | `cmd/sluicegen` | generates the code that turns rows into structs | supported |
 | `sluice/probe` | counters to find the stage that makes the others wait | supported |
-| `sluice/pushdown` | the reader tells the source what it no longer needs | **experimental** — no source listens yet |
+| `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens | supported |
 | `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages | **experimental** |
 | `sluice/web/stream` | the request path for that experimental transport | **experimental** |
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket | **experimental** |
@@ -273,7 +273,7 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── database/postgres/  PostgreSQL connector
 ├── net/httpstream/     native HTTP/1.1, /2, /3 (experimental)
 ├── net/quic/           QUIC v1 (experimental)
-├── pushdown/ probe/    upstream demand (experimental) · instrumentation
+├── pushdown/ probe/    upstream demand · instrumentation
 ├── cmd/sluicegen/      generator of hydration code
 ├── example/            orders (supported path) · vertical (experimental path)
 ├── internal/           shared machinery, measurement harness, wire protocol
