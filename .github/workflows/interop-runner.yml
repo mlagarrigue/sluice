@@ -1,0 +1,55 @@
+# The public QUIC Interop Runner, sluice against one peer on each side of
+# the handshake. Run by hand: a full pass pulls the simulator images, builds
+# ours and crosses some twenty cases twice, which is far beyond what a push
+# should wait for. The result table is in the job log; the runner's logs of
+# every case (captures, keys, each side's output) are the uploaded artifact.
+name: Interop runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      peer:
+        description: implementation to cross with (a name from the runner's list)
+        default: quic-go
+      tests:
+        description: comma-separated cases; empty means every case
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  interop-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      # The runner decrypts the captures with tshark and needs a newer one
+      # than Ubuntu ships; this is the source its own workflow installs from.
+      - name: Install tshark
+        run: |
+          sudo add-apt-repository -y ppa:wireshark-dev/stable
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tshark
+          tshark --version | head -n1
+      - name: Enable IPv6 filtering for the simulated network
+        run: sudo modprobe ip6table_filter
+      - name: Run the interop runner
+        env:
+          RUNNER_DIR: ${{ runner.temp }}/quic-interop-runner
+        run: |
+          if [ -n '${{ inputs.tests }}' ]; then export TESTS='${{ inputs.tests }}'; fi
+          scripts/interop-runner.sh '${{ inputs.peer }}' | tee "$RUNNER_DIR-output.txt"
+      - name: Keep the runner's logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: interop-runner-logs
+          path: |
+            ${{ runner.temp }}/quic-interop-runner/logs
+            ${{ runner.temp }}/quic-interop-runner/results_*.json
+            ${{ runner.temp }}/quic-interop-runner-output.txt
+          if-no-files-found: ignore
