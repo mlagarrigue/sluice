@@ -16,5 +16,5 @@ RUN cd interop && CGO_ENABLED=0 go build -trimpath -o /endpoint ./cmd/endpoint
 
 FROM martenseemann/quic-network-simulator-endpoint:latest
 COPY --from=build /endpoint /endpoint
-COPY interop/run_endpoint.sh /run_endpoint.sh
+COPY --chmod=755 interop/run_endpoint.sh /run_endpoint.sh
 ENTRYPOINT ["/run_endpoint.sh"]

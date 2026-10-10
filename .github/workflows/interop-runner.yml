@@ -41,6 +41,7 @@ jobs:
         env:
           RUNNER_DIR: ${{ runner.temp }}/quic-interop-runner
         run: |
+          set -o pipefail
           if [ -n '${{ inputs.tests }}' ]; then export TESTS='${{ inputs.tests }}'; fi
           scripts/interop-runner.sh '${{ inputs.peer }}' | tee "$RUNNER_DIR-output.txt"
       - name: Keep the runner's logs
