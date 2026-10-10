@@ -505,13 +505,22 @@ func (c *Conn) expectedDCID(dcid []byte, space int) bool {
 	if bytes.Equal(dcid, c.scid) {
 		return true
 	}
-	if c.isClient || space != spaceInitial {
-		return false
+	if !c.isClient && space == spaceInitial {
+		if bytes.Equal(dcid, c.odcid) {
+			return true
+		}
+		if len(c.params.retrySourceCID) > 0 && bytes.Equal(dcid, c.params.retrySourceCID) {
+			return true
+		}
 	}
-	if bytes.Equal(dcid, c.odcid) {
-		return true
-	}
-	return len(c.params.retrySourceCID) > 0 && bytes.Equal(dcid, c.params.retrySourceCID)
+	// Any other identifier this end issued, the preferred_address one
+	// first of all: it is sequence 1 of the pool (§5.1.1) and a client may
+	// name it from the moment it reads the transport parameters — before
+	// its Handshake flight completes, as quic-go does, and on whichever
+	// path it is using. Refusing it here stalled every such handshake
+	// until the server's deadline closed the connection.
+	_, ok := c.localCIDSeqFor(dcid)
+	return ok
 }
 
 // isStatelessReset reports whether a datagram that failed to route or to
