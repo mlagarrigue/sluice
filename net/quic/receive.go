@@ -963,21 +963,41 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 			return err
 		}
 		c.settleBatchConsumption(batch)
+		// The callback has seen the end; a Read on the same stream — which
+		// got no bytes, the callback did — may now report it too.
+		for _, f := range batch {
+			if (f.Type == FrameStream && f.Fin) || f.Type == FrameResetStream {
+				if s := c.streamIfOpen(f.StreamID); s != nil {
+					s.endForRead()
+				}
+			}
+		}
 		return nil
 	}
 	for _, f := range batch {
-		if f.Type != FrameStream {
+		s := c.streamIfOpen(f.StreamID)
+		if s == nil {
 			continue
 		}
-		c.mu.Lock()
-		s := c.streams[f.StreamID]
-		c.mu.Unlock()
-		if s != nil {
+		switch f.Type {
+		case FrameStream:
 			s.keepForRead(f.Data, f.Fin)
+		case FrameResetStream:
+			// abandon already marked the reset under the stream's lock; the
+			// reader learns of it only now, behind every delta that preceded
+			// it in this batch, so the bytes the peer did send are read first.
+			s.endForRead()
 		}
 	}
 	c.holdPending(batch)
 	return nil
+}
+
+// streamIfOpen looks a stream up by identifier, nil if it is gone.
+func (c *Conn) streamIfOpen(id uint64) *Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streams[id]
 }
 
 // pendingFrameCost is what each held frame is charged beyond its bytes, so

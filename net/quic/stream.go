@@ -44,6 +44,15 @@ type Stream struct {
 	readReset bool
 	readCode  uint64
 	recvDone  bool // FIN fully reassembled, or reset: nothing more will come
+	// readEnded says the end — the FIN's last delta, or the reset — has been
+	// handed to the reader's side: the delta is in buf, or the batch callback
+	// has returned. Read reports EOF or the reset on this flag, never on
+	// recvDone: deliver sets recvDone under mu on the read loop *before* the
+	// delta reaches buf, and a Read looping between the two saw an empty buf
+	// and a finished stream, and returned EOF with the last frame's bytes
+	// still in flight. quic-go's client found that: one echo in twenty came
+	// back a frame short (interop/quicgo_test.go).
+	readEnded bool
 
 	// The send side, under conn.mu.
 	writeOff   uint64
@@ -147,10 +156,23 @@ func (s *Stream) deliver(f Frame, dst []byte) (delta []byte, finished bool, high
 func (s *Stream) keepForRead(delta []byte, finished bool) {
 	s.mu.Lock()
 	s.buf = append(s.buf, delta...)
+	if finished {
+		s.readEnded = true
+	}
 	s.mu.Unlock()
 	if len(delta) > 0 || finished {
 		s.signal()
 	}
+}
+
+// endForRead marks the stream's end as handed over — a reset dispatched to
+// the reader, or a finished stream whose batch callback has returned — and
+// wakes a Read waiting on it.
+func (s *Stream) endForRead() {
+	s.mu.Lock()
+	s.readEnded = true
+	s.mu.Unlock()
+	s.signal()
 }
 
 // Read returns what has arrived in order, blocking until something has.
@@ -183,13 +205,13 @@ func (s *Stream) Read(p []byte) (int, error) {
 			s.conn.creditConsumed(s.id, uint64(n), grant, nextMax) //nolint:gosec // G115: a byte count, positive
 			return n, nil
 		}
-		done := s.fin && s.rasm.consumed >= s.finAt
+		ended := s.readEnded
 		abandoned, code := s.readReset, s.readCode
 		s.mu.Unlock()
-		if abandoned {
-			return 0, fmt.Errorf("%w: stream %d was reset with code %#x", ErrQUIC, s.id, code)
-		}
-		if done {
+		if ended {
+			if abandoned {
+				return 0, fmt.Errorf("%w: stream %d was reset with code %#x", ErrQUIC, s.id, code)
+			}
 			return 0, io.EOF
 		}
 		select {
