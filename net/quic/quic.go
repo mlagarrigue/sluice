@@ -91,13 +91,14 @@
 //     sender can put in a datagram ends a connection. Garbage, forgeries
 //     and strays are counted ([Conn.Stats], and the listener's
 //     own [Listener.DiscardedPackets] in front) and dropped.
+//   - Key update (RFC 9001 §6): a peer's rotation is followed, old read
+//     keys are kept three probe timeouts for stragglers, and this end
+//     rotates its own keys before the AEAD's confidentiality limit (§6.6)
+//     rather than closing — a long-lived connection no longer dies of its
+//     packet count. [Stats.KeyUpdates] counts the rotations.
 //
 // # What is not here
 //
-//   - **Key update** (RFC 9001 §6). A peer that rotates its keys will find
-//     its packets discarded as unauthenticated; the connection then dies by
-//     idle timeout, and the discard counter is the diagnostic. Peers
-//     ordinarily rotate only on very long-lived connections.
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).

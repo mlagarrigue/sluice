@@ -351,6 +351,12 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 
 		c.mu.Lock()
 		sp := &c.spaces[space]
+		if space == spaceApplication && !c.ku.dropPrevAt.IsZero() && !now.Before(c.ku.dropPrevAt) {
+			// RFC 9001 §6.5: the previous phase's read keys outlived their
+			// three probe timeouts; a straggler under them is lost now.
+			sp.opener = sp.opener.withoutPrevious()
+			c.ku.dropPrevAt = time.Time{}
+		}
 		opener, largest, discarded := sp.opener, sp.largest, sp.discarded
 		c.mu.Unlock()
 		if discarded {
@@ -372,7 +378,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			datagram = rest
 			continue
 		}
-		payload, pn, err := opener.Open(raw, pnOffset, largest)
+		payload, pn, used, err := opener.openPhased(raw, pnOffset, largest)
 		if err != nil {
 			// A datagram that names this connection but does not
 			// authenticate can still be the peer's stateless reset: a
@@ -380,15 +386,9 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			if space == spaceApplication && c.isStatelessReset(raw) {
 				return c.handleStatelessReset()
 			}
-			// Failed authentication: anyone can send these bytes. If the key
-			// phase bit differs from the one phase this package speaks, the
-			// peer has probably rotated its keys — counted separately so the
-			// refusal is diagnosable; see the package documentation.
+			// Failed authentication: anyone can send these bytes.
 			c.mu.Lock()
 			c.discarded++
-			if space == spaceApplication && raw[0]&0x04 != 0 {
-				c.keyPhaseSuspects++
-			}
 			opener.failed++
 			overIntegrity := opener.failed >= opener.k.intLimit
 			c.mu.Unlock()
@@ -410,6 +410,18 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 
 		if peerSCID != nil {
 			c.adoptPeerCID(peerSCID)
+		}
+		if used == usedNext {
+			// The peer moved to the next key phase (RFC 9001 §6.2): the
+			// read keys follow, and the send keys with them unless this end
+			// is the one that moved first.
+			c.mu.Lock()
+			err := c.onKeyPhaseOpenedLocked(opener, pn, now)
+			c.mu.Unlock()
+			if err != nil {
+				c.abort(err)
+				return err
+			}
 		}
 		if err := c.processPacket(space, pn, payload, now); err != nil {
 			return err
@@ -1083,6 +1095,12 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if out.newlyAcked > 0 {
 		c.cc.onAcked(out.newlyAcked, out.growableBytes)
 		c.cond.Broadcast()
+	}
+	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
+		// A packet under the current send keys reached the peer: both
+		// sides hold this phase, and the next rotation is permitted
+		// (RFC 9001 §6.1).
+		c.ku.acked = true
 	}
 	if out.newlyAckedCount > 0 && space == spaceHandshake {
 		// An acknowledged Handshake packet is the client's proof the server

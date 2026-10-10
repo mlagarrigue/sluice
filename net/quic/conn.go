@@ -221,8 +221,11 @@ type Conn struct {
 	once        sync.Once
 	timerKick   chan struct{}
 
-	discarded        uint64 // datagrams or packets dropped without processing
-	keyPhaseSuspects uint64
+	discarded uint64 // datagrams or packets dropped without processing
+
+	// ku is the 1-RTT key-update state this end's send side keeps
+	// (RFC 9001 §6). Guarded by mu.
+	ku keyUpdateState
 	// unhandledTLSEvents counts crypto/tls events pump has no case for;
 	// atomic, as it is bumped outside mu.
 	unhandledTLSEvents atomic.Uint64
@@ -319,6 +322,35 @@ type peerClose struct {
 	app    bool
 	reason string
 	seen   bool
+}
+
+// keyUpdateState is what a sender must know to rotate 1-RTT keys and to
+// answer the peer's rotation (RFC 9001 §6.1, §6.2, §6.5). The read side's
+// state lives on the opener (keyPhase); this is the rest.
+type keyUpdateState struct {
+	// phase is the Key Phase bit this end's packets carry now: 0, then
+	// keyPhaseBit, alternating with each rotation (§6).
+	phase byte
+	// firstPN is the first packet number sent under the current write keys
+	// and acked whether the peer has acknowledged one of them, which is
+	// what permits the next rotation (§6.1): keys are then known to be
+	// present on both sides. The only initiator here is the AEAD limit
+	// (§6.6), a MUST; the three-probe-timeout wait §6.5 asks of a
+	// voluntary rotation has no voluntary rotation to apply to.
+	firstPN uint64
+	acked   bool
+	// responseDue is set when the peer initiated: this end's send keys
+	// switched in answer and no packet under them has carried an
+	// acknowledgement yet (§6.2). A further rotation from the peer in that
+	// window is a KEY_UPDATE_ERROR — it rotated twice without waiting.
+	responseDue bool
+	responsePN  uint64
+	// dropPrevAt is when the previous read keys are let go (§6.5: no more
+	// than three probe timeouts after the first packet under the new ones);
+	// zero when none are held.
+	dropPrevAt time.Time
+	// updates counts rotations of this end's send keys, for Stats.
+	updates uint64
 }
 
 // space is one packet-number space: its keys, CRYPTO reassembly, what was
@@ -1086,7 +1118,15 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 		c.spaces[space].sealer = sealer
 		return nil
 	}
-	opener, err := newOpenerSuite(secret, s)
+	var opener *packetOpener
+	if space == spaceApplication {
+		// 1-RTT keys rotate (RFC 9001 §6): the opener carries the next
+		// phase from the start, so the peer's first rotation costs no
+		// derivation on the receive path.
+		opener, err = newPhasedOpener(secret, s)
+	} else {
+		opener, err = newOpenerSuite(secret, s)
+	}
 	if err != nil {
 		return err
 	}
@@ -1105,6 +1145,79 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 		}
 	}
 	c.mu.Lock()
+	return nil
+}
+
+// rotateSendKeysLocked moves this end's 1-RTT send keys to the next phase
+// (RFC 9001 §6.1, §6.4): new key and IV, the phase bit toggled, the
+// confidentiality count restarted, and the old keys dropped at once — a
+// sender never protects anything under old keys. The next rotation waits
+// for an acknowledgement of a packet sent under these.
+func (c *Conn) rotateSendKeysLocked() error {
+	sp := &c.spaces[spaceApplication]
+	next, err := sp.sealer.k.next()
+	if err != nil {
+		return err
+	}
+	sp.sealer = &packetSealer{k: next}
+	c.ku.phase ^= keyPhaseBit
+	c.ku.firstPN = sp.nextPN
+	c.ku.acked = false
+	c.ku.updates++
+	return nil
+}
+
+// canInitiateKeyUpdateLocked is RFC 9001 §6.1's two MUSTs: the handshake
+// is confirmed and a packet under the current phase was acknowledged.
+func (c *Conn) canInitiateKeyUpdateLocked() bool {
+	return c.handshakeConfirmed && c.ku.acked && !c.ku.responseDue
+}
+
+// initiateKeyUpdateLocked rotates this end's send keys on its own
+// initiative (RFC 9001 §6.1), when permitted. Reports whether it did. The
+// read keys need no change: the peer's answer arrives under the next phase
+// the opener already holds, and is promoted when it authenticates.
+func (c *Conn) initiateKeyUpdateLocked() (bool, error) {
+	if !c.canInitiateKeyUpdateLocked() {
+		return false, nil
+	}
+	return true, c.rotateSendKeysLocked()
+}
+
+// onKeyPhaseOpenedLocked follows a 1-RTT packet that authenticated under
+// the opener's next keys at packet number pn: the peer has moved to that
+// phase (RFC 9001 §6.2). The read keys advance, with the old ones kept for
+// three probe timeouts of stragglers (§6.5), and the send keys follow if
+// they are still in the old phase. A second advance while the answer to
+// the first has not carried an acknowledgement is the peer rotating twice
+// without waiting — KEY_UPDATE_ERROR, as §6.2 allows and nothing sound
+// requires tolerating.
+func (c *Conn) onKeyPhaseOpenedLocked(opener *packetOpener, pn uint64, now time.Time) error {
+	sp := &c.spaces[spaceApplication]
+	if sp.opener != opener {
+		// Another packet already advanced the phase under the same keys;
+		// this one is read under what is now the current set.
+		return nil
+	}
+	if c.ku.responseDue {
+		return &transportError{
+			code: transportKeyUpdateError,
+			err:  fmt.Errorf("%w: the peer rotated its keys again before this end acknowledged the first rotation", ErrQUIC),
+		}
+	}
+	rotated, err := opener.rotated(pn)
+	if err != nil {
+		return err
+	}
+	sp.opener = rotated
+	c.ku.dropPrevAt = now.Add(3 * c.rtt.pto(c.peerMaxAckDelayLocked()))
+	if c.ku.phase == rotated.phase.bit {
+		return nil // this end initiated; the peer's answer completes it
+	}
+	if err := c.rotateSendKeysLocked(); err != nil {
+		return err
+	}
+	c.ku.responseDue, c.ku.responsePN = true, pn
 	return nil
 }
 
@@ -1153,16 +1266,15 @@ type Stats struct {
 	// without being processed: wrong sender, failed parse, failed
 	// authentication — and transient socket read errors, which on Windows
 	// include the unauthenticated ICMP port-unreachable. A rising count under
-	// load is either an attacker probing or a peer whose keys have rotated;
-	// KeyPhaseSuspects separates the two.
+	// load is an attacker probing, or a path corrupting datagrams.
 	DiscardedPackets uint64
 
-	// KeyPhaseSuspects is how many discarded packets carried a key-phase bit
-	// this package does not speak. Key update (RFC 9001 §6) is not
-	// implemented; a peer that rotates its keys shows up here, and the
-	// connection it is on will die of idle timeout. This counter is what
-	// turns that from a mystery into a diagnosis.
-	KeyPhaseSuspects uint64
+	// KeyUpdates is how many times this end's 1-RTT send keys rotated
+	// (RFC 9001 §6), whichever side initiated. Each rotation renews the
+	// AEAD's confidentiality budget (§6.6); a count that never moves on a
+	// connection that has sent tens of millions of packets is the thing to
+	// look at.
+	KeyUpdates uint64
 
 	// WriteFailures is how many datagrams this connection failed to hand to
 	// its socket. Sends are best effort — loss recovery resends what a failed
@@ -1184,7 +1296,7 @@ func (c *Conn) Stats() Stats {
 	defer c.mu.Unlock()
 	return Stats{
 		DiscardedPackets:   c.discarded,
-		KeyPhaseSuspects:   c.keyPhaseSuspects,
+		KeyUpdates:         c.ku.updates,
 		WriteFailures:      c.writeFailures,
 		UnhandledTLSEvents: c.unhandledTLSEvents.Load(),
 	}

@@ -22,6 +22,9 @@ type sendOpts struct {
 	// ackOnly marks a packet that elicits no acknowledgement and is not
 	// counted in flight (RFC 9002 §2).
 	ackOnly bool
+	// carriesAck says an ACK frame rode along with the payload: what
+	// completes this end's answer to the peer's key update (RFC 9001 §6.2).
+	carriesAck bool
 	// noRetrans drops the payload from loss recovery: a probe resends bytes
 	// that are already queued elsewhere, and recording them again would
 	// duplicate them on the next loss.
@@ -137,6 +140,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		head = sp.ack.appendAck(head, now)
 		if len(head) > 0 {
 			payload = append(head, payload...)
+			opts.carriesAck = true
 		}
 	}
 
@@ -290,7 +294,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	defer func() { c.hdrScratch = header[:0] }()
 	needPad := false
 	if space == spaceApplication {
-		header = append(header, 0x40|c.spin|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin
+		header = append(header, 0x40|c.spin|c.ku.phase|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin, RFC 9001 §6 key phase
 		if opts.dcid != nil {
 			header = append(header, opts.dcid...)
 		} else {
@@ -379,22 +383,39 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return nil
 	}
 
-	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets, and
-	// without key update (not implemented; see the package documentation)
-	// there is no fresh key to move to — the connection must end with
-	// AEAD_LIMIT_REACHED instead of degrading the cipher. The check skips
-	// the CONNECTION_CLOSE itself (closeSent is set before it is written,
-	// and the refusal below reserved it a slot under the limit).
-	//
-	// This check also subsumes RFC 9000 §12.3's 2^62-1 packet-number
-	// ceiling: nextPN only advances alongside sealed, the sealer never
-	// rekeys, and 2^23 is thirty-nine powers of two short of the ceiling —
-	// so no separate guard exists, and one would be dead code until key
-	// update lands. If key update ever does, §12.3 needs its own check.
+	// RFC 9000 §12.3: a sender whose packet number reaches 2^62-1 closes
+	// without a CONNECTION_CLOSE — there is no number left to send one
+	// under. Key update renews keys, never numbers, so this guard is its
+	// own.
+	if sp.nextPN >= 1<<62-1 {
+		err := fmt.Errorf("%w: the packet-number space is exhausted", ErrQUIC)
+		if c.closeErr == nil {
+			c.closeErr = err
+		}
+		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		return err
+	}
+
+	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets. At
+	// the 1-RTT level the sender MUST rotate before that (§6), which it
+	// may once the handshake is confirmed and a packet under the current
+	// keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
+	// limit a MUST, so it does not apply here. Where rotation is not yet
+	// permitted, or at the levels whose keys never rotate, the connection
+	// ends with AEAD_LIMIT_REACHED instead of degrading the cipher. The
+	// check skips the CONNECTION_CLOSE itself (closeSent is set before it
+	// is written, and the refusal below reserved it a slot under the limit).
 	if !c.closeSent && sp.sealer.sealed >= sp.sealer.k.confLimit-1 {
+		if space == spaceApplication {
+			if ok, err := c.initiateKeyUpdateLocked(); err != nil {
+				return err
+			} else if ok {
+				return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
+			}
+		}
 		err := &transportError{
 			code: transportAEADLimitReached,
-			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and key update is not implemented", ErrQUIC),
+			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
 		}
 		if c.closeErr == nil {
 			c.closeErr = err
@@ -484,6 +505,14 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	size := len(out) - before
 	if c.amplActive && p.onPath {
 		c.amplSent += int64(size)
+	}
+	// RFC 9001 §6.2: an acknowledgement sent under the keys that answered
+	// the peer's rotation, covering the packet that carried it, is what
+	// completes the update — from here the peer may rotate again. The
+	// packet is covered once it was recorded for acknowledgement, which
+	// sp.largest reaching it proves (processPacket sets both together).
+	if p.space == spaceApplication && c.ku.responseDue && (p.opts.ackOnly || p.opts.carriesAck) && sp.largest >= c.ku.responsePN {
+		c.ku.responseDue = false
 	}
 
 	// A client's first Handshake packet is the moment its Initial keys are

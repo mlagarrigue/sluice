@@ -208,15 +208,39 @@ func (p chachaProtector) mask(sample []byte) [16]byte {
 // keys are one direction's packet-protection material, with the §6.6 usage
 // limits of the AEAD they were built for. Confidentiality: packets sealed
 // under one key — past it, an attacker's distinguishing advantage stops
-// being negligible. Integrity: forgery attempts (failed opens) tolerated
-// under one key. Without key update there is no next key, so either limit
-// ends the connection with AEAD_LIMIT_REACHED.
+// being negligible; a 1-RTT sender rotates to the next key before reaching
+// it (§6), the other levels end the connection with AEAD_LIMIT_REACHED.
+// Integrity: forgery attempts (failed opens) tolerated across the
+// connection, which ends it with the same code.
 type keys struct {
 	aead      cipher.AEAD
 	iv        []byte
 	hp        headerProtector
 	confLimit uint64
 	intLimit  uint64
+	// secret is what aead and iv were expanded from, kept only so the next
+	// phase can be derived from it (§6.1); nil for the Initial level, which
+	// never rotates.
+	secret []byte
+	s      suite
+}
+
+// next derives the following key phase (RFC 9001 §6.1): the new secret is
+// HKDF-Expand-Label of the current one with the label "quic ku", the key
+// and IV come from it as in §5.1, and the header-protection key is kept —
+// the phase bit and packet number stay readable to whoever holds the old
+// keys, which is what lets a receiver pick keys before it has used any.
+func (k keys) next() (keys, error) {
+	secret, err := expandLabelHash(k.s.hash, k.secret, "quic ku", k.s.hash().Size())
+	if err != nil {
+		return keys{}, err
+	}
+	n, err := newSuiteKeys(secret, k.s)
+	if err != nil {
+		return keys{}, err
+	}
+	n.hp = k.hp
+	return n, nil
 }
 
 func newKeys(secret []byte) (keys, error) {
@@ -244,7 +268,10 @@ func newSuiteKeys(secret []byte, s suite) (keys, error) {
 	if err != nil {
 		return keys{}, err
 	}
-	return keys{aead: aead, iv: iv, hp: hp, confLimit: s.confLimit, intLimit: s.intLimit}, nil
+	return keys{
+		aead: aead, iv: iv, hp: hp, confLimit: s.confLimit, intLimit: s.intLimit,
+		secret: append([]byte(nil), secret...), s: s,
+	}, nil
 }
 
 // Sealer protects packets in one direction.
@@ -266,6 +293,69 @@ type packetOpener struct {
 	// are allowed to end a connection, because §6.6 says the key is what
 	// they wear out. Guarded by the connection's lock.
 	failed uint64
+	// phase is the 1-RTT opener's key-update state (RFC 9001 §6); nil at
+	// the Initial and Handshake levels, whose keys never rotate. It is
+	// immutable once built: a rotation replaces the whole opener under the
+	// connection's lock, so openPhased reads it without one.
+	phase *keyPhase
+}
+
+// keyPhase is what a 1-RTT receiver keeps beside its current keys to read
+// across a key update (RFC 9001 §6.3, §6.5): the phase bit the current keys
+// answer to, the next phase's keys derived ahead of time (so deriving them
+// on demand does not leak when a rotation happened, §6.3), and the previous
+// phase's keys while delayed packets may still arrive under them.
+type keyPhase struct {
+	bit  byte  // 0 or keyPhaseBit: what packets under the current keys carry
+	next keys  // the following phase, derived ahead
+	prev *keys // the previous phase, or nil once dropped (§6.5)
+	// lowest is the smallest packet number opened under the current keys,
+	// and hasLowest whether any was: a differing phase bit below it means
+	// the previous keys, above it the next (§6.5).
+	lowest    uint64
+	hasLowest bool
+}
+
+// keyPhaseBit is the Key Phase bit of a short header (RFC 9000 §17.3.1),
+// protected along with the packet number (RFC 9001 §5.4.1).
+const keyPhaseBit = 0x04
+
+// keyUse says which of a 1-RTT opener's three key sets authenticated a
+// packet; the current keys for the other levels.
+type keyUse uint8
+
+const (
+	usedCurrent keyUse = iota
+	usedPrevious
+	usedNext
+)
+
+// rotated is the opener that replaces o once a packet authenticated under
+// the next keys at packet number pn (RFC 9001 §6.2): the current keys
+// become the previous, the next the current, and a further next is derived
+// so the following rotation finds it ready. The forgery count carries
+// over, as §6.6 counts failures across the connection.
+func (o *packetOpener) rotated(pn uint64) (*packetOpener, error) {
+	cur := o.k
+	next, err := o.phase.next.next()
+	if err != nil {
+		return nil, err
+	}
+	return &packetOpener{
+		k:      o.phase.next,
+		failed: o.failed,
+		phase: &keyPhase{
+			bit: o.phase.bit ^ keyPhaseBit, next: next, prev: &cur,
+			lowest: pn, hasLowest: true,
+		},
+	}, nil
+}
+
+// withoutPrevious is o with its previous phase's keys dropped (§6.5).
+func (o *packetOpener) withoutPrevious() *packetOpener {
+	p := *o.phase
+	p.prev = nil
+	return &packetOpener{k: o.k, failed: o.failed, phase: &p}
 }
 
 // NewSealer and NewOpener build one direction's Initial protection from its
@@ -290,6 +380,21 @@ func newSealerSuite(secret []byte, s suite) (*packetSealer, error) {
 func newOpenerSuite(secret []byte, s suite) (*packetOpener, error) {
 	k, err := newSuiteKeys(secret, s)
 	return &packetOpener{k: k}, err
+}
+
+// newPhasedOpener is the 1-RTT opener: the first phase's keys with the
+// next phase already derived (RFC 9001 §6.3).
+func newPhasedOpener(secret []byte, s suite) (*packetOpener, error) {
+	o, err := newOpenerSuite(secret, s)
+	if err != nil {
+		return nil, err
+	}
+	next, err := o.k.next()
+	if err != nil {
+		return nil, err
+	}
+	o.phase = &keyPhase{next: next}
+	return o, nil
 }
 
 // Retry integrity (RFC 9001 §5.8): a Retry packet carries a sixteen-byte tag
@@ -404,9 +509,21 @@ func (s *packetSealer) Seal(dst, header, payload []byte, pn uint64, pnOffset, pn
 // received in this space, which is what the truncated number on the wire is
 // reconstructed against.
 func (o *packetOpener) Open(packet []byte, pnOffset int, largestPN uint64) (payload []byte, pn uint64, err error) {
+	payload, pn, _, err = o.openPhased(packet, pnOffset, largestPN)
+	return payload, pn, err
+}
+
+// openPhased is Open that also reports which key set authenticated the
+// packet. At the 1-RTT level the choice follows RFC 9001 §6.5: the Key
+// Phase bit, once unprotected, names the current keys or the other phase,
+// and for the other phase the packet number says whether that is the
+// previous one (below everything seen under the current keys) or the next.
+// The keys are chosen before any AEAD runs, and a wrong phase bit fails
+// the same way as any forgery — the timing §6.3 asks for.
+func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64) (payload []byte, pn uint64, used keyUse, err error) {
 	sampleAt := pnOffset + 4
 	if sampleAt+16 > len(packet) {
-		return nil, 0, ErrTruncated
+		return nil, 0, usedCurrent, ErrTruncated
 	}
 	// Copied rather than modified: the caller's datagram may hold other
 	// packets, a failed authentication must leave it as it was (GCM's Open
@@ -434,13 +551,22 @@ func (o *packetOpener) Open(packet []byte, pnOffset int, largestPN uint64) (payl
 	}
 	pn = decodePacketNumber(largestPN, truncated, pnLen)
 
+	k := o.k
+	if p := o.phase; p != nil && buf[0]&0x80 == 0 && buf[0]&keyPhaseBit != p.bit {
+		switch {
+		case p.prev != nil && p.hasLowest && pn < p.lowest:
+			k, used = *p.prev, usedPrevious
+		default:
+			k, used = p.next, usedNext
+		}
+	}
 	header := buf[:pnOffset+pnLen]
 	body := buf[pnOffset+pnLen:]
-	payload, err = o.k.aead.Open(body[:0], o.k.nonce(pn), body, header)
+	payload, err = k.aead.Open(body[:0], k.nonce(pn), body, header)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: the packet did not authenticate", ErrQUIC)
+		return nil, 0, usedCurrent, fmt.Errorf("%w: the packet did not authenticate", ErrQUIC)
 	}
-	return payload, pn, nil
+	return payload, pn, used, nil
 }
 
 // maskFirstByte covers the bits of the first byte that are not needed to
