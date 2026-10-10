@@ -50,5 +50,16 @@ so what is tested is the code being changed.
 Dependabot bumps it like the root's dependencies; a bump that breaks the
 handshake is a finding about one side or the other, not noise.
 
-The public *QUIC Interop Runner* — many implementations, crossed two by
-two — is the next step and is not here yet (`docs/guide/limits.md`).
+## The public QUIC Interop Runner
+
+`cmd/endpoint` is sluice under the contract of the public [QUIC Interop
+Runner](https://github.com/quic-interop/quic-interop-runner), which crosses
+many implementations two by two inside a simulated network: `ROLE`,
+`TESTCASE` and `REQUESTS` in the environment, `/www` served on port 443,
+`/downloads` written, exit status 127 for a case it does not implement.
+`Dockerfile` and `run_endpoint.sh` make the image the runner starts, from
+the repository root; `scripts/interop-runner.sh` builds it, clones the
+runner and crosses sluice with one peer in both directions, printing one
+row per case. It needs Docker, so it runs in the `Interop runner` workflow
+(by hand) rather than in the devcontainer. The cases passed and refused are
+recorded in `docs/guide/limits.md`.
