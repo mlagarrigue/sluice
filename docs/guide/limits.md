@@ -135,12 +135,16 @@ to a separate module before a v1.
   connectionmigration (the server closes with INTERNAL_ERROR once the
   client moves to the preferred address). As a client it passes handshake,
   transfer, longrtt, multiplexing, retry, blackhole, transferloss,
-  transfercorruption, ipv6, handshakeloss and handshakecorruption, and
-  fails amplificationlimit, rebind-port and rebind-addr (the connection
-  dies of its idle timeout after the NAT rebinds). The two handshake cases
-  under 30 % loss or corruption passed on both sides once a probe timeout
-  resent the two oldest unacknowledged packets instead of copying the
-  first again (RFC 9002 §6.2.4). The cases it refuses, as the runner's
+  transfercorruption, ipv6, handshakeloss, handshakecorruption and
+  amplificationlimit, and fails rebind-port and rebind-addr (the
+  connection dies of its idle timeout after the NAT rebinds). The two
+  handshake cases under 30 % loss or corruption passed on both sides once
+  a probe timeout resent the two oldest unacknowledged packets instead of
+  copying the first again; amplificationlimit passed on the client side
+  once a probe with a single payload to resend sent it twice, so that a
+  server allowed three times what it received is unblocked after seven
+  doubling intervals rather than sixty-three (RFC 9002 §6.2.4). The cases
+  it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
   resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
   restrict the cipher suites), a forced key update and HTTP/3 on the client
