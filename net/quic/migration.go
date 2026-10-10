@@ -146,6 +146,14 @@ type pathProbe struct {
 	// is, without error — the path in use still works.
 	target    net.Addr
 	targetCID []byte
+	// via is set while a server probes the client from its preferred-address
+	// socket (§9.6.2: "the server MUST probe on the path toward the client
+	// from its preferred address") before the connection has moved there:
+	// the challenge leaves by that socket, under targetCID, while
+	// everything else still leaves by the socket in use. The client's first
+	// non-probing packet on that socket moves the connection and adopts
+	// the identifier; silence drops the probe and moves nothing.
+	via net.PacketConn
 	// sent and full record whether the current data has left and whether
 	// every datagram carrying it was expanded to 1200 bytes. A response to
 	// a smaller probe validates the address but not the path MTU, and
@@ -458,6 +466,12 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		return
 	}
 	c.pc = c.rxVia
+	if c.pathProbe.via == c.rxVia {
+		// The client answered — or is answering — the probe this end
+		// sent from this socket (§9.6.2); the identifier it went under
+		// is the new path's from here on (§9.5).
+		c.adoptProbedCIDLocked()
+	}
 	c.migrations++
 	c.resetPathStateLocked()
 }
@@ -643,13 +657,7 @@ func (c *Conn) startPathChallengeLocked(now time.Time) {
 		// amplification-limited; the idle timer judges the rest.
 		return
 	}
-	copy(c.pathProbe.data[:], data)
-	c.pathProbe.pending = true
-	c.pathProbe.fatal = false
-	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
-	c.pathProbe.retransmits = 0
-	c.pathProbe.sentAt = now
-	c.pathProbe.sent, c.pathProbe.full = false, false
+	c.startPathChallengeData(data, now)
 	c.sendPathChallengeLocked()
 }
 
@@ -683,8 +691,93 @@ func (c *Conn) sendPathChallengeLocked() {
 	// never retransmitted, and grants riding it would be lost with it.
 	c.flushControlLocked()
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
-		noRetrans: true, to: c.pathProbe.target, dcid: c.pathProbe.targetCID, padTo: 1200,
+		noRetrans: true, to: c.pathProbe.target, via: c.pathProbe.via, dcid: c.pathProbe.targetCID, padTo: 1200,
 	})
+}
+
+// preferredPathChallengeLocked is the server half of §9.6.2, taken when a
+// PATH_CHALLENGE arrives on the preferred-address socket from the client's
+// address while the connection still sends from the main one: the client
+// is validating the path the server offered, and the server "MUST probe on
+// the path toward the client from its preferred address". The challenge
+// rides in the same packet as the answer to the client's — the first
+// datagram this end sends from that socket carries both — under a peer
+// identifier never used on another path (§9.5: a new local address needs
+// a new identifier; with none pooled, the one in use is the fallback the
+// answer already takes). Returns the frame to append and the identifier to
+// send under, both nil when nothing is to be probed: a client, an
+// unconfirmed handshake, a challenge that arrived on the socket in use or
+// from a new address (the latter is a migration, §9.3's business), or a
+// probe from this socket already pending — whose data is then repeated,
+// since the client's repeat means the first answer was lost. Callers hold
+// mu.
+func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) {
+	if c.isClient || !c.handshakeConfirmed || c.rxVia == nil || c.rxVia == c.pc ||
+		(c.rxFrom != nil && !sameAddr(c.rxFrom, c.peer)) {
+		return nil, nil
+	}
+	if c.pathProbe.pending && c.pathProbe.via == c.rxVia {
+		return append(AppendVarint(nil, framePathChallenge), c.pathProbe.data[:]...), c.pathProbe.targetCID
+	}
+	data, err := randomID(8)
+	if err != nil {
+		return nil, nil
+	}
+	c.startPathChallengeData(data, now)
+	c.pathProbe.via = c.rxVia
+	c.pathProbe.sent, c.pathProbe.full = true, true
+	if cid, _, ok := c.pickFreshPeerCIDLocked(); ok {
+		c.pathProbe.targetCID = cid
+	}
+	return append(AppendVarint(nil, framePathChallenge), data...), c.pathProbe.targetCID
+}
+
+// startPathChallengeData arms the probe state around data without sending
+// anything: the caller is putting the challenge in a packet of its own.
+// Callers hold mu.
+func (c *Conn) startPathChallengeData(data []byte, now time.Time) {
+	copy(c.pathProbe.data[:], data)
+	c.pathProbe.pending = true
+	c.pathProbe.fatal = false
+	c.pathProbe.target, c.pathProbe.targetCID, c.pathProbe.via = nil, nil, nil
+	c.pathProbe.retransmits = 0
+	c.pathProbe.sentAt = now
+	c.pathProbe.sent, c.pathProbe.full = false, false
+}
+
+// pickFreshPeerCIDLocked marks as used and returns the pooled peer identifier
+// of lowest sequence never used on any path, other than the one in use —
+// without switching to it. Callers hold mu.
+func (c *Conn) pickFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
+	pick := -1
+	for i := range c.peerCIDs {
+		e := &c.peerCIDs[i]
+		if e.used || e.seq == c.currentPeerSeq {
+			continue
+		}
+		if pick == -1 || e.seq < c.peerCIDs[pick].seq {
+			pick = i
+		}
+	}
+	if pick == -1 {
+		return nil, 0, false
+	}
+	e := &c.peerCIDs[pick]
+	e.used = true
+	return e.cid, e.seq, true
+}
+
+// adoptProbedCIDLocked makes the identifier a server probed the client under
+// from its preferred socket the one in use, now that the connection sends
+// from that socket. Callers hold mu.
+func (c *Conn) adoptProbedCIDLocked() {
+	for i := range c.peerCIDs {
+		if e := &c.peerCIDs[i]; bytes.Equal(e.cid, c.pathProbe.targetCID) {
+			c.dcid, c.currentPeerSeq = e.cid, e.seq
+			c.rollSpinLocked()
+		}
+	}
+	c.pathProbe.targetCID, c.pathProbe.via = nil, nil
 }
 
 // sendOldPathChallengeLocked sends the §9.3.3 challenge to the last
@@ -795,6 +888,14 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 	}
 	if c.pathProbe.retransmits >= pathProbeMaxRetransmits {
 		c.pathProbe.pending = false
+		if c.pathProbe.via != nil {
+			// A server's probe from its preferred socket that the client
+			// never answered, while the client never moved either: the
+			// connection is where it always was, on the socket in use,
+			// and nothing is wrong (§9.6.2 lets the client stay).
+			c.pathProbe.via, c.pathProbe.targetCID = nil, nil
+			return time.Time{}
+		}
 		if !c.isClient {
 			// A migrated path that never validated, or validated its
 			// address but not 1200 bytes of MTU: either way not a path

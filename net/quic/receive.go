@@ -891,7 +891,12 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			if onPath || c.rxDatagramLen >= 1200 {
 				padTo = 1200
 			}
-			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, padTo: padTo})
+			// A challenge that reached a server's preferred-address socket
+			// is answered with this end's own probe of that path in the
+			// same packet (§9.6.2), under the identifier that path gets.
+			probe, dcid := c.preferredPathChallengeLocked(now)
+			resp = append(resp, probe...)
+			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
 			c.mu.Unlock()
 
 		case f.Type == framePathResponse:

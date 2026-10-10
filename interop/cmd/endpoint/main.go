@@ -155,14 +155,18 @@ func runServer(testcase string) error {
 	}
 	lcfg := quic.ListenerConfig{AlwaysRetry: testcase == "retry"}
 	if testcase == "connectionmigration" {
-		ip, err := localIPv4()
+		// One dual-stack socket, announced in both families: a client only
+		// moves to a preferred address of the family it already uses
+		// (RFC 9000 §9.6.1), and the runner's client may pick either.
+		ips, err := localIPs()
 		if err != nil {
 			return err
 		}
-		lcfg.PreferredAddress, err = udp.Listen("udp4", net.JoinHostPort(ip.String(), preferredPort))
+		lcfg.PreferredAddress, err = udp.Listen("udp", net.JoinHostPort("", preferredPort))
 		if err != nil {
 			return err
 		}
+		lcfg.PreferredIPs = ips
 	}
 	l, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), lcfg)
 	if err != nil {
@@ -183,19 +187,36 @@ func runServer(testcase string) error {
 	}
 }
 
-// localIPv4 is the address the preferred-address socket binds to: the one
-// global unicast IPv4 address the simulated server has.
-func localIPv4() (net.IP, error) {
+// localIPs is what the preferred-address socket announces: the one global
+// unicast address of each family the simulated server has, IPv4 first.
+func localIPs() ([]net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
 	}
+	var v4, v6 net.IP
 	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && n.IP.IsGlobalUnicast() {
-			return n.IP.To4(), nil
+		n, ok := a.(*net.IPNet)
+		if !ok || !n.IP.IsGlobalUnicast() {
+			continue
+		}
+		switch {
+		case n.IP.To4() != nil && v4 == nil:
+			v4 = n.IP.To4()
+		case n.IP.To4() == nil && v6 == nil:
+			v6 = n.IP
 		}
 	}
-	return nil, errors.New("no global IPv4 address to announce as preferred")
+	var ips []net.IP
+	for _, ip := range []net.IP{v4, v6} {
+		if ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, errors.New("no global unicast address to announce as preferred")
+	}
+	return ips, nil
 }
 
 // serveHQ answers HTTP/0.9 requests, one per stream, until the connection

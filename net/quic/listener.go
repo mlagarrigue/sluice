@@ -77,6 +77,18 @@ type ListenerConfig struct {
 	// where it is. nil announces nothing. The listener owns the socket from
 	// here and closes it with [Listener.Close].
 	PreferredAddress net.PacketConn
+
+	// PreferredIPs names the addresses announced for PreferredAddress's
+	// port when that socket is bound to the unspecified address — a
+	// dual-stack one on "[::]", typically: at most one address per family,
+	// each a concrete address this host answers at. The parameter carries
+	// one address of each family (RFC 9000 §18.2), and a client only moves
+	// to the one of the family its connection already uses (§9.6.1) — a
+	// server reached over IPv6 that announces IPv4 alone is never moved to.
+	// Empty, the socket's own bound address is announced, which must then
+	// be concrete. With a socket bound to a concrete address, the only
+	// address allowed here is that one.
+	PreferredIPs []net.IP
 }
 
 // Listener owns one [net.PacketConn] shared by many connections, the thing a
@@ -102,14 +114,16 @@ type Listener struct {
 	// datagram a via that answers from the address it arrived on.
 	sourced *net.UDPConn
 	// preferred is ListenerConfig.PreferredAddress, read by its own
-	// loop and dispatched into the same demux table; preferredAddr is what
-	// each handshake announces for it.
-	preferred     net.PacketConn
-	preferredAddr *net.UDPAddr
-	cfg           *tls.Config
-	params        TransportParameters
-	lcfg          ListenerConfig
-	key           retryTokenKey
+	// loop and dispatched into the same demux table; preferredV4 and
+	// preferredV6 are what each handshake announces for it, one per
+	// family, nil for a family not announced.
+	preferred   net.PacketConn
+	preferredV4 *net.UDPAddr
+	preferredV6 *net.UDPAddr
+	cfg         *tls.Config
+	params      TransportParameters
+	lcfg        ListenerConfig
+	key         retryTokenKey
 
 	// mu is taken after a connection's own mu, never before: a connection
 	// registers identifiers (addLocalCID) with its lock held, so nothing
@@ -171,17 +185,16 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if _, err := rand.Read(resetKey[:]); err != nil {
 		return nil, err
 	}
-	var preferredAddr *net.UDPAddr
+	var preferredV4, preferredV6 *net.UDPAddr
 	if lcfg.PreferredAddress != nil {
-		ua, ok := lcfg.PreferredAddress.LocalAddr().(*net.UDPAddr)
-		if !ok || ua == nil || ua.IP == nil || ua.IP.IsUnspecified() {
-			return nil, fmt.Errorf("%w: PreferredAddress must be bound to a concrete IPv4 or IPv6 address, not %v — a client has to know where to send",
-				ErrQUIC, lcfg.PreferredAddress.LocalAddr())
+		var err error
+		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredAddress.LocalAddr(), lcfg.PreferredIPs)
+		if err != nil {
+			return nil, err
 		}
-		preferredAddr = ua
 	}
 	l := &Listener{
-		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredAddr: preferredAddr,
+		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
 		cfg: cfg, params: params, lcfg: lcfg, key: key, resetKey: resetKey,
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),
@@ -790,16 +803,55 @@ func (l *Listener) prepareConn(c *Conn) error {
 	if err != nil {
 		return err
 	}
-	pa := &preferredAddress{cid: cid, statelessResetToken: l.resetTokenFor(cid)}
-	if l.preferredAddr.IP.To4() != nil {
-		pa.ipv4 = l.preferredAddr
-	} else {
-		pa.ipv6 = l.preferredAddr
+	c.params.preferredAddress = &preferredAddress{
+		ipv4: l.preferredV4, ipv6: l.preferredV6,
+		cid: cid, statelessResetToken: l.resetTokenFor(cid),
 	}
-	c.params.preferredAddress = pa
 	c.localCIDs = append(c.localCIDs, localCID{seq: 1, cid: cid})
 	c.nextLocalSeq = 2
 	return nil
+}
+
+// preferredAnnouncements resolves what a listener announces for its
+// preferred-address socket, bound at local, from [ListenerConfig.PreferredIPs]:
+// one address per family at most, each on the socket's port. Without IPs
+// the socket's own address is announced and must be concrete; a socket on a
+// concrete address accepts only that address, since nothing else reaches it.
+func preferredAnnouncements(local net.Addr, ips []net.IP) (v4, v6 *net.UDPAddr, err error) {
+	ua, ok := local.(*net.UDPAddr)
+	if !ok || ua == nil || ua.IP == nil {
+		return nil, nil, fmt.Errorf("%w: PreferredAddress must be a UDP socket, not %v", ErrQUIC, local)
+	}
+	if len(ips) == 0 {
+		if ua.IP.IsUnspecified() {
+			return nil, nil, fmt.Errorf("%w: PreferredAddress is bound to %v; name the addresses to announce in PreferredIPs — a client has to know where to send",
+				ErrQUIC, local)
+		}
+		if ua.IP.To4() != nil {
+			return ua, nil, nil
+		}
+		return nil, ua, nil
+	}
+	for _, ip := range ips {
+		if ip == nil || ip.IsUnspecified() {
+			return nil, nil, fmt.Errorf("%w: PreferredIPs holds %v, not an address a client can send to", ErrQUIC, ip)
+		}
+		if !ua.IP.IsUnspecified() && !ua.IP.Equal(ip) {
+			return nil, nil, fmt.Errorf("%w: PreferredIPs names %v but PreferredAddress is bound to %v, which is the only address that reaches it",
+				ErrQUIC, ip, ua.IP)
+		}
+		addr := &net.UDPAddr{IP: ip, Port: ua.Port, Zone: ua.Zone}
+		switch {
+		case ip.To4() != nil && v4 == nil:
+			v4 = addr
+		case ip.To4() == nil && v6 == nil:
+			v6 = addr
+		default:
+			return nil, nil, fmt.Errorf("%w: PreferredIPs names two addresses of one family (%v); the parameter carries one per family (RFC 9000 §18.2)",
+				ErrQUIC, ip)
+		}
+	}
+	return v4, v6, nil
 }
 
 // runHandshake drives one connection's handshake to completion on its own
