@@ -129,13 +129,16 @@ to a separate module before a v1.
   integration (the `interop/` module, job `interop-quic`).
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
-- **`net/httpstream`**: an end-to-end measurement of HTTP/2 and HTTP/3
-  against a real client — curl, a browser or quic-go's client, not the
-  package's own test harness — latency and throughput for a plain response
-  and a streamed one, published in `docs/benchmarks.md` with their method.
-  Decided on 2026-10-10: interoperability alone does not drop the label, a
-  stable API that turns out too slow is harder to fix than an experimental
-  one. Interoperability itself left this list the same day: HTTP/1.1 and
+- **`net/httpstream`**: the per-batch cost of a streamed HTTP/2 response,
+  explained in the code and brought down or owned in the experimental
+  guide. The measurement that revealed it — HTTP/2 and HTTP/3 against a
+  client that shares no code, the standard library's and quic-go's — is
+  published in `docs/benchmarks.md` since 2026-10-10 (`interop/`, "HTTP/2
+  and HTTP/3, from a real client"): about 70 µs per batch pulled, whatever
+  its size, which HTTP/3 does not pay for small batches. Decided on
+  2026-10-10: interoperability alone does not drop the label, a stable API
+  that turns out too slow is harder to fix than an experimental one.
+  Interoperability itself left this list the same day: HTTP/1.1 and
   /2 have faced curl and h2spec in continuous integration
   (`scripts/interop-http.sh`); HTTP/3 has faced quic-go's client
   (`interop/h3_test.go`, job `interop-quic`), a plain response, a streamed

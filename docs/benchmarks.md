@@ -103,6 +103,58 @@ Windows; `autoMemoryReclaim=disabled` and `pageReporting=false` in
 - The comparison with ecosystems other than Go, framed separately and
   published with its scenarios and method.
 
+## HTTP/2 and HTTP/3, from a real client
+
+This is the measurement that `docs/guide/limits.md` names as the exit
+condition of the "experimental" label on `net/httpstream`. The package's
+micro-benchmarks measure each layer without a socket; here it is the whole
+path, seen by a client that shares no code with sluice: the standard
+library's HTTP/2 client (`net/http`, ALPN `h2` over TLS 1.3) and quic-go's
+HTTP/3 client (`quic-go/http3`). Server and client run on the same machine,
+over loopback, with one connection and requests in sequence. ns/op is the
+round trip as the client sees it, from the request to the last byte of the
+body; MB/s counts the bytes of the body.
+
+There are three bodies. `plain` is a response rendered whole by the handler
+(20 bytes). `stream` is three one-line batches pulled one at a time
+(24 bytes). `bulk` is sixteen 4 KiB batches pulled one at a time (64 KiB),
+enough to cross several flow-control windows (the limit on how much data the
+sender may have in flight before the receiver acknowledges it).
+
+```
+cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
+```
+
+Median of three passes on 2026-10-10, on the same machine as the rest of
+this document (laptop, WSL2, not pinned: a socket bench cannot be pinned).
+
+| benchmark | median | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkH2FromNetHTTP/plain` | 118 µs | ±17% ** | 5.8 KB | 56 |
+| `BenchmarkH2FromNetHTTP/stream` | 334 µs | ±17% ** | 5.6 KB | 67 |
+| `BenchmarkH2FromNetHTTP/bulk` | 1184 µs · 55 MB/s | ±2% | 6.5 KB | 119 |
+| `BenchmarkH3FromQuicGo/plain` | 345 µs | ±3% | 11 KB | 163 |
+| `BenchmarkH3FromQuicGo/stream` | 348 µs | ±1% | 12 KB | 207 |
+| `BenchmarkH3FromQuicGo/bulk` | 1053 µs · 62 MB/s | ±2% | 117 KB | 857 |
+
+B/op and allocs/op count both sides, the third-party client included: read
+them as an order of magnitude, not as the cost of the server.
+
+**What the figures say.** The two short HTTP/2 rows exceed the 15% threshold
+and are not quoted in absolute terms; the ratios, however, hold across the
+three passes. A streamed HTTP/2 response of three batches costs nearly three
+times the plain response: about 70 µs per batch pulled, whatever its size,
+and `bulk` confirms it at sixteen batches on both protocols. In HTTP/3, the
+three small batches cost nothing more than the plain response; the extra
+cost only appears with `bulk`, when the 64 KiB cross the flow windows. At
+4 KiB per batch, both protocols top out around 60 MB/s over loopback.
+
+**Verdict.** These figures do not yet allow the label to be removed: a fixed
+cost per batch of a streamed HTTP/2 response, which HTTP/3 does not pay for
+small batches, is a mechanism to explain before promising a stable API;
+`docs/guide/limits.md` carries it as the one condition left. Nothing here
+says the path is slow by nature: a bigger batch divides the cost by as much.
+
 ---
 
 ## Measured in one session
