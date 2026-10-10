@@ -398,3 +398,31 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// §5.1.1 on the server: the identifier announced in preferred_address is
+// sequence 1 of this end's pool, and a client may name it from the moment
+// it reads the transport parameters — which is before its Handshake flight
+// completes. quic-go does exactly that: its Handshake packets carrying the
+// client Finished already use the preferred identifier, while staying on
+// the original path. A long-header gate that knew only scid dropped them,
+// and the server resent its own Handshake until its deadline closed the
+// connection with INTERNAL_ERROR.
+func TestServerAcceptsItsPreferredIdentifierInLongHeaders(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("pref-srv:self")}
+	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 50000}
+	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.localCIDs = append(c.localCIDs, localCID{seq: 1, cid: []byte("pref-cid")})
+
+	for _, space := range []int{spaceInitial, spaceHandshake} {
+		if !c.expectedDCID([]byte("srv-cid0"), space) {
+			t.Errorf("space %d: scid refused", space)
+		}
+		if !c.expectedDCID([]byte("pref-cid"), space) {
+			t.Errorf("space %d: the preferred_address identifier (sequence 1) refused", space)
+		}
+		if c.expectedDCID([]byte("else-cid"), space) {
+			t.Errorf("space %d: an identifier this end never issued accepted", space)
+		}
+	}
+}
