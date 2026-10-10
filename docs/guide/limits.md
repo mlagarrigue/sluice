@@ -135,15 +135,19 @@ to a separate module before a v1.
   connectionmigration (the server closes with INTERNAL_ERROR once the
   client moves to the preferred address). As a client it passes handshake,
   transfer, longrtt, multiplexing, retry, blackhole, transferloss,
-  transfercorruption, ipv6, handshakeloss, handshakecorruption and
-  amplificationlimit, and fails rebind-port and rebind-addr (the
-  connection dies of its idle timeout after the NAT rebinds). The two
+  transfercorruption, ipv6, handshakeloss, handshakecorruption,
+  amplificationlimit, rebind-port and rebind-addr. The two
   handshake cases under 30 % loss or corruption passed on both sides once
   a probe timeout resent the two oldest unacknowledged packets instead of
   copying the first again; amplificationlimit passed on the client side
   once a probe with a single payload to resend sent it twice, so that a
   server allowed three times what it received is unblocked after seven
-  doubling intervals rather than sixty-three (RFC 9002 §6.2.4). The cases
+  doubling intervals rather than sixty-three (RFC 9002 §6.2.4); the two
+  rebind cases passed on the client side once `Dial` issued connection
+  identifiers of its own — a server may not probe a client's new address
+  under an identifier it already uses towards the old one (RFC 9000
+  §9.5), so quic-go, holding no spare, kept sending to the address the
+  NAT had abandoned until the idle timer fired. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
   resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
