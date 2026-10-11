@@ -118,8 +118,10 @@ body; MB/s counts the bytes of the body.
 There are three bodies. `plain` is a response rendered whole by the handler
 (20 bytes). `stream` is three one-line batches pulled one at a time
 (24 bytes). `bulk` is sixteen 4 KiB batches pulled one at a time (64 KiB),
-enough to cross several flow-control windows (the limit on how much data the
-sender may have in flight before the receiver acknowledges it).
+several times the data a sender puts in flight before its first
+acknowledgements come back (the congestion window), though it stays well
+inside the flow-control windows (the limit the receiver announces on how
+much data the sender may have in flight).
 
 ```
 cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
@@ -164,8 +166,22 @@ streams — and those that arrive while it is being written leave together on
 the next pass, so at most one write per round of the writer instead of one per
 batch; on the client side, each DATA frame received wakes up the body reader.
 HTTP/3 does not know this step for three batches of eight bytes because its
-first packet waits for its turn in the send loop, and pays back the QUIC
-windows on `bulk`, twice as dearly.
+first packet waits for its turn in the send loop.
+
+**Why `bulk` is slower over HTTP/3 (measured 2026-10-11).** Not the QUIC
+windows. Server side, `Config.TransportParameters` scaled by 1, 4 and 16
+leaves `bulk` at 47–56, 51–59 and 40–50 MB/s: the spread of one setting is
+wider than the gap between settings. Client side, quic-go's receive windows
+at 512 KiB (its default), 4 MiB and 16 MiB give 48, 50–54 and 53–55 MB/s; only
+64 KiB, the size of the whole body, is slower (41–43 MB/s). The body fits in
+the default windows, so none of them is ever the limit. The CPU profile of the
+server during the transfer points elsewhere: a fifth of the samples sit in
+`sendto`, once per packet, called from `Stream.Write` itself
+(`writePacketLocked`), and a quarter in the scheduler parking and waking
+goroutines. 64 KiB is some fifty packets, each its own system call, with no
+batching of datagrams and no pacing of their departure. That is the observed
+shape, not a proven split of the 1179 µs: batching datagrams (`sendmmsg`,
+UDP segmentation offload) is the lead, and it has its own backlog entry.
 
 **Verdict.** The cost per batch is explained, divided by two, and what remains
 is owned: `docs/guide/experimental.md` says it in one sentence for whoever

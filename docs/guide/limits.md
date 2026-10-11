@@ -185,6 +185,13 @@ to a separate module before a v1.
   restrict the cipher suites), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
+- **`net/quic` throughput**: one UDP system call per packet, none batched.
+  A 64 KiB response over HTTP/3 reaches about 55 MB/s against quic-go's
+  client, against 127 MB/s over HTTP/2 (`docs/benchmarks.md`, "HTTP/2 and
+  HTTP/3, from a real client"). The QUIC windows are not the cause — scaled
+  from 1 to 16 times, on either side, they move nothing — and a profile of
+  the server puts a fifth of its CPU in `sendto`. Sizing the windows will not
+  buy that throughput back.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`web/stream`**: a real consumer of its stages. Its transport,
