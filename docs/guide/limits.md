@@ -128,7 +128,13 @@ to a separate module before a v1.
   third-party peer: quic-go, on each side of the handshake, in continuous
   integration (the `interop/` module, job `interop-quic`). The runner
   itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
-  the `Interop runner` workflow). As a server, sluice passes handshake,
+  the `Interop runner` workflow). Since 2026-10-11 the endpoint's image,
+  `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
+  (the `Interop image` workflow), and sluice is proposed to the runner's
+  public matrix at [interop.seemann.io](https://interop.seemann.io/)
+  ([quic-interop-runner#513](https://github.com/quic-interop/quic-interop-runner/pull/513));
+  that matrix, not this paragraph, will be the record once the entry is
+  merged. As a server, sluice passes handshake,
   transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
   amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,
   rebind-addr, handshakeloss and handshakecorruption, and fails
