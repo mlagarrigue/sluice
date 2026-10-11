@@ -228,20 +228,20 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
 		t.Skip("needs the full history: a shallow clone hides which commits are merges")
 	}
-	out, err := exec.Command("git", "log", "--no-merges", "--format=%H%x00%s%x00%b%x1e").Output()
+	out, err := exec.Command("git", "log", "--no-merges", "--format=%H%x00%an%x00%s%x00%b%x1e").Output()
 	if err != nil {
 		t.Skipf("not a git checkout: %v", err)
 	}
 	for rec := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x1e\n"), "\x1e\n") {
-		parts := strings.SplitN(rec, "\x00", 3)
-		if len(parts) < 2 {
+		parts := strings.SplitN(rec, "\x00", 4)
+		if len(parts) < 3 {
 			continue
 		}
 		body := ""
-		if len(parts) == 3 {
-			body = parts[2]
+		if len(parts) == 4 {
+			body = parts[3]
 		}
-		for _, fault := range commitMessageFaults(parts[1], body) {
+		for _, fault := range commitMessageFaults(parts[1], parts[2], body) {
 			t.Errorf("%s: %s", parts[0][:7], fault)
 		}
 	}
@@ -252,12 +252,17 @@ var (
 	commitTrailer = regexp.MustCompile(`(?mi)^co-authored-by:`)
 )
 
-// commitMessageFaults says what is wrong with one commit message, subject
-// and body apart, or nothing. release-please's own commits are
+// commitMessageFaults says what is wrong with one commit message — author,
+// subject and body apart — or nothing. release-please's own commits are
 // "chore(main): release X.Y.Z": that scope is its, not ours, and so is the
 // trailer naming the bot that opened the pull request — both are let
-// through on that one shape of subject and refused on every other.
-func commitMessageFaults(subj, body string) (faults []string) {
+// through on that one shape of subject and refused on every other. The
+// trailer is also let through when the author is dependabot[bot]: GitHub
+// writes the squash message of its pull requests, and adds a
+// Co-authored-by line for every author the branch carried (2026-10-11,
+// fbbf143, after an update of the branch from main). A person's commit
+// with that trailer is still refused.
+func commitMessageFaults(author, subj, body string) (faults []string) {
 	m := commitSubject.FindStringSubmatch(subj)
 	if m == nil {
 		return []string{fmt.Sprintf("subject %q is not `<type>(<scope>): <subject>` without a trailing period", subj)}
@@ -269,29 +274,33 @@ func commitMessageFaults(subj, body string) (faults []string) {
 	if len(subj) > 72 {
 		faults = append(faults, fmt.Sprintf("subject is %d characters, 72 at most", len(subj)))
 	}
-	if !releaseCommit && commitTrailer.MatchString(body) {
+	botCommit := releaseCommit || author == "dependabot[bot]"
+	if !botCommit && commitTrailer.MatchString(body) {
 		faults = append(faults, "a Co-Authored-By trailer")
 	}
 	return faults
 }
 
-// The release commit's trailer is let through for release-please's
-// commits alone: the same trailer under any other subject is still refused.
+// The trailer is let through for release-please's commits and dependabot's
+// alone: the same trailer under any other subject or author is still
+// refused.
 func TestCommitMessageFaults(t *testing.T) {
 	const trailer = "Release PR.\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n"
 	for _, tc := range []struct {
-		subj, body string
-		want       int
+		author, subj, body string
+		want               int
 	}{
-		{"chore(main): release 0.1.1 (#11)", trailer, 0},
-		{"chore(main): release 0.1.1 (#11)", "", 0},
-		{"fix(web): bound the int conversion explicitly", "", 0},
-		{"fix(web): bound the int conversion explicitly", trailer, 1},
-		{"chore(main): tidy the release notes", trailer, 2},
-		{"docs: a trailing period.", "", 1},
-		{"feat(nowhere): an unknown scope", "", 1},
+		{"mlagarrigue", "chore(main): release 0.1.1 (#11)", trailer, 0},
+		{"mlagarrigue", "chore(main): release 0.1.1 (#11)", "", 0},
+		{"mlagarrigue", "fix(web): bound the int conversion explicitly", "", 0},
+		{"mlagarrigue", "fix(web): bound the int conversion explicitly", trailer, 1},
+		{"mlagarrigue", "chore(main): tidy the release notes", trailer, 2},
+		{"mlagarrigue", "docs: a trailing period.", "", 1},
+		{"mlagarrigue", "feat(nowhere): an unknown scope", "", 1},
+		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2 (#13)", trailer, 0},
+		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2.", trailer, 1},
 	} {
-		if got := commitMessageFaults(tc.subj, tc.body); len(got) != tc.want {
+		if got := commitMessageFaults(tc.author, tc.subj, tc.body); len(got) != tc.want {
 			t.Errorf("%q: %d faults %v, want %d", tc.subj, len(got), got, tc.want)
 		}
 	}
