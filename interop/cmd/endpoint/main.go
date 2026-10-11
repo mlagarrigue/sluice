@@ -6,7 +6,9 @@
 // mounted directories, nothing else: ROLE is client or server; TESTCASE
 // names the case; REQUESTS (client) lists the URLs to fetch, space
 // separated; the server serves /www on port 443 with /certs/cert.pem and
-// /certs/priv.key, the client writes what it fetched to /downloads;
+// /certs/priv.key, the client verifies that chain against /certs/ca.pem,
+// the root the runner minted for the run, and writes what it fetched to
+// /downloads;
 // SSLKEYLOGFILE, when set, receives the TLS secrets the runner decrypts the
 // capture with. Unless the case says otherwise the transfer is HTTP/0.9 over
 // QUIC: "GET /path\r\n" on a bidirectional stream, the file as the whole
@@ -28,6 +30,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +58,7 @@ const (
 	downloadsDir = "/downloads"
 	certFile     = "/certs/cert.pem"
 	keyFile      = "/certs/priv.key"
+	caFile       = "/certs/ca.pem"
 
 	serverPort = "443"
 	// preferredPort is the second port a server announces as its preferred
@@ -350,14 +354,23 @@ func fetchAll(requests []string, kl io.Writer) error {
 	}
 	defer pc.Close() //nolint:errcheck // process exits right after
 
+	// The runner mints a root and a chain per run and mounts both sides'
+	// /certs; the leaf names server, server4, server6 and server46, so the
+	// chain verifies like any other — against the run's root alone.
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return fmt.Errorf("%s: no certificate found", caFile)
+	}
 	cfg := &tls.Config{
-		// The runner mints its own certificate per run; what it checks is
-		// the bytes that arrive, not the chain.
-		InsecureSkipVerify: true, //nolint:gosec // interop endpoint, see above
-		ServerName:         host,
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{alpnHQ},
-		KeyLogWriter:       kl,
+		RootCAs:      roots,
+		ServerName:   host,
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{alpnHQ},
+		KeyLogWriter: kl,
 	}
 	c, err := quic.Dial(pc, addr, cfg, quic.DefaultParameters())
 	if err != nil {
