@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/mlagarrigue/sluice/compare/v0.2.0...v0.2.1) (2026-10-11)
+
+
+### Documentation
+
+* **quic:** link the public interop matrix ([1b22363](https://github.com/mlagarrigue/sluice/commit/1b223630a1210a3708cc069ee3257191c0a2126d))
+
 ## [0.2.0](https://github.com/mlagarrigue/sluice/compare/v0.1.1...v0.2.0) (2026-10-11)
 
 
