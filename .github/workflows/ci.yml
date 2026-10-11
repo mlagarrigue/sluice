@@ -324,7 +324,7 @@ jobs:
         run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList' .
       - name: Exported API against the last tag
         if: github.event_name == 'pull_request'
-        run: scripts/check-api.sh ${{ github.event.pull_request.base.sha }}
+        run: scripts/check-api.sh
 
   # Formatting and linting run on the floor toolchain, not the latest: the
   # pinned gofumpt and golangci-lint are built with it, and a linter built
