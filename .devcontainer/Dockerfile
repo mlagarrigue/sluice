@@ -35,6 +35,15 @@ RUN groupadd --gid $USER_GID $USERNAME \
 
 USER $USERNAME
 
+# Commits are signed with a key that stays on the host: the container only
+# sees the gpg-agent socket VS Code forwards, which drops for a moment at
+# every reconnection. Without no-autostart, a gpg run in that gap starts a
+# local, keyless agent on the socket path and keeps the forwarded one out
+# until someone kills it; with it, gpg fails plainly and recovers by itself
+# once the socket is back.
+RUN mkdir -m 700 /home/$USERNAME/.gnupg \
+    && echo no-autostart > /home/$USERNAME/.gnupg/gpg.conf
+
 # Go tooling: language server, debugger, the formatter and linter CI enforces
 # (pinned to the versions CI runs), vulnerability scanning, import management.
 RUN go install golang.org/x/tools/gopls@latest \
