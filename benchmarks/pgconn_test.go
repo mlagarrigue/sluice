@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -370,13 +371,39 @@ func benchAnySQL(b *testing.B, driver string) {
 
 const wideSQL = `SELECT id, c1, c2, c3, c4, c5, t1, t2, t3, t4, t5 FROM bench_wide`
 
+// The wide read is also timed per query, from the call to the first batch in
+// hand (TTFB) and to the end of the result (TTLB), and reported as a
+// distribution. ns/op says how long a whole read takes; the two delays say
+// where the time goes. If the server streamed the result and the client
+// decoded it as it came, the last batch would trail the first by the decode
+// time alone; a round trip per batch adds its wait twenty times over.
 func BenchmarkPGWideSluice(b *testing.B) {
+	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024})
+}
+
+// The same read with AllRows: one Execute for the whole result, so the server
+// streams every row while the client decodes the batches as they come. The
+// batches the consumer sees are the same size. Against BenchmarkPGWideSluice
+// this isolates the cost of asking for each batch after the previous one has
+// been delivered.
+func BenchmarkPGWideSluiceAllRows(b *testing.B) {
+	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024, AllRows: true})
+}
+
+func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 	conn := sluiceConn(b)
 	var acc int64
+	var first, last []time.Duration
 	b.ReportAllocs()
 	for b.Loop() {
-		src := conn.Query(b.Context(), wideSQL, nil, postgres.QueryConfig{BatchRows: 1024})
+		start := time.Now()
+		seen := false
+		src := conn.Query(b.Context(), wideSQL, nil, cfg)
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
+			if !seen {
+				first = append(first, time.Since(start))
+				seen = true
+			}
 			for _, r := range batch.Items {
 				for col := range 6 {
 					v, isNull := r.Value(col)
@@ -400,21 +427,33 @@ func BenchmarkPGWideSluice(b *testing.B) {
 		if err := src.Err(); err != nil {
 			b.Fatal(err)
 		}
+		last = append(last, time.Since(start))
 	}
 	sink = int(acc)
+	reportPercentiles(b, "ttfb", first)
+	reportPercentiles(b, "ttlb", last)
 }
 
+// pgx hands over a row at a time, so its first batch is its first row; it
+// asks for the whole result in one Execute, as AllRows does.
 func BenchmarkPGWidePgx(b *testing.B) {
 	conn := pgxConn(b)
 	ctx := b.Context()
 	var acc int64
+	var first, last []time.Duration
 	b.ReportAllocs()
 	for b.Loop() {
+		start := time.Now()
 		rows, err := conn.Query(ctx, wideSQL)
 		if err != nil {
 			b.Fatal(err)
 		}
+		seen := false
 		for rows.Next() {
+			if !seen {
+				first = append(first, time.Since(start))
+				seen = true
+			}
 			var id, c1, c2, c3, c4, c5 int64
 			var t1, t2, t3, t4, t5 string
 			if err := rows.Scan(&id, &c1, &c2, &c3, &c4, &c5, &t1, &t2, &t3, &t4, &t5); err != nil {
@@ -426,8 +465,11 @@ func BenchmarkPGWidePgx(b *testing.B) {
 		if err := rows.Err(); err != nil {
 			b.Fatal(err)
 		}
+		last = append(last, time.Since(start))
 	}
 	sink = int(acc)
+	reportPercentiles(b, "ttfb", first)
+	reportPercentiles(b, "ttlb", last)
 }
 
 func BenchmarkPGWidePgxSQL(b *testing.B) { benchWideSQL(b, "pgx") }
@@ -573,5 +615,20 @@ func TestPGContendersAgree(t *testing.T) {
 		if got[id] != total {
 			t.Errorf("id %d: sluice %d, pgx %d", id, got[id], total)
 		}
+	}
+}
+
+// reportPercentiles reports p50, p90, p99 and p99.9 of ds in nanoseconds,
+// under the names the interop benchmarks use. A percentile is the nearest
+// rank: below 1,000 samples, p99.9 is the slowest query.
+func reportPercentiles(b *testing.B, name string, ds []time.Duration) {
+	b.Helper()
+	slices.Sort(ds)
+	for _, q := range []struct {
+		label string
+		per   int // per thousand
+	}{{"p50", 500}, {"p90", 900}, {"p99", 990}, {"p99.9", 999}} {
+		i := (len(ds)*q.per + 999) / 1000 // ceil(len × q), a rank from 1
+		b.ReportMetric(float64(ds[max(i, 1)-1]), name+"-"+q.label+"-ns")
 	}
 }
