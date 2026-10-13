@@ -32,6 +32,9 @@ func h3Handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Respon
 		case "/bulk":
 			out = append(out, httpstream.Response{Status: 200, Stream: h3Bulk})
 			continue
+		case "/paced":
+			out = append(out, httpstream.Response{Status: 200, Stream: h3Paced})
+			continue
 		}
 		out = append(out, httpstream.Response{
 			Status: 200,
@@ -71,6 +74,25 @@ var bulkPayload = func() []byte {
 
 func h3Bulk(yield func(sluice.Batch[[]byte]) bool) {
 	for range bulkBatches {
+		if !yield(sluice.Batch[[]byte]{Items: [][]byte{bulkPayload}}) {
+			return
+		}
+	}
+}
+
+// pacedGap is the pause h3Paced takes before every batch after the first:
+// long enough beside a loopback round trip that a first batch held back
+// until the last would show, short enough to keep a request under 20 ms.
+const pacedGap = time.Millisecond
+
+// h3Paced is h3Bulk from a slow producer, the shape of a response streamed
+// while a database reads the next rows: the first batch is ready at once,
+// the others pacedGap apart.
+func h3Paced(yield func(sluice.Batch[[]byte]) bool) {
+	for i := range bulkBatches {
+		if i > 0 {
+			time.Sleep(pacedGap)
+		}
 		if !yield(sluice.Batch[[]byte]{Items: [][]byte{bulkPayload}}) {
 			return
 		}

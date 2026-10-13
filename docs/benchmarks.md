@@ -115,13 +115,15 @@ over loopback, with one connection and requests in sequence. ns/op is the
 round trip as the client sees it, from the request to the last byte of the
 body; MB/s counts the bytes of the body.
 
-There are three bodies. `plain` is a response rendered whole by the handler
+There are four bodies. `plain` is a response rendered whole by the handler
 (20 bytes). `stream` is three one-line batches pulled one at a time
 (24 bytes). `bulk` is sixteen 4 KiB batches pulled one at a time (64 KiB),
 several times the data a sender puts in flight before its first
 acknowledgements come back (the congestion window), though it stays well
 inside the flow-control windows (the limit the receiver announces on how
-much data the sender may have in flight).
+much data the sender may have in flight). `paced` is the same body as
+`bulk` from a producer that pauses one millisecond before every batch after
+the first, as a database reading the next rows would.
 
 ```
 cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
@@ -229,6 +231,37 @@ the QUIC protocol.
   goroutine, often on another core. The mutex profile names who makes the
   others wait on the connection's lock: `Stream.Write` for 54% of the
   waiting, the read loop for 12%, the timer loop for 9%.
+
+**First and last byte (measured 2026-10-13).** ns/op is a mean, and it
+only counts the last byte. The benchmark also records, request by request,
+two delays counted from the moment the request is sent: the first byte of
+the body (TTFB, *time to first byte*: the client sees the response start)
+and the last (TTLB, *time to last byte*: it has all of it). It reports them
+as a distribution — p50, p90, p99, p99.9, the delay under which 50%, 90%,
+99% and 99.9% of the requests fall — because a mean hides the slow
+requests. Median of three passes, `-benchtime 3s`, quiet machine, in µs:
+
+| benchmark | TTFB p50 | p90 | p99 | p99.9 | TTLB p50 | p90 | p99 | p99.9 |
+|---|---|---|---|---|---|---|---|---|
+| `BenchmarkH2FromNetHTTP/plain` | 138 | 186 | 354 | 610 | 138 | 186 | 357 | 614 |
+| `BenchmarkH2FromNetHTTP/stream` | 208 | 256 | 432 | 670 | 209 | 257 | 435 | 671 |
+| `BenchmarkH2FromNetHTTP/bulk` | 226 | 327 | 510 | 824 | 283 | 433 | 621 | 938 |
+| `BenchmarkH2FromNetHTTP/paced` | 279 | 501 | 658 | 740 | 18,918 | 19,546 | 20,640 | 20,940 |
+| `BenchmarkH3FromQuicGo/plain` | 211 | 331 | 563 | 1,030 | 214 | 337 | 575 | 1,051 |
+| `BenchmarkH3FromQuicGo/stream` | 222 | 349 | 590 | 1,099 | 231 | 367 | 611 | 1,146 |
+| `BenchmarkH3FromQuicGo/bulk` | 312 | 627 | 1,113 | 1,578 | 543 | 1,022 | 1,597 | 1,999 |
+| `BenchmarkH3FromQuicGo/paced` | 304 | 615 | 987 | 1,008 | 18,609 | 19,227 | 19,810 | 20,395 |
+
+On `paced`, the first byte arrives after 0.3 ms and the last after 19 ms,
+over HTTP/2 as over HTTP/3: the first batch leaves as soon as it is ready,
+and the coalescing of batches does not hold it back. That is the README's
+promise — the client receives the start while the server produces the
+rest — put in figures. On `plain` and `stream`, the two delays merge: the
+body fits in one write. On `bulk`, the gap between first and last byte is
+57 µs over HTTP/2 and 231 µs over HTTP/3: that is HTTP/3's lower throughput
+seen above, not a late start. HTTP/3's tails (p99.9 around a millisecond
+from `plain` on) are nearly twice those of HTTP/2. A pass of `paced` counts
+only about 160 requests: its p99.9 is the slowest of them.
 
 **Verdict.** The cost per batch is explained, divided by two, and what remains
 is owned: `docs/guide/experimental.md` says it in one sentence for whoever
