@@ -378,14 +378,14 @@ Sign-test verdicts, 14 rounds:
 cd benchmarks && go test -run '^$' -bench 'PGWide(Sluice|SluiceAllRows|Pgx)$' -benchtime 2s
 ```
 
-**Two batches asked for ahead (measured 2026-10-14).** The default read now
+**Two batches asked for ahead (measured 2026-10-13).** The default read now
 sends the `Execute` for the next two batches as soon as the portal
 suspends, before the batch in hand reaches the consumer: the server
 produces batch k+1 while the consumer works through batch k, and finds the
 request for k+2 waiting. Same protocol as above, fifteen paired rounds,
 the binary before the change and after it back to back in each round. The
-machine was slower that day than on 2026-10-13, so the absolute figures do
-not compare with the table above; the ratios within a round do:
+machine was slower than for the table above, so the absolute figures do not
+compare with it; the ratios within a round do:
 
 | benchmark | ns/op | TTFB p50 | p90 | p99 | p99.9 | TTLB p50 | p90 | p99 | p99.9 |
 |---|---|---|---|---|---|---|---|---|---|
