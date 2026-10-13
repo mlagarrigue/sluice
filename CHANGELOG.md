@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/mlagarrigue/sluice/compare/v0.2.1...v0.2.2) (2026-10-13)
+
+
+### Documentation
+
+* **quic:** hold the interop exit condition in our CI ([85a6aca](https://github.com/mlagarrigue/sluice/commit/85a6aca797681b3b4eb6610d2e7fdd5c5eb433fe))
+* **quic:** name why HTTP/3 bulk trails HTTP/2 ([8c02a86](https://github.com/mlagarrigue/sluice/commit/8c02a865ae4f11828cf61c6ffcf148b366df1386))
+
 ## [0.2.1](https://github.com/mlagarrigue/sluice/compare/v0.2.0...v0.2.1) (2026-10-11)
 
 
