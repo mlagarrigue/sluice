@@ -476,3 +476,25 @@ func TestWorkflowCheckoutsDropTheirCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestDockerImagesArePinned: a tag moves, a digest does not. The interop
+// image is published, so its base is pinned for the same reason the
+// workflows pin every action by commit; Dependabot moves the digests.
+func TestDockerImagesArePinned(t *testing.T) {
+	from := regexp.MustCompile(`(?m)^FROM\s+(\S+)`)
+	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile"} {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		images := from.FindAllSubmatch(b, -1)
+		if len(images) == 0 {
+			t.Errorf("%s: no FROM line; if the file changed shape, update this test with it", f)
+		}
+		for _, m := range images {
+			if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).Match(m[1]) {
+				t.Errorf("%s: FROM %s is not pinned by digest", f, m[1])
+			}
+		}
+	}
+}
