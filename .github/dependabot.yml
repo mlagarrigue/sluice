@@ -24,6 +24,12 @@ updates:
     directories: ["/interop", "/.devcontainer"]
     schedule:
       interval: weekly
+    # The golang image follows the floor go.mod declares; raising it is the
+    # decision TestGoModVersionMatchesTheOldestCIBuild guards, not a bump.
+    # Within 1.26 the digest still moves.
+    ignore:
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: "build"
   - package-ecosystem: github-actions
