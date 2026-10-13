@@ -3,13 +3,21 @@
 # release rather than the working tree. Built from a release tag only,
 # never from a commit of main: the runner tests the state the release
 # notes and docs/guide/limits.md describe. `latest` moves with each
-# release; the version tag stays. The dispatch form rebuilds a tag whose image was lost
-# or whose base image moved; given a branch, it refuses.
+# release; the version tag stays. The Release workflow calls this one with
+# the tag it just cut (its token's tag push starts nothing); a tag pushed by
+# hand starts it directly. The dispatch form rebuilds a tag whose image was
+# lost or whose base image moved; given a branch, it refuses.
 name: Interop image
 
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: release tag to build
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions:
@@ -20,13 +28,17 @@ jobs:
   interop-image:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Require a release tag
-        if: github.ref_type != 'tag'
+        if: inputs.tag == '' && github.ref_type != 'tag'
         run: |
           echo "::error::the interop image is built from a tag, not from ${{ github.ref }}"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TAG }}
       # The online runner wants linux/amd64; arm64 serves a local run on an
       # Apple or Graviton machine. The base image ships both.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -43,9 +55,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/mlagarrigue/sluice-interop:${{ github.ref_name }}
+            ghcr.io/mlagarrigue/sluice-interop:${{ env.TAG }}
             ghcr.io/mlagarrigue/sluice-interop:latest
           labels: |
             org.opencontainers.image.source=https://github.com/mlagarrigue/sluice
-            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.version=${{ env.TAG }}
             org.opencontainers.image.description=sluice's endpoint for the QUIC Interop Runner
