@@ -856,3 +856,43 @@ func BenchmarkListenerRefusedInitial(b *testing.B) {
 		pc.taken()
 	}
 }
+
+// A connection whose read loop is busy for a moment must not lose the burst
+// a large response draws back: the listener queues up to connQueueLen
+// datagrams before it drops. A queue of 8 dropped this burst and stalled
+// each affected request for a client PTO.
+func TestListenerQueuesABurstForABusyConnection(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	// A connection nothing reads: every datagram routed to it stays queued.
+	c := &Conn{scid: bytes.Repeat([]byte{0xab}, listenerCIDLen)}
+	if err := l.prepareConn(c); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	l.routeLocked(string(c.scid), c)
+	l.mu.Unlock()
+	defer l.forget(c)
+
+	const burst = 32 // what a 64 KiB HTTP/3 response drew back, measured
+	dg := append([]byte{0x40}, c.scid...)
+	dg = append(dg, make([]byte, 40)...)
+	before := l.DiscardedPackets()
+	for range burst {
+		l.dispatch(append([]byte(nil), dg...), pc.LocalAddr(), l.pc)
+	}
+	if n := l.DiscardedPackets() - before; n != 0 {
+		t.Errorf("the listener dropped %d of a %d-datagram burst", n, burst)
+	}
+	if n := len(c.incoming); n != burst {
+		t.Errorf("%d datagrams queued, want %d", n, burst)
+	}
+}

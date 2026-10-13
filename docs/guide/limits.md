@@ -74,18 +74,24 @@ Three reasons come up, and the difference matters:
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,
-  `macaddr`, `bit`) and arrays of the most frequent. **Missing** — not yet:
-  `money` (its scale depends on a server setting, a trap more than a type),
-  `tsvector`, ranges, composite types, and arrays of the remaining types.
-  Each addition needs vectors taken from a real server.
+  `macaddr`, `bit`). Thirteen of them — `bool`, `int2/4/8`, `float4/8`,
+  `text`, `bytea`, `uuid`, `timestamptz`, `timestamp`, `date`, `numeric` —
+  also have a one-dimensional array, the same array with NULL elements, and
+  a column scanner; the table in the [PostgreSQL guide](postgres.md#the-codecs-in-one-table)
+  says which has what. **Missing** — not yet: `money` (its scale depends on
+  a server setting, a trap more than a type), `tsvector`, ranges, composite
+  types, multi-dimensional arrays, and arrays and scanners of the other
+  types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
+  `macaddr`, `bit`) — on demand, as no use has asked for them yet. Each
+  addition needs vectors taken from a real server.
 - **TLS is yours.** The connector dials nothing and negotiates no TLS: you
   hand it an already open connection, encrypted or not. On purpose: which
   host, which certificate, which timeout are deployment decisions.
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
-- **`pushdown` is not wired**: the connector does not yet read a `Demand`
-  (see Experimental).
+- **`pushdown` pushes the limit and the key bound, not the column set**:
+  the SQL is the caller's and its select list is not rewritten.
 
 ## Web and gateway
 
@@ -115,19 +121,87 @@ Three reasons come up, and the difference matters:
 These packages leave the label only by meeting these conditions, or move
 to a separate module before a v1.
 
-- **`net/quic`**: having talked to a third-party implementation (quic-go,
-  then the public *QUIC Interop Runner*); implementing key update
-  (RFC 9001 §6), without which a long connection eventually dies; an
-  external cryptographic review.
-- **`net/quic/udp`**: the macOS code run in continuous integration (it is
-  written, never run there).
-- **`net/httpstream`**: HTTP/2 and /3 confronted with third-party clients
-  (curl, browsers, h2spec); parser fuzzing in continuous integration; a
-  streamed HTTP/2 response that does not block the responder, or that limit
-  owned in the documentation.
-- **`web/stream`**: follows `httpstream`, plus a real consumer.
-- **`pushdown`**: at least one source that reads the `Demand` (PostgreSQL
-  or the gateway); otherwise the API is frozen on a guessed need.
+- **`net/quic`**: being green in the *QUIC Interop Runner* against
+  quic-go and ngtcp2, on each side of the handshake, in our own continuous
+  integration; an external cryptographic review. Two conditions left this list on
+  2026-10-10: key update (RFC 9001 §6) — both sides rotate, and a long
+  connection no longer dies of its packet count — and the first
+  third-party peer: quic-go, on each side of the handshake, in continuous
+  integration (the `interop/` module, job `interop-quic`). The runner
+  itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
+  the `Interop runner` workflow). Since 2026-10-11 the endpoint's image,
+  `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
+  (the `Interop image` workflow). Each run of the `Interop runner`
+  workflow, not this paragraph, is the record: its log holds the table of
+  cases, its artifact the captures and each side's logs. As a server,
+  sluice passes handshake,
+  transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
+  amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,
+  rebind-addr, handshakeloss and handshakecorruption, and fails
+  connectionmigration for a reason outside it: quic-go's client never
+  migrates to a server's preferred address, so the runner sees a single
+  path while the transfer itself completes. As a client it passes handshake,
+  transfer, longrtt, multiplexing, retry, blackhole, transferloss,
+  transfercorruption, ipv6, handshakeloss, handshakecorruption,
+  amplificationlimit, rebind-port and rebind-addr. The two
+  handshake cases under 30 % loss or corruption passed on both sides once
+  a probe timeout resent the two oldest unacknowledged packets instead of
+  copying the first again; amplificationlimit passed on the client side
+  once a probe with a single payload to resend sent it twice, so that a
+  server allowed three times what it received is unblocked after seven
+  doubling intervals rather than sixty-three (RFC 9002 §6.2.4); the two
+  rebind cases passed on the client side once `Dial` issued connection
+  identifiers of its own — a server may not probe a client's new address
+  under an identifier it already uses towards the old one (RFC 9000
+  §9.5), so quic-go, holding no spare, kept sending to the address the
+  NAT had abandoned until the idle timer fired; the connectionmigration
+  transfer completed once the server's long-header gate accepted every
+  identifier it had issued, not only its own — quic-go names the
+  preferred_address identifier (sequence 1, RFC 9000 §5.1.1) from the
+  Handshake packets that carry its Finished, and a server dropping them
+  resent its own Handshake until its deadline closed the connection with
+  INTERNAL_ERROR (`interop/preferred_test.go`). The second peer, ngtcp2,
+  was crossed the same day: every case above passes on both sides, and
+  connectionmigration splits. ngtcp2's client does move to a preferred
+  address, but only to one of the family its connection already uses
+  (RFC 9000 §9.6.1), and it had connected over IPv6 to a server announcing
+  IPv4 alone — the endpoint now announces one address per family from a
+  dual-stack socket (`ListenerConfig.PreferredIPs`). The runner then wants
+  the first server packet on the new path to carry a PATH_CHALLENGE, which
+  is §9.6.2's own demand ("the server MUST probe on the path toward the
+  client from its preferred address"): the server now puts that probe in
+  the packet that answers the client's challenge, under an identifier
+  never used on the old path (§9.5). The reverse direction stays red for
+  a reason outside sluice: the client validates the preferred address
+  before moving, as §9.6.2 requires, so the first packet it sends there
+  carries nothing but a PATH_CHALLENGE, and ngtcp2's server answers such a
+  packet with a PATH_RESPONSE alone, probing in turn only once a
+  non-probing packet arrives — no client that validates first can hand
+  the runner the PATH_CHALLENGE it wants in that first packet (ngtcp2's
+  own client probes the same way, `conn_write_path_challenge`). The cases
+  it refuses, as the runner's
+  exit status 127 asks, are the features documented as not there — 0-RTT,
+  resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
+  restrict the cipher suites), a forced key update and HTTP/3 on the client
+  side (no HTTP/3 client in the module). Green means every one of these
+  passed against at least two peers.
+- **`net/quic` throughput**: a 64 KiB response over HTTP/3 reaches about
+  81 MB/s against quic-go's client, against 143 MB/s over HTTP/2 measured in
+  the same session (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real
+  client"). On Linux, the datagrams one `Stream.Write` produces leave in one
+  system call (UDP segmentation offload); on other systems, or on a kernel
+  that refuses the option, each datagram is still its own write. The QUIC
+  windows are not the cause — scaled from 1 to 16 times, on either side, they
+  move nothing — so sizing them will not buy the rest back. The rest is the
+  Go scheduler: on two cores (`GOMAXPROCS=2`), the same response reaches
+  167 MB/s over HTTP/3 against 157 over HTTP/2, because a request crosses
+  several goroutines and each hand-off wakes one, often on another core.
+- **`net/quic/udp`**: follows `quic`; packet information on Darwin and
+  Windows the day a deployment there needs it.
+- **`web/stream`**: a real consumer of its stages. Its transport,
+  `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
+  client in continuous integration, fuzzed parsers, the per-batch cost of a
+  streamed response measured.
 
 ## Measurements: what is missing
 

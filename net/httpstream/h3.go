@@ -40,7 +40,8 @@ const (
 	h3MaxPushID   = 0x0d
 )
 
-// ErrH3Protocol reports an HTTP/3 frame or request this package will not accept.
+// ErrH3Protocol reports an HTTP/3 frame or request this package will not
+// accept. Named as [ErrHPACK] explains.
 var ErrH3Protocol = errors.New("httpstream: HTTP/3 protocol error")
 
 // h3Frame is one frame off a QUIC stream. Payload borrows the stream buffer.
@@ -67,7 +68,7 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			return dst, buf, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
 		if maxFrame > 0 && length > uint64(maxFrame) {
-			// ErrTooLarge as well as ErrH3: a frame too long to read is the
+			// ErrTooLarge as well as ErrH3Protocol: a frame too long to read is the
 			// peer asking for more than it may, whatever its type — a GREASE
 			// frame included — which a request stream answers with
 			// H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.

@@ -253,7 +253,7 @@ const defaultMaxConcurrency = 100
 
 // ErrH2Protocol reports a frame sequence this package will not accept. Like
 // every framing failure here it ends the connection: a stream whose boundaries
-// are in doubt cannot be resynchronised.
+// are in doubt cannot be resynchronised. Named as [ErrHPACK] explains.
 var ErrH2Protocol = errors.New("httpstream: HTTP/2 protocol error")
 
 // h2Frames reads a connection as a stream of frame batches, after checking the

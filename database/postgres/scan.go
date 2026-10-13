@@ -229,3 +229,75 @@ func ScanTimestampTZ(dst []time.Time, rows *Rows, col int) ([]time.Time, error) 
 	}
 	return dst, nil
 }
+
+// # One scanner per codec
+//
+// The six scanners above are written out by hand and sit on the batched-read
+// hot path, with the figures the package header quotes measured against
+// them. The seven below exist so the table in docs/guide/postgres.md has no
+// hole in its Scan column — a uuid key is as common an `= ANY($1)` parameter
+// as an int8 one — and they are built on one generic loop rather than copied
+// seven more times. The hand-written six are deliberately not converted to
+// it, for the reason array.go gives about its own hand-written four: a
+// per-value indirect call on the measured path is the kind of change that
+// costs three percent and is noticed a month later.
+
+// scanColumn is the loop every scanner runs: check the column's type once,
+// then decode each row's value, refusing a NULL.
+func scanColumn[T any](dst []T, rows *Rows, col int, name string, dec func([]byte) (T, error), accepts ...uint32) ([]T, error) {
+	if err := checkColumn(rows, col, name, accepts...); err != nil {
+		return dst, err
+	}
+	for i := range rows.Len() {
+		b, isNull := rows.Value(i, col)
+		if isNull {
+			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
+		}
+		v, err := dec(b)
+		if err != nil {
+			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
+		}
+		dst = append(dst, v)
+	}
+	return dst, nil
+}
+
+// ScanInt2 appends column col of every row, decoded as int2 (int16).
+func ScanInt2(dst []int16, rows *Rows, col int) ([]int16, error) {
+	return scanColumn(dst, rows, col, "ScanInt2", DecodeInt2, OIDInt2)
+}
+
+// ScanFloat4 appends column col of every row, decoded as float4 (float32).
+func ScanFloat4(dst []float32, rows *Rows, col int) ([]float32, error) {
+	return scanColumn(dst, rows, col, "ScanFloat4", DecodeFloat4, OIDFloat4)
+}
+
+// ScanBytea appends column col of every row as byte slices. Each is a copy,
+// for the reason [ScanText] gives: the batch's buffer is reused.
+func ScanBytea(dst [][]byte, rows *Rows, col int) ([][]byte, error) {
+	return scanColumn(dst, rows, col, "ScanBytea", cloneBytes, OIDBytea)
+}
+
+// ScanUUID appends column col of every row, decoded as uuid.
+func ScanUUID(dst [][16]byte, rows *Rows, col int) ([][16]byte, error) {
+	return scanColumn(dst, rows, col, "ScanUUID", DecodeUUID, OIDUUID)
+}
+
+// ScanNumeric appends column col of every row, decoded as numeric — exact,
+// as [DecodeNumeric] keeps it.
+func ScanNumeric(dst []Numeric, rows *Rows, col int) ([]Numeric, error) {
+	return scanColumn(dst, rows, col, "ScanNumeric", DecodeNumeric, OIDNumeric)
+}
+
+// ScanTimestamp appends column col of every row as times without a zone,
+// as [DecodeTimestamp] returns them. It reads timestamp only: a timestamptz
+// column holds instants, and [ScanTimestampTZ] is the scanner that says so.
+func ScanTimestamp(dst []time.Time, rows *Rows, col int) ([]time.Time, error) {
+	return scanColumn(dst, rows, col, "ScanTimestamp", DecodeTimestamp, OIDTimestamp)
+}
+
+// ScanDate appends column col of every row as midnight UTC times, as
+// [DecodeDate] returns them.
+func ScanDate(dst []time.Time, rows *Rows, col int) ([]time.Time, error) {
+	return scanColumn(dst, rows, col, "ScanDate", DecodeDate, OIDDate)
+}

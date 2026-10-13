@@ -27,8 +27,8 @@ import (
 // than believed. The *listener* side of a server — connection-identifier
 // demultiplexing, address validation, amplification limits, Retry
 // generation — lives in [Listener], its own design unit on top of this one.
-// Interoperation with another implementation remains unproven until it is
-// tested against one.
+// Interoperation is proven against quic-go, both ways, in continuous
+// integration (interop/); against any other implementation it is not.
 //
 // # Failure model
 //
@@ -77,6 +77,13 @@ type Conn struct {
 	// to the refusals its reads see. Guarded by mu.
 	writeRefusals int
 	writeRefusal  error
+	// hsSyncRead is true while handshake() reads the socket itself; hsWake
+	// asks that read to return early so the loop re-counts refusals: on
+	// Linux a closed port's ICMP is reported by whichever syscall comes
+	// next, and when that is a probe's second send the read would
+	// otherwise block until the handshake deadline. Guarded by mu.
+	hsSyncRead bool
+	hsWake     bool
 	// writeFailures counts every failed send, refusal or not. Guarded by mu.
 	writeFailures uint64
 
@@ -118,6 +125,24 @@ type Conn struct {
 	dgram     []byte
 	dgramPend *pendingPacket
 	dgramPad  bool
+	// batching, batch, batchSeg, batchN and batchShort are send batching:
+	// while batching is set (Stream.write), 1-RTT datagrams bound for the
+	// current path are sealed back to back into batch — every one batchSeg
+	// bytes, but a shorter last that closes it (batchShort) — and leave in
+	// one system call. noGSO records that the socket refused segmentation
+	// offload once, so later batches go one write per datagram without
+	// asking again. batchErr is the first write error of the batches
+	// flushed since Stream.write began, which it returns. oobScratch is
+	// the control message. See batchLocked and flushBatchLocked.
+	batching   bool
+	batch      []byte
+	batchSeg   int
+	batchN     int
+	batchShort bool
+	noGSO      bool
+	segmented  int // batches that left in one segmented write, for tests
+	batchErr   error
+	oobScratch []byte
 	// parseScratch and batchScratch are the receive path's two per-packet
 	// frame slices, reusable because one receive goroutine processes one
 	// packet at a time and no consumer keeps either slice (see frames).
@@ -221,8 +246,11 @@ type Conn struct {
 	once        sync.Once
 	timerKick   chan struct{}
 
-	discarded        uint64 // datagrams or packets dropped without processing
-	keyPhaseSuspects uint64
+	discarded uint64 // datagrams or packets dropped without processing
+
+	// ku is the 1-RTT key-update state this end's send side keeps
+	// (RFC 9001 §6). Guarded by mu.
+	ku keyUpdateState
 	// unhandledTLSEvents counts crypto/tls events pump has no case for;
 	// atomic, as it is bumped outside mu.
 	unhandledTLSEvents atomic.Uint64
@@ -249,10 +277,10 @@ type Conn struct {
 	amplRecv   int64
 	amplSent   int64
 
-	// registrar is non-nil only for a [Listener]-managed connection: the
-	// hook that lets this connection add and remove its own additional
-	// identifiers in the shared demux table. Without one, no identifiers
-	// are issued (RFC 9000 §5.1.1's SHOULD) and the peer keeps sequence 0.
+	// registrar issues this connection's additional identifiers: the
+	// [Listener]'s demux table for a connection it manages, an
+	// ownerRegistrar for one that owns its socket. The peer needs them to
+	// follow this end across a NAT rebind (RFC 9000 §9.5).
 	registrar cidRegistrar
 	// localCIDs are the identifiers this end currently answers to, sequence
 	// 0 being scid; nextLocalSeq numbers the next one issued.
@@ -319,6 +347,35 @@ type peerClose struct {
 	app    bool
 	reason string
 	seen   bool
+}
+
+// keyUpdateState is what a sender must know to rotate 1-RTT keys and to
+// answer the peer's rotation (RFC 9001 §6.1, §6.2, §6.5). The read side's
+// state lives on the opener (keyPhase); this is the rest.
+type keyUpdateState struct {
+	// phase is the Key Phase bit this end's packets carry now: 0, then
+	// keyPhaseBit, alternating with each rotation (§6).
+	phase byte
+	// firstPN is the first packet number sent under the current write keys
+	// and acked whether the peer has acknowledged one of them, which is
+	// what permits the next rotation (§6.1): keys are then known to be
+	// present on both sides. The only initiator here is the AEAD limit
+	// (§6.6), a MUST; the three-probe-timeout wait §6.5 asks of a
+	// voluntary rotation has no voluntary rotation to apply to.
+	firstPN uint64
+	acked   bool
+	// responseDue is set when the peer initiated: this end's send keys
+	// switched in answer and no packet under them has carried an
+	// acknowledgement yet (§6.2). A further rotation from the peer in that
+	// window is a KEY_UPDATE_ERROR — it rotated twice without waiting.
+	responseDue bool
+	responsePN  uint64
+	// dropPrevAt is when the previous read keys are let go (§6.5: no more
+	// than three probe timeouts after the first packet under the new ones);
+	// zero when none are held.
+	dropPrevAt time.Time
+	// updates counts rotations of this end's send keys, for Stats.
+	updates uint64
 }
 
 // space is one packet-number space: its keys, CRYPTO reassembly, what was
@@ -430,7 +487,12 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	if err != nil {
 		return nil, err
 	}
+	owner, err := newOwnerRegistrar()
+	if err != nil {
+		return nil, err
+	}
 	c := newConn(pc, addr, dcid, scid, true, params)
+	c.registrar = owner
 	c.initialDCID = dcid
 	c.params.initialSourceCID = scid
 
@@ -540,6 +602,15 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 		c.params.originalDCID = c.odcid
 		c.params.retrySourceCID = append([]byte(nil), h.DCID...)
 	}
+	// Standalone, the connection owns its socket and issues identifiers
+	// through an ownerRegistrar; a listener's prepare replaces it with the
+	// demux table.
+	owner, err := newOwnerRegistrar()
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	c.registrar = owner
 	if prepare != nil {
 		if err := prepare(c); err != nil {
 			_ = c.Close()
@@ -696,6 +767,14 @@ func (c *Conn) handshake(ctx context.Context) error {
 		close(fired)
 	})
 	defer stop()
+	c.mu.Lock()
+	c.hsSyncRead = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.hsSyncRead = false
+		c.mu.Unlock()
+	}()
 	// ctxErr turns a deadline the context set into the context's error,
 	// rather than a bare timeout — even when the socket's read deadline
 	// fires a hair before the context's own timer marks it done.
@@ -809,6 +888,11 @@ func (c *Conn) handshake(ctx context.Context) error {
 			}
 			continue
 		}
+		if !got && errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil && time.Now().Before(deadline) {
+			// Not the deadline: a send refusal woke the read (hsWake) so
+			// the refusal count at the top of the loop is re-taken now.
+			continue
+		}
 		if !got && sockErr != nil && !heard && errors.Is(err, os.ErrDeadlineExceeded) {
 			err = sockErr // as at the deadline check above
 		}
@@ -869,9 +953,8 @@ func (c *Conn) confirmLocked() {
 	c.handshakeConfirmed = true
 	c.peerAddrValidated = true
 	c.discardSpaceLocked(spaceHandshake)
-	// A listener-managed server now offers the alternatives a migrating or
-	// rotation-forcing peer will need; everyone else issues nothing
-	// (issueLocalCIDsLocked is a no-op without a registrar).
+	// Both ends now offer the alternatives a migrating, rebinding or
+	// rotation-forcing peer will need.
 	c.issueLocalCIDsLocked()
 	// A client whose server would rather be reached elsewhere starts
 	// validating that path now (§9.6.2) — the earliest moment the section
@@ -1086,7 +1169,15 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 		c.spaces[space].sealer = sealer
 		return nil
 	}
-	opener, err := newOpenerSuite(secret, s)
+	var opener *packetOpener
+	if space == spaceApplication {
+		// 1-RTT keys rotate (RFC 9001 §6): the opener carries the next
+		// phase from the start, so the peer's first rotation costs no
+		// derivation on the receive path.
+		opener, err = newPhasedOpener(secret, s)
+	} else {
+		opener, err = newOpenerSuite(secret, s)
+	}
 	if err != nil {
 		return err
 	}
@@ -1105,6 +1196,79 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 		}
 	}
 	c.mu.Lock()
+	return nil
+}
+
+// rotateSendKeysLocked moves this end's 1-RTT send keys to the next phase
+// (RFC 9001 §6.1, §6.4): new key and IV, the phase bit toggled, the
+// confidentiality count restarted, and the old keys dropped at once — a
+// sender never protects anything under old keys. The next rotation waits
+// for an acknowledgement of a packet sent under these.
+func (c *Conn) rotateSendKeysLocked() error {
+	sp := &c.spaces[spaceApplication]
+	next, err := sp.sealer.k.next()
+	if err != nil {
+		return err
+	}
+	sp.sealer = &packetSealer{k: next}
+	c.ku.phase ^= keyPhaseBit
+	c.ku.firstPN = sp.nextPN
+	c.ku.acked = false
+	c.ku.updates++
+	return nil
+}
+
+// canInitiateKeyUpdateLocked is RFC 9001 §6.1's two MUSTs: the handshake
+// is confirmed and a packet under the current phase was acknowledged.
+func (c *Conn) canInitiateKeyUpdateLocked() bool {
+	return c.handshakeConfirmed && c.ku.acked && !c.ku.responseDue
+}
+
+// initiateKeyUpdateLocked rotates this end's send keys on its own
+// initiative (RFC 9001 §6.1), when permitted. Reports whether it did. The
+// read keys need no change: the peer's answer arrives under the next phase
+// the opener already holds, and is promoted when it authenticates.
+func (c *Conn) initiateKeyUpdateLocked() (bool, error) {
+	if !c.canInitiateKeyUpdateLocked() {
+		return false, nil
+	}
+	return true, c.rotateSendKeysLocked()
+}
+
+// onKeyPhaseOpenedLocked follows a 1-RTT packet that authenticated under
+// the opener's next keys at packet number pn: the peer has moved to that
+// phase (RFC 9001 §6.2). The read keys advance, with the old ones kept for
+// three probe timeouts of stragglers (§6.5), and the send keys follow if
+// they are still in the old phase. A second advance while the answer to
+// the first has not carried an acknowledgement is the peer rotating twice
+// without waiting — KEY_UPDATE_ERROR, as §6.2 allows and nothing sound
+// requires tolerating.
+func (c *Conn) onKeyPhaseOpenedLocked(opener *packetOpener, pn uint64, now time.Time) error {
+	sp := &c.spaces[spaceApplication]
+	if sp.opener != opener {
+		// Another packet already advanced the phase under the same keys;
+		// this one is read under what is now the current set.
+		return nil
+	}
+	if c.ku.responseDue {
+		return &transportError{
+			code: transportKeyUpdateError,
+			err:  fmt.Errorf("%w: the peer rotated its keys again before this end acknowledged the first rotation", ErrQUIC),
+		}
+	}
+	rotated, err := opener.rotated(pn)
+	if err != nil {
+		return err
+	}
+	sp.opener = rotated
+	c.ku.dropPrevAt = now.Add(3 * c.rtt.pto(c.peerMaxAckDelayLocked()))
+	if c.ku.phase == rotated.phase.bit {
+		return nil // this end initiated; the peer's answer completes it
+	}
+	if err := c.rotateSendKeysLocked(); err != nil {
+		return err
+	}
+	c.ku.responseDue, c.ku.responsePN = true, pn
 	return nil
 }
 
@@ -1153,16 +1317,15 @@ type Stats struct {
 	// without being processed: wrong sender, failed parse, failed
 	// authentication — and transient socket read errors, which on Windows
 	// include the unauthenticated ICMP port-unreachable. A rising count under
-	// load is either an attacker probing or a peer whose keys have rotated;
-	// KeyPhaseSuspects separates the two.
+	// load is an attacker probing, or a path corrupting datagrams.
 	DiscardedPackets uint64
 
-	// KeyPhaseSuspects is how many discarded packets carried a key-phase bit
-	// this package does not speak. Key update (RFC 9001 §6) is not
-	// implemented; a peer that rotates its keys shows up here, and the
-	// connection it is on will die of idle timeout. This counter is what
-	// turns that from a mystery into a diagnosis.
-	KeyPhaseSuspects uint64
+	// KeyUpdates is how many times this end's 1-RTT send keys rotated
+	// (RFC 9001 §6), whichever side initiated. Each rotation renews the
+	// AEAD's confidentiality budget (§6.6); a count that never moves on a
+	// connection that has sent tens of millions of packets is the thing to
+	// look at.
+	KeyUpdates uint64
 
 	// WriteFailures is how many datagrams this connection failed to hand to
 	// its socket. Sends are best effort — loss recovery resends what a failed
@@ -1184,7 +1347,7 @@ func (c *Conn) Stats() Stats {
 	defer c.mu.Unlock()
 	return Stats{
 		DiscardedPackets:   c.discarded,
-		KeyPhaseSuspects:   c.keyPhaseSuspects,
+		KeyUpdates:         c.ku.updates,
 		WriteFailures:      c.writeFailures,
 		UnhandledTLSEvents: c.unhandledTLSEvents.Load(),
 	}

@@ -3,6 +3,7 @@ package sluice_test
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,30 +228,273 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
 		t.Skip("needs the full history: a shallow clone hides which commits are merges")
 	}
-	out, err := exec.Command("git", "log", "--no-merges", "--format=%H%x00%s%x00%b%x1e").Output()
+	out, err := exec.Command("git", "log", "--no-merges", "--format=%H%x00%an%x00%s%x00%b%x1e").Output()
 	if err != nil {
 		t.Skipf("not a git checkout: %v", err)
 	}
-	subject := regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
 	for rec := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x1e\n"), "\x1e\n") {
-		parts := strings.SplitN(rec, "\x00", 3)
-		if len(parts) < 2 {
+		parts := strings.SplitN(rec, "\x00", 4)
+		if len(parts) < 3 {
 			continue
 		}
-		sha, subj := parts[0][:7], parts[1]
-		m := subject.FindStringSubmatch(subj)
+		body := ""
+		if len(parts) == 4 {
+			body = parts[3]
+		}
+		for _, fault := range commitMessageFaults(parts[1], parts[2], body) {
+			t.Errorf("%s: %s", parts[0][:7], fault)
+		}
+	}
+}
+
+var (
+	commitSubject = regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
+	commitTrailer = regexp.MustCompile(`(?mi)^co-authored-by:`)
+)
+
+// commitMessageFaults says what is wrong with one commit message — author,
+// subject and body apart — or nothing. release-please's own commits are
+// "chore(main): release X.Y.Z": that scope is its, not ours, and so is the
+// trailer naming the bot that opened the pull request — both are let
+// through on that one shape of subject and refused on every other. The
+// trailer is also let through when the author is dependabot[bot]: GitHub
+// writes the squash message of its pull requests, and adds a
+// Co-authored-by line for every author the branch carried (2026-10-11,
+// fbbf143, after an update of the branch from main). A person's commit
+// with that trailer is still refused.
+func commitMessageFaults(author, subj, body string) (faults []string) {
+	m := commitSubject.FindStringSubmatch(subj)
+	if m == nil {
+		return []string{fmt.Sprintf("subject %q is not `<type>(<scope>): <subject>` without a trailing period", subj)}
+	}
+	releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
+	if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
+		faults = append(faults, fmt.Sprintf("scope %q is not in the closed list", m[3]))
+	}
+	if len(subj) > 72 {
+		faults = append(faults, fmt.Sprintf("subject is %d characters, 72 at most", len(subj)))
+	}
+	botCommit := releaseCommit || author == "dependabot[bot]"
+	if !botCommit && commitTrailer.MatchString(body) {
+		faults = append(faults, "a Co-Authored-By trailer")
+	}
+	return faults
+}
+
+// The trailer is let through for release-please's commits and dependabot's
+// alone: the same trailer under any other subject or author is still
+// refused.
+func TestCommitMessageFaults(t *testing.T) {
+	const trailer = "Release PR.\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n"
+	for _, tc := range []struct {
+		author, subj, body string
+		want               int
+	}{
+		{"mlagarrigue", "chore(main): release 0.1.1 (#11)", trailer, 0},
+		{"mlagarrigue", "chore(main): release 0.1.1 (#11)", "", 0},
+		{"mlagarrigue", "fix(web): bound the int conversion explicitly", "", 0},
+		{"mlagarrigue", "fix(web): bound the int conversion explicitly", trailer, 1},
+		{"mlagarrigue", "chore(main): tidy the release notes", trailer, 2},
+		{"mlagarrigue", "docs: a trailing period.", "", 1},
+		{"mlagarrigue", "feat(nowhere): an unknown scope", "", 1},
+		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2 (#13)", trailer, 0},
+		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2.", trailer, 1},
+	} {
+		if got := commitMessageFaults(tc.author, tc.subj, tc.body); len(got) != tc.want {
+			t.Errorf("%q: %d faults %v, want %d", tc.subj, len(got), got, tc.want)
+		}
+	}
+}
+
+// The package list is written in three places a reader meets before the
+// code — the README's table, the experimental guide's opening sentence and
+// the exit conditions in the limits guide — and each is checked against the
+// tree and the godoc, so a package added, removed or relabelled fails here
+// rather than waiting for a reader to notice.
+func modulePackages(t *testing.T) (module string, docs map[string]string) {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not installed")
+	}
+	out, err := exec.Command("go", "list", "-f", "{{.ImportPath}}\t{{.Doc}}", "./...").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	docs = map[string]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		path, doc, _ := strings.Cut(line, "\t")
+		if module == "" {
+			module = path // the root is listed first
+		}
+		if strings.Contains(path, "/internal/") || strings.Contains(path, "/example/") {
+			continue
+		}
+		docs[path] = doc
+	}
+	return module, docs
+}
+
+// readmePackageRows reads the README's package table: each row names one
+// package (or two, joined by " · ") in the first cell and says in the last
+// whether it is supported or experimental.
+func readmePackageRows(t *testing.T, module string) (status map[string]string) {
+	t.Helper()
+	b, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile("^\\| (`[^`]+`(?: · `[^`]+`)*) \\|.*\\| ([^|]+) \\|$")
+	status = map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		m := row.FindStringSubmatch(line)
 		if m == nil {
-			t.Errorf("%s: subject %q is not `<type>(<scope>): <subject>` without a trailing period", sha, subj)
 			continue
 		}
-		if m[3] != "" && !slices.Contains(scopes, m[3]) {
-			t.Errorf("%s: scope %q is not in the closed list", sha, m[3])
+		for _, name := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(m[1], -1) {
+			n := name[1]
+			switch {
+			case n == "sluice":
+				n = module
+			case strings.HasPrefix(n, "sluice/"):
+				n = module + strings.TrimPrefix(n, "sluice")
+			default:
+				n = module + "/" + n
+			}
+			status[n] = strings.TrimSpace(m[2])
 		}
-		if len(subj) > 72 {
-			t.Errorf("%s: subject is %d characters, 72 at most", sha, len(subj))
+	}
+	return status
+}
+
+func TestREADMEPackageTableFollowsTheTree(t *testing.T) {
+	module, docs := modulePackages(t)
+	rows := readmePackageRows(t, module)
+	for path := range docs {
+		if _, ok := rows[path]; !ok {
+			t.Errorf("%s: not in the README's package table", path)
 		}
-		if len(parts) == 3 && regexp.MustCompile(`(?mi)^co-authored-by:`).MatchString(parts[2]) {
-			t.Errorf("%s: a Co-Authored-By trailer", sha)
+	}
+	for path, st := range rows {
+		doc, ok := docs[path]
+		if !ok {
+			t.Errorf("README: row %q names a package that is not in the tree", path)
+			continue
+		}
+		labelled := strings.Contains(strings.ToLower(doc), "experiment")
+		if labelled != strings.Contains(st, "experimental") {
+			t.Errorf("%s: README says %q, the godoc's first sentence %s the experimental label", path, st, map[bool]string{true: "carries", false: "lacks"}[labelled])
+		}
+	}
+}
+
+func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
+	module, docs := modulePackages(t)
+	labelled := map[string]bool{}
+	for path, doc := range docs {
+		if strings.Contains(strings.ToLower(doc), "experiment") {
+			labelled[path] = true
+		}
+	}
+	// The guide's opening paragraph, up to the first blank line after the
+	// title, names every labelled package in backticks.
+	b, err := os.ReadFile("docs/guide/experimental.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening, _, _ := strings.Cut(strings.TrimPrefix(string(b), "# Experimental\n\n"), "\n\n")
+	named := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(opening, -1) {
+		named[module+"/"+m[1]] = true
+	}
+	// The limits guide gives each one its exit conditions, one bullet each.
+	b, err = os.ReadFile("docs/guide/limits.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, exits, ok := strings.Cut(string(b), "## Experimental: the exit conditions\n")
+	if !ok {
+		t.Fatal("docs/guide/limits.md: no section \"Experimental: the exit conditions\"")
+	}
+	exits, _, _ = strings.Cut(exits, "\n## ")
+	conditioned := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^- \\*\\*`([^`]+)`\\*\\*").FindAllStringSubmatch(exits, -1) {
+		conditioned[module+"/"+m[1]] = true
+	}
+	for path := range labelled {
+		if !named[path] {
+			t.Errorf("%s: labelled experimental in its godoc, not named in docs/guide/experimental.md's opening", path)
+		}
+		if !conditioned[path] {
+			t.Errorf("%s: labelled experimental in its godoc, no exit conditions in docs/guide/limits.md", path)
+		}
+	}
+	for path := range named {
+		if !labelled[path] {
+			t.Errorf("%s: named in docs/guide/experimental.md, its godoc's first sentence does not say so", path)
+		}
+	}
+	for path := range conditioned {
+		if !labelled[path] {
+			t.Errorf("%s: has exit conditions in docs/guide/limits.md, its godoc's first sentence does not say so", path)
+		}
+	}
+}
+
+// TestWorkflowCheckoutsDropTheirCredentials: a checkout leaves the job's
+// token in the clone unless told not to, where every later step, a test
+// binary or a tool built from a module included, can read it. No job here
+// pushes through the clone (the badge job pushes by an explicit URL), so
+// every checkout drops it.
+func TestWorkflowCheckoutsDropTheirCredentials(t *testing.T) {
+	files, err := filepath.Glob(".github/workflows/*.yml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no workflow found: %v", err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(b), "\n")
+		for i, l := range lines {
+			if !strings.Contains(l, "- uses: actions/checkout@") {
+				continue
+			}
+			// The step's body is every following line indented deeper than
+			// its dash.
+			indent := len(l) - len(strings.TrimLeft(l, " "))
+			dropped := false
+			for _, body := range lines[i+1:] {
+				if len(body)-len(strings.TrimLeft(body, " ")) <= indent {
+					break
+				}
+				dropped = dropped || strings.TrimSpace(body) == "persist-credentials: false"
+			}
+			if !dropped {
+				t.Errorf("%s:%d: a checkout without persist-credentials: false", f, i+1)
+			}
+		}
+	}
+}
+
+// TestDockerImagesArePinned: a tag moves, a digest does not. The interop
+// image is published, so its base is pinned for the same reason the
+// workflows pin every action by commit; Dependabot moves the digests.
+func TestDockerImagesArePinned(t *testing.T) {
+	from := regexp.MustCompile(`(?m)^FROM\s+(\S+)`)
+	for _, f := range []string{"interop/Dockerfile", ".devcontainer/Dockerfile"} {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		images := from.FindAllSubmatch(b, -1)
+		if len(images) == 0 {
+			t.Errorf("%s: no FROM line; if the file changed shape, update this test with it", f)
+		}
+		for _, m := range images {
+			if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).Match(m[1]) {
+				t.Errorf("%s: FROM %s is not pinned by digest", f, m[1])
+			}
 		}
 	}
 }

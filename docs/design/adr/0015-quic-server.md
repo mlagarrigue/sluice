@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update)
 - **Theme:** quic
 
 ## Problem
@@ -59,8 +59,12 @@ which defeats a migration forged from copied packets. A path that never
 validates is abandoned and the last validated one restored (§9.3.2); with
 none known, the connection closes silently. The client has `Conn.Rebind`
 (a new socket, a fatal probe), and moves to a server's preferred address on
-its own after the handshake; the server half of `preferred_address` is
-implemented and tested but not public.
+its own after the handshake. The server half is `ListenerConfig.
+PreferredAddress`, a second socket the listener reads and announces: it
+was kept private by the surface pass of 2026-10-04, which exported nothing
+only the package's own tests used, and is public since the feature is
+otherwise unreachable and the parameter's whole point (§9.6) is a server
+behind a shared address — a deployment, not a test.
 
 ## Rationale
 
@@ -75,8 +79,9 @@ comparison on the packet hot path.
 Known residuals, stated rather than hidden: interoperation against a
 foreign implementation remains the missing proof — the harness drops,
 reorders and forges datagrams, but only a peer sharing no code catches a
-shared wrong assumption; key update (RFC 9001 §6) is not implemented, and a
-peer that rotates keys shows in `Stats().KeyPhaseSuspects` then dies of
-idle timeout; RTT samples from an abandoned path can inflate the probe
-timeout after a migration, in the conservative direction only; 0-RTT is
-absent.
+shared wrong assumption; key update (RFC 9001 §6) rotates in both
+directions since 2026-10-10, but the only rotation this end initiates is
+the one the AEAD limit forces, and the §6.2 refusal of a double rotation
+is applied strictly where the RFC says MAY; RTT samples from an abandoned
+path can inflate the probe timeout after a migration, in the conservative
+direction only; 0-RTT is absent.

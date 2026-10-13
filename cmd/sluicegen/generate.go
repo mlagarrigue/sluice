@@ -49,7 +49,8 @@ type column struct {
 	Name       string   // column name in SQL
 	Decode     string   // expression decoding `b` into the field's type
 	OIDs       []string // acceptable type OIDs, by their constant names
-	Nullable   bool     // the Go field is a pointer, so NULL is expressible
+	Nullable   bool     // the Go field is a pointer or a Null[T], so NULL is expressible
+	Present    string   // expression wrapping a decoded `v` for a nullable field: &v or postgres.Some(v)
 	GoType     string   // the Go type, for the nullable branch
 	Infallible bool     // Decode cannot fail, so no error branch is rendered
 }
@@ -193,17 +194,29 @@ func columnFor(typeName, fieldName string, f *ast.Field) (*column, error) {
 		return nil, nil
 	}
 
-	// One pointer is how a field says its column may be NULL. A second has
-	// no meaning the generated code could give it — `e.F = &v` would not even
-	// compile against **T — so it is refused here, where the message can name
-	// the field, rather than in a DO NOT EDIT file.
+	// A field says its column may be NULL in one of two ways: a pointer, or
+	// a postgres.Null[T]. Saying it twice has no meaning the generated code
+	// could give it — `e.F = &v` would not even compile against **T, and a
+	// Null[*T] or *Null[T] would be an absence with two spellings — so it is
+	// refused here, where the message can name the field, rather than in a
+	// DO NOT EDIT file.
 	if star, ok := f.Type.(*ast.StarExpr); ok {
 		if _, multi := star.X.(*ast.StarExpr); multi {
 			return nil, fmt.Errorf("%s.%s: a pointer to a pointer is not supported — a nullable column is a single pointer, *T",
 				typeName, fieldName)
 		}
+		if isNullType(star.X) {
+			return nil, fmt.Errorf("%s.%s: a pointer to a postgres.Null is not supported — a nullable column is either *T or postgres.Null[T]",
+				typeName, fieldName)
+		}
 	}
-	goType, nullable := typeExpr(f.Type)
+	if inner, ok := nullOf(f.Type); ok {
+		if _, star := inner.(*ast.StarExpr); star {
+			return nil, fmt.Errorf("%s.%s: a postgres.Null of a pointer is not supported — a nullable column is either *T or postgres.Null[T]",
+				typeName, fieldName)
+		}
+	}
+	goType, nullable, present := typeExpr(f.Type)
 	m, ok := typeMapping[goType]
 	if !ok {
 		return nil, fmt.Errorf("%s.%s: no decoder for Go type %q — add one to the generator rather than guessing at runtime",
@@ -215,6 +228,7 @@ func columnFor(typeName, fieldName string, f *ast.Field) (*column, error) {
 		Decode:     m.decode,
 		OIDs:       m.oids,
 		Nullable:   nullable,
+		Present:    present,
 		GoType:     goType,
 		Infallible: m.infallible,
 	}
@@ -282,16 +296,54 @@ func columnName(fieldName string, tag *ast.BasicLit) (name string, skip bool) {
 
 // typeExpr renders a field's type and reports whether it is a pointer, which
 // is how the generated code expresses a nullable column.
-func typeExpr(e ast.Expr) (goType string, nullable bool) {
+// typeExpr resolves a field's type to the Go type the mapping is keyed by,
+// whether NULL is expressible, and how a present value is wrapped.
+//
+// Two spellings of nullable are accepted. `*T` is the one Go readers expect,
+// and costs an allocation per row because the pointer the generated code
+// takes escapes. `postgres.Null[T]` is the form this package uses for its own
+// arrays and column scans: a value beside a Valid bit, no pointer, no
+// allocation — the same reason the batch decodes into one buffer plus
+// offsets rather than a slice per row.
+func typeExpr(e ast.Expr) (goType string, nullable bool, present string) {
 	if star, ok := e.(*ast.StarExpr); ok {
-		t, _ := typeExpr(star.X)
-		return t, true
+		t, _, _ := typeExpr(star.X)
+		return t, true, "&v"
+	}
+	if inner, ok := nullOf(e); ok {
+		t, _, _ := typeExpr(inner)
+		return t, true, "postgres.Some(v)"
 	}
 	// ExprString renders any type expression as written, so a field the
 	// mapping does not cover is named in the error — a map or a [N]byte with
 	// a named length used to come out as "?" or as "[]byte", the latter
 	// matching the bytea decoder for a type it cannot assign to.
-	return types.ExprString(e), false
+	return types.ExprString(e), false, ""
+}
+
+// nullOf returns T when e is written postgres.Null[T].
+func nullOf(e ast.Expr) (ast.Expr, bool) {
+	idx, ok := e.(*ast.IndexExpr)
+	if !ok || !isNullType(idx.X) {
+		return nil, false
+	}
+	return idx.Index, true
+}
+
+// isNullType reports whether e names postgres.Null, with or without its type
+// argument. The package is matched by the name the fixture imports it under,
+// as typeMapping matches postgres.Numeric: an aliased import is a type the
+// generator does not know, and says so.
+func isNullType(e ast.Expr) bool {
+	if idx, ok := e.(*ast.IndexExpr); ok {
+		e = idx.X
+	}
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Null" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "postgres"
 }
 
 // snakeCase turns FieldName into field_name, and CustomerID into customer_id
@@ -400,7 +452,7 @@ func Hydrate{{.Type}}(dst []{{.Type}}, rows *postgres.Rows, p {{.Type}}Plan) ([]
 					return dst[:before], fmt.Errorf("row %d, column %q: %w", i, {{printf "%q" .Name}}, err)
 				}
 {{- end}}
-				e.{{.Field}} = &v
+				e.{{.Field}} = {{.Present}}
 			}
 {{- else}}
 			if isNull {

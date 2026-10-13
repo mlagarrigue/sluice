@@ -223,3 +223,143 @@ func TestScannersAcceptMatchingAndUserTypes(t *testing.T) {
 		t.Errorf("ScanInt8 over a user type of the wrong width = %v, want ErrCodec", err)
 	}
 }
+
+// The seven scanners built on the generic loop, held to the same promises
+// as the hand-written six: row order, a NULL refused, a wrong width refused
+// where width is fixed, a built-in type mismatch refused, and the caller's
+// buffer handed back on error.
+func TestGenericScanners(t *testing.T) {
+	at := time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)
+	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
+	price, err := ParseNumeric("19.90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+
+	fields := []Field{
+		{Name: "a", TypeOID: OIDInt2},
+		{Name: "b", TypeOID: OIDFloat4},
+		{Name: "c", TypeOID: OIDBytea},
+		{Name: "d", TypeOID: OIDUUID},
+		{Name: "e", TypeOID: OIDNumeric},
+		{Name: "f", TypeOID: OIDTimestamp},
+		{Name: "g", TypeOID: OIDDate},
+	}
+	values := [][]byte{
+		AppendInt2(nil, -12345), AppendFloat4(nil, -0.125),
+		{1, 2, 3},
+		AppendUUID(nil, uuid), AppendNumeric(nil, price),
+		AppendTimestamp(nil, at), AppendDate(nil, day),
+	}
+	rows := NewRows(len(values), 4)
+	rows.Init(fields, 4)
+	if err := rows.Append(dataRow(values...)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Append(dataRow(make([][]byte, len(values))...)); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("values come out in row order", func(t *testing.T) {
+		one := NewRows(len(values), 4)
+		one.Init(fields, 4)
+		if err := one.Append(dataRow(values...)); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := ScanInt2(nil, one, 0); err != nil || len(got) != 1 || got[0] != -12345 {
+			t.Errorf("ScanInt2 = %v, %v", got, err)
+		}
+		if got, err := ScanFloat4(nil, one, 1); err != nil || len(got) != 1 || got[0] != -0.125 {
+			t.Errorf("ScanFloat4 = %v, %v", got, err)
+		}
+		got, err := ScanBytea(nil, one, 2)
+		if err != nil || len(got) != 1 || string(got[0]) != "\x01\x02\x03" {
+			t.Errorf("ScanBytea = %v, %v", got, err)
+		}
+		if b, _ := one.Value(0, 2); len(got) == 1 && len(b) == 3 && &b[0] == &got[0][0] {
+			t.Error("ScanBytea handed out the batch's buffer rather than a copy")
+		}
+		if got, err := ScanUUID(nil, one, 3); err != nil || len(got) != 1 || got[0] != uuid {
+			t.Errorf("ScanUUID = %v, %v", got, err)
+		}
+		if got, err := ScanNumeric(nil, one, 4); err != nil || len(got) != 1 || got[0].String() != "19.90" {
+			t.Errorf("ScanNumeric = %v, %v", got, err)
+		}
+		if got, err := ScanTimestamp(nil, one, 5); err != nil || len(got) != 1 || !got[0].Equal(at) {
+			t.Errorf("ScanTimestamp = %v, %v", got, err)
+		}
+		if got, err := ScanDate(nil, one, 6); err != nil || len(got) != 1 || !got[0].Equal(day) {
+			t.Errorf("ScanDate = %v, %v", got, err)
+		}
+	})
+
+	scanners := map[string]func(*Rows, int) error{
+		"ScanInt2":      func(r *Rows, c int) error { _, err := ScanInt2(nil, r, c); return err },
+		"ScanFloat4":    func(r *Rows, c int) error { _, err := ScanFloat4(nil, r, c); return err },
+		"ScanBytea":     func(r *Rows, c int) error { _, err := ScanBytea(nil, r, c); return err },
+		"ScanUUID":      func(r *Rows, c int) error { _, err := ScanUUID(nil, r, c); return err },
+		"ScanNumeric":   func(r *Rows, c int) error { _, err := ScanNumeric(nil, r, c); return err },
+		"ScanTimestamp": func(r *Rows, c int) error { _, err := ScanTimestamp(nil, r, c); return err },
+		"ScanDate":      func(r *Rows, c int) error { _, err := ScanDate(nil, r, c); return err },
+	}
+	cols := map[string]int{
+		"ScanInt2": 0, "ScanFloat4": 1, "ScanBytea": 2, "ScanUUID": 3,
+		"ScanNumeric": 4, "ScanTimestamp": 5, "ScanDate": 6,
+	}
+
+	t.Run("a NULL is refused rather than zeroed", func(t *testing.T) {
+		for name, scan := range scanners {
+			if err := scan(rows, cols[name]); !errors.Is(err, ErrNullValue) {
+				t.Errorf("%s over a column holding a NULL = %v, want ErrNullValue", name, err)
+			}
+		}
+	})
+
+	t.Run("a value of the wrong width is refused", func(t *testing.T) {
+		narrow := NewRows(1, 4)
+		if err := narrow.Append(dataRow([]byte{1, 2, 3})); err != nil {
+			t.Fatal(err)
+		}
+		for name, scan := range scanners {
+			if name == "ScanBytea" {
+				continue // any width is a bytea
+			}
+			if err := scan(narrow, 0); !errors.Is(err, ErrCodec) {
+				t.Errorf("%s over three bytes = %v, want ErrCodec", name, err)
+			}
+		}
+		if got, err := ScanBytea(nil, narrow, 0); err != nil || len(got) != 1 {
+			t.Errorf("ScanBytea over three bytes = %v, %v; want it accepted", got, err)
+		}
+	})
+
+	t.Run("a built-in type mismatch is refused", func(t *testing.T) {
+		// Every column read by the scanner of its neighbour: the widths may
+		// even agree (date and float4, int2 and nothing), the OID does not.
+		for name, scan := range scanners {
+			col := (cols[name] + 1) % len(fields)
+			if err := scan(rows, col); !errors.Is(err, ErrCodec) {
+				t.Errorf("%s over column %d (%s) = %v, want ErrCodec", name, col, oidName(fields[col].TypeOID), err)
+			}
+		}
+		// ScanTimestamp does not read timestamptz: the two differ in meaning,
+		// not in bytes, which is exactly why the OID is the guard.
+		tz := described(t, OIDTimestampTZ, AppendTimestampTZ(nil, at))
+		if _, err := ScanTimestamp(nil, tz, 0); !errors.Is(err, ErrCodec) {
+			t.Errorf("ScanTimestamp over timestamptz = %v, want ErrCodec", err)
+		}
+	})
+
+	t.Run("an error returns the caller's buffer", func(t *testing.T) {
+		dst := make([][16]byte, 0, 8)
+		dst = append(dst, [16]byte{42})
+		got, err := ScanUUID(dst, rows, 3) // row 0 decodes, row 1 is NULL
+		if !errors.Is(err, ErrNullValue) {
+			t.Fatalf("ScanUUID over a NULL = %v, want ErrNullValue", err)
+		}
+		if len(got) != 2 || &got[0] != &dst[0] || got[1] != uuid {
+			t.Fatalf("ScanUUID on error = %v, want the caller's buffer with [42…, uuid]", got)
+		}
+	})
+}

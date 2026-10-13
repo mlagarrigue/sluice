@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
+	"github.com/mlagarrigue/sluice/pushdown"
 )
 
 // Row is one row of a result: a view into the flat storage its batch shares,
@@ -362,6 +364,61 @@ type QueryConfig struct {
 	// int4, and the query then fails on a value that does not fit. State the
 	// OIDs where the types matter.
 	ParamOIDs []uint32
+
+	// Demand, when set, lets the consumer tell this query what it no longer
+	// needs. It is consulted once per batch — one atomic load, the mechanism
+	// [pushdown] exists for — and two of its three fields are pushed down:
+	//
+	//   - The **limit** becomes the row count of the next Execute, so the
+	//     server produces exactly what is still wanted and the stream ends
+	//     without draining a batch nobody asked for. The figure is the
+	//     consumer's: it says how many rows it still wants, republished as it
+	//     takes them, and this query never subtracts what it delivered from
+	//     it. A demand with nothing left to want ends the query at the next
+	//     batch boundary; one that wants nothing from the start sends
+	//     nothing to the server at all.
+	//   - The **lower bound** is bound, as it is, to the parameter KeyParam
+	//     names, and the portal is re-bound: `WHERE id > $1 ORDER BY id`
+	//     then resumes from the bound instead of walking the rows below it.
+	//     The bound's bytes are the parameter's binary encoding — big-endian
+	//     for an integer key, which is what [pushdown.AdvanceBy]'s key
+	//     function produces when it encodes the key the way the wire does.
+	//
+	// The column set is not pushed down: the SQL is the caller's, and
+	// rewriting its select list is not this package's job. A consumer that
+	// narrows columns is not refused; the narrowing is simply not acted on.
+	//
+	// # What the query must look like
+	//
+	// It is the caller's SQL that makes a bound mean "skip": the query is
+	// ordered by the key, the key is unique, and the parameter KeyParam names
+	// compares against it. Whether the comparison is `>` or `>=` depends on
+	// who publishes the bound. [pushdown.AdvanceBy] publishes the key of the
+	// last row delivered, so `>` resumes right after it; a bound published by
+	// hand that names the first key still wanted takes `>=`, which is the
+	// reading [pushdown.Snapshot.LowerBound] documents. The parameter's own
+	// value in params stands until the first bound arrives — the floor of the
+	// key space, typically.
+	//
+	// # What it costs
+	//
+	// A re-bind is a Bind and an Execute in the write the next batch's request
+	// was already making — no extra round trip, by the protocol's own rule
+	// that binding the unnamed portal again destroys the previous one. It
+	// does start the query over from the bound, which on an index scan is one
+	// seek. A publisher that advances on every batch, AdvanceBy among them,
+	// therefore re-binds on every batch; that is cheap, and what makes the
+	// skip real when the bound jumps ahead, but a demand nothing advances
+	// costs nothing beyond the atomic load.
+	//
+	// Demand and AllRows are exclusive: AllRows asks for every row at once,
+	// which is the one thing a demand is there to avoid.
+	Demand *pushdown.Demand
+
+	// KeyParam is the 1-based index of the parameter the demand's lower bound
+	// replaces: 1 for `$1`. Zero means the bound is not pushed down, and only
+	// the limit is. It is only read when Demand is set.
+	KeyParam int
 }
 
 // Query runs sql with the given binary parameters and returns its rows as a
@@ -446,6 +503,17 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 			return
 		}
 		q := &query{conn: c, ctx: ctx, batchRows: batchRows, allRows: cfg.AllRows}
+		if cfg.Demand != nil {
+			if cfg.AllRows {
+				queryErr = errors.New("postgres: QueryConfig.Demand and AllRows are exclusive")
+				return
+			}
+			if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
+				queryErr = fmt.Errorf("postgres: QueryConfig.KeyParam %d names no parameter among %d", cfg.KeyParam, len(params))
+				return
+			}
+			q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
+		}
 		queryErr = q.run(sql, params, cfg.ParamOIDs, yield)
 		// Settled after the deferred resync has read to ReadyForQuery, so the
 		// cache's provisional entry is confirmed or dropped on the server's
@@ -482,6 +550,17 @@ type query struct {
 	synced    bool // the Sync went out with the query, so resync must not send another
 	rows      *Rows
 	items     []Row // reused: one Row view per row of the current batch
+
+	// The pushdown side, nil without a QueryConfig.Demand. stmt and params
+	// are kept so a bound can re-bind the portal; bound is the one last
+	// bound, so a demand whose generation moved for its limit alone does not
+	// re-plan. rowsWanted is the row count the next Execute asks for.
+	demand     *pushdown.Reader
+	keyParam   int
+	stmt       string
+	params     [][]byte
+	bound      []byte
+	rowsWanted int
 }
 
 func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluice.Batch[Row]) bool) (err error) {
@@ -494,6 +573,12 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	}
 	if err := checkSQLText(sql); err != nil {
 		return err
+	}
+	// A consumer that already wants nothing costs the server nothing: no
+	// statement is prepared, no byte leaves. Checked before beginBusy so the
+	// connection is not even marked.
+	if q.demand != nil && q.demand.Exhausted() {
+		return nil
 	}
 	if err := c.beginBusy(); err != nil {
 		return err
@@ -516,7 +601,15 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	if needsParse {
 		c.w.Parse(stmt, sql, oids)
 	}
-	c.w.BindBinary("", stmt, params)
+	q.stmt, q.params, q.rowsWanted = stmt, params, q.batchRows
+	if q.demand != nil {
+		// A limit or a bound published before the first batch shapes the
+		// first request: the Execute asks for what is wanted, the key
+		// parameter carries the bound. Nothing to re-bind yet, so the plan
+		// is folded into the one Bind that was going out anyway.
+		q.replan()
+	}
+	c.w.BindBinary("", stmt, q.params)
 	c.w.Describe('P', "")
 	if q.allRows {
 		// No row limit and a Sync rather than a Flush: the backend produces
@@ -527,7 +620,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		c.w.Sync()
 		q.synced = true
 	} else {
-		c.w.Execute("", uint32(q.batchRows)) //nolint:gosec // G115: a caller's batch size
+		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		// Without this the backend holds everything it has produced until a
 		// Sync, and a Sync would close the portal the next Execute needs. See
 		// [Writer.FlushMessage].
@@ -568,15 +661,66 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		if err := q.ctx.Err(); err != nil {
 			return fmt.Errorf("abandoning the query: %w", err)
 		}
+		// The demand is read here, once per batch: the consumer that has
+		// just taken a batch may have said it wants nothing more — the
+		// query ends, the deferred resync drains the portal — or that it
+		// wants less, or from further on.
+		if q.demand != nil {
+			if q.demand.Exhausted() {
+				return nil
+			}
+			if q.replan() {
+				// The bound moved: the unnamed portal is bound again, which
+				// the protocol says destroys the suspended one, so no Sync
+				// and no round trip sit between the two. The statement is
+				// the same, so no Describe either — the rows keep the shape
+				// the first one announced.
+				c.w.BindBinary("", q.stmt, q.params)
+			}
+		}
 		// The portal suspended with rows still to come, and the consumer is
 		// still taking them: ask for the next batch. This is the pull
 		// reaching the server.
-		c.w.Execute("", uint32(q.batchRows)) //nolint:gosec // G115: a caller's batch size
+		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		c.w.FlushMessage()
 		if err := c.w.Flush(); err != nil {
 			return c.breakConn(fmt.Errorf("asking for the next batch: %w", err))
 		}
 	}
+}
+
+// replan brings the next request in line with the demand, and reports whether
+// the portal must be bound again — that is, whether the lower bound moved.
+//
+// The limit does not need a re-bind: it becomes the row count of the next
+// Execute, which the suspended portal honours as it is. Only a bound changes
+// what the server would produce next, and only when KeyParam names where it
+// goes. A limit below BatchRows caps the request so the server stops exactly
+// where the consumer will; a snapshot is taken only when the demand's
+// generation moved, so the common batch costs the atomic load and nothing
+// else.
+func (q *query) replan() (rebind bool) {
+	snap, changed := q.demand.Current()
+	if !changed {
+		return false
+	}
+	q.rowsWanted = q.batchRows
+	if snap.Limit != pushdown.Unlimited && snap.Limit < int64(q.rowsWanted) {
+		// Limit 0 never reaches here: Exhausted was checked first, and a
+		// zero would make Execute ask for every row.
+		q.rowsWanted = int(snap.Limit)
+	}
+	if q.keyParam == 0 || snap.LowerBound == nil || bytes.Equal(snap.LowerBound, q.bound) {
+		return false
+	}
+	// The caller's slice is not written to: the bound replaces one value
+	// in a copy, taken once, that the query then owns.
+	if q.bound == nil {
+		q.params = append([][]byte(nil), q.params...)
+	}
+	q.bound = snap.LowerBound
+	q.params[q.keyParam-1] = q.bound
+	return true
 }
 
 // readChunk reads messages until the portal suspends or the query ends,

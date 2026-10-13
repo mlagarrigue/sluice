@@ -24,14 +24,17 @@ jobs:
         # 'stable' is kept so the newest release is tested the day it ships,
         # without anyone having to remember to add it.
         #
-        # Tests run on Linux only, but the code is not Linux-only: net/quic/udp
-        # carries per-OS socket options (configure_windows.go,
-        # configure_darwin.go). The cross-OS vet steps below type-check those
-        # files and their tests, which a Linux build never compiles.
+        # The whole suite runs on Linux only. The code is not Linux-only:
+        # net/quic/udp carries per-OS socket options (configure_windows.go,
+        # configure_darwin.go), which test-udp below runs on their own
+        # platforms. The cross-OS vet steps here type-check everything else
+        # for those targets, which a Linux build never compiles.
         go: ['1.26', 'stable']
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -43,8 +46,10 @@ jobs:
         run: |
           GOOS=windows go vet ./...
           GOOS=darwin go vet ./...
-          # vet type-checks the Windows test; linking it proves it builds.
+          # vet type-checks the per-OS tests; linking them proves they
+          # build on the floor toolchain too, which test-udp does not run.
           GOOS=windows go test -c -o /dev/null ./net/quic/udp/
+          GOOS=darwin go test -c -o /dev/null ./net/quic/udp/
 
       # -shuffle=on randomises test order so a test that only passes after
       # another one has run fails here instead of on a contributor's machine.
@@ -57,12 +62,84 @@ jobs:
       # -race: the detector instruments every memory access and the measurement
       # would report the instrumentation rather than the code. It keeps the
       # fastest of many short rounds, so a noisy neighbour on the runner
-      # inflates some rounds but not the minimum.
+      # inflates some rounds but not the minimum. The allocation ceiling
+      # joins it: the detector also drops sync.Pool entries at random, which
+      # turns an allocation count into a fraction (see render_test.go).
       - name: Performance budget
-        run: go test -run TestStageBudget ./internal/bench/
+        run: go test -run 'TestStageBudget|TestRenderAllocationCeiling' ./internal/bench/
 
       - name: Build
         run: go build ./...
+
+  # The coverage figure behind the README badge, computed here rather than by
+  # a third-party service: nothing outside GitHub and pkg.go.dev reads the
+  # repository. The total is written as a shields.io "endpoint" JSON file on
+  # the orphan branch `badges`, which holds that one file and no history
+  # (each run force-pushes a fresh root commit), so the badge reads it from
+  # raw.githubusercontent.com. The workflow's own token can write the branch;
+  # no extra secret is involved. Only main's pushes publish: a pull request
+  # must not move the figure before it is merged.
+  coverage:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+
+      # Without SLUICE_PG the integration tests skip, so the figure is the
+      # scripted-server suite's: the same code paths the test job measures,
+      # minus the few lines that only a live server reaches.
+      - name: Measure
+        run: |
+          go test -coverprofile=cover.out ./...
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')
+          echo "total=$total" >> "$GITHUB_ENV"
+          echo "coverage: $total%"
+
+      - name: Publish the badge endpoint
+        run: |
+          # shields.io's endpoint schema: https://shields.io/badges/endpoint-badge
+          color=$(awk -v t="$total" 'BEGIN {
+            if (t >= 90) print "brightgreen"; else if (t >= 80) print "green";
+            else if (t >= 70) print "yellowgreen"; else if (t >= 60) print "yellow";
+            else print "orange" }')
+          mkdir badges && cd badges
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' \
+            "$total" "$color" > coverage.json
+          git init -q -b badges
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add coverage.json
+          git commit -q -m "ci: coverage $total% at ${GITHUB_SHA::7}"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" badges
+
+  # net/quic/udp is the one package whose code differs per operating system:
+  # socket options with a different name and errno on each, which a Linux
+  # run never executes. This job runs that package, and only it, on the two
+  # other platforms. Not the whole suite: PostgreSQL is not there, and the
+  # rest of the module is covered by the Linux job above.
+  test-udp:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: Test
+        run: go test -race -shuffle=on ./net/quic/udp/...
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.
@@ -74,6 +151,8 @@ jobs:
       GOWORK: off
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         if: hashFiles('benchmarks/go.mod') != ''
         with:
@@ -113,6 +192,8 @@ jobs:
       SLUICE_PG_PASSWORD: sluicepass
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
@@ -136,6 +217,51 @@ jobs:
             exit 1
           fi
 
+  # net/httpstream against clients it did not write: curl over HTTP/1.1 and
+  # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server
+  # built from the tree. A peer that did not read the specification with our
+  # eyes is the one check the scripted tests cannot be. The expected h2spec
+  # failures are listed, each with its reason, in
+  # net/httpstream/testdata/h2spec-exclusions.txt; the script fails on any
+  # other red case and on a listed case that passes. HTTP/3 is not here yet:
+  # the runner's curl is built without it.
+  interop-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: curl and h2spec against the server
+        run: scripts/interop-http.sh
+
+  # net/quic against a peer that shares none of its code: the interop/ module
+  # (its own go.mod, excluded from the root's ./... and so from the deps job's
+  # graph) runs sluice's client against a quic-go server and the reverse —
+  # handshake, an echo across flow-control windows, a close the peer sees —
+  # and quic-go's HTTP/3 client against ServeH3.
+  # The QUIC Interop Runner is its own workflow, run by hand
+  # (interop-runner.yml, docs/guide/limits.md).
+  interop-quic:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache-dependency-path: |
+            go.sum
+            interop/go.sum
+      - name: sluice and quic-go, each side of the handshake
+        run: go test -race -count=1 ./...
+        working-directory: interop
+
   # Every production dependency is a recorded decision (ADR 0002): today the
   # standard library plus golang.org/x/crypto (which brings golang.org/x/sys
   # for CPU feature detection), nothing else. Checked two ways: go.mod may
@@ -152,6 +278,8 @@ jobs:
       GOWORK: off
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
@@ -202,6 +330,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -213,15 +342,21 @@ jobs:
         run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList' .
       - name: Exported API against the last tag
         if: github.event_name == 'pull_request'
-        run: scripts/check-api.sh ${{ github.event.pull_request.base.sha }}
+        run: scripts/check-api.sh
 
+  # Formatting and linting run on the floor toolchain, not the latest: the
+  # pinned gofumpt and golangci-lint are built with it, and a linter built
+  # with Go N refuses files the Go N+1 toolchain compiles ("file requires
+  # newer Go version"). The code they check is the same on both.
   format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: ${{ env.GO_LATEST }}
+          go-version: '1.26'
           cache: false
 
       # Pinned, like golangci-lint below and in the devcontainer: two
@@ -241,9 +376,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: ${{ env.GO_LATEST }}
+          go-version: '1.26'
           cache: false
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
@@ -253,6 +390,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
@@ -281,6 +420,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           # The gate builds the merge base too.
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

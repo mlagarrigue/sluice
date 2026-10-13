@@ -22,6 +22,9 @@ type sendOpts struct {
 	// ackOnly marks a packet that elicits no acknowledgement and is not
 	// counted in flight (RFC 9002 §2).
 	ackOnly bool
+	// carriesAck says an ACK frame rode along with the payload: what
+	// completes this end's answer to the peer's key update (RFC 9001 §6.2).
+	carriesAck bool
 	// noRetrans drops the payload from loss recovery: a probe resends bytes
 	// that are already queued elsewhere, and recording them again would
 	// duplicate them on the next loss.
@@ -137,6 +140,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		head = sp.ack.appendAck(head, now)
 		if len(head) > 0 {
 			payload = append(head, payload...)
+			opts.carriesAck = true
 		}
 	}
 
@@ -253,6 +257,10 @@ func (c *Conn) cryptoRoomLocked() int {
 // an Initial in the datagram requires it — and writes the datagram. Callers
 // hold mu.
 func (c *Conn) flushDatagramLocked() {
+	if c.dgramPend == nil && len(c.dgram) == 0 {
+		return
+	}
+	c.flushBatchLocked() // what was sent before leaves before
 	if p := c.dgramPend; p != nil {
 		c.dgramPend = nil
 		pad := 0
@@ -290,7 +298,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	defer func() { c.hdrScratch = header[:0] }()
 	needPad := false
 	if space == spaceApplication {
-		header = append(header, 0x40|c.spin|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin
+		header = append(header, 0x40|c.spin|c.ku.phase|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin, RFC 9001 §6 key phase
 		if opts.dcid != nil {
 			header = append(header, opts.dcid...)
 		} else {
@@ -379,22 +387,39 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return nil
 	}
 
-	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets, and
-	// without key update (not implemented; see the package documentation)
-	// there is no fresh key to move to — the connection must end with
-	// AEAD_LIMIT_REACHED instead of degrading the cipher. The check skips
-	// the CONNECTION_CLOSE itself (closeSent is set before it is written,
-	// and the refusal below reserved it a slot under the limit).
-	//
-	// This check also subsumes RFC 9000 §12.3's 2^62-1 packet-number
-	// ceiling: nextPN only advances alongside sealed, the sealer never
-	// rekeys, and 2^23 is thirty-nine powers of two short of the ceiling —
-	// so no separate guard exists, and one would be dead code until key
-	// update lands. If key update ever does, §12.3 needs its own check.
+	// RFC 9000 §12.3: a sender whose packet number reaches 2^62-1 closes
+	// without a CONNECTION_CLOSE — there is no number left to send one
+	// under. Key update renews keys, never numbers, so this guard is its
+	// own.
+	if sp.nextPN >= 1<<62-1 {
+		err := fmt.Errorf("%w: the packet-number space is exhausted", ErrQUIC)
+		if c.closeErr == nil {
+			c.closeErr = err
+		}
+		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		return err
+	}
+
+	// RFC 9001 §6.6: AES-GCM keys are spent after 2^23 sealed packets. At
+	// the 1-RTT level the sender MUST rotate before that (§6), which it
+	// may once the handshake is confirmed and a packet under the current
+	// keys was acknowledged (§6.1) — the §6.5 wait is a SHOULD, and the
+	// limit a MUST, so it does not apply here. Where rotation is not yet
+	// permitted, or at the levels whose keys never rotate, the connection
+	// ends with AEAD_LIMIT_REACHED instead of degrading the cipher. The
+	// check skips the CONNECTION_CLOSE itself (closeSent is set before it
+	// is written, and the refusal below reserved it a slot under the limit).
 	if !c.closeSent && sp.sealer.sealed >= sp.sealer.k.confLimit-1 {
+		if space == spaceApplication {
+			if ok, err := c.initiateKeyUpdateLocked(); err != nil {
+				return err
+			} else if ok {
+				return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
+			}
+		}
 		err := &transportError{
 			code: transportAEADLimitReached,
-			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and key update is not implemented", ErrQUIC),
+			err:  fmt.Errorf("%w: this key sealed its 2^23 packets and no key update was possible", ErrQUIC),
 		}
 		if c.closeErr == nil {
 			c.closeErr = err
@@ -435,6 +460,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		sp: sp, space: space, prefix: header, payload: payload,
 		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,
 	}
+	if c.batching && space == spaceApplication && opts.via == nil && onPath {
+		return c.batchLocked(&p, size)
+	}
+	c.flushBatchLocked()
 	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0)
 	if err != nil {
 		return err
@@ -484,6 +513,14 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	size := len(out) - before
 	if c.amplActive && p.onPath {
 		c.amplSent += int64(size)
+	}
+	// RFC 9001 §6.2: an acknowledgement sent under the keys that answered
+	// the peer's rotation, covering the packet that carried it, is what
+	// completes the update — from here the peer may rotate again. The
+	// packet is covered once it was recorded for acknowledgement, which
+	// sp.largest reaching it proves (processPacket sets both together).
+	if p.space == spaceApplication && c.ku.responseDue && (p.opts.ackOnly || p.opts.carriesAck) && sp.largest >= c.ku.responsePN {
+		c.ku.responseDue = false
 	}
 
 	// A client's first Handshake packet is the moment its Initial keys are
@@ -634,31 +671,66 @@ func (c *Conn) retransmitLocked() {
 	}
 }
 
-// sendProbeLocked answers a probe timeout in one space: resend the oldest
-// unacknowledged payload — it is the most likely lost, and probes may exceed
-// the congestion window (RFC 9002 §6.2.4, §7) — or ping if there is nothing
-// to resend but an answer is still owed.
-// A probe carries old data, not new (RFC 9002 §6.2.4 prefers new data but
-// permits this): writers here are synchronous — unsent data lives in a
-// blocked Stream.Write's own stack, not in a queue a probe could pull from —
-// and what a probe answers is "did my oldest packet die?", which resending
-// that packet answers in one round trip where new data would take two.
+// sendProbeLocked answers a probe timeout in one space with two datagrams
+// (RFC 9002 §6.2.4 allows two, so that one lost probe does not cost a whole
+// doubled interval; probes may exceed the congestion window, §7): the two
+// oldest unacknowledged payloads — they are the most likely lost — or, when
+// only one is left to resend, that one twice. A ping goes out alone when
+// there is nothing to resend but an answer is still owed. The queue of
+// declared losses goes first; the rest is lifted out of the flight record
+// (liftOldestResendable says why) and sent as new packets.
+//
+// Two datagrams every time, not only when two payloads wait: a client whose
+// ClientHello spans two Initial packets and whose second one is lost holds
+// exactly one payload to resend, and an amplification-limited server can
+// send nothing until that payload arrives. Each interval doubles, so the
+// eighth datagram leaves after 7 intervals at two per probe and after 63 at
+// one — past the five seconds a server waits for a handshake, on a path of
+// 30 ms. Two copies of one payload cost one spurious duplicate per probe on
+// a flight of one packet, the price §6.2.4 names for the same payload
+// "ensuring the highest priority frames arrive first".
+//
+// Two is also what a server's first flight needs: a ServerHello with a
+// post-quantum key share spans two Initial packets, and a client that
+// holds only the first cannot read anything the server sends after it.
+// A probe carries old data, not new (§6.2.4 prefers new data but permits
+// this): writers here are synchronous — unsent data lives in a blocked
+// Stream.Write's own stack, not in a queue a probe could pull from — and
+// what a probe answers is "did my oldest packet die?", which resending that
+// packet answers in one round trip where new data would take two.
 func (c *Conn) sendProbeLocked(space int) {
 	sp := &c.spaces[space]
 	if sp.discarded || sp.sealer == nil {
 		return
 	}
-	if len(sp.retrans) > 0 {
-		payload := sp.retrans[0]
+	const probes = 2
+	var payloads [probes][]byte
+	n := 0
+	for ; n < probes && len(sp.retrans) > 0; n++ {
+		payloads[n] = sp.retrans[0]
 		sp.retrans = sp.retrans[1:]
+	}
+	// Lifted before any is sent: the copies are recorded as they go, and
+	// the newest of them must not be the next one lifted.
+	for ; n < probes; n++ {
+		p, ok := sp.sent.liftOldestResendable()
+		if !ok {
+			break
+		}
+		c.cc.onLifted(p.size)
+		payloads[n] = p.payload
+	}
+	switch n {
+	case 0:
+		_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
+		return
+	case 1:
+		payloads[1] = payloads[0]
+		n = probes
+	}
+	for _, payload := range payloads[:n] {
 		_ = c.sendPacketLocked(space, payload, sendOpts{own: true})
-		return
 	}
-	if p, ok := sp.sent.oldestEliciting(); ok && len(p.payload) > 0 {
-		_ = c.sendPacketLocked(space, p.payload, sendOpts{noRetrans: true})
-		return
-	}
-	_ = c.sendPacketLocked(space, []byte{framePing}, sendOpts{})
 }
 
 // waitForCreditLocked parks the caller until credit arrives or the
@@ -670,7 +742,14 @@ func (c *Conn) waitForCreditLocked() error {
 		return errClosed
 	default:
 	}
+	// Nothing built waits with the writer, and while it sleeps the
+	// batch is closed: whoever takes mu meanwhile — the read loop and its
+	// acknowledgements — writes at once, as outside Stream.write.
+	batching := c.batching
+	c.flushBatchLocked()
+	c.batching = false
 	c.cond.Wait()
+	c.batching = batching
 	select {
 	case <-c.closed:
 		return errClosed
@@ -785,12 +864,99 @@ func (c *Conn) kickTimer() {
 // from being silent.
 func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
 	_, err := pc.WriteTo(b, to)
+	return c.wroteLocked(err)
+}
+
+// wroteLocked is writeLocked's accounting of one write's outcome, shared
+// with the batched writes of flushBatchLocked. Callers hold mu.
+func (c *Conn) wroteLocked(err error) error {
 	if err != nil {
 		c.writeFailures++
 		if isRefusal(err) {
 			c.writeRefusals++
 			c.writeRefusal = err
+			if c.hsSyncRead && c.incoming == nil {
+				// Wake the handshake's blocking read so it re-counts the
+				// refusals now rather than at its deadline (hsWake).
+				c.hsWake = true
+				_ = c.pc.SetReadDeadline(time.Now())
+			}
 		}
 	}
 	return err
+}
+
+// maxBatchSegments and maxBatchBytes bound one batch: the kernel's
+// UDP_MAX_SEGMENTS on the oldest kernels that offer segmentation (4.18),
+// and what one UDP datagram — the unit sendmsg hands over before cutting —
+// may carry.
+const (
+	maxBatchSegments = 64
+	maxBatchBytes    = 65507
+)
+
+// batchLocked seals p at the end of the batch instead of writing it. size
+// is its exact sealed length, known before sealing (writePacketLocked): a
+// packet that cannot join — larger than the batch's segments, after a
+// shorter one closed it, or past the bounds — first flushes the batch and
+// opens the next. The recovery bookkeeping is sealLocked's, as for any
+// packet; only the write is deferred, to flushBatchLocked. Callers hold mu.
+func (c *Conn) batchLocked(p *pendingPacket, size int) error {
+	if c.batchN > 0 && (c.batchShort || size > c.batchSeg ||
+		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
+		c.flushBatchLocked()
+	}
+	out, err := c.sealLocked(c.batch, p, 0)
+	if err != nil {
+		return err
+	}
+	size = len(out) - len(c.batch)
+	c.batch = out
+	switch {
+	case c.batchN == 0:
+		c.batchSeg = size
+	case size < c.batchSeg:
+		c.batchShort = true
+	}
+	c.batchN++
+	return nil
+}
+
+// flushBatchLocked writes what batchLocked gathered: in one system call
+// where the socket offers segmentation (writeSegments), one write per
+// datagram where it does not. The destination is the peer's current
+// address: batching only takes packets bound for it, and the peer cannot
+// change while the batch is open — that takes mu, which a batching writer
+// releases only through waitForCreditLocked, which flushes first. It
+// keeps the first write error in batchErr, which Stream.write returns as
+// it returned WriteTo's before; the packets themselves are recorded, and
+// loss recovery resends them like any lost datagram. Callers hold mu.
+func (c *Conn) flushBatchLocked() {
+	if c.batchN == 0 {
+		return
+	}
+	b, seg, n := c.batch, c.batchSeg, c.batchN
+	c.batch, c.batchN, c.batchShort = c.batch[:0], 0, false
+	if n > 1 && !c.noGSO {
+		var ok bool
+		var err error
+		c.oobScratch, ok, err = writeSegments(c.pc, b, seg, c.peer, c.oobScratch)
+		if ok {
+			c.segmented++
+			c.keepBatchErr(c.wroteLocked(err))
+			return
+		}
+		c.noGSO = true
+	}
+	for len(b) > 0 {
+		k := min(seg, len(b))
+		c.keepBatchErr(c.writeLocked(c.pc, b[:k], c.peer))
+		b = b[k:]
+	}
+}
+
+func (c *Conn) keepBatchErr(err error) {
+	if c.batchErr == nil {
+		c.batchErr = err
+	}
 }

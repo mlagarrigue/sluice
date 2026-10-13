@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"os"
@@ -957,6 +958,123 @@ func TestServerFollowsClientRebind(t *testing.T) {
 	waitReceived(mark+300, "after validation")
 	if got := server.Migrations(); got != 1 {
 		t.Errorf("Migrations() = %d, want 1", got)
+	}
+}
+
+// A client issues identifiers for itself too, and a server needs them to
+// follow: RFC 9000 §9.5 forbids sending under one identifier to two
+// destination addresses, so a server holding no spare one cannot probe the
+// client's new address — quic-go then "skips validation of new path … since
+// no connection ID is available" and keeps sending where the NAT no longer
+// listens, until the idle timer fires (the runner's rebind-port and
+// rebind-addr, before Dial issued any). Here the server is sluice's own, so
+// the proof is on its state: the pool holds the client's identifiers before
+// any move, and each of two rebinds is followed, validated, and sent to
+// under an identifier that is not the client's original — which the client,
+// owning its socket, answers to without any routing table.
+func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan *Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- c
+	}()
+
+	rp := newRebindablePC(t, 3)
+	client, err := Dial(rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var server *Conn
+	select {
+	case c, ok := <-accepted:
+		if !ok {
+			t.Fatal("Accept failed")
+		}
+		server = c
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handshake never completed")
+	}
+
+	var recvMu sync.Mutex
+	var received int
+	server.OnStreamFrames(func(fs []Frame) error {
+		recvMu.Lock()
+		for _, f := range fs {
+			if f.IsStream() {
+				received += len(f.Data)
+			}
+		}
+		recvMu.Unlock()
+		return nil
+	})
+	waitReceived := func(n int, what string) {
+		t.Helper()
+		waitFor(t, what, func() bool {
+			recvMu.Lock()
+			defer recvMu.Unlock()
+			return received >= n
+		})
+	}
+
+	s, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(make([]byte, 100)); err != nil {
+		t.Fatal(err)
+	}
+	waitReceived(100, "the first bytes to arrive")
+
+	// The client's NEW_CONNECTION_ID frames ride the first 1-RTT packets
+	// after confirmation; the server's pool shows them. Red before Dial
+	// issued any: the pool stays at the client's original identifier.
+	waitFor(t, "the client's identifiers to reach the server", func() bool {
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		return len(server.peerCIDs) >= 2
+	})
+
+	for i, sock := range []int{1, 2} {
+		rp.rebind(sock)
+		if _, err := s.Write(make([]byte, 20)); err != nil {
+			t.Fatal(err)
+		}
+		waitReceived(100+20*(i+1), "bytes across the rebind")
+		want := rp.socks[sock].LocalAddr()
+		waitFor(t, "the server to follow and validate the new path", func() bool {
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			return sameAddr(server.peer, want) && server.migrations == uint64(i+1) &&
+				!server.amplActive && !server.pathProbe.pending
+		})
+		// Validated means the client answered a PATH_CHALLENGE that named
+		// an identifier it issued, not its original (§9.5).
+		server.mu.Lock()
+		dcid := append([]byte(nil), server.dcid...)
+		server.mu.Unlock()
+		if bytes.Equal(dcid, client.scid) {
+			t.Fatalf("rebind %d: the server still sends under the client's original identifier", i+1)
+		}
+		if _, ok := client.localCIDSeqFor(dcid); !ok {
+			t.Fatalf("rebind %d: the server sends under %x, which the client never issued", i+1, dcid)
+		}
+	}
+	if got := server.Migrations(); got != 2 {
+		t.Errorf("Migrations() = %d, want 2", got)
 	}
 }
 

@@ -1,7 +1,7 @@
 # ADR 0010 — Routing is a table matched on the raw target
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-04 (a fully covered route is refused), 2026-10-07 (renumbered)
+- **Revised:** 2026-10-04 (a fully covered route is refused), 2026-10-07 (renumbered), 2026-10-09 (a refusal panics)
 - **Theme:** web
 
 ## Problem
@@ -25,7 +25,12 @@ off before matching and never matched on. A method mismatch on an existing
 path is 405 with `Allow`; an unmatched path is 404; both are refusals
 recorded on the exchange. Since 2026-10-04 `NewRouter` refuses a row an
 earlier row fully covers (`/orders/{id}` before `/orders/new`), naming both
-patterns, instead of compiling a route that silently never answers.
+patterns, instead of compiling a route that silently never answers. Since
+2026-10-09 every refusal is a panic rather than a returned error: the table
+is written in the program, so a bad row is a programming error, and an
+error a caller may ignore (`rt, _ :=`) is a route that quietly never
+answers — the constructor rule in `CONTRIBUTING.md` and `ServeMux`'s own
+behaviour on a bad pattern.
 
 ## Rationale
 

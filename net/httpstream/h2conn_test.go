@@ -1324,6 +1324,33 @@ func TestH2ServesInFlightResponsesAfterPeerGoAway(t *testing.T) {
 	}
 }
 
+// RFC 9113 §6.8: a peer's GOAWAY is a promise to open no more streams, not a
+// hang-up. h2spec (generic/3.8/1) sends GOAWAY and then PING on the same
+// write: the server used to close as soon as nothing was owed, with the PING
+// still unread in the socket, which TCP answers with a reset. The connection
+// now stays until the peer closes it or the idle timeout does, and the PING
+// is answered.
+func TestH2AnswersPingAfterPeerGoAway(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+
+	c.request(1, "GET", "/a")
+	c.frame(h2Frame{Type: frameGoAway, Payload: make([]byte, 8)}) // last-stream 0, NO_ERROR
+	c.frame(h2Frame{Type: framePing, Payload: []byte("h2spec  ")})
+	c.flush()
+
+	c.pump(func() bool { return c.pings > 0 })
+	if c.pings != 1 {
+		t.Fatalf("a PING sent after GOAWAY was acknowledged %d times, want 1: the reader stopped at the GOAWAY", c.pings)
+	}
+	if got := c.bodies(1)[1]; got != "/a" {
+		t.Errorf("stream 1 answered %q, want %q", got, "/a")
+	}
+	if c.sawGoAway {
+		t.Error("the server ended the connection on the peer's GOAWAY instead of leaving the close to the peer")
+	}
+}
+
 // The aggregate assembly bound. Each stream alone stays under MaxBodyBytes,
 // but windows are replenished as DATA is buffered, so without a connection-
 // level cap a peer can park MaxConcurrentStreams × MaxBodyBytes by never
@@ -1728,6 +1755,34 @@ func TestH2RefusesInvalidTrailerFields(t *testing.T) {
 				t.Errorf("stream 3 answered %q; the malformed trailer took its neighbour", got)
 			}
 		})
+	}
+}
+
+// RFC 9113 §8.1: a trailer section is the field block that ends the stream.
+// A second HEADERS without END_STREAM is a malformed request — a stream
+// error — not a block to decode and then wait behind. h2spec 8.1/1 found the
+// wait: the stream stayed open, and its slot with it, until the idle timeout.
+func TestH2RefusesTrailersWithoutEndStream(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: headBlock("POST", "/t", [2]string{"te", "trailers"}),
+	})
+	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("hi")})
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: literal(nil, "x-sum", "1"),
+	})
+	c.request(3, "GET", "/after")
+	c.flush()
+
+	if code := c.waitReset(1); code != 0x1 {
+		t.Errorf("stream 1 was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
+	}
+	if got := c.bodies(1)[3]; got != "/after" {
+		t.Errorf("stream 3 answered %q; the open-ended trailer took its neighbour", got)
 	}
 }
 

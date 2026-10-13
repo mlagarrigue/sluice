@@ -2,6 +2,8 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mlagarrigue/sluice.svg)](https://pkg.go.dev/github.com/mlagarrigue/sluice)
 [![CI](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml/badge.svg)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mlagarrigue/sluice)](https://goreportcard.com/report/github.com/mlagarrigue/sluice)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mlagarrigue/sluice/badges/coverage.json)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mlagarrigue/sluice)](https://github.com/mlagarrigue/sluice/releases)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8)
 ![Status](https://img.shields.io/badge/status-v0.1%20·%20unstable%20API-orange)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
@@ -70,8 +72,8 @@ its lifecycle. No global registry, no mandatory initialisation, no function
 to register somewhere. What Sluice.go provides combines with the standard
 library (`net`, `crypto/tls`, `io`, `iter`), never replaces it.
 
-**What it covers today**: serving HTTP (over `net/http`, and experimentally
-native HTTP/1.1, /2 and /3), reading and writing PostgreSQL (by speaking its
+**What it covers today**: serving HTTP (over `net/http`, and natively in
+HTTP/1.1, /2 and /3), reading and writing PostgreSQL (by speaking its
 protocol directly, with COPY for bulk loads), grouping simultaneous calls
 into one query, and transforming, joining, windowing and deduplicating
 streams for ETL — with the same operators everywhere.
@@ -129,9 +131,9 @@ special "handler" in the middle that would be of another nature.
 | `sluice/database/postgres` | PostgreSQL by speaking its protocol: binary codecs, `= ANY($1)`, COPY | supported |
 | `cmd/sluicegen` | generates the code that turns rows into structs | supported |
 | `sluice/probe` | counters to find the stage that makes the others wait | supported |
-| `sluice/pushdown` | the reader tells the source what it no longer needs | **experimental** — no source listens yet |
-| `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages | **experimental** |
-| `sluice/web/stream` | the request path for that experimental transport | **experimental** |
+| `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens | supported |
+| `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages | supported |
+| `sluice/web/stream` | the request path for the native transport | **experimental** |
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket | **experimental** |
 
 > **In plain terms: "experimental".** The code exists, is tested and
@@ -189,7 +191,7 @@ flowchart LR
 With Sluice.go the result flows batch by batch, and the client pulls: the
 database is read at the pace the client consumes, memory stays the size of
 one batch, and if the client leaves, the read stops. *(Native streamed
-responses: experimental transport.)*
+responses too, over `net/httpstream`.)*
 
 ### 3. A stream that never ends
 
@@ -252,8 +254,9 @@ preparation** — scenarios, method and results will be published together.
 - **PostgreSQL only** for now; SCRAM-SHA-256, cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
-- **The native HTTP/QUIC transport is experimental** and has never been
-  confronted with another QUIC implementation.
+- **QUIC is experimental**: confronted with two other implementations
+  (quic-go and ngtcp2, in the QUIC Interop Runner in CI), with no external
+  cryptographic review; HTTP/3 runs over it.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
 
@@ -269,11 +272,11 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── web/                request path over net/http · web/stream: native (experimental)
 ├── gateway/            simultaneous calls grouped
 ├── database/postgres/  PostgreSQL connector
-├── net/httpstream/     native HTTP/1.1, /2, /3 (experimental)
+├── net/httpstream/     native HTTP/1.1, /2, /3
 ├── net/quic/           QUIC v1 (experimental)
-├── pushdown/ probe/    upstream demand (experimental) · instrumentation
+├── pushdown/ probe/    upstream demand · instrumentation
 ├── cmd/sluicegen/      generator of hydration code
-├── example/            orders (supported path) · vertical (experimental path)
+├── example/            orders (supported path) · vertical (native path)
 ├── internal/           shared machinery, measurement harness, wire protocol
 └── docs/               guides, architecture, decisions, measurements
 ```
@@ -289,7 +292,7 @@ prerequisite beyond Go. The API reference is the godoc, on
 runnable example per operator. Two complete examples:
 [`example/orders`](example/orders), the supported vertical against a real
 PostgreSQL, and [`example/vertical`](example/vertical), the same over the
-experimental transport.
+native transport.
 
 Inspired by the Volcano model, MonetDB/X100, Akka Streams, Flink, and the
 FHIR and SARIF diagnostic models — sources cited in the architecture.

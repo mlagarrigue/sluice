@@ -3,12 +3,8 @@ package udp
 import "syscall"
 
 // Darwin names (bsd/netinet/in.h, bsd/netinet6/in6.h). Package syscall's
-// Darwin tables do not carry either, so they are spelled here.
-//
-// NOT YET VERIFIED ON A MAC. Written from the XNU headers; the values are
-// the same ones quic-go and msquic use on this platform. The first run on
-// macOS should confirm with the getsockopt check in configure_test.go
-// adapted to these names.
+// Darwin tables do not carry either, so they are spelled here; the values
+// are read back by configure_darwin_test.go, which CI runs on macOS.
 const (
 	ipDontFrag   = 0x1c // IP_DONTFRAG   (28)
 	ipv6DontFrag = 0x3e // IPV6_DONTFRAG (62)

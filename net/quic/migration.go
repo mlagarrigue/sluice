@@ -2,6 +2,9 @@ package quic
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -11,11 +14,13 @@ import (
 // Connection-identifier rotation and server-side passive migration, RFC 9000
 // §5.1 and §9.
 //
-// The shape in one paragraph: a [Listener]-managed server connection issues
-// alternative identifiers for itself (NEW_CONNECTION_ID) once its handshake
-// confirms, registered in the listener's demux table so a packet naming any
-// of them still routes; every connection pools the identifiers its *peer*
-// issues and honours Retire Prior To by switching what it sends under; and a
+// The shape in one paragraph: every connection issues alternative
+// identifiers for itself (NEW_CONNECTION_ID) once its handshake confirms — a
+// [Listener]-managed one registers them in the listener's demux table so a
+// packet naming any of them still routes, one that owns its socket needs no
+// table, every datagram on it being its own; every connection pools the
+// identifiers its *peer* issues and honours Retire Prior To by switching
+// what it sends under; and a
 // server that sees a 1-RTT packet arrive from a new address follows the
 // client there — new path unvalidated and amplification-limited until a
 // PATH_CHALLENGE round trip proves it, congestion and round-trip state reset
@@ -36,11 +41,18 @@ const maxLocalActiveCIDs = 4
 // timer is the one deadline that already exists for exactly that silence.
 const pathProbeMaxRetransmits = 3
 
-// cidRegistrar is what a [Listener] gives each connection it manages: the
-// ability to add and remove routing entries for additional local connection
-// identifiers in the shared demux table. A connection without one — [Dial],
-// standalone [Accept] — never issues identifiers, which RFC 9000 §5.1.1
-// permits (issuing is a SHOULD): its peer simply keeps using sequence 0.
+// cidRegistrar is what a connection issues its additional identifiers
+// through. A [Listener] gives each connection it manages the ability to add
+// and remove routing entries in the shared demux table; a connection that
+// owns its socket — [Dial], standalone [Accept] — gets an [ownerRegistrar],
+// which routes nothing. Issuing is only a SHOULD (RFC 9000 §5.1.1), but a
+// peer that got no identifier cannot follow this end across a NAT rebind:
+// §9.5 forbids sending under one identifier to two destination addresses,
+// so a server with no spare one cannot probe the client's new address —
+// quic-go logs "skipping validation of new path … since no connection ID is
+// available" and keeps sending to the address the NAT abandoned, until the
+// idle timer ends the connection (the runner's rebind-port and rebind-addr
+// cases, 2026-10-10, before Dial issued any).
 //
 // Lock order: these are called with the connection's mu held and take the
 // listener's own lock inside — Conn.mu before Listener.mu, never the
@@ -58,6 +70,41 @@ type cidRegistrar interface {
 	// trace of the connection is gone, which only a key the registrar
 	// keeps for its own lifetime can honour.
 	resetTokenFor(cid []byte) [16]byte
+}
+
+// ownerRegistrar is the registrar of a connection that owns its socket —
+// [Dial], standalone [Accept]. Routing is nothing: every datagram the socket
+// yields belongs to this one connection whatever identifier it names, and
+// receive already matches any entry of localCIDs. What remains is minting
+// identifiers of scid's length (the short header is parsed at that length)
+// and deriving the reset token each NEW_CONNECTION_ID must carry (§19.15)
+// from a per-connection key, so none is stored. No reset is ever sent from
+// here — the socket goes with the connection — which §10.3 allows: the
+// token only has to be unpredictable.
+type ownerRegistrar struct {
+	resetKey [32]byte
+}
+
+func newOwnerRegistrar() (*ownerRegistrar, error) {
+	r := &ownerRegistrar{}
+	if _, err := rand.Read(r.resetKey[:]); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *ownerRegistrar) addLocalCID(c *Conn) ([]byte, error) {
+	return randomID(len(c.scid))
+}
+
+func (r *ownerRegistrar) removeLocalCID([]byte) {}
+
+func (r *ownerRegistrar) resetTokenFor(cid []byte) [16]byte {
+	mac := hmac.New(sha256.New, r.resetKey[:])
+	mac.Write(cid)
+	var token [16]byte
+	copy(token[:], mac.Sum(nil))
+	return token
 }
 
 // localCID is one identifier this end answers to. Sequence 0 is the
@@ -99,6 +146,14 @@ type pathProbe struct {
 	// is, without error — the path in use still works.
 	target    net.Addr
 	targetCID []byte
+	// via is set while a server probes the client from its preferred-address
+	// socket (§9.6.2: "the server MUST probe on the path toward the client
+	// from its preferred address") before the connection has moved there:
+	// the challenge leaves by that socket, under targetCID, while
+	// everything else still leaves by the socket in use. The client's first
+	// non-probing packet on that socket moves the connection and adopts
+	// the identifier; silence drops the probe and moves nothing.
+	via net.PacketConn
 	// sent and full record whether the current data has left and whether
 	// every datagram carrying it was expanded to 1200 bytes. A response to
 	// a smaller probe validates the address but not the path MTU, and
@@ -116,8 +171,9 @@ type pathProbe struct {
 // was offered, or this is a server. The move itself is automatic once the
 // handshake confirms — a validated preferred path becomes the connection's
 // path, counted in [Conn.Migrations]; one that never validates leaves the
-// connection on the handshake's path. Internal, like the listener's
-// preferredAddress configuration: only this package's tests read it.
+// connection on the handshake's path. Internal: a caller sees the move
+// through [Conn.Migrations], and only this package's tests need the
+// address itself.
 func (c *Conn) preferredAddress() net.Addr {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -155,9 +211,9 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // min(the peer's active_connection_id_limit, [maxLocalActiveCIDs]), issuing
 // each new one as a NEW_CONNECTION_ID on the control queue — which rides the
 // next packet's retransmittable payload, so a lost one is resent like any
-// other control frame. No-op without a registrar (nowhere to route the new
-// identifier) or before the handshake confirms (§5.1.1 wants them in 1-RTT
-// packets the peer is known able to read). Callers hold mu.
+// other control frame. No-op before the handshake confirms (§5.1.1 wants
+// them in 1-RTT packets the peer is known able to read), or on a connection
+// a test built by hand with no registrar at all. Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
 		return
@@ -410,6 +466,12 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		return
 	}
 	c.pc = c.rxVia
+	if c.pathProbe.via == c.rxVia {
+		// The client answered — or is answering — the probe this end
+		// sent from this socket (§9.6.2); the identifier it went under
+		// is the new path's from here on (§9.5).
+		c.adoptProbedCIDLocked()
+	}
 	c.migrations++
 	c.resetPathStateLocked()
 }
@@ -595,13 +657,7 @@ func (c *Conn) startPathChallengeLocked(now time.Time) {
 		// amplification-limited; the idle timer judges the rest.
 		return
 	}
-	copy(c.pathProbe.data[:], data)
-	c.pathProbe.pending = true
-	c.pathProbe.fatal = false
-	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
-	c.pathProbe.retransmits = 0
-	c.pathProbe.sentAt = now
-	c.pathProbe.sent, c.pathProbe.full = false, false
+	c.startPathChallengeData(data, now)
 	c.sendPathChallengeLocked()
 }
 
@@ -635,8 +691,93 @@ func (c *Conn) sendPathChallengeLocked() {
 	// never retransmitted, and grants riding it would be lost with it.
 	c.flushControlLocked()
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
-		noRetrans: true, to: c.pathProbe.target, dcid: c.pathProbe.targetCID, padTo: 1200,
+		noRetrans: true, to: c.pathProbe.target, via: c.pathProbe.via, dcid: c.pathProbe.targetCID, padTo: 1200,
 	})
+}
+
+// preferredPathChallengeLocked is the server half of §9.6.2, taken when a
+// PATH_CHALLENGE arrives on the preferred-address socket from the client's
+// address while the connection still sends from the main one: the client
+// is validating the path the server offered, and the server "MUST probe on
+// the path toward the client from its preferred address". The challenge
+// rides in the same packet as the answer to the client's — the first
+// datagram this end sends from that socket carries both — under a peer
+// identifier never used on another path (§9.5: a new local address needs
+// a new identifier; with none pooled, the one in use is the fallback the
+// answer already takes). Returns the frame to append and the identifier to
+// send under, both nil when nothing is to be probed: a client, an
+// unconfirmed handshake, a challenge that arrived on the socket in use or
+// from a new address (the latter is a migration, §9.3's business), or a
+// probe from this socket already pending — whose data is then repeated,
+// since the client's repeat means the first answer was lost. Callers hold
+// mu.
+func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) {
+	if c.isClient || !c.handshakeConfirmed || c.rxVia == nil || c.rxVia == c.pc ||
+		(c.rxFrom != nil && !sameAddr(c.rxFrom, c.peer)) {
+		return nil, nil
+	}
+	if c.pathProbe.pending && c.pathProbe.via == c.rxVia {
+		return append(AppendVarint(nil, framePathChallenge), c.pathProbe.data[:]...), c.pathProbe.targetCID
+	}
+	data, err := randomID(8)
+	if err != nil {
+		return nil, nil
+	}
+	c.startPathChallengeData(data, now)
+	c.pathProbe.via = c.rxVia
+	c.pathProbe.sent, c.pathProbe.full = true, true
+	if cid, _, ok := c.pickFreshPeerCIDLocked(); ok {
+		c.pathProbe.targetCID = cid
+	}
+	return append(AppendVarint(nil, framePathChallenge), data...), c.pathProbe.targetCID
+}
+
+// startPathChallengeData arms the probe state around data without sending
+// anything: the caller is putting the challenge in a packet of its own.
+// Callers hold mu.
+func (c *Conn) startPathChallengeData(data []byte, now time.Time) {
+	copy(c.pathProbe.data[:], data)
+	c.pathProbe.pending = true
+	c.pathProbe.fatal = false
+	c.pathProbe.target, c.pathProbe.targetCID, c.pathProbe.via = nil, nil, nil
+	c.pathProbe.retransmits = 0
+	c.pathProbe.sentAt = now
+	c.pathProbe.sent, c.pathProbe.full = false, false
+}
+
+// pickFreshPeerCIDLocked marks as used and returns the pooled peer identifier
+// of lowest sequence never used on any path, other than the one in use —
+// without switching to it. Callers hold mu.
+func (c *Conn) pickFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
+	pick := -1
+	for i := range c.peerCIDs {
+		e := &c.peerCIDs[i]
+		if e.used || e.seq == c.currentPeerSeq {
+			continue
+		}
+		if pick == -1 || e.seq < c.peerCIDs[pick].seq {
+			pick = i
+		}
+	}
+	if pick == -1 {
+		return nil, 0, false
+	}
+	e := &c.peerCIDs[pick]
+	e.used = true
+	return e.cid, e.seq, true
+}
+
+// adoptProbedCIDLocked makes the identifier a server probed the client under
+// from its preferred socket the one in use, now that the connection sends
+// from that socket. Callers hold mu.
+func (c *Conn) adoptProbedCIDLocked() {
+	for i := range c.peerCIDs {
+		if e := &c.peerCIDs[i]; bytes.Equal(e.cid, c.pathProbe.targetCID) {
+			c.dcid, c.currentPeerSeq = e.cid, e.seq
+			c.rollSpinLocked()
+		}
+	}
+	c.pathProbe.targetCID, c.pathProbe.via = nil, nil
 }
 
 // sendOldPathChallengeLocked sends the §9.3.3 challenge to the last
@@ -747,6 +888,14 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 	}
 	if c.pathProbe.retransmits >= pathProbeMaxRetransmits {
 		c.pathProbe.pending = false
+		if c.pathProbe.via != nil {
+			// A server's probe from its preferred socket that the client
+			// never answered, while the client never moved either: the
+			// connection is where it always was, on the socket in use,
+			// and nothing is wrong (§9.6.2 lets the client stay).
+			c.pathProbe.via, c.pathProbe.targetCID = nil, nil
+			return time.Time{}
+		}
 		if !c.isClient {
 			// A migrated path that never validated, or validated its
 			// address but not 1200 bytes of MTU: either way not a path

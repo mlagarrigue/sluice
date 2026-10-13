@@ -25,7 +25,13 @@ func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*qu
 	t.Cleanup(cancel)
 	serverUp := make(chan error, 1)
 	served := make(chan error, 1)
+	serverDone := make(chan struct{})
+	// The server goroutine is reaped before the next test starts: one
+	// outliving its test would read the h3ReleaseStreamBytes hook while
+	// TestH3CreditsRequestBytesOnce swaps it (a data race under -race).
+	t.Cleanup(func() { <-serverDone })
 	go func() {
+		defer close(serverDone)
 		buf := make([]byte, 2048)
 		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 			serverUp <- err

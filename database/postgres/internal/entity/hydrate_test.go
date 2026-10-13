@@ -272,18 +272,25 @@ func BenchmarkGeneratedHydrate(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/row")
 }
 
-// The mappings Order does not exercise, end to end through the committed
-// generated code: char(n) and name into string, bytea copied out of the row
-// buffer, numeric kept exact, and a date column through the `date` option.
-func TestGeneratedProductHydrator(t *testing.T) {
-	plan, err := entity.BindProduct([]postgres.Field{
+// productFields describes the result Product expects, with released as oid.
+func productFields(released uint32) []postgres.Field {
+	return []postgres.Field{
 		{Name: "sku", TypeOID: postgres.OIDBPChar},
 		{Name: "owner", TypeOID: postgres.OIDName},
 		{Name: "image", TypeOID: postgres.OIDBytea},
 		{Name: "thumbnail", TypeOID: postgres.OIDBytea},
 		{Name: "price", TypeOID: postgres.OIDNumeric},
-		{Name: "released", TypeOID: postgres.OIDDate},
-	})
+		{Name: "released", TypeOID: released},
+		{Name: "weight", TypeOID: postgres.OIDFloat8},
+	}
+}
+
+// The mappings Order does not exercise, end to end through the committed
+// generated code: char(n) and name into string, bytea copied out of the row
+// buffer, numeric kept exact, a date column through the `date` option, and
+// a Null[T] field for the nullable column that takes no pointer.
+func TestGeneratedProductHydrator(t *testing.T) {
+	plan, err := entity.BindProduct(productFields(postgres.OIDDate))
 	if err != nil {
 		t.Fatalf("BindProduct returned %v", err)
 	}
@@ -292,10 +299,18 @@ func TestGeneratedProductHydrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
-	rows := postgres.NewRows(6, 4)
+	rows := postgres.NewRows(7, 4)
 	if err := rows.Append(dataRow(
 		[]byte("AB-1  "), []byte("postgres"), []byte{1, 2, 3}, nil,
 		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+		postgres.AppendFloat8(nil, 1.25),
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rows.Append(dataRow(
+		[]byte("AB-2  "), []byte("postgres"), []byte{1, 2, 3}, nil,
+		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+		nil,
 	)); err != nil {
 		t.Fatal(err)
 	}
@@ -316,13 +331,21 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	if !p.Released.Equal(day) {
 		t.Errorf("Released = %v, want %v", p.Released, day)
 	}
+	// A Null[T] field: present as Some(v), absent as the zero Null — never a
+	// zero value that reads as present.
+	if p.Weight != postgres.Some(1.25) {
+		t.Errorf("Weight = %+v, want Some(1.25)", p.Weight)
+	}
+	if got[1].Weight.Valid {
+		t.Errorf("Weight of a NULL row = %+v, want an invalid Null", got[1].Weight)
+	}
 
 	// The bytes are the field's own: the row buffer is reused for the next
 	// batch, and a []byte that aliased it would change under the caller.
 	rows.Reset()
 	if err := rows.Append(dataRow(
 		[]byte("ZZ-9  "), []byte("other"), []byte{9, 9, 9}, []byte{7},
-		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), nil,
 	)); err != nil {
 		t.Fatal(err)
 	}
@@ -331,14 +354,41 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	}
 
 	// A timestamp column is refused for the date field: the bytes differ.
-	if _, err := entity.BindProduct([]postgres.Field{
-		{Name: "sku", TypeOID: postgres.OIDText},
-		{Name: "owner", TypeOID: postgres.OIDText},
-		{Name: "image", TypeOID: postgres.OIDBytea},
-		{Name: "thumbnail", TypeOID: postgres.OIDBytea},
-		{Name: "price", TypeOID: postgres.OIDNumeric},
-		{Name: "released", TypeOID: postgres.OIDTimestampTZ},
-	}); err == nil {
+	if _, err := entity.BindProduct(productFields(postgres.OIDTimestampTZ)); err == nil {
 		t.Error("a timestamptz column bound to a date field")
+	}
+}
+
+// The reason Null[T] exists beside *T: a present value costs no allocation,
+// where a pointer field costs one per row. Measured here as a difference, so
+// the allocations the other fields make (two strings, one bytea) cancel out.
+func TestNullFieldDoesNotAllocate(t *testing.T) {
+	plan, err := entity.BindProduct(productFields(postgres.OIDDate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	price, _ := postgres.ParseNumeric("1")
+	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
+	row := func(weight []byte) *postgres.Rows {
+		rows := postgres.NewRows(7, 4)
+		if err := rows.Append(dataRow(
+			[]byte("A"), []byte("o"), []byte{1}, nil,
+			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), weight,
+		)); err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	present, absent := row(postgres.AppendFloat8(nil, 1)), row(nil)
+	dst := make([]entity.Product, 0, 1)
+	allocs := func(rows *postgres.Rows) float64 {
+		return testing.AllocsPerRun(100, func() {
+			if _, err := entity.HydrateProduct(dst[:0], rows, plan); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if extra := allocs(present) - allocs(absent); extra != 0 {
+		t.Errorf("a present Null[float64] costs %v allocations per row, want 0", extra)
 	}
 }

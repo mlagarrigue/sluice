@@ -34,6 +34,9 @@ shape of the object.
 go get github.com/mlagarrigue/sluice
 ```
 
+Go 1.26 or newer: that is the `go` line of the module, and the oldest
+version CI builds. See CONTRIBUTING.md for how the floor moves.
+
 ## A first program
 
 We have orders; we want the sum of their totals, ignoring the ones at zero

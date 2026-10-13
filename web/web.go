@@ -44,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -173,7 +174,7 @@ func PathInt(r *http.Request, name string) (int, diagnostics.Diagnostic, bool) {
 		return 0, d, false
 	}
 	// Dead on 64-bit platforms, where int is int64; it is the 32-bit guard.
-	if int64(int(v)) != v {
+	if v < math.MinInt || v > math.MaxInt {
 		return 0, invalid(name, r.PathValue(name), "integer"), false
 	}
 	return int(v), diagnostics.Diagnostic{}, true

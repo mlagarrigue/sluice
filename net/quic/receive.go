@@ -351,6 +351,12 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 
 		c.mu.Lock()
 		sp := &c.spaces[space]
+		if space == spaceApplication && !c.ku.dropPrevAt.IsZero() && !now.Before(c.ku.dropPrevAt) {
+			// RFC 9001 §6.5: the previous phase's read keys outlived their
+			// three probe timeouts; a straggler under them is lost now.
+			sp.opener = sp.opener.withoutPrevious()
+			c.ku.dropPrevAt = time.Time{}
+		}
 		opener, largest, discarded := sp.opener, sp.largest, sp.discarded
 		c.mu.Unlock()
 		if discarded {
@@ -372,7 +378,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			datagram = rest
 			continue
 		}
-		payload, pn, err := opener.Open(raw, pnOffset, largest)
+		payload, pn, used, err := opener.openPhased(raw, pnOffset, largest)
 		if err != nil {
 			// A datagram that names this connection but does not
 			// authenticate can still be the peer's stateless reset: a
@@ -380,15 +386,9 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			if space == spaceApplication && c.isStatelessReset(raw) {
 				return c.handleStatelessReset()
 			}
-			// Failed authentication: anyone can send these bytes. If the key
-			// phase bit differs from the one phase this package speaks, the
-			// peer has probably rotated its keys — counted separately so the
-			// refusal is diagnosable; see the package documentation.
+			// Failed authentication: anyone can send these bytes.
 			c.mu.Lock()
 			c.discarded++
-			if space == spaceApplication && raw[0]&0x04 != 0 {
-				c.keyPhaseSuspects++
-			}
 			opener.failed++
 			overIntegrity := opener.failed >= opener.k.intLimit
 			c.mu.Unlock()
@@ -410,6 +410,18 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 
 		if peerSCID != nil {
 			c.adoptPeerCID(peerSCID)
+		}
+		if used == usedNext {
+			// The peer moved to the next key phase (RFC 9001 §6.2): the
+			// read keys follow, and the send keys with them unless this end
+			// is the one that moved first.
+			c.mu.Lock()
+			err := c.onKeyPhaseOpenedLocked(opener, pn, now)
+			c.mu.Unlock()
+			if err != nil {
+				c.abort(err)
+				return err
+			}
 		}
 		if err := c.processPacket(space, pn, payload, now); err != nil {
 			return err
@@ -493,13 +505,22 @@ func (c *Conn) expectedDCID(dcid []byte, space int) bool {
 	if bytes.Equal(dcid, c.scid) {
 		return true
 	}
-	if c.isClient || space != spaceInitial {
-		return false
+	if !c.isClient && space == spaceInitial {
+		if bytes.Equal(dcid, c.odcid) {
+			return true
+		}
+		if len(c.params.retrySourceCID) > 0 && bytes.Equal(dcid, c.params.retrySourceCID) {
+			return true
+		}
 	}
-	if bytes.Equal(dcid, c.odcid) {
-		return true
-	}
-	return len(c.params.retrySourceCID) > 0 && bytes.Equal(dcid, c.params.retrySourceCID)
+	// Any other identifier this end issued, the preferred_address one
+	// first of all: it is sequence 1 of the pool (§5.1.1) and a client may
+	// name it from the moment it reads the transport parameters — before
+	// its Handshake flight completes, as quic-go does, and on whichever
+	// path it is using. Refusing it here stalled every such handshake
+	// until the server's deadline closed the connection.
+	_, ok := c.localCIDSeqFor(dcid)
+	return ok
 }
 
 // isStatelessReset reports whether a datagram that failed to route or to
@@ -870,7 +891,12 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			if onPath || c.rxDatagramLen >= 1200 {
 				padTo = 1200
 			}
-			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, padTo: padTo})
+			// A challenge that reached a server's preferred-address socket
+			// is answered with this end's own probe of that path in the
+			// same packet (§9.6.2), under the identifier that path gets.
+			probe, dcid := c.preferredPathChallengeLocked(now)
+			resp = append(resp, probe...)
+			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
 			c.mu.Unlock()
 
 		case f.Type == framePathResponse:
@@ -951,21 +977,41 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 			return err
 		}
 		c.settleBatchConsumption(batch)
+		// The callback has seen the end; a Read on the same stream — which
+		// got no bytes, the callback did — may now report it too.
+		for _, f := range batch {
+			if (f.Type == FrameStream && f.Fin) || f.Type == FrameResetStream {
+				if s := c.streamIfOpen(f.StreamID); s != nil {
+					s.endForRead()
+				}
+			}
+		}
 		return nil
 	}
 	for _, f := range batch {
-		if f.Type != FrameStream {
+		s := c.streamIfOpen(f.StreamID)
+		if s == nil {
 			continue
 		}
-		c.mu.Lock()
-		s := c.streams[f.StreamID]
-		c.mu.Unlock()
-		if s != nil {
+		switch f.Type {
+		case FrameStream:
 			s.keepForRead(f.Data, f.Fin)
+		case FrameResetStream:
+			// abandon already marked the reset under the stream's lock; the
+			// reader learns of it only now, behind every delta that preceded
+			// it in this batch, so the bytes the peer did send are read first.
+			s.endForRead()
 		}
 	}
 	c.holdPending(batch)
 	return nil
+}
+
+// streamIfOpen looks a stream up by identifier, nil if it is gone.
+func (c *Conn) streamIfOpen(id uint64) *Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streams[id]
 }
 
 // pendingFrameCost is what each held frame is charged beyond its bytes, so
@@ -1083,6 +1129,12 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if out.newlyAcked > 0 {
 		c.cc.onAcked(out.newlyAcked, out.growableBytes)
 		c.cond.Broadcast()
+	}
+	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
+		// A packet under the current send keys reached the peer: both
+		// sides hold this phase, and the next rotation is permitted
+		// (RFC 9001 §6.1).
+		c.ku.acked = true
 	}
 	if out.newlyAckedCount > 0 && space == spaceHandshake {
 		// An acknowledged Handshake packet is the client's proof the server
@@ -1395,11 +1447,20 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 		return false, err
 	}
 	// After arming, as in readLoop: a Close that expired the deadline
-	// before this call re-armed it would otherwise be waited out.
+	// before this call re-armed it would otherwise be waited out. A
+	// refusal wake (hsWake) that landed before the arming is taken the
+	// same way: the re-armed deadline erased its expiry.
 	select {
 	case <-c.closed:
 		return false, net.ErrClosed
 	default:
+	}
+	c.mu.Lock()
+	woke := c.hsWake
+	c.hsWake = false
+	c.mu.Unlock()
+	if woke {
+		return false, os.ErrDeadlineExceeded
 	}
 	n, addr, err := c.pc.ReadFrom(buf)
 	if err != nil {

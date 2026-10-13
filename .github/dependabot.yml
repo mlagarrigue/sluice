@@ -10,6 +10,28 @@ updates:
       interval: weekly
     commit-message:
       prefix: "build"
+  # The interop module pins quic-go (interop/go.mod); a bump that breaks the
+  # handshake fails the interop-quic job, which is the point of running it.
+  - package-ecosystem: gomod
+    directory: "/interop"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build"
+  # The base images are pinned by digest (TestDockerImagesArePinned); these
+  # entries move the digests, the interop endpoint's and the devcontainer's.
+  - package-ecosystem: docker
+    directories: ["/interop", "/.devcontainer"]
+    schedule:
+      interval: weekly
+    # The golang image follows the floor go.mod declares; raising it is the
+    # decision TestGoModVersionMatchesTheOldestCIBuild guards, not a bump.
+    # Within 1.26 the digest still moves.
+    ignore:
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "build"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

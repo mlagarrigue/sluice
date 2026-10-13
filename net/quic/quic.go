@@ -6,11 +6,18 @@
 //
 // # Read this before using it
 //
-// It has not been run against another implementation. Everything here is
-// checked against itself, against RFC 9001 Appendix A's published vectors,
-// and against a test harness that drops, reorders and forges datagrams —
-// which is a real standard and still not the same as interoperating. Treat
-// interoperability as unproven until a peer that shares no code has agreed.
+// Interoperability is proven against exactly one peer that shares no code:
+// quic-go, on each side of the handshake, in continuous integration since
+// 2026-10-10 (the interop/ module — handshake, an echo across flow-control
+// windows, a close the peer sees). Everything else is checked against
+// itself, against RFC 9001 Appendix A's published vectors, and against a
+// test harness that drops, reorders and forges datagrams. The QUIC Interop
+// Runner, run in this repository's CI, adds ngtcp2 to quic-go; two peers
+// are not every peer, so treat a third implementation as untested.
+// The deployments it is written for — a client behind a NAT that rebinds,
+// a server on a host with several addresses (Linux only, through
+// [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported
+// deployments"); each row names where the code decides it.
 //
 // # Why it exists
 //
@@ -48,8 +55,9 @@
 //     path change to its clients. [Accept] remains for the
 //     one-connection-per-socket case.
 //   - Connection-identifier rotation and server-side passive migration
-//     (RFC 9000 §5.1, §9): a Listener-managed connection issues additional
-//     identifiers once its handshake confirms, every connection pools what
+//     (RFC 9000 §5.1, §9): every connection issues additional identifiers
+//     once its handshake confirms — a client's are what let a server
+//     follow it across a NAT rebind (§9.5) — every connection pools what
 //     its peer issues and honours RETIRE_CONNECTION_ID and Retire Prior To
 //     — switching what it sends under when a peer (a load balancer,
 //     typically) forces rotation — and a server whose client's packets
@@ -70,9 +78,9 @@
 //     answers; a client offered a preferred address by its server probes
 //     it once the handshake confirms and moves there on its own when the
 //     path validates. Both reset congestion and round-trip state as §9.4
-//     asks. The server side — a [Listener] announcing a second socket —
-//     is implemented and tested inside the package but not exposed: no
-//     [ListenerConfig] field turns it on yet.
+//     asks. The server side is [ListenerConfig.PreferredAddress]: a second
+//     socket the listener reads alongside its main one and announces in
+//     every handshake.
 //   - Datagram coalescing (§12.2): the ACK a datagram earns and the CRYPTO
 //     flight it provokes leave together, Initial and Handshake packets in
 //     one datagram, with §14.1's padding carried by the packet that closes
@@ -87,20 +95,17 @@
 //     sender can put in a datagram ends a connection. Garbage, forgeries
 //     and strays are counted ([Conn.Stats], and the listener's
 //     own [Listener.DiscardedPackets] in front) and dropped.
+//   - Key update (RFC 9001 §6): a peer's rotation is followed, old read
+//     keys are kept three probe timeouts for stragglers, and this end
+//     rotates its own keys before the AEAD's confidentiality limit (§6.6)
+//     rather than closing — a long-lived connection no longer dies of its
+//     packet count. [Stats.KeyUpdates] counts the rotations.
 //
 // # What is not here
 //
-//   - **Key update** (RFC 9001 §6). A peer that rotates its keys will find
-//     its packets discarded as unauthenticated; the connection then dies by
-//     idle timeout, and the discard counter is the diagnostic. Peers
-//     ordinarily rotate only on very long-lived connections.
-//   - **Server migration.** A server never changes its own address (§9);
-//     announcing a preferred_address is not exposed (see above), and a
+//   - **Server migration.** A server never changes its own address (§9):
+//     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - [Dial] and standalone [Accept] connections issue no connection
-//     identifiers of their own — only a [Listener] has a demux table to
-//     route an alternative through. Issuing is a SHOULD (§5.1.1); their
-//     peers simply keep using sequence 0.
 //   - 0-RTT, ECN and session resumption.
 //
 // # The socket is the caller's
@@ -117,11 +122,14 @@
 // # On the cryptography
 //
 // None of it is invented here. The key schedule is HKDF from [crypto/hkdf]
-// with the labels RFC 9001 §5.1 publishes, the packet protection is AES-GCM
-// from [crypto/cipher], and the header protection is AES-ECB over a sample,
-// as §5.4 specifies. What this package contributes is the plumbing, and the
-// plumbing is pinned two ways: Appendix A.1's published derivation vectors,
-// and seal/open round trips for what the vectors do not reach.
+// with the labels RFC 9001 §5.1 publishes, the packet protection is the
+// AEAD of the negotiated suite — AES-GCM from [crypto/cipher], or
+// ChaCha20-Poly1305 from golang.org/x/crypto, the module's one dependency
+// (ADR 0002) — and the header protection is one block of the same suite's
+// cipher over a sample, as §5.4 specifies. What this package contributes is
+// the plumbing, and the plumbing is pinned two ways: Appendix A.1's
+// published derivation vectors, and seal/open round trips for what the
+// vectors do not reach.
 package quic
 
 import (

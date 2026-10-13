@@ -24,6 +24,7 @@ const (
 	transportApplicationError     = 0xc
 	transportProtocolViolation    = 0xa
 	transportCryptoBufferExceeded = 0xd
+	transportKeyUpdateError       = 0xe
 	transportAEADLimitReached     = 0xf
 	// transportCryptoErrorBase is the start of the range RFC 9001 §4.8
 	// reserves for TLS alerts: 0x0100 plus the alert's own code, which is

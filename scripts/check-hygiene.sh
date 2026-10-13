@@ -17,7 +17,14 @@ if git ls-files -z -- . ':!scripts/check-hygiene.sh' ':!repo_test.go' \
   echo "check-hygiene: the lines above carry an attribution" >&2
   status=1
 fi
-if git log --format='%h %b' | grep -iE "$pattern"; then
+# release-please's own commits, "chore(main): release X.Y.Z", name the bot
+# that opened the pull request, and GitHub writes dependabot's squash
+# messages with a Co-authored-by line per author the branch carried; those
+# two are skipped here, as in repo_test.go, and every other commit is read.
+if git log --format='%H%x09%an%x09%s' \
+    | awk -F'\t' '$2 != "dependabot[bot]" && $3 !~ /^chore\(main\): release / { print $1 }' \
+    | git log --no-walk --stdin --format='%h %b' \
+    | grep -iE "$pattern"; then
   echo "check-hygiene: the commits above carry an attribution" >&2
   status=1
 fi
@@ -43,7 +50,7 @@ done
 # Hidden files at the root: the same rule, with the project's own list.
 for f in $(git ls-files | grep -E '^\.[^/]+$'); do
   case "$f" in
-    .gitignore|.golangci.yml|.release-please-manifest.json|.gitattributes|.editorconfig) ;;
+    .gitignore|.dockerignore|.golangci.yml|.release-please-manifest.json|.gitattributes|.editorconfig) ;;
     *) echo "check-hygiene: $f is tracked" >&2; status=1 ;;
   esac
 done

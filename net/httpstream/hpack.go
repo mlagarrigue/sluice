@@ -26,6 +26,16 @@ import (
 // after.
 
 // ErrHPACK reports a header block this package will not decode.
+//
+// Naming: this package's sentinels for a peer that broke the rules are
+// [ErrHPACK], [ErrH2Protocol] and [ErrH3Protocol], one per rule set — the
+// HPACK format (RFC 7541), the HTTP/2 protocol (RFC 9113) and the HTTP/3
+// protocol (RFC 9114). The split is what the wire needs: HTTP/2 answers an
+// HPACK failure with COMPRESSION_ERROR and a framing failure with
+// PROTOCOL_ERROR, and [codeFor] tells them apart with errors.Is. The names
+// follow the RFCs' own words, which is why HPACK, a format, carries no
+// "Protocol" suffix while the two protocol versions do. Decided before v1
+// and not to be revisited: renaming any of the three is an API break.
 var ErrHPACK = errors.New("httpstream: HPACK decoding failed")
 
 // hpackEntrySize is the per-entry overhead RFC 7541 §4.1 defines, so that an

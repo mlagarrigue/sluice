@@ -2,10 +2,18 @@ package quic_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"runtime"
 	"sync"
@@ -87,6 +95,13 @@ func (a fakeAddr) String() string  { return string(a) }
 // returned channel.
 func startEchoServer(t *testing.T, pc net.PacketConn) (<-chan *quic.Conn, <-chan error) {
 	t.Helper()
+	return startEchoServerTLS(t, pc, serverTLS(t))
+}
+
+// startEchoServerTLS is startEchoServer with the server's TLS configuration
+// chosen by the test.
+func startEchoServerTLS(t *testing.T, pc net.PacketConn, cfg *tls.Config) (<-chan *quic.Conn, <-chan error) {
+	t.Helper()
 	connCh := make(chan *quic.Conn, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -100,7 +115,7 @@ func startEchoServer(t *testing.T, pc net.PacketConn) (<-chan *quic.Conn, <-chan
 			errCh <- err
 			return
 		}
-		conn, err := quic.Accept(pc, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(pc, peer, buf[:n], cfg, quic.DefaultParameters())
 		if err != nil {
 			errCh <- err
 			return
@@ -779,5 +794,188 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the transfer wedged — credit is not flowing back")
+	}
+}
+
+// A server whose whole first flight is lost — the ServerHello spans two
+// Initial packets since the post-quantum key shares, the second coalesced
+// with the Handshake flight — must resend *both* on its probe timeout. The
+// probe used to copy only the oldest unacknowledged packet, and the copy was
+// anonymous to the flight record: with the client's acknowledgements lost
+// too, the original stayed the oldest, every doubled timeout re-sent the
+// first half, and the client, holding half a ServerHello, never got the
+// rest. The QUIC Interop Runner's handshakeloss case against quic-go is
+// where it showed. Here the client's own datagrams are held back once the
+// server's flight is dropped, until the client proves it read the whole
+// ServerHello by sending at the Handshake level, so the only thing that can
+// complete the handshake is the server's probe carrying both halves.
+func TestServerProbeResendsItsWholeInitialFlight(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer serverPC.Close()
+	defer clientPC.Close()
+
+	serverHooked := &hookedConn{PacketConn: serverPC}
+	serverDatagrams := 0
+	serverHooked.mu.Lock()
+	serverHooked.filterWrite = func(b []byte) [][]byte {
+		// The server's first datagram acknowledges the ClientHello; the
+		// second and third carry the ServerHello and the Handshake flight.
+		serverDatagrams++
+		if serverDatagrams == 2 || serverDatagrams == 3 {
+			return nil
+		}
+		return [][]byte{b}
+	}
+	serverHooked.mu.Unlock()
+
+	clientHooked := &hookedConn{PacketConn: clientPC}
+	clientDatagrams := 0
+	clientHeldBack := 0
+	clientHooked.mu.Lock()
+	clientHooked.filterWrite = func(b []byte) [][]byte {
+		clientDatagrams++
+		isHandshake := b[0]&0x80 != 0 && (b[0]>>4)&0x03 == 0x02
+		if clientDatagrams <= 2 || isHandshake {
+			return [][]byte{b} // the ClientHello, then whatever follows the full ServerHello
+		}
+		clientHeldBack++
+		return nil
+	}
+	clientHooked.mu.Unlock()
+
+	connCh, errCh := startEchoServer(t, serverHooked)
+	// The server has no round-trip sample: its first probe fires at the
+	// 1-second initial PTO (RFC 9002 §6.2.2), the next two seconds later.
+	// One probe must be enough; the deadline leaves no room for a second.
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	conn, err := quic.DialContext(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("the handshake did not complete on the server's first probe: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case sc := <-connCh:
+		defer sc.Close()
+	case err := <-errCh:
+		t.Fatalf("the server: %v", err)
+	}
+	clientHooked.mu.Lock()
+	held := clientHeldBack
+	clientHooked.mu.Unlock()
+	if held == 0 {
+		t.Fatal("no client datagram was held back; the test proved nothing")
+	}
+}
+
+// delayedConn delivers every datagram written through it one fixed delay
+// later: a one-way latency, so that a round trip and the probe timeout it
+// sets are measurable amounts of time rather than loopback noise.
+type delayedConn struct {
+	net.PacketConn
+	delay time.Duration
+}
+
+func (d *delayedConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	data := append([]byte(nil), b...)
+	time.AfterFunc(d.delay, func() { _, _ = d.PacketConn.WriteTo(data, addr) })
+	return len(b), nil
+}
+
+// longChainTLS is serverTLS with a certificate chain of nine, padded past
+// 7500 bytes: the runner's amplificationlimit server, whose first flight
+// cannot fit in three times one client Initial.
+func longChainTLS(t *testing.T) *tls.Config {
+	t.Helper()
+	cfg := serverTLS(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := len(cfg.Certificates[0].Certificate[0])
+	for i := range 8 {
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(int64(i + 2)),
+			NotBefore:    time.Now().Add(-time.Hour),
+			NotAfter:     time.Now().Add(time.Hour),
+			KeyUsage:     x509.KeyUsageCertSign,
+			ExtraExtensions: []pkix.Extension{{
+				Id:    asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 99999, 1},
+				Value: make([]byte, 800),
+			}},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Certificates[0].Certificate = append(cfg.Certificates[0].Certificate, der)
+		total += len(der)
+	}
+	if total < 7500 {
+		t.Fatalf("the chain is %d bytes; the runner's server sends at least 7500", total)
+	}
+	return cfg
+}
+
+// The runner's amplificationlimit case, client side: the ClientHello spans
+// two Initial datagrams and the network drops client datagrams 2 to 7. The
+// server, allowed three times what it received, has answered the first
+// with an acknowledgement and can do nothing more until the client sends
+// again — and the server gives up five seconds after that. Only the client
+// can raise the budget, and every probe timeout doubles the wait: at one
+// datagram per probe the eighth leaves after 63 intervals, at two after 7
+// (RFC 9002 §6.2.4). A 40 ms one-way latency makes the interval 120 ms,
+// which puts the two strategies on either side of the deadline.
+func TestClientProbesUnblockAnAmplificationLimitedServer(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer serverPC.Close()
+	defer clientPC.Close()
+
+	clientHooked := &hookedConn{PacketConn: clientPC}
+	clientDatagrams := 0
+	dropped := 0
+	var first, eighth time.Time
+	clientHooked.mu.Lock()
+	clientHooked.filterWrite = func(b []byte) [][]byte {
+		clientDatagrams++
+		switch {
+		case clientDatagrams == 1:
+			first = time.Now()
+		case clientDatagrams <= 7:
+			dropped++
+			return nil
+		case clientDatagrams == 8:
+			eighth = time.Now()
+		}
+		return [][]byte{b}
+	}
+	clientHooked.mu.Unlock()
+
+	connCh, errCh := startEchoServerTLS(t, &delayedConn{PacketConn: serverPC, delay: 40 * time.Millisecond}, longChainTLS(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := quic.DialContext(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	if err != nil {
+		clientHooked.mu.Lock()
+		n, dr := clientDatagrams, dropped
+		clientHooked.mu.Unlock()
+		t.Fatalf("the handshake did not complete in 5 s (%d client datagrams, %d dropped): %v", n, dr, err)
+	}
+	defer conn.Close()
+	select {
+	case sc := <-connCh:
+		defer sc.Close()
+	case err := <-errCh:
+		t.Fatalf("the server: %v", err)
+	}
+	clientHooked.mu.Lock()
+	dr, gap := dropped, eighth.Sub(first)
+	clientHooked.mu.Unlock()
+	if dr != 6 {
+		t.Fatalf("%d client datagrams were dropped, want 6; the test proved nothing", dr)
+	}
+	// Seven intervals of 120 ms, with room for the scheduler.
+	if gap > 2*time.Second {
+		t.Errorf("the eighth client datagram left %v after the first; two probes per timeout put it under a second", gap)
 	}
 }

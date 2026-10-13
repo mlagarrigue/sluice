@@ -363,3 +363,111 @@ func TestListenerHandshakeSurvivesAnAmplificationLimitedFirstFlight(t *testing.T
 		t.Fatalf("echo = %q", got)
 	}
 }
+
+// ListenerConfig.PreferredAddress, from outside the package: a listener on
+// 127.0.0.1 announces a second socket on 127.0.0.2, the client moves there
+// on its own after the handshake, the server follows onto that socket, and
+// data flows both ways afterwards. Only the public surface is read: each
+// side counts exactly one migration. Skipped where 127.0.0.2 is not a
+// local address (macOS configures only 127.0.0.1).
+func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
+	pref, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 2)})
+	if err != nil {
+		t.Skipf("no 127.0.0.2 on this host: %v", err)
+	}
+	l, addr := newUDPListener(t, quic.ListenerConfig{PreferredAddress: pref})
+
+	accepted := make(chan *quic.Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- c
+	}()
+	client := dialUDP(t, addr, quic.DefaultParameters())
+	var server *quic.Conn
+	select {
+	case c, ok := <-accepted:
+		if !ok {
+			t.Fatal("Accept failed")
+		}
+		server = c
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handshake never completed")
+	}
+	defer server.Close()
+
+	// Traffic in both directions is what proves the move: the client's
+	// first stream reaches the server, which by then has followed onto
+	// the preferred socket, and its answer comes back from there.
+	received := make(chan []byte, 8)
+	server.OnStreamFrames(func(fs []quic.Frame) error {
+		for _, f := range fs {
+			if f.IsStream() {
+				received <- append([]byte(nil), f.Data...)
+			}
+		}
+		return nil
+	})
+	echo := make(chan []byte, 8)
+	client.OnStreamFrames(func(fs []quic.Frame) error {
+		for _, f := range fs {
+			if f.IsStream() {
+				echo <- append([]byte(nil), f.Data...)
+			}
+		}
+		return nil
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for client.Migrations() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the client never moved to the preferred address")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte("to the preferred address")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-received:
+		if string(data) != "to the preferred address" {
+			t.Errorf("the server read %q", data)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("data sent to the preferred address never arrived")
+	}
+	for server.Migrations() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the server never followed onto its preferred socket")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	back, err := server.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := back.Write([]byte("from the preferred address")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case data := <-echo:
+		if string(data) != "from the preferred address" {
+			t.Errorf("the client read %q", data)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("data sent from the preferred address never arrived")
+	}
+	if n := client.Migrations(); n != 1 {
+		t.Errorf("client migrations = %d, want 1", n)
+	}
+	if n := server.Migrations(); n != 1 {
+		t.Errorf("server migrations = %d, want 1", n)
+	}
+}

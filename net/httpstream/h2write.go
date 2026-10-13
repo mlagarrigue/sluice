@@ -61,11 +61,19 @@ var errWriteStalled = errors.New("httpstream: the peer granted no window before 
 // h2Job is one stream's contribution to the write queue: a framed head that
 // needs no credit, and a payload that does.
 //
-// data is borrowed from whoever queued the job and must stay valid until the
-// job reports done — which is what makes [h2Writer.deliver] a blocking call
-// and the producer run at the socket's pace rather than ahead of it.
+// For a job [h2Writer.deliver] queues, data is borrowed from whoever queued
+// it and must stay valid until the job reports done — which is what makes
+// deliver a blocking call. For a streamed body's job ([h2Writer.extend]) data
+// is the job's own buffer, grown under the lock while the job is still queued,
+// so that the producer runs ahead of the socket by at most one round's budget
+// and the batches that arrive during a write leave together in the next one.
 type h2Job struct {
 	id uint32
+
+	// queued is true while the job sits in h2Writer.jobs: the one state in
+	// which more data may be appended to it. It is cleared wherever a job
+	// leaves the queue — framed whole, dropped, expired or failed.
+	queued bool
 
 	// head is already framed: HEADERS and whatever CONTINUATION frames the
 	// block needed. RFC 9113 §6.9 flow-controls DATA and nothing else, so it
@@ -271,7 +279,7 @@ func (w *h2Writer) expire() {
 			continue
 		}
 		j.err = fmt.Errorf("%w: stream %d", errWriteStalled, j.id)
-		j.done = true
+		j.done, j.queued = true, false
 		delete(w.windows, j.id)
 		// CANCEL rather than a code that blames the peer: it granted less
 		// than we wanted, which it is entitled to do, and we are the side
@@ -335,12 +343,14 @@ func (w *h2Writer) fill() []*h2Job {
 	for _, j := range w.jobs {
 		switch {
 		case j.done: // failed inside emit; already answered
+			j.queued = false
 		case j.complete():
 			if j.closes {
 				// The stream is over on this side; its window is nobody's to
 				// spend now.
 				delete(w.windows, j.id)
 			}
+			j.queued = false
 			finished = append(finished, j)
 		default:
 			kept = append(kept, j)
@@ -427,6 +437,7 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 			continue
 		}
 		j.deadline = deadline
+		j.queued = true
 		w.jobs = append(w.jobs, j)
 	}
 	w.cond.Broadcast()
@@ -446,6 +457,114 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 		}
 		w.cond.Wait()
 	}
+}
+
+// extend queues data for a streamed body on id and returns the job carrying
+// it, without waiting for the wire.
+//
+// The job still queued from the previous batch, if there is one, takes the
+// bytes: they go out in the same round as what it already holds, in one DATA
+// frame where the window allows, and the last of them may carry END_STREAM
+// when [h2Writer.finish] catches the job in time. Otherwise — the previous
+// job is being written, has been written, or was dropped — a new job opens on
+// whichever of cur and spare is free. Both are the caller's and alternate:
+// one is at most in flight while the other is queued, so the one not in use
+// is always done by the time it is needed, and its buffer can be reused.
+//
+// The only wait is for room: a queued job holding one round's budget or more
+// of unframed bytes ([H2Config.MaxWriteBufferBytes]) is a peer that reads
+// slower than the producer yields, and the producer then runs at the window's
+// pace, bounded by the same deadline every stalled job has. This is the whole
+// difference between a batch on HTTP/2 and on HTTP/3 before it: deliver
+// returned once the bytes were on the wire, so three batches of eight bytes
+// cost three writes, six goroutine hand-offs and three TCP segments the
+// client woke on one at a time — about 70 µs each against a loopback —
+// where quic-go's Stream.Write copies, returns, and lets the send loop pack
+// what has accumulated into one packet.
+//
+// The outcome of a job that left the queue is on the job, as with deliver:
+// cur.err set means the stream is gone and the pull should stop.
+func (w *h2Writer) extend(id uint32, cur, spare *h2Job, data []byte) (*h2Job, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for cur != nil && cur.queued {
+		if w.err != nil {
+			return cur, w.err
+		}
+		if len(cur.data)-cur.off < w.cfg.MaxWriteBufferBytes {
+			cur.data = append(cur.data, data...)
+			w.cond.Broadcast()
+			return cur, nil
+		}
+		w.cond.Wait()
+	}
+	if cur != nil && cur.err != nil {
+		return cur, nil // the stream is over; the caller reads why
+	}
+	j, err := w.claim(id, cur, spare)
+	if err != nil || j.err != nil {
+		return j, err
+	}
+	j.data = append(j.data[:0], data...)
+	w.jobs = append(w.jobs, j)
+	w.cond.Broadcast()
+	return j, nil
+}
+
+// claim takes a free job of the pair for a new streamed-body job on id and
+// resets it, waiting for a write in progress to release one. Called with the
+// lock held. A stream that is gone is answered on the job, as deliver does.
+func (w *h2Writer) claim(id uint32, cur, spare *h2Job) (*h2Job, error) {
+	j := cur
+	if j == nil || !j.done {
+		j = spare
+	}
+	for !j.done {
+		if w.err != nil {
+			return j, w.err
+		}
+		w.cond.Wait()
+	}
+	if w.err != nil {
+		return j, w.err
+	}
+	data := j.data[:0]
+	*j = h2Job{id: id, headSent: true, data: data, deadline: time.Now().Add(w.cfg.WriteTimeout)}
+	if _, alive := w.windows[id]; !alive || w.stopping {
+		j.err, j.done = errStreamGone, true
+		return j, nil
+	}
+	j.queued = true
+	return j, nil
+}
+
+// finish ends a streamed body: END_STREAM rides on the last DATA frame of the
+// job still queued when there is one, and on an empty DATA frame of its own
+// otherwise. It returns once the stream's last job has been written — or
+// dropped, which is not this connection's failure.
+func (w *h2Writer) finish(id uint32, cur, spare *h2Job) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	j := cur
+	if j != nil && j.queued {
+		j.end, j.closes = true, true
+		w.cond.Broadcast()
+	} else {
+		var err error
+		if j, err = w.claim(id, cur, spare); err != nil || j.err != nil {
+			return err
+		}
+		j.end, j.closes = true, true
+		w.jobs = append(w.jobs, j)
+		w.cond.Broadcast()
+	}
+	for !j.done {
+		if w.err != nil {
+			return w.err
+		}
+		w.cond.Wait()
+	}
+	return nil
 }
 
 // control queues a control frame, blocking while the queue is at its bound.
@@ -567,7 +686,7 @@ func (w *h2Writer) forget(id uint32) {
 			kept = append(kept, j)
 			continue
 		}
-		j.err, j.done = errStreamGone, true
+		j.err, j.done, j.queued = errStreamGone, true, false
 	}
 	w.jobs = kept
 	w.turn = 0
@@ -683,6 +802,7 @@ func (w *h2Writer) setErr(err error) {
 		if !j.done {
 			j.err, j.done = w.err, true
 		}
+		j.queued = false
 	}
 	for _, j := range w.inflight {
 		j.err, j.done = w.err, true

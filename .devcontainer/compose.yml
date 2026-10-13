@@ -1,8 +1,10 @@
 services:
   dev:
+    # The image copies nothing from the repository: this folder is the whole
+    # build context, and the workspace arrives by the mount below.
     build:
-      context: ..
-      dockerfile: .devcontainer/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     container_name: sluice-dev
     volumes:
       - ..:/workspaces/sluice:cached

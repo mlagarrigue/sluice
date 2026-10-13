@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,7 +53,22 @@ type routeSegment struct {
 // not say. For the same reason it refuses a row no request can reach, because
 // an earlier row of the same method matches everything it would: a literal
 // route belongs above the wildcard route that would otherwise swallow it.
-func NewRouter(routes ...Route) (*Router, error) {
+//
+// A refusal is a panic, as with [net/http.ServeMux]: the table is written in
+// the program, so a bad row is a programming error, found at startup and
+// never reached by a request. There is no error-returning form, because an
+// ignored error here is a route that quietly never answers.
+func NewRouter(routes ...Route) *Router {
+	rt, err := compile(routes)
+	if err != nil {
+		panic(err.Error())
+	}
+	return rt
+}
+
+// compile is NewRouter with the refusal as a value, for the tests that read
+// it.
+func compile(routes []Route) (*Router, error) {
 	if len(routes) == 0 {
 		return nil, errors.New("stream: a router needs at least one route")
 	}
@@ -286,7 +302,7 @@ func PathInt(e *Exchange, i int, name string) (int, bool) {
 		return 0, false
 	}
 	// Dead on 64-bit platforms, where int is int64; it is the 32-bit guard.
-	if int64(int(v)) != v {
+	if v < math.MinInt || v > math.MaxInt {
 		refuseInteger(e, i, name)
 		return 0, false
 	}
