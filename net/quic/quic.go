@@ -11,9 +11,9 @@
 // 2026-10-10 (the interop/ module — handshake, an echo across flow-control
 // windows, a close the peer sees). Everything else is checked against
 // itself, against RFC 9001 Appendix A's published vectors, and against a
-// test harness that drops, reorders and forges datagrams. One peer is not
-// the public QUIC Interop Runner, whose matrix crosses many; until this
-// package is green there, treat a second implementation as untested.
+// test harness that drops, reorders and forges datagrams. The QUIC Interop
+// Runner, run in this repository's CI, adds ngtcp2 to quic-go; two peers
+// are not every peer, so treat a third implementation as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
 // a server on a host with several addresses (Linux only, through
 // [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported

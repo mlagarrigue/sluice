@@ -1,9 +1,9 @@
 # The interop endpoint's public image, ghcr.io/mlagarrigue/sluice-interop,
-# which the public QUIC Interop Runner pulls to cross sluice with every
-# registered implementation. Built from a release tag only, never from a
-# commit of main: the matrix tests the state the release notes and
-# docs/guide/limits.md describe. `latest` moves with each release; the
-# version tag stays. The dispatch form rebuilds a tag whose image was lost
+# which the Interop runner workflow pulls (its image input) to cross a
+# release rather than the working tree. Built from a release tag only,
+# never from a commit of main: the runner tests the state the release
+# notes and docs/guide/limits.md describe. `latest` moves with each
+# release; the version tag stays. The dispatch form rebuilds a tag whose image was lost
 # or whose base image moved; given a branch, it refuses.
 name: Interop image
 

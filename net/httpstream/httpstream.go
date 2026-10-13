@@ -158,9 +158,9 @@
 // recovery — not on a dependency, since the standard library has no QUIC.
 // That package is still experimental, in a sense this one has left: checked
 // against itself, against published vectors, against a harness that drops,
-// reorders and forges datagrams, and against one peer that shares no code
+// reorders and forges datagrams, and against two peers that share no code
 // (quic-go, in the interop/ module, where its HTTP/3 client also reads
-// [ServeH3]'s responses) — not yet against the public QUIC Interop Runner.
+// [ServeH3]'s responses, and ngtcp2, in the QUIC Interop Runner).
 // Keep [ServeH3] off the supported path for the same reason as the rest of
 // this package.
 //

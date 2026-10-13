@@ -121,8 +121,9 @@ Three reasons come up, and the difference matters:
 These packages leave the label only by meeting these conditions, or move
 to a separate module before a v1.
 
-- **`net/quic`**: being green in the public *QUIC Interop Runner*; an
-  external cryptographic review. Two conditions left this list on
+- **`net/quic`**: being green in the *QUIC Interop Runner* against
+  quic-go and ngtcp2, on each side of the handshake, in our own continuous
+  integration; an external cryptographic review. Two conditions left this list on
   2026-10-10: key update (RFC 9001 §6) — both sides rotate, and a long
   connection no longer dies of its packet count — and the first
   third-party peer: quic-go, on each side of the handshake, in continuous
@@ -130,11 +131,10 @@ to a separate module before a v1.
   itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
   the `Interop runner` workflow). Since 2026-10-11 the endpoint's image,
   `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
-  (the `Interop image` workflow), and sluice is proposed to the runner's
-  public matrix at [interop.seemann.io](https://interop.seemann.io/)
-  ([quic-interop-runner#513](https://github.com/quic-interop/quic-interop-runner/pull/513));
-  that matrix, not this paragraph, will be the record once the entry is
-  merged. As a server, sluice passes handshake,
+  (the `Interop image` workflow). Each run of the `Interop runner`
+  workflow, not this paragraph, is the record: its log holds the table of
+  cases, its artifact the captures and each side's logs. As a server,
+  sluice passes handshake,
   transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
   amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,
   rebind-addr, handshakeloss and handshakecorruption, and fails

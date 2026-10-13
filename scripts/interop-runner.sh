@@ -9,7 +9,7 @@
 # system temporary directory) at RUNNER_REF (default: master); TESTS
 # narrows the cases (comma separated, the runner's names). The image is
 # built from the working tree, or pulled when IMAGE names a published one
-# (ghcr.io/mlagarrigue/sluice-interop:latest, what the public matrix runs),
+# (ghcr.io/mlagarrigue/sluice-interop:latest, the last release),
 # and the sluice entry is added to the runner's implementation list; the
 # runner's own directories are left as it leaves them, so a second run
 # reuses the clone and its virtual environment.
