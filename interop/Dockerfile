@@ -7,7 +7,7 @@
 # /setup.sh and /wait-for-it.sh; the binary is static, so nothing else is
 # installed on top of it. Both images are pinned by digest, so a release
 # rebuilds the image it shipped; Dependabot moves the pins.
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+FROM golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY interop/go.mod interop/go.sum ./interop/
