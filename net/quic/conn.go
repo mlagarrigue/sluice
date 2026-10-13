@@ -125,6 +125,24 @@ type Conn struct {
 	dgram     []byte
 	dgramPend *pendingPacket
 	dgramPad  bool
+	// batching, batch, batchSeg, batchN and batchShort are send batching:
+	// while batching is set (Stream.write), 1-RTT datagrams bound for the
+	// current path are sealed back to back into batch — every one batchSeg
+	// bytes, but a shorter last that closes it (batchShort) — and leave in
+	// one system call. noGSO records that the socket refused segmentation
+	// offload once, so later batches go one write per datagram without
+	// asking again. batchErr is the first write error of the batches
+	// flushed since Stream.write began, which it returns. oobScratch is
+	// the control message. See batchLocked and flushBatchLocked.
+	batching   bool
+	batch      []byte
+	batchSeg   int
+	batchN     int
+	batchShort bool
+	noGSO      bool
+	segmented  int // batches that left in one segmented write, for tests
+	batchErr   error
+	oobScratch []byte
 	// parseScratch and batchScratch are the receive path's two per-packet
 	// frame slices, reusable because one receive goroutine processes one
 	// packet at a time and no consumer keeps either slice (see frames).

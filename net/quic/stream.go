@@ -239,10 +239,26 @@ func (s *Stream) CloseWrite() error {
 }
 
 func (s *Stream) write(p []byte, fin bool) (int, error) {
-	written := 0
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// The packets one call builds leave together (batchLocked): a 4 KiB
+	// write is four datagrams, and one system call carries the four.
+	c.batching, c.batchErr = true, nil
+	written, err := s.writeLocked(p, fin)
+	c.batching = false
+	c.flushBatchLocked()
+	if err == nil {
+		err = c.batchErr
+	}
+	c.batchErr = nil
+	return written, err
+}
+
+// writeLocked is write's loop, run under mu with batching on.
+func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
+	written := 0
+	c := s.conn
 	for {
 		if s.writeReset {
 			return written, fmt.Errorf("%w: stream %d is reset (code %#x) and takes no more writes",

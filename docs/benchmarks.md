@@ -180,8 +180,30 @@ server during the transfer points elsewhere: a fifth of the samples sit in
 (`writePacketLocked`), and a quarter in the scheduler parking and waking
 goroutines. 64 KiB is some fifty packets, each its own system call, with no
 batching of datagrams and no pacing of their departure. That is the observed
-shape, not a proven split of the 1179 µs: batching datagrams (`sendmmsg`,
-UDP segmentation offload) is the lead, and it has its own backlog entry.
+shape, not a proven split of the 1179 µs.
+
+**Batching the datagrams (measured 2026-10-13).** Since the commit
+`perf(quic): send a write's datagrams in one call`, the packets one
+`Stream.Write` builds are sealed back to back and leave in one `sendmsg`
+carrying `UDP_SEGMENT` (UDP segmentation offload, Linux 4.18): the kernel
+cuts the buffer into the same datagrams a write per packet gave, so the peer
+sees no difference, and a 4 KiB batch costs one system call instead of four.
+The standard library is enough (`WriteMsgUDPAddrPort` with a control
+message); no module was added. Paired A/B against the previous commit, eight
+rounds alternated back to back, `-benchtime 2s`, medians:
+
+| benchmark | before | after | rounds won |
+|---|---|---|---|
+| `BenchmarkH3FromQuicGo/plain` | 454 µs | 464 µs | ~ (p=0.80) |
+| `BenchmarkH3FromQuicGo/stream` | 464 µs | 470 µs | ~ (p=0.51) |
+| `BenchmarkH3FromQuicGo/bulk` | 1447 µs · 45 MB/s | 1128 µs · 58 MB/s | 8 of 8 |
+
+`bulk` also loses 27 allocations per request (867 to 840). The session ran
+slower than the one of the table above (`bulk` at 45 MB/s before the change
+against 56): in the same session, `BenchmarkH2FromNetHTTP/bulk` measured
+97 MB/s, so HTTP/3 went from under half of HTTP/2 to six tenths. Windows and
+macOS keep one write per datagram, as does a kernel that refuses the option
+(the first refusal turns batching into a loop of writes for the connection).
 
 **Verdict.** The cost per batch is explained, divided by two, and what remains
 is owned: `docs/guide/experimental.md` says it in one sentence for whoever

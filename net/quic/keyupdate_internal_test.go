@@ -96,6 +96,13 @@ func TestOpenerReadsAcrossAKeyUpdate(t *testing.T) {
 func newKeyedConn(t *testing.T) (c *Conn, peer *packetSealer) {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
+	return newKeyedConnOn(t, pcA, pcB)
+}
+
+// newKeyedConnOn is newKeyedConn over sockets the caller holds, for a test
+// that reads what the Conn writes.
+func newKeyedConnOn(t *testing.T, pcA, pcB net.PacketConn) (c *Conn, peer *packetSealer) {
+	t.Helper()
 	c = newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("app-secrets"))

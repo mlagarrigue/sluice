@@ -257,6 +257,10 @@ func (c *Conn) cryptoRoomLocked() int {
 // an Initial in the datagram requires it — and writes the datagram. Callers
 // hold mu.
 func (c *Conn) flushDatagramLocked() {
+	if c.dgramPend == nil && len(c.dgram) == 0 {
+		return
+	}
+	c.flushBatchLocked() // what was sent before leaves before
 	if p := c.dgramPend; p != nil {
 		c.dgramPend = nil
 		pad := 0
@@ -456,6 +460,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		sp: sp, space: space, prefix: header, payload: payload,
 		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,
 	}
+	if c.batching && space == spaceApplication && opts.via == nil && onPath {
+		return c.batchLocked(&p, size)
+	}
+	c.flushBatchLocked()
 	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0)
 	if err != nil {
 		return err
@@ -734,7 +742,14 @@ func (c *Conn) waitForCreditLocked() error {
 		return errClosed
 	default:
 	}
+	// Nothing built waits with the writer, and while it sleeps the
+	// batch is closed: whoever takes mu meanwhile — the read loop and its
+	// acknowledgements — writes at once, as outside Stream.write.
+	batching := c.batching
+	c.flushBatchLocked()
+	c.batching = false
 	c.cond.Wait()
+	c.batching = batching
 	select {
 	case <-c.closed:
 		return errClosed
@@ -849,6 +864,12 @@ func (c *Conn) kickTimer() {
 // from being silent.
 func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
 	_, err := pc.WriteTo(b, to)
+	return c.wroteLocked(err)
+}
+
+// wroteLocked is writeLocked's accounting of one write's outcome, shared
+// with the batched writes of flushBatchLocked. Callers hold mu.
+func (c *Conn) wroteLocked(err error) error {
 	if err != nil {
 		c.writeFailures++
 		if isRefusal(err) {
@@ -863,4 +884,79 @@ func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
 		}
 	}
 	return err
+}
+
+// maxBatchSegments and maxBatchBytes bound one batch: the kernel's
+// UDP_MAX_SEGMENTS on the oldest kernels that offer segmentation (4.18),
+// and what one UDP datagram — the unit sendmsg hands over before cutting —
+// may carry.
+const (
+	maxBatchSegments = 64
+	maxBatchBytes    = 65507
+)
+
+// batchLocked seals p at the end of the batch instead of writing it. size
+// is its exact sealed length, known before sealing (writePacketLocked): a
+// packet that cannot join — larger than the batch's segments, after a
+// shorter one closed it, or past the bounds — first flushes the batch and
+// opens the next. The recovery bookkeeping is sealLocked's, as for any
+// packet; only the write is deferred, to flushBatchLocked. Callers hold mu.
+func (c *Conn) batchLocked(p *pendingPacket, size int) error {
+	if c.batchN > 0 && (c.batchShort || size > c.batchSeg ||
+		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
+		c.flushBatchLocked()
+	}
+	out, err := c.sealLocked(c.batch, p, 0)
+	if err != nil {
+		return err
+	}
+	size = len(out) - len(c.batch)
+	c.batch = out
+	switch {
+	case c.batchN == 0:
+		c.batchSeg = size
+	case size < c.batchSeg:
+		c.batchShort = true
+	}
+	c.batchN++
+	return nil
+}
+
+// flushBatchLocked writes what batchLocked gathered: in one system call
+// where the socket offers segmentation (writeSegments), one write per
+// datagram where it does not. The destination is the peer's current
+// address: batching only takes packets bound for it, and the peer cannot
+// change while the batch is open — that takes mu, which a batching writer
+// releases only through waitForCreditLocked, which flushes first. It
+// keeps the first write error in batchErr, which Stream.write returns as
+// it returned WriteTo's before; the packets themselves are recorded, and
+// loss recovery resends them like any lost datagram. Callers hold mu.
+func (c *Conn) flushBatchLocked() {
+	if c.batchN == 0 {
+		return
+	}
+	b, seg, n := c.batch, c.batchSeg, c.batchN
+	c.batch, c.batchN, c.batchShort = c.batch[:0], 0, false
+	if n > 1 && !c.noGSO {
+		var ok bool
+		var err error
+		c.oobScratch, ok, err = writeSegments(c.pc, b, seg, c.peer, c.oobScratch)
+		if ok {
+			c.segmented++
+			c.keepBatchErr(c.wroteLocked(err))
+			return
+		}
+		c.noGSO = true
+	}
+	for len(b) > 0 {
+		k := min(seg, len(b))
+		c.keepBatchErr(c.writeLocked(c.pc, b[:k], c.peer))
+		b = b[k:]
+	}
+}
+
+func (c *Conn) keepBatchErr(err error) {
+	if c.batchErr == nil {
+		c.batchErr = err
+	}
 }

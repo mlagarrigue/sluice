@@ -185,13 +185,17 @@ to a separate module before a v1.
   restrict the cipher suites), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
-- **`net/quic` throughput**: one UDP system call per packet, none batched.
-  A 64 KiB response over HTTP/3 reaches about 55 MB/s against quic-go's
-  client, against 127 MB/s over HTTP/2 (`docs/benchmarks.md`, "HTTP/2 and
-  HTTP/3, from a real client"). The QUIC windows are not the cause — scaled
-  from 1 to 16 times, on either side, they move nothing — and a profile of
-  the server puts a fifth of its CPU in `sendto`. Sizing the windows will not
-  buy that throughput back.
+- **`net/quic` throughput**: a 64 KiB response over HTTP/3 reaches about
+  59 MB/s against quic-go's client, against 97 MB/s over HTTP/2 measured in
+  the same session (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real
+  client"). On Linux, the datagrams one `Stream.Write` produces leave in one
+  system call (UDP segmentation offload), which took that response from 45
+  to 58 MB/s; on other systems, or on a kernel that refuses the option, each
+  datagram is still its own write. The QUIC windows are not the cause —
+  scaled from 1 to 16 times, on either side, they move nothing — so sizing
+  them will not buy the rest back. What remains is not apportioned: before
+  the change, a quarter of the server's CPU went to the scheduler parking and
+  waking goroutines.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`web/stream`**: a real consumer of its stages. Its transport,
