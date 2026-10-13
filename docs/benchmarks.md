@@ -205,6 +205,31 @@ against 56): in the same session, `BenchmarkH2FromNetHTTP/bulk` measured
 macOS keep one write per datagram, as does a kernel that refuses the option
 (the first refusal turns batching into a loop of writes for the connection).
 
+**Where the rest goes (measured 2026-10-13).** Two causes, neither of them
+the QUIC protocol.
+
+- *Dropped datagrams under load.* A `Listener` reads every connection's
+  datagrams off one socket and queues them per connection; when a queue is
+  full it drops the datagram rather than stall every other connection. The
+  queue held 8 datagrams. A 64 KiB response draws back a burst — the
+  client's acknowledgements and its next request — and on a busy machine the
+  connection's read loop drained it too slowly: 55 datagrams dropped in
+  1,200 requests, each loss stalling its request for the client's loss timer
+  (about 27 ms), nearly half the time between sending and receiving. The
+  queue now holds 64 (32 already dropped nothing). Paired A/B, eight rounds,
+  `-benchtime 2s`: neutral on a quiet machine (83 against 84 MB/s, 5 rounds
+  of 8) and on two cores (4 of 8); with fifteen CPU-bound processes running
+  beside it, 23.8 to 25.7 MB/s, 7 rounds of 8. The change buys steadiness
+  under load, not throughput at rest.
+- *The Go scheduler.* With every core available (`-cpu 15`), `bulk` reaches
+  81 MB/s against 143 over HTTP/2; on two (`-cpu 2`), 167 against 157:
+  HTTP/3 catches up with HTTP/2, and both run faster. A request crosses
+  several goroutines (the stream writer, the connection's read loop, its
+  timer loop, and quic-go's on the client side), and each hand-off wakes a
+  goroutine, often on another core. The mutex profile names who makes the
+  others wait on the connection's lock: `Stream.Write` for 54% of the
+  waiting, the read loop for 12%, the timer loop for 9%.
+
 **Verdict.** The cost per batch is explained, divided by two, and what remains
 is owned: `docs/guide/experimental.md` says it in one sentence for whoever
 sizes their batches, and `docs/guide/limits.md` no longer carries an exit

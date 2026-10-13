@@ -783,6 +783,15 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	go l.runHandshake(c, datagram, from)
 }
 
+// connQueueLen is how many datagrams the listener queues for one connection
+// before it drops them (see dispatch). A 64 KiB response draws back a burst:
+// the client's ACKs and its next request arrive while the connection's read
+// loop is still busy. At 8, HTTP/3 bulk lost 55 datagrams in 1,200 requests,
+// and each loss stalled its request for a client PTO (~27 ms, 45% of the
+// send-to-receive time); at 32 none were lost. 64 doubles that margin for
+// about 3.5 KB of channel per connection.
+const connQueueLen = 64
+
 // prepareConn is what newServerConn runs on a listener-managed connection
 // before its transport parameters are serialised: the stateless reset token
 // for its own identifier, the registrar and feed that make it the
@@ -795,7 +804,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 	t := l.resetTokenFor(c.scid)
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
-	c.incoming = make(chan rawDatagram, 8)
+	c.incoming = make(chan rawDatagram, connQueueLen)
 	if l.preferred == nil {
 		return nil
 	}

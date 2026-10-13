@@ -186,16 +186,16 @@ to a separate module before a v1.
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 reaches about
-  59 MB/s against quic-go's client, against 97 MB/s over HTTP/2 measured in
+  81 MB/s against quic-go's client, against 143 MB/s over HTTP/2 measured in
   the same session (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real
   client"). On Linux, the datagrams one `Stream.Write` produces leave in one
-  system call (UDP segmentation offload), which took that response from 45
-  to 58 MB/s; on other systems, or on a kernel that refuses the option, each
-  datagram is still its own write. The QUIC windows are not the cause —
-  scaled from 1 to 16 times, on either side, they move nothing — so sizing
-  them will not buy the rest back. What remains is not apportioned: before
-  the change, a quarter of the server's CPU went to the scheduler parking and
-  waking goroutines.
+  system call (UDP segmentation offload); on other systems, or on a kernel
+  that refuses the option, each datagram is still its own write. The QUIC
+  windows are not the cause — scaled from 1 to 16 times, on either side, they
+  move nothing — so sizing them will not buy the rest back. The rest is the
+  Go scheduler: on two cores (`GOMAXPROCS=2`), the same response reaches
+  167 MB/s over HTTP/3 against 157 over HTTP/2, because a request crosses
+  several goroutines and each hand-off wakes one, often on another core.
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`web/stream`**: a real consumer of its stages. Its transport,
