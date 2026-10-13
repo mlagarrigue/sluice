@@ -60,12 +60,25 @@ type stmtEntry struct {
 	key        stmtKey
 	name       string
 	prev, next int
+
+	// lastRows is how many rows the statement's last execution produced, when
+	// that execution was read to its CommandComplete; -1 when it is unknown —
+	// never run to its end, stopped early, failed. It is what lets a query
+	// that fits in one batch ask for every row and pay one round trip: see
+	// [FetchAuto].
+	lastRows int
 }
+
+// defaultStatementCacheBound is the cache a connection starts with — the
+// bound pgx uses. See [Conn.PrepareStatements] for why there is one at all.
+const defaultStatementCacheBound = 512
 
 func newStmtCache(bound int) *stmtCache {
 	return &stmtCache{
-		max:   bound,
-		byKey: make(map[stmtKey]int, bound),
+		max: bound,
+		// Not sized to the bound: every connection starts with a cache now,
+		// and most never prepare anywhere near 512 statements.
+		byKey: make(map[stmtKey]int),
 		head:  -1,
 		tail:  -1,
 	}
@@ -84,16 +97,16 @@ func packOIDs(oids []uint32) string {
 	return string(b)
 }
 
-// lookup returns the name a statement is already prepared under, if any.
-func (c *stmtCache) lookup(key stmtKey) (string, bool) {
+// lookup returns the entry a statement is already prepared under, if any.
+func (c *stmtCache) lookup(key stmtKey) (int, bool) {
 	i, ok := c.byKey[key]
 	if !ok {
 		c.misses++
-		return "", false
+		return -1, false
 	}
 	c.hits++
 	c.moveToFront(i)
-	return c.entries[i].name, true
+	return i, true
 }
 
 // evictee names the statement that must be closed on the server to make room,
@@ -107,8 +120,9 @@ func (c *stmtCache) evictee() (stmtKey, string, bool) {
 	return e.key, e.name, true
 }
 
-// add records a statement now prepared on the server under a fresh name.
-func (c *stmtCache) add(key stmtKey) string {
+// add records a statement now prepared on the server under a fresh name, and
+// returns its entry.
+func (c *stmtCache) add(key stmtKey) int {
 	name := "sluice_" + strconv.FormatUint(c.nextID, 10)
 	c.nextID++
 
@@ -116,14 +130,14 @@ func (c *stmtCache) add(key stmtKey) string {
 	if n := len(c.free); n > 0 {
 		i = c.free[n-1]
 		c.free = c.free[:n-1]
-		c.entries[i] = stmtEntry{key: key, name: name, prev: -1, next: -1}
+		c.entries[i] = stmtEntry{key: key, name: name, prev: -1, next: -1, lastRows: -1}
 	} else {
-		c.entries = append(c.entries, stmtEntry{key: key, name: name, prev: -1, next: -1})
+		c.entries = append(c.entries, stmtEntry{key: key, name: name, prev: -1, next: -1, lastRows: -1})
 		i = len(c.entries) - 1
 	}
 	c.byKey[key] = i
 	c.pushFront(i)
-	return name
+	return i
 }
 
 // remove forgets a statement. Called after the server has been told to close
@@ -173,26 +187,35 @@ func (c *stmtCache) moveToFront(i int) {
 	c.pushFront(i)
 }
 
-// PrepareStatements turns the statement cache on for this connection. bound
-// is the largest number of statements kept prepared on the server at once;
-// beyond it, the least recently used one is closed in the same write that
-// prepares the new one, so an eviction costs no round trip of its own.
+// PrepareStatements sets the bound of this connection's statement cache: the
+// largest number of statements kept prepared on the server at once. Beyond
+// it, the least recently used one is closed in the same write that prepares
+// the new one, so an eviction costs no round trip of its own.
 //
-//	conn.PrepareStatements(64)
+//	conn.PrepareStatements(64) // a tighter bound than the default
+//	conn.PrepareStatements(0)  // no cache: every query re-parsed
 //
-// # Why this is a number and not a boolean
+// # The default, and why there is one
 //
-// Every driver has a statement cache because parsing the same SQL for every
-// batch measures the parser rather than the transport. But a prepared
-// statement is server-side state, and an unbounded cache is a backend growing
-// a plan per distinct query text until something notices — which, for
-// generated SQL, is never. So the bound is required and there is no default
-// that suits every workload, in the same spirit as [QueryConfig].
+// A connection starts with the cache on, bounded at 512 statements — the
+// bound pgx uses. Every driver has a statement cache because parsing the same
+// SQL for every batch measures the parser rather than the transport. This one
+// also carries what makes a point read cost one round trip rather than two:
+// the cache remembers how many rows each statement's last execution
+// produced, and a statement known to fit in one batch is asked for whole (see
+// [FetchAuto]). Without the cache that knowledge has nowhere to live, and
+// every read pays the second trip.
+//
+// The bound is a bound and not a boolean because a prepared statement is
+// server-side state, and an unbounded cache is a backend growing a plan per
+// distinct query text until something notices — which, for generated SQL, is
+// never.
 //
 // Zero or less disables the cache: every query uses the unnamed statement, the
-// server re-parses it, and nothing is held between queries. That is the right
-// setting for a connection running mostly-distinct SQL, and it is what this
-// package did before the cache existed.
+// server re-parses it, nothing is held between queries, and every read is
+// fetched in batches. That is the right setting for a connection running
+// mostly-distinct SQL, and for one behind a pooler that does not keep named
+// statements across transactions.
 //
 // # Where it loses, which is not a footnote
 //
@@ -211,7 +234,7 @@ func (c *stmtCache) moveToFront(i int) {
 //
 // It is a method rather than a [StartupConfig] field because it applies to a
 // [Conn] however it was built — including one from [NewConn], which never saw
-// a startup exchange. Calling it twice with a smaller bound evicts down to it;
+// a startup exchange. Calling it with a smaller bound evicts down to it;
 // calling it with zero or less closes everything and turns the cache off.
 //
 // The statements are closed on the server as they are evicted, so what this
@@ -322,13 +345,17 @@ func (c *Conn) closeAllStatements() error {
 // is over — drops an entry that was never confirmed. The three belong
 // together: a caller that consults the cache without settling reintroduces
 // the poisoned entry this protocol exists to prevent.
-func (c *Conn) prepareFor(sql string, oids []uint32) (name string, needsParse bool, err error) {
+//
+// entry is the statement's place in the cache, -1 when the cache is off; the
+// query reads and records the statement's last row count through it. It stays
+// valid for the length of the query: nothing else evicts while it runs.
+func (c *Conn) prepareFor(sql string, oids []uint32) (name string, needsParse bool, entry int) {
 	if c.stmts == nil {
-		return "", true, nil // unnamed, parsed per query, as before
+		return "", true, -1 // unnamed, parsed per query
 	}
 	key := stmtKey{sql: sql, oids: packOIDs(oids)}
-	if name, ok := c.stmts.lookup(key); ok {
-		return name, false, nil
+	if i, ok := c.stmts.lookup(key); ok {
+		return c.stmts.entries[i].name, false, i
 	}
 	// Make room before adding. The Close is queued in front of the Parse and
 	// leaves in the same write, so a miss on a full cache costs no extra round
@@ -345,7 +372,8 @@ func (c *Conn) prepareFor(sql string, oids []uint32) (name string, needsParse bo
 	}
 	c.closesSent, c.closesDone = len(c.stmts.closing), 0
 	c.pendingParse, c.pendingKey = true, key
-	return c.stmts.add(key), true, nil
+	i := c.stmts.add(key)
+	return c.stmts.entries[i].name, true, i
 }
 
 // closeCompleted counts a CloseComplete for one of the Closes prepareFor

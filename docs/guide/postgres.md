@@ -101,11 +101,18 @@ program's memory is bounded by the size of the batch, not of the result:
 that is what makes a ten-million-row result readable. The price: one round
 trip per batch.
 
-> **In plain terms: `AllRows`.** For a small read you will consume whole (a
-> row by its identifier), `QueryConfig{AllRows: true}` asks for everything
-> at once and saves a round trip — at parity with pgx. What it gives up: if
-> you stop reading midway, the server has already been told to send it all.
-> An option for small reads, not the default.
+> **In plain terms: one round trip for a small read.** A read that fits in
+> one batch (a row by its identifier) costs a single round trip from its
+> second execution on, with nothing to set. The connection keeps the
+> queries it has seen (up to 512, prepared on the server) and remembers how
+> many rows the last execution returned: if they fit in one batch, the
+> query asks for everything at once. The first execution, or a query that
+> returned more than a batch, is read batch by batch. What this gives up,
+> once: a query that is usually small but, for this particular parameter,
+> returns millions of rows, and that you stop reading midway, is read to
+> the end before the connection can be used again. `QueryConfig.Fetch`
+> forces the choice: `FetchAll` asks for everything from the first
+> execution, `FetchBatches` always reads batch by batch.
 
 > **A round-trip trap.** If you expect one row and ask for `BatchRows: 1`,
 > the server sends the row then waits, because it cannot know there is no
@@ -297,7 +304,7 @@ applied). The detail: [Limits](limits.md).
 ## Measured
 
 Against pgx, the reference driver, on one connection each: parity on a
-point read with `AllRows` (139 µs against 140), 697 µs against 742 for a
-thousand keys in `= ANY`, a wide scan 1.5 times slower at decode but 60
+point read, with no option since 2026-10-13 (196 µs against 197 on another
+server), 697 µs against 742 for a thousand keys in `= ANY` with `FetchAll`, a wide scan 1.5 times slower at decode but 60
 allocations against 280,008, and a faster COPY. The rows and the method:
 [Measurements](../benchmarks.md).

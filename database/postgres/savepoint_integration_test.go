@@ -143,7 +143,7 @@ func TestIntegrationSavepointCost(t *testing.T) {
 		for range rounds {
 			var seen int
 			src := reader.Query(ctx, `SELECT id, n FROM `+table, nil,
-				postgres.QueryConfig{BatchRows: 1024, AllRows: true})
+				postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 				seen += b.Len()
 				return true

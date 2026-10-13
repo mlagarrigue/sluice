@@ -87,7 +87,7 @@ func superuser(t *testing.T, conn *postgres.Conn) bool {
 	t.Helper()
 	var is bool
 	src := conn.Query(t.Context(), `SELECT current_setting('is_superuser')`, nil,
-		postgres.QueryConfig{BatchRows: 2, AllRows: true})
+		postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchAll})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)

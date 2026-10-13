@@ -240,7 +240,7 @@ func (s *Service) serveGroup(ctx context.Context, tx *postgres.Tx, tenant string
 		postgres.AppendInt8Array(nil, orderIDs),
 		postgres.AppendInt4Array(nil, indexes),
 	}, postgres.QueryConfig{
-		BatchRows: 256, AllRows: true,
+		BatchRows: 256, Fetch: postgres.FetchAll,
 		ParamOIDs: []uint32{postgres.OIDInt8Array, postgres.OIDInt4Array},
 	})
 	var decodeErr error

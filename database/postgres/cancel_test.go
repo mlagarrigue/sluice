@@ -119,12 +119,14 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 
 	// And the client must have resynchronised rather than left the portal
 	// hanging: a Sync after the Executes sent ahead, and before the next query.
+	// The next query binds the cached statement, and is fetched in batches:
+	// a cancelled execution says nothing about the statement's size.
 	sent := srv.clientMessages(t)
 	wantSent := []byte{
 		pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
 		pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush,
 		pgwire.FrontendSync,
-		pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
+		pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
 		pgwire.FrontendSync,
 	}
 	if !slices.Equal(sent, wantSent) {

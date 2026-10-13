@@ -19,7 +19,9 @@
 // Decode* codecs in codec.go, array.go and nullable.go encode a Go value to
 // the server's own representation and back, and the array codecs are what
 // make `WHERE id = ANY($1)` with a thousand keys one round trip rather than a
-// thousand. [Conn.PrepareStatements] turns on a bounded statement cache.
+// thousand. Each connection keeps a bounded statement cache, which
+// [Conn.PrepareStatements] resizes or turns off; through it, a statement
+// known to fit in one batch is read in one round trip ([FetchAuto]).
 //
 // # Authentication
 //
