@@ -65,17 +65,67 @@ func sluiceDBHandler(b testing.TB) http.Handler {
 // sluiceDBHandlerCounted also returns how many queries the pipeline has issued,
 // which is the claim itself: sixty-four requests must reach the database as one.
 func sluiceDBHandlerCounted(b testing.TB) (http.Handler, *atomic.Int64) {
-	var queries atomic.Int64
 	conn := sluiceConn(b)
 	if err := conn.PrepareStatements(8); err != nil {
 		b.Fatal(err)
 	}
+	buf := make([]byte, 0, 64*12+64)
+	return dbGatewayHandler(b, func(ids []int64, found map[int64]int64) error {
+		// The whole thesis, in one statement: every id in the batch leaves
+		// as one array parameter and comes back in one result.
+		buf = postgres.AppendInt8Array(buf[:0], ids)
+		src := conn.Query(context.Background(), dbQuery, [][]byte{buf},
+			postgres.QueryConfig{
+				BatchRows: 128, Fetch: postgres.FetchAll,
+				ParamOIDs: []uint32{postgres.OIDInt8Array},
+			})
+		src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
+			for _, r := range rows.Items {
+				idBytes, _ := r.Value(0)
+				totalBytes, _ := r.Value(1)
+				id, _ := postgres.DecodeInt8(idBytes)
+				total, _ := postgres.DecodeInt8(totalBytes)
+				found[id] = total
+			}
+			return true
+		})
+		return src.Err()
+	})
+}
 
+// pgxGatewayHandler is axis B of the internal study, in process: the same
+// gateway, the same `= ANY($1)` on one connection, with pgx between the
+// gateway and the socket instead of database/postgres. Against
+// sluiceDBHandlerCounted it isolates the driver — the comparison above, pgx
+// one query per request, mixes the driver with the grouping.
+func pgxGatewayHandler(b testing.TB) (http.Handler, *atomic.Int64) {
+	conn := pgxConn(b)
+	return dbGatewayHandler(b, func(ids []int64, found map[int64]int64) error {
+		rows, err := conn.Query(context.Background(), dbQuery, ids)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, total int64
+			if err := rows.Scan(&id, &total); err != nil {
+				return err
+			}
+			found[id] = total
+		}
+		return rows.Err()
+	})
+}
+
+// dbGatewayHandler is the gateway and the handler both drivers share; fetch
+// fills found with the rows of one batch, in one round trip. The counter is
+// the claim itself: sixty-four requests must reach the database as one.
+func dbGatewayHandler(b testing.TB, fetch func(ids []int64, found map[int64]int64) error) (http.Handler, *atomic.Int64) {
+	var queries atomic.Int64
 	gw := gateway.New(
 		gateway.Config{Size: 64, Within: 2 * time.Millisecond},
 		func(calls sluice.Stream[*gateway.Call[int64, order]]) {
 			ids := make([]int64, 0, 64)
-			buf := make([]byte, 0, 64*12+64)
 			found := make(map[int64]int64, 64)
 
 			calls(func(batch sluice.Batch[*gateway.Call[int64, order]]) bool {
@@ -84,27 +134,8 @@ func sluiceDBHandlerCounted(b testing.TB) (http.Handler, *atomic.Int64) {
 				for _, c := range batch.Items {
 					ids = append(ids, c.In)
 				}
-
-				// The whole thesis, in one statement: every id in the batch
-				// leaves as one array parameter and comes back in one result.
-				buf = postgres.AppendInt8Array(buf[:0], ids)
 				queries.Add(1)
-				src := conn.Query(context.Background(), dbQuery, [][]byte{buf},
-					postgres.QueryConfig{
-						BatchRows: 128, Fetch: postgres.FetchAll,
-						ParamOIDs: []uint32{postgres.OIDInt8Array},
-					})
-				src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
-					for _, r := range rows.Items {
-						idBytes, _ := r.Value(0)
-						totalBytes, _ := r.Value(1)
-						id, _ := postgres.DecodeInt8(idBytes)
-						total, _ := postgres.DecodeInt8(totalBytes)
-						found[id] = total
-					}
-					return true
-				})
-				if err := src.Err(); err != nil {
+				if err := fetch(ids, found); err != nil {
 					for _, c := range batch.Items {
 						c.Fail(err)
 					}
@@ -250,6 +281,14 @@ func BenchmarkWebDBPgxOneConn(b *testing.B) {
 	serveConcurrently(b, pgxDBHandler(b, 1), concurrency)
 }
 
+// Axis B of the internal study: pgx under the same gateway, so that the only
+// difference from BenchmarkWebDBSluiceOneConn is the driver. Paired against
+// it with internal/bench/scripts/versus.sh, never read as a single run.
+func BenchmarkWebDBPgxGateway(b *testing.B) {
+	h, _ := pgxGatewayHandler(b)
+	serveConcurrently(b, h, concurrency)
+}
+
 func BenchmarkWebDBLibPQOneConn(b *testing.B) {
 	serveConcurrently(b, sqlDBHandler(b, "postgres", 1), concurrency)
 }
@@ -272,15 +311,17 @@ func TestWebDBContendersAgree(t *testing.T) {
 		t.Skip("SLUICE_PG is not set")
 	}
 
+	pgxGW, _ := pgxGatewayHandler(t)
 	handlers := map[string]http.Handler{
-		"sluice": sluiceDBHandler(t),
-		"pgx":    pgxDBHandler(t, 4),
-		"lib/pq": sqlDBHandler(t, "postgres", 4),
+		"sluice":      sluiceDBHandler(t),
+		"pgx":         pgxDBHandler(t, 4),
+		"pgx+gateway": pgxGW,
+		"lib/pq":      sqlDBHandler(t, "postgres", 4),
 	}
 
 	for _, id := range []int64{1, 42, 1000} {
 		var want string
-		for _, name := range []string{"sluice", "pgx", "lib/pq"} {
+		for _, name := range []string{"sluice", "pgx", "pgx+gateway", "lib/pq"} {
 			w := httptest.NewRecorder()
 			r := *request(9)
 			r.Method = http.MethodGet

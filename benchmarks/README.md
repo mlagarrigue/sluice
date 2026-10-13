@@ -230,6 +230,27 @@ Read it beside the rows below rather than instead of them. The same mechanism
 that wins here costs ×600 when there is no round trip to amortise, and this
 table is the other half of that sentence.
 
+**The driver alone, under the same gateway** (axis B of the internal study,
+2026-10-14). Every row above mixes two things, the grouping and the driver.
+`BenchmarkWebDBPgxGateway` separates them: pgx v5.10.0 on one connection
+under the very gateway `BenchmarkWebDBSluiceOneConn` uses, the same
+`= ANY($1)`, the same handler, so the only difference left is the code
+between the gateway and the socket. Paired over fifteen rounds with
+`versus.sh` (the first round discarded, as always):
+
+    versus.sh BenchmarkWebDBSluiceOneConn BenchmarkWebDBPgxGateway 15
+      → pgx SLOWER +6.4% (median of the per-round ratios), wins=2/14
+
+sluice/postgres is faster in twelve rounds of fourteen (sign test, p ≈ 0.013).
+The per-round ratio pgx/sluice runs from 0.99 to 1.15, with one wild round at
+1.63 that the sign test counts as a single win; the interquartile range is
+1.02 to 1.11. A pre-signal, not the study's figure: in process, on a laptop
+sharing one machine with its PostgreSQL container, with the connector's
+`PrepareStatements(8)` and `FetchAll` against pgx's default statement cache.
+What it says is modest and useful — at equal grouping, the driver is not
+where the ×13 above comes from, and the connector costs nothing the study
+would have to explain away.
+
 ### Where batching loses, which is the row that matters
 
 Without a database there is nothing for the gateway to amortise. Its whole
