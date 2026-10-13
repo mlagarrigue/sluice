@@ -368,8 +368,8 @@ Sign-test verdicts, 14 rounds:
   sluice client spends 31% of the read idle, waiting on the socket, and
   decoding is a quarter of its busy time; pgx is busy throughout, mostly
   allocating (`mallocgc` 43%). Nor is it the number of reads: sluice makes
-  about 300 `read` calls per query, 8 KiB each, pgx about 540. What this
-  remainder is has not been named yet.
+  about 300 `read` calls per query, 8 KiB each, pgx about 540. The
+  remainder is named in the next paragraph: an idle client is slow to wake.
 - sluice's TTFB (711 µs against 255) is the batch size, not a delay: 1,024
   rows at pgx's pace take about 510 µs, plus its first byte. A smaller batch
   arrives sooner; that is what `BatchRows` sets.
@@ -399,10 +399,30 @@ compare with it; the ratios within a round do:
 - The first batch pays for it: TTFB p50 +5.6% (worse in 14 rounds of 15),
   about 70 µs, the write of the two `Execute` messages, which now goes out
   before the first batch is handed over.
-- After against `AllRows`: +6.1% in ns/op (worse in 13 of 15). The default
-  still writes once per batch where `AllRows` writes once per query; what
-  that write costs on the client has not been separated from what the
-  server spends resuming a portal.
+- After against `AllRows`: +6.1% in ns/op (worse in 13 of 15). The cause is
+  the write once per batch, where `AllRows` writes once per query. Counted
+  on the socket (a `net.Conn` that reads and writes through
+  `syscall.RawConn` and counts every call and every `EAGAIN`, the "not
+  ready, wait" answer of a non-blocking socket): the default makes 21
+  writes per query and spends 365 µs inside them, `AllRows` one write and
+  41 µs; a write costs about 16 µs on this machine (a Docker bridge under
+  WSL2). Everything else is equal: 157 parked reads per query on both
+  sides, 7.5 ms waiting for the server on both, so the server is no slower
+  to resume a suspended portal than to continue one. With a consumer that
+  works (300 µs of CPU per batch, next point), the gap is 1.7% (median of
+  six rounds), within the 3% the writes cost. Asking for batches two at a
+  time would halve the writes (about 160 µs, 1.5%) and lengthen an early
+  stop's drain to three batches; not done.
+- `AllRows` against pgx: sluice waits for the server, pgx does not. sluice
+  decodes faster than the server sends, empties the socket and parks its
+  read 157 times per query (7.5 ms waiting, 5.3 ms of system CPU); pgx,
+  busy allocating, parks 15 times (0.95 ms). Each park puts the core to
+  sleep and the next segment has to wake it. A consumer that works shows
+  it: 300 µs of CPU per batch, 6 ms per query, makes the read *faster*,
+  10.75 ms to 9.88 ms (median of three rounds), 16 parks per query, below
+  pgx's 10.6 ms the same session. The 0.4 ms are the cost of waking an
+  idle client on this machine, paid only by a consumer that does nothing
+  with its rows; the connector has nothing to fix there.
 - Two variants measured and rejected: one batch asked for ahead (−4.7%, 9
   rounds of 15, not significant: the server still waits for batch k+1 to
   be read before it hears of k+2), and two batches kept asked for but
@@ -411,6 +431,9 @@ compare with it; the ratios within a round do:
 - An early stop now drains up to two batches instead of none
   (`QueryConfig.BatchRows`). A `Demand` keeps one request per batch, after
   delivery, because the request depends on what the consumer says.
+
+`SLUICE_PG_COUNT=1` adds the socket counts to the output of the wide reads,
+`SLUICE_PG_SPIN=300us` the consumer's work per batch.
 
 ## Codec, in isolation
 
