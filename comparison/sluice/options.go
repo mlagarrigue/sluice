@@ -61,6 +61,13 @@ const (
 	transportHTTPStreamH1 = "httpstream-h1"
 	transportHTTPStreamH2 = "httpstream-h2"
 	transportHTTPStreamH3 = "httpstream-h3"
+
+	driverSluice = "sluice"
+	driverPgx    = "pgx"
+
+	// maxDBConns bounds -db-conns: PostgreSQL's own default ceiling is 100,
+	// and pgxpool counts in int32.
+	maxDBConns = 4096
 )
 
 func parseOptions(args []string) (options, error) {
@@ -73,8 +80,8 @@ func parseOptions(args []string) (options, error) {
 
 	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
 		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (not implemented until axis A)")
-	fs.StringVar(&o.driver, "driver", "sluice",
-		"axis B: sluice (R), pgx (not implemented until axis B)")
+	fs.StringVar(&o.driver, "driver", driverSluice,
+		"axis B: sluice (R, database/postgres), pgx (jackc/pgx v5; same gateway, same connections)")
 	fs.IntVar(&o.gatewaySize, "gateway-size", 64, "axis C: gateway Size, the largest batch of unit reads")
 	fs.DurationVar(&o.gatewayWithin, "gateway-within", 2*time.Millisecond, "axis C: gateway Within, how long the first key of a batch waits")
 	fs.IntVar(&o.maxRequestsPerBatch, "max-requests-per-batch", 0,
@@ -119,9 +126,7 @@ func (o options) validate() error {
 		return fmt.Errorf("-transport %q: unknown", o.transport)
 	}
 	switch o.driver {
-	case "sluice":
-	case "pgx":
-		return fmt.Errorf("-driver pgx: %w until axis B", errNotImplemented)
+	case driverSluice, driverPgx:
 	default:
 		return fmt.Errorf("-driver %q: unknown", o.driver)
 	}
@@ -153,6 +158,9 @@ func (o options) validate() error {
 	}
 	if o.dbConns <= 0 || o.listMax <= 0 {
 		return errors.New("-db-conns and -list-max must be positive")
+	}
+	if o.dbConns > maxDBConns {
+		return fmt.Errorf("-db-conns must be at most %d", maxDBConns)
 	}
 	if (o.cert == "") != (o.key == "") {
 		return errors.New("-cert and -key go together")

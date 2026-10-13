@@ -5,14 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mlagarrigue/sluice"
-	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/gateway"
 )
 
@@ -32,11 +29,13 @@ import (
 // Answers are Go values rather than bytes: the transport adapters encode them,
 // net/http through web.WriteJSON as R does and httpstream through
 // encoding/json, so the two produce the same document from the same value.
+//
+// The app does not know which driver answers either: the store (store.go) is
+// what -driver swaps, the gateway in front of it stays.
 type app struct {
 	static  staticDoc
+	st      store
 	gw      *gateway.Gateway[int64, orderRow]
-	gwConn  *postgres.Conn
-	pool    chan *postgres.Conn
 	listMax int
 }
 
@@ -92,51 +91,18 @@ const (
 	writeQuery    = `INSERT INTO comparison_writes (key, total) VALUES ($1, $2)`
 )
 
-func dial(cfg dbConfig) (*postgres.Conn, error) {
-	nc, err := net.DialTimeout("tcp", cfg.addr, 5*time.Second)
+func newApp(o options) (*app, error) {
+	st, err := newStore(o)
 	if err != nil {
 		return nil, err
 	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
-		User: cfg.user, Database: cfg.database, Password: cfg.password,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("postgres startup: %w", err)
-	}
-	return conn, nil
-}
-
-func newApp(o options) (*app, error) {
-	a := &app{
-		static:  newStaticDoc(),
-		pool:    make(chan *postgres.Conn, o.dbConns),
-		listMax: o.listMax,
-	}
-	for range o.dbConns {
-		c, err := dial(o.db)
-		if err != nil {
-			_ = a.Close()
-			return nil, err
-		}
-		a.pool <- c
-	}
-	c := <-a.pool
-	err := c.Exec(context.Background(), writeTable)
-	if err == nil {
-		err = c.Exec(context.Background(), writeNoVacuum)
-	}
-	a.pool <- c
-	if err != nil {
-		_ = a.Close()
+	if err := st.createWriteTable(context.Background()); err != nil {
+		_ = st.Close()
 		return nil, fmt.Errorf("write table: %w", err)
 	}
-
-	if a.gwConn, err = dial(o.db); err != nil {
-		_ = a.Close()
-		return nil, err
-	}
+	a := &app{static: newStaticDoc(), st: st, listMax: o.listMax}
 	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
-		unitPipeline(a.gwConn, o.gatewaySize))
+		unitPipeline(st, o.gatewaySize))
 	return a, nil
 }
 
@@ -145,11 +111,8 @@ func (a *app) Close() error {
 	if a.gw != nil {
 		errs = append(errs, a.gw.Close())
 	}
-	if a.gwConn != nil {
-		errs = append(errs, a.gwConn.Close())
-	}
-	for len(a.pool) > 0 {
-		errs = append(errs, (<-a.pool).Close())
+	if a.st != nil {
+		errs = append(errs, a.st.Close())
 	}
 	return errors.Join(errs...)
 }
@@ -163,13 +126,12 @@ func newStaticDoc() staticDoc {
 	return d
 }
 
-// unitPipeline is the gateway's pipeline: every key of a batch leaves as one
-// array parameter and comes back in one round trip. Mostly the example of
-// package gateway, with the label added.
-func unitPipeline(conn *postgres.Conn, size int) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
+// unitPipeline is the gateway's pipeline, the same whatever the driver: the
+// keys of a batch go to the store as one slice and come back as one map, and
+// every caller gets its row or a miss.
+func unitPipeline(st store, size int) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
 	return func(calls sluice.Stream[*gateway.Call[int64, orderRow]]) {
 		ids := make([]int64, 0, size)
-		buf := make([]byte, 0, 4+size*12)
 		found := make(map[int64]orderRow, size)
 		calls(func(batch sluice.Batch[*gateway.Call[int64, orderRow]]) bool {
 			ids = ids[:0]
@@ -177,20 +139,7 @@ func unitPipeline(conn *postgres.Conn, size int) func(sluice.Stream[*gateway.Cal
 			for _, c := range batch.Items {
 				ids = append(ids, c.In)
 			}
-			buf = postgres.AppendInt8Array(buf[:0], ids)
-			src := conn.Query(context.Background(), unitQuery, [][]byte{buf},
-				postgres.QueryConfig{BatchRows: size + 1, ParamOIDs: []uint32{postgres.OIDInt8Array}})
-			src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
-				for _, r := range rows.Items {
-					row, err := decodeOrder(r)
-					if err != nil {
-						continue
-					}
-					found[row.ID] = row
-				}
-				return true
-			})
-			if err := src.Err(); err != nil {
+			if err := st.unit(context.Background(), ids, found); err != nil {
 				for _, c := range batch.Items {
 					c.Fail(err)
 				}
@@ -209,22 +158,10 @@ func unitPipeline(conn *postgres.Conn, size int) func(sluice.Stream[*gateway.Cal
 	}
 }
 
-var errNotFound = errors.New("no such key")
-
-func decodeOrder(r postgres.Row) (orderRow, error) {
-	idB, _ := r.Value(0)
-	totalB, _ := r.Value(1)
-	labelB, _ := r.Value(2)
-	id, err := postgres.DecodeInt8(idB)
-	if err != nil {
-		return orderRow{}, err
-	}
-	total, err := postgres.DecodeInt8(totalB)
-	if err != nil {
-		return orderRow{}, err
-	}
-	return orderRow{ID: id, Total: total, Label: postgres.DecodeText(labelB)}, nil
-}
+var (
+	errNotFound = errors.New("no such key")
+	errDecode   = errors.New("decode")
+)
 
 // route answers one request. target is the raw origin-form target, query
 // attached, as both transports hand it over.
@@ -275,27 +212,14 @@ func (a *app) list(ctx context.Context, rawQuery string) answer {
 	if err != nil || limit <= 0 || limit > a.listMax {
 		return answer{400, errDoc{Error: "bad limit", Key: &from}}
 	}
-	conn := <-a.pool
-	defer func() { a.pool <- conn }()
-
-	params := [][]byte{postgres.AppendInt8(nil, from), postgres.AppendInt8(nil, int64(limit))}
-	doc := listDoc{From: from, Limit: limit, Items: make([]orderRow, 0, limit)}
-	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{
-		BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
-	})
-	for b := range src.Stream() {
-		for _, r := range b.Items {
-			row, err := decodeOrder(r)
-			if err != nil {
-				return answer{500, errDoc{Error: "decode", Key: &from}}
-			}
-			doc.Items = append(doc.Items, row)
-		}
-	}
-	if err := src.Err(); err != nil {
+	items, err := a.st.list(ctx, from, limit)
+	switch {
+	case errors.Is(err, errDecode):
+		return answer{500, errDoc{Error: "decode", Key: &from}}
+	case err != nil:
 		return answer{503, errDoc{Error: "unavailable", Key: &from}}
 	}
-	return answer{200, doc}
+	return answer{200, listDoc{From: from, Limit: limit, Items: items}}
 }
 
 func (a *app) write(ctx context.Context, body []byte) answer {
@@ -303,16 +227,7 @@ func (a *app) write(ctx context.Context, body []byte) answer {
 	if err := json.Unmarshal(body, &req); err != nil || req.Key == 0 {
 		return answer{400, errDoc{Error: "bad body"}}
 	}
-	conn := <-a.pool
-	defer func() { a.pool <- conn }()
-
-	params := [][]byte{postgres.AppendInt8(nil, req.Key), postgres.AppendInt8(nil, req.Total)}
-	src := conn.Query(ctx, writeQuery, params, postgres.QueryConfig{
-		BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
-	})
-	for range src.Stream() {
-	}
-	if err := src.Err(); err != nil {
+	if err := a.st.write(ctx, req.Key, req.Total); err != nil {
 		return answer{503, errDoc{Error: "unavailable", Key: &req.Key}}
 	}
 	return answer{200, writeDoc{Key: req.Key}}

@@ -48,6 +48,7 @@ var variants = []struct {
 	{"nethttp-h2", []string{"-transport", "nethttp-h2"}},
 	{"httpstream-h1", []string{"-transport", "httpstream-h1"}},
 	{"httpstream-h2", []string{"-transport", "httpstream-h2"}},
+	{"pgx", []string{"-driver", "pgx"}},
 	{"gateway-16-500us", []string{"-gateway-size", "16", "-gateway-within", "500us"}},
 	{"gateway-256-8ms", []string{"-gateway-size", "256", "-gateway-within", "8ms"}},
 	{"httpstream-h1-batch8-conn16", []string{"-transport", "httpstream-h1", "-max-requests-per-batch", "8", "-max-requests-per-conn", "16"}},
@@ -339,7 +340,7 @@ func countWrites(t *testing.T) int64 {
 func TestUnimplementedVariantsRefuse(t *testing.T) {
 	refused := [][]string{
 		{"-transport", "httpstream-h3"},
-		{"-driver", "pgx"},
+		{"-driver", "libpq"},
 		{"-response", "stream"},
 		{"-compression", "gzip1"},
 		{"-compression", "gzip6"},
