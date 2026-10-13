@@ -91,7 +91,7 @@ func sluiceDBHandlerCounted(b testing.TB) (http.Handler, *atomic.Int64) {
 				queries.Add(1)
 				src := conn.Query(context.Background(), dbQuery, [][]byte{buf},
 					postgres.QueryConfig{
-						BatchRows: 128, AllRows: true,
+						BatchRows: 128, Fetch: postgres.FetchAll,
 						ParamOIDs: []uint32{postgres.OIDInt8Array},
 					})
 				src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {

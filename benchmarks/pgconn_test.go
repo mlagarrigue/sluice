@@ -121,11 +121,14 @@ func sqlDB(b testing.TB, driver string) *sql.DB {
 
 const pointSQL = `SELECT id, total FROM bench_orders WHERE id = $1`
 
+// No option set: the default statement cache remembers that the read fits in
+// one batch, and FetchAuto asks for it whole from the second execution on.
 func BenchmarkPGPointSluice(b *testing.B) {
 	conn := sluiceConn(b)
 	key := make([]byte, 0, 8)
 	var acc int64
 	b.ReportAllocs()
+	report := countReport(b)
 	for b.Loop() {
 		key = postgres.AppendInt8(key[:0], 42)
 		src := conn.Query(b.Context(), pointSQL, [][]byte{key},
@@ -142,6 +145,7 @@ func BenchmarkPGPointSluice(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+	report()
 	sink = int(acc)
 }
 
@@ -176,9 +180,10 @@ func BenchmarkPGPointSluiceCached(b *testing.B) {
 	sink = int(acc)
 }
 
-// The same read with AllRows: one round trip instead of two, which is the
-// entire gap against pgx. What it gives up is a cheap early stop, and a point
-// read is never abandoned half way.
+// The same read with FetchAll, named for the AllRows field it replaced: one
+// round trip from the first execution on, which was the entire gap against pgx
+// before FetchAuto. What it gives up is a cheap early stop, and a point read is
+// never abandoned half way.
 func BenchmarkPGPointSluiceAllRows(b *testing.B) {
 	conn := sluiceConn(b)
 	if err := conn.PrepareStatements(16); err != nil {
@@ -190,7 +195,7 @@ func BenchmarkPGPointSluiceAllRows(b *testing.B) {
 	for b.Loop() {
 		key = postgres.AppendInt8(key[:0], 42)
 		src := conn.Query(b.Context(), pointSQL, [][]byte{key},
-			postgres.QueryConfig{BatchRows: 2, AllRows: true, ParamOIDs: []uint32{postgres.OIDInt8}})
+			postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchAll, ParamOIDs: []uint32{postgres.OIDInt8}})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
@@ -218,7 +223,7 @@ func BenchmarkPGAnySluiceAllRows(b *testing.B) {
 	for b.Loop() {
 		buf = postgres.AppendInt8Array(buf[:0], keys)
 		src := conn.Query(b.Context(), anySQL, [][]byte{buf},
-			postgres.QueryConfig{BatchRows: 1024, AllRows: true, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+			postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll, ParamOIDs: []uint32{postgres.OIDInt8Array}})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
 			return true
@@ -235,6 +240,7 @@ func BenchmarkPGPointPgx(b *testing.B) {
 	ctx := b.Context()
 	var acc int64
 	b.ReportAllocs()
+	report := countReport(b)
 	for b.Loop() {
 		var id, total int64
 		if err := conn.QueryRow(ctx, pointSQL, 42).Scan(&id, &total); err != nil {
@@ -242,6 +248,7 @@ func BenchmarkPGPointPgx(b *testing.B) {
 		}
 		acc += total
 	}
+	report()
 	sink = int(acc)
 }
 
@@ -386,13 +393,13 @@ func BenchmarkPGWideSluice(b *testing.B) {
 	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024})
 }
 
-// The same read with AllRows: one Execute for the whole result, so the server
+// The same read with FetchAll: one Execute for the whole result, so the server
 // streams every row while the client decodes the batches as they come. The
 // batches the consumer sees are the same size. Against BenchmarkPGWideSluice
 // this isolates the cost of asking for each batch after the previous one has
 // been delivered.
 func BenchmarkPGWideSluiceAllRows(b *testing.B) {
-	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024, AllRows: true})
+	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 }
 
 func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
@@ -443,7 +450,7 @@ func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 }
 
 // pgx hands over a row at a time, so its first batch is its first row; it
-// asks for the whole result in one Execute, as AllRows does.
+// asks for the whole result in one Execute, as FetchAll does.
 func BenchmarkPGWidePgx(b *testing.B) {
 	conn := pgxConn(b)
 	ctx := b.Context()
