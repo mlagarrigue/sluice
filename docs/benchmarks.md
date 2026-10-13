@@ -330,6 +330,25 @@ ignores that measures pooling.
 | `BenchmarkPGWidePgx` | 9091637 ns | ±2% | 6740547 B | 280008 |
 | `BenchmarkPGWideSluice` | 13609370 ns | ±2% | 601564 B | 60 |
 
+**Point read with no option (measured 2026-10-13).** A connection now keeps
+its prepared statements by default (up to 512) and asks for the whole result
+of a statement whose last execution fit in one batch (`FetchAuto`).
+`BenchmarkPGPointSluice`, which sets nothing, therefore pays a single round
+trip from its second execution on: one write and one read per query
+(`writes/op` = 1, `reads/op` = 1 with `SLUICE_PG_COUNT=1`), as pgx does.
+
+- Against pgx, in the same binary, 15 alternating rounds (plus one
+  discarded), 2 s each, core 6, `GOMAXPROCS=1`: medians 196 µs against
+  197 µs, sluice slower in 7 rounds of 15. No detectable difference (sign
+  test, p = 1).
+- Against the former default (two round trips), paired over 8 rounds:
+  184 µs against 367 µs (−50%), faster in 8 rounds of 8.
+
+Server: the `postgres` container (PostgreSQL 17.11, Docker bridge), not the
+loopback of the table above; absolute values do not compare with its rows,
+ratios do. The table's `BenchmarkPGPointSluice` row measures the former
+default.
+
 **First and last batch of a wide read (measured 2026-10-13).** The table
 above gives a mean per complete read. The wide read (`bench_wide`, 20,000
 rows of eleven columns, about 2.5 MB on the wire) also records, query by

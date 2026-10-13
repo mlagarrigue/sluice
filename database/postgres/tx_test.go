@@ -49,7 +49,7 @@ func cmdCycle(tag string) []byte {
 
 // setConfigCycle is what the server answers to `SELECT set_config($1,$2,true)`:
 // an extended-query sequence returning one row nobody reads. One chunk, not
-// two: execParams runs under AllRows, so the Sync travels with the query and
+// two: execParams runs under FetchAll, so the Sync travels with the query and
 // a real backend delivers everything up to and including ReadyForQuery as one
 // answer.
 func setConfigCycle() [][]byte {
@@ -363,7 +363,7 @@ func TestSetLocalTimeoutRoundsUpAndRefusesZero(t *testing.T) {
 }
 
 // SetLocal is paid once per principal on the RLS path, so its wire shape is
-// load-bearing: AllRows sends Parse/Bind/Describe/Execute/Sync in one flush
+// load-bearing: FetchAll sends Parse/Bind/Describe/Execute/Sync in one flush
 // and reads one answer. The shape a row limit produces — Execute(1), Flush,
 // a second Execute to learn the portal is done, then a separate Sync — is
 // three round trips for a row nobody reads.
@@ -509,7 +509,7 @@ func TestBeginTimeoutIsAppliedAndFailsClosed(t *testing.T) {
 }
 
 func TestBeginRollsBackWhenTheTimeoutCannotBeSet(t *testing.T) {
-	// One chunk through ReadyForQuery: the Sync left with the query (AllRows),
+	// One chunk through ReadyForQuery: the Sync left with the query (FetchAll),
 	// so the error and the recovery arrive as one answer.
 	var refused []byte
 	refused = append(refused, beSimple(pgwire.BackendParseComplete)...)

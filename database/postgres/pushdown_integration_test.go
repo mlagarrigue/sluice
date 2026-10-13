@@ -184,7 +184,7 @@ func TestIntegrationPushdownNothingWanted(t *testing.T) {
 // one answers as if nothing had happened.
 func assertConnUsable(t *testing.T, conn *postgres.Conn) {
 	t.Helper()
-	src := conn.Query(t.Context(), "SELECT 7::bigint", nil, postgres.QueryConfig{AllRows: true})
+	src := conn.Query(t.Context(), "SELECT 7::bigint", nil, postgres.QueryConfig{Fetch: postgres.FetchAll})
 	keys, _ := readKeys(t, src, nil)
 	if len(keys) != 1 || keys[0] != 7 {
 		t.Fatalf("the next query returned %v, want [7]", keys)

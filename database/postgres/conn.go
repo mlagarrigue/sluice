@@ -254,8 +254,14 @@ func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row])
 //
 // A Conn built this way reports nothing from [Conn.Parameter], because the
 // ParameterStatus messages went past before it existed.
+//
+// It starts with the statement cache on; [Conn.PrepareStatements] changes the
+// bound or turns it off.
 func NewConn(rw io.ReadWriteCloser) *Conn {
-	return &Conn{rw: rw, r: pgwire.NewReader(readSource(rw)), w: pgwire.NewWriter(rw)}
+	return &Conn{
+		rw: rw, r: pgwire.NewReader(readSource(rw)), w: pgwire.NewWriter(rw),
+		stmts: newStmtCache(defaultStatementCacheBound),
+	}
 }
 
 // ReadBufferSize is how much of the stream a connection pulls in one read.
@@ -309,8 +315,71 @@ func (c *Conn) Err() error { return c.broken }
 // check here rather than assume. A Conn from [NewConn] has none of them.
 func (c *Conn) Parameter(name string) string { return c.params[name] }
 
-// QueryConfig states the bounds a query runs under. Both are the caller's,
-// per S1: neither has a value that suits every result.
+// Fetch says how a query asks the server for its rows: in batches, or all at
+// once. The zero value, FetchAuto, decides per statement.
+type Fetch uint8
+
+const (
+	// FetchAuto asks for every row at once when the statement is known to
+	// fit in one batch, and in batches otherwise.
+	//
+	// "Known" means the statement cache remembers it: its last execution on
+	// this connection was read to the end and produced at most BatchRows rows.
+	// A point read, a lookup, an INSERT ... RETURNING then cost one round
+	// trip, as with FetchAll, from their second execution on. A statement run
+	// for the first time, one whose last result was larger, or one whose last
+	// execution was stopped early or failed is fetched in batches, so a scan
+	// keeps its cheap early stop. With the cache off ([Conn.PrepareStatements]
+	// with zero) nothing is known and every query is fetched in batches.
+	//
+	// # Where it loses, which is not a footnote
+	//
+	// A statement that usually returns a handful of rows, called with a
+	// parameter for which it returns millions, **and** abandoned by its
+	// consumer partway, drains the whole result once before the connection is
+	// usable again — what [FetchAll] costs on an early stop. The statement is
+	// then known to be large and fetched in batches the next time. A caller
+	// who cannot pay that once sets [FetchBatches].
+	FetchAuto Fetch = iota
+
+	// FetchAll asks the server for the whole result at once, saving a round
+	// trip and giving up a cheap early stop.
+	//
+	// # What it saves
+	//
+	// The batched sequence is Execute-with-a-row-limit, then Flush to make the
+	// backend deliver without closing the portal, then a Sync to end the
+	// sequence. That Sync is a **second round trip**, and on a result that fit
+	// in one batch it buys nothing: the portal was already finished. Measured
+	// on loopback, where a round trip is 130 µs, a point read cost 280 µs in
+	// batches and 155 µs all at once — the difference is exactly one trip.
+	//
+	// # What it costs
+	//
+	// An early stop stops being cheap. With a row limit, a consumer that stops
+	// pulling leaves at most two batches to drain — the ones asked for ahead,
+	// see BatchRows. With FetchAll the server has been told to produce
+	// everything, so abandoning a ten-million-row result means draining ten
+	// million rows to get the connection back to a known position — or
+	// closing it.
+	//
+	// Client memory is still bounded by BatchRows either way, because rows are
+	// decoded and handed on a batch at a time and TCP stops the server when
+	// nobody reads. What changes is the cost of not finishing.
+	//
+	// So: set it for reads whose result is small and always consumed whole,
+	// when even the first execution should cost one round trip. [FetchAuto]
+	// does the same from the second execution on without being told.
+	FetchAll
+
+	// FetchBatches always asks for BatchRows rows at a time, whatever the
+	// statement returned before: an early stop always drains at most two
+	// batches, and a read that fits in one batch pays a second round trip.
+	FetchBatches
+)
+
+// QueryConfig states the bounds a query runs under. They are the caller's,
+// per S1: none has a value that suits every result.
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
 	// asked for exactly that many at a time — what bounds the rows in flight.
@@ -342,38 +411,15 @@ type QueryConfig struct {
 	// against 280 µs with BatchRows: 2 — one whole round trip, bought by
 	// asking for one row less than you could have.
 	//
-	// So bound it by what memory allows, not by what the result holds.
+	// So bound it by what memory allows, not by what the result holds. The
+	// trap is gone once the statement is known to fit — [FetchAuto] then asks
+	// for every row — but the first execution still falls into it.
 	BatchRows int
 
-	// AllRows asks the server for the whole result at once, saving a round
-	// trip and giving up a cheap early stop.
-	//
-	// # What it saves
-	//
-	// The default sequence is Execute-with-a-row-limit, then Flush to make the
-	// backend deliver without closing the portal, then a Sync to end the
-	// sequence. That Sync is a **second round trip**, and on a result that fit
-	// in one batch it buys nothing: the portal was already finished. Measured
-	// on loopback, where a round trip is 130 µs, a point read costs 280 µs the
-	// default way and 155 µs this way — the difference is exactly one trip.
-	//
-	// # What it costs
-	//
-	// An early stop stops being cheap. With a row limit, a consumer that stops
-	// pulling leaves at most two batches to drain — the ones asked for ahead,
-	// see BatchRows. With AllRows the server
-	// has been told to produce everything, so abandoning a ten-million-row
-	// result means draining ten million rows to get the connection back to a
-	// known position — or closing it.
-	//
-	// Client memory is still bounded by BatchRows either way, because rows are
-	// decoded and handed on a batch at a time and TCP stops the server when
-	// nobody reads. What changes is the cost of not finishing.
-	//
-	// So: set it for reads whose result is small and always consumed whole — a
-	// point read, a lookup, a `= ANY($1)` over a bounded key list. Leave it off
-	// for a scan that might stop early.
-	AllRows bool
+	// Fetch says whether the rows are asked for in batches of BatchRows or
+	// all at once. The zero value, [FetchAuto], asks for everything when the
+	// statement is known to fit in one batch, and in batches otherwise.
+	Fetch Fetch
 
 	// ParamOIDs gives the types of the parameters, when the server should not
 	// infer them. Inference is usually right and occasionally surprising: an
@@ -428,8 +474,9 @@ type QueryConfig struct {
 	// skip real when the bound jumps ahead, but a demand nothing advances
 	// costs nothing beyond the atomic load.
 	//
-	// Demand and AllRows are exclusive: AllRows asks for every row at once,
-	// which is the one thing a demand is there to avoid.
+	// A demand always fetches in batches, whatever [FetchAuto] knows of the
+	// statement. Demand and [FetchAll] are exclusive: FetchAll asks for every
+	// row at once, which is the one thing a demand is there to avoid.
 	Demand *pushdown.Demand
 
 	// KeyParam is the 1-based index of the parameter the demand's lower bound
@@ -481,7 +528,8 @@ type QueryConfig struct {
 // Rows are asked for a batch at a time — Execute names the count, the server
 // sends that many and suspends — so a consumer that stops pulling stops the
 // server, two batches later, and memory is bounded by BatchRows rather than
-// by the size of the result. The next two batches are asked for before the
+// by the size of the result. A statement known to fit in one batch is the
+// exception: it is asked for whole, in one round trip ([FetchAuto]). The next two batches are asked for before the
 // current one is delivered, so the server keeps producing while the consumer
 // works and the read pays no round trip per batch (see
 // [QueryConfig.BatchRows]). That is the deliberate trade: a result of ten
@@ -498,7 +546,9 @@ type QueryConfig struct {
 // An early stop is safe: the connection is resynchronised to the next
 // ReadyForQuery before Query's stream returns, so the connection stays usable.
 // That drain is bounded by two batches — the rows already asked for — which
-// is the other reason the server is asked a batch at a time.
+// is the other reason the server is asked a batch at a time. A query fetched
+// whole drains the rest of its result instead; [FetchAuto] says when that
+// happens without being asked.
 func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
 	batchRows := cfg.BatchRows
 	if batchRows <= 0 {
@@ -522,10 +572,14 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 			queryErr = fmt.Errorf("abandoning the query before it was sent: %w", err)
 			return
 		}
-		q := &query{conn: c, ctx: ctx, batchRows: batchRows, allRows: cfg.AllRows}
+		if cfg.Fetch > FetchBatches {
+			queryErr = fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
+			return
+		}
+		q := &query{conn: c, ctx: ctx, batchRows: batchRows, fetch: cfg.Fetch, entry: -1}
 		if cfg.Demand != nil {
-			if cfg.AllRows {
-				queryErr = errors.New("postgres: QueryConfig.Demand and AllRows are exclusive")
+			if cfg.Fetch == FetchAll {
+				queryErr = errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
 				return
 			}
 			if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
@@ -535,6 +589,7 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 			q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
 		}
 		queryErr = q.run(sql, params, cfg.ParamOIDs, yield)
+		q.recordRows(queryErr)
 		// Settled after the deferred resync has read to ReadyForQuery, so the
 		// cache's provisional entry is confirmed or dropped on the server's
 		// last word — see [Conn.settleParse] for what a kept-but-unparsed
@@ -566,7 +621,8 @@ type query struct {
 	conn      *Conn
 	ctx       context.Context
 	batchRows int
-	allRows   bool
+	fetch     Fetch
+	allRows   bool // decided in run: every row asked for at once
 	synced    bool // the Sync went out with the query, so resync must not send another
 	rows      *Rows
 	items     []Row // reused: one Row view per row of the current batch
@@ -584,6 +640,31 @@ type query struct {
 
 	// asked counts the Executes sent whose batch has not ended yet.
 	asked int
+
+	// entry is the statement's place in the cache, -1 without one; rowsRead
+	// counts the rows of the result and complete says it was read to its
+	// CommandComplete. Together they are what [FetchAuto] knows next time.
+	entry    int
+	rowsRead int
+	complete bool
+}
+
+// recordRows tells the cache how many rows this execution produced, or that
+// nobody knows: an execution stopped early or failed says nothing about the
+// statement's size, and must not let the next one be asked for whole.
+//
+// A query under a demand records nothing. Its limit and its re-bound portal
+// shape the result, so its count is not the statement's.
+func (q *query) recordRows(err error) {
+	c := q.conn
+	if q.entry < 0 || q.demand != nil || c.stmts == nil {
+		return
+	}
+	n := -1
+	if err == nil && q.complete {
+		n = q.rowsRead
+	}
+	c.stmts.entries[q.entry].lastRows = n
 }
 
 func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluice.Batch[Row]) bool) (err error) {
@@ -612,9 +693,19 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	// statement the server already parsed and planned — which is the whole
 	// point, since re-parsing the same SQL for every batch measures the parser
 	// rather than the transport.
-	stmt, needsParse, err := c.prepareFor(sql, oids)
-	if err != nil {
-		return err
+	stmt, needsParse, entry := c.prepareFor(sql, oids)
+	q.entry = entry
+	// The fetch is decided here, once the cache has said what it knows. A
+	// statement whose last complete execution fit in one batch is asked for
+	// whole: one round trip instead of two — see [FetchAuto].
+	switch q.fetch {
+	case FetchAll:
+		q.allRows = true
+	case FetchAuto:
+		if entry >= 0 && q.demand == nil {
+			last := c.stmts.entries[entry].lastRows
+			q.allRows = last >= 0 && last <= q.batchRows
+		}
 	}
 
 	// Parse, Bind, Describe and the first Execute leave together: §8.5's
@@ -638,7 +729,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		// No row limit and a Sync rather than a Flush: the backend produces
 		// everything and ends the sequence itself, so the answer and the
 		// ReadyForQuery arrive together. One round trip instead of two — see
-		// [QueryConfig.AllRows] for what that gives up.
+		// [FetchAll] for what that gives up.
 		c.w.Execute("", 0)
 		c.w.Sync()
 		q.synced = true
@@ -799,7 +890,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				return false, c.breakConn(fmt.Errorf("%w: DataRow before any RowDescription", ErrProtocol))
 			}
 			if err := q.rows.Append(m.Body); err != nil {
-				// Cold path. Under AllRows the backend was given no row limit,
+				// Cold path. Fetched whole, the backend was given no row limit,
 				// so nothing pauses it at BatchRows — the pause that used to
 				// do that was the PortalSuspended a limit produces — and the
 				// batch fills mid-result. Emitting here rather than testing
@@ -871,7 +962,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			return false, nil
 
 		case pgwire.BackendCommandComplete, pgwire.BackendEmptyQuery:
-			// The result is finished; what is held is the last batch.
+			// The result is finished; what is held is the last batch. Read to
+			// the end, its row count is now the statement's to remember.
+			q.complete = true
 			q.emit(yield)
 			return true, nil
 
@@ -957,6 +1050,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 // emit hands the accumulated rows to the consumer as one batch and resets the
 // accumulator. It reports whether the consumer wants more.
 func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
+	if q.rows != nil {
+		q.rowsRead += q.rows.Len()
+	}
 	items, ok := q.conn.emitRows(q.rows, q.items, yield)
 	q.items = items
 	return ok
@@ -973,13 +1069,13 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 // result.
 func (q *query) resync() error {
 	c := q.conn
-	// Under AllRows the Sync left with the query, so sending another would
+	// Fetched whole, the Sync left with the query, so sending another would
 	// draw a second ReadyForQuery that nothing reads — and the next query on
 	// this connection would take it for its own. What is left to do is read up
 	// to the one already coming.
 	//
 	// That read is bounded by the rest of the result rather than by BatchRows,
-	// which is the cost AllRows names: an abandoned ten-million-row scan is
+	// which is the cost FetchAll names: an abandoned ten-million-row scan is
 	// drained ten million rows.
 	if !q.synced {
 		c.w.Sync()

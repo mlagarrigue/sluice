@@ -26,6 +26,7 @@ type fakeServer struct {
 	pos       int
 	readBuf   bytes.Buffer
 	writeErr  error
+	writes    int // Write calls: one per flush of the client's buffer
 	closed    bool
 
 	// scanned and triggers track the one thing a script would otherwise get
@@ -109,6 +110,7 @@ func (s *fakeServer) Write(p []byte) (int, error) {
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
+	s.writes++
 	return s.sent.Write(p)
 }
 
@@ -550,8 +552,13 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 		if m.Type != pgwire.FrontendBind {
 			continue
 		}
-		// portal(1) stmt(1) formatCount(2) format(2) then the parameter count.
-		n := binary.BigEndian.Uint16(m.Body[6:8])
+		// The portal and statement names, NUL-terminated, then
+		// formatCount(2) format(2) and the parameter count.
+		body := m.Body
+		for range 2 {
+			body = body[bytes.IndexByte(body, 0)+1:]
+		}
+		n := binary.BigEndian.Uint16(body[4:6])
 		if n != 1 {
 			t.Errorf("Bind carries %d parameters for 1000 keys, want 1", n)
 		}
@@ -592,9 +599,9 @@ func TestConnCloseSkipsTerminateWhenBroken(t *testing.T) {
 	}
 }
 
-// AllRows sends the Sync with the query instead of a Flush, so the answer and
+// FetchAll sends the Sync with the query instead of a Flush, so the answer and
 // the ReadyForQuery arrive together. One round trip instead of two.
-func TestAllRowsSendsSyncInsteadOfFlush(t *testing.T) {
+func TestFetchAllSendsSyncInsteadOfFlush(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
@@ -606,7 +613,7 @@ func TestAllRowsSendsSyncInsteadOfFlush(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{script}}
 	conn := NewConn(srv)
 
-	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, AllRows: true})
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 	var seen int
 	src.Stream()(func(b sluice.Batch[Row]) bool { seen += b.Len(); return true })
 	if err := src.Err(); err != nil {
@@ -619,16 +626,16 @@ func TestAllRowsSendsSyncInsteadOfFlush(t *testing.T) {
 	sent := srv.clientMessages(t)
 	want := []byte{pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendSync}
 	if !slices.Equal(sent, want) {
-		t.Errorf("client sent %q, want %q — a Flush here is the round trip AllRows exists to remove", sent, want)
+		t.Errorf("client sent %q, want %q — a Flush here is the round trip FetchAll exists to remove", sent, want)
 	}
 	if bytes.Contains(sent, []byte{pgwire.FrontendFlush}) {
-		t.Error("a Flush went out under AllRows")
+		t.Error("a Flush went out under FetchAll")
 	}
 }
 
 // The Execute must carry no row limit: a limit makes the backend answer
 // PortalSuspended, and the portal is closed by the Sync that follows.
-func TestAllRowsAsksForEveryRow(t *testing.T) {
+func TestFetchAllAsksForEveryRow(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
@@ -638,7 +645,7 @@ func TestAllRowsAsksForEveryRow(t *testing.T) {
 
 	srv := &fakeServer{responses: [][]byte{script}}
 	conn := NewConn(srv)
-	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, AllRows: true})
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, Fetch: FetchAll})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
 		t.Fatal(err)
@@ -666,7 +673,7 @@ func TestAllRowsAsksForEveryRow(t *testing.T) {
 
 // A second Sync would draw a second ReadyForQuery that nothing reads, and the
 // next query on the connection would take it for its own answer.
-func TestAllRowsDoesNotSyncTwice(t *testing.T) {
+func TestFetchAllDoesNotSyncTwice(t *testing.T) {
 	one := func(v int64) []byte {
 		var s []byte
 		s = append(s, beSimple(pgwire.BackendParseComplete)...)
@@ -681,7 +688,7 @@ func TestAllRowsDoesNotSyncTwice(t *testing.T) {
 
 	for _, want := range []int64{1, 2} {
 		var got []int64
-		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, AllRows: true})
+		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 		src.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
@@ -713,13 +720,13 @@ func TestAllRowsDoesNotSyncTwice(t *testing.T) {
 		t.Errorf("%d Syncs for two queries, want 2", syncs)
 	}
 	if flushes != 0 {
-		t.Errorf("%d Flushes under AllRows, want 0", flushes)
+		t.Errorf("%d Flushes under FetchAll, want 0", flushes)
 	}
 }
 
-// Stopping early under AllRows must still leave the connection usable — the
+// Stopping early under FetchAll must still leave the connection usable — the
 // rest of the result is drained to the ReadyForQuery already on its way.
-func TestAllRowsEarlyStopKeepsTheConnection(t *testing.T) {
+func TestFetchAllEarlyStopKeepsTheConnection(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
@@ -741,7 +748,7 @@ func TestAllRowsEarlyStopKeepsTheConnection(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{first, second}}
 	conn := NewConn(srv)
 
-	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, AllRows: true})
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, Fetch: FetchAll})
 	var batches int
 	src.Stream()(func(sluice.Batch[Row]) bool { batches++; return false })
 	if err := src.Err(); err != nil {
@@ -756,7 +763,7 @@ func TestAllRowsEarlyStopKeepsTheConnection(t *testing.T) {
 
 	// And the next query reads its own answer rather than the leftovers.
 	var got []int64
-	again := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, AllRows: true})
+	again := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 	again.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
@@ -775,7 +782,7 @@ func TestAllRowsEarlyStopKeepsTheConnection(t *testing.T) {
 
 // The default path must be untouched: a Flush, a row limit, and a Sync of its
 // own from the resync.
-func TestWithoutAllRowsTheFlushRemains(t *testing.T) {
+func TestWithoutFetchAllTheFlushRemains(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
@@ -1095,7 +1102,7 @@ func TestWireTouchingCallsInsideAConsumerAreRefused(t *testing.T) {
 
 	nested := map[string]error{}
 	var got []int64
-	src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 4, AllRows: true})
+	src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 4, Fetch: FetchAll})
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		nested["Exec"] = conn.Exec(ctx, "SELECT 1")
 		_, nested["Begin"] = conn.Begin(ctx, TxConfig{})
@@ -1182,7 +1189,7 @@ func TestQueryToleratesANotification(t *testing.T) {
 	conn := NewConn(srv)
 
 	var got []int64
-	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, AllRows: true})
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, Fetch: FetchAll})
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)

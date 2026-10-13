@@ -70,7 +70,7 @@ func TestQuerySurvivesAFragmentedStream(t *testing.T) {
 
 	conn := NewConn(&dribbleTransport{dribbleReader{data: stream}})
 	var got []int64
-	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, AllRows: true})
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)

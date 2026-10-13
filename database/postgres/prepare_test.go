@@ -96,14 +96,22 @@ func drain(t *testing.T, src sluice.Source[Row]) error {
 	return src.Err()
 }
 
-// Off by default, and off must mean exactly what it meant before the cache
-// existed: the unnamed statement, re-parsed every time.
-func TestStatementCacheOffByDefault(t *testing.T) {
+// batched is the config the cache tests run under. Their scripts answer the
+// batched exchange — Execute and Flush, then the Sync of the resync — and what
+// they test is the cache, not how FetchAuto would fetch a statement it knows.
+var batched = QueryConfig{Fetch: FetchBatches}
+
+// Off must mean exactly what it meant before the cache existed: the unnamed
+// statement, re-parsed every time.
+func TestStatementCacheOff(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
 	conn := NewConn(srv)
+	if err := conn.PrepareStatements(0); err != nil {
+		t.Fatal(err)
+	}
 
 	for range 2 {
-		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -130,7 +138,7 @@ func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 	}
 
 	for range 2 {
-		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -167,11 +175,11 @@ func TestStatementCacheKeyIncludesTheParameterTypes(t *testing.T) {
 
 	const sql = "SELECT id WHERE k = $1"
 	if err := drain(t, conn.Query(t.Context(), sql, [][]byte{nil},
-		QueryConfig{ParamOIDs: []uint32{OIDInt8}})); err != nil {
+		QueryConfig{Fetch: FetchBatches, ParamOIDs: []uint32{OIDInt8}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := drain(t, conn.Query(t.Context(), sql, [][]byte{nil},
-		QueryConfig{ParamOIDs: []uint32{OIDInt4}})); err != nil {
+		QueryConfig{Fetch: FetchBatches, ParamOIDs: []uint32{OIDInt4}})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +210,7 @@ func TestStatementCacheEvictsLeastRecentlyUsedAndClosesIt(t *testing.T) {
 	}
 
 	for _, sql := range []string{"SELECT a", "SELECT b", "SELECT a", "SELECT c"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatalf("%s: %v", sql, err)
 		}
 	}
@@ -263,13 +271,13 @@ func TestStatementCacheRetriesAnUnconfirmedClose(t *testing.T) {
 	if err := conn.PrepareStatements(1); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT a", nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), "SELECT a", nil, batched)); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT b", nil, QueryConfig{})); err == nil {
+	if err := drain(t, conn.Query(t.Context(), "SELECT b", nil, batched)); err == nil {
 		t.Fatal("the failed query reported no error")
 	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT c", nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), "SELECT c", nil, batched)); err != nil {
 		t.Fatal(err)
 	}
 	ps := parsed(t, srv)
@@ -304,11 +312,11 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	}
 
 	const sql = "SELECT id"
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatal(err)
 	}
 
-	err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{}))
+	err := drain(t, conn.Query(t.Context(), sql, nil, batched))
 	if !errors.Is(err, ErrStalePlan) {
 		t.Fatalf("error = %v, want it to wrap ErrStalePlan", err)
 	}
@@ -323,7 +331,7 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	// Two Parses, not three: the query that hit the stale plan was a cache
 	// *hit*, so it sent a Bind and no Parse at all — which is precisely why
 	// the entry had to be dropped for the retry to work.
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatalf("the retry after a stale plan returned %v", err)
 	}
 	ps := parsed(t, srv)
@@ -352,7 +360,7 @@ func TestPrepareStatementsZeroClosesEverything(t *testing.T) {
 	if err := conn.PrepareStatements(4); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.PrepareStatements(0); err != nil {
@@ -379,7 +387,7 @@ func TestPrepareStatementsShrinkEvicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -404,7 +412,7 @@ func TestStatementNamesAreGenerated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -486,7 +494,7 @@ func TestStatementCacheForgetsAStatementTheServerRefused(t *testing.T) {
 	}
 
 	const sql = "SELCT id"
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err == nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err == nil {
 		t.Fatal("the refused query reported no error")
 	}
 	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
@@ -495,7 +503,7 @@ func TestStatementCacheForgetsAStatementTheServerRefused(t *testing.T) {
 
 	// The retry is what a caller does next, and it must re-prepare rather than
 	// bind the name the server never created.
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatalf("the retry failed: %v", err)
 	}
 	if got := len(parsed(t, srv)); got != 2 {
@@ -520,17 +528,17 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	}
 
 	const sql = "SELECT id"
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err == nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err == nil {
 		t.Fatal("the query against the vanished statement reported no error")
 	}
 	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
 		t.Errorf("%d statements cached after the server said it holds none", prepared)
 	}
 
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatalf("the retry failed: %v", err)
 	}
 	ps := parsed(t, srv)
@@ -552,7 +560,7 @@ func TestCloseAllStatementsStopsOnceBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -603,10 +611,10 @@ func TestStatementCacheKeepsEntryOnOtherFeatureNotSupported(t *testing.T) {
 		t.Fatal(err)
 	}
 	const sql = "SELECT id"
-	if err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatal(err)
 	}
-	err := drain(t, conn.Query(t.Context(), sql, nil, QueryConfig{}))
+	err := drain(t, conn.Query(t.Context(), sql, nil, batched))
 	var pgErr *Error
 	if !errors.As(err, &pgErr) || pgErr.Code != "0A000" {
 		t.Fatalf("error = %v, want the server's 0A000", err)

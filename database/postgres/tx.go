@@ -652,14 +652,15 @@ func validSettingName(name string) error {
 // It is the extended-query path, which is the only one that takes parameters
 // at all — the simple Query message has nowhere to put them.
 func (c *Conn) execParams(ctx context.Context, sql string, params [][]byte, oids []uint32) error {
-	// AllRows, not a row limit. These statements return at most one row that
+	// FetchAll, not a row limit, and not FetchAuto either: the first
+	// execution counts too. These statements return at most one row that
 	// nobody reads, and a row limit here walks into the trap
 	// [QueryConfig.BatchRows] documents: asking for exactly what the result
 	// holds costs an extra Execute to learn there is no more, and the Flush
 	// path adds the Sync as a round trip of its own — three trips where
-	// AllRows takes one. On the per-transaction RLS path that tax lands on
+	// FetchAll takes one. On the per-transaction RLS path that tax lands on
 	// every SetLocal, which is every principal.
-	src := c.Query(ctx, sql, params, QueryConfig{AllRows: true, ParamOIDs: oids})
+	src := c.Query(ctx, sql, params, QueryConfig{Fetch: FetchAll, ParamOIDs: oids})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
 		return fmt.Errorf("running %q: %w", sql, err)
