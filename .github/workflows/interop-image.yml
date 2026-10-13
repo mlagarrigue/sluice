@@ -38,6 +38,7 @@ jobs:
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       # The online runner wants linux/amd64; arm64 serves a local run on an
       # Apple or Graviton machine. The base image ships both.

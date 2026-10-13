@@ -23,6 +23,8 @@ jobs:
       packages: ${{ steps.list.outputs.packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
@@ -44,6 +46,8 @@ jobs:
         package: ${{ fromJSON(needs.discover.outputs.packages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
@@ -63,3 +67,6 @@ jobs:
           name: fuzz-failures-${{ strategy.job-index }}
           path: fuzz-failures/
           if-no-files-found: ignore
+          # Artifacts of a public repository are public, and a crashing input
+          # is a reproducer: a week to collect it, not the default ninety days.
+          retention-days: 7

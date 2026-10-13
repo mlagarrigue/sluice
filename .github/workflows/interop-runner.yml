@@ -27,6 +27,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # The runner's compose file names its interfaces, which needs a Docker
       # Engine 28.1 or later; the hosted runner ships an older one.
       - uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
@@ -61,3 +63,6 @@ jobs:
             ${{ runner.temp }}/quic-interop-runner/results_*.json
             ${{ runner.temp }}/quic-interop-runner-output.txt
           if-no-files-found: ignore
+          # Artifacts of a public repository are public, and these carry
+          # packet captures with their TLS key logs: a week to read them.
+          retention-days: 7

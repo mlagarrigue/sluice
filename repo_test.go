@@ -439,3 +439,40 @@ func TestExperimentalLabelMatchesTheGuides(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkflowCheckoutsDropTheirCredentials: a checkout leaves the job's
+// token in the clone unless told not to, where every later step, a test
+// binary or a tool built from a module included, can read it. No job here
+// pushes through the clone (the badge job pushes by an explicit URL), so
+// every checkout drops it.
+func TestWorkflowCheckoutsDropTheirCredentials(t *testing.T) {
+	files, err := filepath.Glob(".github/workflows/*.yml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no workflow found: %v", err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(b), "\n")
+		for i, l := range lines {
+			if !strings.Contains(l, "- uses: actions/checkout@") {
+				continue
+			}
+			// The step's body is every following line indented deeper than
+			// its dash.
+			indent := len(l) - len(strings.TrimLeft(l, " "))
+			dropped := false
+			for _, body := range lines[i+1:] {
+				if len(body)-len(strings.TrimLeft(body, " ")) <= indent {
+					break
+				}
+				dropped = dropped || strings.TrimSpace(body) == "persist-credentials: false"
+			}
+			if !dropped {
+				t.Errorf("%s:%d: a checkout without persist-credentials: false", f, i+1)
+			}
+		}
+	}
+}
