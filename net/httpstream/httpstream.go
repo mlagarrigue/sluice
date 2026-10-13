@@ -276,7 +276,12 @@ type Config struct {
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
 	// at once. Zero means 64. It is what keeps a client that writes ten
 	// thousand requests in one burst from turning them into one batch and one
-	// allocation the size of the burst.
+	// allocation the size of the burst. For a client that sends one request
+	// at a time the bound never binds — a batch is whatever one read
+	// returned; for one that pipelines 256 deep, 8 costs +83% per request
+	// against 64 and 256 saves 16%, one response write per batch instead of
+	// four (docs/benchmarks.md, "The connection budget and the batch
+	// bound"). 64 is the allocation bound, not the measured optimum.
 	MaxRequestsPerBatch int
 
 	// MaxConcurrentStreams bounds how many request streams one HTTP/2 or
@@ -296,6 +301,13 @@ type Config struct {
 
 	// MaxRequestsPerConn bounds how many requests one connection may make
 	// before it is closed. Zero means 1024, which is keep-alive with an end.
+	// The end costs a client that does not pipeline a TCP and a TLS
+	// handshake every 1024 requests: +3.7% per request over loopback against
+	// no end at all, the handshake and nothing else (docs/benchmarks.md,
+	// "The connection budget and the batch bound"). Over a real network it
+	// is two extra round trips on one request in 1024 — the tail, which
+	// loopback does not see. There is no unbounded setting; math.MaxInt is
+	// one.
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
