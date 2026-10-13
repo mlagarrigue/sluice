@@ -1,0 +1,178 @@
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"math"
+	"os"
+	"time"
+)
+
+// options is the whole matrix of the internal study (docs: the comparison
+// study, §8), one flag per axis, with the reference configuration R as the
+// default of every flag. A campaign starts from this one binary whatever it
+// measures, so two variants differ by the flag they name and by nothing else.
+//
+// A variant the code does not implement yet is refused by validate, out loud,
+// before anything listens: a flag that silently served R would publish R's
+// figure under another name.
+type options struct {
+	listen string
+	tls    bool
+	cert   string
+	key    string
+
+	// Axis A — protocol and transport.
+	transport string
+
+	// Axis B — driver.
+	driver string
+
+	// Axis C — grouping.
+	gatewaySize   int
+	gatewayWithin time.Duration
+
+	// Axis D — the transport's own batch and connection budget (httpstream).
+	maxRequestsPerBatch int
+	maxRequestsPerConn  int
+
+	// Axis E — response.
+	response string
+
+	// Axis F — compression.
+	compression string
+
+	// The database behind every dynamic scenario.
+	db      dbConfig
+	dbConns int
+
+	// listMax bounds what one list request may ask for.
+	listMax int
+}
+
+type dbConfig struct {
+	addr, user, database, password string
+}
+
+const (
+	transportNetHTTPH1    = "nethttp-h1"
+	transportNetHTTPH2    = "nethttp-h2"
+	transportHTTPStreamH1 = "httpstream-h1"
+	transportHTTPStreamH2 = "httpstream-h2"
+	transportHTTPStreamH3 = "httpstream-h3"
+)
+
+func parseOptions(args []string) (options, error) {
+	var o options
+	fs := flag.NewFlagSet("sluice-study", flag.ContinueOnError)
+	fs.StringVar(&o.listen, "listen", "127.0.0.1:8443", "address to listen on")
+	fs.BoolVar(&o.tls, "tls", true, "serve TLS (R); false is cleartext HTTP/1.1, for local tooling only")
+	fs.StringVar(&o.cert, "cert", "", "TLS certificate file (PEM); empty generates a self-signed ECDSA P-256 certificate at startup")
+	fs.StringVar(&o.key, "key", "", "TLS key file (PEM), with -cert")
+
+	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
+		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (not implemented until axis A)")
+	fs.StringVar(&o.driver, "driver", "sluice",
+		"axis B: sluice (R), pgx (not implemented until axis B)")
+	fs.IntVar(&o.gatewaySize, "gateway-size", 64, "axis C: gateway Size, the largest batch of unit reads")
+	fs.DurationVar(&o.gatewayWithin, "gateway-within", 2*time.Millisecond, "axis C: gateway Within, how long the first key of a batch waits")
+	fs.IntVar(&o.maxRequestsPerBatch, "max-requests-per-batch", 0,
+		"axis D: httpstream Config.MaxRequestsPerBatch; 0 is the package default (64); httpstream transports only")
+	fs.IntVar(&o.maxRequestsPerConn, "max-requests-per-conn", 0,
+		"axis D: httpstream Config.MaxRequestsPerConn; 0 is the package default (1024), -1 is unbounded; httpstream transports only")
+	fs.StringVar(&o.response, "response", "buffered",
+		"axis E: buffered (R), stream (not implemented until axis E)")
+	fs.StringVar(&o.compression, "compression", "none",
+		"axis F: none (R), gzip1, gzip6, deflate6 (not implemented until axis F)")
+
+	fs.StringVar(&o.db.addr, "db", os.Getenv("SLUICE_PG"), "PostgreSQL host:port (default $SLUICE_PG)")
+	fs.StringVar(&o.db.user, "db-user", os.Getenv("SLUICE_PG_USER"), "PostgreSQL role (default $SLUICE_PG_USER)")
+	fs.StringVar(&o.db.database, "db-name", os.Getenv("SLUICE_PG_DB"), "PostgreSQL database (default $SLUICE_PG_DB)")
+	fs.StringVar(&o.db.password, "db-password", "", "PostgreSQL password (default $SLUICE_PG_PASSWORD, not echoed here)")
+	fs.IntVar(&o.dbConns, "db-conns", 8, "connections for list and write requests; unit reads share the gateway's own connection")
+	fs.IntVar(&o.listMax, "list-max", 100000, "largest limit a list request may ask for")
+
+	if err := fs.Parse(args); err != nil {
+		return o, err
+	}
+	if o.db.password == "" {
+		o.db.password = os.Getenv("SLUICE_PG_PASSWORD")
+	}
+	return o, o.validate()
+}
+
+var errNotImplemented = errors.New("not implemented")
+
+// validate refuses what the binary cannot serve as asked. Every refusal names
+// the axis whose brief will lift it: nothing here falls back to R.
+func (o options) validate() error {
+	switch o.transport {
+	case transportNetHTTPH1, transportHTTPStreamH1:
+	case transportNetHTTPH2, transportHTTPStreamH2:
+		if !o.tls {
+			return fmt.Errorf("-transport %s: %w without -tls (h2c is not a configuration of the study)", o.transport, errNotImplemented)
+		}
+	case transportHTTPStreamH3:
+		return fmt.Errorf("-transport %s: %w until axis A", o.transport, errNotImplemented)
+	default:
+		return fmt.Errorf("-transport %q: unknown", o.transport)
+	}
+	switch o.driver {
+	case "sluice":
+	case "pgx":
+		return fmt.Errorf("-driver pgx: %w until axis B", errNotImplemented)
+	default:
+		return fmt.Errorf("-driver %q: unknown", o.driver)
+	}
+	if o.gatewaySize <= 0 || o.gatewayWithin <= 0 {
+		return errors.New("-gateway-size and -gateway-within must be positive")
+	}
+	if !o.httpstream() && (o.maxRequestsPerBatch != 0 || o.maxRequestsPerConn != 0) {
+		return fmt.Errorf("-max-requests-per-batch and -max-requests-per-conn only apply to httpstream transports, not %s", o.transport)
+	}
+	if o.maxRequestsPerBatch < 0 || o.maxRequestsPerConn < -1 {
+		return errors.New("-max-requests-per-batch must be >= 0 and -max-requests-per-conn >= -1")
+	}
+	switch o.response {
+	case "buffered":
+	case "stream":
+		return fmt.Errorf("-response stream: %w until axis E", errNotImplemented)
+	default:
+		return fmt.Errorf("-response %q: unknown", o.response)
+	}
+	switch o.compression {
+	case "none":
+	case "gzip1", "gzip6", "deflate6":
+		return fmt.Errorf("-compression %s: %w until axis F", o.compression, errNotImplemented)
+	default:
+		return fmt.Errorf("-compression %q: unknown", o.compression)
+	}
+	if o.db.addr == "" || o.db.user == "" {
+		return errors.New("-db and -db-user are required (or SLUICE_PG and SLUICE_PG_USER)")
+	}
+	if o.dbConns <= 0 || o.listMax <= 0 {
+		return errors.New("-db-conns and -list-max must be positive")
+	}
+	if (o.cert == "") != (o.key == "") {
+		return errors.New("-cert and -key go together")
+	}
+	return nil
+}
+
+func (o options) httpstream() bool {
+	switch o.transport {
+	case transportHTTPStreamH1, transportHTTPStreamH2, transportHTTPStreamH3:
+		return true
+	}
+	return false
+}
+
+// perConn translates the flag's -1 into the only unbounded value httpstream
+// has (docs/benchmarks.md, "The connection budget and the batch bound").
+func (o options) perConn() int {
+	if o.maxRequestsPerConn == -1 {
+		return math.MaxInt
+	}
+	return o.maxRequestsPerConn
+}
