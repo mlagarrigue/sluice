@@ -58,8 +58,17 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 	second = append(second, beDataRow(int8Val(2))...)
 	second = append(second, beCommandComplete("SELECT 1")...)
 
+	// The answer to the two Executes sent ahead of the first batch's
+	// delivery, which the resync drains.
+	var ahead []byte
+	ahead = append(ahead, beDataRow(int8Val(98))...)
+	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+	ahead = append(ahead, beDataRow(int8Val(99))...)
+	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+
 	srv := &fakeServer{responses: [][]byte{
 		suspended,
+		ahead,
 		beReadyForQuery(), // answers the resync's Sync
 		second,
 		beReadyForQuery(),
@@ -109,10 +118,11 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 	}
 
 	// And the client must have resynchronised rather than left the portal
-	// hanging: a Sync between the two Executes.
+	// hanging: a Sync after the Executes sent ahead, and before the next query.
 	sent := srv.clientMessages(t)
 	wantSent := []byte{
 		pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
+		pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush,
 		pgwire.FrontendSync,
 		pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
 		pgwire.FrontendSync,

@@ -245,7 +245,8 @@ func TestConnQueryExposesFields(t *testing.T) {
 }
 
 // The pull reaches the server: a suspended portal means the client asks for
-// the next batch, and it asks once per batch rather than once for the result.
+// the next batches, and it asks a batch at a time rather than once for the
+// result.
 func TestConnQueryAsksForEachBatch(t *testing.T) {
 	var head []byte
 	head = append(head, beSimple(pgwire.BackendParseComplete)...)
@@ -255,9 +256,12 @@ func TestConnQueryAsksForEachBatch(t *testing.T) {
 	head = append(head, beDataRow(int8Val(2))...)
 	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 
+	// The answer to the two Executes sent ahead: the last row, then nothing,
+	// because the second one reaches a portal already at its end.
 	var second []byte
 	second = append(second, beDataRow(int8Val(3))...)
 	second = append(second, beCommandComplete("SELECT 3")...)
+	second = append(second, beCommandComplete("SELECT 0")...)
 
 	srv := &fakeServer{responses: [][]byte{head, second, beReadyForQuery()}}
 	conn := NewConn(srv)
@@ -284,11 +288,12 @@ func TestConnQueryAsksForEachBatch(t *testing.T) {
 		t.Errorf("ids = %v, want %v", ids, want)
 	}
 
-	// Two Executes: one in the opening pipeline, one to resume the portal.
+	// Three Executes: one in the opening pipeline, two to resume the portal
+	// as soon as it suspended.
 	sent := srv.clientMessages(t)
 	executes := bytes.Count(sent, []byte{pgwire.FrontendExecute})
-	if executes != 2 {
-		t.Errorf("client sent %d Executes, want 2 — one per batch", executes)
+	if executes != 3 {
+		t.Errorf("client sent %d Executes, want 3 — one opening, two ahead", executes)
 	}
 }
 
@@ -325,6 +330,76 @@ func TestConnQueryEarlyStopResynchronises(t *testing.T) {
 	sent := srv.clientMessages(t)
 	if !bytes.Contains(sent, []byte{pgwire.FrontendSync}) {
 		t.Errorf("client sent %q, with no Sync — the next query would read this one's rows", sent)
+	}
+}
+
+// The next two batches are asked for before the current one is delivered,
+// and a stop on the current one drains the batches already asked for — those
+// two, and no more — before the connection is handed back.
+//
+// The second half is what makes the first safe: an Execute sent ahead draws
+// rows the consumer will never take, and if the resync stopped short of them,
+// the next query would read them as its own.
+func TestEarlyStopDrainsTheBatchesAskedForAhead(t *testing.T) {
+	var head []byte
+	head = append(head, beSimple(pgwire.BackendParseComplete)...)
+	head = append(head, beSimple(pgwire.BackendBindComplete)...)
+	head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	head = append(head, beDataRow(int8Val(1))...)
+	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
+
+	// The answer to the two Executes sent ahead: two whole batches, the
+	// portal still suspended after each.
+	var ahead []byte
+	ahead = append(ahead, beDataRow(int8Val(2))...)
+	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+	ahead = append(ahead, beDataRow(int8Val(3))...)
+	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+
+	var next []byte
+	next = append(next, beSimple(pgwire.BackendParseComplete)...)
+	next = append(next, beSimple(pgwire.BackendBindComplete)...)
+	next = append(next, beRowDescription([]string{"v"}, []uint32{OIDInt8})...)
+	next = append(next, beDataRow(int8Val(4242))...)
+	next = append(next, beCommandComplete("SELECT 1")...)
+
+	srv := &fakeServer{responses: [][]byte{head, ahead, beReadyForQuery(), next, beReadyForQuery()}}
+	conn := NewConn(srv)
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
+
+	var askedBeforeDelivery int
+	src.Stream()(func(sluice.Batch[Row]) bool {
+		askedBeforeDelivery = bytes.Count(srv.clientMessages(t), []byte{pgwire.FrontendExecute})
+		return false // stop on the first batch
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v, want nil — an early stop is not a failure", err)
+	}
+	if askedBeforeDelivery != 3 {
+		t.Errorf("%d Executes sent when the first batch was delivered, want 3 — the next two batches were not asked for ahead", askedBeforeDelivery)
+	}
+	sent := srv.clientMessages(t)
+	if executes := bytes.Count(sent, []byte{pgwire.FrontendExecute}); executes != 3 {
+		t.Errorf("client sent %d Executes, want 3 — the drain must not ask for more", executes)
+	}
+	if conn.Err() != nil {
+		t.Fatalf("the connection was left broken by an early stop: %v", conn.Err())
+	}
+
+	var got int64
+	q := conn.Query(t.Context(), "SELECT 4242::bigint", nil, QueryConfig{BatchRows: 4})
+	q.Stream()(func(b sluice.Batch[Row]) bool {
+		for _, r := range b.Items {
+			v, _ := r.Value(0)
+			got, _ = DecodeInt8(v)
+		}
+		return true
+	})
+	if err := q.Err(); err != nil {
+		t.Fatalf("the connection was unusable after the drain: %v", err)
+	}
+	if got != 4242 {
+		t.Errorf("the next query returned %d, want 4242 — it read a batch asked for ahead", got)
 	}
 }
 

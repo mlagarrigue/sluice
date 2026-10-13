@@ -313,8 +313,24 @@ func (c *Conn) Parameter(name string) string { return c.params[name] }
 // per S1: neither has a value that suits every result.
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
-	// asked for exactly that many at a time — how many rows may be in flight.
+	// asked for exactly that many at a time — what bounds the rows in flight.
 	// A value of zero or less means [sluice.DefaultBatchSize].
+	//
+	// # Two batches in flight
+	//
+	// The next two batches are asked for before the current one reaches the
+	// consumer, so the server keeps producing while the consumer works:
+	// without that, every batch waited one round trip, measured at 3.0 ms of
+	// a wide read's 3.5 ms gap with pgx. So up to three batches are in
+	// flight — the one the consumer holds and the two on their way — and a
+	// consumer that stops early leaves up to twice BatchRows rows to drain.
+	//
+	// The drained batches are executed like any other: a server error in
+	// them — a division by zero further down the scan — is reported by the
+	// query, and inside a transaction it aborts the transaction, though the
+	// consumer never asked for those rows. With a Demand set, the next batch
+	// is asked for after delivery instead, one at a time, because the
+	// request depends on what the consumer says once it has the batch.
 	//
 	// # Do not set it to exactly the number of rows you expect
 	//
@@ -344,7 +360,8 @@ type QueryConfig struct {
 	// # What it costs
 	//
 	// An early stop stops being cheap. With a row limit, a consumer that stops
-	// pulling leaves at most BatchRows rows to drain. With AllRows the server
+	// pulling leaves at most two batches to drain — the ones asked for ahead,
+	// see BatchRows. With AllRows the server
 	// has been told to produce everything, so abandoning a ten-million-row
 	// result means draining ten million rows to get the connection back to a
 	// known position — or closing it.
@@ -439,16 +456,16 @@ type QueryConfig struct {
 //
 // # What ctx stops, and what it does not
 //
-// ctx is checked **once per batch** — before the query is sent, and before
-// each request for the next batch. That granularity is not a compromise, it
-// is the one the protocol already imposes: rows arrive in groups of BatchRows
-// because Execute names a count, so between two checks there is exactly one
-// batch of work in flight and nothing finer to interrupt. Checking per row
-// would add a branch to the decode loop and buy no earlier stop.
+// ctx is checked **once per batch** — before the query is sent, and after
+// each batch is delivered. That granularity is not a compromise, it is the
+// one the protocol already imposes: rows arrive in groups of BatchRows
+// because Execute names a count, so a batch is the smallest unit of work
+// there is to interrupt. Checking per row would add a branch to the decode
+// loop and buy no earlier stop.
 //
 // A cancelled query **does not break the connection**. The stream ends, the
-// connection is resynchronised to the next ReadyForQuery — bounded by
-// BatchRows, the rows already asked for — and the next query on it works.
+// connection is resynchronised to the next ReadyForQuery — bounded by two
+// batches, the rows already asked for — and the next query on it works.
 // [sluice.Source.Err] reports ctx.Err() wrapped, so errors.Is against
 // [context.Canceled] and [context.DeadlineExceeded] answers.
 //
@@ -463,10 +480,13 @@ type QueryConfig struct {
 //
 // Rows are asked for a batch at a time — Execute names the count, the server
 // sends that many and suspends — so a consumer that stops pulling stops the
-// server, and memory is bounded by BatchRows rather than by the size of the
-// result. The cost is one round trip per batch instead of one for the whole
-// result. That is the deliberate trade: a result of ten million rows is
-// readable at all, and back-pressure is real rather than a buffer that fills.
+// server, two batches later, and memory is bounded by BatchRows rather than
+// by the size of the result. The next two batches are asked for before the
+// current one is delivered, so the server keeps producing while the consumer
+// works and the read pays no round trip per batch (see
+// [QueryConfig.BatchRows]). That is the deliberate trade: a result of ten
+// million rows is readable at all, and back-pressure is real rather than a
+// buffer that fills.
 //
 // # Errors
 //
@@ -477,8 +497,8 @@ type QueryConfig struct {
 //
 // An early stop is safe: the connection is resynchronised to the next
 // ReadyForQuery before Query's stream returns, so the connection stays usable.
-// That drain is bounded by BatchRows — the rows already asked for — which is
-// the other reason the server is asked a batch at a time.
+// That drain is bounded by two batches — the rows already asked for — which
+// is the other reason the server is asked a batch at a time.
 func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
 	batchRows := cfg.BatchRows
 	if batchRows <= 0 {
@@ -561,6 +581,9 @@ type query struct {
 	params     [][]byte
 	bound      []byte
 	rowsWanted int
+
+	// asked counts the Executes sent whose batch has not ended yet.
+	asked int
 }
 
 func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluice.Batch[Row]) bool) (err error) {
@@ -621,6 +644,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		q.synced = true
 	} else {
 		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
+		q.asked = 1
 		// Without this the backend holds everything it has produced until a
 		// Sync, and a Sync would close the portal the next Execute needs. See
 		// [Writer.FlushMessage].
@@ -661,32 +685,51 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		if err := q.ctx.Err(); err != nil {
 			return fmt.Errorf("abandoning the query: %w", err)
 		}
+		// Without a demand the next batches were asked for before this one
+		// was delivered — see the PortalSuspended case of readChunk.
+		if q.demand == nil {
+			continue
+		}
 		// The demand is read here, once per batch: the consumer that has
 		// just taken a batch may have said it wants nothing more — the
 		// query ends, the deferred resync drains the portal — or that it
 		// wants less, or from further on.
-		if q.demand != nil {
-			if q.demand.Exhausted() {
-				return nil
-			}
-			if q.replan() {
-				// The bound moved: the unnamed portal is bound again, which
-				// the protocol says destroys the suspended one, so no Sync
-				// and no round trip sit between the two. The statement is
-				// the same, so no Describe either — the rows keep the shape
-				// the first one announced.
-				c.w.BindBinary("", q.stmt, q.params)
-			}
+		if q.demand.Exhausted() {
+			return nil
+		}
+		if q.replan() {
+			// The bound moved: the unnamed portal is bound again, which
+			// the protocol says destroys the suspended one, so no Sync
+			// and no round trip sit between the two. The statement is
+			// the same, so no Describe either — the rows keep the shape
+			// the first one announced.
+			c.w.BindBinary("", q.stmt, q.params)
 		}
 		// The portal suspended with rows still to come, and the consumer is
 		// still taking them: ask for the next batch. This is the pull
 		// reaching the server.
-		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
-		c.w.FlushMessage()
-		if err := c.w.Flush(); err != nil {
-			return c.breakConn(fmt.Errorf("asking for the next batch: %w", err))
+		if err := q.askNext(1); err != nil {
+			return err
 		}
 	}
+}
+
+// executesAhead is how many batches a query without a demand keeps asked for
+// beyond the one being delivered.
+const executesAhead = 2
+
+// askNext asks the suspended portal for the next n batches, in one write.
+func (q *query) askNext(n int) error {
+	c := q.conn
+	for range n {
+		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
+	}
+	q.asked += n
+	c.w.FlushMessage()
+	if err := c.w.Flush(); err != nil {
+		return c.breakConn(fmt.Errorf("asking for the next batch: %w", err))
+	}
+	return nil
 }
 
 // replan brings the next request in line with the demand, and reports whether
@@ -789,6 +832,39 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 
 		case pgwire.BackendPortalSuspended:
 			// Exactly batchRows rows arrived and more remain.
+			q.asked--
+			// Without a demand, the next batches are asked for now, before
+			// this one reaches the consumer, and two are kept asked for: the
+			// server produces batch k+1 while the consumer works through
+			// batch k, and finds the Execute for k+2 waiting when it is done,
+			// so it never idles for a round trip. Asking after delivery put
+			// that round trip on every batch, 3.0 ms of a 3.5 ms gap with pgx
+			// on a wide read, measured; one batch ahead took back a fifth of
+			// it, because the server still waited for k+1 to be read before
+			// it heard of k+2, and two kept asked for but topped up after
+			// delivery took back three fifths. The price is a first batch
+			// that arrives one write later — 5% on its p50, measured — and
+			// an early stop that drains up to two batches.
+			//
+			// An Execute that reaches a portal already at its end is answered
+			// with no rows and a CommandComplete, which the resync discards:
+			// a portal that suspends is one the backend fetches from — a
+			// SELECT, or a statement whose RETURNING rows it holds in a store
+			// — and only the run-once kind, which never suspends, refuses a
+			// second Execute (PortalRun in the backend's pquery.c). So asking
+			// ahead is safe from the first PortalSuspended on, and never
+			// before it.
+			//
+			// A demand keeps the request after delivery, because the request
+			// is shaped by what the consumer says once it has the batch. Sent
+			// ahead, it could only carry the bound published after batch
+			// k-1, and AdvanceBy, which publishes the last key delivered,
+			// would re-bind the portal to start again at batch k.
+			if q.demand == nil {
+				if err := q.askNext(executesAhead - q.asked); err != nil {
+					return false, err
+				}
+			}
 			if !q.emit(yield) {
 				return true, nil // the consumer stopped; the deferred resync tidies up
 			}
@@ -890,9 +966,11 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 // the connection at a known position.
 //
 // Everything in between is discarded, including rows the consumer never asked
-// for: they were already on their way when it stopped. That is bounded by the
-// batch size, which is the second reason the server is asked for a batch at a
-// time rather than for the whole result.
+// for: they were already on their way when it stopped — the batches asked
+// for ahead of delivery, and the empty answer of an Execute that reached the
+// portal after its end. That is bounded by two batches, which is the second
+// reason the server is asked for a batch at a time rather than for the whole
+// result.
 func (q *query) resync() error {
 	c := q.conn
 	// Under AllRows the Sync left with the query, so sending another would
