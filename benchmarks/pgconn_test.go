@@ -74,7 +74,7 @@ func sluiceConn(b testing.TB) *postgres.Conn {
 	if !ok {
 		b.Skip("SLUICE_PG is not set")
 	}
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	nc, err := dialCount(context.Background(), "tcp", addr)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -88,7 +88,12 @@ func sluiceConn(b testing.TB) *postgres.Conn {
 
 func pgxConn(b testing.TB) *pgx.Conn {
 	b.Helper()
-	conn, err := pgx.Connect(context.Background(), dsn(b))
+	pcfg, err := pgx.ParseConfig(dsn(b))
+	if err != nil {
+		b.Fatal(err)
+	}
+	pcfg.DialFunc = dialCount
+	conn, err := pgx.ConnectConfig(context.Background(), pcfg)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -395,6 +400,7 @@ func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 	var acc int64
 	var first, last []time.Duration
 	b.ReportAllocs()
+	report := countReport(b)
 	for b.Loop() {
 		start := time.Now()
 		seen := false
@@ -404,6 +410,7 @@ func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 				first = append(first, time.Since(start))
 				seen = true
 			}
+			spinBatch()
 			for _, r := range batch.Items {
 				for col := range 6 {
 					v, isNull := r.Value(col)
@@ -430,6 +437,7 @@ func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 		last = append(last, time.Since(start))
 	}
 	sink = int(acc)
+	report()
 	reportPercentiles(b, "ttfb", first)
 	reportPercentiles(b, "ttlb", last)
 }
@@ -442,6 +450,7 @@ func BenchmarkPGWidePgx(b *testing.B) {
 	var acc int64
 	var first, last []time.Duration
 	b.ReportAllocs()
+	report := countReport(b)
 	for b.Loop() {
 		start := time.Now()
 		rows, err := conn.Query(ctx, wideSQL)
@@ -468,6 +477,7 @@ func BenchmarkPGWidePgx(b *testing.B) {
 		last = append(last, time.Since(start))
 	}
 	sink = int(acc)
+	report()
 	reportPercentiles(b, "ttfb", first)
 	reportPercentiles(b, "ttlb", last)
 }
