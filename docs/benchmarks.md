@@ -495,6 +495,32 @@ both to one core measures their contention.
 | `BenchmarkSocketNetHTTP` | 170371 ns | ±14% | 10113 B | 111 |
 | `BenchmarkSocketSluice` | 184708 ns | ±1% | 10120 B | 112 |
 
+### The connection budget and the batch bound (2026-10-14)
+
+`net/httpstream` closes an HTTP/1.1 connection after
+`Config.MaxRequestsPerConn` requests (1024 by default), and a client that
+does not pipeline — `net/http`'s own client, most load generators — dials
+again: a TCP handshake and a full TLS 1.3 handshake that `net/http`'s server
+never asks for. `BenchmarkConnLimitTLS*` (`internal/bench/connlimit_test.go`)
+prices it on this machine (Ryzen AI 9 465 under WSL2, loopback, eight clients
+with one connection each, no session resumption, client and server on the
+same CPU), 15 paired rounds by `versus.sh`: 1024 against unbounded, **+3.7%
+per request** (the budget won 0 of 14 rounds); 16 against unbounded, +224%,
+which gives the handshake itself: (115.1 − 34.9) µs × 16 ≈ 1.3 ms for both
+halves, and 1.3 ms ÷ 1024 ≈ 1.25 µs predicts +3.6% of a 35 µs round trip. The
+measured gap is the handshake and nothing else. On a deployment only the
+server's half lands on its CPU. The default stays. What this does not
+measure is the tail: over a 20 ms network each reconnection holds one request
+in 1024 for two extra round trips, which is exactly the p99.9 the comparison
+study measures (axis D).
+
+`Config.MaxRequestsPerBatch` only binds for a client that pipelines.
+`BenchmarkBatchLimitTLS*`, one connection with 256 requests written before
+any answer is read: 8 against 64, +83% per request (0 of 14); 256 against
+64, −16% (12 of 14), one response write per batch instead of four. The
+default stays at 64, the bound on what one burst may allocate; a consumer
+measured pipelining more than 64 deep is the condition to revisit it.
+
 ## The gateway, with a database behind it
 
 Sixty-four concurrent requests, each needing one row. Not pinned, for the same
