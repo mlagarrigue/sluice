@@ -25,4 +25,6 @@ RUN go install mvdan.cc/gofumpt@v0.12.0 \
     && go clean -cache -modcache
 
 # Anything personal — editor tools, credentials, mounts, CPU pinning —
-# belongs in .devcontainer/local/, which git ignores, not here.
+# belongs in .devcontainer/local/, which git ignores, not here: how to layer
+# it over this image, and why, is in CONTRIBUTING.md, "The development
+# container".

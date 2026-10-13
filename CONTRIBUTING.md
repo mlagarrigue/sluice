@@ -62,6 +62,96 @@ sentence. Experimental means: no compatibility promise, and not yet
 confronted with other implementations. It does not live in a separate
 directory.
 
+## The development container
+
+`.devcontainer/` describes a *devcontainer*: a development environment that
+VS Code (or the `devcontainer` CLI) builds in a Docker container and opens
+as if it were local. It holds what `scripts/check.sh` needs and nothing
+else: Go, gcc for the race detector, `gofumpt` and `golangci-lint` at the
+versions CI runs, and the PostgreSQL server of the integration tests. That
+is deliberate, for two reasons:
+
+- **A minimal surface.** No extra package, no third-party apt repository, no
+  `sudo`, every tool pinned to a version. What is not installed can neither
+  break nor be compromised, and two builds a month apart give the same
+  tooling.
+- **Nothing personal in the repository.** Editor tools, credentials (a
+  token, a signing key), mounts from your machine: they differ from one
+  contributor to the next. Putting them here would impose them on everyone,
+  and expose the author's.
+
+> **In plain words** — the public image is the smallest environment where
+> the checks pass. What you add for your own comfort goes in an overlay of
+> your own, which git ignores.
+
+### Adding your tools: the local overlay
+
+`.devcontainer/local/` is ignored by git. A `devcontainer.json` placed there
+shows up as a second configuration when VS Code reopens the folder in a
+container. Three files are enough.
+
+`.devcontainer/local/devcontainer.json` takes the public service and adds a
+Compose file:
+
+```jsonc
+{
+  "name": "sluice (local)",
+  "dockerComposeFile": ["../compose.yml", "compose.local.yml"],
+  "service": "dev",
+  "runServices": ["dev", "postgres"],
+  "workspaceFolder": "/workspaces/sluice",
+  "remoteUser": "dev"
+}
+```
+
+`.devcontainer/local/compose.local.yml` is a *Compose override*: Compose
+merges it over `compose.yml`, and its relative paths start from the first
+file's folder, `.devcontainer/`.
+
+```yaml
+services:
+  dev-public:            # the public image, built as is
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: "true"
+  dev:                   # your layers on top
+    build:
+      context: local
+      dockerfile: Dockerfile
+      additional_contexts:
+        public: service:dev-public
+```
+
+`.devcontainer/local/Dockerfile` starts from the public image and adds what
+you want. An *image* is the frozen file system a container starts from;
+each instruction of a Dockerfile adds a *layer* to it.
+
+```dockerfile
+FROM public
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep sudo \
+    && rm -rf /var/lib/apt/lists/*
+USER dev
+```
+
+Then open the VS Code command palette, run "Dev Containers: Rebuild
+Container", and pick "sluice (local)".
+
+Why this arrangement rather than a copy of the public configuration:
+
+- **`FROM public` follows the public image.** At every rebuild, your layers
+  land on the public image of the day: when it moves to a new Go or linter
+  version, your overlay follows without copying anything.
+  `additional_contexts` with `service:` is what hands that image to your
+  Dockerfile; it needs a recent Docker Compose.
+- **`runServices` keeps `dev-public` off.** That service exists only to be
+  built; without the line, Compose would start it too.
+- **Mounts go in `compose.local.yml`.** To mount a folder from your machine
+  (credentials, say), declare it under `dev.volumes` with `:ro` (read-only).
+  In a Compose configuration, the devcontainer CLI ignores `readonly` in
+  `devcontainer.json`'s `mounts` key; Compose honours `:ro`.
+
 ## Checking
 
 Before every commit, all of this, and none of it may print anything:
