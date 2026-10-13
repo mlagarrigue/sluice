@@ -358,10 +358,11 @@ Sign-test verdicts, 14 rounds:
 
 - `AllRows` against the default: −22.5% in ns/op, 14 rounds of 14; TTLB
   p50 −22.4%, 14 of 14; TTFB unchanged (noise). The 3.5 ms gap with pgx is
-  therefore first the round trip per batch: by default sluice sends the
+  therefore first the round trip per batch: at the time, sluice sent the
   `Execute` for the next batch only after delivering the previous one
-  (`database/postgres/conn.go`), and the server waits while the client
-  decodes. Twenty batches, twenty waits: 3.0 ms of the 3.5.
+  (`database/postgres/conn.go`), and the server waited while the client
+  decoded. Twenty batches, twenty waits: 3.0 ms of the 3.5. Fixed since:
+  see the next paragraph.
 - `AllRows` against pgx: +4.2% in ns/op (13 rounds of 14), TTLB p50 +4.1%
   (12 of 14). 0.4 ms remain. It is not decoding: on a CPU profile, the
   sluice client spends 31% of the read idle, waiting on the socket, and
@@ -376,6 +377,40 @@ Sign-test verdicts, 14 rounds:
 ```
 cd benchmarks && go test -run '^$' -bench 'PGWide(Sluice|SluiceAllRows|Pgx)$' -benchtime 2s
 ```
+
+**Two batches asked for ahead (measured 2026-10-14).** The default read now
+sends the `Execute` for the next two batches as soon as the portal
+suspends, before the batch in hand reaches the consumer: the server
+produces batch k+1 while the consumer works through batch k, and finds the
+request for k+2 waiting. Same protocol as above, fifteen paired rounds,
+the binary before the change and after it back to back in each round. The
+machine was slower that day than on 2026-10-13, so the absolute figures do
+not compare with the table above; the ratios within a round do:
+
+| benchmark | ns/op | TTFB p50 | p90 | p99 | p99.9 | TTLB p50 | p90 | p99 | p99.9 |
+|---|---|---|---|---|---|---|---|---|---|
+| `BenchmarkPGWidePgx` | 13.11 ms | 359 | 545 | 951 | 1,236 | 12,764 | 14,953 | 20,811 | 23,249 |
+| `BenchmarkPGWideSluice`, before | 18.53 ms | 973 | 1,288 | 1,836 | 1,965 | 17,914 | 21,431 | 27,440 | 28,609 |
+| `BenchmarkPGWideSluice`, after | 14.64 ms | 1,044 | 1,437 | 1,904 | 2,001 | 14,192 | 16,698 | 21,153 | 23,748 |
+| `BenchmarkPGWideSluiceAllRows` | 13.85 ms | 1,009 | 1,299 | 1,946 | 2,171 | 13,380 | 15,195 | 22,990 | 24,138 |
+
+- After against before: −22.9% in ns/op, 15 rounds of 15; TTLB p50
+  −21.9%, 15 of 15. The round trip per batch is gone.
+- The first batch pays for it: TTFB p50 +5.6% (worse in 14 rounds of 15),
+  about 70 µs, the write of the two `Execute` messages, which now goes out
+  before the first batch is handed over.
+- After against `AllRows`: +6.1% in ns/op (worse in 13 of 15). The default
+  still writes once per batch where `AllRows` writes once per query; what
+  that write costs on the client has not been separated from what the
+  server spends resuming a portal.
+- Two variants measured and rejected: one batch asked for ahead (−4.7%, 9
+  rounds of 15, not significant: the server still waits for batch k+1 to
+  be read before it hears of k+2), and two batches kept asked for but
+  topped up after delivery (−13.6%, 15 of 15, TTFB unchanged: the server
+  idles while the consumer works).
+- An early stop now drains up to two batches instead of none
+  (`QueryConfig.BatchRows`). A `Demand` keeps one request per batch, after
+  delivery, because the request depends on what the consumer says.
 
 ## Codec, in isolation
 

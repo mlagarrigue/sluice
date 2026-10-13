@@ -599,6 +599,55 @@ func TestIntegrationEarlyStopLeavesTheConnectionUsable(t *testing.T) {
 	}
 }
 
+// The Executes sent ahead of delivery reach the portal after its end whenever
+// the result is shorter than what was asked for, and the backend's answer is
+// what makes that safe: no rows and a CommandComplete, never a second run. A
+// script can only say what it is told; this asks the server, on the two
+// shapes that suspend — a SELECT whose row count is an exact multiple of the
+// batch, and an INSERT ... RETURNING, whose rows the backend holds in a store
+// and which must have inserted once.
+func TestIntegrationExecutesAheadReachAFinishedPortalHarmlessly(t *testing.T) {
+	conn := dial(t)
+
+	count := func(sql string) int64 {
+		t.Helper()
+		var n int64
+		src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{BatchRows: 32})
+		src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+			n += int64(b.Len())
+			return true
+		})
+		if err := src.Err(); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		return n
+	}
+
+	if n := count("SELECT i FROM generate_series(1, 64) AS i"); n != 64 {
+		t.Errorf("exact multiple of the batch: %d rows, want 64", n)
+	}
+
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_ahead_test (id bigint)"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("INSERT INTO sluice_ahead_test SELECT i FROM generate_series(1, 40) AS i RETURNING id"); n != 40 {
+		t.Errorf("INSERT ... RETURNING delivered %d rows, want 40", n)
+	}
+	var stored int64
+	src := conn.Query(t.Context(), "SELECT count(*) FROM sluice_ahead_test", nil, postgres.QueryConfig{BatchRows: 4})
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		v, _ := b.Items[0].Value(0)
+		stored, _ = postgres.DecodeInt8(v)
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 40 {
+		t.Errorf("the table holds %d rows, want 40 — an Execute sent ahead ran the INSERT again", stored)
+	}
+}
+
 // An error that arrives after rows have already been delivered, which is a
 // different path from one that fails before the first row: the consumer has
 // seen data, and the error has to reach it anyway.
