@@ -271,46 +271,72 @@ much.
 
 ## QUIC, on an emulated path
 
-`net/quic`'s three path benchmarks (`net/quic/netem_bench_test.go`) move one
-stream through an in-process middlebox that charges every datagram a one-way
-delay and, per profile, draws a loss or queues it behind a bottleneck. They
+`net/quic`'s path benchmarks (`net/quic/netem_bench_test.go`) move one
+stream — two, on the fairness profile — through an in-process middlebox
+that charges every datagram a one-way delay and, per profile, draws a loss
+(independent or in bursts), holds it back so that it arrives after its
+successors, or queues it behind a bottleneck that the flows share. They
 measure the congestion controller, not the CPU: a transfer takes as long as
 the path lets it, so the figure is goodput — bytes the receiver got per
 second of wall clock — and the machine's load barely moves it. What moves
 it is how fast the window grows (`Clean`), how loss is detected and growth
-resumed (`Loss1pct`), and whether bursts overrun a shallow buffer
-(`Bottleneck`, whose line rate is 6.25 MB/s: the sender reaches 71% of it,
-and the rest is what the pacing item in the backlog is about).
+resumed (`Loss1pct`, and `BurstLoss` for the same loss rate in runs of four),
+whether a late datagram is mistaken for a lost one (`Reorder`, which has no
+loss at all), whether bursts overrun a shallow buffer (`Bottleneck`, whose
+line rate is 6.25 MB/s), how much of a deep one the controller fills
+(`DeepBuffer`, read through `rtt_x`), how two copies of it split a line
+(`TwoFlows`, read through `share`) and how it grows a window back on a long
+round trip (`RTT40`, `RTT80`). Each benchmark also prints `rtt_x`, the
+sender's final smoothed RTT over the smallest it sampled: one when the
+controller keeps the queue empty, six when it keeps 200 ms of buffer full.
 
 | Benchmark | Path | Transfer | Median | Goodput | Spread |
 |---|---|---|---|---|---|
-| `BenchmarkTransferClean` | 20 ms RTT, no loss | 8 MiB | 238.5 ms | 35.2 MB/s | ±1% |
-| `BenchmarkTransferLoss1pct` | 20 ms RTT, 1% loss each way | 4 MiB | 4.31 s | 0.97 MB/s | ±4% |
-| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 950 ms | 4.41 MB/s | ±1% |
+| `BenchmarkTransferClean` | 20 ms RTT, no loss | 8 MiB | 255.8 ms | 32.8 MB/s | ±6% |
+| `BenchmarkTransferLoss1pct` | 20 ms RTT, 1% loss each way | 4 MiB | 4.40 s | 0.95 MB/s | ±4% |
+| `BenchmarkTransferBurstLoss` | 20 ms RTT, 1% loss in bursts of 4 | 4 MiB | 755 ms | 5.55 MB/s | ±1%, one round at +42% |
+| `BenchmarkTransferReorder` | 20 ms RTT, 2% of datagrams up to 2 ms late | 4 MiB | 4.89 s | 0.86 MB/s | ±12%, not gated |
+| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 865 ms | 4.86 MB/s | ±2%, one round at +23% |
+| `BenchmarkTransferDeepBuffer` | 20 ms RTT, 50 Mbit/s, 200 ms of buffer | 4 MiB | 788 ms | 5.33 MB/s, `rtt_x` 5.9 | ±0.2% |
+| `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
+| `BenchmarkTransferRTT40` | 40 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 971 ms | 8.64 MB/s | ±1% |
+| `BenchmarkTransferRTT80` | 80 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 1.35 s | 6.21 MB/s | ±2% |
 
 ```
-go test -run=XXX -bench='BenchmarkTransfer(Clean|Loss1pct|Bottleneck)$' -count=8 ./net/quic/ | tee after.txt
+go test -run=XXX -bench='BenchmarkTransfer' -benchtime=1x -count=8 ./net/quic/ | tee after.txt
 benchstat before.txt after.txt
 ```
 
-**These rows are ceilings.** Eight rounds on 2026-10-14, medians by
-`benchstat`, go1.26.9, the same laptop as the rest of this document, not
-pinned: an emulation that sleeps on timers in several goroutines must not
-be. A change to `net/quic` that puts a median more than **15% below** its
-row is a regression until it is explained; one that puts it above replaces
-the row.
+**These rows are ceilings.** Eight rounds on 2026-10-14, medians, go1.26.9,
+the same laptop as the rest of this document, not pinned: an emulation that
+sleeps on timers in several goroutines must not be. The spread is the
+farthest round from the median; where one round of eight sits far above
+it, the row says so, and that is why the statistic is the median. A change
+to `net/quic` that puts a median more than **15% below** its row is a
+regression until it is explained; one that puts it above replaces the row.
 
-**The CI gate watches them** through a second script,
+The six profiles below `Loss1pct` are the ones the congestion-control
+palette (CUBIC, BBR) will have to prove itself on, and their rows are
+Reno's figures: the starting ceiling, not a target. Reno reaches half of
+the 100 Mbit/s line at 80 ms of RTT, fills a 200 ms buffer to the brim,
+and on the reordering profile declares loss the path never had — those are
+the margins a new controller is measured against.
+
+**The CI gate watches eight of them** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
-`gate.sh`'s on every pull request. It differs from `gate.sh` in the three ways these rows
-require: it builds `net/quic`'s test binary rather than `internal/bench`'s;
-it runs the two binaries unpinned, with the runtime's own `GOMAXPROCS`,
-since the emulation sleeps on timers in several goroutines; and it rules on
-the median of eight transfers a side, interleaved before/after so drift
-cancels, red when the median after is more than 15% above the median before
-rather than on a 3% effect by sign test. One transfer per round
-(`-benchtime=1x`): the figure is a transfer's wall clock, not a rate the
-harness scales. To run it by hand against the tree before a change:
+`gate.sh`'s on every pull request. It differs from `gate.sh` in the three
+ways these rows require: it builds `net/quic`'s test binary rather than
+`internal/bench`'s; it runs the two binaries unpinned, with the runtime's
+own `GOMAXPROCS`, since the emulation sleeps on timers in several
+goroutines; and it rules on the median of eight transfers a side,
+interleaved before/after so drift cancels, red when the median after is
+more than 15% above the median before rather than on a 3% effect by sign
+test. One transfer per round (`-benchtime=1x`): the figure is a transfer's
+wall clock, not a rate the harness scales. `Reorder` stays out of the gate:
+on an identical tree its median moved 7% between the two sides (the eight
+gated profiles, under 2.1%), because a spurious loss is declared or not by
+a few microseconds of scheduling. To run the gate by hand against the tree
+before a change:
 
 ```
 internal/bench/scripts/gate-path.sh main
