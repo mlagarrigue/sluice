@@ -114,23 +114,36 @@ func TestECNValidationOutcomes(t *testing.T) {
 	acked := ackOutcome{raisedLargest: true, newlyAckedECT0: 5}
 
 	c := fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{5, 0, 0}, true), acked)
+	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{5, 0, 0}, true), acked); newCE != 0 {
+		t.Fatalf("matching counts reported %d new CE marks, want 0", newCE)
+	}
 	if c.ecn.phase != ecnCapable || c.spaces[spaceApplication].ecnLast != [3]uint64{5, 0, 0} {
 		t.Fatalf("matching counts: phase %d last %v", c.ecn.phase, c.spaces[spaceApplication].ecnLast)
 	}
-	// CE marks stand in for ECT(0) ones: the network remarked, not cleared.
+	// CE marks stand in for ECT(0) ones: the network remarked, not cleared,
+	// and the two marks are the congestion signal the controller hears.
 	c = fresh(5)
-	c.validateECNLocked(spaceApplication, ack([3]uint64{3, 0, 2}, true), acked)
+	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{3, 0, 2}, true), acked); newCE != 2 {
+		t.Fatalf("ECT(0)+CE covering the packets reported %d new CE marks, want 2", newCE)
+	}
 	if c.ecn.phase != ecnCapable {
 		t.Fatalf("ECT(0)+CE covering the packets: phase %d", c.ecn.phase)
 	}
-	// Decreasing counts, on a path already validated.
+	// The same counts again, under an unchanged largest: old news, no
+	// second signal. Then one more mark in a frame that raises it: one.
+	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{3, 0, 2}, true), ackOutcome{}); newCE != 0 {
+		t.Fatalf("a frame that does not raise the largest reported %d new CE marks, want 0", newCE)
+	}
+	c.spaces[spaceApplication].ecnSent = 10
+	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{7, 0, 3}, true), acked); newCE != 1 {
+		t.Fatalf("one more CE mark reported as %d, want 1", newCE)
+	}
+	// Decreasing counts, on a path already validated: failed, no signal.
 	c = fresh(20)
 	c.validateECNLocked(spaceApplication, ack([3]uint64{5, 0, 0}, true), acked)
 	c.spaces[spaceApplication].ecnSent = 20
-	c.validateECNLocked(spaceApplication, ack([3]uint64{4, 0, 0}, true), acked)
-	if c.ecn.phase != ecnFailed {
-		t.Fatalf("decreasing counts: phase %d", c.ecn.phase)
+	if newCE := c.validateECNLocked(spaceApplication, ack([3]uint64{4, 0, 1}, true), acked); newCE != 0 || c.ecn.phase != ecnFailed {
+		t.Fatalf("decreasing counts: phase %d, %d new CE marks, want failed and 0", c.ecn.phase, newCE)
 	}
 	c = fresh(5)
 	c.validateECNLocked(spaceApplication, ack([3]uint64{}, false), acked)

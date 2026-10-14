@@ -187,6 +187,9 @@ func (b *bbr) onSent(now time.Time, bytes int) {
 
 func (b *bbr) onLifted(bytes int) { b.inFlight = max(b.inFlight-bytes, 0) }
 
+// onMarked is ignored: version 1 reads bandwidth and round trip only.
+func (b *bbr) onMarked(markEvent) {}
+
 // pacingRate is the rate the model names, pacing_gain × BtlBw (§4.2.1),
 // kept in rate by setPacingRate. Before the first sample it is the
 // draft's initial rate: the initial window over the round trip, at

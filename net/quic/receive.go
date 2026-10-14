@@ -1118,7 +1118,12 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}
-	c.validateECNLocked(space, f, out)
+	if newCE := c.validateECNLocked(space, f, out); newCE > 0 {
+		// After the frame's acknowledgements and before its losses: a mark
+		// is congestion the network reported without dropping (§13.4.2),
+		// and the controller hears it as such (draft-ietf-ccwg-bbr §3.7).
+		c.cc.onMarked(markEvent{now: now, latestSent: out.largestSentAt, packets: newCE})
+	}
 	if out.largestWasNew && out.largestEliciting {
 		var ackDelay time.Duration
 		if space == spaceApplication {

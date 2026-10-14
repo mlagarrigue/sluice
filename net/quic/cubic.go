@@ -210,6 +210,14 @@ func (c *cubic) onLost(ev lossEvent) {
 	c.startEpoch(ev.now)
 }
 
+// onMarked is the multiplicative decrease of a loss (RFC 9438 §3.1 reads a
+// CE mark as a congestion event) with nothing leaving the flight: the
+// marked packets were delivered. Dated by the frame's largest acknowledged
+// packet (RFC 9002 B.12), once per recovery period.
+func (c *cubic) onMarked(ev markEvent) {
+	c.onLost(lossEvent{now: ev.now, latestSent: ev.latestSent})
+}
+
 // onPersistentCongestion collapses the window the way Reno does (RFC 9002
 // §7.6.2); the slow-start threshold stays what the loss in the same batch
 // set it to, β of the window. The stage is closed and wMax forgotten: a

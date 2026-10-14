@@ -619,6 +619,15 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 // from it decrypts, sends are held to RFC 9000 §8.1's anti-amplification
 // limit of three times the bytes received — the same accounting
 // Listener-managed connections pay, with the same implicit release.
+//
+// A connection accepted this way never uses ECN. The caller read the first
+// datagram, and this signature carries its bytes but not the ECN field of
+// its IP header, so the connection counts that packet as Not-ECT (RFC 9000
+// §13.4.1). A client that tests the path marks it ECT(0), finds no ECN
+// counts in the acknowledgement that covers it, and fails validation as
+// §13.4.2.1 requires; it sends unmarked from then on. Behind a [Listener]
+// the mark is read with the datagram and the path validates. A form of
+// Accept that takes the mark with the datagram would lift this.
 func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err

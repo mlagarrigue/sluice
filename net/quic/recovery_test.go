@@ -556,7 +556,7 @@ func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
 // every site that must report is checked for reporting.
 type spyController struct {
 	congestionController
-	sent, acked, lost, collapsed, lifted int
+	sent, acked, lost, collapsed, lifted, marked int
 }
 
 func (s *spyController) onSent(now time.Time, bytes int) {
@@ -582,6 +582,11 @@ func (s *spyController) onPersistentCongestion() {
 func (s *spyController) onLifted(bytes int) {
 	s.lifted++
 	s.congestionController.onLifted(bytes)
+}
+
+func (s *spyController) onMarked(ev markEvent) {
+	s.marked++
+	s.congestionController.onMarked(ev)
 }
 
 // Every event the connection owes its congestion controller reaches it
@@ -832,4 +837,39 @@ func plainPair(t *testing.T) (client, server *Conn) {
 	}
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	return client, server
+}
+
+// A CE increase is a congestion event for Reno and CUBIC (RFC 9002 §7.3.2,
+// B.12; RFC 9438 §3.1): the window takes its loss decrease and the recovery
+// period opens, once — a second report dated before the period's start is
+// the same event — and the flight does not move, the marked packets having
+// arrived.
+func TestMarksAreACongestionEvent(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name string
+		cc   congestionController
+		want int // the window after one event, from 12000
+	}{
+		{"reno", newNewReno(1200), 6000},
+		{"cubic", newCubic(1200), 8400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cc := tc.cc
+			cc.onSent(now, 12000)
+			cc.onMarked(markEvent{now: now, latestSent: now.Add(-time.Millisecond), packets: 1})
+			if cc.window() != tc.want || cc.bytesInFlight() != 12000 {
+				t.Fatalf("after one mark: window %d flight %d, want %d and 12000", cc.window(), cc.bytesInFlight(), tc.want)
+			}
+			cc.onMarked(markEvent{now: now, latestSent: now.Add(-time.Millisecond), packets: 3})
+			if cc.window() != tc.want {
+				t.Fatalf("a second report of the same event moved the window to %d", cc.window())
+			}
+			later := now.Add(time.Second)
+			cc.onMarked(markEvent{now: later, latestSent: now.Add(time.Millisecond), packets: 1})
+			if cc.window() >= tc.want {
+				t.Fatalf("a mark on a packet sent after the period began left the window at %d", cc.window())
+			}
+		})
+	}
 }

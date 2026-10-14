@@ -565,6 +565,11 @@ type congestionController interface {
 	// onPersistentCongestion follows onLost in the same batch when the
 	// losses span more than the persistent-congestion duration (§7.6).
 	onPersistentCongestion()
+	// onMarked follows the onAcked calls of an ACK frame whose ECN counts
+	// passed validation and report more CE marks than before (RFC 9000
+	// §13.4.2): the network is signalling congestion without dropping.
+	// Controllers that read loss only ignore it.
+	onMarked(ev markEvent)
 	// onLifted releases bytes that leave the flight record without being
 	// acknowledged or lost: a probe timeout's lifted copy, a lost DPLPMTUD
 	// probe, a discarded space, a Retry.
@@ -596,6 +601,17 @@ type ackEvent struct {
 	sendElapsed    time.Duration
 	sinceDelivered time.Duration
 	appLimited     bool
+}
+
+// markEvent is one ACK frame's newly reported CE marks, as onMarked sees
+// them: the peer counts marked packets, not bytes, and names no packet
+// (RFC 9000 §19.3.2), so the event is a count at a time, not a packet.
+// latestSent is when the frame's largest acknowledged packet left — what
+// RFC 9002 B.12 dates the congestion event with.
+type markEvent struct {
+	now        time.Time
+	latestSent time.Time
+	packets    int
 }
 
 // rateSample is one acknowledgement's delivery-rate sample
@@ -883,6 +899,14 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 // the same way (RFC 9000 §14.4). Floored as a guard only: a previous path's
 // packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
+
+// onMarked is a congestion event dated by the frame's largest acknowledged
+// packet (RFC 9002 §7.3.2, B.12 ProcessECN): the window halves and the
+// recovery period opens, as on a loss, unless one is already running. The
+// marked packets were delivered, so the flight does not move.
+func (c *newReno) onMarked(ev markEvent) {
+	c.onLost(lossEvent{now: ev.now, latestSent: ev.latestSent})
+}
 
 // pacingRate is 5/4 of the window per smoothed round trip — the RFC's
 // "slightly higher than necessary" rate (§7.7), so pacing never becomes

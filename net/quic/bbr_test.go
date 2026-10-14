@@ -60,6 +60,11 @@ func (p *bbrPath) lose(n int) {
 	p.cc.onLost(lossEvent{now: p.now, latestSent: latest, bytes: n * 1200})
 }
 
+// mark reports n CE-marked datagrams now, as one validated ACK frame does.
+func (p *bbrPath) mark(n int) {
+	p.cc.onMarked(markEvent{now: p.now, packets: n})
+}
+
 // round sends n datagrams and acknowledges them a round trip later.
 func (p *bbrPath) round(n int) {
 	p.send(n)

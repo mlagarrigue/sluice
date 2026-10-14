@@ -73,12 +73,16 @@ func (e *ecnState) mark() uint8 {
 
 // validateECNLocked checks the ECN counts of one ACK frame against what
 // this end sent in that space (§13.4.2.1), and moves the path to capable
-// or failed. out is what processAck made of the frame. Callers hold mu.
-func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) {
+// or failed. out is what processAck made of the frame. It returns how many
+// more packets the frame reports as CE-marked than the last valid one in
+// that space (§13.4.2.1's "increase in the ECN-CE count"): the congestion
+// signal the controller reads, zero when the counts fail validation or
+// the frame is old news. Callers hold mu.
+func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) (newCE int) {
 	if c.ecn.phase == ecnFailed || !out.raisedLargest {
 		// A frame that does not increase the largest acknowledged number
 		// is old or reordered news, and MUST NOT fail validation.
-		return
+		return 0
 	}
 	sp := &c.spaces[space]
 	counts, ok := ackECNCounts(f)
@@ -89,7 +93,7 @@ func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) {
 		if out.newlyAckedECT0 > 0 {
 			c.ecn.phase = ecnFailed
 		}
-		return
+		return 0
 	}
 	prev := sp.ecnLast
 	switch {
@@ -109,7 +113,10 @@ func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) {
 		if out.newlyAckedECT0 > 0 {
 			c.ecn.phase = ecnCapable
 		}
+		// Bounded by ecnSent, a count of this end's packets: fits an int.
+		return int(counts[2] - prev[2]) //nolint:gosec // G115: see above
 	}
+	return 0
 }
 
 // ecnSocket asks pc's kernel to report the ECN field of every datagram

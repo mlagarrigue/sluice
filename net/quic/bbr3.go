@@ -32,8 +32,13 @@ import (
 // — and ProbeRTT halves the window for 200 ms every five seconds
 // (§5.3.4). extra_acked (§5.5.9) adds the aggregation the path shows to
 // the window. The send quantum is one datagram, the unit the pacer
-// releases, and the CE counts the peer reports (§3.7) are validated by
-// the transport but not yet read here.
+// releases. The CE marks the peer reports (§3.7: the draft specifies no
+// response, only that marks MUST be treated as congestion) are read as a
+// loss is, less the retransmission: a marked round cuts the short-term
+// model by 0.7 (onMarked), and marks count with losses against the 2% a
+// probe may cause, so a probe that marks more than that bounds
+// inflight_longterm and goes DOWN. Not the DCTCP-style response Linux
+// gives L4S marks, which this end never asks for (it marks ECT(0)).
 //
 // Four readings this draft leaves to the implementation. The volume in
 // flight when a lost packet was sent (RS.tx_in_flight) is read as the
@@ -82,9 +87,10 @@ type bbr3 struct {
 	// The short-term model (§5.5.10.3): the bounds, unset between probes,
 	// and the latest delivery signals they adapt to — the best rate and
 	// volume of the current loss round. A loss round runs from the first
-	// loss to the acknowledgement of a packet sent after it; lostInRound
-	// and lossEventsInRound count its losses, roundDelivered holds what
-	// the round that just ended delivered.
+	// loss or CE mark to the acknowledgement of a packet sent after it;
+	// lostInRound and lossEventsInRound count its losses, markedInRound its
+	// marks in bytes (the peer counts packets: one datagram each),
+	// roundDelivered holds what the round that just ended delivered.
 	bwShortterm        float64
 	inflightShortterm  int
 	bwLatest           float64
@@ -94,6 +100,7 @@ type bbr3 struct {
 	lossRoundDelivered int
 	roundDelivered     int
 	lostInRound        int
+	markedInRound      int
 	lossEventsInRound  int
 
 	// Round counting (§5.5.1): delivered is the controller's own count of
@@ -414,7 +421,7 @@ func (b *bbr3) updateCongestionSignals(rs rateSample, priorDelivered int) {
 	b.adaptLowerBoundsFromCongestion()
 	b.checkStartupHighLoss()
 	b.lossInRound = false
-	b.lostInRound, b.lossEventsInRound = 0, 0
+	b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
 }
 
 // updateMaxBw is BBRUpdateMaxBw (§5.5.5): an application-limited sample is
@@ -447,9 +454,9 @@ func (b *bbr3) cwndLimited() bool { return b.limited || b.limitedPrev }
 func (b *bbr3) startRound() { b.nextRoundDelivered = b.delivered }
 
 // adaptLowerBoundsFromCongestion is BBRAdaptLowerBoundsFromCongestion
-// (§5.5.10.3): a round that saw a loss while the flow was not probing cuts
-// the short-term bounds to 0.7 of what they were, never under what the
-// round actually delivered.
+// (§5.5.10.3): a round that saw a loss or a CE mark while the flow was not
+// probing cuts the short-term bounds to 0.7 of what they were, never under
+// what the round actually delivered.
 func (b *bbr3) adaptLowerBoundsFromCongestion() {
 	if b.probingBW() || !b.lossInRound {
 		return
@@ -473,9 +480,9 @@ func (b *bbr3) inProbeBW() bool {
 }
 
 // inflightTooHigh is IsInflightTooHigh (§5.5.10.2): the loss round's losses
-// against a volume in flight exceed the 2% a probe may cause.
+// and CE marks against a volume in flight exceed the 2% a probe may cause.
 func (b *bbr3) inflightTooHigh(volume int) bool {
-	return b.lossInRound && float64(b.lostInRound) > bbr3LossThresh*float64(volume)
+	return b.lossInRound && float64(b.lostInRound+b.markedInRound) > bbr3LossThresh*float64(volume)
 }
 
 // checkStartupHighLoss is BBRCheckStartupHighLoss (§5.3.1.3), read when a
@@ -609,7 +616,7 @@ func (b *bbr3) startProbeBWUp() {
 
 func (b *bbr3) resetCongestionSignals() {
 	b.lossInRound = false
-	b.lostInRound, b.lossEventsInRound = 0, 0
+	b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
 	b.bwLatest, b.inflightLatest = 0, 0
 }
 
@@ -909,11 +916,7 @@ func (b *bbr3) boundCwndForModel() {
 func (b *bbr3) onLost(ev lossEvent) {
 	inflightAtLoss := b.inFlight
 	b.inFlight = max(b.inFlight-ev.bytes, 0)
-	if !b.lossInRound {
-		b.lossRoundDelivered = b.delivered
-		b.lostInRound, b.lossEventsInRound = 0, 0
-	}
-	b.lossInRound = true
+	b.noteCongestion()
 	b.lostInRound += ev.bytes
 	b.lossEventsInRound++
 	if !ev.latestSent.Before(b.recoveryStart) {
@@ -925,6 +928,32 @@ func (b *bbr3) onLost(ev lossEvent) {
 		return
 	}
 	b.handleInflightTooHigh(ev.now, b.inflightLongtermFromLostPacket(inflightAtLoss, ev.bytes))
+}
+
+// noteCongestion is BBRNoteLoss: a loss or a mark opens a loss round if
+// none is running — it ends when a packet sent from now on is acknowledged.
+func (b *bbr3) noteCongestion() {
+	if !b.lossInRound {
+		b.lossRoundDelivered = b.delivered
+		b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
+	}
+	b.lossInRound = true
+}
+
+// onMarked is the response to CE marks §3.7 leaves to the implementation,
+// a loss's without the retransmission: the marks count toward the loss
+// round, whose end cuts the short-term model by 0.7 if the flow was not
+// probing (adaptLowerBoundsFromCongestion), and, while probing, toward the
+// 2% that bounds inflight_longterm at the current flight — the volume the
+// network marked at — and sends ProbeBW_UP DOWN. No recovery period: BBR
+// cuts nothing on entering one, and the marked packets were delivered.
+func (b *bbr3) onMarked(ev markEvent) {
+	b.noteCongestion()
+	b.markedInRound += ev.packets * b.maxDatagram
+	if !b.bwProbeSamples || !b.inflightTooHigh(b.inFlight) {
+		return
+	}
+	b.handleInflightTooHigh(ev.now, b.inFlight)
 }
 
 // inflightLongtermFromLostPacket is BBRInflightLongtermFromLostPacket: the

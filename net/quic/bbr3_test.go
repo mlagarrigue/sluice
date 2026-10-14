@@ -328,3 +328,78 @@ func TestWindowedMax(t *testing.T) {
 		t.Fatalf("tick 30: %d, want everything expired", got)
 	}
 }
+
+// A CE mark between probes is a loss without the retransmission (§3.7 leaves
+// the response open; this one reads marks as congestion the way §5.5.10.3
+// reads loss): the round that saw it ends on the acknowledgement of a packet
+// sent after it, and the short-term bounds drop to 0.7 of the window and of
+// max_bw, never under what the round delivered. The window follows.
+func TestBBR3MarksCutTheShortTermBound(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	p.round(80)
+	if b.inflightShortterm != bbr3Unbounded || !math.IsInf(b.bwShortterm, 1) {
+		t.Fatalf("short-term bounds %d / %v set before any signal", b.inflightShortterm, b.bwShortterm)
+	}
+	p.send(80)
+	p.now = p.now.Add(p.rtt)
+	p.ack(40)
+	p.mark(2)
+	if !b.lossInRound || b.markedInRound != 2*1200 {
+		t.Fatalf("after two marks: loss round %v, marked %d bytes, want open and 2400", b.lossInRound, b.markedInRound)
+	}
+	// The rest of the flight was sent before the marks: the round stays open.
+	p.ack(40)
+	if b.inflightShortterm != bbr3Unbounded {
+		t.Fatalf("the round closed on a packet sent before the marks: bound %d", b.inflightShortterm)
+	}
+	p.send(80)
+	p.now = p.now.Add(p.rtt)
+	cwnd, maxBw := b.cwnd, b.maxBw
+	p.ack(1)
+	if b.lossInRound {
+		t.Fatal("the acknowledgement of a packet sent after the marks did not close the round")
+	}
+	wantInflight := max(b.inflightLatest, int(bbr3Beta*float64(cwnd)))
+	if b.inflightShortterm != wantInflight || b.inflightShortterm >= cwnd {
+		t.Fatalf("inflight_shortterm = %d after a marked round, want %d (under the window %d)", b.inflightShortterm, wantInflight, cwnd)
+	}
+	// The rate bound is set too, at the delivered rate here: the round ran
+	// at the link's rate, which is what "never under what it delivered"
+	// protects.
+	if math.IsInf(b.bwShortterm, 1) || b.bwShortterm > maxBw || b.bwShortterm < bbr3Beta*maxBw {
+		t.Fatalf("bw_shortterm = %v after a marked round, want within 0.7 of %v", b.bwShortterm, maxBw)
+	}
+	if b.window() > b.inflightShortterm {
+		t.Fatalf("window %d above inflight_shortterm %d", b.window(), b.inflightShortterm)
+	}
+	// Reno, told the same, does not read it the same way: this test is the
+	// draft's controller's; recovery_test.go has Reno's.
+}
+
+// Marks while probing count with losses against the 2% a probe may cause
+// (§5.5.10.2): five marked datagrams on fifty in flight bound
+// inflight_longterm at the flight — never under 0.7 of the target — and
+// send the probe DOWN.
+func TestBBR3MarksWhileProbingBoundTheFlight(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(80) // REFILL
+	p.round(80) // UP
+	if b.state != bbr3ProbeBWUp || b.inflightLongterm != bbr3Unbounded {
+		t.Fatalf("state %d bound %d before the marks", b.state, b.inflightLongterm)
+	}
+	p.send(100)
+	p.now = p.now.Add(p.rtt)
+	p.ack(50)
+	want := max(50*1200, int(bbr3Beta*float64(b.targetInflight())))
+	p.mark(5) // 5 of 50 in flight: 10%, over 2%
+	if b.state != bbr3ProbeBWDown {
+		t.Fatalf("state %d after 10%% of marks in UP, want DOWN", b.state)
+	}
+	if b.inflightLongterm != want {
+		t.Fatalf("inflight_longterm = %d, want %d", b.inflightLongterm, want)
+	}
+	if b.bwProbeSamples {
+		t.Fatal("the probe reacted but still counts its samples: it would react again")
+	}
+}
