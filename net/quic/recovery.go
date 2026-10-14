@@ -777,6 +777,8 @@ func newController(cfg CongestionConfig, maxDatagram int) congestionController {
 		return newCubic(maxDatagram)
 	case CongestionBBRv1:
 		return newBBR(maxDatagram)
+	case CongestionBBR:
+		return newBBR3(maxDatagram)
 	default:
 		return newNewReno(maxDatagram)
 	}

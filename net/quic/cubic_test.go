@@ -198,6 +198,16 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if CongestionBBRv1.String() != "bbr1" {
 		t.Errorf("CongestionBBRv1 prints as %q", CongestionBBRv1)
 	}
+	b3, ok := newController(CongestionConfig{Algorithm: CongestionBBR}, 1200).(*bbr3)
+	if !ok {
+		t.Fatal("CongestionBBR did not build a draft-ietf-ccwg-bbr controller")
+	}
+	if b3.window() != newNewReno(1200).cwnd || b3.state != bbr3Startup || b3.pacingGain != bbr3StartupPacingGain || b3.cwndGain != 2 {
+		t.Errorf("BBR starts with window %d, state %d, gains %v/%v: want Reno's window, Startup, 2.77 and 2", b3.window(), b3.state, b3.pacingGain, b3.cwndGain)
+	}
+	if CongestionBBR.String() != "bbr" {
+		t.Errorf("CongestionBBR prints as %q", CongestionBBR)
+	}
 	// An algorithm this build does not know falls to the default, and the
 	// connection's Stats say which one runs.
 	pcA, pcB := newLoopbackPair(t)

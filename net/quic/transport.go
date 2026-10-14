@@ -189,9 +189,23 @@ const (
 	// CUBIC flow sharing the link. Experimental: measured on this package's
 	// emulated paths only.
 	CongestionBBRv1
+
+	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr, the
+	// version Linux ships as BBRv3): the same model of the path as
+	// CongestionBBRv1 — the highest delivery rate and the lowest round trip
+	// seen recently — with loss read as evidence about how much the path
+	// holds. A round that loses more than 2% while probing bounds the
+	// volume in flight, 15% of which is then left free for other flows;
+	// a loss between probes cuts the rate and the volume to 0.7 of what
+	// they were, until the next probe, two to three seconds later or as
+	// soon as a Reno flow would have grown back. Startup also ends on
+	// loss, so a shallow buffer is not overrun for three round trips.
+	// Experimental: measured on this package's emulated paths only.
+	CongestionBBR
 )
 
-// String is the name the dashboard prints: "newreno", "cubic", "bbr1".
+// String is the name the dashboard prints: "newreno", "cubic", "bbr1",
+// "bbr".
 func (a CongestionAlgorithm) String() string {
 	switch a {
 	case CongestionNewReno:
@@ -200,6 +214,8 @@ func (a CongestionAlgorithm) String() string {
 		return "cubic"
 	case CongestionBBRv1:
 		return "bbr1"
+	case CongestionBBR:
+		return "bbr"
 	}
 	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }

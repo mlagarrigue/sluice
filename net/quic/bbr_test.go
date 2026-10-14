@@ -14,6 +14,7 @@ import (
 // round's last acknowledgement samples the round's rate, capped at the
 // link's (draft-cheng-iccrg-delivery-rate-estimation §2.2.4).
 type bbrPath struct {
+	cc        congestionController // the controller driven: b, or bbr3_test.go's
 	b         *bbr
 	now       time.Time
 	rtt       time.Duration
@@ -28,13 +29,14 @@ type bbrSent struct {
 }
 
 func newBBRPath(rtt time.Duration, link float64) *bbrPath {
-	return &bbrPath{b: newBBR(1200), now: time.Unix(1000, 0), rtt: rtt, link: link}
+	b := newBBR(1200)
+	return &bbrPath{cc: b, b: b, now: time.Unix(1000, 0), rtt: rtt, link: link}
 }
 
 // send puts n datagrams on the path now.
 func (p *bbrPath) send(n int) {
 	for range n {
-		p.b.onSent(p.now, 1200)
+		p.cc.onSent(p.now, 1200)
 		p.queue = append(p.queue, bbrSent{sentAt: p.now, prior: p.delivered})
 	}
 }
@@ -47,8 +49,15 @@ func (p *bbrPath) ack(n int) {
 		p.delivered += 1200
 		ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior}
 		ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
-		p.b.onAcked(ev)
+		p.cc.onAcked(ev)
 	}
+}
+
+// lose declares the oldest n datagrams lost now, as one batch.
+func (p *bbrPath) lose(n int) {
+	latest := p.queue[n-1].sentAt
+	p.queue = p.queue[n:]
+	p.cc.onLost(lossEvent{now: p.now, latestSent: latest, bytes: n * 1200})
 }
 
 // round sends n datagrams and acknowledges them a round trip later.

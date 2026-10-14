@@ -720,7 +720,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	}
 	// An algorithm this build does not know runs the default, and Stats
 	// says so: the choice is local, so there is no peer to refuse it.
-	if params.Congestion.Algorithm > CongestionBBRv1 {
+	if params.Congestion.Algorithm > CongestionBBR {
 		params.Congestion.Algorithm = CongestionNewReno
 	}
 	c := &Conn{
