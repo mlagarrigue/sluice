@@ -60,6 +60,10 @@ import (
 // retransmits, enforces flow control and interoperates with quic-go, whose
 // HTTP/3 client reads this layer's responses too (the interop/ module, in
 // CI) — and the server side is one connection per packet socket.
+//
+// The connection must have negotiated "h3" (RFC 9114 §3.1): the server's
+// [crypto/tls.Config] announces it in NextProtos, and a connection that
+// settled on any other protocol is refused and closed rather than served.
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
@@ -78,6 +82,14 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		return fmt.Errorf(
 			"httpstream: InitialMaxStreamsBidi %d is over the %d ServeH3 can serve without deadlock",
 			lim, h3MaxServeStreams)
+	}
+	// RFC 9114 §3.1: HTTP/3 is the protocol identified by the ALPN token
+	// "h3". A peer that settled on anything else is waiting for that other
+	// protocol and would read this layer's SETTINGS and frames as garbage;
+	// refused and closed, like the limit above.
+	if proto := c.ConnectionState().NegotiatedProtocol; proto != "h3" {
+		_ = c.CloseWithError(h3InternalError)
+		return fmt.Errorf("httpstream: ServeH3 on a connection that negotiated %q, not h3", proto)
 	}
 	a := newH3Assembler(cfg)
 	// Manual flow-control credit closes the security report's M-3 residue:

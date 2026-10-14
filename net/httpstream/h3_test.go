@@ -1625,3 +1625,60 @@ func TestQPACKCallerTableIsNotAliased(t *testing.T) {
 		t.Errorf("rewriting the caller's table changed a decoded field to %q", fields[0].Value)
 	}
 }
+
+// A connection that negotiated something other than "h3" is refused before
+// a byte of HTTP/3 leaves (RFC 9114 §3.1): ServeH3 returns the refusal and
+// closes the connection, which the client sees end.
+func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	serverCfg := h3ServerTLS(t)
+	serverCfg.NextProtos = []string{"h3-29"}
+	clientCfg := h3ClientTLS()
+	clientCfg.NextProtos = []string{"h3-29"}
+
+	served := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			served <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			served <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, peer, buf[:n], serverCfg, quic.DefaultParameters())
+		if err != nil {
+			served <- err
+			return
+		}
+		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			t.Error("the handler ran on a connection that did not negotiate h3")
+			return sluice.Batch[Response]{}
+		})
+	}()
+
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), `"h3-29"`) {
+			t.Fatalf("ServeH3 returned %v, want the refusal naming h3-29", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH3 served a connection that negotiated h3-29")
+	}
+	select {
+	case <-conn.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client never saw the refused connection end")
+	}
+}
