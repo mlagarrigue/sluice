@@ -87,10 +87,34 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = b
 	}
 	ans := a.route(r.Context(), r.Method, r.URL.RequestURI(), body)
-	_ = web.WriteJSON(w, ans.status, ans.body)
+	if !a.codec.accepts(r.Header.Get("Accept-Encoding")) {
+		_ = web.WriteJSON(w, ans.status, ans.body)
+		return
+	}
+	// Axis F: the same document, encoded. Vary is set whatever the outcome
+	// of the negotiation, so a cache keys on the header that decided it.
+	b, err := json.Marshal(ans.body)
+	if err != nil {
+		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "encode"})
+		return
+	}
+	enc, err := a.codec.encode(b)
+	if err != nil {
+		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "compress"})
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Encoding", a.codec.token)
+	h.Set("Vary", "Accept-Encoding")
+	w.WriteHeader(ans.status)
+	_, _ = w.Write(enc)
 }
 
-var jsonHeader = []httpstream.Header{{Name: []byte("content-type"), Value: []byte("application/json")}}
+var (
+	jsonHeader = []httpstream.Header{{Name: []byte("content-type"), Value: []byte("application/json")}}
+	varyHeader = httpstream.Header{Name: []byte("vary"), Value: []byte("Accept-Encoding")}
+)
 
 // handler is the httpstream adapter: a batch of requests, a batch of answers.
 // The unit reads of one batch are submitted to the gateway together
@@ -108,11 +132,11 @@ func (a *app) handler() httpstream.Handler {
 				continue
 			}
 			ans := a.route(context.Background(), string(req.Method), string(req.Target), req.Body)
-			out[i] = encode(ans)
+			out[i] = a.encode(ans, req)
 		}
 		if len(unitIdx) > 0 {
 			for j, oc := range a.gw.DoBatch(context.Background(), unitKeys) {
-				out[unitIdx[j]] = encode(unitAnswer(unitKeys[j], oc.Out, oc.Err))
+				out[unitIdx[j]] = a.encode(unitAnswer(unitKeys[j], oc.Out, oc.Err), batch.Items[unitIdx[j]])
 			}
 		}
 		return sluice.Batch[httpstream.Response]{Items: out}
@@ -135,12 +159,27 @@ func unitTarget(req httpstream.Request) (int64, bool) {
 	return key, key > 0
 }
 
-func encode(ans answer) httpstream.Response {
+// encode marshals the answer and, under axis F, compresses it when the
+// request accepts the codec. The headers of a compressed answer are built
+// per response: the slice is read during the write and not retained.
+func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
 	b, err := json.Marshal(ans.body)
 	if err != nil {
 		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
 	}
-	return httpstream.Response{Status: ans.status, Headers: jsonHeader, Body: b}
+	if !a.codec.accepts(string(req.Get("accept-encoding"))) {
+		return httpstream.Response{Status: ans.status, Headers: jsonHeader, Body: b}
+	}
+	enc, err := a.codec.encode(b)
+	if err != nil {
+		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"compress"}`)}
+	}
+	headers := []httpstream.Header{
+		jsonHeader[0],
+		{Name: []byte("content-encoding"), Value: []byte(a.codec.token)},
+		varyHeader,
+	}
+	return httpstream.Response{Status: ans.status, Headers: headers, Body: enc}
 }
 
 // tlsConfig is the certificate the options name, or a self-signed ECDSA P-256

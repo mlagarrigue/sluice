@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -53,6 +55,10 @@ var variants = []struct {
 	{"gateway-256-8ms", []string{"-gateway-size", "256", "-gateway-within", "8ms"}},
 	{"httpstream-h1-batch8-conn16", []string{"-transport", "httpstream-h1", "-max-requests-per-batch", "8", "-max-requests-per-conn", "16"}},
 	{"httpstream-h1-conn-unbounded", []string{"-transport", "httpstream-h1", "-max-requests-per-conn", "-1"}},
+	{"gzip1", []string{"-compression", "gzip1"}},
+	{"gzip6", []string{"-compression", "gzip6"}},
+	{"deflate6", []string{"-compression", "deflate6"}},
+	{"httpstream-h2-gzip6", []string{"-transport", "httpstream-h2", "-compression", "gzip6"}},
 }
 
 func requirePG(tb testing.TB) {
@@ -118,6 +124,9 @@ func start(tb testing.TB, args ...string) *server {
 		TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
 		MaxIdleConnsPerHost: concurrency,
 		ForceAttemptHTTP2:   h2,
+		// The test sets Accept-Encoding itself and decodes itself: net/http
+		// only decodes gzip, and only when it asked for it.
+		DisableCompression: true,
 	}
 	if !h2 {
 		tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
@@ -145,12 +154,38 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return reply{}, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(resp.Body)
+	var r io.Reader = resp.Body
+	// Axis F: the variant must say what it encoded with, and the test
+	// decodes before comparing; R must not encode at all.
+	switch ce := resp.Header.Get("Content-Encoding"); ce {
+	case "":
+		if s.o.compression != codecNone {
+			return reply{}, fmt.Errorf("-compression %s answered without Content-Encoding", s.o.compression)
+		}
+	case "gzip":
+		if r, err = gzip.NewReader(resp.Body); err != nil {
+			return reply{}, err
+		}
+	case "deflate":
+		r = flate.NewReader(resp.Body)
+	default:
+		return reply{}, fmt.Errorf("Content-Encoding %q", ce)
+	}
+	if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+		if want := lookupCodec(s.o.compression); want == nil || want.token != ce {
+			return reply{}, fmt.Errorf("-compression %s answered Content-Encoding %s", s.o.compression, ce)
+		}
+		if resp.Header.Get("Vary") != "Accept-Encoding" {
+			return reply{}, errors.New("compressed answer without Vary: Accept-Encoding")
+		}
+	}
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return reply{}, err
 	}
@@ -298,7 +333,7 @@ func TestVariantsAnswerLikeR(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantProto := "HTTP/1.1"
-			if strings.HasSuffix(v.name, "-h2") {
+			if strings.HasSuffix(s.o.transport, "-h2") {
 				wantProto = "HTTP/2.0"
 			}
 			if r.proto != wantProto {
@@ -342,9 +377,7 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 		{"-transport", "httpstream-h3"},
 		{"-driver", "libpq"},
 		{"-response", "stream"},
-		{"-compression", "gzip1"},
-		{"-compression", "gzip6"},
-		{"-compression", "deflate6"},
+		{"-compression", "br"},
 		{"-transport", "nethttp-h2", "-tls=false"},
 		{"-transport", "nethttp-h1", "-max-requests-per-conn", "-1"},
 		{"-transport", "nope"},
