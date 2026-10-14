@@ -301,6 +301,7 @@ controller keeps the queue empty, six when it keeps 200 ms of buffer full.
 | `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
 | `BenchmarkTransferRTT40` | 40 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 971 ms | 8.64 MB/s | ±1% |
 | `BenchmarkTransferRTT80` | 80 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 1.35 s | 6.21 MB/s | ±2% |
+| `BenchmarkTransferRTT80Shallow` | 80 ms RTT, 100 Mbit/s, 5 ms of buffer | 32 MiB | 8.80 s | 3.81 MB/s | ±2%, not gated |
 
 ```
 go test -run=XXX -bench='BenchmarkTransfer' -benchtime=1x -count=8 ./net/quic/ | tee after.txt
@@ -315,14 +316,67 @@ it, the row says so, and that is why the statistic is the median. A change
 to `net/quic` that puts a median more than **15% below** its row is a
 regression until it is explained; one that puts it above replaces the row.
 
-The six profiles below `Loss1pct` are the ones the congestion-control
-palette (CUBIC, BBR) will have to prove itself on, and their rows are
-Reno's figures: the starting ceiling, not a target. Reno reaches half of
-the 100 Mbit/s line at 80 ms of RTT, fills a 200 ms buffer to the brim,
-and on the reordering profile declares loss the path never had — those are
-the margins a new controller is measured against.
+`RTT80Shallow` is the congestion-avoidance benchmark: the 8 MiB of `RTT80`
+are gone before avoidance matters (the handshake and a slow start doubling
+from 12 kB floor it near 1.2 s whatever the controller, and its 20 ms
+buffer leaves a halved window at 0.78 of the path), while 32 MiB behind
+5 ms of buffer leave Reno at half of the path after each loss, a datagram
+per round trip from full. It is not gated: its figure moves with where the
+slow start's exit loss lands (CUBIC's eight rounds spread ±25%).
 
-**The CI gate watches eight of them** through a second script,
+The six profiles below `Loss1pct`, plus `RTT80Shallow`, are the ones the
+congestion-control palette has to prove itself on, and the Reno rows are
+the starting ceiling, not a target. Reno fills a 200 ms buffer to the
+brim, declares loss on the reordering profile that the path never had,
+and on the shallow 80 ms path reaches three tenths of the line — those
+are the margins a new controller is measured against. The first one is
+CUBIC (RFC 9438, `CongestionCubic` in `TransportParameters.Congestion`;
+NewReno stays the default until a controller has been measured against a
+real client):
+
+| Benchmark | Reno, same pass | CUBIC | Reno / CUBIC | CUBIC goodput | Spread |
+|---|---|---|---|---|---|
+| `BenchmarkTransferClean` | 284 ms | 288 ms | 0.98 | 29.1 MB/s | ±17% |
+| `BenchmarkTransferLoss1pct` | 4.47 s | 3.60 s | 1.24 | 1.17 MB/s | ±2% |
+| `BenchmarkTransferBurstLoss` | 766 ms | 483 ms | 1.59 | 8.68 MB/s | ±21% |
+| `BenchmarkTransferReorder` | 4.42 s | 3.72 s | 1.19 | 1.13 MB/s | ±31%, not gated |
+| `BenchmarkTransferBottleneck` | 883 ms | 905 ms | 0.98 | 4.63 MB/s | ±3% |
+| `BenchmarkTransferDeepBuffer` | 788 ms | 789 ms | 1.00 | 5.32 MB/s, `rtt_x` 6.0 | ±1% |
+| `BenchmarkTransferTwoFlows` | 1.51 s | 1.50 s | 1.01 | 5.59 MB/s, `share` 0.46–0.56 | ±13% |
+| `BenchmarkTransferRTT40` | 980 ms | 964 ms | 1.02 | 8.70 MB/s | ±22% |
+| `BenchmarkTransferRTT80` | 1.38 s | 1.33 s | 1.04 | 6.30 MB/s | ±1% |
+| `BenchmarkTransferRTT80Shallow` | 8.80 s | 5.04 s | 1.75 | 6.66 MB/s | ±25%, not gated |
+
+Eight rounds on 2026-10-14, interleaved — one Reno transfer, one CUBIC
+transfer, eight times, the same test binary with `SLUICE_QUIC_CC=cubic`
+set on the CUBIC side — medians, go1.26.9, the same laptop (`rtt_x` and
+`share` for CUBIC: three rounds). The Reno column is that pass's own Reno,
+which is what CUBIC is compared with; the rows above are the ceilings the
+gate watches, and the two agree within their spread except `Clean`, which
+is the one profile the machine's load moves (its 284 ms here against
+256 ms above). What CUBIC proved: the 1.75× on the shallow 80 ms path is
+its window curve — a loss costs it three tenths of the window instead of
+half, and the curve refills in seconds what Reno refills a datagram per
+round trip; the 1.24× on `Loss1pct` and 1.59× on `BurstLoss` are the same
+two facts on a short path. On the clean and bottleneck profiles it sits
+within 2.5% of Reno, which is the Reno-friendly region (RFC 9438 §4.3)
+doing its job; on the deep buffer it fills the queue exactly as Reno does
+(`rtt_x` 6.0 against 5.9): CUBIC reads loss and nothing else, and a buffer
+that does not drop is a buffer it fills. `RTT80` itself moves 4%: an 8 MiB
+transfer is slow start and the handshake, not avoidance.
+
+```
+for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
+  SLUICE_QUIC_CC=$cc go test -run=XXX -bench='BenchmarkTransfer' -benchtime=1x -count=1 ./net/quic/ \
+    | sed "s/^/$cc /" >> ab.txt
+done; done
+```
+
+The gate (`gate-path.sh`) runs the default, Reno: CUBIC changes none of
+its eight rows until it is chosen (measured the same day: the eight within
+0.94–1.02 of `main`, `Bottleneck` the 0.94 and the gate's known bias there).
+
+**The CI gate watches eight of the Reno rows** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
 `gate.sh`'s on every pull request. It differs from `gate.sh` in the three
 ways these rows require: it builds `net/quic`'s test binary rather than
