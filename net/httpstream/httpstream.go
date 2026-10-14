@@ -321,6 +321,11 @@ type Config struct {
 	ReadTimeout time.Duration
 
 	// WriteTimeout is how long one batch of responses has to be written.
+	// Over HTTP/3 it bounds each write of a response — its head, then each
+	// batch of a streamed body — on the stream's flow control: a client that
+	// keeps the connection alive but never grants credit sees its stream
+	// reset with H3_REQUEST_CANCELLED when it passes, instead of holding the
+	// response's goroutine and body for as long as the idle timeout allows.
 	// Zero means 10s.
 	WriteTimeout time.Duration
 

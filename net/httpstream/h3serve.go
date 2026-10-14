@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/quic"
@@ -163,7 +165,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		for {
 			select {
 			case b := <-in:
-				answerH3(c, b, handle, &writers)
+				answerH3(c, b, handle, cfg.WriteTimeout, &writers)
 			case <-c.Done():
 				return
 			}
@@ -300,7 +302,7 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(c *quic.Conn, b h3Batch, handle Handler, writers *sync.WaitGroup) {
+func answerH3(c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duration, writers *sync.WaitGroup) {
 	res, err := apply(handle, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
@@ -334,7 +336,7 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writers *sync.WaitGroup) 
 					writers.Done()
 				}
 			}()
-			writeH3Response(c, id, r, method, b.fieldSection, func() {
+			writeH3Response(c, id, r, method, b.fieldSection, writeTimeout, func() {
 				detached = true
 				writers.Done()
 			})
@@ -349,13 +351,17 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // writeH3Response frames and writes one response on its own goroutine — the
 // lift of the old single-writer design's head-of-line block. A write stalled
 // on this stream's flow control stalls this goroutine alone; packets keep
-// arriving on the read loop, every other response keeps leaving, and the
-// idle timeout bounds how long a starving client can hold the goroutine.
+// arriving on the read loop and every other response keeps leaving. Each
+// write has writeTimeout to complete — [Config.WriteTimeout], the bound the
+// HTTP/2 writer puts on a job — so a client that keeps the connection alive
+// but never grants credit holds the goroutine, and a streamed producer's
+// body, for that long and no longer: the stream is then reset and the
+// goroutine returned.
 //
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, detach func()) {
+func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, writeTimeout time.Duration, detach func()) {
 	s := c.Stream(id)
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
@@ -372,8 +378,8 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		r = Response{Status: 500}
 	}
 	sc.head = head
-	if _, err := s.Write(head); err != nil {
-		return // the stream is gone; its neighbours are not
+	if !writeH3Bounded(s, head, writeTimeout) {
+		return // the stream is gone or given up on; its neighbours are not
 	}
 	status := r.Status
 	if status == 0 {
@@ -389,18 +395,36 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		// the producer is never pulled, the same way the HTTP/1.1 and
 		// HTTP/2 paths never do for these.
 		detach()
-		if !streamH3Body(c, s, r.Stream) {
+		if !streamH3Body(c, s, r.Stream, writeTimeout) {
 			return
 		}
 	}
 	_ = s.CloseWrite()
 }
 
+// writeH3Bounded writes p on s with writeTimeout to finish, reporting whether
+// it all went out. A write the peer starves of credit past the timeout is
+// given up on and its stream reset with H3_REQUEST_CANCELLED (RFC 9114 §8.1):
+// the peer granted less than the response needs, which it is entitled to do,
+// and this end is the one that stopped waiting — the same reading as the
+// HTTP/2 writer's CANCEL after its write timeout. Any other failure means
+// the stream is already gone.
+func writeH3Bounded(s *quic.Stream, p []byte, writeTimeout time.Duration) bool {
+	_ = s.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if _, err := s.Write(p); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			_ = s.Reset(h3RequestCancelled)
+		}
+		return false
+	}
+	return true
+}
+
 // streamH3Body pulls a streamed response onto its stream, reporting whether it
 // ran to the end. A stream the peer reset stops the pull, which is a cancelled
 // request reaching the handler that is still working for it; so does a
 // connection that ended, even on an empty batch that would write nothing.
-func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte]) bool {
+func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], writeTimeout time.Duration) bool {
 	ok := true
 	var out []byte // reused across batches; Stream.Write copies before returning
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
@@ -418,7 +442,7 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte]) bo
 		if len(out) == 0 {
 			return true // an empty batch is cadence, not an end
 		}
-		if _, err := s.Write(out); err != nil {
+		if !writeH3Bounded(s, out, writeTimeout) {
 			ok = false
 			return false
 		}

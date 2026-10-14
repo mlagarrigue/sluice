@@ -182,6 +182,7 @@ const (
 	h3SettingsError        = 0x0109
 	h3MissingSettings      = 0x010a
 	h3RequestRejected      = 0x010b
+	h3RequestCancelled     = 0x010c
 	h3RequestIncomplete    = 0x010d
 	h3MessageError         = 0x010e
 )

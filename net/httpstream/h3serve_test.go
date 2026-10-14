@@ -18,6 +18,13 @@ import (
 // cancel for the server's context, and what ServeH3 returned once it has.
 func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
+	return startH3With(t, Config{}, params, quic.DefaultParameters(), handle)
+}
+
+// startH3With is startH3 with the server's Config and the client's transport
+// parameters chosen too.
+func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
+	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
 
@@ -48,10 +55,10 @@ func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*qu
 			return
 		}
 		serverUp <- nil
-		served <- ServeH3(ctx, conn, Config{}, handle)
+		served <- ServeH3(ctx, conn, cfg, handle)
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
