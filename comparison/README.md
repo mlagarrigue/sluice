@@ -85,3 +85,66 @@ measurement: client and server share the process and the machine.
 go test -C comparison/sluice -run '^$' -bench . -cpuprofile cpu.out
 go tool pprof -top cpu.out
 ```
+
+## `loadgen/` — the load generator
+
+The study's own client (§3 and §4 of its protocol; "home-made" is a
+recorded decision: no tool on the market checks the key in the body of
+every answer). It sends requests at a **constant interval** and clocks each
+one from the instant it was *due*, not the instant it left: a request that
+waited because every connection was busy carries that wait as latency.
+That is the correction of the coordinated omission, and what makes a
+closed-loop generator's figures too good. Everything it prints is a JSON
+line per stage, never a result of the study. It shares no code with
+Sluice.go: a bug symmetric between client and server would mask itself.
+
+What one stage does today, HTTP/1.1 over TLS:
+
+- opens `-conns` keep-alive connections before the clock starts (the TLS
+  handshakes never fall inside the measurement), one request in flight per
+  connection — the ceiling of 8 is for HTTP/2 and HTTP/3, which come next;
+- draws one key per request from a permutation of `1..-keyspace` under
+  `-seed`, so no key repeats within a stage and every contender of a round
+  sees the same sequence; a stage longer than its keyspace is refused;
+- checks **every** answer: body complete (`Content-Length`), JSON parsed to
+  the end, key served = key asked (`id`, `from`, `key` by scenario), a
+  list's ids strictly increasing above its bound; and on 1 % of them,
+  drawn by `(seed, index)`, the whole document against what the fixtures
+  predict (`total = 7·id`, `label = "order-<id>"`, a write answers its key);
+- publishes TTFB and TTLB apart (p50, p90, p99, p99.9, max, in ms, over the
+  answers that passed every check), the errors by class — `bad_key`
+  (the contract broken: one fails the stage), `connect` (one invalidates
+  it) — and the internal queue: `queue_max`, the most requests due at once
+  with no connection free, `queued`, how many were due while another still
+  waited, and `wait_ms`, the queue seen from one request. `late_ms` is the
+  dispatcher's own lateness after its due instant, the generator's noise
+  floor on the median: it sleeps until 2 ms before, then spins.
+
+```
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
+go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, empty trusts it
+```
+
+The exit status is 1 when the stage is not a measurement: any error, or a
+failed connect. The mixed scenario is 80 % unit, 15 % list, 5 % write by
+position in the sequence, exact whatever the seed.
+
+### Calibrating it
+
+```
+go test -C comparison/loadgen -race ./...
+```
+
+runs the calibration the protocol demands: against a server of the test
+that sleeps exactly 5 ms, p50 must read 5 ms above what the same server
+sleeping 0 ms costs (the apparatus' own floor, under a millisecond), and
+under 5.5 ms absolute; p99 and p99.9 are printed, not asserted, since they
+belong to the machine. A second stage asks 2 000 req/s of 4 connections
+that carry 800: the queue climbs, the delays climb with it, and the
+achieved rate says what the budget carried. A third answers two requests
+with another key and the stage fails with `bad_key` 2.
+
+Not yet here: HTTP/2 and HTTP/3, the geometric stages with the drain
+between them and the stop at the first broken one, the connection budget
+recomputed per stage (`C = 2 × R × (RTT + X)`), the share of new
+connections, the `oha` cross-check.
