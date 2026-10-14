@@ -39,16 +39,22 @@ type app struct {
 	listMax int
 	codec   *codec // axis F; nil in R
 	stream  bool   // axis E: the list is written as it comes
+	// appendJSON encodes the list by hand (encode.go) instead of through
+	// encoding/json; the answer then carries the bytes, not the value.
+	appendJSON bool
 }
 
 // answer is a status and either a body, encoded by the transport in one
-// write, or a stream of fragments of the document (axis E), which the
-// transport writes and flushes batch by batch. The stream runs when the
-// transport pulls it, after the status has gone out: an error it meets then
-// can only cut the document short.
+// write, a body already encoded (raw, the -json append path: the transport
+// writes the bytes as they are, compressed under axis F like the others),
+// or a stream of fragments of the document (axis E), which the transport
+// writes and flushes batch by batch. The stream runs when the transport
+// pulls it, after the status has gone out: an error it meets then can only
+// cut the document short.
 type answer struct {
 	status int
 	body   any
+	raw    []byte
 	stream sluice.Stream[[]byte]
 }
 
@@ -111,6 +117,7 @@ func newApp(o options) (*app, error) {
 	a := &app{
 		static: newStaticDoc(), st: st, listMax: o.listMax,
 		codec: lookupCodec(o.compression), stream: o.response == responseStream,
+		appendJSON: o.json == jsonAppend,
 	}
 	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
 		unitPipeline(st, o.gatewaySize))
@@ -233,8 +240,16 @@ func (a *app) list(ctx context.Context, rawQuery string) answer {
 	case err != nil:
 		return answer{status: 503, body: errDoc{Error: "unavailable", Key: &from}}
 	}
+	if a.appendJSON {
+		return answer{status: 200, raw: appendListDoc(make([]byte, 0, listDocSize(len(items))), from, limit, items)}
+	}
 	return answer{status: 200, body: listDoc{From: from, Limit: limit, Items: items}}
 }
+
+// listDocSize is a guess at the encoded size of n rows, so that the hand
+// encoder appends into one allocation: about 60 bytes per row of
+// bench_orders, the head and brackets on top.
+func listDocSize(n int) int { return 64 + 64*n }
 
 // listStream is axis E: the same document as listDoc encodes, byte for
 // byte, produced as the store delivers it — the head with the key, then
@@ -247,7 +262,7 @@ func (a *app) list(ctx context.Context, rawQuery string) answer {
 func (a *app) listStream(ctx context.Context, from int64, limit int) sluice.Stream[[]byte] {
 	return func(yield func(sluice.Batch[[]byte]) bool) {
 		emit := func(b []byte) bool { return yield(sluice.Batch[[]byte]{Items: [][]byte{b}}) }
-		if !emit(fmt.Appendf(nil, `{"from":%d,"limit":%d,"items":[`, from, limit)) {
+		if !emit(appendListHead(nil, from, limit)) {
 			return
 		}
 		first := true
@@ -255,13 +270,18 @@ func (a *app) listStream(ctx context.Context, from int64, limit int) sluice.Stre
 			if len(rows) == 0 {
 				return true
 			}
-			b, err := json.Marshal(rows)
-			if err != nil {
-				return false
-			}
-			b = b[1 : len(b)-1] // the rows without the array's own brackets
-			if !first {
-				b = append([]byte{','}, b...)
+			var b []byte
+			if a.appendJSON {
+				b = appendRows(make([]byte, 0, listDocSize(len(rows))), rows, first)
+			} else {
+				var err error
+				if b, err = json.Marshal(rows); err != nil {
+					return false
+				}
+				b = b[1 : len(b)-1] // the rows without the array's own brackets
+				if !first {
+					b = append([]byte{','}, b...)
+				}
 			}
 			first = false
 			return emit(b)

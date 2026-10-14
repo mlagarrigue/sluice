@@ -43,6 +43,9 @@ type options struct {
 	// Axis F — compression.
 	compression string
 
+	// Off the axes: how the list is encoded (§2.4, the optimised version).
+	json string
+
 	// The database behind every dynamic scenario.
 	db      dbConfig
 	dbConns int
@@ -67,6 +70,9 @@ const (
 
 	responseBuffered = "buffered"
 	responseStream   = "stream"
+
+	jsonStd    = "std"
+	jsonAppend = "append"
 
 	// maxDBConns bounds -db-conns: PostgreSQL's own default ceiling is 100,
 	// and pgxpool counts in int32.
@@ -95,6 +101,9 @@ func parseOptions(args []string) (options, error) {
 		"axis E: buffered (R), stream (the list is written and flushed batch by batch, chunked; with -compression, the encoder is flushed per batch too)")
 	fs.StringVar(&o.compression, "compression", "none",
 		"axis F: none (R), gzip1, gzip6, deflate6; the body is encoded when the client accepts it")
+
+	fs.StringVar(&o.json, "json", jsonStd,
+		"list encoder: std (R, encoding/json), append (a hand encoder of the list document, strconv.AppendInt; the other scenarios stay under encoding/json)")
 
 	fs.StringVar(&o.db.addr, "db", os.Getenv("SLUICE_PG"), "PostgreSQL host:port (default $SLUICE_PG)")
 	fs.StringVar(&o.db.user, "db-user", os.Getenv("SLUICE_PG_USER"), "PostgreSQL role (default $SLUICE_PG_USER)")
@@ -153,6 +162,11 @@ func (o options) validate() error {
 	case codecNone, codecGzip1, codecGzip6, codecDeflate6:
 	default:
 		return fmt.Errorf("-compression %q: unknown", o.compression)
+	}
+	switch o.json {
+	case jsonStd, jsonAppend:
+	default:
+		return fmt.Errorf("-json %q: unknown", o.json)
 	}
 	if o.db.addr == "" || o.db.user == "" {
 		return errors.New("-db and -db-user are required (or SLUICE_PG and SLUICE_PG_USER)")

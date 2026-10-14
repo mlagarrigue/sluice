@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -137,17 +138,23 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.writeStream(w, ans, accepts)
 		return
 	}
-	if !accepts {
+	b := ans.raw
+	switch {
+	case b != nil && !accepts:
+		writeRaw(w, ans.status, b)
+		return
+	case b == nil && !accepts:
 		_ = web.WriteJSON(w, ans.status, ans.body)
 		return
+	case b == nil:
+		var err error
+		if b, err = json.Marshal(ans.body); err != nil {
+			_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "encode"})
+			return
+		}
 	}
 	// Axis F: the same document, encoded. Vary is set whatever the outcome
 	// of the negotiation, so a cache keys on the header that decided it.
-	b, err := json.Marshal(ans.body)
-	if err != nil {
-		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "encode"})
-		return
-	}
 	enc, err := a.codec.encode(b)
 	if err != nil {
 		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "compress"})
@@ -159,6 +166,20 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Vary", "Accept-Encoding")
 	w.WriteHeader(ans.status)
 	_, _ = w.Write(enc)
+}
+
+// writeRaw writes an answer already encoded the way web.WriteJSON writes
+// a value: Content-Type, Content-Length counting the newline, the newline
+// as its own write.
+func writeRaw(w http.ResponseWriter, status int, b []byte) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(b)+1))
+	w.WriteHeader(status)
+	if _, err := w.Write(b); err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, "\n")
 }
 
 // writeStream is axis E on net/http: no Content-Length, so net/http frames
@@ -265,9 +286,12 @@ func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
 		}
 		return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Stream: a.codec.encodeStream(ans.stream)}
 	}
-	b, err := json.Marshal(ans.body)
-	if err != nil {
-		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
+	b := ans.raw
+	if b == nil {
+		var err error
+		if b, err = json.Marshal(ans.body); err != nil {
+			return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
+		}
 	}
 	if !a.codec.accepts(string(req.Get("accept-encoding"))) {
 		return httpstream.Response{Status: ans.status, Headers: jsonHeader, Body: b}

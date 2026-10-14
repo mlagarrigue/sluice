@@ -71,6 +71,10 @@ var variants = []variant{
 	{"httpstream-h3-stream", []string{"-transport", "httpstream-h3", "-response", "stream"}},
 	{"stream-gzip6", []string{"-response", "stream", "-compression", "gzip6"}},
 	{"httpstream-h2-stream-gzip6", []string{"-transport", "httpstream-h2", "-response", "stream", "-compression", "gzip6"}},
+	{"json-append", []string{"-json", "append"}},
+	{"json-append-stream", []string{"-json", "append", "-response", "stream"}},
+	{"json-append-gzip6", []string{"-json", "append", "-compression", "gzip6"}},
+	{"httpstream-h1-json-append", []string{"-transport", "httpstream-h1", "-json", "append"}},
 }
 
 func requirePG(tb testing.TB) {
@@ -435,6 +439,7 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 		{"-driver", "libpq"},
 		{"-response", "chunked"},
 		{"-compression", "br"},
+		{"-json", "fast"},
 		{"-transport", "nethttp-h2", "-tls=false"},
 		{"-transport", "nethttp-h1", "-max-requests-per-conn", "-1"},
 		{"-transport", "nope"},

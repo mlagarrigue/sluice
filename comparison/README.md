@@ -21,6 +21,7 @@ compression — and every axis of the internal study is a flag:
 | D — transport batch | `-max-requests-per-batch`, `-max-requests-per-conn` (`-1` unbounded) | httpstream transports only |
 | E — response | `-response buffered` (R), `stream` | the list is written as the store delivers it, one flush per batch of rows, no `Content-Length`; with `-compression`, the encoder is flushed per batch too; the other scenarios stay buffered |
 | F — compression | `-compression none` (R), `gzip1`, `gzip6`, `deflate6` | stdlib encoders on the buffered body when the client accepts it; `Vary: Accept-Encoding` |
+| — JSON encoder (§2.4, optimised version) | `-json std` (R), `append` | the list document written by hand (`strconv.AppendInt`, the same escaping as `encoding/json`), buffered or streamed, compressed like the others; the other scenarios stay under `encoding/json` |
 
 A variant the code does not implement is refused before the server listens,
 with the axis that will add it. Nothing falls back to R silently: a flag
