@@ -212,6 +212,17 @@ func (c *Conn) ptoDeadlineLocked(sp *space, space int) time.Time {
 	if space == spaceApplication && !c.handshakeConfirmed {
 		return time.Time{}
 	}
+	// §6.2.2.1: a server that has spent its anti-amplification budget does
+	// not arm the PTO at all — what a probe sends counts against the very
+	// limit that stops it — until the client's next datagram reopens the
+	// budget; that datagram kicks the timer (receive), and a deadline then
+	// found in the past fires at once. The count is left alone meanwhile:
+	// it used to climb here with every probe the budget withheld, doubling
+	// the interval of probes that never left, and the first one to leave
+	// was a pile of PINGs.
+	if c.amplActive && c.amplSent >= 3*c.amplRecv {
+		return time.Time{}
+	}
 	if _, ok := sp.sent.oldestEliciting(); !ok {
 		if len(sp.retrans) == 0 {
 			// §6.2.2.1: a client whose flight is fully acknowledged while

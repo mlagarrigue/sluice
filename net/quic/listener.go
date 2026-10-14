@@ -903,8 +903,12 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 		// An address that has proved nothing yet pays the RFC 9000 §8.1
 		// amplification limit until its first Handshake-level packet
 		// decrypts. The Retry path proved itself across that round trip,
-		// so no accounting is needed there.
+		// so no accounting is needed there. Under the connection's lock:
+		// its timer loop is already running and reads the flag
+		// (ptoDeadlineLocked).
+		c.mu.Lock()
 		c.amplActive = true
+		c.mu.Unlock()
 	}
 
 	firstKey := string(h.DCID)

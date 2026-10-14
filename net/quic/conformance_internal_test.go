@@ -790,3 +790,45 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 		t.Errorf("cwnd %d after three probe timeouts, want %d untouched", cwnd, initial)
 	}
 }
+
+// RFC 9002 §6.2.2.1: a server whose anti-amplification budget is spent does
+// not arm the PTO — the count stays where it is and no probe leaves — until
+// a datagram from the client reopens the budget, when a deadline already
+// past fires at once.
+func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	c.amplActive, c.amplRecv, c.amplSent = true, 1200, 3600 // the budget is spent
+	sp := &c.spaces[spaceInitial]
+	sp.lastElicit = now.Add(-time.Minute) // the PTO deadline is long past
+	sp.sent.record(sentPacket{pn: 0, sentAt: sp.lastElicit, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	sp.nextPN = 1
+	c.mu.Unlock()
+
+	for _, d := range []time.Duration{0, 5 * time.Second, 10 * time.Second} {
+		c.actOnDeadlines(now.Add(d))
+	}
+	c.mu.Lock()
+	ptoCount, nextPN := c.ptoCount, c.spaces[spaceInitial].nextPN
+	c.mu.Unlock()
+	if ptoCount != 0 || nextPN != 1 {
+		t.Fatalf("under the amplification limit, ptoCount %d and nextPN %d; want 0 and 1 (nothing probed)", ptoCount, nextPN)
+	}
+
+	c.mu.Lock()
+	c.amplRecv += 1200 // the client's next datagram
+	c.mu.Unlock()
+	c.actOnDeadlines(now.Add(10 * time.Second))
+	c.mu.Lock()
+	ptoCount, nextPN = c.ptoCount, c.spaces[spaceInitial].nextPN
+	c.mu.Unlock()
+	if ptoCount != 1 || nextPN == 1 {
+		t.Errorf("with the budget reopened, ptoCount %d and nextPN %d; want 1 and a probe sent", ptoCount, nextPN)
+	}
+}
