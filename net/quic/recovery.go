@@ -193,6 +193,7 @@ type ackOutcome struct {
 	// on (RFC 9002 B.5 runs this test per packet; an aggregate gated on the
 	// oldest packet alone starves the ACK that straddles a recovery exit).
 	growableBytes   int
+	latestAckedSent time.Time // when the newest newly acknowledged packet was sent
 	lostBytes       int
 	lostCount       uint64   // packets behind lostBytes, for Stats.LostPackets
 	lost            [][]byte // payloads to queue for retransmission
@@ -268,6 +269,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		out.newlyAckedCount++
 		if !p.sentAt.Before(growAfter) {
 			out.growableBytes += p.size
+		}
+		if p.sentAt.After(out.latestAckedSent) {
+			out.latestAckedSent = p.sentAt
 		}
 		if p.ackEliciting {
 			out.sawAckEliciting = true
@@ -452,6 +456,16 @@ type newReno struct {
 	inFlight      int
 	recoveryStart time.Time // packets sent before this do not shrink the window again
 	maxDatagram   int
+	// Window utilisation, judged per round trip the way Linux's
+	// tcp_is_cwnd_limited does (RFC 9002 §7.8 leaves the detection to the
+	// implementation): limited records that a send was refused for lack of
+	// window this round, maxInFlight the largest flight the round reached,
+	// and roundMark when it began — the round is over once a packet sent
+	// at or after the mark is acknowledged, and the next send starts a new
+	// one. Zero while a round waits for its first send.
+	limited     bool
+	maxInFlight int
+	roundMark   time.Time
 }
 
 func newNewReno(maxDatagram int) newReno {
@@ -467,9 +481,33 @@ func newNewReno(maxDatagram int) newReno {
 // per round trip, because a burst's ACKs arrive as one cluster and the
 // allowance starves between clusters). §7.7 is pacing's job — a
 // timer-released send rate — or nothing.
-func (c *newReno) canSend(bytes int) bool { return c.inFlight+bytes <= c.cwnd }
+//
+// A refusal is also the utilisation signal §7.8 asks for: the window was
+// what stopped the sender, and onAcked may grow it on what this flight
+// earns. Every send path asks here, so no site has to remember to report.
+func (c *newReno) canSend(bytes int) bool {
+	if c.inFlight+bytes > c.cwnd {
+		c.limited = true
+		return false
+	}
+	return true
+}
 
-func (c *newReno) onSent(bytes int) { c.inFlight += bytes }
+// onSent adds to the flight and, after a round-closing ACK, opens the next
+// round on the sender's own evidence: the reset happens here and not when
+// the ACK arrived so that the flight it measures is one the sender has
+// had the chance to refill — a clump of acknowledgements drained by the
+// read loop before the writer takes the lock would otherwise read as an
+// application that stopped sending.
+func (c *newReno) onSent(now time.Time, bytes int) {
+	c.inFlight += bytes
+	if c.roundMark.IsZero() {
+		c.roundMark = now
+		c.limited = false
+		c.maxInFlight = 0
+	}
+	c.maxInFlight = max(c.maxInFlight, c.inFlight)
+}
 
 // onLifted releases the bytes of a packet the probe timeout lifted from the
 // flight record to resend: its copy re-enters through onSent, so the flight
@@ -496,12 +534,25 @@ func (c *newReno) paceWindow() int {
 // from before the loss release flight but earn nothing, and processAck
 // applies that test per packet (B.5), so one pre-recovery straggler in an
 // ACK no longer silences the growth of everything sent after the exit.
-func (c *newReno) onAcked(bytes, growable int) {
-	c.inFlight -= bytes
-	if c.inFlight < 0 {
-		c.inFlight = 0
+//
+// A window the sender does not fill must not grow either (§7.8): a long
+// connection of small exchanges would otherwise inflate it far past the
+// path's capacity and burst into loss on its first large transfer. The
+// test is Linux's tcp_is_cwnd_limited, over the current round: in
+// avoidance the window grows only if a send was refused for lack of it;
+// in slow start, also if the flight reached half the window — a paced
+// sender doubling its window each round trip rarely hits the window
+// itself, but its flight comes within a few datagrams of it, while an
+// application-limited one sits far below. latestSent is when the newest
+// packet this ACK covers was sent: at or after the round's mark, it
+// closes the round, and the next send opens the next one.
+func (c *newReno) onAcked(bytes, growable int, latestSent time.Time) {
+	c.inFlight = max(c.inFlight-bytes, 0)
+	useful := c.limited || (c.cwnd < c.ssthresh && 2*c.maxInFlight >= c.cwnd)
+	if !c.roundMark.IsZero() && !latestSent.Before(c.roundMark) {
+		c.roundMark = time.Time{}
 	}
-	if growable <= 0 {
+	if growable <= 0 || !useful {
 		return
 	}
 	if c.cwnd < c.ssthresh {

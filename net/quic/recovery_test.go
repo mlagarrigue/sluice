@@ -172,9 +172,10 @@ func TestNewRenoWindow(t *testing.T) {
 	}
 	now := time.Now()
 
-	// Slow start: acknowledged bytes grow the window byte for byte.
-	cc.onSent(2400)
-	cc.onAcked(2400, 2400)
+	// Slow start: acknowledged bytes grow the window byte for byte — the
+	// flight fills the window, so the window is what limits the sender.
+	cc.onSent(now, 12000)
+	cc.onAcked(2400, 2400, now)
 	if cc.cwnd != start+2400 {
 		t.Errorf("slow start grew %d, want %d", cc.cwnd-start, 2400)
 	}
@@ -182,14 +183,14 @@ func TestNewRenoWindow(t *testing.T) {
 	// Bytes from before a recovery start release flight but earn nothing:
 	// processAck reports them as acked and not growable, and the window
 	// must not move on them.
-	cc.onSent(1200)
-	cc.onAcked(1200, 0)
+	cc.onSent(now, 1200)
+	cc.onAcked(1200, 0, now)
 	if cc.cwnd != start+2400 {
 		t.Errorf("non-growable bytes moved the window to %d", cc.cwnd)
 	}
 
 	// Loss halves it, once per recovery period.
-	cc.onSent(1200)
+	cc.onSent(now, 1200)
 	cc.onLost(1200, now, now)
 	half := cc.cwnd
 	if half != (start+2400)/2 {
@@ -205,6 +206,98 @@ func TestNewRenoWindow(t *testing.T) {
 	if cc.cwnd != 2*1200 {
 		t.Errorf("collapsed window = %d", cc.cwnd)
 	}
+}
+
+// A window the sender never fills must not grow (RFC 9002 §7.8): a thousand
+// acknowledgements of a flight far below the window leave it where it was,
+// while the same acknowledgements after the window refused a send grow it
+// as slow start always did. The flight at half the window is the slow-start
+// boundary; avoidance grows on a refusal alone; a refusal counts for its
+// round, which the acknowledgement of a packet sent after it closes.
+func TestNewRenoUnderutilizedWindow(t *testing.T) {
+	const datagram = 1200
+	now := time.Now()
+	t.Run("slow start, flight far below the window", func(t *testing.T) {
+		cc := newNewReno(datagram)
+		start := cc.cwnd
+		for range 1000 {
+			cc.onSent(now, datagram)
+			cc.onAcked(datagram, datagram, now)
+		}
+		if cc.cwnd != start {
+			t.Fatalf("cwnd = %d after 1000 application-limited ACKs, want %d unchanged", cc.cwnd, start)
+		}
+	})
+	t.Run("slow start, the window refused a send", func(t *testing.T) {
+		cc := newNewReno(datagram)
+		start := cc.cwnd
+		for range 1000 {
+			cc.onSent(now, datagram)
+			if cc.canSend(cc.cwnd) {
+				t.Fatal("a send of a whole window on top of a flight was not refused")
+			}
+			cc.onAcked(datagram, datagram, now)
+		}
+		if want := start + 1000*datagram; cc.cwnd != want {
+			t.Fatalf("cwnd = %d after 1000 window-limited ACKs, want %d", cc.cwnd, want)
+		}
+	})
+	t.Run("slow start, flight at half the window", func(t *testing.T) {
+		cc := newNewReno(datagram)
+		start := cc.cwnd
+		cc.onSent(now, start/2)
+		cc.onAcked(datagram, datagram, now)
+		if cc.cwnd != start+datagram {
+			t.Fatalf("cwnd = %d with the flight at half the window, want %d", cc.cwnd, start+datagram)
+		}
+		// The window grew; the same flight is now below half of it.
+		cc.onSent(now, datagram)
+		cc.onAcked(datagram, datagram, now)
+		if cc.cwnd != start+datagram {
+			t.Fatalf("cwnd = %d with the flight under half the window, want %d unchanged", cc.cwnd, start+datagram)
+		}
+	})
+	t.Run("avoidance grows on a refusal alone", func(t *testing.T) {
+		cc := newNewReno(datagram)
+		cc.ssthresh = cc.cwnd
+		start := cc.cwnd
+		for range 1000 {
+			cc.onSent(now, start-datagram) // nearly full, never refused
+			cc.onAcked(start-datagram, start-datagram, now)
+		}
+		if cc.cwnd != start {
+			t.Fatalf("cwnd = %d after 1000 unrefused ACKs in avoidance, want %d unchanged", cc.cwnd, start)
+		}
+		cc.onSent(now, start)
+		if cc.canSend(datagram) {
+			t.Fatal("a datagram on top of a full window was not refused")
+		}
+		cc.onAcked(datagram, datagram, now)
+		if want := start + datagram*datagram/start; cc.cwnd != want {
+			t.Fatalf("cwnd = %d after a window-limited ACK in avoidance, want %d", cc.cwnd, want)
+		}
+	})
+	t.Run("a refusal is spent with its round", func(t *testing.T) {
+		cc := newNewReno(datagram)
+		start := cc.cwnd
+		cc.onSent(now, start)
+		if cc.canSend(datagram) {
+			t.Fatal("a datagram on top of a full window was not refused")
+		}
+		cc.onAcked(start, start, now) // the whole flight: the window grows once…
+		if cc.cwnd != 2*start {
+			t.Fatalf("cwnd = %d after the full flight was acknowledged, want %d", cc.cwnd, 2*start)
+		}
+		cc.onAcked(datagram, datagram, now) // …still within the round, so again…
+		if cc.cwnd != 2*start+datagram {
+			t.Fatalf("cwnd = %d after a second ACK of the refused round, want %d", cc.cwnd, 2*start+datagram)
+		}
+		cc.onSent(now, datagram)            // the first send after the round opens the next one
+		cc.onAcked(datagram, datagram, now) // …and not on the next small exchange
+		if cc.cwnd != 2*start+datagram {
+			t.Fatalf("cwnd = %d after the refusal was spent, want %d unchanged", cc.cwnd, 2*start+datagram)
+		}
+	})
 }
 
 // The probe timeout grows with variance and doubles per unanswered probe —

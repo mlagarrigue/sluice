@@ -1141,7 +1141,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		c.rtt.sample(now.Sub(out.largestSentAt), ackDelay)
 	}
 	if out.newlyAcked > 0 {
-		c.cc.onAcked(out.newlyAcked, out.growableBytes)
+		c.cc.onAcked(out.newlyAcked, out.growableBytes, out.latestAckedSent)
 		c.cond.Broadcast()
 	}
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {

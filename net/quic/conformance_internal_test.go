@@ -368,7 +368,7 @@ func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 func TestCongestionEventGatesOnTheLatestLoss(t *testing.T) {
 	cc := newNewReno(1200)
 	now := time.Now()
-	cc.onSent(4800)
+	cc.onSent(now, 4800)
 	cc.onLost(1200, now.Add(-time.Second), now.Add(-500*time.Millisecond))
 	before := cc.cwnd
 

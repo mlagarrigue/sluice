@@ -700,7 +700,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	}
 	sp.sent.record(record)
 	sp.lastElicit = p.now
-	c.cc.onSent(size)
+	c.cc.onSent(p.now, size)
 	// Every send spends pacing tokens — probes, ACKs and grants occupy the
 	// wire like anything else — but only the waitCwnd gate above ever waits
 	// on them (the pacer's doc says why the rest must not).
