@@ -33,7 +33,7 @@
 #
 # Also not gated here: net/quic's emulated-path benchmarks, which cannot run
 # pinned and need a bound on the median rather than a sign test. They have
-# their own script, gate-path.sh, which CI runs as the next step of this job.
+# their own script, gate-path.sh, which CI runs as a job of its own.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BASE="${1:?usage: gate.sh <base-ref> [rounds]}"

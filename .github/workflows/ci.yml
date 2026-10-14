@@ -431,12 +431,26 @@ jobs:
       - name: Paired regression gate against the merge base
         run: internal/bench/scripts/gate.sh ${{ github.event.pull_request.base.sha }}
 
-      # The emulated-path benchmarks of net/quic measure the congestion
-      # controller on a timer-driven middlebox, which cannot run pinned to one
-      # core and does not move with the CPU: a separate script, not pinned,
-      # eight transfers a side, red when a median is 15% slower (see
-      # gate-path.sh). A separate step, so a red core gate still reports the
-      # path.
+  # The emulated-path benchmarks of net/quic measure the congestion controller
+  # on a timer-driven middlebox, which cannot run pinned to one core and does
+  # not move with the CPU: a separate script, not pinned, eight transfers a
+  # side, red when a median is 15% slower (see gate-path.sh). Its own job
+  # rather than a step of bench-gate: that job already takes five minutes,
+  # and this one takes two that would otherwise be added to every pull
+  # request's critical path.
+  bench-path-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The gate builds the merge base too.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
       - name: Paired path gate against the merge base
-        if: ${{ !cancelled() }}
         run: internal/bench/scripts/gate-path.sh ${{ github.event.pull_request.base.sha }}

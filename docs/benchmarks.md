@@ -301,8 +301,8 @@ row is a regression until it is explained; one that puts it above replaces
 the row.
 
 **The CI gate watches them** through a second script,
-`internal/bench/scripts/gate-path.sh`, run by the same job as `gate.sh` on
-every pull request. It differs from `gate.sh` in the three ways these rows
+`internal/bench/scripts/gate-path.sh`, run by its own CI job beside
+`gate.sh`'s on every pull request. It differs from `gate.sh` in the three ways these rows
 require: it builds `net/quic`'s test binary rather than `internal/bench`'s;
 it runs the two binaries unpinned, with the runtime's own `GOMAXPROCS`,
 since the emulation sleeps on timers in several goroutines; and it rules on
