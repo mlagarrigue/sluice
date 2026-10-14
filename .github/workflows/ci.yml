@@ -436,8 +436,8 @@ jobs:
   # not move with the CPU: a separate script, not pinned, eight transfers a
   # side, red when a median is 15% slower (see gate-path.sh). Its own job
   # rather than a step of bench-gate: that job already takes five minutes,
-  # and this one takes two that would otherwise be added to every pull
-  # request's critical path.
+  # and this one takes about five more (eight profiles, 2026-10-14) that
+  # would otherwise be added to every pull request's critical path.
   bench-path-gate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

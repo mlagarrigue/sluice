@@ -5,8 +5,8 @@
 #
 #   internal/bench/scripts/gate-path.sh <base-ref> [rounds]
 #
-# gate.sh cannot read these three benchmarks, which is why this script exists
-# rather than three more names in its GATED set:
+# gate.sh cannot read these benchmarks, which is why this script exists
+# rather than more names in its GATED set:
 #
 #   - they live in net/quic, and gate.sh lists and builds internal/bench alone;
 #   - ab.sh pins each binary to one core under GOMAXPROCS=1, and an emulation
@@ -17,7 +17,7 @@
 #     and the spread is 1-4%. gate.sh's 3% effect by sign test is a CPU bound;
 #     the rule docs/benchmarks.md states for these rows is 15% on the median.
 #
-# So: build net/quic's test binary from both trees, run the three benchmarks
+# So: build net/quic's test binary from both trees, run the gated benchmarks
 # as interleaved rounds (before, after, before, after...) so drift cancels out
 # of the comparison as it does in ab.sh, one transfer per round
 # (-test.benchtime=1x: the figure is one transfer's wall clock, and the
@@ -31,8 +31,15 @@ BASE="${1:?usage: gate-path.sh <base-ref> [rounds]}"
 ROUNDS="${2:-8}"
 PKG="./net/quic"
 
-# The gated set, every name anchored.
-GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBottleneck$'
+# The gated set, every name anchored. A path benchmark enters it when its
+# median holds within 5% of itself on an identical tree (this script, HEAD
+# against the working tree, eight rounds); one that does not stays out, with
+# the measurement that says so here. Measured 2026-10-14 on an identical
+# tree: the eight gated names within 2.1% of themselves (Bottleneck 0.979,
+# the rest 0.991 to 1.013); BenchmarkTransferReorder at 0.934, out — a
+# spurious loss is declared or not by a few microseconds of scheduling, and
+# its figure moves 7% with nothing changed.
+GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurstLoss$|BenchmarkTransferBottleneck$|BenchmarkTransferDeepBuffer$|BenchmarkTransferTwoFlows$|BenchmarkTransferRTT40$|BenchmarkTransferRTT80$'
 
 # 15%: the bound docs/benchmarks.md sets on these rows, above their measured
 # spread (±4% on the lossy profile) and below what a change to the controller

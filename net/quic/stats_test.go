@@ -69,7 +69,11 @@ func TestStatsCountsLostPackets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("a 512 KiB transfer over an emulated 4 ms lossy path")
 	}
-	stats := transferOnce(t, netemProfile{owd: 2 * time.Millisecond, loss: 0.05}, 512<<10)
+	tr, err := transferOnce(t, &netemLink{prof: netemProfile{owd: 2 * time.Millisecond, loss: 0.05}}, 512<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := tr.stats
 	if stats.LostPackets == 0 {
 		t.Fatalf("5%% loss, nothing declared lost: %+v", stats)
 	}

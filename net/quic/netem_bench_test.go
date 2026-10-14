@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +16,11 @@ import (
 
 // The loss/latency harness the congestion-control backlog items wait on:
 // a middlebox between two dgram pairs that charges every datagram a one-way
-// delay and, per profile, a random loss probability and a drop-tail
-// bottleneck queue. It is what lets a pacing, cwnd-growth or PTO change be
-// measured as goodput on a path instead of asserted from the RFC's prose.
+// delay and, per profile, a random or bursty loss, a late delivery that
+// reorders it behind its successors, and a drop-tail bottleneck queue that
+// two flows may share. It is what lets a pacing, cwnd-growth or PTO change
+// be measured as goodput on a path instead of asserted from the RFC's
+// prose, and what CUBIC and BBR will have to prove themselves on.
 //
 // The emulation splits each direction in two stages so that reading never
 // blocks behind the delay: the forwarder decides a packet's fate the moment
@@ -32,6 +35,22 @@ type netemProfile struct {
 	// a fixed-seed generator so two runs of one benchmark walk the same
 	// loss pattern (timing still moves, the draw sequence does not).
 	loss float64
+	// burstStart and burstEnd make the loss bursty instead of independent:
+	// a two-state Gilbert model whose bad state loses every datagram.
+	// burstStart is the per-datagram probability of entering the bad
+	// state, burstEnd of leaving it, so a burst lasts 1/burstEnd datagrams
+	// on average and the long-run loss rate is burstStart over the sum of
+	// the two. Drawn from the same generator as loss. Zero burstStart
+	// disables it.
+	burstStart, burstEnd float64
+	// reorder is the probability a datagram is delivered late — by an
+	// extra delay drawn uniformly up to reorderDelay — so that it arrives
+	// after datagrams sent after it. A delay, not a swap with the next
+	// datagram: a swap stays under RFC 9002 §6.1.1's packet threshold of
+	// three and measures nothing, while a millisecond inside a burst moves
+	// a datagram past dozens of its successors. Zero disables it.
+	reorder      float64
+	reorderDelay time.Duration
 	// rate, in bytes per second, serializes packets through a bottleneck;
 	// zero means no bottleneck. queue is how long a packet may wait for
 	// the bottleneck before it is dropped instead — depth expressed in
@@ -46,11 +65,38 @@ type timedPacket struct {
 	arriveAt time.Time
 }
 
+// bottleneck is the serialization point of one direction: when its line
+// frees up next. Flows that share a link share one of these, which is the
+// whole of what makes them compete.
+type bottleneck struct {
+	mu        sync.Mutex
+	lastTxEnd time.Time
+}
+
+// enqueue charges a packet of n bytes its serialization time behind
+// whatever is already queued, returning when it leaves the line, or false
+// when it would wait longer than the queue allows and is dropped instead.
+func (b *bottleneck) enqueue(now time.Time, n int, prof netemProfile) (time.Time, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	txStart := now
+	if b.lastTxEnd.After(txStart) {
+		txStart = b.lastTxEnd
+	}
+	if txStart.Sub(now) > prof.queue {
+		return time.Time{}, false // the bottleneck's buffer is full: drop-tail
+	}
+	txEnd := txStart.Add(time.Duration(n) * time.Second / time.Duration(prof.rate))
+	b.lastTxEnd = txEnd
+	return txEnd, true
+}
+
 // forward emulates one direction: src's peer traffic is read promptly,
 // doomed packets are dropped at read time, survivors are handed to a
-// deliverer that sleeps until each one's arrival instant. Returns when src
-// closes.
-func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.Rand) {
+// deliverer that sleeps until each one's arrival instant. A reordered
+// packet leaves that in-order queue for a timer of its own, which is what
+// lets it overtake. Returns when src closes.
+func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.Rand, bn *bottleneck) {
 	ch := make(chan timedPacket, 4096)
 	go func() {
 		// On a closed pair the writes start failing; keep draining so the
@@ -64,7 +110,7 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 	}()
 	defer close(ch)
 
-	var lastTxEnd time.Time
+	bad := false
 	buf := make([]byte, 2048)
 	for {
 		n, _, err := src.ReadFrom(buf)
@@ -74,35 +120,59 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 		if prof.loss > 0 && rng.Float64() < prof.loss {
 			continue
 		}
+		if prof.burstStart > 0 {
+			if bad {
+				bad = rng.Float64() >= prof.burstEnd
+			} else {
+				bad = rng.Float64() < prof.burstStart
+			}
+			if bad {
+				continue
+			}
+		}
 		now := time.Now()
 		txEnd := now
 		if prof.rate > 0 {
-			txStart := now
-			if lastTxEnd.After(txStart) {
-				txStart = lastTxEnd
+			var ok bool
+			if txEnd, ok = bn.enqueue(now, n, prof); !ok {
+				continue
 			}
-			if txStart.Sub(now) > prof.queue {
-				continue // the bottleneck's buffer is full: drop-tail
-			}
-			txEnd = txStart.Add(time.Duration(n) * time.Second / time.Duration(prof.rate))
-			lastTxEnd = txEnd
 		}
-		ch <- timedPacket{
+		pkt := timedPacket{
 			data:     append([]byte(nil), buf[:n]...),
 			arriveAt: txEnd.Add(prof.owd),
 		}
+		if prof.reorder > 0 && rng.Float64() < prof.reorder {
+			late := pkt.arriveAt.Add(time.Duration(rng.Float64() * float64(prof.reorderDelay)))
+			time.AfterFunc(time.Until(late), func() { _, _ = dst.WriteTo(pkt.data, to) })
+			continue
+		}
+		ch <- pkt
 	}
 }
 
-// netemPath wires client and server packet connections through two
-// forwarders sharing one profile. dialTo is where the client addresses its
-// datagrams — the middlebox end facing it. Closing either returned end tears
-// the whole path down.
-func netemPath(prof netemProfile) (client, server net.PacketConn, dialTo net.Addr, stop func()) {
-	a1, a2 := dgram.Pair()                                                // client <-> middlebox
-	b1, b2 := dgram.Pair()                                                // middlebox <-> server
-	go forward(a2, b1, b2.LocalAddr(), prof, rand.New(rand.NewPCG(1, 2))) //nolint:gosec // G404: a seeded loss pattern, reproducible on purpose
-	go forward(b1, a2, a1.LocalAddr(), prof, rand.New(rand.NewPCG(3, 4))) //nolint:gosec // G404: same
+// netemLink is one emulated link: a profile and the two bottlenecks, one a
+// direction, that every path opened over it shares. Loss and reordering are
+// drawn per path from its own seeds, so two flows on one link do not lose
+// the same datagrams; the first path's seeds are the ones the single-flow
+// benchmarks have always used, so their rows stay comparable.
+type netemLink struct {
+	prof     netemProfile
+	up, down bottleneck
+	paths    uint64
+}
+
+// path wires a client and a server packet connection through two
+// forwarders on this link. dialTo is where the client addresses its
+// datagrams — the middlebox end facing it. Closing either returned end
+// tears the path down; the link outlives it.
+func (l *netemLink) path() (client, server net.PacketConn, dialTo net.Addr, stop func()) {
+	seed := 4*l.paths + 1
+	l.paths++
+	a1, a2 := dgram.Pair()                                                                     // client <-> middlebox
+	b1, b2 := dgram.Pair()                                                                     // middlebox <-> server
+	go forward(a2, b1, b2.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed, seed+1)), &l.up)     //nolint:gosec // G404: a seeded loss pattern, reproducible on purpose
+	go forward(b1, a2, a1.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed+2, seed+3)), &l.down) //nolint:gosec // G404: same
 	return a1, b2, a2.LocalAddr(), func() {
 		_ = a1.Close()
 		_ = b2.Close()
@@ -121,14 +191,23 @@ func wideParameters() quic.TransportParameters {
 	return p
 }
 
-// transferOnce runs one connection over the path and moves total bytes
+// transfer is what one flow reports: how long it took and the sender's
+// counters as they stood when the receiver had everything.
+type transfer struct {
+	elapsed time.Duration
+	stats   quic.Stats
+}
+
+// transferOnce runs one connection over the link and moves total bytes
 // client-to-server on a single stream, returning when the server has read
-// them all, with the sender's counters as they stood then. The handshake
-// rides inside the measurement; at these transfer sizes it is two round
-// trips against a second of data.
-func transferOnce(tb testing.TB, prof netemProfile, total int) quic.Stats {
+// them all. The handshake rides inside the measurement; at these transfer
+// sizes it is two round trips against a second of data. It returns an
+// error rather than failing the test because two flows run it from two
+// goroutines, and only the test's own may call Fatal.
+func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 	tb.Helper()
-	clientPC, serverPC, dialTo, stop := netemPath(prof)
+	start := time.Now()
+	clientPC, serverPC, dialTo, stop := link.path()
 	defer stop()
 
 	type result struct {
@@ -168,45 +247,79 @@ func transferOnce(tb testing.TB, prof netemProfile, total int) quic.Stats {
 
 	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), wideParameters())
 	if err != nil {
-		tb.Fatalf("Dial: %v", err)
+		return transfer{}, fmt.Errorf("Dial: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 	s, err := conn.OpenStream(tb.Context())
 	if err != nil {
-		tb.Fatal(err)
+		return transfer{}, err
 	}
 	chunk := make([]byte, 64<<10)
 	for sent := 0; sent < total; sent += len(chunk) {
 		if _, err := s.Write(chunk); err != nil {
-			tb.Fatalf("after %d bytes: %v (conn: %v)", sent, err, conn.Err())
+			return transfer{}, fmt.Errorf("after %d bytes: %w (conn: %v)", sent, err, conn.Err()) //nolint:errorlint // as above
 		}
 	}
 	if err := s.CloseWrite(); err != nil {
-		tb.Fatal(err)
+		return transfer{}, err
 	}
 
 	select {
 	case r := <-done:
 		if r.err != nil {
-			tb.Fatalf("the server: %v", r.err)
+			return transfer{}, fmt.Errorf("the server: %w", r.err)
 		}
 		if r.n != int64(total) {
-			tb.Fatalf("the server read %d of %d bytes", r.n, total)
+			return transfer{}, fmt.Errorf("the server read %d of %d bytes", r.n, total)
 		}
 	case <-time.After(120 * time.Second):
-		tb.Fatal("the transfer did not finish")
+		return transfer{}, errors.New("the transfer did not finish")
 	}
-	return conn.Stats()
+	return transfer{elapsed: time.Since(start), stats: conn.Stats()}, nil
 }
 
+// benchTransfer moves total bytes on one flow and reports its goodput, and
+// the sender's final smoothed RTT as a multiple of the smallest it sampled:
+// on a deep buffer that ratio is the queue the controller let build, the
+// figure BBR's "RTT within 1.5× min_rtt" criterion reads.
 func benchTransfer(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(total))
 	for b.Loop() {
-		start := time.Now()
-		transferOnce(b, prof, total)
-		mbps := float64(total) / 1e6 / time.Since(start).Seconds()
-		b.ReportMetric(mbps, "MB/s")
+		t, err := transferOnce(b, &netemLink{prof: prof}, total)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportMetric(float64(total)/1e6/t.elapsed.Seconds(), "MB/s")
+		b.ReportMetric(float64(t.stats.SmoothedRTT)/float64(t.stats.MinRTT), "rtt_x")
+	}
+}
+
+// benchTwoFlows moves total bytes on each of two flows that share the
+// link's bottleneck, started together, and reports the aggregate goodput
+// (what the link delivered) and the first flow's share of the bytes per
+// second — 0.5 when the two controllers split the line, the figure a
+// fairness criterion reads. One transfer's wall clock is the slower flow's.
+func benchTwoFlows(b *testing.B, prof netemProfile, total int) {
+	b.Helper()
+	b.SetBytes(int64(2 * total))
+	for b.Loop() {
+		link := &netemLink{prof: prof}
+		var (
+			wg   sync.WaitGroup
+			res  [2]transfer
+			errs [2]error
+		)
+		for i := range res {
+			wg.Go(func() { res[i], errs[i] = transferOnce(b, link, total) })
+		}
+		wg.Wait()
+		if err := errors.Join(errs[:]...); err != nil {
+			b.Fatal(err)
+		}
+		rate := func(i int) float64 { return float64(total) / 1e6 / res[i].elapsed.Seconds() }
+		b.ReportMetric(float64(2*total)/1e6/max(res[0].elapsed, res[1].elapsed).Seconds(), "MB/s")
+		b.ReportMetric(rate(0)/(rate(0)+rate(1)), "share")
 	}
 }
 
@@ -225,6 +338,35 @@ func BenchmarkTransferLoss1pct(b *testing.B) {
 	benchTransfer(b, netemProfile{owd: 10 * time.Millisecond, loss: 0.01}, 4<<20)
 }
 
+// BenchmarkTransferBurstLoss is the same one percent of loss delivered in
+// bursts of four datagrams on average (a bad state entered one datagram in
+// 400 and left one in four) with clean stretches between: a wireless
+// fade, not a random drop. A controller that halves once per loss event
+// rather than once per lost packet (RFC 9002 §7.3.2) pays a quarter of
+// what Loss1pct costs it; a burst that spans a whole flight is a probe
+// timeout instead.
+func BenchmarkTransferBurstLoss(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:        10 * time.Millisecond,
+		burstStart: 0.0025,
+		burstEnd:   0.25,
+	}, 4<<20)
+}
+
+// BenchmarkTransferReorder is the spurious-loss benchmark: no loss at all,
+// but two datagrams in a hundred arrive up to two milliseconds late, past
+// the dozens sent after them inside the same burst. Every one of them
+// trips RFC 9002 §6.1.1's packet threshold, is declared lost, retransmitted
+// and charged as a congestion event the path never had. What separates
+// controllers here is how they tolerate reordering, not how they recover.
+func BenchmarkTransferReorder(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:          10 * time.Millisecond,
+		reorder:      0.02,
+		reorderDelay: 2 * time.Millisecond,
+	}, 4<<20)
+}
+
 // BenchmarkTransferBottleneck is the pacing benchmark: a 50 Mbit/s
 // bottleneck whose buffer holds five milliseconds of line rate, behind a
 // 20 ms RTT. A sender whose bursts are bounded only by cwnd overruns a
@@ -236,4 +378,55 @@ func BenchmarkTransferBottleneck(b *testing.B) {
 		rate:  50_000_000 / 8,
 		queue: 5 * time.Millisecond,
 	}, 4<<20)
+}
+
+// BenchmarkTransferDeepBuffer is the same bottleneck behind ten round trips
+// of buffer (200 ms at line rate): the bufferbloat shape. A loss-driven
+// controller fills it before it sees a loss, so goodput is the line rate
+// and the cost shows in rtt_x — the smoothed RTT ending at many times the
+// path's own — where a model-based controller is meant to hold the queue
+// short at the same goodput.
+func BenchmarkTransferDeepBuffer(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   10 * time.Millisecond,
+		rate:  50_000_000 / 8,
+		queue: 200 * time.Millisecond,
+	}, 4<<20)
+}
+
+// BenchmarkTransferTwoFlows is the fairness benchmark: two flows started
+// together on the 50 Mbit/s bottleneck behind one round trip of buffer
+// (20 ms), each moving 4 MiB. share is the first flow's part of the
+// delivered rate; two copies of one controller should split the line, and
+// a new controller is measured by how far from a half it pushes the old
+// one.
+func BenchmarkTransferTwoFlows(b *testing.B) {
+	benchTwoFlows(b, netemProfile{
+		owd:   10 * time.Millisecond,
+		rate:  50_000_000 / 8,
+		queue: 20 * time.Millisecond,
+	}, 4<<20)
+}
+
+// BenchmarkTransferRTT40 and RTT80 are the long-haul benchmarks: a
+// 100 Mbit/s bottleneck behind 20 ms of buffer, at 40 then 80 ms of RTT.
+// The bandwidth-delay product grows with the RTT (0.5 then 1 MB) while the
+// buffer does not, so every overflow costs a window the controller has to
+// grow back one segment per round trip under Reno — the regime CUBIC's
+// window function (RFC 9438) was designed for, and where it must show its
+// gain over Reno.
+func BenchmarkTransferRTT40(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   20 * time.Millisecond,
+		rate:  100_000_000 / 8,
+		queue: 20 * time.Millisecond,
+	}, 8<<20)
+}
+
+func BenchmarkTransferRTT80(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   40 * time.Millisecond,
+		rate:  100_000_000 / 8,
+		queue: 20 * time.Millisecond,
+	}, 8<<20)
 }
