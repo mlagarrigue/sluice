@@ -650,6 +650,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		c.idleDeadline = p.now.Add(c.idleTimeout)
 	}
 	c.elicitingSinceRecv = true
+	c.armKeepAliveLocked(p.now)
 	c.kickTimer()
 	return out, nil
 }

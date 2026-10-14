@@ -200,6 +200,12 @@ type Conn struct {
 	idleTimeout        time.Duration
 	idleDeadline       time.Time
 	handshakeConfirmed bool
+	// keepAlive is the period Conn.SetKeepAlive asked for, zero when off;
+	// keepAliveDeadline is when the next PING leaves if nothing else moves
+	// first. Both the receive path and every ack-eliciting send push the
+	// deadline back, so a PING only ever goes out into real silence.
+	keepAlive         time.Duration
+	keepAliveDeadline time.Time
 	// elicitingSinceRecv is true once an ack-eliciting packet has been sent
 	// since the last packet was received and processed. RFC 9000 §10.1 lets a
 	// send restart the idle timer only while this is false — the *first*

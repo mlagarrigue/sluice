@@ -469,6 +469,7 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	// A packet was received and processed, so the next ack-eliciting send may
 	// restart the idle timer again (§10.1).
 	c.elicitingSinceRecv = false
+	c.armKeepAliveLocked(now)
 	// A server that authenticates a Handshake packet is done with Initial
 	// keys (RFC 9001 §4.9.1).
 	if space == spaceHandshake && !c.isClient {
@@ -1387,6 +1388,56 @@ func (c *Conn) SetManualCredit(on bool) {
 	c.mu.Lock()
 	c.manualCredit = on
 	c.mu.Unlock()
+}
+
+// SetKeepAlive makes the connection send a PING frame after every period of
+// complete silence — nothing sent, nothing received — so that the peer's
+// idle timeout, and this end's, keep restarting (RFC 9000 §10.1.2). Without
+// it, a connection nobody uses for longer than the negotiated idle timeout
+// ends quietly: that is the right outcome for a connection that is done, and
+// the wrong one for a connection kept between two requests or parked in a
+// pool. A period of zero or less turns the keepalive off, the default.
+//
+// What it costs: one small packet and its acknowledgement per period of
+// silence, nothing while the connection is busy. A period longer than half
+// the negotiated idle timeout is brought down to that half when the PING is
+// scheduled, because a PING that leaves close to the deadline risks
+// arriving after the peer has already given up (§10.1); a keepalive that
+// holds nothing in silence would be a trap. When neither end announced an
+// idle timeout the keepalive is harmless and pointless: there is no silence
+// to break. Safe from any goroutine, before or after the first stream.
+func (c *Conn) SetKeepAlive(period time.Duration) {
+	c.mu.Lock()
+	c.keepAlive = max(period, 0)
+	c.armKeepAliveLocked(time.Now())
+	c.mu.Unlock()
+	c.kickTimer()
+}
+
+// keepAlivePeriodLocked is the period a PING actually waits for: the one
+// asked for, capped at half the effective idle timeout — recomputed at each
+// arming rather than stored, so a cap set before the peer's parameters
+// arrived never goes stale. Zero when the keepalive is off.
+func (c *Conn) keepAlivePeriodLocked() time.Duration {
+	period := c.keepAlive
+	if period == 0 {
+		return 0
+	}
+	if half := c.idleTimeout / 2; c.idleTimeout != 0 && period > half {
+		period = max(half, time.Millisecond)
+	}
+	return period
+}
+
+// armKeepAliveLocked schedules the next PING one period after now, or
+// clears the deadline when the keepalive is off. Called wherever the
+// silence breaks: a packet received, an ack-eliciting packet sent.
+func (c *Conn) armKeepAliveLocked(now time.Time) {
+	if period := c.keepAlivePeriodLocked(); period != 0 {
+		c.keepAliveDeadline = now.Add(period)
+	} else {
+		c.keepAliveDeadline = time.Time{}
+	}
 }
 
 // ReleaseStreamBytes reports n bytes of stream id's data released by a

@@ -66,6 +66,18 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		}
 	}
 
+	// The keepalive (Conn.SetKeepAlive): a PING into silence, so that both
+	// idle clocks restart (§10.1.2). Only with 1-RTT keys in hand — before
+	// them the handshake's own packets are the activity — and rearmed here
+	// before the send, so a send that fails cannot make the loop spin.
+	if sp := &c.spaces[spaceApplication]; !c.keepAliveDeadline.IsZero() && !sp.discarded && sp.sealer != nil {
+		if !now.Before(c.keepAliveDeadline) {
+			c.armKeepAliveLocked(now)
+			_ = c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{})
+		}
+		earlier(c.keepAliveDeadline)
+	}
+
 	// An unanswered PATH_CHALLENGE on a migrated path retransmits on its own
 	// probe-timeout backoff — the same timer loop, not a second timer system.
 	earlier(c.pathProbeDeadlineLocked(now))
