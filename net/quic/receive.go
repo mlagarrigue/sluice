@@ -664,10 +664,7 @@ func (c *Conn) handleRetry(h longHeader) {
 	sp := &c.spaces[spaceInitial]
 	payloads, inFlight := sp.sent.takeAll()
 	sp.retrans = append(sp.retrans, payloads...)
-	c.cc.inFlight -= inFlight
-	if c.cc.inFlight < 0 {
-		c.cc.inFlight = 0
-	}
+	c.cc.onLifted(inFlight)
 	c.mu.Unlock()
 
 	// New identifier, new Initial secrets (RFC 9001 §5.2).
@@ -1099,7 +1096,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, f.largest),
 		}
 	}
-	out, err := sp.sent.processAck(now, f.largest, f.Data, &c.rtt, c.cc.recoveryStart)
+	out, err := sp.sent.processAck(now, f.largest, f.Data, &c.rtt, c.cc)
 	if errors.Is(err, errOptimisticAck) {
 		// RFC 9000 §21.4: the ACK covers a number this end skipped on
 		// purpose — an acknowledgement of a packet that never existed.
@@ -1141,7 +1138,8 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		c.rtt.sample(now.Sub(out.largestSentAt), ackDelay)
 	}
 	if out.newlyAcked > 0 {
-		c.cc.onAcked(out.newlyAcked, out.growableBytes, out.latestAckedSent)
+		// processAck already told the controller, packet by packet; the
+		// window may have grown and a writer parked on it must look again.
 		c.cond.Broadcast()
 	}
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
@@ -1171,7 +1169,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// nothing to release, and no event for a window they never
 		// counted against.
 		if out.lostBytes > 0 {
-			c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+			c.cc.onLost(lossEvent{now: now, latestSent: out.latestLossSent, bytes: out.lostBytes})
 			// RFC 9002 §7.6: two ack-eliciting losses further apart than
 			// the persistent-congestion duration — three probe intervals,
 			// max_ack_delay included whatever the space (§7.6.1) — with

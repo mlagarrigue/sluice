@@ -27,7 +27,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	if _, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{}); err != nil {
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.lossTime.IsZero() {
@@ -35,7 +35,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	}
 
 	// The same ACK again: no news, and the deadline must survive it.
-	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,12 +369,12 @@ func TestCongestionEventGatesOnTheLatestLoss(t *testing.T) {
 	cc := newNewReno(1200)
 	now := time.Now()
 	cc.onSent(now, 4800)
-	cc.onLost(1200, now.Add(-time.Second), now.Add(-500*time.Millisecond))
+	cc.onLost(lossEvent{now: now.Add(-500 * time.Millisecond), latestSent: now.Add(-time.Second), bytes: 1200})
 	before := cc.cwnd
 
 	// A batch mixing a straggler from before recovery with a loss from
 	// after it: the latest is what decides, and it says new epoch.
-	cc.onLost(1200, now, now)
+	cc.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
 	if cc.cwnd >= before {
 		t.Errorf("cwnd = %d after a post-recovery loss, want below %d — the straggler shielded the batch", cc.cwnd, before)
 	}
@@ -395,7 +395,7 @@ func TestProcessAckReportsTheLatestLossSendTime(t *testing.T) {
 	var peer ackTracker
 	peer.record(4, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,14 +496,14 @@ func TestCryptoObeysTheCongestionWindow(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	c.cc.cwnd = 2000
+	c.reno().cwnd = 2000
 	c.mu.Unlock()
 
 	if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 8192)); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	inFlight, cwnd := c.cc.inFlight, c.cc.cwnd
+	inFlight, cwnd := c.reno().inFlight, c.reno().cwnd
 	queued := len(c.spaces[spaceInitial].retrans)
 	c.mu.Unlock()
 	if inFlight > cwnd+c.maxDatagram {
@@ -580,8 +580,8 @@ func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 
 	c.mu.Lock()
 	c.spaces[spaceApplication].sealer = sealer
-	c.cc.cwnd = 1200
-	c.cc.inFlight = 1200 // the window is spent
+	c.reno().cwnd = 1200
+	c.reno().inFlight = 1200 // the window is spent
 	c.control = appendFrame(c.control, frameRetireConnectionID, 0)
 	c.flushControlLocked()
 	deferred := len(c.control)
@@ -604,7 +604,7 @@ func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 
 	// The window reopens: the deferred frame goes on the next flush.
 	c.mu.Lock()
-	c.cc.inFlight = 0
+	c.reno().inFlight = 0
 	c.flushControlLocked()
 	controlLeft = len(c.control)
 	c.mu.Unlock()
@@ -721,7 +721,7 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 		}
 		now := time.Now()
 		c.mu.Lock()
-		initial = c.cc.cwnd
+		initial = c.reno().cwnd
 		if sampled {
 			// pto = 100ms + 1ms + 25ms (the peer's default max_ack_delay,
 			// counted whatever the space, §7.6.1): the duration is 378ms.
@@ -743,7 +743,7 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.cc.cwnd, c.cc.ssthresh, initial, c.persistentCongestions
+		return c.reno().cwnd, c.reno().ssthresh, initial, c.persistentCongestions
 	}
 
 	cwnd, ssthresh, initial, collapses := run(t, 100*time.Millisecond, true) // losses 0–4 span 400ms > 378ms
@@ -772,7 +772,7 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 	}
 	now := time.Now()
 	c.mu.Lock()
-	initial := c.cc.cwnd
+	initial := c.reno().cwnd
 	sp := &c.spaces[spaceInitial]
 	sp.lastElicit = now
 	sp.sent.record(sentPacket{pn: 0, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing}})
@@ -784,7 +784,7 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 		c.actOnDeadlines(now)
 	}
 	c.mu.Lock()
-	ptoCount, cwnd := c.ptoCount, c.cc.cwnd
+	ptoCount, cwnd := c.ptoCount, c.reno().cwnd
 	c.mu.Unlock()
 	if ptoCount != 3 {
 		t.Fatalf("ptoCount %d after three expiries, want 3", ptoCount)

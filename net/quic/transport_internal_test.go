@@ -418,7 +418,7 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 		sp.sent.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing, byte(pn)}})
 	}
 	sp.nextPN = 3
-	c.cc.inFlight = 300
+	c.reno().inFlight = 300
 
 	c.sendProbeLocked(spaceInitial)
 
@@ -438,8 +438,8 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	// 100 bytes of untouched packet 2, plus two probes that each left the
 	// record and re-entered at their sealed size.
 	want := 100 + sp.sent.packets[1].size + sp.sent.packets[2].size
-	if c.cc.inFlight != want {
-		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.cc.inFlight, want)
+	if c.reno().inFlight != want {
+		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.reno().inFlight, want)
 	}
 }
 

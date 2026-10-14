@@ -92,8 +92,9 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				// an ACK arriving sooner broadcasts too, and the loop simply
 				// re-prices the wait.
 				now := time.Now()
-				c.pacer.refill(now, c.cc.paceWindow(), c.rtt.current())
-				d := c.pacer.delay(c.cc.paceWindow(), c.rtt.current())
+				rate := c.cc.pacingRate(c.rtt.current())
+				c.pacer.refill(now, rate)
+				d := c.pacer.delay(rate)
 				if d == 0 {
 					break
 				}
@@ -298,8 +299,8 @@ func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) int {
 func (c *Conn) takePNLocked(sp *space, space int) uint64 {
 	if space == spaceApplication && sp.nextPN+1 < 1<<62-1 {
 		window := uint64(10) // RFC 9002 §7.2's initial window, for a connection not yet set up
-		if c.maxDatagram > 0 && c.cc.cwnd > 0 {
-			window = uint64(c.cc.cwnd / c.maxDatagram) //nolint:gosec // G115: both are positive
+		if cwnd := c.cc.window(); c.maxDatagram > 0 && cwnd > 0 {
+			window = uint64(cwnd / c.maxDatagram) //nolint:gosec // G115: both are positive
 		}
 		if sp.sent.skipNumber(sp.nextPN, window) {
 			sp.nextPN++
@@ -704,7 +705,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	// Every send spends pacing tokens — probes, ACKs and grants occupy the
 	// wire like anything else — but only the waitCwnd gate above ever waits
 	// on them (the pacer's doc says why the rest must not).
-	c.pacer.refill(p.now, c.cc.paceWindow(), c.rtt.current())
+	c.pacer.refill(p.now, c.cc.pacingRate(c.rtt.current()))
 	c.pacer.spend(size)
 	// The first ack-eliciting send since the last receive restarts the idle
 	// clock (§10.1): the peer is about to owe an answer. Later sends into the

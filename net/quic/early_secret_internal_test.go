@@ -16,7 +16,7 @@ func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 		tls.QUICEncryptionLevelEarly:       false,
 		tls.QUICEncryptionLevelApplication: true,
 	} {
-		c := &Conn{}
+		c := &Conn{cc: newNewReno(1200)}
 		for _, kind := range []tls.QUICEventKind{tls.QUICSetWriteSecret, tls.QUICSetReadSecret} {
 			done, err := c.handleTLSEvent(tls.QUICEvent{Kind: kind, Level: level, Suite: tls.TLS_AES_128_GCM_SHA256, Data: secret})
 			if err != nil || done {
@@ -36,7 +36,7 @@ func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 	}
 	// 0-RTT rejected by the server: nothing went out under the early
 	// secret, so there is nothing to resend and nothing to count.
-	c := &Conn{}
+	c := &Conn{cc: newNewReno(1200)}
 	if done, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICRejectedEarlyData}); done || err != nil {
 		t.Fatalf("QUICRejectedEarlyData: (%v, %v)", done, err)
 	}

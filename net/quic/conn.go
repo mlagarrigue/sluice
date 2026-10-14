@@ -97,7 +97,7 @@ type Conn struct {
 
 	spaces [3]space
 	rtt    rttEstimator
-	cc     newReno
+	cc     congestionController
 	pacer  pacer
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
@@ -748,7 +748,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	c.cc = newNewReno(c.maxDatagram)
 	// §7.7: the pacer's bucket is the initial window, which is also the
 	// freshly-built controller's cwnd.
-	c.pacer.burst = int64(c.cc.cwnd)
+	c.pacer.burst = int64(c.cc.window())
 	if c.idleTimeout != 0 {
 		c.idleDeadline = time.Now().Add(c.idleTimeout)
 	}
@@ -1050,10 +1050,7 @@ func (c *Conn) discardSpaceLocked(space int) {
 	sp.sealer, sp.opener = nil, nil
 	_, inFlight := sp.sent.takeAll()
 	sp.retrans = nil
-	c.cc.inFlight -= inFlight
-	if c.cc.inFlight < 0 {
-		c.cc.inFlight = 0
-	}
+	c.cc.onLifted(inFlight)
 	c.deferred[space] = nil
 	sp.ack = ackTracker{}
 	// RFC 9002 A.11: the backoff was about this space's unanswered
@@ -1527,8 +1524,8 @@ func (c *Conn) Stats() Stats {
 		MinRTT:                c.rtt.min,
 		RTTVariance:           c.rtt.variance,
 		LatestRTT:             c.rtt.latest,
-		CongestionWindow:      c.cc.cwnd,
-		BytesInFlight:         c.cc.inFlight,
+		CongestionWindow:      c.cc.window(),
+		BytesInFlight:         c.cc.bytesInFlight(),
 		LostPackets:           c.lostPackets,
 		BytesRetransmitted:    c.bytesRetransmitted,
 		PersistentCongestions: c.persistentCongestions,

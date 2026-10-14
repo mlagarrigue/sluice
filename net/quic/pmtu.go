@@ -122,7 +122,7 @@ func (c *Conn) pmtuProbeAckedLocked(pn uint64) {
 	c.pmtu.inFlight = false
 	c.pmtu.done = true
 	c.maxDatagram = c.pmtu.size
-	c.cc.maxDatagram = c.pmtu.size
+	c.cc.setMaxDatagram(c.pmtu.size)
 }
 
 // pmtuProbeLostLocked moves to the next try, or ends the search at the

@@ -205,16 +205,10 @@ type ackOutcome struct {
 	largestWasNew    bool // the frame's largest was newly acknowledged…
 	largestEliciting bool // …ack-eliciting and sent on this path: what a sample needs
 	largestSentAt    time.Time
-	// growableBytes is the share of newlyAcked sent at or after the growAfter
-	// instant the caller passed — the bytes the congestion window may grow
-	// on (RFC 9002 B.5 runs this test per packet; an aggregate gated on the
-	// oldest packet alone starves the ACK that straddles a recovery exit).
-	growableBytes   int
-	latestAckedSent time.Time // when the newest newly acknowledged packet was sent
-	lostBytes       int
-	lostCount       uint64   // packets behind lostBytes, for Stats.LostPackets
-	lost            [][]byte // payloads to queue for retransmission
-	sawAckEliciting bool     // any newly acked packet was ack-eliciting
+	lostBytes        int
+	lostCount        uint64   // packets behind lostBytes, for Stats.LostPackets
+	lost             [][]byte // payloads to queue for retransmission
+	sawAckEliciting  bool     // any newly acked packet was ack-eliciting
 	// latestLossSent is when the *newest* lost packet in this batch was
 	// sent, which is what gates a congestion event (RFC 9002 B.8): one
 	// pre-recovery straggler in a batch must not shield a genuinely new
@@ -235,10 +229,13 @@ type ackOutcome struct {
 }
 
 // processAck removes what the ranges cover and declares losses. largest is
-// the frame's own largest field; visitRanges walks its encoded ranges.
-// growAfter is the congestion controller's recovery start: acknowledged
-// packets sent before it release flight bytes but earn no window growth.
-func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte, rtt *rttEstimator, growAfter time.Time) (ackOutcome, error) {
+// the frame's own largest field; visitRanges walks its encoded ranges. cc
+// hears each newly acknowledged packet of the current path, in order, as
+// it is released (RFC 9002 B.5 grows the window per packet); nil when a
+// test drives the tracker alone. Losses are reported in the outcome, not
+// to cc: the caller queues their payloads and judges persistent
+// congestion before it reports the batch as one event.
+func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte, rtt *rttEstimator, cc congestionController) (ackOutcome, error) {
 	var out ackOutcome
 
 	// Both sides are ordered — s.packets ascending by construction (the
@@ -329,11 +326,8 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			onPath := s.onPath(&p)
 			if onPath {
 				out.newlyAcked += p.size
-				if !p.sentAt.Before(growAfter) {
-					out.growableBytes += p.size
-				}
-				if p.sentAt.After(out.latestAckedSent) {
-					out.latestAckedSent = p.sentAt
+				if cc != nil {
+					cc.onAcked(ackEvent{now: now, sentAt: p.sentAt, size: p.size})
 				}
 			}
 			if p.ackEliciting {
@@ -505,6 +499,62 @@ func (s *sentTracker) takeAll() (payloads [][]byte, bytes int) {
 	return payloads, bytes
 }
 
+// congestionController is what the connection asks of its congestion
+// control, whatever the algorithm behind it (RFC 9002 §7 names NewReno as
+// one choice among several). Every site that sends, acknowledges or loses a
+// packet talks to it through these methods and nothing else, so a second
+// algorithm is a second implementation and no change to the sending code.
+// Events are passed by value — no allocation per packet. Callers hold the
+// connection's lock.
+type congestionController interface {
+	// canSend reports whether bytes more may leave now; a refusal is also
+	// the utilisation signal of §7.8 (see newReno.canSend).
+	canSend(bytes int) bool
+	// onSent adds a packet's bytes to the flight.
+	onSent(now time.Time, bytes int)
+	// onAcked is called once per newly acknowledged packet sent on the
+	// current path, in packet-number order (RFC 9002 B.5 runs the growth
+	// test per packet).
+	onAcked(ev ackEvent)
+	// onLost is called once per batch of losses declared together — one
+	// ACK frame or one loss-timer expiry (§7.3.2: one congestion event).
+	onLost(ev lossEvent)
+	// onPersistentCongestion follows onLost in the same batch when the
+	// losses span more than the persistent-congestion duration (§7.6).
+	onPersistentCongestion()
+	// onLifted releases bytes that leave the flight record without being
+	// acknowledged or lost: a probe timeout's lifted copy, a lost DPLPMTUD
+	// probe, a discarded space, a Retry.
+	onLifted(bytes int)
+	// pacingRate is how fast the pacer may release bytes, in bytes per
+	// second, given the current smoothed round trip (§7.7).
+	pacingRate(srtt time.Duration) float64
+	// window and bytesInFlight are read by Stats and by the packet-number
+	// skip (sentTracker.skipNumber sizes its gaps in windows).
+	window() int
+	bytesInFlight() int
+	// setMaxDatagram follows a DPLPMTUD success: the per-datagram unit of
+	// window growth changes, the window itself does not (pmtu.go).
+	setMaxDatagram(bytes int)
+}
+
+// ackEvent is one newly acknowledged packet, as onAcked sees it.
+type ackEvent struct {
+	now    time.Time // when the acknowledgement was processed
+	sentAt time.Time // when the packet left
+	size   int       // bytes it occupied on the wire
+}
+
+// lossEvent is one batch of losses, as onLost sees it. latestSent is the
+// send time of the newest packet in the batch: B.8's gate for whether the
+// batch is a new congestion event or belongs to a recovery period already
+// paid for.
+type lossEvent struct {
+	now        time.Time
+	latestSent time.Time
+	bytes      int
+}
+
 // newReno is §7's congestion controller, the RFC's own default and the
 // defensible minimum: nothing fancier belongs here without measurement.
 type newReno struct {
@@ -513,6 +563,12 @@ type newReno struct {
 	inFlight      int
 	recoveryStart time.Time // packets sent before this do not shrink the window again
 	maxDatagram   int
+	// credit is the avoidance growth earned and not yet spent, in bytes
+	// times maxDatagram: each acknowledged byte earns maxDatagram/cwnd
+	// bytes of window (§7.3.3), and carrying the remainder keeps that
+	// exact whatever the window's size — an integer share per packet
+	// would round to nothing once cwnd exceeds maxDatagram².
+	credit int
 	// Window utilisation, judged per round trip the way Linux's
 	// tcp_is_cwnd_limited does (RFC 9002 §7.8 leaves the detection to the
 	// implementation): limited records that a send was refused for lack of
@@ -525,11 +581,17 @@ type newReno struct {
 	roundMark   time.Time
 }
 
-func newNewReno(maxDatagram int) newReno {
+var _ congestionController = (*newReno)(nil)
+
+func newNewReno(maxDatagram int) *newReno {
 	// §7.2: ten datagrams, floored the way the RFC floors it.
 	w := max(min(10*maxDatagram, 14720), 2*maxDatagram)
-	return newReno{cwnd: w, ssthresh: 1 << 30, maxDatagram: maxDatagram}
+	return &newReno{cwnd: w, ssthresh: 1 << 30, maxDatagram: maxDatagram}
 }
+
+func (c *newReno) window() int              { return c.cwnd }
+func (c *newReno) bytesInFlight() int       { return c.inFlight }
+func (c *newReno) setMaxDatagram(bytes int) { c.maxDatagram = bytes }
 
 // canSend is the congestion gate alone — bursts are not bounded here. The
 // §7.7 burst bound was tried as a per-ACK allowance of one initial window
@@ -574,23 +636,28 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 // packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 
-// paceWindow is the window the pacer prices sends against: doubled in slow
-// start, where the window itself doubles per round trip and pacing at the
-// current cwnd would lag the growth it is spreading (measured: ~3% off a
-// clean 20ms path's goodput; §7.7 permits a higher slow-start rate).
-func (c *newReno) paceWindow() int {
+// pacingRate is 5/4 of the window per smoothed round trip — the RFC's
+// "slightly higher than necessary" rate (§7.7), so pacing never becomes
+// the throughput ceiling — and of twice the window in slow start, where
+// the window itself doubles per round trip and pacing at the current cwnd
+// would lag the growth it is spreading (measured: ~3% off a clean 20ms
+// path's goodput; §7.7 permits a higher slow-start rate). The round trip
+// is floored at the timer's granularity: below it the rate is meaningless
+// and the division is unsafe.
+func (c *newReno) pacingRate(srtt time.Duration) float64 {
+	w := c.cwnd
 	if c.cwnd < c.ssthresh {
-		return 2 * c.cwnd
+		w = 2 * c.cwnd
 	}
-	return c.cwnd
+	return 1.25 * float64(w) / max(srtt, granularity).Seconds()
 }
 
-// onAcked grows the window: by the growable bytes in slow start, by one
-// datagram per window's worth in avoidance (§7.3.1, §7.3.3). bytes releases
-// flight; growable is the share of it sent since recovery began — packets
-// from before the loss release flight but earn nothing, and processAck
-// applies that test per packet (B.5), so one pre-recovery straggler in an
-// ACK no longer silences the growth of everything sent after the exit.
+// onAcked grows the window: by the packet's bytes in slow start, by one
+// datagram per window's worth in avoidance (§7.3.1, §7.3.3). A packet sent
+// before recovery began releases flight but earns nothing (B.5 applies that
+// test per packet, which is why this is called per packet: one
+// pre-recovery straggler in an ACK must not silence the growth of
+// everything sent after the exit).
 //
 // A window the sender does not fill must not grow either (§7.8): a long
 // connection of small exchanges would otherwise inflate it far past the
@@ -600,23 +667,26 @@ func (c *newReno) paceWindow() int {
 // in slow start, also if the flight reached half the window — a paced
 // sender doubling its window each round trip rarely hits the window
 // itself, but its flight comes within a few datagrams of it, while an
-// application-limited one sits far below. latestSent is when the newest
-// packet this ACK covers was sent: at or after the round's mark, it
-// closes the round, and the next send opens the next one.
-func (c *newReno) onAcked(bytes, growable int, latestSent time.Time) {
-	c.inFlight = max(c.inFlight-bytes, 0)
+// application-limited one sits far below. A packet sent at or after the
+// round's mark closes the round, and the next send opens the next one.
+func (c *newReno) onAcked(ev ackEvent) {
+	c.inFlight = max(c.inFlight-ev.size, 0)
 	useful := c.limited || (c.cwnd < c.ssthresh && 2*c.maxInFlight >= c.cwnd)
-	if !c.roundMark.IsZero() && !latestSent.Before(c.roundMark) {
+	if !c.roundMark.IsZero() && !ev.sentAt.Before(c.roundMark) {
 		c.roundMark = time.Time{}
 	}
-	if growable <= 0 || !useful {
+	if ev.sentAt.Before(c.recoveryStart) || !useful {
 		return
 	}
 	if c.cwnd < c.ssthresh {
-		c.cwnd += growable
+		c.cwnd += ev.size
 		return
 	}
-	c.cwnd += c.maxDatagram * growable / c.cwnd
+	c.credit += c.maxDatagram * ev.size
+	if grow := c.credit / c.cwnd; grow > 0 {
+		c.credit -= grow * c.cwnd
+		c.cwnd += grow
+	}
 }
 
 // onLost shrinks the window once per recovery period (§7.3.2): a whole
@@ -625,32 +695,43 @@ func (c *newReno) onAcked(bytes, growable int, latestSent time.Time) {
 // newest predates the recovery start, the whole batch belongs to the epoch
 // already paid for; if it does not, this is a new epoch, however many
 // stragglers ride along.
-func (c *newReno) onLost(bytes int, latestSent, now time.Time) {
-	c.inFlight -= bytes
-	if c.inFlight < 0 {
-		c.inFlight = 0
-	}
-	if latestSent.Before(c.recoveryStart) {
+func (c *newReno) onLost(ev lossEvent) {
+	c.inFlight = max(c.inFlight-ev.bytes, 0)
+	if ev.latestSent.Before(c.recoveryStart) {
 		return
 	}
-	c.recoveryStart = now
-	c.cwnd /= 2
-	if c.cwnd < 2*c.maxDatagram {
-		c.cwnd = 2 * c.maxDatagram
-	}
+	c.recoveryStart = ev.now
+	c.cwnd = max(c.cwnd/2, 2*c.maxDatagram)
 	c.ssthresh = c.cwnd
+	c.credit = 0
 }
 
-// pacer spreads the congestion window over the round trip (RFC 9002 §7.7)
-// instead of letting it leave as one line-rate burst. It is a token bucket:
-// tokens refill continuously at 5/4 of cwnd per smoothed round trip — the
-// RFC's "slightly higher than necessary" rate, so pacing never becomes the
-// throughput ceiling — and the bucket holds one initial window, which is
-// the burst §7.7 permits a sender without finer timing.
+// onPersistentCongestion collapses the window to its minimum (§7.6.2, B.8):
+// an ACK just proved that everything sent over more than three probe
+// intervals was lost — the path is not dropping a packet, it was gone. The
+// slow-start threshold is not touched here: the loss event that precedes
+// this call in the same batch (onLost, B.8's order) already halved it, and
+// the window climbs back to it in slow start the way a TCP sender does
+// after an RTO (RFC 5681 §3.1). The recovery period is cleared so that the
+// first loss on the revived path is a new event.
+func (c *newReno) onPersistentCongestion() {
+	c.cwnd = 2 * c.maxDatagram
+	c.recoveryStart = time.Time{}
+	c.credit = 0
+}
+
+// pacer spreads sends over time at the rate the congestion controller
+// names (RFC 9002 §7.7) instead of letting a window leave as one line-rate
+// burst. It is a token bucket: tokens refill continuously at that rate,
+// and the bucket holds one initial window, which is the burst §7.7 permits
+// a sender without finer timing. The rate is the controller's to choose —
+// NewReno prices its window over the round trip, a model-based controller
+// prices the path's bandwidth — and the pacer only converts it to a wait.
 //
 // The naive alternative — a per-ACK burst allowance — was measured before
-// this existed and collapsed a clean 20ms path fifty-fold (see canSend);
-// time, not the ack clock, has to be what refills the bucket.
+// this existed and collapsed a clean 20ms path fifty-fold (see
+// newReno.canSend); time, not the ack clock, has to be what refills the
+// bucket.
 //
 // Only the application writer's blocking path waits on the pacer
 // (sendPacketLocked's waitCwnd loop, woken by the timer loop at the pace
@@ -667,9 +748,9 @@ type pacer struct {
 	last   time.Time // when tokens last refilled; zero until the first send
 }
 
-// refill credits the time elapsed since the last call at the current rate.
-// Callers hold the connection's lock, like every pacer method.
-func (p *pacer) refill(now time.Time, cwnd int, srtt time.Duration) {
+// refill credits the time elapsed since the last call at rate bytes per
+// second. Callers hold the connection's lock, like every pacer method.
+func (p *pacer) refill(now time.Time, rate float64) {
 	if p.last.IsZero() {
 		p.tokens = p.burst
 		p.last = now
@@ -680,13 +761,11 @@ func (p *pacer) refill(now time.Time, cwnd int, srtt time.Duration) {
 		return
 	}
 	p.last = now
-	if srtt < granularity {
-		srtt = granularity
-	}
-	// Float, not integer: a benchmark-sized cwnd (2^30) times an elapsed in
-	// nanoseconds overflows int64 long before the arithmetic rounds wrong,
-	// and a float64 carries both magnitudes exactly enough for a byte count.
-	add := 1.25 * float64(cwnd) * (float64(elapsed) / float64(srtt))
+	// Float, not integer: a benchmark-sized window (2^30) over a
+	// millisecond is a rate that, times an elapsed in nanoseconds,
+	// overflows int64 long before the arithmetic rounds wrong, and a
+	// float64 carries both magnitudes exactly enough for a byte count.
+	add := rate * elapsed.Seconds()
 	if add >= float64(p.burst-p.tokens) {
 		p.tokens = p.burst
 	} else {
@@ -698,34 +777,19 @@ func (p *pacer) refill(now time.Time, cwnd int, srtt time.Duration) {
 // what was sent was sent, and the deficit prices it for whoever sends next.
 func (p *pacer) spend(bytes int) { p.tokens -= int64(bytes) }
 
-// delay is how long a paced sender must wait before its next send, zero when
-// it may go now. Deficits smaller than one timer granularity are released
-// immediately rather than armed: the timer cannot honour them, and rounding
-// down bounds the overshoot to one granularity's worth of line rate —
-// rate-proportional, unlike the unbounded burst pacing exists to prevent.
-func (p *pacer) delay(cwnd int, srtt time.Duration) time.Duration {
-	if p.tokens >= 0 {
+// delay is how long a paced sender must wait before its next send at rate
+// bytes per second, zero when it may go now. Deficits smaller than one
+// timer granularity are released immediately rather than armed: the timer
+// cannot honour them, and rounding down bounds the overshoot to one
+// granularity's worth of line rate — rate-proportional, unlike the
+// unbounded burst pacing exists to prevent.
+func (p *pacer) delay(rate float64) time.Duration {
+	if p.tokens >= 0 || rate <= 0 {
 		return 0
 	}
-	if srtt < granularity {
-		srtt = granularity
-	}
-	d := time.Duration(-p.tokens * 4 * int64(srtt) / (5 * int64(cwnd)))
+	d := time.Duration(float64(-p.tokens) / rate * float64(time.Second))
 	if d < granularity {
 		return 0
 	}
 	return d
-}
-
-// onPersistentCongestion collapses the window to its minimum (§7.6.2, B.8):
-// an ACK just proved that everything sent over more than three probe
-// intervals was lost — the path is not dropping a packet, it was gone. The
-// slow-start threshold is not touched here: the loss event that precedes
-// this call in the same batch (onLost, B.8's order) already halved it, and
-// the window climbs back to it in slow start the way a TCP sender does
-// after an RTO (RFC 5681 §3.1). The recovery period is cleared so that the
-// first loss on the revived path is a new event.
-func (c *newReno) onPersistentCongestion() {
-	c.cwnd = 2 * c.maxDatagram
-	c.recoveryStart = time.Time{}
 }

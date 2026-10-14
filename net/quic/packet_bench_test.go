@@ -47,7 +47,7 @@ func newBenchConn(tb testing.TB) (*Conn, *packetSealer) {
 	c.hasPeerParams = true
 	c.peerParams = params
 	c.handshakeConfirmed = true
-	c.cc.cwnd = 1 << 30
+	c.reno().cwnd = 1 << 30
 	c.connSend.max = 1 << 50
 	c.mu.Unlock()
 	return c, peerSealer
@@ -79,7 +79,7 @@ func BenchmarkStreamWritePacket(b *testing.B) {
 		c.mu.Lock()
 		c.spaces[spaceApplication].sent = sentTracker{}
 		c.spaces[spaceApplication].sealer.sealed = 0
-		c.cc.inFlight = 0
+		c.reno().inFlight = 0
 		c.mu.Unlock()
 	}
 }
@@ -233,7 +233,7 @@ func BenchmarkCreditGrantHerd(b *testing.B) {
 				c.cond.Broadcast()
 				c.spaces[spaceApplication].sent = sentTracker{}
 				c.spaces[spaceApplication].sealer.sealed = 0
-				c.cc.inFlight = 0
+				c.reno().inFlight = 0
 				c.mu.Unlock()
 				if _, err := w.Write(payload); err != nil {
 					b.Fatal(err)

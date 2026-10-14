@@ -144,7 +144,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 			if out.lostCount > 0 {
 				c.queueLostLocked(sp, out)
 				if out.lostBytes > 0 { // see handleAck: a previous path's losses carry no bytes
-					c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+					c.cc.onLost(lossEvent{now: now, latestSent: out.latestLossSent, bytes: out.lostBytes})
 				}
 				c.retransmitLocked()
 			}

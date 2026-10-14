@@ -478,7 +478,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	// Pollute the path state so the reset is observable.
 	c.mu.Lock()
 	c.rtt.sample(50*time.Millisecond, 0)
-	c.cc.cwnd = 999_999
+	c.reno().cwnd = 999_999
 	c.ptoCount = 2
 	c.mu.Unlock()
 
@@ -506,7 +506,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	migrations := c.migrations
 	ampl, amplRecv := c.amplActive, c.amplRecv
 	rttReset := !c.rtt.sampled
-	cwnd := c.cc.cwnd
+	cwnd := c.reno().cwnd
 	ptoCount := c.ptoCount
 	probing := c.pathProbe.pending
 	dcid := append([]byte(nil), c.dcid...)
@@ -1979,7 +1979,7 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	migrations, flightAfterMove := c.migrations, c.cc.inFlight
+	migrations, flightAfterMove := c.migrations, c.reno().inFlight
 	c.mu.Unlock()
 	if migrations != 1 {
 		t.Fatalf("migrations = %d, want 1", migrations)
@@ -1993,7 +1993,7 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	cwnd, sampled, flight, queued := c.cc.cwnd, c.rtt.sampled, c.cc.inFlight, len(sp.retrans)
+	cwnd, sampled, flight, queued := c.reno().cwnd, c.rtt.sampled, c.reno().inFlight, len(sp.retrans)
 	c.mu.Unlock()
 	if want := newNewReno(1200).cwnd; cwnd != want {
 		t.Errorf("cwnd = %d after the old path's losses, want the initial %d (§9.4)", cwnd, want)
@@ -2023,7 +2023,7 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	cwnd, sampled = c.cc.cwnd, c.rtt.sampled
+	cwnd, sampled = c.reno().cwnd, c.rtt.sampled
 	c.mu.Unlock()
 	// The acknowledged packet grows the window by its size (slow start)
 	// before the batch's loss halves it.

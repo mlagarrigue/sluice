@@ -54,7 +54,7 @@ func TestPacketThresholdLoss(t *testing.T) {
 	peer.record(3, now)
 	f := ackFrameFor(t, &peer)
 
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,12 @@ func TestPacketThresholdLoss(t *testing.T) {
 	}
 }
 
-// An ACK straddling a recovery exit: packets sent before growAfter release
-// flight bytes without earning growth, packets sent after earn theirs. The
-// aggregate this replaced gated everything on the oldest packet, so one
-// pre-recovery straggler silenced the whole frame's growth (RFC 9002 B.5
-// runs the test per packet).
+// An ACK straddling a recovery exit: packets sent before recovery began
+// release flight bytes without earning growth, packets sent after earn
+// theirs. processAck hands the controller each packet on its own, so one
+// pre-recovery straggler cannot silence the whole frame's growth (RFC 9002
+// B.5 runs the test per packet); an aggregate gated on the oldest packet
+// used to.
 func TestProcessAckGrowableStraddlesRecovery(t *testing.T) {
 	var s sentTracker
 	var rtt rttEstimator
@@ -82,20 +83,26 @@ func TestProcessAckGrowableStraddlesRecovery(t *testing.T) {
 	recovery := now.Add(-10 * time.Millisecond)
 	s.record(sentPacket{pn: 0, sentAt: recovery.Add(-time.Millisecond), size: 100, ackEliciting: true})
 	s.record(sentPacket{pn: 1, sentAt: recovery.Add(time.Millisecond), size: 100, ackEliciting: true})
+	cc := newNewReno(1200)
+	cc.recoveryStart = recovery
+	cc.onSent(recovery.Add(-time.Millisecond), 100)
+	cc.onSent(recovery.Add(time.Millisecond), 100)
+	cc.limited = true // the window was the limit this round: growth is earned
+	start := cc.cwnd
 
 	var peer ackTracker
 	peer.record(0, now)
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, recovery)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, cc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out.newlyAcked != 200 {
 		t.Fatalf("acked %d bytes, want 200", out.newlyAcked)
 	}
-	if out.growableBytes != 100 {
-		t.Fatalf("growable = %d, want only the post-recovery packet's 100", out.growableBytes)
+	if cc.cwnd != start+100 {
+		t.Fatalf("the window grew by %d, want only the post-recovery packet's 100", cc.cwnd-start)
 	}
 }
 
@@ -112,7 +119,7 @@ func TestTimeThresholdLoss(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +148,7 @@ func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +171,10 @@ func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
 	}
 }
 
+// reno is the connection's controller as the concrete NewReno, for tests
+// that read or set its fields.
+func (c *Conn) reno() *newReno { return c.cc.(*newReno) }
+
 func TestNewRenoWindow(t *testing.T) {
 	cc := newNewReno(1200)
 	start := cc.cwnd
@@ -175,28 +186,28 @@ func TestNewRenoWindow(t *testing.T) {
 	// Slow start: acknowledged bytes grow the window byte for byte — the
 	// flight fills the window, so the window is what limits the sender.
 	cc.onSent(now, 12000)
-	cc.onAcked(2400, 2400, now)
+	cc.onAcked(ackEvent{now: now, sentAt: now, size: 2400})
 	if cc.cwnd != start+2400 {
 		t.Errorf("slow start grew %d, want %d", cc.cwnd-start, 2400)
 	}
 
-	// Bytes from before a recovery start release flight but earn nothing:
-	// processAck reports them as acked and not growable, and the window
-	// must not move on them.
+	// A packet sent before a recovery start releases flight but earns
+	// nothing: the window must not move on it.
+	cc.recoveryStart = now
 	cc.onSent(now, 1200)
-	cc.onAcked(1200, 0, now)
+	cc.onAcked(ackEvent{now: now, sentAt: now.Add(-time.Second), size: 1200})
 	if cc.cwnd != start+2400 {
-		t.Errorf("non-growable bytes moved the window to %d", cc.cwnd)
+		t.Errorf("a pre-recovery packet moved the window to %d", cc.cwnd)
 	}
 
 	// Loss halves it, once per recovery period.
 	cc.onSent(now, 1200)
-	cc.onLost(1200, now, now)
+	cc.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
 	half := cc.cwnd
 	if half != (start+2400)/2 {
 		t.Errorf("after loss, cwnd = %d", half)
 	}
-	cc.onLost(0, now.Add(-time.Second), now) // sent before recovery began
+	cc.onLost(lossEvent{now: now, latestSent: now.Add(-time.Second)}) // sent before recovery began
 	if cc.cwnd != half {
 		t.Error("a loss inside the same recovery period shrank the window again")
 	}
@@ -222,7 +233,7 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		start := cc.cwnd
 		for range 1000 {
 			cc.onSent(now, datagram)
-			cc.onAcked(datagram, datagram, now)
+			cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
 		}
 		if cc.cwnd != start {
 			t.Fatalf("cwnd = %d after 1000 application-limited ACKs, want %d unchanged", cc.cwnd, start)
@@ -236,7 +247,7 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 			if cc.canSend(cc.cwnd) {
 				t.Fatal("a send of a whole window on top of a flight was not refused")
 			}
-			cc.onAcked(datagram, datagram, now)
+			cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
 		}
 		if want := start + 1000*datagram; cc.cwnd != want {
 			t.Fatalf("cwnd = %d after 1000 window-limited ACKs, want %d", cc.cwnd, want)
@@ -246,13 +257,13 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		cc := newNewReno(datagram)
 		start := cc.cwnd
 		cc.onSent(now, start/2)
-		cc.onAcked(datagram, datagram, now)
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
 		if cc.cwnd != start+datagram {
 			t.Fatalf("cwnd = %d with the flight at half the window, want %d", cc.cwnd, start+datagram)
 		}
 		// The window grew; the same flight is now below half of it.
 		cc.onSent(now, datagram)
-		cc.onAcked(datagram, datagram, now)
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
 		if cc.cwnd != start+datagram {
 			t.Fatalf("cwnd = %d with the flight under half the window, want %d unchanged", cc.cwnd, start+datagram)
 		}
@@ -263,7 +274,7 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		start := cc.cwnd
 		for range 1000 {
 			cc.onSent(now, start-datagram) // nearly full, never refused
-			cc.onAcked(start-datagram, start-datagram, now)
+			cc.onAcked(ackEvent{now: now, sentAt: now, size: start - datagram})
 		}
 		if cc.cwnd != start {
 			t.Fatalf("cwnd = %d after 1000 unrefused ACKs in avoidance, want %d unchanged", cc.cwnd, start)
@@ -272,7 +283,7 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		if cc.canSend(datagram) {
 			t.Fatal("a datagram on top of a full window was not refused")
 		}
-		cc.onAcked(datagram, datagram, now)
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
 		if want := start + datagram*datagram/start; cc.cwnd != want {
 			t.Fatalf("cwnd = %d after a window-limited ACK in avoidance, want %d", cc.cwnd, want)
 		}
@@ -284,16 +295,16 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		if cc.canSend(datagram) {
 			t.Fatal("a datagram on top of a full window was not refused")
 		}
-		cc.onAcked(start, start, now) // the whole flight: the window grows once…
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: start}) // the whole flight: the window grows once…
 		if cc.cwnd != 2*start {
 			t.Fatalf("cwnd = %d after the full flight was acknowledged, want %d", cc.cwnd, 2*start)
 		}
-		cc.onAcked(datagram, datagram, now) // …still within the round, so again…
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram}) // …still within the round, so again…
 		if cc.cwnd != 2*start+datagram {
 			t.Fatalf("cwnd = %d after a second ACK of the refused round, want %d", cc.cwnd, 2*start+datagram)
 		}
-		cc.onSent(now, datagram)            // the first send after the round opens the next one
-		cc.onAcked(datagram, datagram, now) // …and not on the next small exchange
+		cc.onSent(now, datagram)                                    // the first send after the round opens the next one
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram}) // …and not on the next small exchange
 		if cc.cwnd != 2*start+datagram {
 			t.Fatalf("cwnd = %d after the refusal was spent, want %d unchanged", cc.cwnd, 2*start+datagram)
 		}
@@ -349,53 +360,63 @@ func BenchmarkProcessAck(b *testing.B) {
 		s.packets = s.packets[:inFlight]
 		copy(s.packets, template)
 		s.hasLargestAcked = false
-		if _, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{}); err != nil {
+		if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
 // The pacer's bucket: starts full at one initial window, spends below zero,
-// refills at 5/4 cwnd per smoothed round trip, and prices a deficit in time
-// — with sub-granularity deficits released immediately, since the timer
-// could not honour them anyway.
+// refills at the controller's rate — NewReno's is 5/4 of its window per
+// smoothed round trip, doubled in slow start — and prices a deficit in time,
+// with sub-granularity deficits released immediately, since the timer could
+// not honour them anyway.
 func TestPacerBucket(t *testing.T) {
 	now := time.Now()
 	p := pacer{burst: 12000}
-	const cwnd, srtt = 12000, 100 * time.Millisecond
+	cc := newNewReno(1200)
+	cc.ssthresh = cc.cwnd // avoidance: the rate is the window itself, 12000
+	const srtt = 100 * time.Millisecond
+	rate := cc.pacingRate(srtt)
+	if rate != 150000 {
+		t.Fatalf("NewReno paces at %v B/s, want 5/4 × 12000 per 100ms = 150000", rate)
+	}
+	cc.ssthresh = 1 << 30
+	if r := cc.pacingRate(srtt); r != 2*rate {
+		t.Fatalf("NewReno paces slow start at %v B/s, want twice the avoidance rate", r)
+	}
 
-	p.refill(now, cwnd, srtt)
+	p.refill(now, rate)
 	if p.tokens != 12000 {
 		t.Fatalf("first refill filled to %d, want the burst 12000", p.tokens)
 	}
-	if d := p.delay(cwnd, srtt); d != 0 {
+	if d := p.delay(rate); d != 0 {
 		t.Fatalf("a full bucket priced a %v wait", d)
 	}
 
 	// Spend the bucket and one packet beyond: the deficit prices the wait.
 	p.spend(12000)
 	p.spend(1200)
-	// 1200 bytes at 5/4 × 12000 bytes per 100ms (150000 B/s) take 8ms:
-	// deficit × 4 × srtt / (5 × cwnd).
-	if d := p.delay(cwnd, srtt); d != 8*time.Millisecond {
+	// 1200 bytes at 150000 B/s take 8ms.
+	if d := p.delay(rate); d != 8*time.Millisecond {
 		t.Fatalf("deficit of 1200 priced at %v, want 8ms", d)
 	}
 
 	// Half the deficit's time passes: the wait halves.
-	p.refill(now.Add(4*time.Millisecond), cwnd, srtt)
-	if d := p.delay(cwnd, srtt); d != 4*time.Millisecond {
+	p.refill(now.Add(4*time.Millisecond), rate)
+	if d := p.delay(rate); d != 4*time.Millisecond {
 		t.Fatalf("after 4ms the deficit prices at %v, want 4ms", d)
 	}
 
 	// A sub-granularity deficit is released immediately.
-	p.refill(now.Add(8*time.Millisecond), cwnd, srtt)
+	p.refill(now.Add(8*time.Millisecond), rate)
 	p.spend(100)
-	if d := p.delay(cwnd, srtt); d != 0 {
+	if d := p.delay(rate); d != 0 {
 		t.Fatalf("a deficit under one granularity priced a %v wait", d)
 	}
 
 	// A long idle refills to the burst, never beyond.
-	p.refill(now.Add(10*time.Second), cwnd, srtt)
+	p.refill(now.Add(10*time.Second), rate)
 	if p.tokens != 12000 {
 		t.Fatalf("after idling, tokens = %d, want the burst", p.tokens)
 	}
@@ -426,7 +447,7 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 		peer.record(pn, now)
 	}
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 	if err != nil {
 		t.Fatalf("an ACK around the gap was refused: %v", err)
 	}
@@ -436,7 +457,7 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 
 	peer.record(3, now)
 	f = ackFrameFor(t, &peer)
-	if _, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{}); !errors.Is(err, errOptimisticAck) {
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); !errors.Is(err, errOptimisticAck) {
 		t.Fatalf("an ACK covering the gap: err = %v, want errOptimisticAck", err)
 	}
 }
@@ -482,7 +503,7 @@ func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
 		}
 		f := ackFrameFor(t, &peer)
 		var rtt rttEstimator
-		out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -526,4 +547,104 @@ func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
 			t.Errorf("%d losses spanning %v, want 4 spanning 100ms (packet 2 was acknowledged before)", out.lostCount, out.lostSpan)
 		}
 	})
+}
+
+// spyController counts what the connection tells its congestion controller
+// and lets a real NewReno answer, so the connection behaves as usual while
+// every site that must report is checked for reporting.
+type spyController struct {
+	congestionController
+	sent, acked, lost, collapsed, lifted int
+}
+
+func (s *spyController) onSent(now time.Time, bytes int) {
+	s.sent++
+	s.congestionController.onSent(now, bytes)
+}
+
+func (s *spyController) onAcked(ev ackEvent) {
+	s.acked++
+	s.congestionController.onAcked(ev)
+}
+
+func (s *spyController) onLost(ev lossEvent) {
+	s.lost++
+	s.congestionController.onLost(ev)
+}
+
+func (s *spyController) onPersistentCongestion() {
+	s.collapsed++
+	s.congestionController.onPersistentCongestion()
+}
+
+func (s *spyController) onLifted(bytes int) {
+	s.lifted++
+	s.congestionController.onLifted(bytes)
+}
+
+// Every event the connection owes its congestion controller reaches it
+// through the interface: a send, each acknowledged packet, a batch of
+// losses, the persistent-congestion collapse that follows one, and the
+// lift of a packet a probe timeout resends. A second algorithm relies on
+// this; a site that bypassed the interface would starve it.
+func TestEverySiteReportsToTheController(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	spy := &spyController{congestionController: c.cc}
+	c.cc = spy
+	// A round-trip sample, so that persistent congestion can be judged:
+	// pto = 100ms + 1ms + 25ms, the duration is three of those, 378ms.
+	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true}
+	sp := &c.spaces[spaceInitial]
+	// Five ack-eliciting packets spread over 400ms, all about to be lost,
+	// and a sixth the peer acknowledges.
+	for pn := range uint64(5) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-time.Second + time.Duration(pn)*100*time.Millisecond), size: 1200, ackEliciting: true, payload: []byte{framePing, byte(pn)}})
+	}
+	sp.sent.record(sentPacket{pn: 5, sentAt: now, size: 100, ackEliciting: true})
+	sp.nextPN = 6
+	c.mu.Unlock()
+
+	var peer ackTracker
+	peer.record(5, now)
+	if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if spy.acked != 1 {
+		t.Errorf("onAcked called %d times for one acknowledged packet, want 1", spy.acked)
+	}
+	if spy.lost != 1 {
+		t.Errorf("onLost called %d times for one batch of losses, want 1", spy.lost)
+	}
+	if spy.collapsed != 1 {
+		t.Errorf("onPersistentCongestion called %d times for losses spanning 400ms, want 1", spy.collapsed)
+	}
+
+	// A send through the sending path.
+	sp.retrans = nil // what the losses queued; the probe below must lift, not drain
+	if err := c.sendPacketLocked(spaceInitial, []byte{framePing}, sendOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if spy.sent != 1 {
+		t.Errorf("onSent called %d times for one packet, want 1", spy.sent)
+	}
+
+	// A probe timeout with nothing queued lifts that packet out of the
+	// record and resends its payload as new packets — two of them, the
+	// probe's fixed count (sendProbeLocked).
+	c.sendProbeLocked(spaceInitial)
+	if spy.lifted != 1 {
+		t.Errorf("onLifted called %d times for one lifted packet, want 1", spy.lifted)
+	}
+	if spy.sent != 3 {
+		t.Errorf("onSent called %d times after the probe resent the lifted packet twice, want 3", spy.sent)
+	}
 }

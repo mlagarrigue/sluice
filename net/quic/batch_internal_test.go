@@ -26,7 +26,7 @@ func TestStreamWriteLeavesInOneSegmentedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	c.cc.cwnd = 1 << 30
+	c.reno().cwnd = 1 << 30
 	c.connSend.max = 1 << 50
 	s := newStream(c, 1) // the peer's bidi stream: this end may send on it
 	s.sendQ.max = 1 << 50

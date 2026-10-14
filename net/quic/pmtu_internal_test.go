@@ -176,7 +176,7 @@ func TestPMTUProbeFallsBackTo1200AfterThreeLosses(t *testing.T) {
 		t.Errorf("the path dropped %d datagrams, want exactly the %d probes", dropped, pmtuMaxProbes)
 	}
 	client.mu.Lock()
-	recovered, inFlight, cwnd := !client.cc.recoveryStart.IsZero(), client.cc.inFlight, client.cc.cwnd
+	recovered, inFlight, cwnd := !client.reno().recoveryStart.IsZero(), client.reno().inFlight, client.reno().cwnd
 	client.mu.Unlock()
 	if recovered {
 		t.Errorf("the probes' losses were a congestion event (cwnd %d); §14.4 says they are not", cwnd)
