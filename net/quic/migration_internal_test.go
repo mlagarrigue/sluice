@@ -1529,3 +1529,239 @@ func TestRetirementsThatLeaveDoNotAccumulate(t *testing.T) {
 		c.mu.Unlock()
 	}
 }
+
+// openAppPackets decrypts every datagram a recordingPC captured from a Conn
+// that installAppSealer armed, and parses their frames: a cut that fell
+// inside a frame would not parse.
+func openAppPackets(t *testing.T, c *Conn, pc *recordingPC) [][]Frame {
+	t.Helper()
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][]Frame
+	for i, w := range pc.recorded() {
+		if len(w.data) > c.maxDatagram {
+			t.Errorf("datagram %d is %d bytes, over maxDatagram %d", i, len(w.data), c.maxDatagram)
+		}
+		payload, _, err := opener.Open(w.data, 1+len(c.dcid), 0)
+		if err != nil {
+			t.Fatalf("datagram %d does not open: %v", i, err)
+		}
+		frames, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatalf("datagram %d does not parse: %v", i, err)
+		}
+		out = append(out, frames)
+	}
+	return out
+}
+
+// Four hundred RETIRE_CONNECTION_ID frames fit one 1200-byte packet, each
+// legal when read — the sequences are predictable — and each used to queue
+// a 29-byte NEW_CONNECTION_ID: the control queue grew ten times faster
+// than the peer's line. Now at most the active limit of replacements wait
+// on the queue; past it a retirement drops the identifier without one, so
+// nextLocalSeq stops growing and the next invented sequence is the §19.16
+// violation. The registrar's table never holds more than the limit either.
+func TestRetirementChainIsBounded(t *testing.T) {
+	reg := newTestRegistrar()
+	pc := &recordingPC{addr: fakeFuzzAddr("chain:self")}
+	c := newConn(pc, fakeFuzzAddr("chain:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.registrar = reg
+	c.handshakeConfirmed = true
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 4
+	c.issueLocalCIDsLocked()
+	c.flushControlLocked() // the first issuance leaves; the queue is empty
+	c.mu.Unlock()
+
+	var flood []byte
+	for seq := uint64(1); seq <= 400; seq++ {
+		flood = appendFrame(flood, frameRetireConnectionID, seq)
+	}
+	_, err := c.frames(spaceApplication, flood, time.Now())
+	wantViolation(t, err, transportProtocolViolation, "retiring past what was issued")
+
+	c.mu.Lock()
+	queued, newCIDs, nextSeq, locals := len(c.control), c.controlNewCIDs, c.nextLocalSeq, len(c.localCIDs)
+	c.mu.Unlock()
+	const limit = 4
+	var issued int
+	for _, f := range controlFrames(t, c) {
+		if f.Type == frameNewConnectionID {
+			issued++
+		}
+	}
+	if issued > limit || newCIDs != issued {
+		t.Errorf("%d NEW_CONNECTION_ID frames queued (counter %d), want at most %d", issued, newCIDs, limit)
+	}
+	if queued > limit*29 {
+		t.Errorf("the control queue holds %d bytes after a 400-frame flood, want at most %d", queued, limit*29)
+	}
+	if nextSeq > 2*limit {
+		t.Errorf("nextLocalSeq = %d after the flood, want at most %d: issuance did not stop", nextSeq, 2*limit)
+	}
+	if n := len(reg.table); n > limit || locals > limit {
+		t.Errorf("%d identifiers routed, %d active, want at most %d", n, locals, limit)
+	}
+	openAppPackets(t, c, pc) // nothing that left exceeded maxDatagram
+}
+
+// Once the queue drains, the deficit a bounded retirement left is made up:
+// the flush after the next processed packet issues the missing
+// identifiers, so a conformant peer that retires at the pace of the
+// replacements never runs short.
+func TestRetirementDeficitIsMadeUpOnFlush(t *testing.T) {
+	reg := newTestRegistrar()
+	pc := &recordingPC{addr: fakeFuzzAddr("deficit:self")}
+	c := newConn(pc, fakeFuzzAddr("deficit:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.registrar = reg
+	c.handshakeConfirmed = true
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 4
+	c.issueLocalCIDsLocked()
+	c.flushControlLocked()
+	c.mu.Unlock()
+
+	// Retire 1..7: 4 replacements (4..7) fill the queue, then 5, 6 and 7
+	// go without one.
+	var retire []byte
+	for seq := uint64(1); seq <= 7; seq++ {
+		retire = appendFrame(retire, frameRetireConnectionID, seq)
+	}
+	if _, err := c.frames(spaceApplication, retire, time.Now()); err != nil {
+		t.Fatalf("retiring what was issued: %v", err)
+	}
+	c.mu.Lock()
+	before := len(c.localCIDs)
+	c.flushControlLocked()
+	after, pending := len(c.localCIDs), c.controlNewCIDs
+	c.mu.Unlock()
+	if before != 1 {
+		t.Errorf("%d identifiers active after the queue filled, want 1 (sequence 0)", before)
+	}
+	if after != 4 || pending != 0 {
+		t.Errorf("after the flush: %d active, %d replacements still queued, want 4 and 0", after, pending)
+	}
+	for _, frames := range openAppPackets(t, c, pc) {
+		for _, f := range frames {
+			if f.Type == frameNewConnectionID && f.value >= 8 && reg.has(f.Data[:len(f.Data)-16]) {
+				return // a top-up identifier left, and it routes
+			}
+		}
+	}
+	t.Error("no top-up NEW_CONNECTION_ID (sequence 8 or above) was sent")
+}
+
+// A queue longer than one packet leaves in several, each under
+// maxDatagram and cut on a frame boundary, grants first; the counters
+// follow the frames out. The control flush used to copy the whole queue
+// into one packet — 11.5 KB observed on a 1200-byte path.
+func TestQueuedFramesLeaveWithinTheMTU(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("mtu:self")}
+	c := newConn(pc, fakeFuzzAddr("mtu:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	for i := range 100 {
+		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40) // 17 bytes each
+	}
+	for i := range 60 {
+		c.control = appendFrame(c.control, frameStreamDataBlocked, uint64(i)<<40, 1<<40)
+	}
+	for seq := range uint64(20) {
+		c.control = appendFrame(c.control, frameRetireConnectionID, seq)
+		c.controlRetires++
+	}
+	queued := len(c.grants) + len(c.control)
+	c.flushControlLocked()
+	left, retires := len(c.grants)+len(c.control), c.controlRetires
+	c.mu.Unlock()
+	if left != 0 || retires != 0 {
+		t.Fatalf("%d bytes and %d retirements still queued after the flush, want none", left, retires)
+	}
+	packets := openAppPackets(t, c, pc)
+	if len(packets) < queued/c.maxDatagram+1 {
+		t.Errorf("%d bytes of frames left in %d packets, want at least %d", queued, len(packets), queued/c.maxDatagram+1)
+	}
+	var grants, blocked, retired int
+	grantsDone := false
+	for _, frames := range packets {
+		for _, f := range frames {
+			switch f.Type {
+			case frameMaxStreamData:
+				grants++
+				if grantsDone {
+					t.Error("a grant left after a control frame: grants go first")
+				}
+			case frameStreamDataBlocked:
+				blocked++
+				grantsDone = true
+			case frameRetireConnectionID:
+				retired++
+				grantsDone = true
+			}
+		}
+	}
+	if grants != 100 || blocked != 60 || retired != 20 {
+		t.Errorf("%d grants, %d blocked, %d retirements left, want 100, 60, 20", grants, blocked, retired)
+	}
+}
+
+// What rides a data packet is cut to the room beside it: a full stream
+// chunk with a long queue waiting still leaves under maxDatagram, and the
+// rest of the queue leaves on its own afterwards.
+func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("ride:self")}
+	c := newConn(pc, fakeFuzzAddr("ride:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	for i := range 100 {
+		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40)
+	}
+	chunk := []byte{FrameStream | 0x02} // length present, offset 0
+	chunk = AppendVarint(chunk, 4)
+	chunk = AppendVarint(chunk, uint64(c.maxStreamChunk()-8))
+	chunk = append(chunk, make([]byte, c.maxStreamChunk()-len(chunk))...)
+	if err := c.sendPacketLocked(spaceApplication, chunk, sendOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Unlock()
+	packets := openAppPackets(t, c, pc)
+	if len(packets) != 1 {
+		t.Fatalf("%d packets left, want the one data packet", len(packets))
+	}
+	var rode int
+	for _, f := range packets[0] {
+		if f.Type == frameMaxStreamData {
+			rode++
+		}
+	}
+	if rode == 0 || rode == 100 {
+		t.Errorf("%d grants rode the data packet, want some but not all 100", rode)
+	}
+	c.mu.Lock()
+	c.flushControlLocked()
+	left := len(c.grants)
+	c.mu.Unlock()
+	if left != 0 {
+		t.Errorf("%d bytes of grants still queued after the flush", left)
+	}
+	openAppPackets(t, c, pc)
+}

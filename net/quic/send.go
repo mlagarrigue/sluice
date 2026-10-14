@@ -106,45 +106,117 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		}
 	}
 
-	// Anything owed rides along: the grant and control queues (application
-	// space), and this space's acknowledgement. Grants ride any packet —
-	// their cwnd exemption is theirs, not the carrier's — while the control
-	// queue rides only when the window has room for the extra bytes: a
-	// cwnd-exempt carrier (a grant flush, a probe) must not smuggle past the
-	// window what flushControlLocked just deferred for lacking it.
+	// Anything owed rides along: this space's acknowledgement, and the
+	// grant and control queues (application space) — as much of them as
+	// fits beside the payload under maxDatagram, cut on a frame boundary;
+	// the rest waits for the next packet, or for flushControlLocked, which
+	// sends packet after packet until the queues are empty. Grants ride any
+	// packet — their cwnd exemption is theirs, not the carrier's — while
+	// the control queue rides only when the window has room for the extra
+	// bytes: a cwnd-exempt carrier (a grant flush, a probe) must not
+	// smuggle past the window what flushControlLocked just deferred for
+	// lacking it.
 	//
 	// A noRetrans packet carries neither: nothing records it for recovery,
 	// so frames riding it would be gone for good if it were lost — or
 	// withheld by the amplification budget, which skips such a packet
 	// outright. They stay queued for the next packet that recovery covers.
+	//
+	// The ACK is encoded first — its size decides the room left — and
+	// settled last: an empty call from flushControlLocked, when the window
+	// has no room for the control queue, sends nothing and owes it still.
+	now := time.Now()
+	var ack []byte
+	if sp.ack.owes(now) {
+		ack = sp.ack.encodeAck(c.ackScratch[:0], now)
+		c.ackScratch = ack
+	}
 	retransPart := payload
-	var head []byte
 	if space == spaceApplication && !opts.noRetrans && (len(c.grants) > 0 || len(c.control) > 0) {
-		head = append(head, c.grants...)
-		c.grants = nil
-		if len(c.control) > 0 && c.cc.canSend(len(head)+len(payload)+len(c.control)+64) {
-			head = append(head, c.control...)
-			c.control, c.controlRetires = nil, 0
-		}
-		if len(head) > 0 {
-			retransPart = append(head[:len(head):len(head)], payload...)
+		room := c.maxDatagram - c.shortPacketOverhead() - len(ack) - len(payload)
+		if queued := c.takeQueuedLocked(room, len(payload)); len(queued) > 0 {
+			retransPart = append(queued, payload...)
 			// Control frames are cheap to lose only if someone resends
 			// them; they carry window and stream grants, so they are
 			// retransmittable and ride the same recovery as the payload.
 			payload = retransPart
 		}
-		head = nil
 	}
-	now := time.Now()
-	if sp.ack.owes(now) {
-		head = sp.ack.appendAck(head, now)
-		if len(head) > 0 {
-			payload = append(head, payload...)
-			opts.carriesAck = true
-		}
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(ack) > 0 {
+		payload = append(ack[:len(ack):len(ack)], payload...)
+		sp.ack.settle()
+		opts.carriesAck = true
 	}
 
 	return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
+}
+
+// shortPacketOverhead is what a 1-RTT packet costs on the wire beyond its
+// payload: the short header, the packet number and the AEAD tag.
+func (c *Conn) shortPacketOverhead() int {
+	const pnLen = 4
+	return 1 + len(c.dcid) + pnLen + 16
+}
+
+// takeQueuedLocked lifts what fits in room bytes off the grant queue, then
+// the control queue, whole frames only, and returns it as a fresh slice —
+// nil when nothing fits or the congestion window refuses the control bytes
+// (carried is what the packet already holds, counted against the window
+// with them). Both queues are this end's own encoding, so cutting them is
+// a walk with the one frame parser. Callers hold mu.
+func (c *Conn) takeQueuedLocked(room, carried int) []byte {
+	var out []byte
+	if n, _, _ := cutFrames(c.grants, room); n > 0 {
+		out = append(out, c.grants[:n]...)
+		c.grants = c.grants[n:]
+		if len(c.grants) == 0 {
+			c.grants = nil
+		}
+		room -= n
+	}
+	if n, retires, newCIDs := cutFrames(c.control, room); n > 0 && c.cc.canSend(carried+len(out)+n+64) {
+		out = append(out, c.control[:n]...)
+		c.control = c.control[n:]
+		c.controlRetires -= retires
+		c.controlNewCIDs -= newCIDs
+		if len(c.control) == 0 {
+			c.control, c.controlRetires, c.controlNewCIDs = nil, 0, 0
+		}
+	}
+	return out
+}
+
+// cutFrames is the length of the longest prefix of q that ends on a frame
+// boundary and is no longer than room, with how many RETIRE_CONNECTION_ID
+// and NEW_CONNECTION_ID frames that prefix holds — the two queue counters
+// that must follow the frames out. The whole queue when it fits, without a
+// walk; q holds frames this end encoded, so the parse cannot fail, and a
+// failure would only leave the rest queued.
+func cutFrames(q []byte, room int) (n, retires, newCIDs int) {
+	if len(q) <= room {
+		return len(q), 0, 0
+	}
+	for n < len(q) {
+		f, rest, err := parseFrame(q[n:])
+		if err != nil {
+			return n, retires, newCIDs
+		}
+		l := len(q) - n - len(rest)
+		if n+l > room {
+			return n, retires, newCIDs
+		}
+		n += l
+		switch f.Type {
+		case frameRetireConnectionID:
+			retires++
+		case frameNewConnectionID:
+			newCIDs++
+		}
+	}
+	return n, retires, newCIDs
 }
 
 // initialPadding is how many zero bytes an Initial packet's payload needs so
@@ -482,6 +554,14 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // flight, pacing, the idle clock. A long-header prefix is completed in
 // place when dst is the pending packet's own copy, or into scratch when it
 // is the per-packet header. Callers hold mu.
+//
+// The bookkeeping comes before the write on purpose: batched and coalesced
+// packets are sealed long before their datagram leaves, and a write that
+// fails is a packet the network lost — recovery declares it so and resends
+// its payload, releasing the window it held, exactly as for a loss on the
+// wire. Nothing here is sized past maxDatagram (sendPacketLocked cuts the
+// queues to it), so the one failure a correct packet could cause itself,
+// EMSGSIZE, does not arise.
 func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error) {
 	const pnLen = 4
 	sp := p.sp
@@ -598,10 +678,11 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 	return nil
 }
 
-// flushControlLocked sends whatever control frames are queued, now, in their
-// own packet. Used when nothing else is about to leave and the peer needs
-// them to make progress — a MAX_DATA the peer is blocked on does not wait
-// for this end to have data of its own.
+// flushControlLocked sends whatever control frames are queued, now, in
+// their own packets — as many as maxDatagram needs. Used when nothing else
+// is about to leave and the peer needs them to make progress — a MAX_DATA
+// the peer is blocked on does not wait for this end to have data of its
+// own.
 //
 // Grants flush regardless of the congestion window: they are how a blocked
 // peer resumes sending, and withholding them until ACKs reopen the window is
@@ -610,20 +691,28 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 // stays queued, rides the next packet that passes the window, or flushes on
 // a later call — one runs after every processed packet, so an ACK that
 // reopens the window releases it.
+//
+// Before each packet it tops the issued connection identifiers back up: a
+// retirement that found the queue full (issueLocalCIDsLocked) left a
+// deficit, made up here — this runs after every processed packet — once
+// the packet before freed the room.
 func (c *Conn) flushControlLocked() {
 	if c.spaces[spaceApplication].sealer == nil {
 		return
 	}
-	payload := c.grants
-	c.grants = nil
-	if len(c.control) > 0 && c.cc.canSend(len(payload)+len(c.control)+64) {
-		payload = append(payload, c.control...)
-		c.control, c.controlRetires = nil, 0
+	for {
+		c.issueLocalCIDsLocked()
+		before := len(c.grants) + len(c.control)
+		if before == 0 {
+			return
+		}
+		if err := c.sendPacketLocked(spaceApplication, nil, sendOpts{}); err != nil {
+			return
+		}
+		if len(c.grants)+len(c.control) == before {
+			return // the window has no room for what is left; it waits
+		}
 	}
-	if len(payload) == 0 {
-		return
-	}
-	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{})
 }
 
 // flushAcksLocked answers every space that owes an acknowledgement with

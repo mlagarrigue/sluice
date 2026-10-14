@@ -213,7 +213,20 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // next packet's retransmittable payload, so a lost one is resent like any
 // other control frame. No-op before the handshake confirms (§5.1.1 wants
 // them in 1-RTT packets the peer is known able to read), or on a connection
-// a test built by hand with no registrar at all. Callers hold mu.
+// a test built by hand with no registrar at all.
+//
+// At most limit NEW_CONNECTION_ID frames wait on the queue at once. Each
+// RETIRE_CONNECTION_ID the peer sends costs it two bytes and would make
+// this end queue a 29-byte replacement, and the sequences are predictable,
+// so one 1200-byte packet could retire four hundred identifiers — the
+// control queue grew ten times faster than the peer's line. Once the queue
+// holds its limit, a retirement drops the identifier without a replacement
+// (§5.1.1 only asks that one SHOULD follow, and lets an endpoint limit
+// what it issues); nextLocalSeq stops growing, so the next invented
+// sequence is the §19.16 violation handleRetireConnectionID refuses, and a
+// conformant peer, which can only retire what it was sent, never meets the
+// bound. The deficit is made up when the queue drains: flushControlLocked
+// tops up after every processed packet. Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
 		return
@@ -225,7 +238,7 @@ func (c *Conn) issueLocalCIDsLocked() {
 	if limit > maxLocalActiveCIDs {
 		limit = maxLocalActiveCIDs
 	}
-	for uint64(len(c.localCIDs)) < limit {
+	for uint64(len(c.localCIDs)) < limit && uint64(c.controlNewCIDs) < limit { //nolint:gosec // G115: a count, never negative
 		cid, err := c.registrar.addLocalCID(c)
 		if err != nil {
 			return // a full table or a dying listener; the connection works without
@@ -242,12 +255,14 @@ func (c *Conn) issueLocalCIDsLocked() {
 		c.control = append(c.control, byte(len(cid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 		c.control = append(c.control, cid...)
 		c.control = append(c.control, token[:]...)
+		c.controlNewCIDs++
 	}
 }
 
 // handleRetireConnectionID acts on the peer retiring one of this end's
 // identifiers (§19.16): the entry is dropped from the demux table and a
-// replacement issued, keeping the active count. The two violations the
+// replacement issued, keeping the active count — within the bound
+// issueLocalCIDsLocked explains. The two violations the
 // section names are checked first — a sequence this end never issued, and
 // the identifier the frame's own packet arrived under (retiring the thing
 // you are using to say so proves the sender confused, and §5.1.2 forbids

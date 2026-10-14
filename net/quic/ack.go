@@ -137,14 +137,29 @@ func (a *ackTracker) appendAck(dst []byte, now time.Time) []byte {
 	if len(a.ranges) == 0 {
 		return dst
 	}
+	dst = a.encodeAck(dst, now)
+	a.settle()
+	return dst
+}
+
+// encodeAck writes the ACK owed without clearing the debt: the caller may
+// still find nothing to send and leave the debt for the next packet. settle
+// clears it once the frame is on its way.
+func (a *ackTracker) encodeAck(dst []byte, now time.Time) []byte {
+	if len(a.ranges) == 0 {
+		return dst
+	}
 	delay := uint64(0)
 	if !a.largestAt.IsZero() && now.After(a.largestAt) {
 		delay = uint64(now.Sub(a.largestAt).Microseconds()) //nolint:gosec // G115: positive, now is after largestAt
 	}
-	dst = appendAckFrame(dst, a.ranges, delay)
+	return appendAckFrame(dst, a.ranges, delay)
+}
+
+// settle clears the debt an encoded ACK paid.
+func (a *ackTracker) settle() {
 	a.elicitingSinceAck = 0
 	a.immediate = false
 	a.outOfOrder = false
 	a.due = time.Time{}
-	return dst
 }

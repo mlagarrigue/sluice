@@ -115,6 +115,9 @@ type Conn struct {
 	// packet into WriteTo, which may not retain its argument).
 	hdrScratch []byte
 	pktScratch []byte
+	// ackScratch holds the ACK sendPacketLocked encodes before it knows
+	// the packet will leave; consumed within the call, like the two above.
+	ackScratch []byte
 	// gather, dgram, dgramPend and dgramPad are datagram coalescing (RFC
 	// 9000 §12.2): while gather is set, Initial and Handshake packets
 	// accumulate in dgram — the last one built kept unsealed in dgramPend,
@@ -159,10 +162,12 @@ type Conn struct {
 	connSend sendQuota
 	connRecv recvQuota
 	control  []byte // small control frames waiting to ride the next packet
-	// controlRetires counts the RETIRE_CONNECTION_ID frames in control —
-	// the one control frame a peer can make this end queue at will; see
-	// queueRetireLocked.
+	// controlRetires and controlNewCIDs count the RETIRE_CONNECTION_ID and
+	// NEW_CONNECTION_ID frames in control — the two control frames a peer
+	// can make this end queue at will; see queueRetireLocked and
+	// issueLocalCIDsLocked.
 	controlRetires int
+	controlNewCIDs int
 	// grants holds the flow-control credit frames — MAX_DATA, MAX_STREAM_DATA,
 	// MAX_STREAMS — queued apart from control because they alone may exceed
 	// the congestion window when flushed: a grant is how a blocked peer
