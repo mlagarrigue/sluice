@@ -71,4 +71,4 @@ echo "measuring $ROUNDS paired rounds: $A vs $B" >&2
     run "$B" | awk -v r="$r" '/ns\/op/{print "after",  r, "A-vs-B", $3}'
   done
 } | awk -v MINEFFECT="$MINEFFECT" -f "$ROOT/internal/bench/scripts/paired.awk" |
-  sed "s/A-vs-B/$A vs $B/"
+  sed "s|A-vs-B|$A vs $B|"
