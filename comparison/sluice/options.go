@@ -91,7 +91,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.response, "response", "buffered",
 		"axis E: buffered (R), stream (not implemented until axis E)")
 	fs.StringVar(&o.compression, "compression", "none",
-		"axis F: none (R), gzip1, gzip6, deflate6 (not implemented until axis F)")
+		"axis F: none (R), gzip1, gzip6, deflate6; the body is encoded when the client accepts it")
 
 	fs.StringVar(&o.db.addr, "db", os.Getenv("SLUICE_PG"), "PostgreSQL host:port (default $SLUICE_PG)")
 	fs.StringVar(&o.db.user, "db-user", os.Getenv("SLUICE_PG_USER"), "PostgreSQL role (default $SLUICE_PG_USER)")
@@ -147,9 +147,7 @@ func (o options) validate() error {
 		return fmt.Errorf("-response %q: unknown", o.response)
 	}
 	switch o.compression {
-	case "none":
-	case "gzip1", "gzip6", "deflate6":
-		return fmt.Errorf("-compression %s: %w until axis F", o.compression, errNotImplemented)
+	case codecNone, codecGzip1, codecGzip6, codecDeflate6:
 	default:
 		return fmt.Errorf("-compression %q: unknown", o.compression)
 	}

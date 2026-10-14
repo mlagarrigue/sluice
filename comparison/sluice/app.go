@@ -37,6 +37,7 @@ type app struct {
 	st      store
 	gw      *gateway.Gateway[int64, orderRow]
 	listMax int
+	codec   *codec // axis F; nil in R
 }
 
 type answer struct {
@@ -100,7 +101,7 @@ func newApp(o options) (*app, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("write table: %w", err)
 	}
-	a := &app{static: newStaticDoc(), st: st, listMax: o.listMax}
+	a := &app{static: newStaticDoc(), st: st, listMax: o.listMax, codec: lookupCodec(o.compression)}
 	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
 		unitPipeline(st, o.gatewaySize))
 	return a, nil

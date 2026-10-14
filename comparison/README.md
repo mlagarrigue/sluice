@@ -20,7 +20,7 @@ compression — and every axis of the internal study is a flag:
 | C — grouping | `-gateway-size 64 -gateway-within 2ms` | any positive values |
 | D — transport batch | `-max-requests-per-batch`, `-max-requests-per-conn` (`-1` unbounded) | httpstream transports only |
 | E — response | `-response buffered` (R), `stream` | stream refused until axis E |
-| F — compression | `-compression none` (R), `gzip1`, `gzip6`, `deflate6` | refused until axis F |
+| F — compression | `-compression none` (R), `gzip1`, `gzip6`, `deflate6` | stdlib encoders on the buffered body when the client accepts it; `Vary: Accept-Encoding` |
 
 A variant the code does not implement is refused before the server listens,
 with the axis that will add it. Nothing falls back to R silently: a flag
