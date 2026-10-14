@@ -68,7 +68,14 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // bound nobody chose.
 //
 // Serve returns when ctx is cancelled and every connection has finished, or
-// when the listener fails. It closes the listener on the way out.
+// when the listener fails. It closes the listener on the way out. A
+// temporary Accept failure — a [net.Error] whose Temporary reports true,
+// which is how the kernel says it ran out of descriptors (EMFILE, ENFILE)
+// or that a peer hung up mid-handshake (ECONNABORTED) — is not the listener
+// failing: Serve waits and tries again, 5 ms doubling to 1 s, the policy
+// net/http applies, and the connections already accepted keep being
+// served. Treating it as fatal would let a burst of descriptor pressure end
+// every connection the server holds.
 //
 // Cancellation reaches the connections, not only the listener. A goroutine
 // parked in Accept is released by closing the listener under it; a goroutine
@@ -118,6 +125,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 		}
 	}()
 
+	var tempDelay time.Duration // how long to wait after a temporary Accept failure
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -126,8 +134,23 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 				return nil // asked to stop: not a failure
 			default:
 			}
+			if ne, ok := errors.AsType[net.Error](err); ok && ne.Temporary() { //nolint:staticcheck // SA1019: Temporary is what Accept still reports EMFILE and ECONNABORTED through, as net/http reads it
+				// The same shape as the QUIC read loop's readBackoff and
+				// deliberately not shared with it: four lines are cheaper
+				// than a dependency between the two packages.
+				tempDelay = min(max(tempDelay*2, 5*time.Millisecond), time.Second)
+				t := time.NewTimer(tempDelay)
+				select {
+				case <-stop:
+					t.Stop()
+					return nil
+				case <-t.C:
+				}
+				continue
+			}
 			return fmt.Errorf("httpstream: accepting: %w", err)
 		}
+		tempDelay = 0
 		if !live.add(c) {
 			// The shutdown ran between Accept and here, so this connection
 			// would never be closed by it.
