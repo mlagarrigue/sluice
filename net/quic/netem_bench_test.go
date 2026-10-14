@@ -227,11 +227,18 @@ type transfer struct {
 // goroutines, and only the test's own may call Fatal.
 func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 	tb.Helper()
+	return transferWith(tb, link, total, link.cc)
+}
+
+// transferWith is transferOnce with the controller named rather than the
+// link's: what lets two flows on one link run two controllers.
+func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionAlgorithm) (transfer, error) {
+	tb.Helper()
 	start := time.Now()
 	clientPC, serverPC, dialTo, stop := link.path()
 	defer stop()
 	params := wideParameters()
-	params.Congestion.Algorithm = link.cc
+	params.Congestion.Algorithm = cc
 
 	type result struct {
 		n   int64
@@ -325,6 +332,13 @@ func benchTransfer(b *testing.B, prof netemProfile, total int) {
 // fairness criterion reads. One transfer's wall clock is the slower flow's.
 func benchTwoFlows(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
+	benchTwoFlowsAgainst(b, prof, total, benchAlgorithm)
+}
+
+// benchTwoFlowsAgainst is benchTwoFlows with the second flow's controller
+// named: the first runs benchAlgorithm, and share is still the first's.
+func benchTwoFlowsAgainst(b *testing.B, prof netemProfile, total int, second quic.CongestionAlgorithm) {
+	b.Helper()
 	b.SetBytes(int64(2 * total))
 	for b.Loop() {
 		link := &netemLink{prof: prof, cc: benchAlgorithm}
@@ -333,8 +347,9 @@ func benchTwoFlows(b *testing.B, prof netemProfile, total int) {
 			res  [2]transfer
 			errs [2]error
 		)
+		ccs := [2]quic.CongestionAlgorithm{benchAlgorithm, second}
 		for i := range res {
-			wg.Go(func() { res[i], errs[i] = transferOnce(b, link, total) })
+			wg.Go(func() { res[i], errs[i] = transferWith(b, link, total, ccs[i]) })
 		}
 		wg.Wait()
 		if err := errors.Join(errs[:]...); err != nil {
@@ -424,11 +439,24 @@ func BenchmarkTransferDeepBuffer(b *testing.B) {
 // a new controller is measured by how far from a half it pushes the old
 // one.
 func BenchmarkTransferTwoFlows(b *testing.B) {
-	benchTwoFlows(b, netemProfile{
-		owd:   10 * time.Millisecond,
-		rate:  50_000_000 / 8,
-		queue: 20 * time.Millisecond,
-	}, 4<<20)
+	benchTwoFlows(b, twoFlowsProfile, 4<<20)
+}
+
+// BenchmarkTransferTwoFlowsVsReno is the coexistence benchmark: the same
+// link and sizes as TwoFlows, the first flow on the controller under
+// measurement and the second on Reno, whatever SLUICE_QUIC_CC says. share
+// is the first flow's: a half when both run Reno, and for a model-based
+// controller the figure its bound on what it takes from a loss-based flow
+// is read on. Not in the gate: its question is the controller's, not the
+// tree's.
+func BenchmarkTransferTwoFlowsVsReno(b *testing.B) {
+	benchTwoFlowsAgainst(b, twoFlowsProfile, 4<<20, quic.CongestionNewReno)
+}
+
+var twoFlowsProfile = netemProfile{
+	owd:   10 * time.Millisecond,
+	rate:  50_000_000 / 8,
+	queue: 20 * time.Millisecond,
 }
 
 // BenchmarkTransferRTT40 and RTT80 are the long-haul benchmarks: a
