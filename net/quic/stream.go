@@ -354,11 +354,19 @@ func (s *Stream) StopSending(code uint64) error {
 func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// §4.5: a RESET_STREAM that changes a known final size, or declares one
+	// below bytes already received, is FINAL_SIZE_ERROR like deliver's two.
 	if s.fin && finalSize != s.finAt {
-		return 0, 0, fmt.Errorf("%w: stream %d reset to a different final size", ErrQUIC, s.id)
+		return 0, 0, &transportError{
+			code: transportFinalSize,
+			err:  fmt.Errorf("%w: stream %d reset to a different final size", ErrQUIC, s.id),
+		}
 	}
 	if finalSize < s.recvQ.highest {
-		return 0, 0, fmt.Errorf("%w: stream %d reset below bytes already received", ErrQUIC, s.id)
+		return 0, 0, &transportError{
+			code: transportFinalSize,
+			err:  fmt.Errorf("%w: stream %d reset below bytes already received", ErrQUIC, s.id),
+		}
 	}
 	if s.readReset {
 		return 0, 0, nil

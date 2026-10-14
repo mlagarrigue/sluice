@@ -44,14 +44,17 @@ func (e *transportError) Error() string { return e.err.Error() }
 func (e *transportError) Unwrap() error { return e.err }
 
 // closeCodeFor picks the CONNECTION_CLOSE code an error deserves. A
-// transportError carries its own; a TLS alert anywhere in the chain maps to
-// RFC 9001 §4.8's crypto range (0x0100 + alert), which is how the codes that
-// RFC mandates — 0x0178 for ALPN failure (§8.1), 0x016d for missing
-// transport parameters (§8.2), 0x010a for a KeyUpdate message (§6) — all
-// reach the wire without this package naming each alert; everything else is
-// INTERNAL_ERROR.
+// transportError anywhere in the chain carries its own — anywhere, because
+// the sites that know the code (a stream's flow-control account, the
+// parameter parser) sit below callers that add context with %w, and a
+// direct assertion on the outermost error turned every one of those into
+// INTERNAL_ERROR. A TLS alert anywhere in the chain maps to RFC 9001 §4.8's
+// crypto range (0x0100 + alert), which is how the codes that RFC mandates —
+// 0x0178 for ALPN failure (§8.1), 0x016d for missing transport parameters
+// (§8.2), 0x010a for a KeyUpdate message (§6) — all reach the wire without
+// this package naming each alert; everything else is INTERNAL_ERROR.
 func closeCodeFor(err error) uint64 {
-	if te, ok := err.(*transportError); ok { //nolint:errorlint // the code rides the outermost error by construction
+	if te, ok := errors.AsType[*transportError](err); ok {
 		return te.code
 	}
 	if alert, ok := errors.AsType[tls.AlertError](err); ok {

@@ -943,7 +943,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		c.mu.Lock()
 		if err := c.connRecv.receive(c.connRecv.highest + connGrowth); err != nil {
 			c.mu.Unlock()
-			return eliciting, &transportError{code: transportFlowControl, err: err}
+			return eliciting, err // FLOW_CONTROL_ERROR, attached by receive
 		}
 		c.mu.Unlock()
 	}

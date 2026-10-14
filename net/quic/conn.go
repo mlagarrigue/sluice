@@ -1068,13 +1068,15 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Every refusal below is TRANSPORT_PARAMETER_ERROR (parameterError says
+	// which section names it for which check).
 	if !bytes.Equal(p.initialSourceCID, c.dcid) {
-		return fmt.Errorf("%w: the peer's initial_source_connection_id is not the identifier its packets carry", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: the peer's initial_source_connection_id is not the identifier its packets carry", ErrQUIC))
 	}
 	switch {
 	case c.isClient:
 		if !bytes.Equal(p.originalDCID, c.initialDCID) {
-			return fmt.Errorf("%w: the server did not echo the original destination identifier", ErrQUIC)
+			return parameterError(fmt.Errorf("%w: the server did not echo the original destination identifier", ErrQUIC))
 		}
 		// retry_source_connection_id binds this handshake to the Retry that
 		// redirected it (RFC 9000 §7.3): present iff a Retry actually
@@ -1083,36 +1085,30 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		// the server's own identifier by the time the parameters arrive.
 		if c.retried {
 			if !bytes.Equal(p.retrySourceCID, c.retrySCID) {
-				return fmt.Errorf("%w: the server did not echo the Retry's source identifier", ErrQUIC)
+				return parameterError(fmt.Errorf("%w: the server did not echo the Retry's source identifier", ErrQUIC))
 			}
 		} else if p.retrySourceCID != nil {
-			return fmt.Errorf("%w: retry_source_connection_id without a Retry", ErrQUIC)
+			return parameterError(fmt.Errorf("%w: retry_source_connection_id without a Retry", ErrQUIC))
 		}
+	// §18.2: the four server-only announcements a client must not send.
 	case p.originalDCID != nil:
-		return fmt.Errorf("%w: a client sent original_destination_connection_id", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: a client sent original_destination_connection_id", ErrQUIC))
 	case p.retrySourceCID != nil:
-		return fmt.Errorf("%w: a client sent retry_source_connection_id", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: a client sent retry_source_connection_id", ErrQUIC))
 	case p.sawStatelessResetToken:
-		// §18.2: stateless_reset_token and preferred_address are server-only
-		// announcements; a client sending either is TRANSPORT_PARAMETER_ERROR.
-		return &transportError{
-			code: transportParameterError,
-			err:  fmt.Errorf("%w: a client sent stateless_reset_token", ErrQUIC),
-		}
+		return parameterError(fmt.Errorf("%w: a client sent stateless_reset_token", ErrQUIC))
 	case p.sawPreferredAddress:
-		return &transportError{
-			code: transportParameterError,
-			err:  fmt.Errorf("%w: a client sent preferred_address", ErrQUIC),
-		}
+		return parameterError(fmt.Errorf("%w: a client sent preferred_address", ErrQUIC))
 	}
+	// §18.2's own bounds: below 1200, above 20, 2^14 or more are "invalid".
 	if p.MaxUDPPayloadSize != 0 && p.MaxUDPPayloadSize < 1200 {
-		return fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, p.MaxUDPPayloadSize)
+		return parameterError(fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, p.MaxUDPPayloadSize))
 	}
 	if p.AckDelayExponent > 20 {
-		return fmt.Errorf("%w: ack_delay_exponent %d is over 20", ErrQUIC, p.AckDelayExponent)
+		return parameterError(fmt.Errorf("%w: ack_delay_exponent %d is over 20", ErrQUIC, p.AckDelayExponent))
 	}
 	if p.MaxAckDelay >= 1<<14*time.Millisecond {
-		return fmt.Errorf("%w: max_ack_delay %v is over the protocol maximum", ErrQUIC, p.MaxAckDelay)
+		return parameterError(fmt.Errorf("%w: max_ack_delay %v is over the protocol maximum", ErrQUIC, p.MaxAckDelay))
 	}
 
 	c.peerParams = p

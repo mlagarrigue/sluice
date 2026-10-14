@@ -281,6 +281,17 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 // how a protocol stops being able to change. A *known* identifier repeated
 // is refused, though — RFC 9000 §7.4 makes it TRANSPORT_PARAMETER_ERROR,
 // because two values for one limit is a peer this end cannot reason about.
+// parameterError is how every refusal of what the peer announced leaves
+// the parser and handlePeerParameters: RFC 9000 §7.4 makes an invalid value
+// or a duplicate TRANSPORT_PARAMETER_ERROR, §18.2 says the same of each
+// parameter's own bounds and of the server-only ones a client sends, and
+// §7.3 offers it (or PROTOCOL_VIOLATION) for identifiers that do not match
+// the handshake's packets — one code for the whole family, so a peer reads
+// "your parameters" rather than "my internals".
+func parameterError(err error) error {
+	return &transportError{code: transportParameterError, err: err}
+}
+
 func parseParameters(b []byte) (TransportParameters, error) {
 	var p TransportParameters
 	var seen uint64 // a bit per known identifier; they all sit below 0x10
@@ -294,7 +305,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			return p, err
 		}
 		if length > uint64(len(rest)) {
-			return p, fmt.Errorf("%w: a transport parameter of %d bytes, %d remain", ErrQUIC, length, len(rest))
+			return p, parameterError(fmt.Errorf("%w: a transport parameter of %d bytes, %d remain", ErrQUIC, length, len(rest)))
 		}
 		val, rest, err := bytesN(rest, int(length)) //nolint:gosec // G115: checked above
 		if err != nil {
@@ -305,7 +316,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 		if id < 64 {
 			bit := uint64(1) << id
 			if known(id) && seen&bit != 0 {
-				return p, fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id)
+				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
 			}
 			seen |= bit
 		}
@@ -320,7 +331,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 		case paramStatelessResetToken:
 			p.sawStatelessResetToken = true
 			if len(val) != 16 {
-				return p, fmt.Errorf("%w: a stateless_reset_token of %d bytes", ErrQUIC, len(val))
+				return p, parameterError(fmt.Errorf("%w: a stateless_reset_token of %d bytes", ErrQUIC, len(val)))
 			}
 			p.statelessResetToken = val
 		case paramPreferredAddress:
@@ -339,10 +350,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				return p, err
 			}
 			if v < 2 {
-				return p, &transportError{
-					code: transportParameterError,
-					err:  fmt.Errorf("%w: active_connection_id_limit %d is below the minimum of 2", ErrQUIC, v),
-				}
+				return p, parameterError(fmt.Errorf("%w: active_connection_id_limit %d is below the minimum of 2", ErrQUIC, v))
 			}
 			p.ActiveConnIDLimit = v
 		case paramMaxIdleTimeout, paramMaxUDPPayloadSize, paramInitialMaxData,
