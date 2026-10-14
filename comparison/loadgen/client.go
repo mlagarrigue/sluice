@@ -8,10 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptrace"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,15 +23,23 @@ import (
 // at most 8 streams (§3.5, the published ceiling), never more.
 const inFlightPerConn = 1
 
-// client is the generator's HTTP side: `conns` keep-alive connections to
-// one server, HTTP/1.1 over TLS, nothing shared with Sluice.go.
+// client is the generator's HTTP side: keep-alive connections to one
+// server, HTTP/1.1 over TLS, nothing shared with Sluice.go. The budget C is
+// held by the number of workers, not by the transport, so that a ramp can
+// grow it between two stages: `warm` opens the connections a stage lacks,
+// and the ones a smaller stage leaves idle never age out. The share of
+// fresh connections goes through `fresh`, a transport that keeps nothing:
+// each such request opens its connection, inside its own delays, and the
+// client closes it, so that TIME_WAIT lands on the tester (§3.6).
 type client struct {
-	url string
-	tr  *http.Transport
-	hc  *http.Client
+	url   string
+	tr    *http.Transport
+	hc    *http.Client
+	fresh *http.Client
 }
 
-func (st stage) newClient() (*client, error) {
+func (c campaign) newClient() (*client, error) {
+	st := c.stage
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		NextProtos: []string{"http/1.1"},
@@ -51,24 +62,43 @@ func (st stage) newClient() (*client, error) {
 	}
 	tr := &http.Transport{
 		TLSClientConfig:     cfg,
-		MaxConnsPerHost:     st.conns,
-		MaxIdleConnsPerHost: st.conns,
-		IdleConnTimeout:     0, // a connection of the budget never ages out
+		MaxIdleConnsPerHost: math.MaxInt32, // the budget, whatever a ramp grows it to
+		IdleConnTimeout:     0,             // a connection of the budget never ages out
 		ForceAttemptHTTP2:   false,
 		DisableCompression:  true,
 	}
+	fresh := tr.Clone()
+	fresh.DisableKeepAlives = true
 	return &client{
-		url: st.url,
-		tr:  tr,
-		hc:  &http.Client{Transport: tr, Timeout: st.timeout},
+		url:   st.url,
+		tr:    tr,
+		hc:    &http.Client{Transport: tr, Timeout: st.timeout},
+		fresh: &http.Client{Transport: fresh, Timeout: st.timeout},
 	}, nil
 }
 
 func (c *client) close() { c.tr.CloseIdleConnections() }
 
+// freshDraw says which requests of a stage open a fresh connection: a
+// function of (seed, index) like the full validation, so that every
+// contender of a round sees the same ones.
+func (st stage) freshDraw() func(i int) bool {
+	if st.newConns == 0 {
+		return func(int) bool { return false }
+	}
+	return func(i int) bool {
+		return rand.New(rand.NewPCG(st.seed^freshSalt, uint64(i))).IntN(100) < st.newConns //nolint:gosec // G404: a seeded draw is the point
+	}
+}
+
+// freshSalt keeps the fresh draw apart from the full-validation draw of
+// the same (seed, index).
+const freshSalt = 0x66726573685f636f
+
 // warm opens the budget before the stage: `conns` requests in flight at
 // once, so every TLS handshake happens now, never inside the measurement
-// (§3.5). The answers are discarded.
+// (§3.5). The connections an earlier stage left idle are reused, the
+// missing ones opened. The answers are discarded.
 func (c *client) warm(ctx context.Context, conns int) error {
 	errs := make([]error, conns)
 	var wg sync.WaitGroup
@@ -91,6 +121,7 @@ type result struct {
 	err        error
 	connect    bool // err is a failed connect or handshake (§3.6)
 	badKey     bool // err is the response contract broken (§4)
+	handshake  bool // a TLS handshake happened inside this request's delays
 }
 
 func (c *client) do(ctx context.Context, j job) result {
@@ -104,24 +135,33 @@ func (c *client) do(ctx context.Context, j job) result {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	var firstByte time.Time
-	var connectErr error
+	// A dial the transport started for this request can outlive it, when
+	// another connection became free first: these two are written from
+	// that goroutine, hence the atomics.
+	var connectErr, handshake atomic.Bool
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		GotFirstResponseByte: func() { firstByte = time.Now() },
 		ConnectDone: func(_, _ string, err error) {
 			if err != nil {
-				connectErr = err
+				connectErr.Store(true)
 			}
 		},
 		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
 			if err != nil {
-				connectErr = err
+				connectErr.Store(true)
 			}
+			handshake.Store(true)
 		},
 	}))
-	resp, err := c.hc.Do(req) //nolint:gosec // G704: same
+	hc := c.hc
+	if j.fresh {
+		hc = c.fresh
+	}
+	resp, err := hc.Do(req) //nolint:gosec // G704: same
+	res.handshake = handshake.Load()
 	if err != nil {
 		res.err = err
-		res.connect = connectErr != nil
+		res.connect = connectErr.Load()
 		return res
 	}
 	defer resp.Body.Close() //nolint:errcheck // the body was read to the end or the error is already reported

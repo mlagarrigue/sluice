@@ -4,99 +4,171 @@
 // checks the key in every answer (§2.1, §4) and publishes TTFB and TTLB
 // apart, one JSON line per stage.
 //
-// Today it speaks HTTP/1.1 over TLS and runs one stage; HTTP/2 and HTTP/3,
-// the geometric stages, the drain between them and the connection budget
-// recomputed per stage come next. Nothing it prints is a result of the
-// study: it is the apparatus.
+// It speaks HTTP/1.1 over TLS and runs one stage or a ramp of them: stages
+// on the study's geometric grid, a drain between two, the connection budget
+// recomputed per stage and opened before the clock starts, a share of fresh
+// connections, and the stop at the first stage that breaks, with its cause.
+// HTTP/2 and HTTP/3 come next. Nothing it prints is a result of the study:
+// it is the apparatus.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"time"
 )
 
 func main() {
-	st, err := parseStage(os.Args[1:])
+	c, err := parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	rep, err := st.run(ctx)
+	ok, err := c.run(ctx, os.Stdout)
 	stop()
-	if err == nil {
-		err = json.NewEncoder(os.Stdout).Encode(rep)
-	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if rep.Failed() {
+	if !ok {
 		os.Exit(1)
 	}
 }
 
 // stage is one run at one rate: what the flags say, and what a campaign
-// will vary from stage to stage.
+// varies from stage to stage (rate and budget).
 type stage struct {
 	url      string
 	rate     int // requests per second, at a constant interval
 	duration time.Duration
-	conns    int // the connection budget C of §3.5
+	warmup   time.Duration // sent at the rate before the clock starts, never counted
+	conns    int           // the connection budget C of §3.5
 	name     string
 	scenario scenario
 	keyspace int
 	seed     uint64
 	timeout  time.Duration
 	ca       string
+	slo      time.Duration // X: the p99 the scenario must hold (§3.2)
+	rtt      time.Duration // the RTT injected on the wire, for C only (§3.5)
+	newConns int           // percent of requests that open a fresh connection (§3.6)
 }
 
-func parseStage(args []string) (stage, error) {
+// campaign is what the command runs: one stage, or a ramp of stages that
+// stops at the first broken one.
+type campaign struct {
+	stage
+	ramp     bool
+	rates    []int
+	drain    time.Duration
+	maxConns int // the tester's ceiling on C, 0 for none
+}
+
+// defaultSLO is X by scenario (§3.2, orders of magnitude before the local
+// survey confirms them); a write holds the unit read's.
+var defaultSLO = map[string]time.Duration{
+	"static": 10 * time.Millisecond,
+	"unit":   25 * time.Millisecond,
+	"list":   100 * time.Millisecond,
+	"write":  25 * time.Millisecond,
+	"mixed":  50 * time.Millisecond,
+}
+
+func parse(args []string) (campaign, error) {
 	fs := flag.NewFlagSet("loadgen", flag.ContinueOnError)
-	var st stage
-	var name string
+	var c campaign
+	st := &c.stage
+	var name, rates string
 	fs.StringVar(&st.url, "url", "https://127.0.0.1:8443", "the server under test, scheme and host")
-	fs.IntVar(&st.rate, "rate", 100, "requests per second, sent at a constant interval")
-	fs.DurationVar(&st.duration, "duration", 10*time.Second, "length of the stage")
-	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1")
+	fs.IntVar(&st.rate, "rate", 100, "requests per second, sent at a constant interval; with -ramp, where the grid starts")
+	fs.DurationVar(&st.duration, "duration", 10*time.Second, "length of the measurement of a stage")
+	fs.DurationVar(&st.warmup, "warmup", 5*time.Second, "sent at the stage's rate before its clock starts, never counted")
+	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1 (a single stage; a ramp computes it)")
 	fs.StringVar(&name, "scenario", "unit", "static, unit, list, write or mixed (80 % unit, 15 % list, 5 % write)")
 	fs.IntVar(&st.keyspace, "keyspace", 100000, "ids the table holds, 1..keyspace; every request draws a different one")
 	fs.Uint64Var(&st.seed, "seed", 1, "seed of the draw, the same for every contender of a round (§2.1)")
 	fs.DurationVar(&st.timeout, "timeout", 30*time.Second, "give up on a request after this long")
 	fs.StringVar(&st.ca, "ca", "", "PEM file of the CA that signed the server's certificate; empty trusts any certificate")
+	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms)")
+	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp")
+	fs.IntVar(&st.newConns, "new-conns", 0, "percent of requests that open a fresh connection and close it, 0 or 10 (§3.6)")
+	fs.BoolVar(&c.ramp, "ramp", false, "run the stages of the grid 100 × 1.05^k from -rate up, until one breaks")
+	fs.StringVar(&rates, "rates", "", "run these stages instead of the grid, comma-separated req/s, until one breaks")
+	fs.DurationVar(&c.drain, "drain", 5*time.Second, "pause between two stages, once every request of the first has been answered")
+	fs.IntVar(&c.maxConns, "max-conns", 0, "the tester's ceiling on the budget C of a ramp; 0 for none")
 	if err := fs.Parse(args); err != nil {
-		return st, err
+		return c, err
 	}
 	sc, ok := scenarios[name]
 	if !ok {
-		return st, fmt.Errorf("-scenario %q: want static, unit, list, write or mixed", name)
+		return c, fmt.Errorf("-scenario %q: want static, unit, list, write or mixed", name)
 	}
 	st.name, st.scenario = name, sc
+	if st.slo == 0 {
+		st.slo = defaultSLO[name]
+	}
+	if rates != "" {
+		for part := range strings.SplitSeq(rates, ",") {
+			r, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil || r <= 0 {
+				return c, fmt.Errorf("-rates %q: want positive req/s, comma-separated", rates)
+			}
+			c.rates = append(c.rates, r)
+		}
+	}
 	switch {
 	case st.rate <= 0:
-		return st, errors.New("-rate must be positive")
+		return c, errors.New("-rate must be positive")
 	case st.duration <= 0:
-		return st, errors.New("-duration must be positive")
+		return c, errors.New("-duration must be positive")
+	case st.warmup < 0 || c.drain < 0:
+		return c, errors.New("-warmup and -drain cannot be negative")
 	case st.conns <= 0:
-		return st, errors.New("-conns must be positive")
+		return c, errors.New("-conns must be positive")
+	case c.maxConns < 0:
+		return c, errors.New("-max-conns cannot be negative")
 	case st.keyspace <= listLimit:
-		return st, fmt.Errorf("-keyspace must exceed the list limit %d", listLimit)
+		return c, fmt.Errorf("-keyspace must exceed the list limit %d", listLimit)
+	case st.slo <= 0 || st.rtt < 0:
+		return c, errors.New("-slo must be positive and -rtt cannot be negative")
+	case st.newConns < 0 || st.newConns > 100:
+		return c, errors.New("-new-conns is a percentage")
+	case c.ramp && len(c.rates) > 0:
+		return c, errors.New("-ramp and -rates exclude each other")
 	}
-	if n := st.requests(); n > st.keyspace {
-		return st, fmt.Errorf("%d requests at %d req/s for %s, but the keyspace holds %d keys: a stage never repeats a key (§2.1)", n, st.rate, st.duration, st.keyspace)
+	if !c.ramp && len(c.rates) == 0 {
+		if err := st.fits(); err != nil {
+			return c, err
+		}
 	}
-	return st, nil
+	return c, nil
 }
 
-// requests is how many requests the stage sends: one per interval.
+// fits refuses a stage that would repeat a key (§2.1): the warm-up draws
+// from the same permutation as the measurement.
+func (st stage) fits() error {
+	if n := st.requests(); n > st.keyspace {
+		return fmt.Errorf("%d requests at %d req/s for %s (warm-up %s), but the keyspace holds %d keys: a stage never repeats a key (§2.1)", n, st.rate, st.duration, st.warmup, st.keyspace)
+	}
+	return nil
+}
+
+// requests is how many requests the stage sends, warm-up included: one per
+// interval.
 func (st stage) requests() int {
-	return int(st.duration / st.interval())
+	return int((st.warmup + st.duration) / st.interval())
+}
+
+// warmRequests is how many of them fall before the clock starts.
+func (st stage) warmRequests() int {
+	return int(st.warmup / st.interval())
 }
 
 func (st stage) interval() time.Duration {

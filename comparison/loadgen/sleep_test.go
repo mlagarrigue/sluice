@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,13 +55,30 @@ func sleepExactly(d time.Duration) {
 	}
 }
 
-func testStage(tb testing.TB, url string, args ...string) stage {
+// testCampaign parses the flags of a test: no warm-up and no drain unless
+// the test asks for them, since a test runs its stages back to back.
+func testCampaign(tb testing.TB, url string, args ...string) campaign {
 	tb.Helper()
-	st, err := parseStage(append([]string{"-url", url, "-keyspace", "10000"}, args...))
+	c, err := parse(append([]string{"-url", url, "-keyspace", "10000", "-warmup", "0", "-drain", "0"}, args...))
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return st
+	return c
+}
+
+// runStage runs a single stage with a client of its own.
+func runStage(tb testing.TB, c campaign) report {
+	tb.Helper()
+	cl, err := c.newClient()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	defer cl.close()
+	rep, err := c.stage.run(context.Background(), cl)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return rep
 }
 
 // TestCalibration is the calibration the study asks of its generator: against
@@ -79,11 +98,9 @@ func testStage(tb testing.TB, url string, args ...string) stage {
 func TestCalibration(t *testing.T) {
 	run := func(d time.Duration) report {
 		srv := sleepServer(t, d, nil)
-		st := testStage(t, srv.URL, "-scenario", "unit", "-rate", "200", "-duration", "3s", "-conns", "16")
-		rep, err := st.run(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
+		c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "200", "-duration", "3s", "-conns", "16")
+		st := c.stage
+		rep := runStage(t, c)
 		t.Logf("server sleeping %v: sent %d ok %d queue_max %d queued %d", d, rep.Sent, rep.OK, rep.QueueMax, rep.Queued)
 		t.Logf("  late p50 %.3f p99 %.3f max %.3f ms", rep.Late.P50, rep.Late.P99, rep.Late.Max)
 		t.Logf("  ttfb p50 %.3f p99 %.3f p999 %.3f max %.3f ms", rep.TTFB.P50, rep.TTFB.P99, rep.TTFB.P999, rep.TTFB.Max)
@@ -97,8 +114,11 @@ func TestCalibration(t *testing.T) {
 		// 16 connections at 5 ms carry 3 200 req/s: at 200 req/s the queue
 		// stays empty, and a non-empty one here would be the generator's
 		// own fault (§3.5).
-		if rep.QueueMax > 1 || rep.Queued > 0 {
+		if rep.QueueMax > 0 || rep.Queued > 0 {
 			t.Fatalf("queue_max %d queued %d at a rate the budget carries", rep.QueueMax, rep.Queued)
+		}
+		if !rep.Held || rep.Cause != "" || rep.Handshakes != 0 {
+			t.Fatalf("held %v cause %q handshakes %d under X = 25 ms with no fresh connection", rep.Held, rep.Cause, rep.Handshakes)
 		}
 		return rep
 	}
@@ -125,11 +145,8 @@ func TestCalibration(t *testing.T) {
 // would read 5 ms throughout and hide the stall.
 func TestOverloadedStageQueues(t *testing.T) {
 	srv := sleepServer(t, 5*time.Millisecond, nil)
-	st := testStage(t, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4")
-	rep, err := st.run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4")
+	rep := runStage(t, c)
 	t.Logf("sent %d ok %d queue_max %d queued %d achieved %.0f req/s", rep.Sent, rep.OK, rep.QueueMax, rep.Queued, rep.Achieved)
 	t.Logf("wait p50 %.1f ttlb p50 %.1f p99 %.1f max %.1f ms", rep.Wait.P50, rep.TTLB.P50, rep.TTLB.P99, rep.TTLB.Max)
 	if rep.Failed() {
@@ -146,27 +163,134 @@ func TestOverloadedStageQueues(t *testing.T) {
 	if rep.Achieved > 900 {
 		t.Fatalf("achieved %.0f req/s with 4 connections at 5 ms", rep.Achieved)
 	}
+	// p99 is far over X = 25 ms: the stage is broken by the SLO, and the
+	// queue, however deep, is not the cause published (over X the wait in
+	// the queue is latency, §3.1).
+	if rep.Held || rep.Cause != causeSLO {
+		t.Fatalf("held %v cause %q, want the SLO broken", rep.Held, rep.Cause)
+	}
 }
 
 // TestWrongKeyFailsTheStage: one answer carrying another key than the one
 // asked for is counted, and the stage is failed, with no extrapolation (§4).
 func TestWrongKeyFailsTheStage(t *testing.T) {
-	st := testStage(t, "https://unused", "-scenario", "unit", "-rate", "100", "-duration", "1s", "-conns", "4")
-	draw := st.scenario.draw(st.seed, st.keyspace)
+	c := testCampaign(t, "https://unused", "-scenario", "unit", "-rate", "100", "-duration", "1s", "-conns", "4")
+	draw := c.scenario.draw(c.seed, c.keyspace)
 	wrong := map[int64]bool{draw(7).key: true, draw(42).key: true}
 	srv := sleepServer(t, 0, wrong)
-	st.url = srv.URL
-	rep, err := st.run(context.Background())
+	c.url = srv.URL
+	rep := runStage(t, c)
+	if !rep.Failed() || rep.BadKey != 2 || rep.Errors != 2 || rep.OK != rep.Sent-2 {
+		t.Fatalf("bad_key %d errors %d ok %d sent %d, want 2 bad keys failing the stage", rep.BadKey, rep.Errors, rep.OK, rep.Sent)
+	}
+	if rep.Held || rep.Cause != causeKey {
+		t.Fatalf("held %v cause %q, want the key", rep.Held, rep.Cause)
+	}
+}
+
+// TestRampStopsWhereTheBudgetEnds is the ramp against the 5 ms server with
+// C recomputed per stage: C = 2 R (RTT + X) carries any rate the server
+// answers under 2X, so what breaks is the tester's ceiling on C, here 4
+// connections, which carry 800 req/s. Under a long X the wait in the
+// queue stays under the SLO, and the cause published is the queue: the
+// generator limits, the stage is invalid, not a verdict on the server.
+// The stages before it are held, each with its own budget.
+func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
+	srv := sleepServer(t, 5*time.Millisecond, nil)
+	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rates", "100,300,1200", "-duration", "1s",
+		"-slo", "5s", "-max-conns", "4", "-warmup", "500ms", "-drain", "100ms")
+	if c.budget(100) != 4 || c.budget(300) != 4 {
+		t.Fatalf("budgets %d %d, want the ceiling", c.budget(100), c.budget(300))
+	}
+	var out strings.Builder
+	ok, err := c.run(context.Background(), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rep.Failed() || rep.BadKey != 2 || rep.Errors != 2 || rep.OK != rep.Sent-2 {
-		t.Fatalf("bad_key %d errors %d ok %d sent %d, want 2 bad keys failing the stage", rep.BadKey, rep.Errors, rep.OK, rep.Sent)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	t.Log(out.String())
+	if ok || len(lines) != 3 {
+		t.Fatalf("ok %v, %d stages, want 3 with the last invalid", ok, len(lines))
+	}
+	for i, want := range []struct {
+		rate  int
+		held  bool
+		cause string
+	}{{100, true, ""}, {300, true, ""}, {1200, false, causeQueue}} {
+		var rep report
+		if err := json.Unmarshal([]byte(lines[i]), &rep); err != nil {
+			t.Fatal(err)
+		}
+		if rep.Rate != want.rate || rep.Held != want.held || rep.Cause != want.cause || rep.Conns != 4 {
+			t.Fatalf("stage %d: rate %d held %v cause %q conns %d, want %+v", i, rep.Rate, rep.Held, rep.Cause, rep.Conns, want)
+		}
+		if rep.Sent != want.rate || rep.Errors != 0 {
+			t.Fatalf("stage %d: sent %d errors %d, want the second (measured) at %d req/s", i, rep.Sent, rep.Errors, want.rate)
+		}
+		if want.held && rep.Queued > 0 {
+			t.Fatalf("stage %d: queued %d at a rate 4 connections carry", i, rep.Queued)
+		}
+	}
+}
+
+// TestBudget is C = 2 R (RTT + X) on the study's example (§3.5): the unit
+// read at 8 000 req/s under 20 ms of RTT and X = 25 ms wants 720.
+func TestBudget(t *testing.T) {
+	c := testCampaign(t, "https://unused", "-scenario", "unit", "-rtt", "20ms", "-ramp")
+	if got := c.budget(8000); got != 720 {
+		t.Fatalf("C(8000) = %d, want 720", got)
+	}
+	if got := c.at(8000).conns; got != 720 {
+		t.Fatalf("the stage at 8000 carries C = %d", got)
+	}
+	c.maxConns = 500
+	if got := c.budget(8000); got != 500 {
+		t.Fatalf("C(8000) = %d under a ceiling of 500", got)
+	}
+	var grid []int
+	for r := range gridFrom(95) {
+		grid = append(grid, r)
+		if len(grid) == 6 {
+			break
+		}
+	}
+	if want := []int{100, 105, 110, 116, 122, 128}; !slices.Equal(grid, want) {
+		t.Fatalf("grid %v, want %v", grid, want)
+	}
+	if _, err := parse([]string{"-ramp", "-rates", "100"}); err == nil {
+		t.Fatal("-ramp with -rates was accepted")
+	}
+}
+
+// TestFreshConnections: with -new-conns 10, about a tenth of the requests
+// open their own connection, whose handshake falls inside their delays
+// and is counted apart; the budget's connections are untouched, and no
+// connect fails on a loopback with a few hundred of them.
+func TestFreshConnections(t *testing.T) {
+	srv := sleepServer(t, 0, nil)
+	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
+	rep := runStage(t, c)
+	t.Logf("sent %d handshakes %d connect %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Connect, rep.TTLB.P50, rep.TTLB.P99)
+	if rep.Failed() || !rep.Held {
+		t.Fatalf("errors %d connect %d held %v cause %q", rep.Errors, rep.Connect, rep.Held, rep.Cause)
+	}
+	if rep.Handshakes < rep.Sent*7/100 || rep.Handshakes > rep.Sent*13/100 {
+		t.Fatalf("%d handshakes in %d requests, want about 10 %%", rep.Handshakes, rep.Sent)
+	}
+	fresh := c.freshDraw()
+	n := 0
+	for i := range rep.Sent {
+		if fresh(i) {
+			n++
+		}
+	}
+	if n != rep.Handshakes {
+		t.Fatalf("%d requests drawn fresh, %d handshakes", n, rep.Handshakes)
 	}
 }
 
 func TestDrawNeverRepeatsAndMixes(t *testing.T) {
-	st := testStage(t, "https://unused", "-scenario", "mixed", "-rate", "1000", "-duration", "10s")
+	st := testCampaign(t, "https://unused", "-scenario", "mixed", "-rate", "1000", "-duration", "10s").stage
 	draw := st.scenario.draw(st.seed, st.keyspace)
 	seen := make(map[int64]bool)
 	kinds := make(map[kind]int)
@@ -195,7 +319,7 @@ func TestDrawNeverRepeatsAndMixes(t *testing.T) {
 			t.Fatalf("request %d differs between two draws of the same seed", i)
 		}
 	}
-	if _, err := parseStage([]string{"-rate", "1000", "-duration", "200s", "-keyspace", "100000"}); err == nil {
+	if _, err := parse([]string{"-rate", "1000", "-duration", "200s", "-keyspace", "100000"}); err == nil {
 		t.Fatal("a stage longer than its keyspace was accepted")
 	}
 }

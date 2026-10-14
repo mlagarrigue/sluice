@@ -15,43 +15,51 @@ import (
 // coordinated omission corrected (§3.1), and what makes the queue a
 // published guard (§3.5) rather than a hidden one.
 type job struct {
-	req request
-	due time.Time
+	req   request
+	due   time.Time
+	warm  bool // due before the clock started: sent, checked, never counted
+	fresh bool // opens its own connection and closes it (§3.6)
 }
 
-// run opens the connections, then fires one request per interval for the
-// duration and collects every outcome. The dispatcher never blocks: the
-// jobs channel holds the whole stage, so a slow server lengthens the queue,
-// never the interval.
-func (st stage) run(ctx context.Context) (report, error) {
-	cl, err := st.newClient()
-	if err != nil {
-		return report{}, err
-	}
-	defer cl.close()
+// run opens the connections the budget lacks, then fires one request per
+// interval for the warm-up and the duration and collects every outcome of
+// the duration. The dispatcher never blocks: the jobs channel holds the
+// whole stage, so a slow server lengthens the queue, never the interval.
+// It returns once every request has been answered: the drain of §7.6
+// starts from there.
+func (st stage) run(ctx context.Context, cl *client) (report, error) {
 	draw := st.scenario.draw(st.seed, st.keyspace)
+	fresh := st.freshDraw()
 	if err := cl.warm(ctx, st.conns); err != nil {
 		return report{}, fmt.Errorf("opening the connections: %w", err)
 	}
 
-	n := st.requests()
+	n, warm := st.requests(), st.warmRequests()
 	jobs := make(chan job, n)
-	var depth, queueMax, queued atomic.Int64
+	// load is how many requests are due and not yet answered; over the
+	// number of workers, the excess is the queue: requests due with no
+	// connection free (§3.5). A job posted but not yet taken by an idle
+	// worker is not queued, only late by a scheduling tick.
+	var load, queueMax, queued atomic.Int64
 	workers := st.conns * inFlightPerConn
 	results := make([][]result, workers)
 	var wg sync.WaitGroup
 	for w := range workers {
 		wg.Go(func() {
 			for j := range jobs {
-				depth.Add(-1)
-				results[w] = append(results[w], cl.do(ctx, j))
+				r := cl.do(ctx, j)
+				load.Add(-1)
+				if !j.warm {
+					results[w] = append(results[w], r)
+				}
 			}
 		})
 	}
 
 	start := time.Now()
 	interval := st.interval()
-	late := make([]time.Duration, 0, n)
+	late := make([]time.Duration, 0, n-warm)
+	var clock time.Time
 	for i := range n {
 		due := start.Add(time.Duration(i) * interval)
 		if !sleepUntil(ctx, due) {
@@ -59,24 +67,29 @@ func (st stage) run(ctx context.Context) (report, error) {
 			wg.Wait()
 			return report{}, errors.New("interrupted")
 		}
-		late = append(late, time.Since(due))
-		// Due jobs not yet taken by a worker, this one included: more than
-		// one means no connection was free when this request was due.
-		d := depth.Add(1)
-		if d > 1 {
-			queued.Add(1)
+		if i == warm {
+			// The clock starts: what the warm-up queued is the warm-up's.
+			clock = due
+			queueMax.Store(0)
+			queued.Store(0)
 		}
-		for {
-			m := queueMax.Load()
-			if d <= m || queueMax.CompareAndSwap(m, d) {
-				break
+		if i >= warm {
+			late = append(late, time.Since(due))
+		}
+		if excess := load.Add(1) - int64(workers); excess > 0 {
+			queued.Add(1)
+			for {
+				m := queueMax.Load()
+				if excess <= m || queueMax.CompareAndSwap(m, excess) {
+					break
+				}
 			}
 		}
-		jobs <- job{draw(i), due}
+		jobs <- job{req: draw(i), due: due, warm: i < warm, fresh: fresh(i)}
 	}
 	close(jobs)
 	wg.Wait()
-	elapsed := time.Since(start)
+	elapsed := time.Since(clock)
 
 	var all []result
 	for _, r := range results {

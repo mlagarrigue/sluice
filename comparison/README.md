@@ -98,11 +98,12 @@ closed-loop generator's figures too good. Everything it prints is a JSON
 line per stage, never a result of the study. It shares no code with
 Sluice.go: a bug symmetric between client and server would mask itself.
 
-What one stage does today, HTTP/1.1 over TLS:
+What one stage does, HTTP/1.1 over TLS:
 
-- opens `-conns` keep-alive connections before the clock starts (the TLS
-  handshakes never fall inside the measurement), one request in flight per
+- opens its connection budget before the clock starts (the TLS handshakes
+  never fall inside the measurement), one request in flight per
   connection — the ceiling of 8 is for HTTP/2 and HTTP/3, which come next;
+  `-warmup` seconds are then sent at the stage's rate and never counted;
 - draws one key per request from a permutation of `1..-keyspace` under
   `-seed`, so no key repeats within a stage and every contender of a round
   sees the same sequence; a stage longer than its keyspace is refused;
@@ -118,7 +119,17 @@ What one stage does today, HTTP/1.1 over TLS:
   with no connection free, `queued`, how many were due while another still
   waited, and `wait_ms`, the queue seen from one request. `late_ms` is the
   dispatcher's own lateness after its due instant, the generator's noise
-  floor on the median: it sleeps until 2 ms before, then spins.
+  floor on the median: it sleeps until 2 ms before, then spins;
+- gives its verdict under the scenario's SLO (§3.2: `p99 ≤ X` and errors
+  under 0.1 %; X is `-slo`, by default static 10 ms, unit and write 25 ms,
+  list 100 ms, mixed 50 ms): `held`, or `cause` by precedence — `key` (the
+  contract broken, a bug of the server), `connect` (a failed connect,
+  the tester's fault, §3.6), `queue` (the generator's queue was not empty
+  while p99 sat under X: the generator limits, §3.5), `slo`;
+- with `-new-conns 10`, a tenth of the requests, drawn by `(seed, index)`,
+  open a fresh connection whose handshake falls inside their own delays and
+  close it, so that `TIME_WAIT` lands on the tester (§3.6); `handshakes`
+  counts them.
 
 ```
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
@@ -128,6 +139,26 @@ go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, e
 The exit status is 1 when the stage is not a measurement: any error, or a
 failed connect. The mixed scenario is 80 % unit, 15 % list, 5 % write by
 position in the sequence, exact whatever the seed.
+
+### The ramp
+
+```
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -ramp -rate 4000 -duration 30s
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -rates 500,2000,8000
+```
+
+`-ramp` walks the study's common grid `100 × 1.05^k` from `-rate` up
+(§3.3, §7.6), `-rates` a list of its own; both stop at the first stage
+that breaks, with its cause on that stage's line, or before a stage the
+keyspace could not hold. Between two stages every request of the first is
+answered, then `-drain` passes. Each stage gets the budget
+`C = 2 × R × (RTT + X)` of §3.5 (`-rtt` is the round trip injected on the
+wire, 0 on a loopback; the budget depends on the scenario and the rate
+only, the same for every contender), capped by `-max-conns` when the
+tester has a ceiling; the connections it lacks are opened before its
+clock starts, the ones a smaller stage leaves idle never age out. The exit
+status is 0 when every stage is a measurement and the last broke on the
+SLO alone, or none broke.
 
 ### Calibrating it
 
@@ -142,9 +173,10 @@ under 5.5 ms absolute; p99 and p99.9 are printed, not asserted, since they
 belong to the machine. A second stage asks 2 000 req/s of 4 connections
 that carry 800: the queue climbs, the delays climb with it, and the
 achieved rate says what the budget carried. A third answers two requests
-with another key and the stage fails with `bad_key` 2.
+with another key and the stage fails with `bad_key` 2. A ramp of three
+stages under a ceiling of 4 connections holds the first two and stops at
+the third with the cause `queue`; a stage with a tenth of fresh
+connections counts their handshakes apart and fails no connect.
 
-Not yet here: HTTP/2 and HTTP/3, the geometric stages with the drain
-between them and the stop at the first broken one, the connection budget
-recomputed per stage (`C = 2 × R × (RTT + X)`), the share of new
-connections, the `oha` cross-check.
+Not yet here: HTTP/2 and HTTP/3, the `oha` cross-check, the trivial server
+per scenario that proves the generator is not the bottleneck (§4).
