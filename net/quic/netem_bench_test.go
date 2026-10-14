@@ -13,6 +13,7 @@ import (
 
 	"github.com/mlagarrigue/sluice/internal/dgram"
 	"github.com/mlagarrigue/sluice/net/quic"
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // The loss/latency harness the congestion-control backlog items wait on:
@@ -58,11 +59,20 @@ type netemProfile struct {
 	// time, the way a router's buffer meets a flow.
 	rate  int
 	queue time.Duration
+	// mark is the queueing delay beyond which a datagram that arrived
+	// ECT leaves marked CE instead of waiting unmarked — an AQM's step
+	// marking at a threshold (RFC 3168 §5), before the drop at queue.
+	// Zero never marks. A marking profile runs its path over UDP sockets
+	// on the loopback interface rather than in-memory pairs, the only
+	// transport here that carries the ECN field (netemLink.path).
+	mark time.Duration
 }
 
-// timedPacket is one datagram and the instant the far end should see it.
+// timedPacket is one datagram, the ECN field it leaves with (zero on a
+// transport without one) and the instant the far end should see it.
 type timedPacket struct {
 	data     []byte
+	ecn      uint8
 	arriveAt time.Time
 }
 
@@ -75,21 +85,54 @@ type bottleneck struct {
 }
 
 // enqueue charges a packet of n bytes its serialization time behind
-// whatever is already queued, returning when it leaves the line, or false
-// when it would wait longer than the queue allows and is dropped instead.
-func (b *bottleneck) enqueue(now time.Time, n int, prof netemProfile) (time.Time, bool) {
+// whatever is already queued, returning when it leaves the line and how
+// long it waited for it, or false when it would wait longer than the queue
+// allows and is dropped instead.
+func (b *bottleneck) enqueue(now time.Time, n int, prof netemProfile) (txEnd time.Time, wait time.Duration, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	txStart := now
 	if b.lastTxEnd.After(txStart) {
 		txStart = b.lastTxEnd
 	}
-	if txStart.Sub(now) > prof.queue {
-		return time.Time{}, false // the bottleneck's buffer is full: drop-tail
+	wait = txStart.Sub(now)
+	if wait > prof.queue {
+		return time.Time{}, 0, false // the bottleneck's buffer is full: drop-tail
 	}
-	txEnd := txStart.Add(time.Duration(n) * time.Second / time.Duration(prof.rate))
+	txEnd = txStart.Add(time.Duration(n) * time.Second / time.Duration(prof.rate))
 	b.lastTxEnd = txEnd
-	return txEnd, true
+	return txEnd, wait, true
+}
+
+// readMarked reads one datagram and, on a UDP socket, the ECN field it
+// arrived with (zero elsewhere, and on a socket udp.EnableECN was not
+// applied to).
+func readMarked(src net.PacketConn, buf, oob []byte) (n int, ecn uint8, err error) {
+	if uc, ok := src.(*net.UDPConn); ok {
+		n, oobn, _, _, err := uc.ReadMsgUDP(buf, oob)
+		if err != nil {
+			return 0, 0, err
+		}
+		ecn, _ = udp.PacketECN(oob[:oobn])
+		return n, ecn, nil
+	}
+	n, _, err = src.ReadFrom(buf)
+	return n, 0, err
+}
+
+// writeMarked writes one datagram with its ECN field set, where the socket
+// and the address can carry one; the mark is dropped elsewhere. oob is
+// scratch, returned grown for reuse.
+func writeMarked(dst net.PacketConn, data []byte, to net.Addr, ecn uint8, oob []byte) []byte {
+	uc, isUDP := dst.(*net.UDPConn)
+	ua, isUDPAddr := to.(*net.UDPAddr)
+	if !isUDP || !isUDPAddr || ecn == 0 {
+		_, _ = dst.WriteTo(data, to)
+		return oob
+	}
+	oob = udp.AppendECN(oob[:0], ecn)
+	_, _, _ = uc.WriteMsgUDPAddrPort(data, oob, ua.AddrPort())
+	return oob
 }
 
 // forward emulates one direction: src's peer traffic is read promptly,
@@ -102,19 +145,21 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 	go func() {
 		// On a closed pair the writes start failing; keep draining so the
 		// forwarder never blocks on a full channel while shutting down.
+		var oob []byte
 		for pkt := range ch {
 			if d := time.Until(pkt.arriveAt); d > 0 {
 				time.Sleep(d)
 			}
-			_, _ = dst.WriteTo(pkt.data, to)
+			oob = writeMarked(dst, pkt.data, to, pkt.ecn, oob)
 		}
 	}()
 	defer close(ch)
 
 	bad := false
 	buf := make([]byte, 2048)
+	oob := make([]byte, udp.PacketInfoLen)
 	for {
-		n, _, err := src.ReadFrom(buf)
+		n, ecn, err := readMarked(src, buf, oob)
 		if err != nil {
 			return
 		}
@@ -134,18 +179,25 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 		now := time.Now()
 		txEnd := now
 		if prof.rate > 0 {
+			var wait time.Duration
 			var ok bool
-			if txEnd, ok = bn.enqueue(now, n, prof); !ok {
+			if txEnd, wait, ok = bn.enqueue(now, n, prof); !ok {
 				continue
+			}
+			// ECT(0) or ECT(1) becomes CE past the marking threshold; a
+			// Not-ECT datagram waits unmarked, as RFC 3168 §5 requires.
+			if prof.mark > 0 && wait > prof.mark && ecn != 0 {
+				ecn = 3
 			}
 		}
 		pkt := timedPacket{
 			data:     append([]byte(nil), buf[:n]...),
+			ecn:      ecn,
 			arriveAt: txEnd.Add(prof.owd),
 		}
 		if prof.reorder > 0 && rng.Float64() < prof.reorder {
 			late := pkt.arriveAt.Add(time.Duration(rng.Float64() * float64(prof.reorderDelay)))
-			time.AfterFunc(time.Until(late), func() { _, _ = dst.WriteTo(pkt.data, to) })
+			time.AfterFunc(time.Until(late), func() { writeMarked(dst, pkt.data, to, pkt.ecn, nil) })
 			continue
 		}
 		ch <- pkt
@@ -186,18 +238,56 @@ var benchAlgorithm = func() quic.CongestionAlgorithm {
 // path wires a client and a server packet connection through two
 // forwarders on this link. dialTo is where the client addresses its
 // datagrams — the middlebox end facing it. Closing either returned end
-// tears the path down; the link outlives it.
-func (l *netemLink) path() (client, server net.PacketConn, dialTo net.Addr, stop func()) {
+// tears the path down; the link outlives it. The ends are in-memory pairs,
+// or four UDP sockets on the loopback interface when the profile marks:
+// only a socket carries the ECN field, and a marking profile over a
+// transport that drops it would measure a path that never marks.
+func (l *netemLink) path() (client, server net.PacketConn, dialTo net.Addr, stop func(), err error) {
 	seed := 4*l.paths + 1
 	l.paths++
-	a1, a2 := dgram.Pair()                                                                     // client <-> middlebox
-	b1, b2 := dgram.Pair()                                                                     // middlebox <-> server
+	var a1, a2, b1, b2 net.PacketConn // client <-> middlebox, middlebox <-> server
+	if l.prof.mark > 0 {
+		socks, err := loopbackSockets(4)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		a1, a2, b1, b2 = socks[0], socks[1], socks[2], socks[3]
+	} else {
+		a1, a2 = dgram.Pair()
+		b1, b2 = dgram.Pair()
+	}
 	go forward(a2, b1, b2.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed, seed+1)), &l.up)     //nolint:gosec // G404: a seeded loss pattern, reproducible on purpose
 	go forward(b1, a2, a1.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed+2, seed+3)), &l.down) //nolint:gosec // G404: same
 	return a1, b2, a2.LocalAddr(), func() {
 		_ = a1.Close()
 		_ = b2.Close()
+		_ = a2.Close()
+		_ = b1.Close()
+	}, nil
+}
+
+// loopbackSockets opens n UDP sockets on 127.0.0.1, each reporting the ECN
+// field of what it reads — the forwarders need it on their receiving ends,
+// the connections ask for it again on theirs — or none, on the first error.
+func loopbackSockets(n int) ([]*net.UDPConn, error) {
+	socks := make([]*net.UDPConn, 0, n)
+	for range n {
+		uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err == nil {
+			err = udp.EnableECN(uc)
+		}
+		if err != nil {
+			for _, s := range socks {
+				_ = s.Close()
+			}
+			if uc != nil {
+				_ = uc.Close()
+			}
+			return nil, err
+		}
+		socks = append(socks, uc)
 	}
+	return socks, nil
 }
 
 // wideParameters opens flow control far beyond what any benchmark transfer
@@ -235,7 +325,10 @@ func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionAlgorithm) (transfer, error) {
 	tb.Helper()
 	start := time.Now()
-	clientPC, serverPC, dialTo, stop := link.path()
+	clientPC, serverPC, dialTo, stop, err := link.path()
+	if err != nil {
+		return transfer{}, err
+	}
 	defer stop()
 	params := wideParameters()
 	params.Congestion.Algorithm = cc
@@ -246,17 +339,7 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 	}
 	done := make(chan result, 1)
 	go func() {
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			done <- result{err: err}
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			done <- result{err: err}
-			return
-		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(tb), params)
+		conn, err := acceptOne(tb, serverPC, params, link.prof.mark > 0)
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -306,6 +389,38 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 		return transfer{}, errors.New("the transfer did not finish")
 	}
 	return transfer{elapsed: time.Since(start), stats: conn.Stats()}, nil
+}
+
+// acceptOne completes one server handshake on pc: by reading the first
+// datagram and handing it to quic.Accept, or, when the path marks, behind a
+// Listener — the only server shape that reads the ECN field of the first
+// datagram, without which the client's ECN validation fails (quic.Accept
+// documents it) and nothing on the path is ever marked.
+func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters, marks bool) (*quic.Conn, error) {
+	tb.Helper()
+	if marks {
+		l, err := quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})
+		if err != nil {
+			return nil, err
+		}
+		conn, err := l.Accept()
+		if err != nil {
+			_ = l.Close()
+			return nil, err
+		}
+		// The listener stays open as long as the connection: it owns the
+		// socket's read loop. Closing pc (the path's stop) ends both.
+		return conn, nil
+	}
+	buf := make([]byte, 2048)
+	if err := pc.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		return nil, err
+	}
+	n, peer, err := pc.ReadFrom(buf)
+	if err != nil {
+		return nil, err
+	}
+	return quic.Accept(pc, peer, buf[:n], serverTLS(tb), params)
 }
 
 // benchTransfer moves total bytes on one flow and reports its goodput, and
@@ -429,6 +544,22 @@ func BenchmarkTransferDeepBuffer(b *testing.B) {
 		owd:   10 * time.Millisecond,
 		rate:  50_000_000 / 8,
 		queue: 200 * time.Millisecond,
+	}, 4<<20)
+}
+
+// BenchmarkTransferDeepBufferECN is DeepBuffer behind an AQM that marks CE
+// once a datagram waits more than 5 ms for the line — the Bottleneck
+// profile's buffer depth — and still drops at 200 ms: the signal §3.7 of the
+// BBR draft names for holding the queue short without loss. Over UDP
+// sockets on the loopback interface (the marks have to travel), so its
+// absolute times are not DeepBuffer's; rtt_x is the figure to read. A
+// controller that ignores marks fills the buffer as on DeepBuffer.
+func BenchmarkTransferDeepBufferECN(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   10 * time.Millisecond,
+		rate:  50_000_000 / 8,
+		queue: 200 * time.Millisecond,
+		mark:  5 * time.Millisecond,
 	}, 4<<20)
 }
 
