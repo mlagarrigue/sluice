@@ -138,6 +138,19 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	if sp.ack.owes(now) {
 		ack = sp.ack.encodeAck(c.ackScratch[:0], now)
 		c.ackScratch = ack
+		// An ACK that does not fit beside the payload under maxDatagram
+		// leaves ahead in a packet of its own, as flushAcksLocked would
+		// send it. A peer that opens maxAckRanges gaps makes the frame a
+		// few hundred bytes, and a full stream chunk (maxStreamChunk)
+		// leaves room for the header, the tag and a short ACK, not that
+		// one: carried anyway, the datagram would exceed what the path
+		// and the peer accept (§14.1 — the peer may discard it outright).
+		// The chunk is not cut, so a full chunk stays one packet; the
+		// extra datagram is the price of the peer's gaps.
+		if len(payload) > 0 && c.packetOverhead(space)+len(ack)+len(payload) > c.maxDatagram {
+			_ = c.writePacketLocked(sp, space, sp.ack.appendAck(nil, now), nil, sendOpts{ackOnly: true}, now)
+			ack = nil
+		}
 	}
 	retransPart := payload
 	if space == spaceApplication && !opts.noRetrans && (len(c.grants) > 0 || len(c.control) > 0) {
@@ -167,6 +180,22 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 func (c *Conn) shortPacketOverhead() int {
 	const pnLen = 4
 	return 1 + len(c.dcid) + pnLen + 16
+}
+
+// packetOverhead is what a packet of space costs on the wire beyond its
+// payload: its header, the packet number and the AEAD tag. A long header's
+// Length field is counted at two bytes, which covers any packet under
+// maxDatagram.
+func (c *Conn) packetOverhead(space int) int {
+	if space == spaceApplication {
+		return c.shortPacketOverhead()
+	}
+	const pnLen = 4
+	n := 1 + 4 + 1 + len(c.dcid) + 1 + len(c.scid) + 2 + pnLen + 16
+	if space == spaceInitial {
+		n += varintBytes(uint64(len(c.retryToken))) + len(c.retryToken)
+	}
+	return n
 }
 
 // takeQueuedLocked lifts what fits in room bytes off the grant queue, then
