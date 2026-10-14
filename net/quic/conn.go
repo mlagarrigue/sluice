@@ -1052,6 +1052,9 @@ func (c *Conn) discardSpaceLocked(space int) {
 	}
 	c.deferred[space] = nil
 	sp.ack = ackTracker{}
+	// RFC 9002 A.11: the backoff was about this space's unanswered
+	// probes, and the handshake just moved past it.
+	c.ptoCount = 0
 	c.kickTimer()
 }
 

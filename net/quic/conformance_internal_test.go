@@ -832,3 +832,21 @@ func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
 		t.Errorf("with the budget reopened, ptoCount %d and nextPN %d; want 1 and a probe sent", ptoCount, nextPN)
 	}
 }
+
+// RFC 9002 A.11: discarding a packet number space resets the probe count —
+// the backoff was about that space's unanswered probes.
+func TestDiscardingASpaceResetsTheProbeCount(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ptoCount = 2
+	c.discardSpaceLocked(spaceInitial)
+	if c.ptoCount != 0 {
+		t.Errorf("ptoCount %d after discarding the Initial space, want 0", c.ptoCount)
+	}
+}
