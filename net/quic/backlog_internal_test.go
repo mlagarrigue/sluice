@@ -441,7 +441,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 		peer.record(pn, now)
 	}
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 
 	// The same frame again: everything it covers is already gone, and the
 	// merge must newly acknowledge nothing.
-	out, err = s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err = s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

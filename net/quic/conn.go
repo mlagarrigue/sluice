@@ -95,10 +95,11 @@ type Conn struct {
 	retryToken  []byte
 	retrySCID   []byte // what the Retry carried; retry_source_connection_id must echo it
 
-	spaces [3]space
-	rtt    rttEstimator
-	cc     congestionController
-	pacer  pacer
+	spaces   [3]space
+	rtt      rttEstimator
+	cc       congestionController
+	delivery deliveryEstimator // draft-cheng delivery-rate state, fed by send.go and processAck
+	pacer    pacer
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
@@ -1519,6 +1520,18 @@ type Stats struct {
 	// number spaces together is one. A count that moves on a quiet path is
 	// a peer that stalls, or ACKs that do not come back.
 	ProbeTimeouts uint64
+
+	// DeliveryRate is how fast the network delivered this end's packets, in
+	// bytes per second, as the last reliable sample measured it
+	// (draft-cheng-iccrg-delivery-rate-estimation): the bytes an
+	// acknowledgement proved delivered, over the longer of the time they
+	// took to send and the time they took to be acknowledged. Samples taken
+	// while the application had nothing to send are skipped — they measure
+	// the application, not the path — and so are intervals shorter than
+	// MinRTT. Zero until the first such sample. Over a bottleneck it reads
+	// the line rate, whatever CongestionWindow says: the window is what the
+	// sender allows itself, this is what the path actually carried.
+	DeliveryRate float64
 }
 
 // Stats reports the connection's counters, consistently with each other.
@@ -1541,6 +1554,7 @@ func (c *Conn) Stats() Stats {
 		BytesRetransmitted:    c.bytesRetransmitted,
 		PersistentCongestions: c.persistentCongestions,
 		ProbeTimeouts:         c.ptoFired,
+		DeliveryRate:          c.delivery.rate,
 	}
 }
 

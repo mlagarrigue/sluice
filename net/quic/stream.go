@@ -413,6 +413,11 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		frame = AppendVarint(frame, s.writeOff)
 		frame = AppendVarint(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
+		if last {
+			// The last of this write: the application is running dry, which
+			// the delivery estimator wants to know (flowEmptyLocked).
+			c.flowEmptyLocked(len(frame) + 64)
+		}
 		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			return written, err

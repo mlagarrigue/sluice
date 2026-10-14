@@ -120,3 +120,27 @@ func TestStatsCountsLostPackets(t *testing.T) {
 		t.Fatalf("negative flight: %+v", stats)
 	}
 }
+
+// Over a 50 Mbit/s bottleneck behind a 20 ms round trip, the delivery
+// estimator reads the line rate whatever the controller's window does: a
+// loss-based sender keeps the bottleneck's queue busy, so every
+// acknowledgement proves delivery at the rate the line serializes. The
+// tolerance below the line is the share of a sample interval the queue can
+// stand empty after a loss; above it is only measurement noise, since
+// nothing is delivered faster than the line (draft-cheng §2.2.4).
+func TestDeliveryRateOnBottleneck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a 4 MiB transfer over an emulated 50 Mbit/s bottleneck")
+	}
+	const line = 50_000_000 / 8
+	link := &netemLink{prof: netemProfile{owd: 10 * time.Millisecond, rate: line, queue: 5 * time.Millisecond}}
+	tr, err := transferOnce(t, link, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := tr.stats.DeliveryRate
+	t.Logf("Stats.DeliveryRate %.0f B/s, %.3f of the line", rate, rate/line)
+	if rate < 0.8*line || rate > 1.05*line {
+		t.Fatalf("Stats.DeliveryRate %.0f B/s on a %d B/s line (%.2f of it): %+v", rate, line, rate/line, tr.stats)
+	}
+}

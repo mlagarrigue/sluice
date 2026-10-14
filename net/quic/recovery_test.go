@@ -2,6 +2,7 @@ package quic
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -54,7 +55,7 @@ func TestPacketThresholdLoss(t *testing.T) {
 	peer.record(3, now)
 	f := ackFrameFor(t, &peer)
 
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestProcessAckGrowableStraddlesRecovery(t *testing.T) {
 	peer.record(0, now)
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, cc)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, cc, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestTimeThresholdLoss(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +338,7 @@ func BenchmarkProcessAck(b *testing.B) {
 	const inFlight = 128
 	template := make([]sentPacket, inFlight)
 	for pn := range uint64(inFlight) {
-		template[pn] = sentPacket{pn: pn, sentAt: now, size: 1200, ackEliciting: true}
+		template[pn] = sentPacket{pn: pn, sentAt: now, size: 1200, ackEliciting: true, sendElapsed: 10 * time.Millisecond, sinceDelivered: 20 * time.Millisecond}
 	}
 
 	// Eight ranges acknowledging every other run of eight packets — the
@@ -355,12 +356,13 @@ func BenchmarkProcessAck(b *testing.B) {
 	}
 
 	s := sentTracker{packets: make([]sentPacket, inFlight)}
+	est := &deliveryEstimator{}
 	b.ReportAllocs()
 	for b.Loop() {
 		s.packets = s.packets[:inFlight]
 		copy(s.packets, template)
 		s.hasLargestAcked = false
-		if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); err != nil {
+		if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, est); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -447,7 +449,7 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 		peer.record(pn, now)
 	}
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatalf("an ACK around the gap was refused: %v", err)
 	}
@@ -457,7 +459,7 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 
 	peer.record(3, now)
 	f = ackFrameFor(t, &peer)
-	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); !errors.Is(err, errOptimisticAck) {
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil); !errors.Is(err, errOptimisticAck) {
 		t.Fatalf("an ACK covering the gap: err = %v, want errOptimisticAck", err)
 	}
 }
@@ -503,7 +505,7 @@ func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
 		}
 		f := ackFrameFor(t, &peer)
 		var rtt rttEstimator
-		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -647,4 +649,187 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	if spy.sent != 3 {
 		t.Errorf("onSent called %d times after the probe resent the lifted packet twice, want 3", spy.sent)
 	}
+}
+
+// ackCovering builds and parses an ACK frame covering exactly pns.
+func ackCovering(t *testing.T, now time.Time, pns ...uint64) Frame {
+	t.Helper()
+	var peer ackTracker
+	for _, pn := range pns {
+		peer.record(pn, now)
+	}
+	f, _, err := parseFrame(appendAckFrame(nil, peer.ranges, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// The delivery-rate sample, by hand (draft-cheng-iccrg-delivery-rate-estimation
+// §3.3). Three packets of 1000 bytes leave an idle connection 10 ms apart and
+// are acknowledged together 120 ms after the first: the sample is re-based on
+// the newest, whose send interval is 20 ms and whose acknowledgement
+// interval is 120 ms, so 3000 bytes over 120 ms. A fourth packet sent 5 ms
+// after that ACK and acknowledged 5 ms later has it the other way round —
+// 10 ms since the last delivery, but 105 ms since the first send of its
+// flight — and the longer interval wins: 1000 bytes over 105 ms, not over
+// 10 ms, which is the filter against ACK compression (§2.2.4). A fifth
+// packet sent after the writer ran dry is marked application-limited, its
+// sample leaves Stats alone, and the mark lifts once it is delivered: the
+// sixth is not marked.
+func TestDeliveryRateSampleByHand(t *testing.T) {
+	var est deliveryEstimator
+	var s sentTracker
+	var rtt rttEstimator
+	rtt.sample(100*time.Millisecond, 0)
+	cc := &rateSpy{congestionController: newNewReno(1200)}
+	t0 := time.Now()
+	send := func(pn uint64, at time.Duration, idle bool) {
+		p := sentPacket{pn: pn, sentAt: t0.Add(at), size: 1000, ackEliciting: true}
+		est.onSent(&p, idle)
+		s.record(p)
+	}
+	ack := func(at time.Duration, pns ...uint64) rateSample {
+		f := ackCovering(t, t0.Add(at), pns...)
+		if _, err := s.processAck(t0.Add(at), f.largest, f.Data, &rtt, cc, &est); err != nil {
+			t.Fatal(err)
+		}
+		return est.cur
+	}
+
+	send(0, 0, true)
+	send(1, 10*time.Millisecond, false)
+	send(2, 20*time.Millisecond, false)
+	rs := ack(120*time.Millisecond, 0, 1, 2)
+	if rs.delivered != 3000 || rs.interval != 120*time.Millisecond || rs.appLimited {
+		t.Fatalf("three packets acknowledged together: %+v, want 3000 bytes over 120ms", rs)
+	}
+	if got, want := est.rate, 3000/0.120; math.Abs(got-want) > 1e-6 {
+		t.Fatalf("Stats rate %v, want %v", got, want)
+	}
+	// The controller reads the same sample off the frame's newest packet.
+	if got := cc.last.rateSample(); got != rs {
+		t.Fatalf("ackEvent.rateSample() = %+v, the estimator says %+v", got, rs)
+	}
+
+	send(3, 125*time.Millisecond, false)
+	rs = ack(130*time.Millisecond, 3)
+	if rs.delivered != 1000 || rs.interval != 105*time.Millisecond {
+		t.Fatalf("send interval 105ms against ack interval 10ms: %+v, want the longer", rs)
+	}
+	if got, want := est.rate, 1000/0.105; math.Abs(got-want) > 1e-6 {
+		t.Fatalf("Stats rate %v, want %v", got, want)
+	}
+
+	// The writer runs dry with nothing in flight: the next packet is
+	// application-limited, and so is its sample.
+	est.markAppLimited(0)
+	before := est.rate
+	send(4, 240*time.Millisecond, true)
+	rs = ack(360*time.Millisecond, 4)
+	if !rs.appLimited {
+		t.Fatalf("packet sent after the writer ran dry: %+v, want application-limited", rs)
+	}
+	if est.rate != before {
+		t.Fatalf("an application-limited sample moved Stats: %v, was %v", est.rate, before)
+	}
+	if est.appLimited != 0 {
+		t.Fatalf("the bubble is delivered (%d > mark %d) and the mark stands", est.delivered, est.appLimited)
+	}
+	send(5, 370*time.Millisecond, true)
+	if rs = ack(490*time.Millisecond, 5); rs.appLimited {
+		t.Fatalf("packet sent after the mark lifted: %+v, want unmarked", rs)
+	}
+	if est.rate == before {
+		t.Fatal("a reliable, unmarked sample left Stats where it was")
+	}
+}
+
+// rateSpy counts the application-limited samples a controller is handed.
+type rateSpy struct {
+	congestionController
+	appLimited, samples int
+	last                ackEvent
+}
+
+func (s *rateSpy) onAcked(ev ackEvent) {
+	s.samples++
+	s.last = ev
+	if ev.rateSample().appLimited {
+		s.appLimited++
+	}
+	s.congestionController.onAcked(ev)
+}
+
+// A short write on a connection with nothing in flight is the
+// application-limited case the estimator exists to tell apart (draft §2.3):
+// the window had room, the writer ran dry, and the sample its acknowledgement
+// yields says so — and Stats.DeliveryRate, which skips such samples, does
+// not move.
+func TestShortWriteIsApplicationLimited(t *testing.T) {
+	client, _ := plainPair(t)
+	spy := &rateSpy{}
+	client.mu.Lock()
+	spy.congestionController = client.cc
+	client.cc = spy
+	client.mu.Unlock()
+	drained := func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for client.Stats().BytesInFlight > 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("the flight never drained")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	drained()
+	before := client.Stats().DeliveryRate
+
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(make([]byte, 100)); err != nil {
+		t.Fatal(err)
+	}
+	drained()
+
+	client.mu.Lock()
+	limited, samples := spy.appLimited, spy.samples
+	client.mu.Unlock()
+	if samples == 0 || limited == 0 {
+		t.Fatalf("%d samples after a 100-byte write, %d application-limited: the writer running dry was not seen", samples, limited)
+	}
+	if after := client.Stats().DeliveryRate; after != before {
+		t.Fatalf("Stats.DeliveryRate moved on an application-limited sample: %v, was %v", after, before)
+	}
+}
+
+// plainPair is a client and a server connection over loopback, handshake
+// done, nothing else said yet.
+func plainPair(t *testing.T) (client, server *Conn) {
+	t.Helper()
+	serverPC := loopbackSocket(t)
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	accepted := make(chan *Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			t.Error(err)
+			close(accepted)
+			return
+		}
+		accepted <- c
+	}()
+	client = dialInternal(t, loopbackSocket(t), serverPC.LocalAddr())
+	server = <-accepted
+	if server == nil {
+		t.Fatal("no server connection")
+	}
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	return client, server
 }

@@ -27,7 +27,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil); err != nil {
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.lossTime.IsZero() {
@@ -35,7 +35,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	}
 
 	// The same ACK again: no news, and the deadline must survive it.
-	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestProcessAckReportsTheLatestLossSendTime(t *testing.T) {
 	var peer ackTracker
 	peer.record(4, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
