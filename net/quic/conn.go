@@ -1375,5 +1375,38 @@ func (c *Conn) Stats() Stats {
 // requests can be admitted and unanswered at once.
 func (c *Conn) LocalParameters() TransportParameters { return c.params }
 
+// ConnectionState reports the TLS state the handshake settled: the
+// negotiated application protocol (NegotiatedProtocol, what a server
+// checks before it speaks h3), the server name the client asked for, the
+// peer's certificates, the TLS version. It is what
+// [crypto/tls.QUICConn.ConnectionState] returns; [Dial] and [Accept]
+// return only once the handshake is complete, so every field is settled by
+// the time a caller can ask.
+func (c *Conn) ConnectionState() tls.ConnectionState { return c.tls.ConnectionState() }
+
+// LocalAddr reports the address of the socket this connection sends on:
+// the one [Dial] was given, or the listener's, until a client's
+// [Conn.Rebind] replaces it or the client adopts its server's preferred
+// address. A connection fed by a [Listener] on a Linux socket bound to
+// 0.0.0.0 or [::] reports the address its datagrams reach, the one the
+// listener answers from; elsewhere, the unspecified address the socket
+// was bound to.
+func (c *Conn) LocalAddr() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pc.LocalAddr()
+}
+
+// RemoteAddr reports the address this connection sends to: the peer as the
+// handshake saw it, then wherever the peer has moved to — a server follows
+// its client across a NAT rebind (RFC 9000 §9.5), a client moves to the
+// preferred address its server offered (§9.6). A log line taken after a
+// migration names the new address.
+func (c *Conn) RemoteAddr() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peer
+}
+
 // Done is closed when the connection ends.
 func (c *Conn) Done() <-chan struct{} { return c.closed }

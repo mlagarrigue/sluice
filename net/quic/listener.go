@@ -316,6 +316,12 @@ func (l *Listener) closeQueued() {
 	}
 }
 
+// Addr reports the address of the socket this listener reads: what
+// [NewListener] was given, as [net.PacketConn.LocalAddr] reports it — a
+// port chosen by the kernel shows up here, which is how a test or a
+// supervisor learns where to dial.
+func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
+
 // DiscardedPackets reports how many datagrams this listener's own front
 // door refused to route — unroutable or malformed, or addressed to a
 // connection too far behind to take them — and failed socket reads, which

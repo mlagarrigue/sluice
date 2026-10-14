@@ -33,7 +33,11 @@
 //
 //   - A [Conn]: TLS 1.3 handshake via [crypto/tls.QUICConn], packet
 //     protection per RFC 9001, streams with interval reassembly, per-stream
-//     failure via [Stream.Reset] and [Stream.StopSending].
+//     failure via [Stream.Reset] and [Stream.StopSending]. What the
+//     handshake settled is readable — [Conn.ConnectionState] for the
+//     negotiated protocol, server name and peer certificates — and so are
+//     the two addresses, [Conn.LocalAddr] and [Conn.RemoteAddr], the
+//     latter following the peer across a migration.
 //   - Recovery per RFC 9002: ACK generation with delayed acknowledgements,
 //     packet- and time-threshold loss detection, probe timeouts,
 //     retransmission, NewReno with slow start and recovery periods.
@@ -52,8 +56,8 @@
 //     Listener on a UDP socket bound to 0.0.0.0 or [::] answers each
 //     datagram from the address it reached (IP_PKTINFO /
 //     IPV6_RECVPKTINFO), so a multi-homed server does not look like a
-//     path change to its clients. [Accept] remains for the
-//     one-connection-per-socket case.
+//     path change to its clients. [Listener.Addr] reports where it
+//     listens. [Accept] remains for the one-connection-per-socket case.
 //   - Connection-identifier rotation and server-side passive migration
 //     (RFC 9000 §5.1, §9): every connection issues additional identifiers
 //     once its handshake confirms — a client's are what let a server
