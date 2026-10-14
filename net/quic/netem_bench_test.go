@@ -447,3 +447,21 @@ func BenchmarkTransferRTT80(b *testing.B) {
 		queue: 20 * time.Millisecond,
 	}, 8<<20)
 }
+
+// BenchmarkTransferRTT80Shallow is the congestion-avoidance benchmark: the
+// same 80 ms, 100 Mbit/s line behind 5 ms of buffer, moving 32 MiB. RTT80's
+// 8 MiB is over before avoidance matters — the handshake and a slow start
+// doubling from 12 kB floor it at about 1.2 s whatever the controller, and
+// its 20 ms buffer leaves a halved window at 0.78 of the path (measured
+// 2026-10-14: CUBIC 1.07× Reno on a 64 MiB transfer there). Here a loss
+// leaves Reno at half of the path, a datagram per round trip from full, and
+// the transfer is long enough to pay for it: this is where a controller's
+// growth curve is read. Not gated: the figure moves with where the slow
+// start's exit loss lands.
+func BenchmarkTransferRTT80Shallow(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   40 * time.Millisecond,
+		rate:  100_000_000 / 8,
+		queue: 5 * time.Millisecond,
+	}, 32<<20)
+}
