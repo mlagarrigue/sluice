@@ -497,11 +497,48 @@ cycles, so the cruise paces at 0.99 × 1.056 of the line and adds 4% of
 a product to the queue every round, with nothing to drain it before the
 next probe (two to three seconds, or 63 rounds) or ProbeRTT (five
 seconds). That figure is not a property of the draft on a path without
-a signal; it asks for ECN (§3.7: the transport reads and reports the
-marks on Linux, the controller does not act on them yet) or an
-estimator that does not keep upward noise. Both criteria are rewritten
-as measured; nothing in the controller is tuned toward them. Reno stays
-the default: nothing here is a measurement against a real client.
+a signal; it asks for ECN (§3.7: measured below) or an estimator that
+does not keep upward noise. Both criteria are rewritten as measured;
+nothing in the controller is tuned toward them. Reno stays the default:
+nothing here is a measurement against a real client.
+
+**BBR with ECN.** draft-ietf-ccwg-bbr-03 §3.7 specifies no response to
+CE marks, only that a connection that marks its packets ECT MUST treat
+them as congestion. The response here reads a mark as a loss without the
+retransmission: a round that saw one between probes cuts the short-term
+model to 0.7, and while probing the marks count with the losses against
+the 2% that bounds `inflight_longterm`. Reno and CUBIC hear the same
+signal as RFC 9002 §7.3.2 and B.12 have it, a congestion event dated by
+the frame's largest acknowledged packet: the window halves (Reno) or
+takes β (CUBIC), once per recovery period.
+`BenchmarkTransferDeepBufferECN` is `DeepBuffer` behind an AQM that marks
+a datagram CE once it waits more than 5 ms for the line — the depth of
+`Bottleneck`'s buffer — and still drops at 200 ms. It runs over four UDP
+sockets on the loopback interface rather than in-memory pairs, the only
+transport here that carries the ECN field, and its server is a
+`Listener`: a connection accepted with `Accept` never uses ECN, the first
+datagram's mark being read by the caller and lost (`Accept` documents
+it). Eight rounds per controller on 2026-10-14, one binary,
+`SLUICE_QUIC_CC` the variable; `rtt_x` is the figure to read, the times
+are not `DeepBuffer`'s to the millisecond:
+
+| Controller | Transfer, median | Spread | `rtt_x`, median | Spread | Same controller on `DeepBuffer` |
+|---|---|---|---|---|---|
+| BBR | 791 ms, 5.3 MB/s | 789–795 ms | 1.09 | 1.07–1.21 | 784 ms, `rtt_x` 1.71 (1.64–2.00) |
+| Reno | 1.18 s, 3.5 MB/s | 0.86–1.36 s | 1.09 | 1.06–1.18 | 790 ms, `rtt_x` 5.9 |
+| CUBIC | 883 ms, 4.7 MB/s | 0.84–1.09 s | 1.09 | 1.08–1.10 | `rtt_x` 9.3 (HyStart++ row above) |
+
+The queue BBR lets build falls from 1.7× the path's round trip to 1.1×
+at the same goodput: the marked rounds cut `inflight_shortterm` to 0.7
+of the window, the queue drains under the marking threshold, and the
+next probe finds the threshold again and goes DOWN on it. This is the
+`rtt_x` ≤ 1.5 the palette plan asked of `DeepBuffer`, met with the
+signal the draft names and not without it. Reno and CUBIC hold the same
+queue and pay in goodput, as a loss-driven controller does on a shallow
+buffer: every marked round is a window cut, and a 5 ms threshold on a
+20 ms path is a quarter of a product. Nothing here is a measurement
+against a real client, and the marking AQM is the emulator's: a step at
+a threshold, not CoDel's or PIE's.
 
 The gate (`gate-path.sh`) runs the default, Reno: CUBIC, BBRv1 and BBR
 change none of its eight rows until they are chosen (measured the same
