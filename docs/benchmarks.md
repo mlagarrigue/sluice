@@ -298,12 +298,23 @@ benchstat before.txt after.txt
 pinned: an emulation that sleeps on timers in several goroutines must not
 be. A change to `net/quic` that puts a median more than **15% below** its
 row is a regression until it is explained; one that puts it above replaces
-the row. The CI gate does not watch them yet. `gate.sh` builds and lists
-`internal/bench` alone; `ab.sh` runs each binary pinned to one core under
-`GOMAXPROCS=1`, which these benchmarks cannot run under; and the gate rules
-on a 3% effect by sign test where these need a 15% bound on the median.
-Until it learns those three things, the comparison is by hand: the command
-above on the tree before and after, back to back, machine idle.
+the row.
+
+**The CI gate watches them** through a second script,
+`internal/bench/scripts/gate-path.sh`, run by the same job as `gate.sh` on
+every pull request. It differs from `gate.sh` in the three ways these rows
+require: it builds `net/quic`'s test binary rather than `internal/bench`'s;
+it runs the two binaries unpinned, with the runtime's own `GOMAXPROCS`,
+since the emulation sleeps on timers in several goroutines; and it rules on
+the median of eight transfers a side, interleaved before/after so drift
+cancels, red when the median after is more than 15% above the median before
+rather than on a 3% effect by sign test. One transfer per round
+(`-benchtime=1x`): the figure is a transfer's wall clock, not a rate the
+harness scales. To run it by hand against the tree before a change:
+
+```
+internal/bench/scripts/gate-path.sh main
+```
 
 ---
 

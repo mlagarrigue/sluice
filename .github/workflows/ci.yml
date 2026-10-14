@@ -430,3 +430,13 @@ jobs:
 
       - name: Paired regression gate against the merge base
         run: internal/bench/scripts/gate.sh ${{ github.event.pull_request.base.sha }}
+
+      # The emulated-path benchmarks of net/quic measure the congestion
+      # controller on a timer-driven middlebox, which cannot run pinned to one
+      # core and does not move with the CPU: a separate script, not pinned,
+      # eight transfers a side, red when a median is 15% slower (see
+      # gate-path.sh). A separate step, so a red core gate still reports the
+      # path.
+      - name: Paired path gate against the merge base
+        if: ${{ !cancelled() }}
+        run: internal/bench/scripts/gate-path.sh ${{ github.event.pull_request.base.sha }}

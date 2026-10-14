@@ -30,6 +30,10 @@
 # the core count more than the code, so a 2-vCPU runner would gate on noise
 # rather than on regressions. They stay measured locally through the same
 # paired protocol, by compare.sh.
+#
+# Also not gated here: net/quic's emulated-path benchmarks, which cannot run
+# pinned and need a bound on the median rather than a sign test. They have
+# their own script, gate-path.sh, which CI runs as the next step of this job.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BASE="${1:?usage: gate.sh <base-ref> [rounds]}"

@@ -252,6 +252,12 @@ A pull request is compared to its merge base by `gate.sh`, which fails on any
 benchmark the sign test declares slower past 3%. Absolute figures do not
 transfer between sessions; only ratios within a session carry.
 
+The one exception is `net/quic`'s three emulated-path benchmarks, which
+measure the congestion controller rather than the CPU: `gate-path.sh`, run
+by the same job, builds that package on both sides, runs them unpinned and
+fails when a median transfer is more than 15% slower (`docs/benchmarks.md`,
+"QUIC, on an emulated path").
+
 ## Style and conventions
 
 - **Everything in the repository is in English**: code, comments, tests,
