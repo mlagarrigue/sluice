@@ -497,10 +497,11 @@ cycles, so the cruise paces at 0.99 × 1.056 of the line and adds 4% of
 a product to the queue every round, with nothing to drain it before the
 next probe (two to three seconds, or 63 rounds) or ProbeRTT (five
 seconds). That figure is not a property of the draft on a path without
-a signal; it asks for ECN (§3.7, not implemented) or an estimator that
-does not keep upward noise. Both criteria are rewritten as measured;
-nothing in the controller is tuned toward them. Reno stays the default:
-nothing here is a measurement against a real client.
+a signal; it asks for ECN (§3.7: the transport reads and reports the
+marks on Linux, the controller does not act on them yet) or an
+estimator that does not keep upward noise. Both criteria are rewritten
+as measured; nothing in the controller is tuned toward them. Reno stays
+the default: nothing here is a measurement against a real client.
 
 The gate (`gate-path.sh`) runs the default, Reno: CUBIC, BBRv1 and BBR
 change none of its eight rows until they are chosen (measured the same

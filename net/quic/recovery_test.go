@@ -349,7 +349,7 @@ func BenchmarkProcessAck(b *testing.B) {
 			peer.record(pn, now)
 		}
 	}
-	frame := appendAckFrame(nil, peer.ranges, 0)
+	frame := appendAckFrame(nil, peer.ranges, 0, [3]uint64{})
 	f, _, err := parseFrame(frame)
 	if err != nil {
 		b.Fatal(err)
@@ -658,7 +658,7 @@ func ackCovering(t *testing.T, now time.Time, pns ...uint64) Frame {
 	for _, pn := range pns {
 		peer.record(pn, now)
 	}
-	f, _, err := parseFrame(appendAckFrame(nil, peer.ranges, 0))
+	f, _, err := parseFrame(appendAckFrame(nil, peer.ranges, 0, [3]uint64{}))
 	if err != nil {
 		t.Fatal(err)
 	}

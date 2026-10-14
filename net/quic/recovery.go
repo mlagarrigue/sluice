@@ -119,6 +119,9 @@ type sentPacket struct {
 	// bytes from flight but is no congestion event (RFC 9000 §14.4), and
 	// its acknowledgement or loss is reported by number to the search.
 	pmtuProbe bool
+	// ect0 marks a packet whose datagram left with the ECT(0) codepoint,
+	// which the peer's ECN counts must then account for (§13.4.2.1).
+	ect0 bool
 	// The delivery estimator's snapshot of the connection when this packet
 	// left (draft-cheng-iccrg-delivery-rate-estimation §3.2): bytes
 	// delivered so far, how long before this send the count last moved and
@@ -221,6 +224,8 @@ type ackOutcome struct {
 	lostCount        uint64   // packets behind lostBytes, for Stats.LostPackets
 	lost             [][]byte // payloads to queue for retransmission
 	sawAckEliciting  bool     // any newly acked packet was ack-eliciting
+	newlyAckedECT0   int      // newly acked packets that left marked ECT(0), for ECN validation
+	raisedLargest    bool     // the frame increased the largest acknowledged: validation may fail on it (§13.4.2.1)
 	// latestLossSent is when the *newest* lost packet in this batch was
 	// sent, which is what gates a congestion event (RFC 9002 B.8): one
 	// pre-recovery straggler in a batch must not shield a genuinely new
@@ -302,6 +307,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	if marked > 0 && (!hadPrev || largestMarked > prevLargest) {
 		s.largestAcked = largestMarked
 		s.hasLargestAcked = true
+		out.raisedLargest = true
 	}
 
 	// One pass in packet-number order: what the frame marked is released,
@@ -341,6 +347,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		if p.acked {
 			runStart = time.Time{}
 			out.newlyAckedCount++
+			if p.ect0 {
+				out.newlyAckedECT0++
+			}
 			onPath := s.onPath(p)
 			if onPath {
 				out.newlyAcked += p.size

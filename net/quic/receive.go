@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // The receive path. The rule that shapes all of it: unauthenticated bytes
@@ -43,6 +45,7 @@ func (c *Conn) readLoop() {
 		return
 	}
 	buf := make([]byte, c.recvBufSize())
+	oob := make([]byte, udp.PacketInfoLen)
 	readFails := 0 // consecutive transient ReadFrom errors, for the backoff
 	for {
 		// The socket is read under mu because [Conn.Rebind] replaces it:
@@ -50,7 +53,7 @@ func (c *Conn) readLoop() {
 		// next that it has moved.
 		c.mu.Lock()
 		deadline := c.idleDeadline
-		pc := c.pc
+		pc, ecnOK := c.pc, c.ecnRecv
 		c.mu.Unlock()
 		if deadline.IsZero() {
 			deadline = time.Now().Add(30 * time.Second)
@@ -76,7 +79,7 @@ func (c *Conn) readLoop() {
 		if c.rebound(pc) {
 			continue
 		}
-		n, addr, err := pc.ReadFrom(buf)
+		n, addr, ecn, err := readDatagram(pc, ecnOK, buf, oob)
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) || c.rebound(pc) {
 				// The idle deadline is the timer loop's to act on; the read
@@ -106,7 +109,7 @@ func (c *Conn) readLoop() {
 			continue
 		}
 		readFails = 0
-		if err := c.processDatagram(rawDatagram{data: buf[:n], from: addr}); err != nil {
+		if err := c.processDatagram(rawDatagram{data: buf[:n], from: addr, ecn: ecn}); err != nil {
 			return
 		}
 	}
@@ -138,7 +141,7 @@ func readBackoff(fails int, stop <-chan struct{}) bool {
 // (abort already sent the CONNECTION_CLOSE) or a TLS failure.
 func (c *Conn) processDatagram(d rawDatagram) error {
 	c.mu.Lock()
-	c.rxVia = d.via
+	c.rxVia, c.rxECN = d.via, d.ecn
 	c.gatherLocked(true)
 	c.mu.Unlock()
 	err := c.receive(d.data, d.from)
@@ -378,6 +381,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				c.deferred[space] = append(c.deferred[space], deferredPacket{
 					raw: append([]byte(nil), raw...),
 					at:  now,
+					ecn: c.rxECN,
 				})
 			}
 			c.mu.Unlock()
@@ -456,6 +460,12 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 		// would double-deliver.
 		c.mu.Unlock()
 		return nil
+	}
+	if cp := c.rxECN; cp != ecnNotECT {
+		// §13.4.1: counted once per QUIC packet processed, in its own
+		// space; coalesced packets share one IP header and each count.
+		sp.ack.ecn[cp]++
+		c.ecnReceived[cp]++
 	}
 	if pn > sp.largest {
 		sp.largest = pn
@@ -1108,6 +1118,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}
+	c.validateECNLocked(space, f, out)
 	if out.largestWasNew && out.largestEliciting {
 		var ackDelay time.Duration
 		if space == spaceApplication {
@@ -1564,6 +1575,7 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 		return c.readOneFed(deadline)
 	}
 	buf := make([]byte, c.recvBufSize())
+	oob := make([]byte, udp.PacketInfoLen)
 	if err := c.pc.SetReadDeadline(deadline); err != nil {
 		return false, err
 	}
@@ -1583,11 +1595,11 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 	if woke {
 		return false, os.ErrDeadlineExceeded
 	}
-	n, addr, err := c.pc.ReadFrom(buf)
+	n, addr, ecn, err := readDatagram(c.pc, c.ecnRecv, buf, oob)
 	if err != nil {
 		return false, err
 	}
-	return true, c.receiveGathered(rawDatagram{data: buf[:n], from: addr})
+	return true, c.receiveGathered(rawDatagram{data: buf[:n], from: addr, ecn: ecn})
 }
 
 // receiveGathered is receive under datagram gathering, for the handshake's
@@ -1596,7 +1608,7 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 // leave together.
 func (c *Conn) receiveGathered(d rawDatagram) error {
 	c.mu.Lock()
-	c.rxVia = d.via
+	c.rxVia, c.rxECN = d.via, d.ecn
 	c.gatherLocked(true)
 	c.mu.Unlock()
 	return c.receive(d.data, d.from)

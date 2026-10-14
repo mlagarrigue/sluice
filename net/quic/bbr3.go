@@ -32,7 +32,8 @@ import (
 // — and ProbeRTT halves the window for 200 ms every five seconds
 // (§5.3.4). extra_acked (§5.5.9) adds the aggregation the path shows to
 // the window. The send quantum is one datagram, the unit the pacer
-// releases, and ECN (§3.7) is not read.
+// releases, and the CE counts the peer reports (§3.7) are validated by
+// the transport but not yet read here.
 //
 // Four readings this draft leaves to the implementation. The volume in
 // flight when a lost packet was sent (RS.tx_in_flight) is read as the

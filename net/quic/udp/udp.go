@@ -175,3 +175,49 @@ func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	return appendPacketSource(oob, src, ifindex)
 }
+
+// EnableECN asks the kernel to report, with every datagram read through
+// [net.UDPConn.ReadMsgUDP], the ECN field of the IP header it arrived in
+// (IP_RECVTOS / IPV6_RECVTCLASS). [PacketECN] reads the field back out of
+// the out-of-band bytes, and [AppendECN] builds the control message that
+// marks a datagram sent with [net.UDPConn.WriteMsgUDP]. A transport that
+// reads the field can report congestion marks to its peer, and one that
+// sets it lets the network signal congestion without dropping (RFC 9000
+// §13.4). The buffer [PacketInfoLen] sizes has room for it.
+//
+// Linux only for now; elsewhere it returns [errors.ErrUnsupported]
+// (wrapped) and changes nothing.
+func EnableECN(c *net.UDPConn) error {
+	rc, err := c.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("udp: %w", err)
+	}
+	v6 := isIPv6Socket(c)
+	var opErr error
+	if err := rc.Control(func(fd uintptr) {
+		opErr = enableECN(fd, v6)
+	}); err != nil {
+		return fmt.Errorf("udp: %w", err)
+	}
+	if opErr != nil {
+		return fmt.Errorf("udp: %w", opErr)
+	}
+	return nil
+}
+
+// PacketECN finds, in the out-of-band bytes of one datagram read from a
+// socket [EnableECN] was applied to, the ECN field of its IP header: the
+// two low bits of the TOS byte or traffic class, 0b00 Not-ECT, 0b01
+// ECT(1), 0b10 ECT(0), 0b11 CE (RFC 3168 §5). ok is false when oob
+// carries no such message. It does not allocate.
+func PacketECN(oob []byte) (ecn uint8, ok bool) {
+	return packetECN(oob)
+}
+
+// AppendECN appends to oob the control messages that set the ECN field of
+// a datagram sent with [net.UDPConn.WriteMsgUDP] to ecn, one of the
+// codepoints [PacketECN] documents. Where [EnableECN] is unsupported, oob
+// is returned unchanged.
+func AppendECN(oob []byte, ecn uint8) []byte {
+	return appendECN(oob, ecn)
+}

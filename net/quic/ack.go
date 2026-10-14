@@ -40,6 +40,10 @@ type ackTracker struct {
 	// peer's loss detection learns about the reordering within one RTT
 	// instead of a delayed-ACK period later.
 	outOfOrder bool
+	// ecn counts the packets recorded by the ECN codepoint their datagram
+	// arrived with, indexed by codepoint (§13.4.1): each coalesced packet
+	// counts once, a duplicate never. Reported in every ACK (§19.3.2).
+	ecn [4]uint64
 }
 
 // record notes one received packet number and returns false when it is a
@@ -153,7 +157,7 @@ func (a *ackTracker) encodeAck(dst []byte, now time.Time) []byte {
 	if !a.largestAt.IsZero() && now.After(a.largestAt) {
 		delay = uint64(now.Sub(a.largestAt).Microseconds()) //nolint:gosec // G115: positive, now is after largestAt
 	}
-	return appendAckFrame(dst, a.ranges, delay)
+	return appendAckFrame(dst, a.ranges, delay, [3]uint64{a.ecn[ecnECT0], a.ecn[ecnECT1], a.ecn[ecnCE]})
 }
 
 // settle clears the debt an encoded ACK paid.

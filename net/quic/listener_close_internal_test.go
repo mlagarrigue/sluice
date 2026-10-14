@@ -199,10 +199,10 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 	// Two slots: the first attempt goes direct (below the half-way mark),
 	// the second has to come back with a Retry token.
 	nowhere := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), nowhere, l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), nowhere, l.pc, 0)
 	newSCID := []byte("rscid-01")
 	token := appendRetryToken(nil, l.key, nowhere, []byte("odcid-cc"), newSCID)
-	l.dispatch(sealedClientInitialWithToken(t, newSCID, []byte("cscid-dd"), token), nowhere, l.pc)
+	l.dispatch(sealedClientInitialWithToken(t, newSCID, []byte("cscid-dd"), token), nowhere, l.pc, 0)
 	if n := pendingCount(l); n != 2 {
 		t.Fatalf("priming left %d pending connections, want 2", n)
 	}
@@ -210,7 +210,7 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 
 	clientPC := loopbackSocket(t)
 	dcid := []byte("odcid-ee")
-	l.dispatch(sealedClientInitial(t, dcid, []byte("cscid-ff")), clientPC.LocalAddr(), l.pc)
+	l.dispatch(sealedClientInitial(t, dcid, []byte("cscid-ff")), clientPC.LocalAddr(), l.pc, 0)
 
 	if n := pendingCount(l); n != 2 {
 		t.Errorf("a full table still took a connection: %d pending", n)

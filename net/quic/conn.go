@@ -384,6 +384,22 @@ type Conn struct {
 	// meaning pc. Only a Listener-fed server connection ever sees another
 	// one: the listener's preferred-address socket (§9.6).
 	rxVia net.PacketConn
+	// rxECN is the ECN codepoint of the datagram being processed, as its
+	// socket reported it (§13.4.1); zero where the socket does not.
+	rxECN uint8
+	// ecnReceived counts every processed packet by the codepoint its
+	// datagram arrived with, for Stats; the per-space counts the ACKs
+	// report are the ackTrackers'.
+	ecnReceived [4]uint64
+
+	// ecn is the current path's ECN validation (§13.4.2); ecnRecv says the
+	// kernel reports the field for datagrams read from pc, and dgramECN
+	// and batchECN hold the mark of the datagram or batch being built, so
+	// every packet in it is recorded with what it actually left with.
+	ecn      ecnState
+	ecnRecv  bool
+	dgramECN uint8
+	batchECN uint8
 
 	// preferred is, on a client, the server's preferred address of this
 	// connection's family (§9.6), kept after the move for
@@ -399,6 +415,9 @@ type rawDatagram struct {
 	// via is the socket the datagram arrived on: the listener's main one,
 	// or its preferred-address one (§9.6). nil means the main one.
 	via net.PacketConn
+	// ecn is the codepoint of the IP header it arrived in, where the socket
+	// reports it (§13.4.1).
+	ecn uint8
 }
 
 // deferredPacket is one packet parked until the keys for its level arrive,
@@ -406,6 +425,7 @@ type rawDatagram struct {
 type deferredPacket struct {
 	raw []byte
 	at  time.Time
+	ecn uint8 // its datagram's ECN codepoint, counted when it is finally processed
 }
 
 // peerClose is what a peer's CONNECTION_CLOSE carried.
@@ -460,6 +480,13 @@ type space struct {
 	retrans    [][]byte // payloads of lost packets, waiting to go again
 	lastElicit time.Time
 	discarded  bool
+	// ecnSent counts this space's packets that left marked ECT(0), ACK-only
+	// ones included (the peer counts them too); ecnLast is the ECT(0),
+	// ECT(1) and CE counts of the last ACK that passed validation
+	// (§13.4.2.1). Both are the sender's side of ECN; ack.ecn is the
+	// receiver's.
+	ecnSent uint64
+	ecnLast [3]uint64
 }
 
 // The three packet-number spaces (RFC 9000 §12.3). Early data shares the
@@ -738,6 +765,10 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		localMaxStreamsUni:  params.InitialMaxStreamsUni,
 		idleTimeout:         params.MaxIdleTimeout,
 	}
+	// ECN marks and counts need a socket that reports the field; one that
+	// cannot leaves the path on failed, which marks nothing (§13.4.2.2).
+	c.ecnRecv = ecnSocket(pc)
+	c.ecn.reset(c.ecnRecv)
 	c.cond.L = &c.mu
 	// RFC 9000 §17.4: an endpoint that does not implement the latency spin
 	// bit SHOULD still set it to a random value per connection, so that
@@ -1283,17 +1314,23 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 	held := c.deferred[space]
 	c.deferred[space] = nil
 	peer := c.peer
+	rxECN := c.rxECN
 	c.mu.Unlock()
 	// The keys just arrived, so whatever was waiting on them can be read
-	// now — stamped with when each packet actually arrived, not with now.
+	// now — stamped with when each packet actually arrived, not with now,
+	// and with the ECN mark of its own datagram, not the current one's.
 	// Unlocked first: opening a packet takes the lock again.
 	for _, pkt := range held {
+		c.mu.Lock()
+		c.rxECN = pkt.ecn
+		c.mu.Unlock()
 		if err := c.receiveAt(pkt.raw, peer, pkt.at); err != nil {
 			c.mu.Lock()
 			return err
 		}
 	}
 	c.mu.Lock()
+	c.rxECN = rxECN
 	return nil
 }
 
@@ -1426,6 +1463,16 @@ type Stats struct {
 	// load is an attacker probing, or a path corrupting datagrams.
 	DiscardedPackets uint64
 
+	// ECT0Received, ECT1Received and CEReceived count the packets processed
+	// whose IP header carried that ECN codepoint (RFC 9000 §13.4.1), the
+	// counts this end reports back in its ACK frames. All zero where the
+	// socket does not report the field (every platform but Linux today), or
+	// when the peer does not mark. A rising CEReceived is the network
+	// signalling congestion without dropping.
+	ECT0Received uint64
+	ECT1Received uint64
+	CEReceived   uint64
+
 	// KeyUpdates is how many times this end's 1-RTT send keys rotated
 	// (RFC 9001 §6), whichever side initiated. Each rotation renews the
 	// AEAD's confidentiality budget (§6.6); a count that never moves on a
@@ -1543,6 +1590,9 @@ func (c *Conn) Stats() Stats {
 	defer c.mu.Unlock()
 	return Stats{
 		DiscardedPackets:      c.discarded,
+		ECT0Received:          c.ecnReceived[ecnECT0],
+		ECT1Received:          c.ecnReceived[ecnECT1],
+		CEReceived:            c.ecnReceived[ecnCE],
 		KeyUpdates:            c.ku.updates,
 		WriteFailures:         c.writeFailures,
 		UnhandledTLSEvents:    c.unhandledTLSEvents.Load(),

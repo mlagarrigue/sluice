@@ -380,7 +380,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer l.Close()
-		l.dispatch(sealedClientInitial(t, short, scid), clientPC.LocalAddr(), l.pc)
+		l.dispatch(sealedClientInitial(t, short, scid), clientPC.LocalAddr(), l.pc, 0)
 		if got := l.DiscardedPackets(); got != 1 {
 			t.Errorf("discarded = %d, want 1", got)
 		}
@@ -545,7 +545,7 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 		return append(b, make([]byte, size-len(b))...)
 	}
 
-	l.dispatch(foreign(1200), clientPC.LocalAddr(), l.pc)
+	l.dispatch(foreign(1200), clientPC.LocalAddr(), l.pc, 0)
 	if err := clientPC.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 
 	// Below 1200 bytes nothing is sent — answering would amplify.
 	before := l.DiscardedPackets()
-	l.dispatch(foreign(600), clientPC.LocalAddr(), l.pc)
+	l.dispatch(foreign(600), clientPC.LocalAddr(), l.pc, 0)
 	if err := clientPC.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	l.dispatch(pkt, clientPC.LocalAddr(), l.pc)
+	l.dispatch(pkt, clientPC.LocalAddr(), l.pc, 0)
 
 	if err := clientPC.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)

@@ -111,8 +111,8 @@ func TestListenerRetransmittedInitialDoesNotDuplicateTheConnection(t *testing.T)
 	from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
 	dg := sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb"))
 
-	l.dispatch(append([]byte(nil), dg...), from, l.pc)
-	l.dispatch(append([]byte(nil), dg...), from, l.pc)
+	l.dispatch(append([]byte(nil), dg...), from, l.pc, 0)
+	l.dispatch(append([]byte(nil), dg...), from, l.pc, 0)
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
@@ -144,7 +144,7 @@ func TestListenerDiscardsAnInitialThatDoesNotDecrypt(t *testing.T) {
 	defer l.Close()
 
 	from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(syntheticInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), from, l.pc)
+	l.dispatch(syntheticInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), from, l.pc, 0)
 
 	l.mu.Lock()
 	pending, entries := len(l.pendingConns), len(l.byDCID)
@@ -185,7 +185,7 @@ func TestListenerDiscardsSmallInitialDatagrams(t *testing.T) {
 	if len(dg) >= 1200 {
 		t.Fatalf("the test datagram is %d bytes; it must be under 1200 to prove anything", len(dg))
 	}
-	l.dispatch(dg, clientPC.LocalAddr(), l.pc)
+	l.dispatch(dg, clientPC.LocalAddr(), l.pc, 0)
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
@@ -263,7 +263,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
-	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc, 0)
 
 	writes := pc.taken()
 	if len(writes) != 1 {
@@ -280,7 +280,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 	// address is a Retry token this listener issued and cannot accept —
 	// INVALID_TOKEN (§8.1.2), as before.
 	elsewhere := appendRetryToken(nil, l.key, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
-	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc, 0)
 	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
 		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
 	}
@@ -304,7 +304,7 @@ func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
-	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc, 0)
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
@@ -339,7 +339,7 @@ func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
 	// The Retry flow, as a client would walk it: a tokenless Initial, the
 	// Retry it earns, and the second Initial echoing the token under the
 	// identifier the Retry chose.
-	l.dispatch(sealedClientInitial(t, []byte("dst-cid3"), scid), from, l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("dst-cid3"), scid), from, l.pc, 0)
 	writes := pc.taken()
 	if len(writes) != 1 {
 		t.Fatalf("the listener wrote %d datagrams for a first Initial, want one Retry", len(writes))
@@ -350,7 +350,7 @@ func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
 	}
 	newSCID, token := retry.SCID, retry.Token
 	second := sealedClientInitialWithToken(t, newSCID, scid, token)
-	l.dispatch(second, from, l.pc)
+	l.dispatch(second, from, l.pc, 0)
 
 	l.mu.Lock()
 	c := l.byDCID[string(newSCID)]
@@ -369,7 +369,7 @@ func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
 	l.forget(c)
 	pc.taken()
 
-	l.dispatch(second, from, l.pc)
+	l.dispatch(second, from, l.pc, 0)
 	l.mu.Lock()
 	again := l.byDCID[string(newSCID)]
 	l.mu.Unlock()
@@ -397,7 +397,7 @@ func TestListenerRetriesPastThePendingHighWaterMark(t *testing.T) {
 
 	// Fill the table to the mark (2/2 = 1) with one genuine attempt.
 	first := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), first, l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), first, l.pc, 0)
 	l.mu.Lock()
 	pending := len(l.pendingConns)
 	l.mu.Unlock()
@@ -410,7 +410,7 @@ func TestListenerRetriesPastThePendingHighWaterMark(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientPC.Close()
-	l.dispatch(sealedClientInitial(t, []byte("odcid-cc"), []byte("cscid-dd")), clientPC.LocalAddr(), l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-cc"), []byte("cscid-dd")), clientPC.LocalAddr(), l.pc, 0)
 
 	l.mu.Lock()
 	pending = len(l.pendingConns)
@@ -682,7 +682,7 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	trigger := make([]byte, 60)
 	trigger[0] = 0x40
 	copy(trigger[1:], dcid)
-	l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+	l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 
 	writes := pc.taken()
 	if len(writes) != 1 {
@@ -701,14 +701,14 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	}
 
 	// Too small to answer without a possible loop: silence.
-	l.dispatch(append([]byte(nil), trigger[:21]...), from, l.pc)
+	l.dispatch(append([]byte(nil), trigger[:21]...), from, l.pc, 0)
 	if got := pc.taken(); len(got) != 0 {
 		t.Errorf("a 21-byte trigger was answered with %d datagrams, want none", len(got))
 	}
 
 	// The budget: within one window, emission stops at the cap.
 	for range 3 * maxResetsPerSecond {
-		l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
 	if got := len(pc.taken()); got > maxResetsPerSecond {
 		t.Errorf("%d resets in one window, over the %d budget", got, maxResetsPerSecond)
@@ -732,14 +732,14 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 
 	for port := range 3 * maxResetsPerSecond {
 		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
-		l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
 	if got := len(pc.taken()); got != maxResetsPerSourcePerSecond {
 		t.Errorf("one address drew %d resets in one window, want its share of %d", got, maxResetsPerSourcePerSecond)
 	}
 
 	other := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 443}
-	l.dispatch(append([]byte(nil), trigger...), other, l.pc)
+	l.dispatch(append([]byte(nil), trigger...), other, l.pc, 0)
 	if got := len(pc.taken()); got != 1 {
 		t.Errorf("another address drew %d resets after the first one's flood, want 1", got)
 	}
@@ -1040,7 +1040,7 @@ func BenchmarkListenerRefusedInitial(b *testing.B) {
 	from := fakeFuzzAddr("client:refused")
 	b.ReportAllocs()
 	for b.Loop() {
-		l.dispatch(dgram, from, l.pc)
+		l.dispatch(dgram, from, l.pc, 0)
 		pc.taken()
 	}
 }
@@ -1060,7 +1060,7 @@ func BenchmarkListenerRetriedInitial(b *testing.B) {
 	from := fakeFuzzAddr("client:retried")
 	b.ReportAllocs()
 	for b.Loop() {
-		l.dispatch(dgram, from, l.pc)
+		l.dispatch(dgram, from, l.pc, 0)
 		pc.taken()
 	}
 }
@@ -1079,13 +1079,13 @@ func BenchmarkListenerUndecryptableInitial(b *testing.B) {
 	dgram[len(dgram)-1] ^= 0xff // the tag no longer matches
 	from := fakeFuzzAddr("client:noise")
 	before := l.DiscardedPackets()
-	l.dispatch(dgram, from, l.pc)
+	l.dispatch(dgram, from, l.pc, 0)
 	if l.DiscardedPackets() != before+1 || len(pc.taken()) != 0 {
 		b.Fatal("the corrupted Initial was not refused silently")
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		l.dispatch(dgram, from, l.pc)
+		l.dispatch(dgram, from, l.pc, 0)
 	}
 }
 
@@ -1119,7 +1119,7 @@ func TestListenerQueuesABurstForABusyConnection(t *testing.T) {
 	dg = append(dg, make([]byte, 40)...)
 	before := l.DiscardedPackets()
 	for range burst {
-		l.dispatch(append([]byte(nil), dg...), pc.LocalAddr(), l.pc)
+		l.dispatch(append([]byte(nil), dg...), pc.LocalAddr(), l.pc, 0)
 	}
 	if n := l.DiscardedPackets() - before; n != 0 {
 		t.Errorf("the listener dropped %d of a %d-datagram burst", n, burst)
@@ -1147,7 +1147,7 @@ func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
 		defer l.Close()
 
 		from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5556}
-		l.dispatch(sealedClientInitial(t, []byte("odcid-ht"), []byte("cscid-ht")), from, l.pc)
+		l.dispatch(sealedClientInitial(t, []byte("odcid-ht"), []byte("cscid-ht")), from, l.pc, 0)
 		l.mu.Lock()
 		pending := len(l.pendingConns)
 		l.mu.Unlock()

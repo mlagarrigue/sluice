@@ -328,6 +328,7 @@ type pendingPacket struct {
 	now         time.Time
 	dest        net.Addr
 	onPath      bool
+	ecn         uint8 // the codepoint its datagram leaves with (§13.4.2)
 }
 
 // gatherLocked turns datagram coalescing on or off. On: writePacketLocked
@@ -401,7 +402,7 @@ func (c *Conn) flushDatagramLocked() {
 		c.dgram, _ = c.sealLocked(c.dgram, p, pad)
 	}
 	if len(c.dgram) > 0 {
-		_ = c.writeLocked(c.pc, c.dgram, c.peer)
+		_ = c.writeLocked(c.pc, c.dgram, c.peer, c.dgramECN)
 	}
 	c.dgram = c.dgram[:0]
 	c.dgramPad = false
@@ -588,10 +589,15 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 			c.dgramPend = nil
 			c.dgram, _ = c.sealLocked(c.dgram, p, 0)
 		}
+		if c.dgramPend == nil && len(c.dgram) == 0 {
+			// The datagram's mark is decided when it opens; every packet
+			// coalesced into it is recorded with the same one.
+			c.dgramECN = c.ecn.mark()
+		}
 		pn := c.takePNLocked(sp, space)
 		c.dgramPend = &pendingPacket{
 			sp: sp, space: space, prefix: append([]byte(nil), header...), payload: payload,
-			retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,
+			retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath, ecn: c.dgramECN,
 		}
 		if needPad {
 			c.dgramPad = true
@@ -602,7 +608,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	pn := c.takePNLocked(sp, space)
 	p := pendingPacket{
 		sp: sp, space: space, prefix: header, payload: payload,
-		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,
+		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath, ecn: c.ecn.mark(),
 	}
 	if c.batching && space == spaceApplication && opts.via == nil && onPath {
 		return c.batchLocked(&p, size)
@@ -617,7 +623,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	if opts.via != nil {
 		pc = opts.via
 	}
-	return c.writeLocked(pc, pkt, dest)
+	return c.writeLocked(pc, pkt, dest, p.ecn)
 }
 
 // sealLocked finishes a built packet — Length field and packet number for a
@@ -683,10 +689,13 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		c.discardSpaceLocked(spaceInitial)
 	}
 
+	if p.ecn == ecnECT0 {
+		p.sp.ecnSent++ // ACK-only packets included: the peer counts them too
+	}
 	if p.opts.ackOnly {
 		return out, nil
 	}
-	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe}
+	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe, ect0: p.ecn == ecnECT0}
 	c.delivery.onSent(&record, c.cc.bytesInFlight() == 0)
 	if p.opts.pmtuProbe {
 		// Counted here, not where the probe was decided: a packet refused
@@ -1059,11 +1068,16 @@ func (c *Conn) kickTimer() {
 // effort — loss recovery resends what a failed write lost — so the error
 // stops there, and the count is what keeps a socket refusing every send
 // from being silent.
-func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
+func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr, ecn uint8) error {
 	if c.closing.capturing {
 		c.keepClosingDatagramLocked(pc, b, to) // the CONNECTION_CLOSE, for the closing state
 	}
-	_, err := pc.WriteTo(b, to)
+	var err error
+	if ecn != ecnNotECT {
+		c.oobScratch, err = writeMarked(pc, b, to, ecn, c.oobScratch)
+	} else {
+		_, err = pc.WriteTo(b, to)
+	}
 	return c.wroteLocked(err)
 }
 
@@ -1102,9 +1116,9 @@ const (
 // opens the next. The recovery bookkeeping is sealLocked's, as for any
 // packet; only the write is deferred, to flushBatchLocked. Callers hold mu.
 func (c *Conn) batchLocked(p *pendingPacket, size int) error {
-	if c.batchN > 0 && (c.batchShort || size > c.batchSeg ||
+	if c.batchN > 0 && (c.batchShort || size > c.batchSeg || p.ecn != c.batchECN ||
 		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
-		c.flushBatchLocked()
+		c.flushBatchLocked() // one segmented write carries one ECN mark
 	}
 	out, err := c.sealLocked(c.batch, p, 0)
 	if err != nil {
@@ -1114,7 +1128,7 @@ func (c *Conn) batchLocked(p *pendingPacket, size int) error {
 	c.batch = out
 	switch {
 	case c.batchN == 0:
-		c.batchSeg = size
+		c.batchSeg, c.batchECN = size, p.ecn
 	case size < c.batchSeg:
 		c.batchShort = true
 	}
@@ -1140,7 +1154,7 @@ func (c *Conn) flushBatchLocked() {
 	if n > 1 && !c.noGSO {
 		var ok bool
 		var err error
-		c.oobScratch, ok, err = writeSegments(c.pc, b, seg, c.peer, c.oobScratch)
+		c.oobScratch, ok, err = writeSegments(c.pc, b, seg, c.peer, c.batchECN, c.oobScratch)
 		if ok {
 			c.segmented++
 			c.keepBatchErr(c.wroteLocked(err))
@@ -1150,7 +1164,7 @@ func (c *Conn) flushBatchLocked() {
 	}
 	for len(b) > 0 {
 		k := min(seg, len(b))
-		c.keepBatchErr(c.writeLocked(c.pc, b[:k], c.peer))
+		c.keepBatchErr(c.writeLocked(c.pc, b[:k], c.peer, c.batchECN))
 		b = b[k:]
 	}
 }

@@ -403,9 +403,11 @@ func (l *Listener) noteDiscard() {
 // configured; both feed the same demux table.
 func (l *Listener) readLoop(pc net.PacketConn) {
 	buf := make([]byte, max(int(l.params.MaxUDPPayloadSize), minRecvBuf)) //nolint:gosec // G115: the endpoint's own configuration, not peer input
+	oob := make([]byte, udp.PacketInfoLen)
+	ecnOK := ecnSocket(pc) // the kernel reports each datagram's ECN field (§13.4.1)
 	var sv *sourcedVias
 	if l.sourced != nil && pc == net.PacketConn(l.sourced) {
-		sv = &sourcedVias{uc: l.sourced, oob: make([]byte, udp.PacketInfoLen), byLocal: make(map[localKey]*sourcedConn)}
+		sv = &sourcedVias{uc: l.sourced, oob: oob, byLocal: make(map[localKey]*sourcedConn)}
 	}
 	readFails := 0 // consecutive read errors, for the backoff
 	for {
@@ -419,11 +421,12 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 			from net.Addr
 			err  error
 			via  = pc
+			ecn  uint8
 		)
 		if sv != nil {
-			n, from, via, err = sv.read(buf)
+			n, from, via, ecn, err = sv.read(buf)
 		} else {
-			n, from, err = pc.ReadFrom(buf)
+			n, from, ecn, err = readDatagram(pc, ecnOK, buf, oob)
 		}
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
@@ -442,7 +445,7 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 			continue
 		}
 		readFails = 0
-		l.dispatch(append([]byte(nil), buf[:n]...), from, via)
+		l.dispatch(append([]byte(nil), buf[:n]...), from, via, ecn)
 	}
 }
 
@@ -472,14 +475,16 @@ type sourcedVias struct {
 	byLocal map[localKey]*sourcedConn
 }
 
-func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
-	n, oobn, _, from, err := s.uc.ReadMsgUDP(buf, s.oob)
+func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn, ecn uint8, err error) {
+	var oobn int
+	n, oobn, _, from, err = s.uc.ReadMsgUDP(buf, s.oob)
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, 0, err
 	}
+	ecn, _ = udp.PacketECN(s.oob[:oobn])
 	dst, ifindex, ok := udp.PacketDestination(s.oob[:oobn])
 	if !ok || dst.IsMulticast() || dst.IsUnspecified() {
-		return n, from, s.uc, nil
+		return n, from, s.uc, ecn, nil
 	}
 	if !dst.Is6() || dst.Is4In6() || !dst.IsLinkLocalUnicast() {
 		ifindex = 0 // let routing pick the interface, as it would anyway
@@ -488,7 +493,7 @@ func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
 	v := s.byLocal[k]
 	if v == nil {
 		if len(s.byLocal) >= maxSourcedVias {
-			return n, from, s.uc, nil
+			return n, from, s.uc, ecn, nil
 		}
 		v = &sourcedConn{
 			UDPConn: s.uc,
@@ -497,7 +502,7 @@ func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
 		}
 		s.byLocal[k] = v
 	}
-	return n, from, v, nil
+	return n, from, v, ecn, nil
 }
 
 // sourcedConn is the listener's unspecified-address socket seen from one
@@ -529,7 +534,7 @@ func (s *sourcedConn) LocalAddr() net.Addr { return s.local }
 // once per destination) to the connection it names, or treats it as a new
 // connection attempt if nothing claims its identifier yet. via is the
 // socket it arrived on, which is where any answer leaves from.
-func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) {
+func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn, ecn uint8) {
 	dcid := peekDCID(datagram)
 	if dcid == nil {
 		// Not a packet this listener can route — possibly a long header in a
@@ -559,7 +564,7 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 		// what the network would do; loss recovery retransmits, and
 		// back-pressure stays per connection, through flow control.
 		select {
-		case c.incoming <- rawDatagram{data: datagram, from: from, via: via}:
+		case c.incoming <- rawDatagram{data: datagram, from: from, via: via, ecn: ecn}:
 		default:
 			l.noteDiscard()
 		}
@@ -585,7 +590,7 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 		l.noteDiscard()
 		return
 	}
-	l.handleNewInitial(datagram, from, h, via)
+	l.handleNewInitial(datagram, from, h, via, ecn)
 }
 
 // peekDCID reads just enough of a datagram to learn which connection it
@@ -661,7 +666,7 @@ func foreignVersionCIDs(datagram []byte) (dcid, scid []byte, ok bool) {
 // identifier this listener has never routed before — a genuinely new
 // attempt, or (if [ListenerConfig.AlwaysRetry] is on) one still proving its
 // address before a Conn is even created.
-func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader, via net.PacketConn) {
+func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader, via net.PacketConn, ecn uint8) {
 	// RFC 9000 §14.1: a server MUST discard an Initial carried in a
 	// datagram under 1200 bytes. A real client always pads; what arrives
 	// smaller is a forgery economising on bandwidth — and answering it
@@ -722,10 +727,10 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// refuse it.
 	retry := l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2
 	if len(h.Token) > 0 || retry {
-		l.handleRetryFlow(datagram, from, h, &keys, via, retry)
+		l.handleRetryFlow(datagram, from, h, &keys, via, ecn, retry)
 		return
 	}
-	l.bootstrapConn(datagram, from, h, nil, &keys, via)
+	l.bootstrapConn(datagram, from, h, nil, &keys, via, ecn)
 }
 
 // initialKeys is what checking a client's first Initial derived: the
@@ -782,7 +787,7 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // already validated. retry says whether an Initial that proves nothing is
 // answered with a Retry or admitted on the direct path, the choice the
 // dispatcher made for a tokenless one.
-func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, retry bool) {
+func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, ecn uint8, retry bool) {
 	if len(h.Token) > 0 {
 		rt, err := verifyRetryToken(h.Token, l.key, from)
 		switch {
@@ -821,12 +826,12 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
 			return
 		default:
-			l.bootstrapConn(datagram, from, h, &rt, keys, via)
+			l.bootstrapConn(datagram, from, h, &rt, keys, via, ecn)
 			return
 		}
 	}
 	if !retry {
-		l.bootstrapConn(datagram, from, h, nil, keys, via)
+		l.bootstrapConn(datagram, from, h, nil, keys, via, ecn)
 		return
 	}
 	newSCID, err := randomID(listenerCIDLen)
@@ -894,7 +899,7 @@ func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initial
 // incoming channel instead of exclusive socket ownership, and — for a
 // direct (non-Retry) attempt — the same anti-amplification accounting the
 // standalone [Accept] applies to its own unvalidated peer.
-func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, rt *retryToken, keys *initialKeys, via net.PacketConn) {
+func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, rt *retryToken, keys *initialKeys, via net.PacketConn, ecn uint8) {
 	c, err := newServerConn(via, from, h, l.cfg, l.params, rt, keys, l.prepareConn)
 	if err != nil {
 		return
@@ -927,7 +932,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	l.connsByIP[ip]++
 	l.mu.Unlock()
 
-	go l.runHandshake(c, datagram, from)
+	go l.runHandshake(c, datagram, from, ecn)
 }
 
 // connQueueLen is how many datagrams the listener queues for one connection
@@ -1014,7 +1019,7 @@ func preferredAnnouncements(local net.Addr, ips []net.IP) (v4, v6 *net.UDPAddr, 
 // goroutine, never on the shared dispatch loop: a slow or deliberately
 // stalled handshake must not head-of-line block every other connection's
 // datagrams behind it.
-func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
+func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8) {
 	accepted := false
 	defer func() {
 		l.mu.Lock()
@@ -1026,7 +1031,7 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
 		}
 	}()
 
-	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc}); err != nil {
+	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc, ecn: ecn}); err != nil {
 		return // an authenticated violation on its own first packet; abort already closed it
 	}
 	// The handshake runs under HandshakeTimeout. Cancelling the context

@@ -126,9 +126,14 @@
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT and ECN. A server issues no session ticket; a client given a
+//   - 0-RTT. A server issues no session ticket; a client given a
 //     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
 //     still in one round trip and with nothing sent in 0-RTT.
+//   - A congestion response to ECN. On Linux the ECN field is read off
+//     every datagram and reported in ACK frames, and this end marks its
+//     own packets ECT(0) once the path validates (§13.4); the CE counts a
+//     peer reports are checked, not yet acted on. Elsewhere the field is
+//     neither read nor set, and [Stats] shows zero.
 //
 // # The socket is the caller's
 //

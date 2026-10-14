@@ -181,7 +181,7 @@ to a separate module before a v1.
   own client probes the same way, `conn_write_path_challenge`). The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
-  resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
+  resumption, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
   restrict the cipher suites), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.

@@ -509,6 +509,9 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
 	c.resetPMTULocked()
+	// ECN is validated per path (§13.4.2): the new one starts its test.
+	c.ecnRecv = ecnSocket(c.pc)
+	c.ecn.reset(c.ecnRecv)
 	c.cc = newController(c.params.Congestion, c.maxDatagram)
 	c.ptoCount = 0
 	for i := range c.spaces {
