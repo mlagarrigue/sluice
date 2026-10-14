@@ -499,8 +499,12 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 // resetPathStateLocked is §9.4's bill for a new path: congestion window and
 // round-trip estimate restart from their initial state, because the old
 // path's measurements are not evidence about the new one. Callers hold mu.
+// The datagram size restarts from 1200 with them: the old path's DPLPMTUD
+// proof is not evidence about the new one either (RFC 9000 §14.3), and the
+// probe leaves once the path is validated.
 func (c *Conn) resetPathStateLocked() {
 	c.rtt = rttEstimator{}
+	c.resetPMTULocked()
 	c.cc = newNewReno(c.maxDatagram)
 	c.ptoCount = 0
 }
@@ -665,9 +669,7 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	c.pc = pc
 	c.migrations++
 	// The old path's measurements say nothing about the new one (§9.4).
-	c.rtt = rttEstimator{}
-	c.cc = newNewReno(c.maxDatagram)
-	c.ptoCount = 0
+	c.resetPathStateLocked()
 	c.switchToFreshPeerCIDLocked()
 	c.startPathChallengeLocked(time.Now())
 	c.pathProbe.fatal = c.pathProbe.pending

@@ -139,8 +139,11 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 	if _, ok := coalesced(server); !ok {
 		t.Error("no server datagram carries Initial and Handshake together")
 	}
+	// The bound is on the handshake's datagrams: once confirmed, each end
+	// probes the path with a 1452-byte 1-RTT datagram (pmtu.go), which a
+	// loopback carries.
 	for i, w := range server {
-		if len(w.data) > 1200 {
+		if len(w.data) > 1200 && carriesLongHeader(packetTypes(t, w.data)) {
 			t.Errorf("server datagram %d is %d bytes, over the 1200 this end allows itself", i, len(w.data))
 		}
 	}
@@ -152,9 +155,20 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 		if hasTypes(types, packetInitial) && len(w.data) != 1200 {
 			t.Errorf("client datagram %d carries an Initial in %d bytes, want exactly 1200 (§14.1, padded in the closing packet)", i, len(w.data))
 		}
-		if len(w.data) > 1200 {
+		if len(w.data) > 1200 && carriesLongHeader(types) {
 			t.Errorf("client datagram %d is %d bytes, over 1200", i, len(w.data))
 		}
 	}
 	t.Logf("handshake datagrams: %d from the server, %d from the client", len(server), len(cl))
+}
+
+// carriesLongHeader says whether any packet in the datagram is Initial or
+// Handshake — what packetTypes reports as anything but 0xff.
+func carriesLongHeader(types []byte) bool {
+	for _, typ := range types {
+		if typ != 0xff {
+			return true
+		}
+	}
+	return false
 }

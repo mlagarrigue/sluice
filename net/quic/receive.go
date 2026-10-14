@@ -1163,7 +1163,22 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		sp.retrans = append(sp.retrans, out.lost...)
 		c.cc.onLost(out.lostBytes, out.latestLossSent, now)
 	}
+	c.settleProbeLocked(out)
 	return nil
+}
+
+// settleProbeLocked applies what an ACK or the loss timer decided about a
+// DPLPMTUD probe: an acknowledged probe proves its size, a lost one is
+// released from flight without a congestion event and the search moves on
+// (pmtu.go). Callers hold mu.
+func (c *Conn) settleProbeLocked(out ackOutcome) {
+	if out.probeLost {
+		c.cc.onLifted(out.probeLostBytes)
+		c.pmtuProbeLostLocked(out.probeLostPN)
+	}
+	if out.probeAcked {
+		c.pmtuProbeAckedLocked(out.probeAckedPN)
+	}
 }
 
 // peerAckDelayExponent is the scale the peer applies to its ACK delay

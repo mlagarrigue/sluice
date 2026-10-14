@@ -283,11 +283,11 @@ func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	}
 }
 
-// RFC 9000 §14.1-14.2: without path MTU discovery, nothing proves the path
-// carries more than the 1200 bytes the protocol guarantees — whatever the
-// peer's max_udp_payload_size announces, datagrams stay at 1200 until
-// DPLPMTUD exists.
-func TestMaxDatagramStaysAt1200WithoutPMTUD(t *testing.T) {
+// RFC 9000 §14.1-14.2: the peer's max_udp_payload_size says what it reads,
+// not what the path carries — datagrams stay at 1200 until a DPLPMTUD probe
+// of that size is acknowledged (pmtu_internal_test.go), never on the
+// announcement alone.
+func TestMaxDatagramIgnoresPeerAnnouncementAlone(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	c := newConn(pcA, pcB.LocalAddr(), []byte("server00"), []byte("client00"), true, DefaultParameters())
 	defer c.Close()
@@ -305,7 +305,7 @@ func TestMaxDatagramStaysAt1200WithoutPMTUD(t *testing.T) {
 	got := c.maxDatagram
 	c.mu.Unlock()
 	if got != 1200 {
-		t.Errorf("maxDatagram = %d after the peer announced 1452; §14.2 caps it at 1200 until PMTUD exists", got)
+		t.Errorf("maxDatagram = %d on the peer's announcement alone; §14.2 wants a probe acknowledged first", got)
 	}
 }
 

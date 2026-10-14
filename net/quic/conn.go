@@ -103,8 +103,11 @@ type Conn struct {
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
 
-	ptoCount    int
+	ptoCount int
+	// maxDatagram bounds every datagram sent on the path in use: 1200 until
+	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
+	pmtu        pmtuState
 	spin        byte // 0 or 0x20, OR-ed into every short header (§17.4)
 	// blockedResend is when the §4.1 periodic *_BLOCKED re-announcement
 	// next fires, zero while no writer is parked at a flow-control limit.
@@ -661,7 +664,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		accepted:            make(chan *Stream, 64),
 		closed:              make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),
-		maxDatagram:         1200, // until the peer's max_udp_payload_size says more
+		maxDatagram:         1200, // until a probe proves the path carries more (pmtu.go)
 		connSend:            sendQuota{},
 		connRecv:            newRecvQuota(params.InitialMaxData),
 		localMaxStreamsBidi: params.InitialMaxStreamsBidi,
@@ -973,6 +976,9 @@ func (c *Conn) confirmLocked() {
 	if c.isClient && c.preferred != nil && !sameAddr(c.preferred, c.peer) {
 		c.probePreferredAddressLocked(time.Now())
 	}
+	// DPLPMTUD's BASE state (RFC 9000 §14.3.1): the path may now be probed
+	// for more than 1200 bytes.
+	c.maybeProbePMTULocked()
 }
 
 // discardSpaceLocked drops a space's keys and every timer and in-flight
@@ -1135,13 +1141,13 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	c.connSend.grant(p.InitialMaxData)
 	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
 	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
-	// c.maxDatagram deliberately ignores p.MaxUDPPayloadSize: the peer may
-	// announce room for more, but without path MTU discovery (RFC 9000
-	// §14.2-14.3, not implemented) this end has no proof the *path* carries
-	// more than the 1200 bytes §14.1 guarantees — and a datagram the path
-	// swallows is retransmitted at the same size into the same black hole
-	// until the connection stalls to death. 1200 it stays until DPLPMTUD
-	// exists.
+	// c.maxDatagram does not follow p.MaxUDPPayloadSize: the peer announces
+	// what it reads, not what the *path* carries, and a datagram the path
+	// swallows would be retransmitted at the same size into the same black
+	// hole until the connection stalled. It bounds the probe instead: once
+	// the handshake is confirmed the path is probed at min(1452,
+	// p.MaxUDPPayloadSize) — never more than 1452 whatever the peer offers
+	// (pmtu.go) — and maxDatagram rises only on the probe's acknowledgement.
 	// Streams opened before the grants arrived — none in the ordinary order
 	// of things, but harmless to repair.
 	for _, s := range c.streams {

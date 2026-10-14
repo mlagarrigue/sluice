@@ -196,17 +196,19 @@ to a separate module before a v1.
   Go scheduler: on two cores (`GOMAXPROCS=2`), the same response reaches
   167 MB/s over HTTP/3 against 157 over HTTP/2, because a request crosses
   several goroutines and each hand-off wakes one, often on another core.
-- **`net/quic` datagram size**: every datagram the package sends is at most
-  1200 bytes, the smallest maximum RFC 9000 §14.1 guarantees on any path
-  QUIC runs on. The `MaxUDPPayloadSize` transport parameter (1452 by
-  default, an Ethernet MTU less IPv6 and UDP headers) bounds what this end
-  reads, not what it sends: path MTU discovery (DPLPMTUD, §14.3) is not
-  implemented, so nothing proves a path carries more, and §14.2 says not
-  to send more without that proof — a datagram the path drops would be
-  retransmitted at the same size into the same hole until the connection
-  stalled. On a 1500-byte path the cost is about 7 % of payload per
-  datagram, and a few more packets per response: one of the inputs to the
-  `bulk` gap above, not the one measured. Probing (RFC 8899) is planned.
+- **`net/quic` datagram size**: datagrams start at 1200 bytes, the
+  smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
+  rise to 1452 (an Ethernet MTU less IPv6 and UDP headers) once a probe of
+  that size is acknowledged — DPLPMTUD (§14.3, RFC 8899) in its simplest
+  form: one PING+PADDING datagram of 1452 bytes after the handshake and
+  after each migration, three tries, then 1200 for the rest of that path.
+  The size is never searched: a path that carries 1400 but not 1452 (a
+  tunnel, typically) stays at 1200. The peer's `MaxUDPPayloadSize`
+  transport parameter caps the probe; nothing below 1452 is probed for.
+  ICMP "packet too big" messages are ignored (§14.2.1 does not require
+  them, and `net.PacketConn` does not deliver them): a path that shrinks
+  under a connection is found by loss recovery, not by the probe. A lost
+  probe is not a congestion event (§14.4).
 - **`net/quic/udp`**: follows `quic`; packet information on Darwin and
   Windows the day a deployment there needs it.
 - **`web/stream`**: a real consumer of its stages. Its transport,

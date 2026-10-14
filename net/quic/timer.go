@@ -118,12 +118,13 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 
 		// The loss timer: packets an ACK left too young to declare.
 		if lt := sp.sent.lossTime; !lt.IsZero() && !now.Before(lt) {
-			lost, lostBytes, latestSent := sp.sent.collectTimeLosses(now, &c.rtt)
-			if lostBytes > 0 {
-				sp.retrans = append(sp.retrans, lost...)
-				c.cc.onLost(lostBytes, latestSent, now)
+			out := sp.sent.collectTimeLosses(now, &c.rtt)
+			if out.lostBytes > 0 {
+				sp.retrans = append(sp.retrans, out.lost...)
+				c.cc.onLost(out.lostBytes, out.latestLossSent, now)
 				c.retransmitLocked()
 			}
+			c.settleProbeLocked(out)
 		}
 		earlier(sp.sent.lossTime)
 

@@ -107,6 +107,10 @@ type sentPacket struct {
 	// acked is processAck's working mark. It never survives a call: a marked
 	// packet is removed by the same call that marked it.
 	acked bool
+	// pmtuProbe marks a DPLPMTUD probe (pmtu.go): its loss releases its
+	// bytes from flight but is no congestion event (RFC 9000 §14.4), and
+	// its acknowledgement or loss is reported by number to the search.
+	pmtuProbe bool
 }
 
 // sentTracker is one packet-number space's in-flight bookkeeping. Packets are
@@ -147,6 +151,12 @@ type ackOutcome struct {
 	// pre-recovery straggler in a batch must not shield a genuinely new
 	// loss epoch from the window reduction it deserves.
 	latestLossSent time.Time
+	// probeAcked and probeLost report a DPLPMTUD probe's fate by packet
+	// number (pmtu.go matches it against the probe in flight); probeLostBytes
+	// leave flight without the window shrinking.
+	probeAcked, probeLost     bool
+	probeAckedPN, probeLostPN uint64
+	probeLostBytes            int
 }
 
 // processAck removes what the ranges cover and declares losses. largest is
@@ -198,6 +208,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		if p.ackEliciting {
 			out.sawAckEliciting = true
 		}
+		if p.pmtuProbe {
+			out.probeAcked, out.probeAckedPN = true, p.pn
+		}
 		if p.pn == largest {
 			out.largestWasNew = true
 			out.largestEliciting = p.ackEliciting
@@ -228,6 +241,11 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		for _, p := range s.packets {
 			lostByCount := p.pn+packetThreshold <= largest
 			lostByTime := p.pn < largest && p.sentAt.Before(lostBefore)
+			if (lostByCount || lostByTime) && p.pmtuProbe {
+				out.probeLost, out.probeLostPN = true, p.pn
+				out.probeLostBytes += p.size
+				continue
+			}
 			if lostByCount || lostByTime {
 				out.lostBytes += p.size
 				if len(p.payload) > 0 {
@@ -259,24 +277,32 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 // only ever runs toward resending — duplicates merge in reassembly and
 // acknowledgements retire the copies — which is the cheap side to be wrong
 // on.
-func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (lost [][]byte, lostBytes int, latestSent time.Time) {
+//
+// A DPLPMTUD probe that matured is reported apart (probeLost and the
+// probe's bytes), never in lostBytes: its loss is no congestion event.
+func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out ackOutcome) {
 	if s.lossTime.IsZero() || now.Before(s.lossTime) {
-		return nil, 0, time.Time{}
+		return out
 	}
 	threshold := max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
 	lostBefore := now.Add(-threshold)
 	s.lossTime = time.Time{}
 	kept := s.packets[:0]
 	for _, p := range s.packets {
+		if p.sentAt.Before(lostBefore) && p.pmtuProbe {
+			out.probeLost, out.probeLostPN = true, p.pn
+			out.probeLostBytes += p.size
+			continue
+		}
 		if p.sentAt.Before(lostBefore) {
-			lostBytes += p.size
+			out.lostBytes += p.size
 			if len(p.payload) > 0 {
-				lost = append(lost, p.payload)
+				out.lost = append(out.lost, p.payload)
 			}
-			if p.sentAt.After(latestSent) {
+			if p.sentAt.After(out.latestLossSent) {
 				// The newest loss gates the congestion event, same as the
 				// ACK path (B.8).
-				latestSent = p.sentAt
+				out.latestLossSent = p.sentAt
 			}
 			continue
 		}
@@ -286,7 +312,7 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (lost 
 		kept = append(kept, p)
 	}
 	s.packets = kept
-	return lost, lostBytes, latestSent
+	return out
 }
 
 // oldestEliciting is what the probe timeout is armed on.
@@ -373,8 +399,10 @@ func (c *newReno) onSent(bytes int) { c.inFlight += bytes }
 // onLifted releases the bytes of a packet the probe timeout lifted from the
 // flight record to resend: its copy re-enters through onSent, so the flight
 // stays the same size, and the window does not move — a probe timeout is
-// not a congestion event (RFC 9002 §6.2.4).
-func (c *newReno) onLifted(bytes int) { c.inFlight -= bytes }
+// not a congestion event (RFC 9002 §6.2.4). A lost DPLPMTUD probe leaves
+// the same way (RFC 9000 §14.4); floored because a probe sent on the
+// previous path may be declared lost after the controller was rebuilt.
+func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 
 // paceWindow is the window the pacer prices sends against: doubled in slow
 // start, where the window itself doubles per round trip and pacing at the

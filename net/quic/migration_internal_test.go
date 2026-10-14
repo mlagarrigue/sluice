@@ -1545,7 +1545,9 @@ func openAppPackets(t *testing.T, c *Conn, pc *recordingPC) [][]Frame {
 	}
 	var out [][]Frame
 	for i, w := range pc.recorded() {
-		if len(w.data) > c.maxDatagram {
+		// The DPLPMTUD probe (pmtu.go) is the one datagram sized past
+		// maxDatagram, by design; everything else is bounded by it.
+		if len(w.data) > c.maxDatagram && len(w.data) != pmtuProbeSize {
 			t.Errorf("datagram %d is %d bytes, over maxDatagram %d", i, len(w.data), c.maxDatagram)
 		}
 		payload, _, err := opener.Open(w.data, 1+len(c.dcid), 0)

@@ -56,6 +56,10 @@ type sendOpts struct {
 	// expanded "unless the anti-amplification limit does not permit", and
 	// a probe padded past the budget is not sent at all.
 	padTo int
+	// pmtuProbe marks a DPLPMTUD probe (pmtu.go): recorded in flight so its
+	// acknowledgement proves the size and its loss moves to the next try,
+	// but released from flight without a congestion event when lost.
+	pmtuProbe bool
 }
 
 // maxStreamChunk is how much stream payload fits one packet, leaving room
@@ -612,7 +616,13 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	if p.opts.ackOnly {
 		return out, nil
 	}
-	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true}
+	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe}
+	if p.opts.pmtuProbe {
+		// Counted here, not where the probe was decided: a packet refused
+		// before sealing (number space or key exhausted) was never a try.
+		c.pmtu.inFlight, c.pmtu.probePN = true, p.pn
+		c.pmtu.tries++
+	}
 	if !p.opts.noRetrans && len(p.retransPart) > 0 {
 		if p.opts.own {
 			record.payload = p.retransPart
@@ -700,6 +710,10 @@ func (c *Conn) flushControlLocked() {
 	if c.spaces[spaceApplication].sealer == nil {
 		return
 	}
+	// The DPLPMTUD probe waits on the same things the control queue does —
+	// a validated path, room in the window — and is retried from the same
+	// place.
+	c.maybeProbePMTULocked()
 	for {
 		c.issueLocalCIDsLocked()
 		before := len(c.grants) + len(c.control)

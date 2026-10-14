@@ -85,15 +85,15 @@
 //     flight it provokes leave together, Initial and Handshake packets in
 //     one datagram, with §14.1's padding carried by the packet that closes
 //     it rather than by the Initial alone.
-//   - Datagram size (§14): every datagram this package sends is at most
-//     1200 bytes, the smallest maximum §14.1 guarantees on any path QUIC
-//     runs on. [TransportParameters.MaxUDPPayloadSize] bounds what this
-//     end reads, not what it sends: without DPLPMTUD (§14.3, not
-//     implemented) nothing proves the path carries more, and §14.2 says
-//     not to send more without that proof — a larger datagram the path
-//     drops would be retransmitted at the same size into the same hole.
-//     On a 1500-byte Ethernet path that forgoes about 7 % of payload per
-//     datagram (1452 would fit); see docs/guide/limits.md.
+//   - Datagram size (§14): datagrams start at the 1200 bytes §14.1
+//     guarantees on any path and rise to 1452 — an Ethernet MTU less IPv6
+//     and UDP headers — once a PING+PADDING probe of that size is
+//     acknowledged (DPLPMTUD, §14.3, RFC 8899): one size, probed after the
+//     handshake and after each migration, three tries, then 1200 for the
+//     rest of that path. The peer's [TransportParameters.MaxUDPPayloadSize]
+//     caps the probe. No search between the two sizes, no ICMP (§14.2.1
+//     does not require it); a lost probe is not a congestion event
+//     (§14.4). See docs/guide/limits.md.
 //   - Stateless resets (§10.3): a connection recognises a reset by the
 //     tokens its peer announced — NEW_CONNECTION_ID's, and the handshake's
 //     stateless_reset_token — and dies immediately rather than by idle
