@@ -65,6 +65,9 @@ const (
 	driverSluice = "sluice"
 	driverPgx    = "pgx"
 
+	responseBuffered = "buffered"
+	responseStream   = "stream"
+
 	// maxDBConns bounds -db-conns: PostgreSQL's own default ceiling is 100,
 	// and pgxpool counts in int32.
 	maxDBConns = 4096
@@ -88,8 +91,8 @@ func parseOptions(args []string) (options, error) {
 		"axis D: httpstream Config.MaxRequestsPerBatch; 0 is the package default (64); httpstream transports only")
 	fs.IntVar(&o.maxRequestsPerConn, "max-requests-per-conn", 0,
 		"axis D: httpstream Config.MaxRequestsPerConn; 0 is the package default (1024), -1 is unbounded; httpstream transports only")
-	fs.StringVar(&o.response, "response", "buffered",
-		"axis E: buffered (R), stream (not implemented until axis E)")
+	fs.StringVar(&o.response, "response", responseBuffered,
+		"axis E: buffered (R), stream (the list is written and flushed batch by batch, chunked; with -compression, the encoder is flushed per batch too)")
 	fs.StringVar(&o.compression, "compression", "none",
 		"axis F: none (R), gzip1, gzip6, deflate6; the body is encoded when the client accepts it")
 
@@ -142,9 +145,7 @@ func (o options) validate() error {
 		return errors.New("-max-requests-per-batch must be >= 0 and -max-requests-per-conn >= -1")
 	}
 	switch o.response {
-	case "buffered":
-	case "stream":
-		return fmt.Errorf("-response stream: %w until axis E", errNotImplemented)
+	case responseBuffered, responseStream:
 	default:
 		return fmt.Errorf("-response %q: unknown", o.response)
 	}

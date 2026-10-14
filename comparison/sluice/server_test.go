@@ -66,6 +66,11 @@ var variants = []variant{
 	{"gzip6", []string{"-compression", "gzip6"}},
 	{"deflate6", []string{"-compression", "deflate6"}},
 	{"httpstream-h2-gzip6", []string{"-transport", "httpstream-h2", "-compression", "gzip6"}},
+	{"stream", []string{"-response", "stream"}},
+	{"httpstream-h1-stream", []string{"-transport", "httpstream-h1", "-response", "stream"}},
+	{"httpstream-h3-stream", []string{"-transport", "httpstream-h3", "-response", "stream"}},
+	{"stream-gzip6", []string{"-response", "stream", "-compression", "gzip6"}},
+	{"httpstream-h2-stream-gzip6", []string{"-transport", "httpstream-h2", "-response", "stream", "-compression", "gzip6"}},
 }
 
 func requirePG(tb testing.TB) {
@@ -178,6 +183,9 @@ type reply struct {
 	ctype  string
 	proto  string
 	body   []byte
+	// streamed is what the client can see of axis E: no Content-Length
+	// (chunked under HTTP/1.1, DATA frames ended by a flag under h2 and h3).
+	streamed bool
 }
 
 func (s *server) do(method, path string, body []byte) (reply, error) {
@@ -223,7 +231,7 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 	if err != nil {
 		return reply{}, err
 	}
-	return reply{resp.StatusCode, resp.Header.Get("Content-Type"), resp.Proto, b}, nil
+	return reply{resp.StatusCode, resp.Header.Get("Content-Type"), resp.Proto, b, resp.ContentLength < 0}, nil
 }
 
 // normalise is the comparison §4 asks for: after parsing, so that key order,
@@ -379,6 +387,18 @@ func TestVariantsAnswerLikeR(t *testing.T) {
 			if n := countWrites(t); n != wrote+sampleSize {
 				t.Fatalf("%d rows in comparison_writes, want %d: the writes did not all land", n, wrote+sampleSize)
 			}
+			// Axis E: a streamed list has no Content-Length, a buffered one
+			// has; the other scenarios stay buffered whatever -response.
+			for _, path := range []string{"/orders?from=1&limit=10", "/static"} {
+				r, err := s.do("GET", path, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := s.o.response == responseStream && strings.HasPrefix(path, "/orders?")
+				if r.streamed != want {
+					t.Fatalf("GET %s: streamed %v, want %v", path, r.streamed, want)
+				}
+			}
 		})
 	}
 }
@@ -413,7 +433,7 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 	refused := [][]string{
 		{"-transport", "httpstream-h3", "-tls=false"},
 		{"-driver", "libpq"},
-		{"-response", "stream"},
+		{"-response", "chunked"},
 		{"-compression", "br"},
 		{"-transport", "nethttp-h2", "-tls=false"},
 		{"-transport", "nethttp-h1", "-max-requests-per-conn", "-1"},
@@ -496,6 +516,85 @@ func BenchmarkList1000(b *testing.B) {
 		k %= keySpace - listLimit
 		return request{"list", "GET", fmt.Sprintf("/orders?from=%d&limit=%d", k, listLimit), nil, "from", k}
 	})
+}
+
+// BenchmarkList1000Latency is the pre-signal of axis E: one client, one
+// connection, sequential list requests, and per request the two delays a
+// streamed answer moves — the first body byte (TTFB) and the last (TTLB) —
+// as interop/bench_test.go measures them, plus the peak of the heap while
+// it runs. The heap is the process's, client included: the figure compares
+// stream against buffered in the same process, nothing more. Under
+// SLUICE_STUDY_VARIANT=stream against the default R.
+func BenchmarkList1000Latency(b *testing.B) {
+	var args []string
+	if name := os.Getenv("SLUICE_STUDY_VARIANT"); name != "" {
+		i := slices.IndexFunc(variants, func(v variant) bool { return v.name == name })
+		if i < 0 {
+			b.Fatalf("SLUICE_STUDY_VARIANT=%s: not a variant", name)
+		}
+		args = variants[i].args
+	}
+	s := start(b, args...)
+	url := s.url + fmt.Sprintf("/orders?from=%d&limit=%d", 1, listLimit)
+	buf := make([]byte, 32<<10)
+	get := func() (ttfb, ttlb time.Duration) {
+		start := time.Now()
+		resp, err := s.client.Get(url)
+		if err != nil {
+			b.Fatalf("GET: %v", err)
+		}
+		var n int
+		for n == 0 && err == nil {
+			n, err = resp.Body.Read(buf)
+		}
+		ttfb = time.Since(start)
+		if err == nil {
+			_, err = io.CopyBuffer(io.Discard, resp.Body, buf)
+		}
+		ttlb = time.Since(start)
+		_ = resp.Body.Close()
+		if err != nil && !errors.Is(err, io.EOF) {
+			b.Fatalf("GET: reading the body: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			b.Fatalf("GET: %s", resp.Status)
+		}
+		return ttfb, ttlb
+	}
+	get() // the handshake, outside the timer
+	first := make([]time.Duration, 0, b.N)
+	last := make([]time.Duration, 0, b.N)
+	var ms runtime.MemStats
+	var peakInuse, peakSys uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		f, l := get()
+		first = append(first, f)
+		last = append(last, l)
+		runtime.ReadMemStats(&ms)
+		peakInuse = max(peakInuse, ms.HeapInuse)
+		peakSys = max(peakSys, ms.Sys)
+	}
+	b.StopTimer()
+	reportPercentiles(b, "ttfb", first)
+	reportPercentiles(b, "ttlb", last)
+	b.ReportMetric(float64(peakInuse)/(1<<10), "heap-inuse-peak-KiB")
+	b.ReportMetric(float64(peakSys)/(1<<10), "sys-peak-KiB")
+}
+
+// reportPercentiles reports p50, p90, p99 and p99.9 of ds in nanoseconds,
+// nearest rank: below 1,000 samples, p99.9 is the slowest request.
+func reportPercentiles(b *testing.B, name string, ds []time.Duration) {
+	b.Helper()
+	slices.Sort(ds)
+	for _, p := range []struct {
+		label string
+		q     float64
+	}{{"p50", 0.5}, {"p90", 0.9}, {"p99", 0.99}, {"p99.9", 0.999}} {
+		i := min(len(ds)-1, max(0, int(float64(len(ds))*p.q+0.5)-1))
+		b.ReportMetric(float64(ds[i].Nanoseconds()), name+"-"+p.label+"-ns")
+	}
 }
 
 func BenchmarkMixed(b *testing.B) {

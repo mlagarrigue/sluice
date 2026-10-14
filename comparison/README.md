@@ -19,7 +19,7 @@ compression — and every axis of the internal study is a flag:
 | B — driver | `-driver sluice` (R), `pgx` | both, under the same gateway and connection budget |
 | C — grouping | `-gateway-size 64 -gateway-within 2ms` | any positive values |
 | D — transport batch | `-max-requests-per-batch`, `-max-requests-per-conn` (`-1` unbounded) | httpstream transports only |
-| E — response | `-response buffered` (R), `stream` | stream refused until axis E |
+| E — response | `-response buffered` (R), `stream` | the list is written as the store delivers it, one flush per batch of rows, no `Content-Length`; with `-compression`, the encoder is flushed per batch too; the other scenarios stay buffered |
 | F — compression | `-compression none` (R), `gzip1`, `gzip6`, `deflate6` | stdlib encoders on the buffered body when the client accepts it; `Vary: Accept-Encoding` |
 
 A variant the code does not implement is refused before the server listens,

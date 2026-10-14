@@ -132,7 +132,12 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = b
 	}
 	ans := a.route(r.Context(), r.Method, r.URL.RequestURI(), body)
-	if !a.codec.accepts(r.Header.Get("Accept-Encoding")) {
+	accepts := a.codec.accepts(r.Header.Get("Accept-Encoding"))
+	if ans.stream != nil {
+		a.writeStream(w, ans, accepts)
+		return
+	}
+	if !accepts {
 		_ = web.WriteJSON(w, ans.status, ans.body)
 		return
 	}
@@ -154,6 +159,50 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Vary", "Accept-Encoding")
 	w.WriteHeader(ans.status)
 	_, _ = w.Write(enc)
+}
+
+// writeStream is axis E on net/http: no Content-Length, so net/http frames
+// the body as the protocol streams it (chunked under HTTP/1.1, DATA frames
+// under h2), and each batch of fragments is flushed to the socket as soon as
+// it is written. The document is the one WriteJSON would have written, its
+// trailing newline included; under axis F the fragments go through the
+// codec, flushed per batch as well, and the newline is dropped as the
+// buffered compressed path drops it.
+func (a *app) writeStream(w http.ResponseWriter, ans answer, compress bool) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	var out io.Writer = w
+	var zw resetWriter
+	if compress {
+		h.Set("Content-Encoding", a.codec.token)
+		h.Set("Vary", "Accept-Encoding")
+		zw = a.codec.get(w)
+		defer a.codec.put(zw)
+		out = zw
+	}
+	w.WriteHeader(ans.status)
+	flusher, _ := w.(http.Flusher)
+	ans.stream(func(batch sluice.Batch[[]byte]) bool {
+		for _, frag := range batch.Items {
+			if _, err := out.Write(frag); err != nil {
+				return false
+			}
+		}
+		if zw != nil {
+			if err := zw.Flush(); err != nil {
+				return false
+			}
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	})
+	if zw != nil {
+		_ = zw.Close()
+		return
+	}
+	_, _ = io.WriteString(w, "\n")
 }
 
 var (
@@ -208,6 +257,14 @@ func unitTarget(req httpstream.Request) (int64, bool) {
 // request accepts the codec. The headers of a compressed answer are built
 // per response: the slice is read during the write and not retained.
 func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
+	if ans.stream != nil {
+		// Axis E: Response.Stream, the transport pulls the fragments and
+		// frames them itself; under axis F the codec is flushed per batch.
+		if !a.codec.accepts(string(req.Get("accept-encoding"))) {
+			return httpstream.Response{Status: ans.status, Headers: jsonHeader, Stream: ans.stream}
+		}
+		return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Stream: a.codec.encodeStream(ans.stream)}
+	}
 	b, err := json.Marshal(ans.body)
 	if err != nil {
 		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
@@ -219,12 +276,17 @@ func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
 	if err != nil {
 		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"compress"}`)}
 	}
-	headers := []httpstream.Header{
+	return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Body: enc}
+}
+
+// encodedHeaders are the headers of a compressed answer, built per response:
+// the slice is read during the write and not retained.
+func (a *app) encodedHeaders() []httpstream.Header {
+	return []httpstream.Header{
 		jsonHeader[0],
 		{Name: []byte("content-encoding"), Value: []byte(a.codec.token)},
 		varyHeader,
 	}
-	return httpstream.Response{Status: ans.status, Headers: headers, Body: enc}
 }
 
 // tlsConfig is the certificate the options name, or a self-signed ECDSA P-256
