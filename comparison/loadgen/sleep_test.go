@@ -2,11 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,52 +10,11 @@ import (
 	"time"
 )
 
-// sleepServer answers every path after exactly `d` — a sleep that wakes
-// early, then a spin to the instant, since time.Sleep alone overshoots by
-// ~0.2 ms here and the calibration wants the reference exact — with a document that
-// honours the response contract for the key the path carries, so that the
-// generator's checks all pass and only the delay is under test. A key
-// listed in `wrong` is answered with another key: the contract broken on
-// purpose.
-func sleepServer(tb testing.TB, d time.Duration, wrong map[int64]bool) *httptest.Server {
-	tb.Helper()
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sleepExactly(d)
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/static":
-			fmt.Fprint(w, `{"status":"ok"}`)
-		case strings.HasPrefix(r.URL.Path, "/orders/"):
-			var id int64
-			id, _ = strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/orders/"), 10, 64)
-			if wrong[id] {
-				id++
-			}
-			fmt.Fprintf(w, `{"id":%d,"total":%d,"label":"order-%d"}`, id, id*7, id)
-		default:
-			http.Error(w, "no such route", http.StatusNotFound)
-		}
-	}))
-	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"http/1.1"}}
-	srv.StartTLS()
-	tb.Cleanup(srv.Close)
-	return srv
-}
-
-func sleepExactly(d time.Duration) {
-	until := time.Now().Add(d)
-	if d > time.Millisecond {
-		time.Sleep(d - time.Millisecond)
-	}
-	for time.Now().Before(until) { //nolint:revive // the spin is the point
-	}
-}
-
 // testCampaign parses the flags of a test: no warm-up and no drain unless
 // the test asks for them, since a test runs its stages back to back.
-func testCampaign(tb testing.TB, url string, args ...string) campaign {
+func testCampaign(tb testing.TB, proto, url string, args ...string) campaign {
 	tb.Helper()
-	c, err := parse(append([]string{"-url", url, "-keyspace", "10000", "-warmup", "0", "-drain", "0"}, args...))
+	c, err := parse(append([]string{"-url", url, "-proto", proto, "-keyspace", "10000", "-warmup", "0", "-drain", "0"}, args...))
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -96,9 +51,15 @@ func runStage(tb testing.TB, c campaign) report {
 // the tail and not in the median. That inflation (p99.9 − p50) is the
 // generator's noise floor; a campaign publishes it (§7.4).
 func TestCalibration(t *testing.T) {
+	protos(t, testCalibration)
+}
+
+// testCalibration is the calibration under one protocol; a sub-test of
+// protos, not a helper.
+func testCalibration(t *testing.T, proto string) { //nolint:thelper // a sub-test body, its failures point here
 	run := func(d time.Duration) report {
-		srv := sleepServer(t, d, nil)
-		c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "200", "-duration", "3s", "-conns", "16")
+		srv := sleepServer(t, proto, d, nil)
+		c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "200", "-duration", "3s", "-conns", "16")
 		st := c.stage
 		rep := runStage(t, c)
 		t.Logf("server sleeping %v: sent %d ok %d queue_max %d queued %d", d, rep.Sent, rep.OK, rep.QueueMax, rep.Queued)
@@ -124,14 +85,21 @@ func TestCalibration(t *testing.T) {
 	}
 	floor := run(0)
 	rep := run(5 * time.Millisecond)
-	if floor.TTLB.P50 > 1 {
-		t.Fatalf("floor p50 %.3f ms: the apparatus alone costs more than a millisecond", floor.TTLB.P50)
+	// The floor is what the apparatus alone costs: under a millisecond with
+	// net/http at both ends; quic-go's stack, in user space at both ends of
+	// the same process, costs about one more (measured: 1.1 ms under -race).
+	maxFloor := 1.0
+	if proto == protoH3 {
+		maxFloor = 2.0
+	}
+	if floor.TTLB.P50 > maxFloor {
+		t.Fatalf("floor p50 %.3f ms: the apparatus alone costs more than %.0f ms", floor.TTLB.P50, maxFloor)
 	}
 	if above := rep.TTLB.P50 - floor.TTLB.P50; above < 4.95 || above > 5.3 {
 		t.Fatalf("TTLB p50 %.3f ms sits %.3f ms above the floor %.3f, want 5 ms", rep.TTLB.P50, above, floor.TTLB.P50)
 	}
-	if rep.TTLB.P50 < 5.0 || rep.TTLB.P50 > 5.5+raceSlack {
-		t.Fatalf("TTLB p50 %.3f ms, want 5 ms + loopback RTT, within [5.0, %.1f]", rep.TTLB.P50, 5.5+raceSlack)
+	if ceiling := 4.5 + maxFloor + raceSlack; rep.TTLB.P50 < 5.0 || rep.TTLB.P50 > ceiling {
+		t.Fatalf("TTLB p50 %.3f ms, want 5 ms + loopback RTT, within [5.0, %.1f]", rep.TTLB.P50, ceiling)
 	}
 	if rep.TTFB.P50 < 5.0 || rep.TTFB.P50 > rep.TTLB.P50 {
 		t.Fatalf("TTFB p50 %.3f ms, TTLB p50 %.3f ms", rep.TTFB.P50, rep.TTLB.P50)
@@ -144,8 +112,8 @@ func TestCalibration(t *testing.T) {
 // corrected); measured from the send instant, as a closed loop would, they
 // would read 5 ms throughout and hide the stall.
 func TestOverloadedStageQueues(t *testing.T) {
-	srv := sleepServer(t, 5*time.Millisecond, nil)
-	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4")
+	srv := sleepServer(t, protoH1, 5*time.Millisecond, nil)
+	c := testCampaign(t, protoH1, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4")
 	rep := runStage(t, c)
 	t.Logf("sent %d ok %d queue_max %d queued %d achieved %.0f req/s", rep.Sent, rep.OK, rep.QueueMax, rep.Queued, rep.Achieved)
 	t.Logf("wait p50 %.1f ttlb p50 %.1f p99 %.1f max %.1f ms", rep.Wait.P50, rep.TTLB.P50, rep.TTLB.P99, rep.TTLB.Max)
@@ -174,10 +142,10 @@ func TestOverloadedStageQueues(t *testing.T) {
 // TestWrongKeyFailsTheStage: one answer carrying another key than the one
 // asked for is counted, and the stage is failed, with no extrapolation (§4).
 func TestWrongKeyFailsTheStage(t *testing.T) {
-	c := testCampaign(t, "https://unused", "-scenario", "unit", "-rate", "100", "-duration", "1s", "-conns", "4")
+	c := testCampaign(t, protoH1, "https://unused", "-scenario", "unit", "-rate", "100", "-duration", "1s", "-conns", "4")
 	draw := c.scenario.draw(c.seed, c.keyspace)
 	wrong := map[int64]bool{draw(7).key: true, draw(42).key: true}
-	srv := sleepServer(t, 0, wrong)
+	srv := sleepServer(t, protoH1, 0, wrong)
 	c.url = srv.URL
 	rep := runStage(t, c)
 	if !rep.Failed() || rep.BadKey != 2 || rep.Errors != 2 || rep.OK != rep.Sent-2 {
@@ -191,15 +159,24 @@ func TestWrongKeyFailsTheStage(t *testing.T) {
 // TestRampStopsWhereTheBudgetEnds is the ramp against the 5 ms server with
 // C recomputed per stage: C = 2 R (RTT + X) carries any rate the server
 // answers under 2X, so what breaks is the tester's ceiling on C, here 4
-// connections, which carry 800 req/s. Under a long X the wait in the
-// queue stays under the SLO, and the cause published is the queue: the
+// connections, which carry 800 req/s (one connection and its 8 streams,
+// 1 600 req/s, under h2 and h3). Under a long X the wait in the queue
+// stays under the SLO, and the cause published is the queue: the
 // generator limits, the stage is invalid, not a verdict on the server.
 // The stages before it are held, each with its own budget.
 func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
-	srv := sleepServer(t, 5*time.Millisecond, nil)
-	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rates", "100,300,1200", "-duration", "1s",
-		"-slo", "5s", "-max-conns", "4", "-warmup", "500ms", "-drain", "100ms")
-	if c.budget(100) != 4 || c.budget(300) != 4 {
+	protos(t, testRampStopsWhereTheBudgetEnds)
+}
+
+func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thelper // a sub-test body
+	ceiling, last := 4, 1200
+	if proto != protoH1 {
+		ceiling, last = 1, 3200
+	}
+	srv := sleepServer(t, proto, 5*time.Millisecond, nil)
+	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "100,300,"+strconv.Itoa(last), "-duration", "1s",
+		"-slo", "5s", "-max-conns", strconv.Itoa(ceiling), "-warmup", "500ms", "-drain", "100ms")
+	if c.budget(100) != ceiling || c.budget(300) != ceiling {
 		t.Fatalf("budgets %d %d, want the ceiling", c.budget(100), c.budget(300))
 	}
 	var out strings.Builder
@@ -216,27 +193,70 @@ func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
 		rate  int
 		held  bool
 		cause string
-	}{{100, true, ""}, {300, true, ""}, {1200, false, causeQueue}} {
+	}{{100, true, ""}, {300, true, ""}, {last, false, causeQueue}} {
 		var rep report
 		if err := json.Unmarshal([]byte(lines[i]), &rep); err != nil {
 			t.Fatal(err)
 		}
-		if rep.Rate != want.rate || rep.Held != want.held || rep.Cause != want.cause || rep.Conns != 4 {
+		if rep.Rate != want.rate || rep.Held != want.held || rep.Cause != want.cause || rep.Conns != ceiling || rep.Proto != proto {
 			t.Fatalf("stage %d: rate %d held %v cause %q conns %d, want %+v", i, rep.Rate, rep.Held, rep.Cause, rep.Conns, want)
 		}
 		if rep.Sent != want.rate || rep.Errors != 0 {
 			t.Fatalf("stage %d: sent %d errors %d, want the second (measured) at %d req/s", i, rep.Sent, rep.Errors, want.rate)
 		}
 		if want.held && rep.Queued > 0 {
-			t.Fatalf("stage %d: queued %d at a rate 4 connections carry", i, rep.Queued)
+			t.Fatalf("stage %d: queued %d at a rate the ceiling carries", i, rep.Queued)
 		}
 	}
+	if n := srv.conns.Load(); n != int64(ceiling) {
+		t.Fatalf("the server accepted %d connections, the ceiling is %d", n, ceiling)
+	}
+}
+
+// TestStreamsPerConn is the ceiling of §3.5 seen from the server: under h2
+// and h3, C connections and never more (the transport coalesces nothing),
+// at most 8 requests in flight on each of them, and exactly 8 once the
+// stage overloads them — the excess waits in the generator's queue.
+func TestStreamsPerConn(t *testing.T) {
+	protos(t, func(t *testing.T, proto string) { //nolint:thelper // a sub-test body
+		if proto == protoH1 {
+			t.Skip("one request in flight per connection, by construction")
+		}
+		srv := sleepServer(t, proto, 5*time.Millisecond, nil)
+		// 4 connections × 8 streams carry 6 400 req/s: at 1 600, about 2
+		// requests are in flight per connection, and the queue stays empty
+		// even with both ends slowed by the race detector.
+		c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "1600", "-duration", "1s", "-conns", "4")
+		rep := runStage(t, c)
+		t.Logf("at 1600 req/s: conns %d max in flight %d queued %d", srv.conns.Load(), srv.maxInFlight.Load(), rep.Queued)
+		if rep.Failed() || !rep.Held {
+			t.Fatalf("errors %d connect %d held %v cause %q", rep.Errors, rep.Connect, rep.Held, rep.Cause)
+		}
+		if n, m := srv.conns.Load(), srv.maxInFlight.Load(); n != 4 || m > streamsPerConn || m < 2 {
+			t.Fatalf("%d connections, %d in flight at most on one, want 4 and 2..8", n, m)
+		}
+
+		srv = sleepServer(t, proto, 5*time.Millisecond, nil)
+		// 2 connections carry 3 200 req/s and the stage asks for 6 000.
+		c = testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "6000", "-duration", "500ms", "-conns", "2")
+		rep = runStage(t, c)
+		t.Logf("at 6000 req/s: conns %d max in flight %d queue_max %d achieved %.0f", srv.conns.Load(), srv.maxInFlight.Load(), rep.QueueMax, rep.Achieved)
+		if rep.Failed() {
+			t.Fatalf("errors %d connect %d", rep.Errors, rep.Connect)
+		}
+		if n, m := srv.conns.Load(), srv.maxInFlight.Load(); n != 2 || m != streamsPerConn {
+			t.Fatalf("%d connections, %d in flight at most on one, want 2 and exactly %d", n, m, streamsPerConn)
+		}
+		if rep.QueueMax < 1000 || rep.Achieved > 3600 {
+			t.Fatalf("queue_max %d achieved %.0f req/s: 16 streams at 5 ms carry 3 200", rep.QueueMax, rep.Achieved)
+		}
+	})
 }
 
 // TestBudget is C = 2 R (RTT + X) on the study's example (§3.5): the unit
 // read at 8 000 req/s under 20 ms of RTT and X = 25 ms wants 720.
 func TestBudget(t *testing.T) {
-	c := testCampaign(t, "https://unused", "-scenario", "unit", "-rtt", "20ms", "-ramp")
+	c := testCampaign(t, protoH1, "https://unused", "-scenario", "unit", "-rtt", "20ms", "-ramp")
 	if got := c.budget(8000); got != 720 {
 		t.Fatalf("C(8000) = %d, want 720", got)
 	}
@@ -260,6 +280,9 @@ func TestBudget(t *testing.T) {
 	if _, err := parse([]string{"-ramp", "-rates", "100"}); err == nil {
 		t.Fatal("-ramp with -rates was accepted")
 	}
+	if _, err := parse([]string{"-proto", "h4"}); err == nil {
+		t.Fatal("-proto h4 was accepted")
+	}
 }
 
 // TestFreshConnections: with -new-conns 10, about a tenth of the requests
@@ -267,8 +290,12 @@ func TestBudget(t *testing.T) {
 // and is counted apart; the budget's connections are untouched, and no
 // connect fails on a loopback with a few hundred of them.
 func TestFreshConnections(t *testing.T) {
-	srv := sleepServer(t, 0, nil)
-	c := testCampaign(t, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
+	protos(t, testFreshConnections)
+}
+
+func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a sub-test body
+	srv := sleepServer(t, proto, 0, nil)
+	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
 	rep := runStage(t, c)
 	t.Logf("sent %d handshakes %d connect %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Connect, rep.TTLB.P50, rep.TTLB.P99)
 	if rep.Failed() || !rep.Held {
@@ -287,10 +314,13 @@ func TestFreshConnections(t *testing.T) {
 	if n != rep.Handshakes {
 		t.Fatalf("%d requests drawn fresh, %d handshakes", n, rep.Handshakes)
 	}
+	if got := srv.conns.Load(); got != int64(8+n) {
+		t.Fatalf("the server accepted %d connections, want the budget's 8 and %d fresh", got, n)
+	}
 }
 
 func TestDrawNeverRepeatsAndMixes(t *testing.T) {
-	st := testCampaign(t, "https://unused", "-scenario", "mixed", "-rate", "1000", "-duration", "10s").stage
+	st := testCampaign(t, protoH1, "https://unused", "-scenario", "mixed", "-rate", "1000", "-duration", "10s").stage
 	draw := st.scenario.draw(st.seed, st.keyspace)
 	seen := make(map[int64]bool)
 	kinds := make(map[kind]int)

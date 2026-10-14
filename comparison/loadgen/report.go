@@ -10,6 +10,7 @@ import (
 // answers that passed every check. Errors are counted, never averaged in.
 type report struct {
 	URL      string  `json:"url"`
+	Proto    string  `json:"proto"`
 	Scenario string  `json:"scenario"`
 	Rate     int     `json:"rate"`
 	Duration float64 `json:"duration_s"`
@@ -85,7 +86,7 @@ func (r *report) verdict() {
 
 func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int64) report {
 	rep := report{
-		URL: st.url, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
+		URL: st.url, Proto: st.proto, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
 		Conns: st.conns, Seed: st.seed, Sent: len(all),
 		SLO: ms(st.slo), RTT: ms(st.rtt), NewConns: st.newConns,
 		QueueMax: int(queueMax), Queued: int(queued),

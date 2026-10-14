@@ -41,13 +41,14 @@ func (st stage) run(ctx context.Context, cl *client) (report, error) {
 	// connection free (§3.5). A job posted but not yet taken by an idle
 	// worker is not queued, only late by a scheduling tick.
 	var load, queueMax, queued atomic.Int64
-	workers := st.conns * inFlightPerConn
+	perConn := st.inFlightPerConn()
+	workers := st.conns * perConn
 	results := make([][]result, workers)
 	var wg sync.WaitGroup
 	for w := range workers {
 		wg.Go(func() {
 			for j := range jobs {
-				r := cl.do(ctx, j)
+				r := cl.send(ctx, w/perConn, j)
 				load.Add(-1)
 				if !j.warm {
 					results[w] = append(results[w], r)

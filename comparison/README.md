@@ -98,11 +98,15 @@ closed-loop generator's figures too good. Everything it prints is a JSON
 line per stage, never a result of the study. It shares no code with
 Sluice.go: a bug symmetric between client and server would mask itself.
 
-What one stage does, HTTP/1.1 over TLS:
+What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
+`h2` or `h3`:
 
 - opens its connection budget before the clock starts (the TLS handshakes
-  never fall inside the measurement), one request in flight per
-  connection — the ceiling of 8 is for HTTP/2 and HTTP/3, which come next;
+  never fall inside the measurement): one virtual client is one connection
+  whatever the protocol, with one request in flight on it under HTTP/1.1
+  and at most 8 streams under HTTP/2 and HTTP/3 (§3.5). Each connection is
+  a transport of its own, so that `net/http` and `quic-go`, which both
+  share one connection per host, never coalesce two virtual clients;
   `-warmup` seconds are then sent at the stage's rate and never counted;
 - draws one key per request from a permutation of `1..-keyspace` under
   `-seed`, so no key repeats within a stage and every contender of a round
@@ -133,12 +137,17 @@ What one stage does, HTTP/1.1 over TLS:
 
 ```
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -proto h3 -rates 1000,4000 -duration 3s
 go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, empty trusts it
 ```
 
 The exit status is 1 when the stage is not a measurement: any error, or a
 failed connect. The mixed scenario is 80 % unit, 15 % list, 5 % write by
-position in the sequence, exact whatever the seed.
+position in the sequence, exact whatever the seed. HTTP/1.1 and HTTP/2 are
+`net/http`'s client; HTTP/3 is `quic-go`'s, required in `loadgen/go.mod`
+only, the version `interop/` and `sluice/` pin: the root module's graph
+is untouched (ADR 0002), and the generator never measures Sluice.go against
+itself.
 
 ### The ramp
 

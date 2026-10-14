@@ -4,11 +4,12 @@
 // checks the key in every answer (§2.1, §4) and publishes TTFB and TTLB
 // apart, one JSON line per stage.
 //
-// It speaks HTTP/1.1 over TLS and runs one stage or a ramp of them: stages
+// It speaks HTTP/1.1, HTTP/2 or HTTP/3 over TLS, one connection per virtual
+// client and at most 8 streams on it (§3.5), and runs one stage or a ramp of them: stages
 // on the study's geometric grid, a drain between two, the connection budget
 // recomputed per stage and opened before the clock starts, a share of fresh
 // connections, and the stop at the first stage that breaks, with its cause.
-// HTTP/2 and HTTP/3 come next. Nothing it prints is a result of the study:
+// Nothing it prints is a result of the study:
 // it is the apparatus.
 package main
 
@@ -46,7 +47,8 @@ func main() {
 // varies from stage to stage (rate and budget).
 type stage struct {
 	url      string
-	rate     int // requests per second, at a constant interval
+	proto    string // h1, h2 or h3
+	rate     int    // requests per second, at a constant interval
 	duration time.Duration
 	warmup   time.Duration // sent at the rate before the clock starts, never counted
 	conns    int           // the connection budget C of §3.5
@@ -87,10 +89,11 @@ func parse(args []string) (campaign, error) {
 	st := &c.stage
 	var name, rates string
 	fs.StringVar(&st.url, "url", "https://127.0.0.1:8443", "the server under test, scheme and host")
+	fs.StringVar(&st.proto, "proto", protoH1, "h1, h2 or h3: HTTP/1.1, HTTP/2 or HTTP/3, one connection per virtual client, at most 8 streams on it")
 	fs.IntVar(&st.rate, "rate", 100, "requests per second, sent at a constant interval; with -ramp, where the grid starts")
 	fs.DurationVar(&st.duration, "duration", 10*time.Second, "length of the measurement of a stage")
 	fs.DurationVar(&st.warmup, "warmup", 5*time.Second, "sent at the stage's rate before its clock starts, never counted")
-	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1 (a single stage; a ramp computes it)")
+	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1, up to 8 under HTTP/2 and HTTP/3 (a single stage; a ramp computes it)")
 	fs.StringVar(&name, "scenario", "unit", "static, unit, list, write or mixed (80 % unit, 15 % list, 5 % write)")
 	fs.IntVar(&st.keyspace, "keyspace", 100000, "ids the table holds, 1..keyspace; every request draws a different one")
 	fs.Uint64Var(&st.seed, "seed", 1, "seed of the draw, the same for every contender of a round (§2.1)")
@@ -111,6 +114,9 @@ func parse(args []string) (campaign, error) {
 		return c, fmt.Errorf("-scenario %q: want static, unit, list, write or mixed", name)
 	}
 	st.name, st.scenario = name, sc
+	if st.proto != protoH1 && st.proto != protoH2 && st.proto != protoH3 {
+		return c, fmt.Errorf("-proto %q: want h1, h2 or h3", st.proto)
+	}
 	if st.slo == 0 {
 		st.slo = defaultSLO[name]
 	}
