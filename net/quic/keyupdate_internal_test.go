@@ -259,7 +259,7 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 		}
 		accepted <- c
 		for {
-			st, err := c.AcceptStream()
+			st, err := c.AcceptStream(t.Context())
 			if err != nil {
 				return
 			}

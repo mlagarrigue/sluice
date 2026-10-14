@@ -122,7 +122,7 @@ func startEchoServerTLS(t *testing.T, pc net.PacketConn, cfg *tls.Config) (<-cha
 		}
 		connCh <- conn
 		for {
-			s, err := conn.AcceptStream()
+			s, err := conn.AcceptStream(t.Context())
 			if err != nil {
 				errCh <- err
 				return
@@ -251,7 +251,7 @@ func TestInitialPaddingWithASmallClientHello(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- err
 			return
@@ -503,7 +503,7 @@ func TestStopSendingAbandonsTheWriter(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			stopped <- err
 			return
@@ -754,7 +754,7 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- err
 			return

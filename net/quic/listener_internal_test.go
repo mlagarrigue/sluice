@@ -813,7 +813,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 	fastServer := recv(accepted, "second server Accept")
 	defer func() { _ = fastServer.Close() }()
 	go func() {
-		ss, err := fastServer.AcceptStream()
+		ss, err := fastServer.AcceptStream(t.Context())
 		if err != nil {
 			return
 		}

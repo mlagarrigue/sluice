@@ -2,6 +2,7 @@ package quic
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -551,16 +552,30 @@ func boolBit(b bool, bit uint64) uint64 {
 	return 0
 }
 
-// AcceptStream returns the next stream the peer opened. When the queue is
-// full the connection's read loop blocks rather than dropping or failing —
-// a server that stops accepting stops reading, and the peer feels it as
-// back-pressure through flow control.
-func (c *Conn) AcceptStream() (*Stream, error) {
+// AcceptStream returns the next stream the peer opened. It has three ways
+// out: the stream, once the peer opens one; ctx's error, verbatim, once ctx
+// is cancelled or past its deadline — a graceful shutdown, a timeout, an
+// abandoned request — so the caller can stop waiting without ending the
+// connection; and an error once the connection ends. A stream already
+// queued when ctx is already done may come out either way.
+//
+// When the queue is full the connection's read loop blocks rather than
+// dropping or failing — a server that stops accepting stops reading, and the
+// peer feels it as back-pressure through flow control.
+//
+// [Listener.Accept] takes no context: it has the shape of net.Listener's
+// Accept, and [Listener.Close] unblocks it without touching the connections
+// already accepted. A connection has no such switch — the only thing above
+// it that could wake its acceptors is [Conn.Close], which ends it — hence the
+// context here.
+func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 	select {
 	case s := <-c.accepted:
 		return s, nil
 	case <-c.closed:
 		return nil, errClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

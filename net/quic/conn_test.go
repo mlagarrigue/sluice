@@ -60,7 +60,7 @@ func TestHandshakeAndStream(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -142,7 +142,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- err
 			return

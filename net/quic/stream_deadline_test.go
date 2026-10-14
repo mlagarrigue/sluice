@@ -20,7 +20,7 @@ func openAccepted(t *testing.T, client, server *quic.Conn) (cs, ss *quic.Stream)
 	if _, err := cs.Write([]byte{'x'}); err != nil {
 		t.Fatal(err)
 	}
-	ss, err = server.AcceptStream()
+	ss, err = server.AcceptStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

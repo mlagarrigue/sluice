@@ -227,7 +227,7 @@ func localIPs() ([]net.IP, error) {
 // ends.
 func serveHQ(c *quic.Conn) {
 	for {
-		s, err := c.AcceptStream()
+		s, err := c.AcceptStream(context.Background())
 		if err != nil {
 			log.Printf("connection ended: %v (%v)", err, c.Err())
 			return

@@ -113,7 +113,7 @@ func TestListenerServesTwoConnectionsOnOneSocket(t *testing.T) {
 
 func echoOneStream(t *testing.T, c *quic.Conn) {
 	t.Helper()
-	s, err := c.AcceptStream()
+	s, err := c.AcceptStream(t.Context())
 	if err != nil {
 		return
 	}

@@ -344,7 +344,7 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 	}
 
 	go func() {
-		s, err := server.AcceptStream()
+		s, err := server.AcceptStream(t.Context())
 		if err != nil {
 			return
 		}

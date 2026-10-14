@@ -152,7 +152,7 @@ func transferOnce(b *testing.B, prof netemProfile, total int) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(b.Context())
 		if err != nil {
 			done <- result{err: err}
 			return

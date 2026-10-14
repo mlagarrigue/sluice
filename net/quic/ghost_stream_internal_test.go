@@ -59,7 +59,7 @@ func TestGhostStream(t *testing.T) {
 		if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}
-		if s, err := c.AcceptStream(); err != nil || s.id != id {
+		if s, err := c.AcceptStream(t.Context()); err != nil || s.id != id {
 			t.Fatalf("AcceptStream after stream %d: %v, %v", id, s, err)
 		}
 	}
@@ -102,7 +102,7 @@ func TestOutOfOrderIDOpensTheLowerStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []uint64{0, 4, 8} {
-		s, err := c.AcceptStream()
+		s, err := c.AcceptStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}

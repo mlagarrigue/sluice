@@ -105,7 +105,7 @@ func transfer(t *testing.T, client, server *Conn) {
 	const size = 64 << 10
 	done := make(chan error, 1)
 	go func() {
-		s, err := server.AcceptStream()
+		s, err := server.AcceptStream(t.Context())
 		if err != nil {
 			done <- err
 			return
