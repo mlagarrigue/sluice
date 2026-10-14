@@ -496,6 +496,11 @@ func requireALPN(cfg *tls.Config) error {
 // the AES-GCM pair from the standard library, ChaCha20-Poly1305 from
 // golang.org/x/crypto, the module's one dependency.
 //
+// A cfg with a [tls.ClientSessionCache] resumes a session the server has
+// issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
+// round trip and no 0-RTT data is sent — this package carries nothing in
+// 0-RTT packets, even when the server offers to accept them.
+//
 // The handshake gives up after [DefaultHandshakeTimeout]; [DialContext]
 // takes a context instead.
 func Dial(pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
@@ -1051,10 +1056,27 @@ func (c *Conn) pump() (done bool, err error) {
 // complete.
 func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	switch e.Kind {
-	case tls.QUICSetReadSecret:
-		return false, c.install(e.Level, e.Suite, e.Data, false)
-	case tls.QUICSetWriteSecret:
-		return false, c.install(e.Level, e.Suite, e.Data, true)
+	case tls.QUICSetReadSecret, tls.QUICSetWriteSecret:
+		if e.Level == tls.QUICEncryptionLevelEarly {
+			// The 0-RTT secret. crypto/tls hands it out whenever a
+			// resumption it attempts (a tls.Config with a
+			// ClientSessionCache, a ticket the server marked for early
+			// data, RFC 9001 §4.6.1) or accepts carries it. This package
+			// sends no 0-RTT packet and accepts none, which §4.6.1 leaves
+			// a client free to do after a resumption — so the secret has
+			// no space to go to. spaceFor would file it under the
+			// application space, where it sealed 1-RTT packets with a
+			// key the peer holds only for 0-RTT: dropped by the peer,
+			// declared lost here, until the 1-RTT secret replaced it.
+			// 0-RTT is not planned (quic.go, "what is not there").
+			return false, nil
+		}
+		return false, c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret)
+	case tls.QUICRejectedEarlyData:
+		// Nothing was sent under the early secret, so nothing is to be
+		// resent in 1-RTT (§4.6.2): the rejection is a non-event, not one
+		// of the kinds UnhandledTLSEvents counts.
+		return false, nil
 	case tls.QUICWriteData:
 		return false, c.sendCrypto(e.Level, e.Data)
 	case tls.QUICTransportParameters:

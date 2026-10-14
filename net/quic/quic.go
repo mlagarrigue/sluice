@@ -126,7 +126,9 @@
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT, ECN and session resumption.
+//   - 0-RTT and ECN. A server issues no session ticket; a client given a
+//     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
+//     still in one round trip and with nothing sent in 0-RTT.
 //
 // # The socket is the caller's
 //
