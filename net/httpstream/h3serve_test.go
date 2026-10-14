@@ -72,7 +72,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 // askH3 sends one request on a fresh stream and returns the stream.
 func askH3(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
 	t.Helper()
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

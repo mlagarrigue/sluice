@@ -73,7 +73,7 @@ func TestListenerServesTwoConnectionsOnOneSocket(t *testing.T) {
 	for i := range n {
 		wg.Go(func() {
 			c := dialUDP(t, addr, quic.DefaultParameters())
-			s, err := c.OpenStream()
+			s, err := c.OpenStream(t.Context())
 			if err != nil {
 				t.Errorf("client %d OpenStream: %v", i, err)
 				return
@@ -210,7 +210,7 @@ func TestListenerCloseUnblocksAcceptAndEndsAcceptedConnections(t *testing.T) {
 	// stream — before Close: what ends below is a live connection, not one
 	// that was already failing.
 	go echoOneStream(t, live)
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestListenerAlwaysRetryStillCompletesTheHandshake(t *testing.T) {
 	}()
 
 	c := dialUDP(t, addr, quic.DefaultParameters())
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestListenerHandshakeSurvivesAnAmplificationLimitedFirstFlight(t *testing.T
 	}()
 
 	c := dialUDP(t, pc.LocalAddr(), quic.DefaultParameters())
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	back, err := server.OpenStream()
+	back, err := server.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

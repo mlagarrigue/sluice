@@ -580,20 +580,32 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 }
 
 // OpenStream opens a bidirectional stream from this end, within what the
-// peer's MAX_STREAMS grant allows. Refusal is an error rather than a wait:
-// the callers this package has are tests and clients, and a client is better
-// told than parked.
-func (c *Conn) OpenStream() (*Stream, error) {
+// peer's MAX_STREAMS grant allows (RFC 9000 §4.6). When the grant is spent
+// it waits for the peer to raise it rather than refusing: a client that
+// opens a stream per request would otherwise have to poll, and the peer
+// grants more as soon as it retires a finished stream. The wait ends in one
+// of three ways — the credit arrives and the stream comes out; the context
+// ends and its error comes back verbatim, the connection untouched; the
+// connection closes meanwhile and the error says so, whatever the context.
+// A context that is already done still opens a stream when credit is at
+// hand: only the wait is cancellable.
+//
+// On the way into the wait this end tells the peer it is blocked with
+// STREAMS_BLOCKED (§19.14), once per exhaustion of the limit rather than
+// once per wake-up — the frame is a hint for the peer's accounting, not a
+// retry. With [context.Background] the wait lasts as long as the peer
+// withholds credit, which the idle timeout bounds: a peer that never grants
+// and never speaks ends the connection, and the wait with it.
+func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.hasPeerParams {
 		return nil, fmt.Errorf("%w: opening a stream before the handshake delivered the peer's limits", ErrQUIC)
 	}
 	if c.openedBidi >= c.peerMaxStreamsBidi {
-		c.control = appendFrame(c.control, frameStreamsBlocked, c.peerMaxStreamsBidi)
-		c.flushControlLocked()
-		return nil, fmt.Errorf("%w: the peer allows %d bidirectional streams and all are in use",
-			ErrQUIC, c.peerMaxStreamsBidi)
+		if err := c.waitBidiCreditLocked(ctx); err != nil {
+			return nil, err
+		}
 	}
 	base := uint64(1)
 	if c.isClient {
@@ -604,6 +616,39 @@ func (c *Conn) OpenStream() (*Stream, error) {
 	s := newStream(c, id)
 	c.streams[id] = s
 	return s, nil
+}
+
+// waitBidiCreditLocked parks under mu until the peer's bidirectional grant
+// exceeds what this end has opened, the context ends, or the connection
+// closes. The waits ride c.cond, which the MAX_STREAMS handler broadcasts
+// when the limit rises and closeOnce on the way out; the context's expiry
+// broadcasts too, under mu, so a Wait that has not yet parked cannot miss
+// it. Called only once a wait is certain: the common path, credit at hand,
+// pays nothing for the timer.
+func (c *Conn) waitBidiCreditLocked(ctx context.Context) error {
+	stop := context.AfterFunc(ctx, func() {
+		c.mu.Lock()
+		c.cond.Broadcast()
+		c.mu.Unlock()
+	})
+	defer stop()
+	for c.openedBidi >= c.peerMaxStreamsBidi {
+		select {
+		case <-c.closed:
+			return errClosed
+		default:
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !c.bidiBlockedTold {
+			c.bidiBlockedTold = true
+			c.control = appendFrame(c.control, frameStreamsBlocked, c.peerMaxStreamsBidi)
+			c.flushControlLocked()
+		}
+		c.cond.Wait()
+	}
+	return nil
 }
 
 // Stream returns the stream with this identifier, opening the bookkeeping

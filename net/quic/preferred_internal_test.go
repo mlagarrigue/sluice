@@ -353,7 +353,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		}
 		return nil
 	})
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		}
 		return nil
 	})
-	ss, err := server.OpenStream()
+	ss, err := server.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

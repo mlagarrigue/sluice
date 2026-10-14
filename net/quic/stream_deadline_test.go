@@ -13,7 +13,7 @@ import (
 // learns of it, and returns both ends once the server has accepted it.
 func openAccepted(t *testing.T, client, server *quic.Conn) (cs, ss *quic.Stream) {
 	t.Helper()
-	cs, err := client.OpenStream()
+	cs, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

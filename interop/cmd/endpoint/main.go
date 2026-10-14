@@ -412,23 +412,14 @@ func fetchAll(requests []string, kl io.Writer) error {
 }
 
 // fetch requests one path on a new stream and writes the answer under
-// /downloads. OpenStream refuses rather than waits when the peer's
-// MAX_STREAMS grant is spent, so a refusal is retried while the connection
-// lives.
+// /downloads. OpenStream waits for the peer's MAX_STREAMS grant when it is
+// spent; the context bounds that wait.
 func fetch(c *quic.Conn, p string) error {
-	var (
-		s   *quic.Stream
-		err error
-	)
-	for deadline := time.Now().Add(30 * time.Second); ; {
-		s, err = c.OpenStream()
-		if err == nil {
-			break
-		}
-		if c.Err() != nil || time.Now().After(deadline) {
-			return fmt.Errorf("open stream: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := c.OpenStream(ctx)
+	if err != nil {
+		return fmt.Errorf("open stream: %w", err)
 	}
 	if _, err := io.WriteString(s, "GET "+p+"\r\n"); err != nil {
 		return err

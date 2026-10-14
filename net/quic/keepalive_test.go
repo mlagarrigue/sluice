@@ -30,7 +30,7 @@ func TestKeepAliveHoldsAnIdleConnection(t *testing.T) {
 
 	time.Sleep(time.Second)
 
-	cs, err := client.OpenStream()
+	cs, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream after a second of silence: %v", err)
 	}

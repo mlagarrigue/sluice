@@ -145,7 +145,7 @@ func TestSluiceClientAgainstQuicGoServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sluice could not complete a handshake with quic-go: %v", err)
 	}
-	st, err := client.OpenStream()
+	st, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

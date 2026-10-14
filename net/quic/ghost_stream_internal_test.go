@@ -135,7 +135,7 @@ func TestLateFrameOnOwnClosedStream(t *testing.T) {
 	c.mu.Unlock()
 
 	for i := range uint64(streams) {
-		s, err := c.OpenStream()
+		s, err := c.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}

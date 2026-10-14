@@ -774,7 +774,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 		<-release
 		return nil
 	})
-	s, err := slowClient.OpenStream()
+	s, err := slowClient.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +824,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 		_, _ = ss.Write(buf)
 		_ = ss.CloseWrite()
 	}()
-	fs, err := fastClient.OpenStream()
+	fs, err := fastClient.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

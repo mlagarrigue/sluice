@@ -79,7 +79,7 @@ func TestHandshakeAndStream(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 	}
 	defer func() { _ = s.conn.Close() }()
 
-	stream, err := conn.OpenStream()
+	stream, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

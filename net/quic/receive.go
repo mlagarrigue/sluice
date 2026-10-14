@@ -860,7 +860,10 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		case f.Type == frameMaxStreams, f.Type == frameMaxStreams|1:
 			c.mu.Lock()
 			if f.Type == frameMaxStreams {
-				c.peerMaxStreamsBidi = max(c.peerMaxStreamsBidi, f.value)
+				if f.value > c.peerMaxStreamsBidi {
+					c.peerMaxStreamsBidi = f.value
+					c.bidiBlockedTold = false
+				}
 			} else {
 				c.peerMaxStreamsUni = max(c.peerMaxStreamsUni, f.value)
 			}

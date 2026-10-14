@@ -147,7 +147,7 @@ func startEchoServerTLS(t *testing.T, pc net.PacketConn, cfg *tls.Config) (<-cha
 
 func echoOnce(t *testing.T, conn *quic.Conn, payload string) error {
 	t.Helper()
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,7 @@ func TestInitialPaddingWithASmallClientHello(t *testing.T) {
 		t.Errorf("the first client datagram was %d bytes; §14.1 requires 1200", n)
 	}
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestWriteAfterResetIsRefused(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +517,7 @@ func TestStopSendingAbandonsTheWriter(t *testing.T) {
 	}
 	defer conn.Close()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +698,7 @@ func TestBatchModeReplenishesConnectionCredit(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 	}
 	defer conn.Close()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

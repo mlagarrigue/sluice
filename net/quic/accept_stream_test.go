@@ -32,7 +32,7 @@ func TestAcceptStreamReturnsOnContextCancel(t *testing.T) {
 func TestAcceptStreamStillHandsOutStreams(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
-	cs, err := client.OpenStream()
+	cs, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

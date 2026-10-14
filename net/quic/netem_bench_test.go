@@ -170,7 +170,7 @@ func transferOnce(b *testing.B, prof netemProfile, total int) {
 		b.Fatalf("Dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(b.Context())
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -702,7 +702,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 		}
 		return nil
 	})
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -914,7 +914,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 		t.Fatalf("%s: the server never received the %d bytes", what, n)
 	}
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,7 +1030,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 		})
 	}
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1151,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	}
 	_ = first.Close() // the old socket is the caller's, and the caller is done with it
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

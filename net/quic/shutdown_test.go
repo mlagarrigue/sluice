@@ -16,7 +16,7 @@ func TestShutdownDeliversTheTailBeforeClosing(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
 	const size = 64 << 10
-	cs, err := client.OpenStream()
+	cs, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestShutdownDeliversTheTailBeforeClosing(t *testing.T) {
 func TestShutdownGivesUpWithTheContext(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
-	cs, err := client.OpenStream()
+	cs, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

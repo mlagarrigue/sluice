@@ -411,7 +411,7 @@ func TestH3OverARealConnection(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -954,7 +954,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	// An uppercase field name, which RFC 9114 §4.2 makes malformed for the
 	// same reason HTTP/2 does: a name normalised rather than refused means one
 	// thing to this hop and another to the next.
-	bad, err := conn.OpenStream()
+	bad, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -965,7 +965,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	good, err := conn.OpenStream()
+	good, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1204,7 +1204,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	large, err := conn.OpenStream()
+	large, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1223,7 +1223,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 		t.Fatal("the large request never reached the handler")
 	}
 
-	small, err := conn.OpenStream()
+	small, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,7 +1325,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 	// byte of credit exists only because a finished body was released.
 	const bodyLen = 600 << 10
 	for i := range 8 {
-		s, err := conn.OpenStream()
+		s, err := conn.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1418,7 +1418,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 
 	ask := func(path string) *quic.Stream {
 		t.Helper()
-		s, err := conn.OpenStream()
+		s, err := conn.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}

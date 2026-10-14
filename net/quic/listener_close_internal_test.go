@@ -353,7 +353,7 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 		_, _ = s.Write(buf[:n])
 		_ = s.CloseWrite()
 	}()
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

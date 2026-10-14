@@ -163,7 +163,7 @@ func TestRemoteAddrFollowsRebind(t *testing.T) {
 	if got, want := client.LocalAddr().String(), second.LocalAddr().String(); got != want {
 		t.Errorf("client LocalAddr after Rebind = %s, want %s", got, want)
 	}
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

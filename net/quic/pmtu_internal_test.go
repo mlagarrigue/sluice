@@ -116,7 +116,7 @@ func transfer(t *testing.T, client, server *Conn) {
 		}
 		done <- err
 	}()
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
