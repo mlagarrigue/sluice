@@ -188,6 +188,16 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if !cc.hs.armed {
 		t.Error("CUBIC's initial slow start has HyStart++ disarmed (RFC 9438 §4.10)")
 	}
+	b, ok := newController(CongestionConfig{Algorithm: CongestionBBRv1}, 1200).(*bbr)
+	if !ok {
+		t.Fatal("CongestionBBRv1 did not build a BBR controller")
+	}
+	if b.window() != newNewReno(1200).cwnd || b.state != bbrStartup || b.pacingGain != bbrHighGain {
+		t.Errorf("BBR starts with window %d, state %d, gain %v: want Reno's window, Startup, 2/ln 2", b.window(), b.state, b.pacingGain)
+	}
+	if CongestionBBRv1.String() != "bbr1" {
+		t.Errorf("CongestionBBRv1 prints as %q", CongestionBBRv1)
+	}
 	// An algorithm this build does not know falls to the default, and the
 	// connection's Stats say which one runs.
 	pcA, pcB := newLoopbackPair(t)

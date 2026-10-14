@@ -98,6 +98,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				if d == 0 {
 					break
 				}
+				c.paceWaited = true
 				if until := now.Add(d); c.paceDeadline.IsZero() || until.Before(c.paceDeadline) {
 					c.paceDeadline = until
 					c.kickTimer()

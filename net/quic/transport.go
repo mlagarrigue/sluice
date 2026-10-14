@@ -177,15 +177,29 @@ const (
 	// long round trip no longer costs a window a datagram at a time.
 	// Experimental: measured on this package's emulated paths only.
 	CongestionCubic
+
+	// CongestionBBRv1 is BBR version 1
+	// (draft-cardwell-iccrg-bbr-congestion-control-00): the sender paces
+	// at the highest delivery rate measured over the last ten round trips
+	// and keeps about one bandwidth-delay product in flight, probing for
+	// more every eight round trips and draining the path for 200 ms every
+	// ten seconds to re-measure its propagation delay. Loss does not shrink
+	// its rate, so a path that drops a packet in a hundred is held at its
+	// bandwidth; the version has no bound on what it takes from a Reno or
+	// CUBIC flow sharing the link. Experimental: measured on this package's
+	// emulated paths only.
+	CongestionBBRv1
 )
 
-// String is the name the dashboard prints: "newreno", "cubic".
+// String is the name the dashboard prints: "newreno", "cubic", "bbr1".
 func (a CongestionAlgorithm) String() string {
 	switch a {
 	case CongestionNewReno:
 		return "newreno"
 	case CongestionCubic:
 		return "cubic"
+	case CongestionBBRv1:
+		return "bbr1"
 	}
 	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }

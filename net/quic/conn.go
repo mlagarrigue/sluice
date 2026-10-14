@@ -103,6 +103,9 @@ type Conn struct {
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
+	// paceWaited says a writer has waited on the pacer since the last
+	// write ran dry: the sender is paced, not idle (flowEmptyLocked).
+	paceWaited bool
 	// streamDeadline is the earliest read or write deadline a stream has
 	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
 	// what it holds when it matures and recomputes the next from the stream
@@ -717,7 +720,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	}
 	// An algorithm this build does not know runs the default, and Stats
 	// says so: the choice is local, so there is no peer to refuse it.
-	if params.Congestion.Algorithm > CongestionCubic {
+	if params.Congestion.Algorithm > CongestionBBRv1 {
 		params.Congestion.Algorithm = CongestionNewReno
 	}
 	c := &Conn{

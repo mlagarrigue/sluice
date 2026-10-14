@@ -167,12 +167,15 @@ type netemLink struct {
 }
 
 // benchAlgorithm is the controller the path benchmarks run:
-// SLUICE_QUIC_CC=cubic for CUBIC, anything else for the default, so one
-// test binary measures both sides of a controller A/B when the rounds
-// alternate the variable (docs/benchmarks.md).
+// SLUICE_QUIC_CC=cubic for CUBIC, bbr1 for BBR version 1, anything else
+// for the default, so one test binary measures both sides of a controller
+// A/B when the rounds alternate the variable (docs/benchmarks.md).
 var benchAlgorithm = func() quic.CongestionAlgorithm {
-	if os.Getenv("SLUICE_QUIC_CC") == "cubic" {
+	switch os.Getenv("SLUICE_QUIC_CC") {
+	case "cubic":
 		return quic.CongestionCubic
+	case "bbr1":
+		return quic.CongestionBBRv1
 	}
 	return quic.CongestionNewReno
 }()

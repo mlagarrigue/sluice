@@ -731,14 +731,22 @@ func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 // carries the last of its data: the moment the application runs out, which
 // is where the draft checks for an application-limited phase (§3.4). If the
 // window still has room for that packet, was not what limited the sender
-// this round (§7.8's signal, read the other way), and no lost payload waits
-// to be resent, the samples of the next round trip measure the application,
-// not the path. bytes is what the packet will occupy, the gate's own unit.
+// this round (§7.8's signal, read the other way), the pacer is not what is
+// holding the sender back either, and no lost payload waits to be resent,
+// the samples of the next round trip measure the application, not the
+// path. bytes is what the packet will occupy, the gate's own unit.
 // Writers here are synchronous — unsent data lives in a blocked Write's own
 // stack, not in a buffer the draft's first condition could inspect — so the
 // end of a write is the only place the transport can see the flow run dry.
+// A write that waited on the pacer is Linux's "packets still queued below
+// the socket" (tcp_rate_check_app_limited): a writer that ends every 64 KiB
+// chunk after waiting for its pace is paced, not idle — and a model-based
+// controller is paced most of the time, so without this test it would
+// discount nearly every sample of a bulk transfer.
 func (c *Conn) flowEmptyLocked(bytes int) {
-	if c.cc.windowLimited() || !c.cc.canSend(bytes) {
+	paced := c.paceWaited
+	c.paceWaited = false
+	if paced || c.cc.windowLimited() || !c.cc.canSend(bytes) {
 		return
 	}
 	for i := range c.spaces {
@@ -767,6 +775,8 @@ func newController(cfg CongestionConfig, maxDatagram int) congestionController {
 	switch cfg.Algorithm {
 	case CongestionCubic:
 		return newCubic(maxDatagram)
+	case CongestionBBRv1:
+		return newBBR(maxDatagram)
 	default:
 		return newNewReno(maxDatagram)
 	}
