@@ -1765,3 +1765,94 @@ func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
 	}
 	openAppPackets(t, c, pc)
 }
+
+// RFC 9000 §18.2: disable_active_migration is a zero-length value, read and
+// announced; one that carries bytes is TRANSPORT_PARAMETER_ERROR (§7.4,
+// invalid value), and one repeated is refused like every known identifier.
+func TestDisableActiveMigrationParameter(t *testing.T) {
+	p := DefaultParameters()
+	again, err := parseParameters(appendParameters(nil, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DisableActiveMigration {
+		t.Fatal("the default parameters announce disable_active_migration")
+	}
+	p.DisableActiveMigration = true
+	raw := appendParameters(nil, p)
+	again, err = parseParameters(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.DisableActiveMigration {
+		t.Fatal("disable_active_migration did not survive the round trip")
+	}
+
+	wantParamError := func(t *testing.T, raw []byte, what string) {
+		t.Helper()
+		_, err := parseParameters(raw)
+		te := &transportError{}
+		if !errors.As(err, &te) || te.code != transportParameterError {
+			t.Errorf("%s: %v, want TRANSPORT_PARAMETER_ERROR", what, err)
+		}
+	}
+	oneByte := AppendVarint(nil, paramDisableActiveMigration)
+	oneByte = AppendVarint(oneByte, 1)
+	oneByte = append(oneByte, 0)
+	wantParamError(t, oneByte, "a one-byte disable_active_migration")
+	twice := AppendVarint(nil, paramDisableActiveMigration)
+	twice = AppendVarint(twice, 0)
+	wantParamError(t, append(twice, twice...), "disable_active_migration twice")
+}
+
+// RFC 9000 §18.2: a client whose server announced disable_active_migration
+// refuses Rebind — nothing leaves on the new socket, the connection keeps
+// the old one — until it has moved to that server's preferred address,
+// after which the handshake's address is no longer the one it sends to.
+// TestRebindValidatedByAResponseIsNotFatal is the control without the
+// parameter.
+func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
+	old := &recordingPC{addr: fakeFuzzAddr("dam:old")}
+	peer := fakeFuzzAddr("dam:peer")
+	c := newConn(old, peer, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerParams.DisableActiveMigration = true
+	c.hasPeerParams = true
+	c.mu.Unlock()
+
+	fresh := &recordingPC{addr: fakeFuzzAddr("dam:new")}
+	if err := c.Rebind(fresh); !errors.Is(err, ErrMigrationDisabled) {
+		t.Fatalf("Rebind under disable_active_migration: %v, want ErrMigrationDisabled", err)
+	}
+	if n := len(fresh.recorded()); n != 0 {
+		t.Errorf("%d datagrams left on the new socket after a refused Rebind", n)
+	}
+	c.mu.Lock()
+	if c.pc != old {
+		t.Error("a refused Rebind replaced the socket")
+	}
+	if c.pathProbe.pending {
+		t.Error("a refused Rebind started a path probe")
+	}
+	// A preferred address offered but not yet adopted changes nothing:
+	// the connection still sends to the handshake's address.
+	c.preferred = fakeFuzzAddr("dam:preferred")
+	c.mu.Unlock()
+	if err := c.Rebind(fresh); !errors.Is(err, ErrMigrationDisabled) {
+		t.Fatalf("Rebind with a preferred address not yet adopted: %v, want ErrMigrationDisabled", err)
+	}
+	// Once adopted — the connection sends to the preferred address, as
+	// adoptPreferredPathLocked leaves it — §18.2's last sentence applies.
+	c.mu.Lock()
+	c.peer = c.preferred
+	c.mu.Unlock()
+	if err := c.Rebind(fresh); err != nil {
+		t.Fatalf("Rebind after acting on preferred_address: %v", err)
+	}
+	if n := len(fresh.recorded()); n != 1 {
+		t.Errorf("%d datagrams left on the new socket after Rebind, want 1 (the PATH_CHALLENGE)", n)
+	}
+}

@@ -462,6 +462,11 @@ func probingOnly(frames []Frame) bool {
 // sending there with it — no probe of its own, since the client's address
 // is unchanged and was validated long ago; §9.4's reset still applies,
 // because the path is new even if the peer is not.
+//
+// A server that announced disable_active_migration still follows: §9 lets
+// it either drop the packets from the new address or validate the path
+// and follow, and this is the second way. The announcement tells the
+// client not to try, not this server to refuse.
 func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -595,6 +600,11 @@ func (c *Conn) adoptPreferredPathLocked() {
 	c.kickTimer()
 }
 
+// ErrMigrationDisabled is what [Conn.Rebind] returns when the server
+// announced disable_active_migration (RFC 9000 §18.2) and the connection
+// still sends to the address the handshake used.
+var ErrMigrationDisabled = errors.New("quic: the server announced disable_active_migration (RFC 9000 §18.2)")
+
 // Rebind moves the connection onto pc: client-initiated migration (RFC
 // 9000 §9), for a client whose network changed under it or that chooses to
 // change it. The connection keeps every stream, its keys and its state; what
@@ -619,6 +629,10 @@ func (c *Conn) adoptPreferredPathLocked() {
 //
 // Refused before the handshake is confirmed — §9 forbids migrating
 // earlier — on a server, which never migrates, and on a closed connection.
+// Refused with [ErrMigrationDisabled] when the server announced
+// disable_active_migration (§18.2), unless the connection has since moved
+// to the preferred address that server offered: the parameter forbids a
+// new local address only towards the address the handshake used.
 func (c *Conn) Rebind(pc net.PacketConn) error {
 	if pc == nil {
 		return errors.New("quic: Rebind to a nil socket")
@@ -634,6 +648,13 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		return errClosed
 	case !c.handshakeConfirmed:
 		return errors.New("quic: Rebind before the handshake is confirmed (RFC 9000 §9)")
+	case c.hasPeerParams && c.peerParams.DisableActiveMigration &&
+		(c.preferred == nil || !sameAddr(c.preferred, c.peer)):
+		// §18.2: "MUST NOT use a new local address when sending to the
+		// address that the peer used during the handshake" — and sending
+		// to the preferred address once the move is done (adoptPreferred-
+		// PathLocked set c.peer to it) is not sending to that address.
+		return ErrMigrationDisabled
 	}
 	select {
 	case <-c.closed:

@@ -13,22 +13,23 @@ import (
 
 // Parameter identifiers this package writes and reads.
 const (
-	paramOriginalDCID          = 0x00
-	paramMaxIdleTimeout        = 0x01
-	paramStatelessResetToken   = 0x02
-	paramMaxUDPPayloadSize     = 0x03
-	paramInitialMaxData        = 0x04
-	paramInitialMaxStreamBidiL = 0x05
-	paramInitialMaxStreamBidiR = 0x06
-	paramInitialMaxStreamUni   = 0x07
-	paramInitialMaxStreamsBidi = 0x08
-	paramInitialMaxStreamsUni  = 0x09
-	paramAckDelayExponent      = 0x0a
-	paramMaxAckDelay           = 0x0b
-	paramPreferredAddress      = 0x0d
-	paramActiveConnIDLimit     = 0x0e
-	paramInitialSourceCID      = 0x0f
-	paramRetrySourceCID        = 0x10
+	paramOriginalDCID           = 0x00
+	paramMaxIdleTimeout         = 0x01
+	paramStatelessResetToken    = 0x02
+	paramMaxUDPPayloadSize      = 0x03
+	paramInitialMaxData         = 0x04
+	paramInitialMaxStreamBidiL  = 0x05
+	paramInitialMaxStreamBidiR  = 0x06
+	paramInitialMaxStreamUni    = 0x07
+	paramInitialMaxStreamsBidi  = 0x08
+	paramInitialMaxStreamsUni   = 0x09
+	paramAckDelayExponent       = 0x0a
+	paramMaxAckDelay            = 0x0b
+	paramDisableActiveMigration = 0x0c
+	paramPreferredAddress       = 0x0d
+	paramActiveConnIDLimit      = 0x0e
+	paramInitialSourceCID       = 0x0f
+	paramRetrySourceCID         = 0x10
 )
 
 // TransportParameters are the limits each endpoint imposes on the other.
@@ -87,6 +88,20 @@ type TransportParameters struct {
 	// default of 4 when the connection is built, so there is always a spare
 	// for the peer to rotate into.
 	ActiveConnIDLimit uint64
+
+	// DisableActiveMigration announces that this endpoint cannot follow a
+	// peer that changes address (RFC 9000 §18.2, a zero-length value; §9
+	// says a deployment without connection continuity SHOULD announce it).
+	// A client that reads it from its server refuses [Conn.Rebind] with
+	// [ErrMigrationDisabled] until it has moved to a preferred_address the
+	// same server offered — §18.2 forbids a new local address only towards
+	// the address the handshake used. A server that announces it changes
+	// nothing in how this package behaves: §9 lets such a server either
+	// drop a client's packets from a new address or validate the path and
+	// follow, and it follows (see maybeMigrate); the announcement is for
+	// deployments whose load balancer, not this server, would lose the
+	// client.
+	DisableActiveMigration bool
 
 	// sawStatelessResetToken and sawPreferredAddress record that the peer
 	// announced these server-only parameters (§18.2). A *client* announcing
@@ -264,6 +279,10 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 		// — the protocol floor is 2, and omission means the default.
 		num(paramActiveConnIDLimit, p.ActiveConnIDLimit)
 	}
+	if p.DisableActiveMigration {
+		dst = AppendVarint(dst, paramDisableActiveMigration)
+		dst = AppendVarint(dst, 0) // §18.2: a zero-length value
+	}
 	raw(paramOriginalDCID, p.originalDCID)
 	raw(paramInitialSourceCID, p.initialSourceCID)
 	raw(paramRetrySourceCID, p.retrySourceCID)
@@ -341,6 +360,14 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				return p, err
 			}
 			p.preferredAddress = pa
+		case paramDisableActiveMigration:
+			// §18.2: "a zero-length value" — a peer that puts bytes in it
+			// announced something this package cannot read, which §7.4
+			// makes an invalid value.
+			if len(val) != 0 {
+				return p, parameterError(fmt.Errorf("%w: a disable_active_migration of %d bytes", ErrQUIC, len(val)))
+			}
+			p.DisableActiveMigration = true
 		case paramActiveConnIDLimit:
 			// §18.2: active_connection_id_limit below 2 is
 			// TRANSPORT_PARAMETER_ERROR. The value caps how many identifiers
@@ -396,7 +423,8 @@ func known(id uint64) bool {
 		paramInitialMaxData, paramInitialMaxStreamBidiL, paramInitialMaxStreamBidiR,
 		paramInitialMaxStreamUni, paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni,
 		paramAckDelayExponent, paramMaxAckDelay, paramInitialSourceCID, paramRetrySourceCID,
-		paramStatelessResetToken, paramPreferredAddress, paramActiveConnIDLimit:
+		paramStatelessResetToken, paramPreferredAddress, paramActiveConnIDLimit,
+		paramDisableActiveMigration:
 		return true
 	}
 	return false
