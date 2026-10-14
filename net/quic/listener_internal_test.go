@@ -906,3 +906,52 @@ func TestListenerQueuesABurstForABusyConnection(t *testing.T) {
 		t.Errorf("%d datagrams queued, want %d", n, burst)
 	}
 }
+
+// A handshake that never completes holds a pending slot only for
+// HandshakeTimeout: the slot is given back when it fires. The control, with
+// the timeout unset, keeps the slot well past the configured figure — the
+// client's default is what bounds it then.
+func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
+	pendingAfter := func(t *testing.T, lcfg ListenerConfig, wait time.Duration) int {
+		t.Helper()
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), lcfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+
+		from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5556}
+		l.dispatch(sealedClientInitial(t, []byte("odcid-ht"), []byte("cscid-ht")), from, l.pc)
+		l.mu.Lock()
+		pending := len(l.pendingConns)
+		l.mu.Unlock()
+		if pending != 1 {
+			t.Fatalf("%d pending connections right after the Initial, want 1", pending)
+		}
+
+		deadline := time.Now().Add(wait)
+		for {
+			l.mu.Lock()
+			pending = len(l.pendingConns)
+			l.mu.Unlock()
+			if pending == 0 || !time.Now().Before(deadline) {
+				return pending
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if pending := pendingAfter(t, ListenerConfig{HandshakeTimeout: 200 * time.Millisecond}, time.Second); pending != 0 {
+		t.Errorf("%d pending connections a second after a 200 ms HandshakeTimeout, want 0", pending)
+	}
+	if pending := pendingAfter(t, ListenerConfig{}, 600*time.Millisecond); pending != 1 {
+		t.Errorf("%d pending connections 600 ms into the default handshake timeout, want 1 still", pending)
+	}
+	if _, err := NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{HandshakeTimeout: -time.Second}); err == nil {
+		t.Error("NewListener accepted a negative HandshakeTimeout")
+	}
+}

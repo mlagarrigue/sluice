@@ -62,6 +62,17 @@ type ListenerConfig struct {
 	// overload. Zero means [defaultMaxPendingConns].
 	MaxPendingConns int
 
+	// HandshakeTimeout bounds how long one handshake may hold a pending
+	// slot: a connection that has not completed its handshake by then is
+	// closed and its slot given back. The slots are what MaxPendingConns
+	// counts, so this is the other half of that bound — the first says how
+	// many peers may be mid-handshake at once, this one says for how long,
+	// and together they cap what a slow or stalled peer can occupy. Lower
+	// it under load; a few seconds is plenty on any path a handshake can
+	// succeed on. Zero means [DefaultHandshakeTimeout], the client's
+	// figure; a negative value is refused by [NewListener].
+	HandshakeTimeout time.Duration
+
 	// PreferredAddress is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
 	// server reached through a shared or load-balanced address that would
@@ -177,6 +188,12 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	}
 	if lcfg.MaxPendingConns <= 0 {
 		lcfg.MaxPendingConns = defaultMaxPendingConns
+	}
+	switch {
+	case lcfg.HandshakeTimeout < 0:
+		return nil, fmt.Errorf("%w: a negative HandshakeTimeout", ErrQUIC)
+	case lcfg.HandshakeTimeout == 0:
+		lcfg.HandshakeTimeout = DefaultHandshakeTimeout
 	}
 	key, err := newRetryTokenKey()
 	if err != nil {
@@ -894,7 +911,13 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
 	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc}); err != nil {
 		return // an authenticated violation on its own first packet; abort already closed it
 	}
-	if err := c.handshake(context.Background()); err != nil {
+	// The handshake runs under HandshakeTimeout. Cancelling the context
+	// afterwards is inert: handshake stops its own AfterFunc before it
+	// returns, so an accepted connection is not killed by the cancel.
+	ctx, cancel := context.WithTimeout(context.Background(), l.lcfg.HandshakeTimeout)
+	err := c.handshake(ctx)
+	cancel()
+	if err != nil {
 		return // the handshake path closes on every failure, same as Accept's
 	}
 

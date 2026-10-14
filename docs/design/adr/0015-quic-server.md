@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`)
 - **Theme:** quic
 
 ## Problem
@@ -36,7 +36,8 @@ goroutine runs the only `ReadFrom` loop and routes each datagram by
 destination connection identifier; a managed `Conn` reads from a channel.
 Each handshake runs on its own goroutine, bounded by `MaxPendingConns`
 (counting connections parked for `Accept`, capped at twice that figure
-with a stateless `CONNECTION_REFUSED` beyond). The amplification limit is
+with a stateless `CONNECTION_REFUSED` beyond) and by `HandshakeTimeout`
+(how long one may hold its slot; the client's default when unset). The amplification limit is
 always on — sends past three times receipts are dropped until a
 Handshake-level packet decrypts; `AlwaysRetry` adds stateless Retry with an
 HMAC token for deployments under attack. `Close` ends pending and parked
