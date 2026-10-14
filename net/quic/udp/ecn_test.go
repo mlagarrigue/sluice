@@ -26,8 +26,12 @@ func TestECNMarkIsReadBack(t *testing.T) {
 			}
 			defer srv.Close()
 			if err := udp.EnableECN(srv); err != nil {
-				if runtime.GOOS != "linux" && errors.Is(err, errors.ErrUnsupported) {
-					t.Skip("ECN is read on Linux only")
+				switch runtime.GOOS {
+				case "linux", "darwin", "windows":
+				default:
+					if errors.Is(err, errors.ErrUnsupported) {
+						t.Skip("ECN is read on Linux, Darwin and Windows only")
+					}
 				}
 				t.Fatalf("EnableECN: %v", err)
 			}

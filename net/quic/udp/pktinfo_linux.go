@@ -3,7 +3,6 @@ package udp
 import (
 	"encoding/binary"
 	"net/netip"
-	"slices"
 	"syscall"
 )
 
@@ -44,41 +43,6 @@ func enableECN(fd uintptr, v6 bool) error {
 	return syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipRecvTOS, 1)
 }
 
-// cmsghdr is { size_t len; int level; int type; }: the length field is a
-// word wide, the two ints follow, and the data starts at CmsgLen(0).
-const cmsgLenSize = syscall.SizeofCmsghdr - 8
-
-func cmsgHeader(b []byte) (length, level, typ int) {
-	if cmsgLenSize == 8 {
-		length = int(binary.NativeEndian.Uint64(b)) //nolint:gosec // G115: a wrapped length fails the bounds check that follows
-	} else {
-		length = int(binary.NativeEndian.Uint32(b))
-	}
-	level = int(int32(binary.NativeEndian.Uint32(b[cmsgLenSize:]))) //nolint:gosec // G115: the kernel ABI field is a C int
-	typ = int(int32(binary.NativeEndian.Uint32(b[cmsgLenSize+4:]))) //nolint:gosec // G115: the kernel ABI field is a C int
-	return length, level, typ
-}
-
-// nextCmsg splits the first control message off oob: its level and type,
-// its data, and what follows. ok is false when no well-formed message is
-// left. Walking by hand, not with syscall.ParseSocketControlMessage, which
-// would allocate a slice per datagram.
-func nextCmsg(oob []byte) (level, typ int, data, rest []byte, ok bool) {
-	hdr := syscall.CmsgLen(0)
-	if len(oob) < hdr {
-		return 0, 0, nil, nil, false
-	}
-	length, level, typ := cmsgHeader(oob)
-	if length < hdr || length > len(oob) {
-		return 0, 0, nil, nil, false
-	}
-	data = oob[hdr:length]
-	if next := syscall.CmsgSpace(length - hdr); next < len(oob) {
-		rest = oob[next:]
-	}
-	return level, typ, data, rest, true
-}
-
 // packetDestination finds the packet-information message.
 //
 // For IPv4 it returns in_pktinfo's ipi_spec_dst, the local address the
@@ -117,29 +81,11 @@ func packetECN(oob []byte) (uint8, bool) {
 		switch {
 		case level == syscall.IPPROTO_IP && typ == ipTOS && len(data) >= 1:
 			return data[0] & 3, true
-		case level == syscall.IPPROTO_IPV6 && typ == ipv6TClass && len(data) >= 4:
-			return uint8(binary.NativeEndian.Uint32(data[0:4]) & 3), true
+		case level == syscall.IPPROTO_IPV6 && typ == ipv6TClass:
+			return ecnOfInt(data)
 		}
 		oob = rest
 	}
-}
-
-// appendCmsg appends one control message header for dataLen bytes of
-// data, zeroed, and returns the grown oob and the data slice to fill.
-func appendCmsg(oob []byte, level, typ, dataLen int) (grown, data []byte) {
-	start := len(oob)
-	oob = slices.Grow(oob, syscall.CmsgSpace(dataLen))
-	oob = oob[:start+syscall.CmsgSpace(dataLen)]
-	b := oob[start:]
-	clear(b)
-	if cmsgLenSize == 8 {
-		binary.NativeEndian.PutUint64(b, uint64(syscall.CmsgLen(dataLen))) //nolint:gosec // G115: CmsgLen of a small fixed payload
-	} else {
-		binary.NativeEndian.PutUint32(b, uint32(syscall.CmsgLen(dataLen))) //nolint:gosec // G115: CmsgLen of a small fixed payload
-	}
-	binary.NativeEndian.PutUint32(b[cmsgLenSize:], uint32(level)) //nolint:gosec // G115: a socket level, a small positive constant
-	binary.NativeEndian.PutUint32(b[cmsgLenSize+4:], uint32(typ)) //nolint:gosec // G115: an option name, a small positive constant
-	return oob, b[syscall.CmsgLen(0):]
 }
 
 // appendECN appends the IP_TOS and IPV6_TCLASS messages, both carrying
@@ -148,12 +94,8 @@ func appendCmsg(oob []byte, level, typ, dataLen int) (grown, data []byte) {
 // IPv6 peer through the IPv6 stack, which does the reverse — so one
 // datagram's marking does not depend on which family its address is.
 func appendECN(oob []byte, ecn uint8) []byte {
-	var data []byte
-	oob, data = appendCmsg(oob, syscall.IPPROTO_IP, ipTOS, 4)
-	binary.NativeEndian.PutUint32(data, uint32(ecn))
-	oob, data = appendCmsg(oob, syscall.IPPROTO_IPV6, ipv6TClass, 4)
-	binary.NativeEndian.PutUint32(data, uint32(ecn))
-	return oob
+	oob = appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+	return appendIntCmsg(oob, syscall.IPPROTO_IPV6, ipv6TClass, uint32(ecn))
 }
 
 func appendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {

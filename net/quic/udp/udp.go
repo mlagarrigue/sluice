@@ -185,7 +185,7 @@ func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 // sets it lets the network signal congestion without dropping (RFC 9000
 // §13.4). The buffer [PacketInfoLen] sizes has room for it.
 //
-// Linux only for now; elsewhere it returns [errors.ErrUnsupported]
+// Linux, Darwin and Windows; elsewhere it returns [errors.ErrUnsupported]
 // (wrapped) and changes nothing.
 func EnableECN(c *net.UDPConn) error {
 	rc, err := c.SyscallConn()

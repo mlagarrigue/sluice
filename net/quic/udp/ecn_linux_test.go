@@ -6,21 +6,6 @@ import (
 	"testing"
 )
 
-// forgeCmsg lays out one control message as the kernel does: cmsghdr,
-// then data, then padding to the next word.
-func forgeCmsg(level, typ int, data []byte) []byte {
-	b := make([]byte, syscall.CmsgSpace(len(data)))
-	if cmsgLenSize == 8 {
-		binary.NativeEndian.PutUint64(b, uint64(syscall.CmsgLen(len(data))))
-	} else {
-		binary.NativeEndian.PutUint32(b, uint32(syscall.CmsgLen(len(data))))
-	}
-	binary.NativeEndian.PutUint32(b[cmsgLenSize:], uint32(level))
-	binary.NativeEndian.PutUint32(b[cmsgLenSize+4:], uint32(typ))
-	copy(b[syscall.CmsgLen(0):], data)
-	return b
-}
-
 // The kernel reports IP_TOS as one byte and IPV6_TCLASS as a C int; the
 // ECN field is the low two bits of either, and a message of another kind
 // ahead of it — the packet-information one — is walked past.
