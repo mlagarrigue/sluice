@@ -120,6 +120,49 @@ func TestTimeThresholdLoss(t *testing.T) {
 	}
 }
 
+// RFC 9002 §6.1, A.10: the loss timer only matures packets sent before the
+// largest acknowledged one. A packet sent after the ACK that armed the
+// timer is not a candidate however old it grows — nothing newer was
+// delivered to prove it missing — and it must not re-arm the timer either.
+// Swept by age alone, it was a congestion event on a clean path: a DPLPMTUD
+// probe's hole armed the timer and the transfer behind it, older than the
+// 1 ms floor but not yet acknowledged, halved the window.
+func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
+	var s sentTracker
+	var rtt rttEstimator
+	rtt.sample(10*time.Millisecond, 0)
+	now := time.Now()
+	s.record(sentPacket{pn: 0, sentAt: now.Add(-time.Millisecond), size: 50, ackEliciting: true, payload: []byte{0}})
+	s.record(sentPacket{pn: 1, sentAt: now, size: 50, ackEliciting: true, payload: []byte{1}})
+
+	// The ACK of 1 leaves 0 unacknowledged and 1 ms old: too young for a
+	// 11.25 ms threshold, so the timer is armed on it.
+	var peer ackTracker
+	peer.record(1, now)
+	f := ackFrameFor(t, &peer)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.lost) != 0 || s.lossTime.IsZero() {
+		t.Fatalf("after the ACK: lost = %v, lossTime = %v, want nothing lost and the timer armed", out.lost, s.lossTime)
+	}
+	// Packet 2 leaves after that ACK; nothing newer than 1 is acknowledged.
+	s.record(sentPacket{pn: 2, sentAt: now, size: 50, ackEliciting: true, payload: []byte{2}})
+
+	// Long after the timer matured, both 0 and 2 are older than the threshold.
+	out = s.collectTimeLosses(s.lossTime.Add(time.Second), &rtt)
+	if len(out.lost) != 1 || out.lost[0][0] != 0 {
+		t.Fatalf("lost = %v, want packet 0 alone: packet 2 was sent after the largest acknowledged", out.lost)
+	}
+	if len(s.packets) != 1 || s.packets[0].pn != 2 {
+		t.Errorf("packets kept = %v, want packet 2 alone", s.packets)
+	}
+	if !s.lossTime.IsZero() {
+		t.Errorf("lossTime = %v, want the timer disarmed: packet 2 is no candidate", s.lossTime)
+	}
+}
+
 func TestNewRenoWindow(t *testing.T) {
 	cc := newNewReno(1200)
 	start := cc.cwnd

@@ -326,7 +326,9 @@ func TestIdleTimeoutExpiresSilently(t *testing.T) {
 
 // The loss timer firing on its own, with no ACK to trigger it: the packet
 // an earlier ACK left too young to declare is declared once the timer
-// matures, resent, and the timer re-arms on the survivor.
+// matures, resent, and the timer re-arms on the survivor. The earlier ACK
+// covered packet 2, which makes 0 and 1 candidates (RFC 9002 §6.1: sent
+// before an acknowledged packet).
 func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 	c := newIdleServerConn(t)
 	now := time.Now()
@@ -335,7 +337,8 @@ func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 	old := []byte{framePing, 0xaa}
 	sp.sent.record(sentPacket{pn: 0, sentAt: now.Add(-time.Minute), size: 100, ackEliciting: true, payload: old})
 	sp.sent.record(sentPacket{pn: 1, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing, 0xbb}})
-	sp.nextPN = 2
+	sp.sent.largestAcked, sp.sent.hasLargestAcked = 2, true
+	sp.nextPN = 3
 	sp.lastElicit = now
 	sp.sent.lossTime = now.Add(-time.Millisecond)
 	c.mu.Unlock()
@@ -349,12 +352,12 @@ func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 			t.Fatal("packet 0 is still in flight after its loss timer matured")
 		}
 	}
-	if sp.nextPN != 3 {
-		t.Errorf("nextPN = %d, want the lost payload resent as packet 2", sp.nextPN)
+	if sp.nextPN != 4 {
+		t.Errorf("nextPN = %d, want the lost payload resent as packet 3", sp.nextPN)
 	}
 	resent := false
 	for _, p := range sp.sent.packets {
-		if p.pn == 2 && bytes.Contains(p.payload, old) {
+		if p.pn == 3 && bytes.Contains(p.payload, old) {
 			resent = true
 		}
 	}

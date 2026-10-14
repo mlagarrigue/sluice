@@ -271,12 +271,15 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 // collectTimeLosses declares the packets whose loss timer has now matured,
 // set by a previous ACK that left them too young to call.
 //
-// The sweep is by age alone: it does not re-check that a newer packet has
-// been acknowledged, though the timer was armed by an ACK that had. A
-// packet sent after that ACK can therefore be declared early. The error
-// only ever runs toward resending — duplicates merge in reassembly and
-// acknowledgements retire the copies — which is the cheap side to be wrong
-// on.
+// Only packets sent before the largest acknowledged one are candidates
+// (RFC 9002 §6.1, A.10's DetectAndRemoveLostPackets): a packet sent after
+// the ACK that armed the timer has nothing newer delivered to prove it
+// missing, however old it grows. The sweep used to go by age alone, on the
+// reasoning that an early loss only costs a duplicate; it also costs a
+// congestion event, and on a clean loopback it halved the window one run
+// in ten: a DPLPMTUD probe's hole armed the timer, and the transfer behind
+// it — older than the 1 ms floor, acknowledged a moment later — was swept
+// up as lost (TestLossTimerSparesPacketsPastLargestAcked).
 //
 // A DPLPMTUD probe that matured is reported apart (probeLost and the
 // probe's bytes), never in lostBytes: its loss is no congestion event.
@@ -289,6 +292,12 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 	s.lossTime = time.Time{}
 	kept := s.packets[:0]
 	for _, p := range s.packets {
+		if p.pn > s.largestAcked {
+			// Not a candidate, and not a reason to re-arm the timer: the
+			// next ACK that covers something newer scans it (processAck).
+			kept = append(kept, p)
+			continue
+		}
 		if p.sentAt.Before(lostBefore) && p.pmtuProbe {
 			out.probeLost, out.probeLostPN = true, p.pn
 			out.probeLostBytes += p.size
