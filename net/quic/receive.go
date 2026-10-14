@@ -888,7 +888,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			pathResponses = append(pathResponses, f.Data...)
 
 		case f.Type == framePathResponse:
-			c.handlePathResponse(f)
+			c.handlePathResponse(f, now)
 
 		case f.Type == frameHandshakeDone:
 			if !c.isClient {
@@ -1165,10 +1165,15 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			c.ptoCount = 0
 		}
 	}
-	if len(out.lost) > 0 || out.lostBytes > 0 {
+	if out.lostCount > 0 {
 		sp.retrans = append(sp.retrans, out.lost...)
-		c.cc.onLost(out.lostBytes, out.latestLossSent, now)
 		c.lostPackets += out.lostCount
+		// Losses from a previous path carry no bytes (RFC 9000 §9.4):
+		// nothing to release, and no event for a window they never
+		// counted against.
+		if out.lostBytes > 0 {
+			c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+		}
 	}
 	c.settleProbeLocked(out)
 	return nil

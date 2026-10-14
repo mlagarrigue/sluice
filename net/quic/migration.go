@@ -493,7 +493,7 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		c.adoptProbedCIDLocked()
 	}
 	c.migrations++
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 }
 
 // resetPathStateLocked is §9.4's bill for a new path: congestion window and
@@ -501,12 +501,19 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 // path's measurements are not evidence about the new one. Callers hold mu.
 // The datagram size restarts from 1200 with them: the old path's DPLPMTUD
 // proof is not evidence about the new one either (RFC 9000 §14.3), and the
-// probe leaves once the path is validated.
-func (c *Conn) resetPathStateLocked() {
+// probe leaves once the path is validated. The flight stays recorded — what
+// is unacknowledged is still owed — but dated: packets sent before now were
+// sent on the old path, and §9.4 says they "MUST NOT contribute to
+// congestion control or RTT estimation for the new path"
+// (sentTracker.pathStart).
+func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
 	c.resetPMTULocked()
 	c.cc = newNewReno(c.maxDatagram)
 	c.ptoCount = 0
+	for i := range c.spaces {
+		c.spaces[i].sent.pathStart = now
+	}
 }
 
 // migrateLocked switches the send path to the peer's new address. Everything
@@ -530,7 +537,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// The peer is back on the path this end last validated while the
 		// new one is still unproven — the §9.3.3 outcome of a migration
 		// forged from copied packets, or a peer that never really left.
-		c.revertToValidatedLocked()
+		c.revertToValidatedLocked(now)
 		return
 	}
 	if !unvalidated {
@@ -551,7 +558,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.amplActive = true
 	c.amplRecv = int64(c.rxDatagramLen)
 	c.amplSent = 0
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.switchToFreshPeerCIDLocked()
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
@@ -587,7 +594,7 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 // adoptPreferredPathLocked completes a client's move to the server's
 // preferred address once its probe is answered: sends go there, under the
 // offered identifier, with the path state reset (§9.4). Callers hold mu.
-func (c *Conn) adoptPreferredPathLocked() {
+func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 	c.peer = c.pathProbe.target
 	for i := range c.peerCIDs {
 		e := &c.peerCIDs[i]
@@ -600,7 +607,7 @@ func (c *Conn) adoptPreferredPathLocked() {
 	}
 	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
 	c.migrations++
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.kickTimer()
 }
 
@@ -665,13 +672,14 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		return errClosed
 	default:
 	}
+	now := time.Now()
 	old := c.pc
 	c.pc = pc
 	c.migrations++
 	// The old path's measurements say nothing about the new one (§9.4).
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.switchToFreshPeerCIDLocked()
-	c.startPathChallengeLocked(time.Now())
+	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
 	c.kickTimer()
 	// Jolt the read loop out of the old socket: it re-reads c.pc on its
@@ -897,7 +905,7 @@ func (c *Conn) sendOldPathChallengeLocked() {
 // short history polluted it. Not counted as a migration — it undoes one.
 // With no validated path to return to, §9.3.2 says to close silently.
 // Callers hold mu.
-func (c *Conn) revertToValidatedLocked() {
+func (c *Conn) revertToValidatedLocked(now time.Time) {
 	c.pathProbe.pending, c.pathProbe.oldPending = false, false
 	c.amplActive, c.amplRecv, c.amplSent = false, 0, 0
 	if c.lastValidatedPeer == nil {
@@ -920,7 +928,7 @@ func (c *Conn) revertToValidatedLocked() {
 	if !restored {
 		c.switchToFreshPeerCIDLocked()
 	}
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.kickTimer()
 }
 
@@ -930,7 +938,7 @@ func (c *Conn) revertToValidatedLocked() {
 // what validates a path is the challenge data coming back, not where from —
 // and a response that echoes nothing outstanding is ignored rather than
 // fatal: it may be the answer to a probe already given up on.
-func (c *Conn) handlePathResponse(f Frame) {
+func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 	c.mu.Lock()
 	if c.pathProbe.oldPending && bytes.Equal(f.Data, c.pathProbe.oldData[:]) {
 		// The old path is alive. Nothing moves on that alone: the peer's
@@ -944,7 +952,7 @@ func (c *Conn) handlePathResponse(f Frame) {
 		c.amplActive = false
 		switch {
 		case c.pathProbe.target != nil:
-			c.adoptPreferredPathLocked()
+			c.adoptPreferredPathLocked(now)
 		case !c.pathProbe.full:
 			// The address is validated, the path MTU is not: §8.2.1's
 			// second validation, now that no budget stands in the way.
@@ -984,7 +992,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 			// A migrated path that never validated, or validated its
 			// address but not 1200 bytes of MTU: either way not a path
 			// QUIC can use (§9.3.2, §14).
-			c.revertToValidatedLocked()
+			c.revertToValidatedLocked(now)
 			return time.Time{}
 		}
 		// A preferred address the server never answered at: the

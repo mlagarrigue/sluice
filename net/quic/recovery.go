@@ -142,7 +142,21 @@ type sentTracker struct {
 	hasSkipped bool
 	nextSkip   uint64
 	skipArmed  bool
+	// pathStart is when the current path began (RFC 9000 §9.4). A packet
+	// sent before it was sent on a previous path: its acknowledgement or
+	// loss still leaves the record — and a lost payload is still queued
+	// for retransmission, this time on the current path — but it "MUST
+	// NOT contribute to congestion control or RTT estimation for the new
+	// path": no flight bytes released, no window growth, no congestion
+	// event, no round-trip sample. Zero until the first migration, which
+	// no packet predates. The one mark is cheaper than a path tag per
+	// packet: the record is sorted by send time, so one comparison per
+	// acknowledged or lost packet is the whole cost.
+	pathStart time.Time
 }
+
+// onPath reports whether p was sent on the current path (see pathStart).
+func (s *sentTracker) onPath(p *sentPacket) bool { return !p.sentAt.Before(s.pathStart) }
 
 // errOptimisticAck is processAck's verdict on an ACK that covers the skipped
 // number; handleAck turns it into the connection error.
@@ -183,10 +197,10 @@ func skipGap(window uint64) uint64 {
 
 // ackOutcome is what processing one ACK frame yields.
 type ackOutcome struct {
-	newlyAcked       int  // bytes released from flight
-	newlyAckedCount  int  // packets released
+	newlyAcked       int  // bytes released from flight (current path only)
+	newlyAckedCount  int  // packets released, whichever path sent them
 	largestWasNew    bool // the frame's largest was newly acknowledged…
-	largestEliciting bool // …and was ack-eliciting, which is what a sample needs
+	largestEliciting bool // …ack-eliciting and sent on this path: what a sample needs
 	largestSentAt    time.Time
 	// growableBytes is the share of newlyAcked sent at or after the growAfter
 	// instant the caller passed — the bytes the congestion window may grow
@@ -265,13 +279,16 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			kept = append(kept, p)
 			continue
 		}
-		out.newlyAcked += p.size
 		out.newlyAckedCount++
-		if !p.sentAt.Before(growAfter) {
-			out.growableBytes += p.size
-		}
-		if p.sentAt.After(out.latestAckedSent) {
-			out.latestAckedSent = p.sentAt
+		onPath := s.onPath(&p)
+		if onPath {
+			out.newlyAcked += p.size
+			if !p.sentAt.Before(growAfter) {
+				out.growableBytes += p.size
+			}
+			if p.sentAt.After(out.latestAckedSent) {
+				out.latestAckedSent = p.sentAt
+			}
 		}
 		if p.ackEliciting {
 			out.sawAckEliciting = true
@@ -281,7 +298,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		}
 		if p.pn == largest {
 			out.largestWasNew = true
-			out.largestEliciting = p.ackEliciting
+			out.largestEliciting = p.ackEliciting && onPath
 			out.largestSentAt = p.sentAt
 		}
 		if p.pn > largestAckedInFrame {
@@ -309,20 +326,8 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		for _, p := range s.packets {
 			lostByCount := p.pn+packetThreshold <= largest
 			lostByTime := p.pn < largest && p.sentAt.Before(lostBefore)
-			if (lostByCount || lostByTime) && p.pmtuProbe {
-				out.probeLost, out.probeLostPN = true, p.pn
-				out.probeLostBytes += p.size
-				continue
-			}
 			if lostByCount || lostByTime {
-				out.lostBytes += p.size
-				out.lostCount++
-				if len(p.payload) > 0 {
-					out.lost = append(out.lost, p.payload)
-				}
-				if p.sentAt.After(out.latestLossSent) {
-					out.latestLossSent = p.sentAt
-				}
+				s.declareLost(&out, &p)
 				continue
 			}
 			if p.pn < largest && s.lossTime.IsZero() {
@@ -367,22 +372,8 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 			kept = append(kept, p)
 			continue
 		}
-		if p.sentAt.Before(lostBefore) && p.pmtuProbe {
-			out.probeLost, out.probeLostPN = true, p.pn
-			out.probeLostBytes += p.size
-			continue
-		}
 		if p.sentAt.Before(lostBefore) {
-			out.lostBytes += p.size
-			out.lostCount++
-			if len(p.payload) > 0 {
-				out.lost = append(out.lost, p.payload)
-			}
-			if p.sentAt.After(out.latestLossSent) {
-				// The newest loss gates the congestion event, same as the
-				// ACK path (B.8).
-				out.latestLossSent = p.sentAt
-			}
+			s.declareLost(&out, &p)
 			continue
 		}
 		if s.lossTime.IsZero() {
@@ -392,6 +383,35 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 	}
 	s.packets = kept
 	return out
+}
+
+// declareLost books one packet the ACK path or the loss timer declared lost.
+// A DPLPMTUD probe is reported apart (probeLost and its bytes), never as a
+// congestion event. Any other payload is queued for retransmission whatever
+// path sent it; but only a packet sent on the current path releases flight
+// bytes and dates the loss — the newest loss gates the congestion event
+// (RFC 9002 B.8) — because a previous path's loss says nothing about this
+// one (RFC 9000 §9.4, pathStart).
+func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket) {
+	onPath := s.onPath(p)
+	if p.pmtuProbe {
+		out.probeLost, out.probeLostPN = true, p.pn
+		if onPath {
+			out.probeLostBytes += p.size
+		}
+		return
+	}
+	out.lostCount++
+	if len(p.payload) > 0 {
+		out.lost = append(out.lost, p.payload)
+	}
+	if !onPath {
+		return
+	}
+	out.lostBytes += p.size
+	if p.sentAt.After(out.latestLossSent) {
+		out.latestLossSent = p.sentAt
+	}
 }
 
 // oldestEliciting is what the probe timeout is armed on.
@@ -513,8 +533,8 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 // flight record to resend: its copy re-enters through onSent, so the flight
 // stays the same size, and the window does not move — a probe timeout is
 // not a congestion event (RFC 9002 §6.2.4). A lost DPLPMTUD probe leaves
-// the same way (RFC 9000 §14.4); floored because a probe sent on the
-// previous path may be declared lost after the controller was rebuilt.
+// the same way (RFC 9000 §14.4). Floored as a guard only: a previous path's
+// packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 
 // paceWindow is the window the pacer prices sends against: doubled in slow

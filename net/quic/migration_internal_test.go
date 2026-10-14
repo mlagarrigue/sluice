@@ -1948,3 +1948,89 @@ func countFrames(t *testing.T, c *Conn, datagram []byte, typ byte) int {
 	}
 	return n
 }
+
+// RFC 9000 §9.4: "Packets sent on the old path MUST NOT contribute to
+// congestion control or RTT estimation for the new path." The flight the
+// migration finds in the record is still owed — a lost payload is queued
+// again — but its loss is no congestion event for the fresh window, its
+// acknowledgement releases nothing from a flight it never joined and dates
+// no round trip. Packets sent after the move are the new path's own: their
+// loss halves the window as ever.
+func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
+	c, _ := newMigratableServer(t, "flight")
+	tok := make([]byte, 16)
+	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ten packets in flight on the old path.
+	before := time.Now().Add(-10 * time.Millisecond)
+	c.mu.Lock()
+	sp := &c.spaces[spaceApplication]
+	for pn := range uint64(10) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: before, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	}
+	sp.nextPN = 10
+	c.cc.onSent(before, 12_000)
+	c.mu.Unlock()
+
+	rxFromNewAddress(c, fakeFuzzAddr("flight:peerB"), 1200, true)
+	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	migrations, flightAfterMove := c.migrations, c.cc.inFlight
+	c.mu.Unlock()
+	if migrations != 1 {
+		t.Fatalf("migrations = %d, want 1", migrations)
+	}
+
+	// The peer acknowledges the old path's packet 9 alone: 0 to 6 are lost
+	// by the packet threshold, 9 is newly acknowledged and ack-eliciting.
+	var peer ackTracker
+	peer.record(9, time.Now())
+	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	cwnd, sampled, flight, queued := c.cc.cwnd, c.rtt.sampled, c.cc.inFlight, len(sp.retrans)
+	c.mu.Unlock()
+	if want := newNewReno(1200).cwnd; cwnd != want {
+		t.Errorf("cwnd = %d after the old path's losses, want the initial %d (§9.4)", cwnd, want)
+	}
+	if sampled {
+		t.Error("the old path's acknowledgement gave the new path a round-trip sample (§9.4)")
+	}
+	if flight != flightAfterMove {
+		t.Errorf("in flight = %d after the old path's acknowledgement, want %d: those bytes were never the new path's", flight, flightAfterMove)
+	}
+	if queued != 7 {
+		t.Errorf("%d payloads queued for retransmission, want 7: the old path's losses are still owed", queued)
+	}
+
+	// Witness: ten packets sent on the new path, seven of them lost.
+	after := time.Now()
+	c.mu.Lock()
+	base := sp.nextPN
+	for i := range uint64(10) {
+		sp.sent.record(sentPacket{pn: base + i, sentAt: after, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	}
+	sp.nextPN = base + 10
+	c.cc.onSent(after, 12_000)
+	c.mu.Unlock()
+	peer.record(base+9, time.Now())
+	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	cwnd, sampled = c.cc.cwnd, c.rtt.sampled
+	c.mu.Unlock()
+	// The acknowledged packet grows the window by its size (slow start)
+	// before the batch's loss halves it.
+	if want := (newNewReno(1200).cwnd + 1200) / 2; cwnd != want {
+		t.Errorf("cwnd = %d after the new path's own losses, want %d: a loss on this path is a congestion event", cwnd, want)
+	}
+	if !sampled {
+		t.Error("the new path's acknowledgement gave no round-trip sample")
+	}
+}

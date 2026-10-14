@@ -889,7 +889,9 @@ func (c *Conn) sendProbeLocked(space int) {
 		if !ok {
 			break
 		}
-		c.cc.onLifted(p.size)
+		if sp.sent.onPath(&p) { // a previous path's packet never counted here (RFC 9000 §9.4)
+			c.cc.onLifted(p.size)
+		}
 		payloads[n] = p.payload
 	}
 	switch n {
