@@ -290,6 +290,26 @@ func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) int {
 }
 
 // pendingPacket is a packet built but not yet sealed: everything
+// takePNLocked consumes the next packet number of sp. In the application
+// space it leaves a number unused about once per congestion window (RFC
+// 9000 §21.4), so that a peer acknowledging numbers it never received
+// can be caught; see sentTracker.skipNumber. The gap stays a number short
+// of §12.3's 2^62-1 ceiling, which writePacketLocked checked just above.
+func (c *Conn) takePNLocked(sp *space, space int) uint64 {
+	if space == spaceApplication && sp.nextPN+1 < 1<<62-1 {
+		window := uint64(10) // RFC 9002 §7.2's initial window, for a connection not yet set up
+		if c.maxDatagram > 0 && c.cc.cwnd > 0 {
+			window = uint64(c.cc.cwnd / c.maxDatagram) //nolint:gosec // G115: both are positive
+		}
+		if sp.sent.skipNumber(sp.nextPN, window) {
+			sp.nextPN++
+		}
+	}
+	pn := sp.nextPN
+	sp.nextPN++
+	return pn
+}
+
 // writePacketLocked decided — header up to the Length field, payload,
 // packet number, destination — waiting for the one thing it cannot know
 // alone, how much §14.1 padding it carries. When Initial and Handshake
@@ -566,8 +586,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 			c.dgramPend = nil
 			c.dgram, _ = c.sealLocked(c.dgram, p, 0)
 		}
-		pn := sp.nextPN
-		sp.nextPN++
+		pn := c.takePNLocked(sp, space)
 		c.dgramPend = &pendingPacket{
 			sp: sp, space: space, prefix: append([]byte(nil), header...), payload: payload,
 			retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,
@@ -578,8 +597,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return nil
 	}
 
-	pn := sp.nextPN
-	sp.nextPN++
+	pn := c.takePNLocked(sp, space)
 	p := pendingPacket{
 		sp: sp, space: space, prefix: header, payload: payload,
 		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath,

@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -304,5 +305,69 @@ func TestPacerBucket(t *testing.T) {
 	p.refill(now.Add(10*time.Second), cwnd, srtt)
 	if p.tokens != 12000 {
 		t.Fatalf("after idling, tokens = %d, want the burst", p.tokens)
+	}
+}
+
+// A skipped packet number (RFC 9000 §21.4): an ACK whose ranges go around
+// it is ordinary — nothing is declared lost for a number never sent — and
+// an ACK whose range covers it is the optimistic-ACK verdict.
+func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
+	var s sentTracker
+	var rtt rttEstimator
+	now := time.Now()
+	s.skipArmed, s.nextSkip = true, 3 // the draw, pinned
+	skipped := -1
+	for pn := range uint64(6) {
+		if s.skipNumber(pn, 10) {
+			skipped = int(pn)
+			continue
+		}
+		s.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{byte(pn)}})
+	}
+	if skipped != 3 || !s.hasSkipped || s.skipped != 3 {
+		t.Fatalf("skipped %d, tracker says %d (%v)", skipped, s.skipped, s.hasSkipped)
+	}
+
+	var peer ackTracker
+	for _, pn := range []uint64{0, 1, 2, 4, 5} {
+		peer.record(pn, now)
+	}
+	f := ackFrameFor(t, &peer)
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	if err != nil {
+		t.Fatalf("an ACK around the gap was refused: %v", err)
+	}
+	if out.newlyAckedCount != 5 || out.lostCount != 0 || len(s.packets) != 0 {
+		t.Fatalf("around the gap: acked %d, lost %d, kept %d", out.newlyAckedCount, out.lostCount, len(s.packets))
+	}
+
+	peer.record(3, now)
+	f = ackFrameFor(t, &peer)
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{}); !errors.Is(err, errOptimisticAck) {
+		t.Fatalf("an ACK covering the gap: err = %v, want errOptimisticAck", err)
+	}
+}
+
+// The gaps land about one window apart, never two in a row, and the first
+// one only after a window has been sent.
+func TestSkippedPacketNumberOncePerWindow(t *testing.T) {
+	var s sentTracker
+	const window, sent = 10, 10_000
+	skips, prev := 0, -2
+	for pn := range uint64(sent) {
+		if !s.skipNumber(pn, window) {
+			continue
+		}
+		if int(pn) == prev+1 {
+			t.Fatalf("numbers %d and %d both skipped", prev, pn)
+		}
+		if skips == 0 && pn < window/2 {
+			t.Fatalf("first gap at %d, before half a window", pn)
+		}
+		prev, skips = int(pn), skips+1
+	}
+	// The gap is uniform in [½w, 1½w): one skip per w+1 numbers on average.
+	if lo, hi := sent/(2*window), sent/(window/2); skips < lo || skips > hi {
+		t.Fatalf("%d gaps in %d numbers with a window of %d, want between %d and %d", skips, sent, window, lo, hi)
 	}
 }

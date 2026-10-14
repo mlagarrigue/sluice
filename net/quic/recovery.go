@@ -1,6 +1,11 @@
 package quic
 
-import "time"
+import (
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"time"
+)
 
 // Loss detection and congestion control, RFC 9002 — the part of a transport
 // that cannot be observed on a loopback, which is why it is tested against a
@@ -125,10 +130,55 @@ type sentTracker struct {
 	// news must still be able to mature a pending loss.
 	largestAcked    uint64
 	hasLargestAcked bool
+	// skipped is a packet number this end deliberately never used (RFC
+	// 9000 §21.4): a peer that acknowledges it acknowledged something it
+	// cannot have received, and is closed with PROTOCOL_VIOLATION before
+	// its invented ACKs open the congestion window. One number is kept —
+	// the latest gap — which is enough: an attacker acknowledging every
+	// number up to the largest it sees hits the current gap within a
+	// window. nextSkip is where the next gap goes; skipArmed says whether
+	// it has been drawn yet.
+	skipped    uint64
+	hasSkipped bool
+	nextSkip   uint64
+	skipArmed  bool
 }
+
+// errOptimisticAck is processAck's verdict on an ACK that covers the skipped
+// number; handleAck turns it into the connection error.
+var errOptimisticAck = errors.New("quic: the peer acknowledged a packet number that was skipped on purpose")
 
 func (s *sentTracker) record(p sentPacket) {
 	s.packets = append(s.packets, p)
+}
+
+// skipNumber reports whether pn is the number to leave unused, and draws the
+// next gap when it is. window is the congestion window in packets: gaps land
+// a window apart on average (uniform in [½w, 1½w)), so one number per window
+// is the whole cost, and an optimistic acknowledger — whose gain is a window
+// of unearned growth — is caught within the window it tries to steal. The
+// draw is from crypto/rand, once per window: a peer must not be able to
+// guess where the gap is, which is what makes it a detector rather than a
+// convention.
+func (s *sentTracker) skipNumber(pn, window uint64) bool {
+	if !s.skipArmed {
+		s.skipArmed = true
+		s.nextSkip = pn + skipGap(window)
+		return false
+	}
+	if pn < s.nextSkip {
+		return false
+	}
+	s.skipped, s.hasSkipped = pn, true
+	s.nextSkip = pn + 1 + skipGap(window)
+	return true
+}
+
+func skipGap(window uint64) uint64 {
+	window = max(window, 2)
+	var b [8]byte
+	_, _ = rand.Read(b[:]) // never fails since Go 1.24
+	return window/2 + binary.LittleEndian.Uint64(b[:])%window
 }
 
 // ackOutcome is what processing one ACK frame yields.
@@ -175,7 +225,17 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	// packets; only the ones still in s.packets cost anything.
 	i := len(s.packets) - 1
 	marked := 0
+	optimistic := false
 	err := decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
+		if s.hasSkipped && lo <= s.skipped && s.skipped <= hi {
+			// The range names the number that was never sent (§21.4). The
+			// marks already set stay set: the verdict closes the
+			// connection, and this tracker with it.
+			optimistic = true
+		}
+		if optimistic {
+			return
+		}
 		for i >= 0 && s.packets[i].pn > hi {
 			i--
 		}
@@ -189,6 +249,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	})
 	if err != nil {
 		return out, err
+	}
+	if optimistic {
+		return out, errOptimisticAck
 	}
 	if marked == 0 && len(s.packets) == 0 {
 		return out, nil
