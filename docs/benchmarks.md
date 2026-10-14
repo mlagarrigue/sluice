@@ -341,7 +341,7 @@ real client):
 | `BenchmarkTransferBurstLoss` | 766 ms | 483 ms | 1.59 | 8.68 MB/s | ±21% |
 | `BenchmarkTransferReorder` | 4.42 s | 3.72 s | 1.19 | 1.13 MB/s | ±31%, not gated |
 | `BenchmarkTransferBottleneck` | 883 ms | 905 ms | 0.98 | 4.63 MB/s | ±3% |
-| `BenchmarkTransferDeepBuffer` | 788 ms | 789 ms | 1.00 | 5.32 MB/s, `rtt_x` 6.0 | ±1% |
+| `BenchmarkTransferDeepBuffer` | 788 ms | 789 ms | 1.00 | 5.32 MB/s, `rtt_x` 9.3 (6.0 before HyStart++) | ±1% |
 | `BenchmarkTransferTwoFlows` | 1.51 s | 1.50 s | 1.01 | 5.59 MB/s, `share` 0.46–0.56 | ±13% |
 | `BenchmarkTransferRTT40` | 980 ms | 964 ms | 1.02 | 8.70 MB/s | ±22% |
 | `BenchmarkTransferRTT80` | 1.38 s | 1.33 s | 1.04 | 6.30 MB/s | ±1% |
@@ -364,6 +364,23 @@ doing its job; on the deep buffer it fills the queue exactly as Reno does
 (`rtt_x` 6.0 against 5.9): CUBIC reads loss and nothing else, and a buffer
 that does not drop is a buffer it fills. `RTT80` itself moves 4%: an 8 MiB
 transfer is slow start and the handshake, not avoidance.
+
+**HyStart++** (RFC 9406) ends CUBIC's initial slow start on the round
+trip rising instead of on loss. Measured the same way, CUBIC against
+CUBIC without it, eight rounds on 2026-10-14: the eight gated medians
+within ±4%, `RTT80Shallow` unchanged (bimodal on both sides, 3.8 s or
+5.2 s depending on where the exit loss lands). What it changes is the
+loss count: on `DeepBuffer` the loss-based exit lost 779 kB in 171
+batches and HyStart++ loses nothing; on `TwoFlows` half as much (181 kB
+against 366 kB). The price is on `DeepBuffer` too: the five rounds of
+Conservative Slow Start at a quarter growth triple the window after the
+exit, and the queue ends fuller than β would have left it (`rtt_x` 9.3
+against 6.0). On the 20 ms and 5 ms buffers of the other profiles it
+never fires: the detector compares one round's minimum with the previous
+round's, so it reads a queue one round after it starts, and a doubling
+slow start overflows a buffer no deeper than the bandwidth-delay product
+within that round — the loss comes first, and the exit is the loss as
+before.
 
 ```
 for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
