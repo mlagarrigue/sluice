@@ -20,27 +20,53 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func main() {
+func main() { os.Exit(run()) }
+
+// run is main with an exit status: 2 for a bad flag, 1 for a stage that is
+// not a measurement or an error, 0 otherwise. Deferred work (the CPU
+// profile) runs before the process exits, which os.Exit in main would skip.
+func run() int {
 	c, err := parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if c.trivial != "" {
+		if err := runTrivial(ctx, c.trivial, c.keyspace, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if c.cpuprofile != "" {
+		f, err := os.Create(c.cpuprofile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		defer func() { pprof.StopCPUProfile(); _ = f.Close() }()
+	}
 	ok, err := c.run(ctx, os.Stdout)
-	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	if !ok {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // stage is one run at one rate: what the flags say, and what a campaign
@@ -71,6 +97,9 @@ type campaign struct {
 	rates    []int
 	drain    time.Duration
 	maxConns int // the tester's ceiling on C, 0 for none
+
+	trivial    string // run the trivial server of §4 on this address instead
+	cpuprofile string // write the generator's CPU profile here
 }
 
 // defaultSLO is X by scenario (§3.2, orders of magnitude before the local
@@ -106,8 +135,16 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&rates, "rates", "", "run these stages instead of the grid, comma-separated req/s, until one breaks")
 	fs.DurationVar(&c.drain, "drain", 5*time.Second, "pause between two stages, once every request of the first has been answered")
 	fs.IntVar(&c.maxConns, "max-conns", 0, "the tester's ceiling on the budget C of a ramp; 0 for none")
+	fs.StringVar(&c.trivial, "trivial", "", "serve the trivial server of §4 on this address instead (h1, h2 and h3 at once, -keyspace rows), to prove the generator is not the bottleneck")
+	fs.StringVar(&c.cpuprofile, "cpuprofile", "", "write the generator's CPU profile to this file")
 	if err := fs.Parse(args); err != nil {
 		return c, err
+	}
+	if c.trivial != "" {
+		if st.keyspace <= listLimit {
+			return c, fmt.Errorf("-keyspace must exceed the list limit %d", listLimit)
+		}
+		return c, nil
 	}
 	sc, ok := scenarios[name]
 	if !ok {

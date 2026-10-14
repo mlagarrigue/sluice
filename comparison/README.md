@@ -187,5 +187,31 @@ stages under a ceiling of 4 connections holds the first two and stops at
 the third with the cause `queue`; a stage with a tenth of fresh
 connections counts their handshakes apart and fails no connect.
 
-Not yet here: HTTP/2 and HTTP/3, the `oha` cross-check, the trivial server
-per scenario that proves the generator is not the bottleneck (§4).
+### Not the bottleneck
+
+```
+comparison/loadgen/selftest.sh                                   # 4 scenarios × h1 h2 h3
+go run -C comparison/loadgen . -trivial 127.0.0.1:8444 -keyspace 300000   # the server alone
+```
+
+A capacity measured against a contender means nothing unless the generator
+could have gone much further (§4): the campaign opens with a ramp per
+scenario against a **trivial server**, which answers the four routes with
+documents of the scenario's shape and size — ~1 KB for `/static`, one row
+for `/orders/{id}`, 1 000 rows and ~50 KB for `/orders?from=&limit=`, the
+key echoed for `POST /orders` — serialised once at startup (the table's
+rows are one byte array, a list is a slice of it between two offsets), the
+generator's validation at 100 % on. It is the same binary under `-trivial`,
+run as a process of its own so that its goroutines never share the
+generator's scheduler, serving HTTP/1.1 and HTTP/2 on TCP and HTTP/3 on UDP
+at the same port, under a certificate generated at startup (`-ca` empty
+trusts it). `selftest.sh` builds it, starts it, runs one ramp per scenario
+and protocol on a coarse `×1.25` grid from 4 000 req/s (`RATES`, `DURATION`,
+`SCENARIOS`, `PROTOS` override it) and prints, per cell, the last stage
+held, its p99, the stage that broke and its cause, with a CPU profile of
+the generator per cell (`-cpuprofile`) for when a ceiling needs explaining.
+The study asks for a ceiling of at least twice the fastest contender's
+capacity in that scenario; otherwise the tester gets more cores before
+anything else is measured.
+
+Not yet here: the `oha` cross-check.
