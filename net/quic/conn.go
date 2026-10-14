@@ -949,17 +949,15 @@ func abandonedErr(ctx context.Context) error {
 const handshakeRefusalLimit = 2
 
 // endedDuringHandshakeErr is why a connection closed before its handshake
-// finished: the recorded failure, else the peer's close, which a code of
-// zero or an application close leaves unrecorded but is still a handshake
+// finished: the recorded cause — the peer's close is one, whatever its
+// code, so a refused ALPN reaches the dialer as the [*ConnectionError]
+// carrying 0x0178 — else this end's own Close, which is still a handshake
 // that did not happen.
 func (c *Conn) endedDuringHandshakeErr() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closeErr != nil {
 		return c.closeErr
-	}
-	if pc := c.peerClose; pc.seen {
-		return fmt.Errorf("%w: the peer closed the connection during the handshake: code %#x", ErrQUIC, pc.code)
 	}
 	return fmt.Errorf("%w: the connection closed during the handshake", ErrQUIC)
 }
@@ -1314,9 +1312,15 @@ func randomID(n int) ([]byte, error) {
 
 var errClosed = errors.New("quic: the connection is closed")
 
-// Err reports why the connection ended, or nil. A clean close — this end's
-// [Conn.Close], the peer's CONNECTION_CLOSE with no error, an idle timeout —
-// is not an error.
+// Err reports why the connection ended: nil while it is open and after
+// this end closed it ([Conn.Close], [Conn.CloseWithError], [Conn.Shutdown]);
+// otherwise the cause, one of [ErrIdleTimeout], [ErrStatelessReset],
+// [ErrVersionNegotiation], a [*ConnectionError] for the peer's
+// CONNECTION_CLOSE whatever its code, a [crypto/tls.AlertError] in the
+// chain for a handshake this end's TLS refused, or the protocol violation
+// that made this end abort. The peer's clean goodbye is a ConnectionError
+// too — NO_ERROR, or HTTP/3's H3_NO_ERROR — because the transport cannot
+// tell a clean code from a failure; the layer that knows the codes does.
 //
 // It is safe to call from any goroutine at any time.
 func (c *Conn) Err() error {
@@ -1327,7 +1331,9 @@ func (c *Conn) Err() error {
 
 // PeerClosed reports the application close the peer sent, if any: HTTP/3's
 // H3_NO_ERROR arrives here, and what it means belongs to the layer that
-// knows the codes.
+// knows the codes. The same close is [Conn.Err]'s [*ConnectionError] with
+// Application set; PeerClosed is the older reading of it, kept for callers
+// that do not want to inspect an error chain.
 func (c *Conn) PeerClosed() (code uint64, reason string, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

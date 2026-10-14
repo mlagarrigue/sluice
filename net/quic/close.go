@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -43,6 +44,63 @@ type transportError struct {
 
 func (e *transportError) Error() string { return e.err.Error() }
 func (e *transportError) Unwrap() error { return e.err }
+
+// Why a connection ended, as [Conn.Err] reports it (and [Conn.Dial] or
+// [Conn.Accept] when it ended during the handshake). Each cause has its own
+// value, so a caller distinguishes them with [errors.Is] and [errors.As]
+// rather than by reading the text: a server whose clients leave silently
+// sees [ErrIdleTimeout] once per client, a peer that rebooted shows as
+// [ErrStatelessReset], a peer that said goodbye shows as a
+// [*ConnectionError] carrying its code. Nothing here judges whether an end
+// was clean — what an application code means belongs to the layer that
+// knows the codes, and whether a silent peer is a failure depends on who
+// was expected to speak — so [Conn.Err] is nil only while the connection
+// is open or after this end closed it.
+var (
+	// ErrIdleTimeout: neither end sent anything for the negotiated idle
+	// period (RFC 9000 §10.1). The peer is presumed gone; it was told
+	// nothing.
+	ErrIdleTimeout = errors.New("quic: idle timeout")
+	// ErrStatelessReset: the peer answered with a stateless reset (RFC 9000
+	// §10.3) — it once held this connection and holds no state for it any
+	// more, as after a restart.
+	ErrStatelessReset = errors.New("quic: stateless reset, the peer no longer holds state for this connection")
+	// ErrVersionNegotiation: the server answered the first flight with a
+	// Version Negotiation packet that does not list version 1 (RFC 9000
+	// §6), the only version this package speaks.
+	ErrVersionNegotiation = errors.New("quic: the server does not speak QUIC version 1")
+)
+
+// ConnectionError is the peer's CONNECTION_CLOSE (RFC 9000 §10.2), whatever
+// it said: a transport error, a handshake it refused, an application code
+// such as HTTP/3's H3_NO_ERROR, or NO_ERROR itself. A handshake this end's
+// own TLS refused is not one of these: it is reported as the
+// [crypto/tls.AlertError] in the error's chain.
+type ConnectionError struct {
+	// Code is the transport error code (RFC 9000 §20.1) — the crypto
+	// range, 0x0100 to 0x01ff, is a TLS alert plus 0x0100 (RFC 9001 §4.8),
+	// which is how a peer refuses a handshake: 0x0178 for no common ALPN —
+	// or, when Application is set, the application's own code (§20.2).
+	Code uint64
+	// Application says the frame was the application flavour (type 0x1d):
+	// Code is the application's, and the transport does not know what it
+	// means.
+	Application bool
+	// Reason is the reason phrase the frame carried, usually empty; this
+	// package never sends one.
+	Reason string
+}
+
+func (e *ConnectionError) Error() string {
+	kind := "transport"
+	if e.Application {
+		kind = "application"
+	}
+	if e.Reason == "" {
+		return fmt.Sprintf("quic: the peer closed the connection: %s code %#x", kind, e.Code)
+	}
+	return fmt.Sprintf("quic: the peer closed the connection: %s code %#x %q", kind, e.Code, e.Reason)
+}
 
 // closeCodeFor picks the CONNECTION_CLOSE code an error deserves. A
 // transportError anywhere in the chain carries its own — anywhere, because
@@ -277,9 +335,11 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 
 // idleExpired closes silently: an idle timeout is the one end of a
 // connection that sends nothing, because the whole premise is that the peer
-// is gone (§10.1). It is not an error — it is how the protocol expects a
-// connection nobody is using to end — so Err stays nil.
+// is gone (§10.1). Err reports [ErrIdleTimeout]: the protocol expects an
+// unused connection to end this way, and whether that was expected here is
+// for the caller to say.
 func (c *Conn) idleExpired() {
+	c.fail(ErrIdleTimeout)
 	c.mu.Lock()
 	c.closeSent = true // suppress the CONNECTION_CLOSE a Close would send
 	c.mu.Unlock()

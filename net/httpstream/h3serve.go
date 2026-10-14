@@ -235,7 +235,25 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// connection is gone at its next yield, which returns false (see the
 	// package documentation), and its goroutine ends then.
 	writers.Wait()
-	return c.Err()
+	return h3CloseErr(c.Err())
+}
+
+// h3CloseErr is what ServeH3 reports once the connection ended: nil for
+// the ends an HTTP/3 server treats as the client leaving — its H3_NO_ERROR
+// (RFC 9114 §8.1), its transport NO_ERROR, or silence past the idle timeout
+// — and the transport's cause for everything else. The transport reports
+// every peer close as a [quic.ConnectionError] because it does not know
+// what the codes mean; this is the layer that does.
+func h3CloseErr(err error) error {
+	if errors.Is(err, quic.ErrIdleTimeout) {
+		return nil
+	}
+	if ce, ok := errors.AsType[*quic.ConnectionError](err); ok {
+		if (ce.Application && ce.Code == h3NoError) || (!ce.Application && ce.Code == 0) {
+			return nil
+		}
+	}
+	return err
 }
 
 // h3ReleaseStreamBytes is the manual-credit release, a variable so a test

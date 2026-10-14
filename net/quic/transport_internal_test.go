@@ -145,7 +145,7 @@ func TestDialReportsAHandshakeCloseAsItself(t *testing.T) {
 		}
 		_, _ = srv.WriteTo(pkt, from)
 	})
-	if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "code 0x2") {
+	if !isRefusedClose(err) {
 		t.Fatalf("Dial = %v, want the peer's CONNECTION_REFUSED", err)
 	}
 	if took > 3*time.Second {
@@ -289,10 +289,16 @@ func TestWithheldNoRetransPacketKeepsQueuedFrames(t *testing.T) {
 	}
 }
 
+// isRefusedClose reports whether err is the peer's CONNECTION_CLOSE with
+// CONNECTION_REFUSED, read by its code rather than its text.
+func isRefusedClose(err error) bool {
+	ce, ok := errors.AsType[*ConnectionError](err)
+	return ok && !ce.Application && ce.Code == transportConnectionRefused
+}
+
 // The idle timeout firing: the connection ends, silently — no
-// CONNECTION_CLOSE (§10.1), and no error, since idleness is how the protocol
-// expects an unused connection to end. The existing idle tests only pinned
-// when it does not fire.
+// CONNECTION_CLOSE (§10.1) — and Err names the cause, ErrIdleTimeout. The
+// existing idle tests only pinned when it does not fire.
 func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	pc := newScriptedPC()
@@ -316,8 +322,8 @@ func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	default:
 		t.Fatal("the idle timeout matured and the connection is still open")
 	}
-	if err := c.Err(); err != nil {
-		t.Errorf("Err = %v; an idle timeout is not an error", err)
+	if err := c.Err(); !errors.Is(err, ErrIdleTimeout) {
+		t.Errorf("Err = %v, want ErrIdleTimeout", err)
 	}
 	if n := pc.writes.Load() - before; n != 0 {
 		t.Errorf("%d datagrams written on idle expiry; it must send nothing", n)

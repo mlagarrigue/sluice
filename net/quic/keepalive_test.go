@@ -70,7 +70,7 @@ func TestIdleTimeoutEndsASilentConnection(t *testing.T) {
 	if !strings.Contains(err.Error(), "the connection is closed") {
 		t.Fatalf("AcceptStream on a silent connection: %v; want the connection closed", err)
 	}
-	if err := server.Err(); err != nil {
-		t.Fatalf("server Err after idle: %v; an idle end is not an error", err)
+	if err := server.Err(); !errors.Is(err, quic.ErrIdleTimeout) {
+		t.Fatalf("server Err after idle = %v, want ErrIdleTimeout", err)
 	}
 }

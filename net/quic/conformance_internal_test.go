@@ -681,8 +681,11 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 	copy(reset[len(reset)-16:], token[:])
 
 	err := c.receive(reset, pcB.LocalAddr())
-	if err == nil || !errors.Is(err, ErrQUIC) {
-		t.Fatalf("receive returned %v, want the stateless-reset teardown error", err)
+	if !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("receive returned %v, want ErrStatelessReset", err)
+	}
+	if err := c.Err(); !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("Err = %v, want ErrStatelessReset", err)
 	}
 	select {
 	case <-c.closed:

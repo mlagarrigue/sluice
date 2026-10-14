@@ -2,6 +2,7 @@ package quic
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/netip"
 	"runtime"
@@ -127,16 +128,17 @@ func TestListenerCloseEndsAcceptedConnections(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("the client never learned its accepted connection was closed")
 	}
-	// A transport NO_ERROR close is clean: not an Err, and not the
-	// application close PeerClosed reports. What proves the client heard
-	// the frame rather than, say, timing out is the close it recorded.
+	// A transport NO_ERROR close, reported as the ConnectionError with code
+	// 0 — not the application close PeerClosed reports. What proves the
+	// client heard the frame rather than, say, timing out is the close it
+	// recorded.
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if !client.peerClose.seen || client.peerClose.app || client.peerClose.code != transportNoError {
 		t.Errorf("the client recorded %+v, want a transport NO_ERROR close", client.peerClose)
 	}
-	if client.closeErr != nil {
-		t.Errorf("a clean close left Err = %v", client.closeErr)
+	if ce, ok := errors.AsType[*ConnectionError](client.closeErr); !ok || ce.Application || ce.Code != transportNoError {
+		t.Errorf("Err = %v, want the ConnectionError for a transport NO_ERROR close", client.closeErr)
 	}
 }
 

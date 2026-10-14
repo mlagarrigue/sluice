@@ -340,7 +340,10 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 	if !ok || code != 0x100 {
 		t.Fatalf("PeerClosed = (%#x, %v), want (0x100, true)", code, ok)
 	}
-	if err := client.Err(); err != nil {
-		t.Fatalf("an application close with code 0x100 is the peer's decision, not an error here: %v", err)
+	// The same close as Err's typed value: the transport reports it, the
+	// layer above decides what 0x100 means.
+	ce, ok := errors.AsType[*quic.ConnectionError](client.Err())
+	if !ok || !ce.Application || ce.Code != 0x100 {
+		t.Fatalf("client Err = %v, want a ConnectionError with application code 0x100", client.Err())
 	}
 }

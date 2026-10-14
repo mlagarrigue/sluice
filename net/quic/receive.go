@@ -563,15 +563,12 @@ func (c *Conn) isStatelessReset(datagram []byte) bool {
 // — and provably has no state left for it, so there are no keys on the
 // other side to read a CONNECTION_CLOSE with, and nothing to wait for.
 func (c *Conn) handleStatelessReset() error {
-	err := fmt.Errorf("%w: stateless reset — the peer no longer holds state for this connection", ErrQUIC)
+	c.fail(ErrStatelessReset)
 	c.mu.Lock()
-	if c.closeErr == nil {
-		c.closeErr = err
-	}
 	c.closeSent = true // suppress the CONNECTION_CLOSE a Close would send
 	c.mu.Unlock()
 	_ = c.Close()
-	return err
+	return ErrStatelessReset
 }
 
 // adoptPeerCID pins the connection identifier the peer chose, from the first
@@ -628,7 +625,7 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 		}
 		b = b[4:]
 	}
-	c.fail(fmt.Errorf("%w: the server does not speak QUIC version 1", ErrQUIC))
+	c.fail(ErrVersionNegotiation)
 	_ = c.Close()
 }
 
@@ -1487,15 +1484,16 @@ type settledStream struct {
 	grant uint64
 }
 
-// handlePeerClose acts on the peer's CONNECTION_CLOSE: record why, stop
-// sending anything — including a close of this end's own (§10.2.2) — and
-// end.
+// handlePeerClose acts on the peer's CONNECTION_CLOSE: record it as a
+// [ConnectionError] whatever its code — NO_ERROR included, since what a
+// code means is the caller's to judge — stop sending anything, including a
+// close of this end's own (§10.2.2), and end.
 func (c *Conn) handlePeerClose(f Frame) {
 	c.mu.Lock()
 	c.draining = true
 	c.peerClose = peerClose{code: f.value, app: f.Type == frameConnectionClose|1, reason: string(f.Data), seen: true}
-	if f.Type == frameConnectionClose && f.value != 0 && c.closeErr == nil {
-		c.closeErr = fmt.Errorf("%w: the peer closed the connection: code %#x %q", ErrQUIC, f.value, f.Data)
+	if c.closeErr == nil {
+		c.closeErr = &ConnectionError{Code: f.value, Application: c.peerClose.app, Reason: c.peerClose.reason}
 	}
 	c.mu.Unlock()
 	_ = c.Close()

@@ -49,7 +49,10 @@
 //   - Lifecycle: CONNECTION_CLOSE both ways — at once with [Conn.Close],
 //     or once everything sent is acknowledged with [Conn.Shutdown] —
 //     HANDSHAKE_DONE, the negotiated idle timeout and the
-//     [Conn.SetKeepAlive] PING that holds a connection under it, transport-parameter validation with the §7.3
+//     [Conn.SetKeepAlive] PING that holds a connection under it; why a
+//     connection ended is one typed value from [Conn.Err] ([ErrIdleTimeout],
+//     [ErrStatelessReset], [ErrVersionNegotiation], [ConnectionError]),
+//     transport-parameter validation with the §7.3
 //     identifier-binding checks, version-negotiation and Retry handling on
 //     the client (the Retry integrity tag is verified per RFC 9001 §5.8).
 //   - A server [Listener]: one shared [net.PacketConn] demultiplexed to

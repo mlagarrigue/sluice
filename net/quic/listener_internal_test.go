@@ -13,7 +13,6 @@ import (
 	"net"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1000,7 +999,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 		_ = second.Close()
 		t.Fatal("the second Dial got a connection; the cap is 1")
 	}
-	if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "code 0x2") {
+	if ce, ok := errors.AsType[*ConnectionError](err); !ok || ce.Application || ce.Code != transportConnectionRefused {
 		t.Fatalf("the second Dial failed with %v; want CONNECTION_REFUSED (0x2) during the handshake", err)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {

@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/net/quic"
 )
 
 // Shutdown holds the CONNECTION_CLOSE until the peer has acknowledged every
 // byte: a 64 KiB stream written and closed just before Shutdown arrives
-// whole, and neither end records an error.
+// whole; the client records nothing, the server the client's NO_ERROR close.
 func TestShutdownDeliversTheTailBeforeClosing(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 
@@ -56,8 +58,9 @@ func TestShutdownDeliversTheTailBeforeClosing(t *testing.T) {
 	if err := client.Err(); err != nil {
 		t.Fatalf("client Err after Shutdown: %v", err)
 	}
-	if err := server.Err(); err != nil {
-		t.Fatalf("server Err after the client's Shutdown: %v", err)
+	// The server saw the client's NO_ERROR close: reported, not judged.
+	if ce, ok := errors.AsType[*quic.ConnectionError](server.Err()); !ok || ce.Application || ce.Code != 0 {
+		t.Fatalf("server Err after the client's Shutdown = %v, want the ConnectionError for NO_ERROR", server.Err())
 	}
 }
 
