@@ -389,9 +389,60 @@ for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
 done; done
 ```
 
-The gate (`gate-path.sh`) runs the default, Reno: CUBIC changes none of
-its eight rows until it is chosen (measured the same day: the eight within
-0.94–1.02 of `main`, `Bottleneck` the 0.94 and the gate's known bias there).
+**BBR version 1** (draft-cardwell-iccrg-bbr-congestion-control-00,
+`CongestionBBRv1`) is the first model-based controller of the palette:
+it paces at the highest delivery rate measured over the last ten round
+trips and keeps about two bandwidth-delay products of window, probing
+for more bandwidth one round in eight and draining the path for 200 ms
+every ten seconds to re-measure its propagation delay; loss is not a
+signal to it. Measured the same way as CUBIC, eight rounds on
+2026-10-14, interleaved with the same binary and `SLUICE_QUIC_CC=bbr1`,
+on the four profiles the controller was written for:
+
+| Benchmark | Reno, same pass | BBRv1 | Reno / BBRv1 | BBRv1 goodput | Spread |
+|---|---|---|---|---|---|
+| `BenchmarkTransferLoss1pct` | 4.31 s | 376 ms | 11.5 | 11.2 MB/s | ±13% |
+| `BenchmarkTransferBottleneck` | 881 ms | 818 ms | 1.08 | 5.13 MB/s (0.82 of the line), `rtt_x` 1.22 | ±4% |
+| `BenchmarkTransferDeepBuffer` | 788 ms | 782 ms | 1.01 | 5.37 MB/s, `rtt_x` 1.8 (Reno 5.9) | ±0.3% |
+| `BenchmarkTransferTwoFlows` | 1.51 s | 1.52 s | 0.99 | 5.53 MB/s, `share` 0.47–0.54 | ±2% |
+
+Three things it proved and two it did not. `Loss1pct` is the point of a
+model: a path that drops one datagram in a hundred still delivers at
+its rate, and BBRv1 sends at that rate where Reno halves its window at
+every loss (0.98 MB/s, the Mathis bound). On `DeepBuffer` it holds the
+queue instead of filling it — `rtt_x` 1.6 to 2.0 across the rounds
+against Reno's 5.9 and CUBIC's 9.3 — at the same goodput. On
+`Bottleneck` it moves 4 MiB in 818 ms against 881, with less of the
+spread Reno shows there (786–844 ms against 853–1195). What it did not
+reach: the 85% of the line the palette plan set for this profile (0.82
+here), and a smoothed round trip within 1.5× of the path's on the deep
+buffer (1.8). Both are the version's documented behaviour, read in the
+controller's trace. Startup detects the full pipe three rounds after the
+fact, pacing at 2/ln 2 of the estimate meanwhile, which on a 5 ms
+buffer loses (gain − 1) × BDP a round, 60 to 90 kB each, before Drain;
+and the max filter keeps the highest sample of ten rounds, which the
+acknowledgement timing of the emulated path inflates by 5 to 7% above
+the line, so the cruise paces above the link and only the window's gain
+of two bounds the queue — one bandwidth-delay product of it on a buffer
+that never drops, the 5 ms buffer's worth of loss on one that does.
+The ceiling of any controller on this transfer is about 0.88 of the
+line (671 ms of line time, the handshake and a slow start from 12 kB);
+the rest of the gap is BBR version 1, and the draft's later revisions
+(a Startup that exits on loss, an in-flight bound from the loss rate)
+are the next step of the palette, not a tuning of this one.
+
+Against a Reno flow on the same bottleneck (the `TwoFlows` link, one
+flow each, started together, four rounds, not a benchmark of the suite)
+BBRv1 takes 0.60 to 0.69 of the delivered rate — the version's known
+appetite, with no bound on what it leaves a loss-based flow; the
+draft's later revisions add one, and that figure is the next step's
+criterion. Reno stays the default: nothing here is a measurement
+against a real client.
+
+The gate (`gate-path.sh`) runs the default, Reno: CUBIC and BBRv1 change
+none of its eight rows until they are chosen (measured the same days:
+the eight within 0.94–1.02 of `main` for CUBIC, `Bottleneck` the 0.94
+and the gate's known bias there; within 0.986–1.004 for BBRv1).
 
 **The CI gate watches eight of the Reno rows** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
