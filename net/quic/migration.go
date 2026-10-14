@@ -733,6 +733,52 @@ func (c *Conn) sendPathChallengeLocked() {
 	})
 }
 
+// answerPathChallengesLocked sends the PATH_RESPONSE frames one packet's
+// challenges earned — responses, already encoded back to back — in one
+// datagram to the address the packet came from (§9.3: back to the source,
+// which during a migration is not the path in use), exactly once: never
+// via loss recovery, since the peer retries with a fresh challenge and a
+// stale response proves nothing (§8.2.2). Hence a packet of its own,
+// noRetrans, with the control queue flushed first so no grant hitches a
+// ride out of loss recovery.
+//
+// §8.2.2: the datagram MUST be expanded to 1200 bytes — the probe is also
+// an MTU probe — except past the anti-amplification limit, which the
+// section itself says happens only when the challenge did not arrive
+// expanded. On the path in use the §8.1 books cover the send; toward any
+// other address the books are Conn.offPath, seeded by the challenge's own
+// datagram: a ≥1200-byte challenge earns a 1200-byte answer, a small one
+// gets a small one — never a 1200-byte reflection of a few spoofed-source
+// bytes — and writePacketLocked keeps the sum under three times what that
+// address sent. Nine bytes per response, so one packet answers a packet
+// full of challenges; a larger packet's responses take as many packets as
+// needed, the first one expanded. Callers hold mu.
+func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
+	c.flushControlLocked()
+	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
+	padTo := 0
+	if onPath || c.rxDatagramLen >= 1200 {
+		padTo = 1200
+	}
+	// A challenge that reached a server's preferred-address socket is
+	// answered with this end's own probe of that path in the same packet
+	// (§9.6.2), under the identifier that path gets.
+	probe, dcid := c.preferredPathChallengeLocked(now)
+	const responseLen = 1 + 8 // type, data
+	per := c.maxStreamChunk() / responseLen * responseLen
+	for len(responses) > 0 {
+		n := min(len(responses), per)
+		payload := responses[:n:n]
+		if len(probe) > 0 {
+			payload = append(payload, probe...)
+			probe = nil
+		}
+		_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
+		responses = responses[n:]
+		padTo = 0
+	}
+}
+
 // preferredPathChallengeLocked is the server half of §9.6.2, taken when a
 // PATH_CHALLENGE arrives on the preferred-address socket from the client's
 // address while the connection still sends from the main one: the client

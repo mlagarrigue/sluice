@@ -259,6 +259,12 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 		// the path, where they seed the new path's own accounting.
 		c.amplRecv += int64(len(datagram))
 	}
+	if !fromPeer {
+		if c.offPath.addr == nil || !sameAddr(c.offPath.addr, from) {
+			c.offPath.addr, c.offPath.recv, c.offPath.sent = from, 0, 0
+		}
+		c.offPath.recv += int64(len(datagram))
+	}
 	c.rxFrom = from
 	c.rxDatagramLen = len(datagram)
 	c.rxLocalCIDSeq = 0
@@ -731,6 +737,9 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	// final signal — a Read blocked on it would then wait out the idle
 	// timeout for an EOF that already happened.
 	var ended []*Stream
+	// The PATH_RESPONSE frames this packet's challenges earn, sent
+	// together once every frame is read.
+	var pathResponses []byte
 	scratch := c.takeScratch()
 
 	for _, f := range frames {
@@ -870,44 +879,13 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 
 		case f.Type == framePathChallenge:
 			// §8.2: must be answered, on pain of the peer concluding the
-			// path is dead. The answer has its own rules (§8.2.2): expanded
-			// to a 1200-byte datagram, because the probe is also an MTU
-			// probe, and sent exactly once — never via loss recovery, since
-			// the peer retries with a fresh challenge and a stale response
-			// proves nothing. Hence its own packet, noRetrans, with PADDING
-			// up to the short header's 1200 (1 type byte + dcid + 4 pn +
-			// 16 tag around the payload) — and the control queue flushed
-			// first, so no grant hitches a ride out of loss recovery. §9.3
-			// sends the response back to the address the challenge came
-			// from, which during a migration is not the path in use.
-			c.mu.Lock()
-			c.flushControlLocked()
-			resp := AppendVarint(nil, framePathResponse)
-			resp = append(resp, f.Data...)
-			// §8.2.2: the response MUST be expanded to 1200 — except past
-			// the anti-amplification limit, which the section itself says
-			// happens only when the challenge did not arrive expanded. On
-			// the path in use the books cover the send; toward any other
-			// address there are no books, so the triggering datagram's own
-			// size is the budget: a ≥1200-byte challenge earns a 1200-byte
-			// answer (factor ≤ 1), a small one gets a small one — never a
-			// 1200-byte reflection of a few spoofed-source bytes. (Replay
-			// is already closed: duplicates drop before frames are read.)
-			// On the path in use the expansion stops at what the §8.1
-			// budget allows, if the path is still unvalidated: a response
-			// padded past it would not leave at all.
-			onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
-			padTo := 0
-			if onPath || c.rxDatagramLen >= 1200 {
-				padTo = 1200
-			}
-			// A challenge that reached a server's preferred-address socket
-			// is answered with this end's own probe of that path in the
-			// same packet (§9.6.2), under the identifier that path gets.
-			probe, dcid := c.preferredPathChallengeLocked(now)
-			resp = append(resp, probe...)
-			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
-			c.mu.Unlock()
+			// path is dead. The answers to one packet's challenges leave
+			// together once its frames are read (answerPathChallengesLocked
+			// says how): one datagram, not one per frame — a packet of k
+			// challenges from an address off the path used to earn k
+			// datagrams of 1200 bytes, many times what it cost to send.
+			pathResponses = AppendVarint(pathResponses, framePathResponse)
+			pathResponses = append(pathResponses, f.Data...)
 
 		case f.Type == framePathResponse:
 			c.handlePathResponse(f)
@@ -969,6 +947,13 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		c.mu.Unlock()
 	}
 
+	if len(pathResponses) > 0 {
+		// Before the batch is dispatched: §8.2.2 says not to delay the
+		// response, and the batch callback is the caller's time.
+		c.mu.Lock()
+		c.answerPathChallengesLocked(pathResponses, now)
+		c.mu.Unlock()
+	}
 	if len(batch) > 0 {
 		if err := c.dispatchDeltas(batch); err != nil {
 			return eliciting, err

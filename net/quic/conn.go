@@ -321,6 +321,20 @@ type Conn struct {
 	amplActive bool
 	amplRecv   int64
 	amplSent   int64
+	// offPath is the same limit for the one address off the path that
+	// this end answers: the source of the datagram in hand when it is not
+	// the peer's. Nothing sent there validates it — a probing-only packet
+	// does not move the path (§9.1), so no migration seeds amplRecv for
+	// it — yet §8 bounds what goes to *any* unvalidated address to three
+	// times what came from it, and a PATH_RESPONSE expanded to 1200 bytes
+	// per PATH_CHALLENGE would otherwise reflect many times what a spoofed
+	// datagram cost its sender (§21.1.1.1). One address at a time: a
+	// datagram from another off-path address starts a fresh count, and
+	// what the earlier one had left is forgotten, never carried over.
+	offPath struct {
+		addr       net.Addr
+		recv, sent int64
+	}
 
 	// registrar issues this connection's additional identifiers: the
 	// [Listener]'s demux table for a connection it manages, an

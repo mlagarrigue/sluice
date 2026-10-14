@@ -449,10 +449,19 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	if opts.to != nil && !sameAddr(opts.to, c.peer) {
 		dest, onPath = opts.to, false
 	}
+	// An off-path destination has books of its own when it is the address
+	// the datagram in hand came from (Conn.offPath): what goes there is
+	// bounded like any unvalidated address. A client's probe of the
+	// server's preferred address is off the path too, but that address
+	// sent nothing yet and is not being answered — it is not bounded.
+	budgeted := !onPath && c.offPath.addr != nil && sameAddr(dest, c.offPath.addr)
 	if opts.padTo > 0 && space == spaceApplication {
 		target := opts.padTo
 		if c.amplActive && onPath {
 			target = min(target, int(3*c.amplRecv-c.amplSent))
+		}
+		if budgeted {
+			target = min(target, int(3*c.offPath.recv-c.offPath.sent))
 		}
 		if pad := target - (len(header) + pnLen + len(payload) + 16); pad > 0 {
 			payload = append(payload, make([]byte, pad)...)
@@ -493,6 +502,12 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 				sp.retrans[0] = append([]byte(nil), retransPart...)
 			}
 		}
+		return nil
+	}
+	if budgeted && c.offPath.sent+int64(size) > 3*c.offPath.recv {
+		// Past what the off-path address has earned: nothing leaves. The
+		// only thing sent there is a PATH_RESPONSE, which regenerates — the
+		// peer sends another challenge if it still needs one (§8.2.2).
 		return nil
 	}
 
@@ -630,6 +645,8 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	size := len(out) - before
 	if c.amplActive && p.onPath {
 		c.amplSent += int64(size)
+	} else if !p.onPath && c.offPath.addr != nil && sameAddr(p.dest, c.offPath.addr) {
+		c.offPath.sent += int64(size)
 	}
 	// RFC 9001 §6.2: an acknowledgement sent under the keys that answered
 	// the peer's rotation, covering the packet that carried it, is what

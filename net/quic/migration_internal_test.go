@@ -399,6 +399,12 @@ func newMigratableServer(t *testing.T, name string) (*Conn, *recordingPC) {
 // for an authenticated 1-RTT packet from addr.
 func rxFromNewAddress(c *Conn, addr net.Addr, size int, highest bool) {
 	c.mu.Lock()
+	if !sameAddr(addr, c.peer) {
+		if c.offPath.addr == nil || !sameAddr(c.offPath.addr, addr) {
+			c.offPath.addr, c.offPath.recv, c.offPath.sent = addr, 0, 0
+		}
+		c.offPath.recv += int64(size)
+	}
 	c.rxFrom = addr
 	c.rxDatagramLen = size
 	c.rxHighest = highest
@@ -1857,4 +1863,88 @@ func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
 	if n := len(fresh.recorded()); n != 1 {
 		t.Errorf("%d datagrams left on the new socket after Rebind, want 1 (the PATH_CHALLENGE)", n)
 	}
+}
+
+// RFC 9000 §8.2.2 and §8: every PATH_CHALLENGE is answered, and what goes
+// to an address off the path — never validated, since a probing-only packet
+// does not move the path — stays under three times what that address sent.
+// One packet of k challenges used to earn k datagrams of 1200 bytes each: a
+// reflection of k× toward a spoofed source. Now its k answers share one
+// expanded datagram, and the address's own books cap the rest.
+func TestOffPathChallengesShareOneDatagramWithinBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "budget")
+	source := fakeFuzzAddr("budget:peerB")
+	const k = 8
+	var challenges []byte
+	for i := range k {
+		challenges = AppendVarint(challenges, framePathChallenge)
+		challenges = append(challenges, bytes.Repeat([]byte{byte(i + 1)}, 8)...)
+	}
+	rxFromNewAddress(c, source, 1200, true)
+	if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	writes := pc.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("%d datagrams answered one packet of %d challenges, want 1", len(writes), k)
+	}
+	if !sameAddr(writes[0].to, source) || len(writes[0].data) != 1200 {
+		t.Errorf("the answer is %d bytes to %v, want 1200 to %v", len(writes[0].data), writes[0].to, source)
+	}
+	if got := countFrames(t, c, writes[0].data, framePathResponse); got != k {
+		t.Errorf("the datagram carries %d PATH_RESPONSE frames, want %d", got, k)
+	}
+
+	// The books: 1200 received funds 3600; two more such packets spend it
+	// (1200 each), and a fourth answer — nothing more received — is
+	// withheld rather than sent past the limit.
+	for range 2 {
+		if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	for _, w := range pc.recorded() {
+		if sameAddr(w.to, source) {
+			total += len(w.data)
+		}
+	}
+	if total > 3*1200 {
+		t.Errorf("%d bytes went to an address that sent 1200: past the 3× limit (§8)", total)
+	}
+	if total != 3*1200 {
+		t.Errorf("%d bytes went to the source, want exactly the 3600 its datagram funds", total)
+	}
+}
+
+// countFrames opens a short-header datagram c sealed (the test key serves
+// both directions) and counts the frames of type typ in it.
+func countFrames(t *testing.T, c *Conn, datagram []byte, typ byte) int {
+	t.Helper()
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _, err := opener.Open(append([]byte(nil), datagram...), 1+len(c.dcid), 0)
+	if err != nil {
+		t.Fatalf("the datagram does not open: %v", err)
+	}
+	frames, err := parseFrames(nil, payload)
+	if err != nil {
+		t.Fatalf("the payload does not parse: %v", err)
+	}
+	n := 0
+	for _, f := range frames {
+		if f.Type == typ {
+			n++
+		}
+	}
+	return n
 }
