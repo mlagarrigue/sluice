@@ -46,6 +46,9 @@ type TransportParameters struct {
 	MaxIdleTimeout time.Duration
 
 	// MaxUDPPayloadSize is the largest datagram this endpoint will read.
+	// It does not change what this endpoint sends: datagrams stay at
+	// 1200 bytes, RFC 9000 §14.1's floor, until the path is probed for
+	// more (§14.3, not implemented) — see the package documentation.
 	MaxUDPPayloadSize uint64
 
 	// InitialMaxData bounds everything the peer may send on all streams

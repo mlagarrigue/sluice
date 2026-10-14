@@ -85,6 +85,15 @@
 //     flight it provokes leave together, Initial and Handshake packets in
 //     one datagram, with §14.1's padding carried by the packet that closes
 //     it rather than by the Initial alone.
+//   - Datagram size (§14): every datagram this package sends is at most
+//     1200 bytes, the smallest maximum §14.1 guarantees on any path QUIC
+//     runs on. [TransportParameters.MaxUDPPayloadSize] bounds what this
+//     end reads, not what it sends: without DPLPMTUD (§14.3, not
+//     implemented) nothing proves the path carries more, and §14.2 says
+//     not to send more without that proof — a larger datagram the path
+//     drops would be retransmitted at the same size into the same hole.
+//     On a 1500-byte Ethernet path that forgoes about 7 % of payload per
+//     datagram (1452 would fit); see docs/guide/limits.md.
 //   - Stateless resets (§10.3): a connection recognises a reset by the
 //     tokens its peer announced — NEW_CONNECTION_ID's, and the handshake's
 //     stateless_reset_token — and dies immediately rather than by idle
