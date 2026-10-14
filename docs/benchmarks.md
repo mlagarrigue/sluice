@@ -299,6 +299,7 @@ controller keeps the queue empty, six when it keeps 200 ms of buffer full.
 | `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 865 ms | 4.86 MB/s | ±2%, one round at +23% |
 | `BenchmarkTransferDeepBuffer` | 20 ms RTT, 50 Mbit/s, 200 ms of buffer | 4 MiB | 788 ms | 5.33 MB/s, `rtt_x` 5.9 | ±0.2% |
 | `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
+| `BenchmarkTransferTwoFlowsVsReno` | the `TwoFlows` link, the second flow on Reno | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.42–0.54 | ±5%, not gated |
 | `BenchmarkTransferRTT40` | 40 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 971 ms | 8.64 MB/s | ±1% |
 | `BenchmarkTransferRTT80` | 80 ms RTT, 100 Mbit/s, 20 ms of buffer | 8 MiB | 1.35 s | 6.21 MB/s | ±2% |
 | `BenchmarkTransferRTT80Shallow` | 80 ms RTT, 100 Mbit/s, 5 ms of buffer | 32 MiB | 8.80 s | 3.81 MB/s | ±2%, not gated |
@@ -439,10 +440,73 @@ draft's later revisions add one, and that figure is the next step's
 criterion. Reno stays the default: nothing here is a measurement
 against a real client.
 
-The gate (`gate-path.sh`) runs the default, Reno: CUBIC and BBRv1 change
-none of its eight rows until they are chosen (measured the same days:
-the eight within 0.94–1.02 of `main` for CUBIC, `Bottleneck` the 0.94
-and the gate's known bias there; within 0.986–1.004 for BBRv1).
+**BBR as the IETF drafts it** (draft-ietf-ccwg-bbr-03, the version Linux
+ships as BBRv3, `CongestionBBR`) keeps version 1's model of the path and
+reads loss as evidence about how much the path holds: a round that loses
+more than 2% while probing bounds the volume in flight, with 15% of that
+bound left free while cruising; a loss between probes cuts the rate and
+the volume to 0.7 of what they were until the next probe, two to three
+seconds later or as soon as a Reno flow of the same window would have
+grown back; Startup ends on six loss events in a round as well as on a
+plateau. Measured the same way, eight rounds on 2026-10-14, interleaved
+with the same binary and `SLUICE_QUIC_CC=bbr`, on the four profiles of
+BBRv1's table, the burst-loss one, and a new benchmark,
+`BenchmarkTransferTwoFlowsVsReno` — the `TwoFlows` link with the second
+flow on Reno whatever the variable says, `share` the first flow's:
+
+| Benchmark | Reno, same pass | BBR | Reno / BBR | BBR goodput | Spread |
+|---|---|---|---|---|---|
+| `BenchmarkTransferLoss1pct` | 4.45 s | 277 ms | 16.1 | 15.2 MB/s | 266–440 ms |
+| `BenchmarkTransferBurstLoss` | 757 ms | 256 ms | 2.96 | 16.4 MB/s | 253–324 ms |
+| `BenchmarkTransferBottleneck` | 876 ms | 797 ms | 1.10 | 5.26 MB/s (0.84 of the line), `rtt_x` 1.22 | 795–824 ms (Reno 854–1031) |
+| `BenchmarkTransferDeepBuffer` | 790 ms | 787 ms | 1.00 | 5.33 MB/s, `rtt_x` 1.77 (Reno 5.9) | `rtt_x` 1.19–2.09 |
+| `BenchmarkTransferTwoFlows` | 1.49 s | 1.53 s | 0.97 | 5.48 MB/s, `share` 0.45–0.55 | ±5% |
+| `BenchmarkTransferTwoFlowsVsReno` | 1.49 s | 1.62 s | 0.92 | 5.18 MB/s, `share` 0.56 (0.46–0.61) | ±8% |
+
+What changed from version 1. `Loss1pct` goes from 11.5× Reno to 16×,
+and `BurstLoss` — a profile BBRv1 was not measured on — from Reno's
+757 ms to 256 ms: a loss between probes costs a round at 0.7 of the
+rate and the volume, not a halved window. `Bottleneck` moves 4 MiB in
+797 ms against 876, in a 4% band where Reno spreads over 21%: Startup
+leaves on the first round that loses (one round of overshoot, 126 kB,
+where version 1 lost three), and the short-term bound then holds the
+flight at the product plus the buffer. On `DeepBuffer` the queue is
+what version 1 held, 1.8× the path's round trip at the end against
+Reno's 5.9, at the same goodput. Against a Reno flow BBR takes 0.56 of
+the line (0.46 to 0.61 across the rounds) where version 1 took 0.60 to
+0.69: the loss-rate bound and the headroom are what the draft added for
+this, and the criterion was 0.70 at most.
+
+The two figures the palette plan set and version 1 missed are missed
+again, by the draft rather than by this reading of it. 0.85 of the line
+on `Bottleneck`: 797 ms is 0.84, and the ceiling of the measurement is
+there — 671 ms of line time, 80 to 90 ms of fixed cost (a 64 kB transfer
+takes 91 to 104 ms on this profile, 25 ms of handshake included) and
+about 50 ms of ramp (four rounds under the line rate: 12, 24, 48, 96 kB
+against 125 kB a round) make 800 to 810 ms, 0.83 to 0.84. On a 16 MiB
+transfer, out of that ceiling, BBR delivers 0.94 of the line against
+Reno's 0.80 (one run each, a throwaway test). A smoothed round trip
+within 1.5× of the path's on `DeepBuffer`: 1.77 here, and 2.25 as the
+median over a 16 MiB transfer. With no loss and no ECN the draft bounds
+the queue by the window's gain alone (§5.3.1.1: (gain − 1) × the
+estimated product, plus `extra_acked`), and the estimate carries +5.6%:
+the emulated path's delivery-rate samples are noisy by ±3% either way
+(median 0.99 of the line, 1.01 at the ninetieth percentile, 1.04 at
+most in a round) and the max filter keeps the highest over two ProbeBW
+cycles, so the cruise paces at 0.99 × 1.056 of the line and adds 4% of
+a product to the queue every round, with nothing to drain it before the
+next probe (two to three seconds, or 63 rounds) or ProbeRTT (five
+seconds). That figure is not a property of the draft on a path without
+a signal; it asks for ECN (§3.7, not implemented) or an estimator that
+does not keep upward noise. Both criteria are rewritten as measured;
+nothing in the controller is tuned toward them. Reno stays the default:
+nothing here is a measurement against a real client.
+
+The gate (`gate-path.sh`) runs the default, Reno: CUBIC, BBRv1 and BBR
+change none of its eight rows until they are chosen (measured the same
+days: the eight within 0.94–1.02 of `main` for CUBIC, `Bottleneck` the
+0.94 and the gate's known bias there; within 0.986–1.004 for BBRv1,
+0.994–1.013 for BBR).
 
 **The CI gate watches eight of the Reno rows** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
