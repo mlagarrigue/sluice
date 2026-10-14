@@ -142,8 +142,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		if lt := sp.sent.lossTime; !lt.IsZero() && !now.Before(lt) {
 			out := sp.sent.collectTimeLosses(now, &c.rtt)
 			if out.lostCount > 0 {
-				sp.retrans = append(sp.retrans, out.lost...)
-				c.lostPackets += out.lostCount
+				c.queueLostLocked(sp, out)
 				if out.lostBytes > 0 { // see handleAck: a previous path's losses carry no bytes
 					c.cc.onLost(out.lostBytes, out.latestLossSent, now)
 				}

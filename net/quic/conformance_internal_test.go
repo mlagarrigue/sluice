@@ -711,7 +711,7 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 // probe timeouts. The window then collapses to its minimum below the
 // slow-start threshold the loss event just halved.
 func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
-	run := func(t *testing.T, spacing time.Duration, sampled bool) (cwnd, ssthresh, initial int) {
+	run := func(t *testing.T, spacing time.Duration, sampled bool) (cwnd, ssthresh, initial int, collapses uint64) {
 		t.Helper()
 		pcA, pcB := newLoopbackPair(t)
 		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
@@ -743,18 +743,21 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		return c.cc.cwnd, c.cc.ssthresh, initial
+		return c.cc.cwnd, c.cc.ssthresh, initial, c.persistentCongestions
 	}
 
-	cwnd, ssthresh, initial := run(t, 100*time.Millisecond, true) // losses 0–4 span 400ms > 378ms
+	cwnd, ssthresh, initial, collapses := run(t, 100*time.Millisecond, true) // losses 0–4 span 400ms > 378ms
 	if cwnd != 2400 || ssthresh != initial/2 {
 		t.Errorf("cwnd %d, ssthresh %d after persistent congestion; want the minimum 2400 under %d", cwnd, ssthresh, initial/2)
 	}
-	if cwnd, _, initial := run(t, 50*time.Millisecond, true); cwnd != initial/2 { // 200ms: one loss event
-		t.Errorf("cwnd %d after losses spanning 200ms, want one halving to %d", cwnd, initial/2)
+	if collapses != 1 {
+		t.Errorf("Stats counted %d persistent-congestion collapses, want 1", collapses)
 	}
-	if cwnd, _, initial := run(t, 100*time.Millisecond, false); cwnd != initial/2 { // no sample yet
-		t.Errorf("cwnd %d after losses before any round-trip sample, want one halving to %d", cwnd, initial/2)
+	if cwnd, _, initial, collapses := run(t, 50*time.Millisecond, true); cwnd != initial/2 || collapses != 0 { // 200ms: one loss event
+		t.Errorf("cwnd %d, %d collapses after losses spanning 200ms, want one halving to %d and none", cwnd, collapses, initial/2)
+	}
+	if cwnd, _, initial, collapses := run(t, 100*time.Millisecond, false); cwnd != initial/2 || collapses != 0 { // no sample yet
+		t.Errorf("cwnd %d, %d collapses after losses before any round-trip sample, want one halving to %d and none", cwnd, collapses, initial/2)
 	}
 }
 

@@ -110,12 +110,16 @@ type Conn struct {
 	streamDeadline time.Time
 
 	ptoCount int
-	// lostPackets and ptoFired are the cumulative counters Stats reports:
-	// packets declared lost by either detection path (an ACK's packet or
-	// time threshold, the loss timer), DPLPMTUD probes excepted, and probe
-	// timeouts that fired. Neither is ever reset.
-	lostPackets uint64
-	ptoFired    uint64
+	// lostPackets, bytesRetransmitted, persistentCongestions and ptoFired
+	// are the cumulative counters Stats reports: packets declared lost by
+	// either detection path (an ACK's packet or time threshold, the loss
+	// timer), DPLPMTUD probes excepted; the payload bytes those losses put
+	// back on the send queue; persistent-congestion collapses; and probe
+	// timeouts that fired. None is ever reset.
+	lostPackets           uint64
+	bytesRetransmitted    uint64
+	persistentCongestions uint64
+	ptoFired              uint64
 	// maxDatagram bounds every datagram sent on the path in use: 1200 until
 	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
@@ -1454,6 +1458,15 @@ type Stats struct {
 	// path whose queue is filling and emptying.
 	RTTVariance time.Duration
 
+	// LatestRTT is the last round trip sampled (§5.1, latest_rtt), before
+	// the peer's declared ACK delay is subtracted: the path as it was one
+	// acknowledgement ago, where SmoothedRTT is the path as it has been. A
+	// LatestRTT that sits well above MinRTT on a path that loses nothing
+	// is a queue building somewhere in front of this sender — the signal
+	// a delay-based controller reads, and the one a loss-based one does
+	// not.
+	LatestRTT time.Duration
+
 	// CongestionWindow is how many bytes the congestion controller lets
 	// this end have in flight (RFC 9002 §7): it grows on every ACK, halves
 	// on a loss epoch and collapses after three unanswered probe timeouts.
@@ -1476,6 +1489,22 @@ type Stats struct {
 	// retransmission is not a second loss until it is itself declared.
 	LostPackets uint64
 
+	// BytesRetransmitted is how many bytes of frames those losses put back
+	// on the send queue — payload, not packet size: the headers, the
+	// ACK and PADDING frames of a lost packet are not sent again (§6.1,
+	// RFC 9000 §13.3). On a path that reorders but loses nothing, every
+	// byte here was sent twice for no reason: the cost of a spurious loss,
+	// which LostPackets counts the same as a real one.
+	BytesRetransmitted uint64
+
+	// PersistentCongestions is how many times an acknowledgement proved
+	// that everything sent over more than three probe intervals was lost
+	// (§7.6) and the window collapsed to its minimum. A blackout, a
+	// migration to a dead path, or a peer that went away mid-transfer; a
+	// count that moves on a path that merely loses packets is a detector
+	// firing where the RFC's conditions were not met.
+	PersistentCongestions uint64
+
 	// ProbeTimeouts is how many times the probe timeout fired (§6.2):
 	// acknowledgements stopped arriving for a whole timeout, and this end
 	// sent probes to find out whether anything still gets through. It
@@ -1490,17 +1519,20 @@ func (c *Conn) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return Stats{
-		DiscardedPackets:   c.discarded,
-		KeyUpdates:         c.ku.updates,
-		WriteFailures:      c.writeFailures,
-		UnhandledTLSEvents: c.unhandledTLSEvents.Load(),
-		SmoothedRTT:        c.rtt.smoothed,
-		MinRTT:             c.rtt.min,
-		RTTVariance:        c.rtt.variance,
-		CongestionWindow:   c.cc.cwnd,
-		BytesInFlight:      c.cc.inFlight,
-		LostPackets:        c.lostPackets,
-		ProbeTimeouts:      c.ptoFired,
+		DiscardedPackets:      c.discarded,
+		KeyUpdates:            c.ku.updates,
+		WriteFailures:         c.writeFailures,
+		UnhandledTLSEvents:    c.unhandledTLSEvents.Load(),
+		SmoothedRTT:           c.rtt.smoothed,
+		MinRTT:                c.rtt.min,
+		RTTVariance:           c.rtt.variance,
+		LatestRTT:             c.rtt.latest,
+		CongestionWindow:      c.cc.cwnd,
+		BytesInFlight:         c.cc.inFlight,
+		LostPackets:           c.lostPackets,
+		BytesRetransmitted:    c.bytesRetransmitted,
+		PersistentCongestions: c.persistentCongestions,
+		ProbeTimeouts:         c.ptoFired,
 	}
 }
 

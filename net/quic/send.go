@@ -814,6 +814,18 @@ func (c *Conn) flushAcksLocked(now time.Time) {
 	}
 }
 
+// queueLostLocked puts the payloads of packets a detection pass declared
+// lost back on the space's send queue, and moves the counters Stats reports
+// for it: packets lost, and payload bytes that will go again. Both detection
+// paths (an ACK, the loss timer) end here, so a count lives in one place.
+func (c *Conn) queueLostLocked(sp *space, out ackOutcome) {
+	sp.retrans = append(sp.retrans, out.lost...)
+	c.lostPackets += out.lostCount
+	for _, payload := range out.lost {
+		c.bytesRetransmitted += uint64(len(payload))
+	}
+}
+
 // retransmitLocked drains the queues of lost payloads, best effort under the
 // congestion window: what does not fit now goes when the next ACK opens the
 // window again.

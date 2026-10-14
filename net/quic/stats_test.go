@@ -36,8 +36,11 @@ func TestStatsReportsRTTWindowAndFlight(t *testing.T) {
 		conn *quic.Conn
 	}{{"client", client}, {"server", server}} {
 		name, s := end.name, end.conn.Stats()
-		if s.SmoothedRTT <= 0 || s.MinRTT <= 0 {
-			t.Errorf("%s: no round trip sampled: smoothed %v, min %v", name, s.SmoothedRTT, s.MinRTT)
+		if s.SmoothedRTT <= 0 || s.MinRTT <= 0 || s.LatestRTT <= 0 {
+			t.Errorf("%s: no round trip sampled: smoothed %v, min %v, latest %v", name, s.SmoothedRTT, s.MinRTT, s.LatestRTT)
+		}
+		if s.BytesRetransmitted != 0 || s.PersistentCongestions != 0 {
+			t.Errorf("%s: loopback requeued %d bytes, collapsed %d times", name, s.BytesRetransmitted, s.PersistentCongestions)
 		}
 		if s.MinRTT > s.SmoothedRTT+s.RTTVariance {
 			t.Errorf("%s: min %v above smoothed %v + variance %v", name, s.MinRTT, s.SmoothedRTT, s.RTTVariance)
@@ -76,6 +79,22 @@ func TestStatsCountsLostPackets(t *testing.T) {
 	stats := tr.stats
 	if stats.LostPackets == 0 {
 		t.Fatalf("5%% loss, nothing declared lost: %+v", stats)
+	}
+	// Every loss put a payload back on the queue, and a 512 KiB stream
+	// loses more than one stream frame's worth; a count below the number
+	// of packets is a counter that did not move on one of the two
+	// detection paths.
+	if stats.BytesRetransmitted < stats.LostPackets {
+		t.Fatalf("%d packets lost, %d bytes requeued: %+v", stats.LostPackets, stats.BytesRetransmitted, stats)
+	}
+	if stats.LatestRTT <= 0 || stats.LatestRTT < stats.MinRTT {
+		t.Fatalf("latest round trip %v, min %v: %+v", stats.LatestRTT, stats.MinRTT, stats)
+	}
+	// Five percent of independent loss is never three probe intervals
+	// without an acknowledgement: a collapse here is the detector firing
+	// outside §7.6's conditions.
+	if stats.PersistentCongestions != 0 {
+		t.Fatalf("%d persistent-congestion collapses under 5%% random loss: %+v", stats.PersistentCongestions, stats)
 	}
 	if stats.BytesInFlight < 0 {
 		t.Fatalf("negative flight: %+v", stats)

@@ -1166,8 +1166,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		}
 	}
 	if out.lostCount > 0 {
-		sp.retrans = append(sp.retrans, out.lost...)
-		c.lostPackets += out.lostCount
+		c.queueLostLocked(sp, out)
 		// Losses from a previous path carry no bytes (RFC 9000 §9.4):
 		// nothing to release, and no event for a window they never
 		// counted against.
@@ -1182,6 +1181,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			// for nothing here, by design (§7.6.1).
 			if c.rtt.sampled && out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
 				c.cc.onPersistentCongestion()
+				c.persistentCongestions++
 			}
 		}
 	}
