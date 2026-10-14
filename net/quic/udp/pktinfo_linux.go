@@ -88,13 +88,15 @@ func packetECN(oob []byte) (uint8, bool) {
 	}
 }
 
-// appendECN appends the IP_TOS and IPV6_TCLASS messages, both carrying
-// ecn as a C int. Both at once: the kernel sends to an IPv4 peer through
-// the IPv4 stack, which reads the first and skips the second, and to an
-// IPv6 peer through the IPv6 stack, which does the reverse — so one
-// datagram's marking does not depend on which family its address is.
-func appendECN(oob []byte, ecn uint8) []byte {
-	oob = appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+// appendECN appends the IP_TOS message for an IPv4 destination and the
+// IPV6_TCLASS one otherwise, each carrying ecn as a C int. A dual-stack
+// socket sends to a mapped address through the IPv4 stack (udp_sendmsg),
+// which reads IP_TOS, and to an IPv6 one through udpv6_sendmsg, which
+// reads IPV6_TCLASS.
+func appendECN(oob []byte, ecn uint8, v4 bool) []byte {
+	if v4 {
+		return appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+	}
 	return appendIntCmsg(oob, syscall.IPPROTO_IPV6, ipv6TClass, uint32(ecn))
 }
 

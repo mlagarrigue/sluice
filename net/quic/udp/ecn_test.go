@@ -3,6 +3,7 @@ package udp_test
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"runtime"
 	"testing"
 	"time"
@@ -12,16 +13,21 @@ import (
 
 // A datagram sent with AppendECN's control message arrives, on a socket
 // EnableECN was applied to, with the codepoint PacketECN reads back — on
-// an AF_INET socket and on a dual-stack AF_INET6 one receiving IPv4, where
-// the kernel reports the field through the IPv4 option.
+// an AF_INET socket, on a dual-stack AF_INET6 one receiving IPv4 (the
+// kernel reports the field through whichever option its stack applies to
+// mapped traffic), and on IPv6 loopback where the host has one.
 func TestECNMarkIsReadBack(t *testing.T) {
-	for _, tc := range []struct{ network, bind string }{
-		{"udp4", "127.0.0.1:0"},
-		{"udp", ":0"},
+	for _, tc := range []struct{ network, bind, client, peer string }{
+		{"udp4", "127.0.0.1:0", "udp4", "127.0.0.1"},
+		{"udp", ":0", "udp4", "127.0.0.1"},
+		{"udp6", "[::1]:0", "udp6", "::1"},
 	} {
 		t.Run(tc.network, func(t *testing.T) {
 			srv, err := udp.Listen(tc.network, tc.bind)
 			if err != nil {
+				if tc.network == "udp6" {
+					t.Skipf("no IPv6 loopback: %v", err)
+				}
 				t.Fatal(err)
 			}
 			defer srv.Close()
@@ -35,15 +41,15 @@ func TestECNMarkIsReadBack(t *testing.T) {
 				}
 				t.Fatalf("EnableECN: %v", err)
 			}
-			cli, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			cli, err := net.ListenUDP(tc.client, &net.UDPAddr{IP: net.ParseIP(tc.peer)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer cli.Close()
-			to := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: srv.LocalAddr().(*net.UDPAddr).Port}
+			to := netip.AddrPortFrom(netip.MustParseAddr(tc.peer), uint16(srv.LocalAddr().(*net.UDPAddr).Port)) //nolint:gosec // G115: a port
 			for _, want := range []uint8{2, 3, 1} {
-				oob := udp.AppendECN(nil, want)
-				if _, _, err := cli.WriteMsgUDPAddrPort([]byte{want}, oob, to.AddrPort()); err != nil {
+				oob := udp.AppendECN(nil, want, to.Addr())
+				if _, _, err := cli.WriteMsgUDPAddrPort([]byte{want}, oob, to); err != nil {
 					t.Fatalf("WriteMsgUDP with mark %d: %v", want, err)
 				}
 				_ = srv.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -61,7 +67,7 @@ func TestECNMarkIsReadBack(t *testing.T) {
 				}
 			}
 			// Unmarked stays unmarked: the field is reported, as Not-ECT.
-			if _, err := cli.WriteTo([]byte{0}, to); err != nil {
+			if _, err := cli.WriteToUDPAddrPort([]byte{0}, to); err != nil {
 				t.Fatal(err)
 			}
 			buf, roob := make([]byte, 16), make([]byte, udp.PacketInfoLen)

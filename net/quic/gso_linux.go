@@ -47,10 +47,11 @@ func writeSegments(pc net.PacketConn, b []byte, seg int, to net.Addr, ecn uint8,
 		return oob, false, nil
 	}
 	oob = appendSegmentSize(oob, seg)
+	ap := ua.AddrPort()
 	if ecn != ecnNotECT {
-		oob = udp.AppendECN(oob, ecn)
+		oob = udp.AppendECN(oob, ecn, ap.Addr())
 	}
-	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ua.AddrPort())
+	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ap)
 	if refusedSegmentation(err) {
 		return oob, false, nil
 	}

@@ -34,23 +34,25 @@ func TestPacketECNReadsForgedControlMessages(t *testing.T) {
 	}
 }
 
-// appendECN writes IP_TOS and IPV6_TCLASS as C ints, the one length
-// ip_tos_from_control accepts; the received-side walk does not read the
-// IP_TOS one (XNU reports under IP_RECVTOS) but reads the IPV6_TCLASS one.
+// appendECN writes IP_TOS or IPV6_TCLASS as a C int, the one length
+// ip_tos_from_control accepts; the received-side walk reads the
+// IPV6_TCLASS one back and not the IP_TOS one (XNU reports under
+// IP_RECVTOS).
 func TestAppendECNRoundTrips(t *testing.T) {
-	oob := appendECN(nil, 2)
-	level, typ, data, rest, ok := nextCmsg(oob)
-	if !ok || level != syscall.IPPROTO_IP || typ != ipTOS || len(data) != 4 || binary.NativeEndian.Uint32(data) != 2 {
-		t.Fatalf("first message is %d/%d with %x", level, typ, data)
-	}
-	level, typ, data, rest, ok = nextCmsg(rest)
-	if !ok || level != syscall.IPPROTO_IPV6 || typ != ipv6TClass || len(data) != 4 || binary.NativeEndian.Uint32(data) != 2 {
-		t.Fatalf("second message is %d/%d with %x", level, typ, data)
-	}
-	if rest != nil {
-		t.Fatalf("%d bytes after the two messages", len(rest))
-	}
-	if ecn, ok := packetECN(oob); !ok || ecn != 2 {
-		t.Fatalf("IPV6_TCLASS read back: ecn %d ok %v", ecn, ok)
+	for _, tc := range []struct {
+		v4         bool
+		level, typ int
+	}{{true, syscall.IPPROTO_IP, ipTOS}, {false, syscall.IPPROTO_IPV6, ipv6TClass}} {
+		oob := appendECN(nil, 2, tc.v4)
+		level, typ, data, rest, ok := nextCmsg(oob)
+		if !ok || level != tc.level || typ != tc.typ || len(data) != 4 || binary.NativeEndian.Uint32(data) != 2 {
+			t.Fatalf("v4 %v: message is %d/%d with %x", tc.v4, level, typ, data)
+		}
+		if rest != nil {
+			t.Fatalf("v4 %v: %d bytes after the message", tc.v4, len(rest))
+		}
+		if ecn, ok := packetECN(oob); ok != !tc.v4 || (ok && ecn != 2) {
+			t.Fatalf("v4 %v: read back ecn %d ok %v", tc.v4, ecn, ok)
+		}
 	}
 }

@@ -214,10 +214,13 @@ func PacketECN(oob []byte) (ecn uint8, ok bool) {
 	return packetECN(oob)
 }
 
-// AppendECN appends to oob the control messages that set the ECN field of
+// AppendECN appends to oob the control message that sets the ECN field of
 // a datagram sent with [net.UDPConn.WriteMsgUDP] to ecn, one of the
-// codepoints [PacketECN] documents. Where [EnableECN] is unsupported, oob
-// is returned unchanged.
-func AppendECN(oob []byte, ecn uint8) []byte {
-	return appendECN(oob, ecn)
+// codepoints [PacketECN] documents. dst is the datagram's destination: an
+// IPv4 or IPv4-mapped address gets the IPv4 option, any other the IPv6
+// one, because a kernel reads the option of the family it sends through
+// and Winsock refuses the other family's message outright. Where
+// [EnableECN] is unsupported, oob is returned unchanged.
+func AppendECN(oob []byte, ecn uint8, dst netip.Addr) []byte {
+	return appendECN(oob, ecn, dst.Unmap().Is4())
 }

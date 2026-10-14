@@ -43,13 +43,14 @@ func packetECN(oob []byte) (uint8, bool) {
 	}
 }
 
-// appendECN appends the IP_TOS and IPV6_TCLASS messages, both carrying
-// ecn as a C int: ip_tos_from_control (bsd/netinet/in_tclass.c) takes the
-// first of either kind whose length is CMSG_LEN(sizeof(int)) and skips
-// the rest, and ip6_setpktopts skips every message below IPPROTO_IPV6 —
-// so one datagram's marking does not depend on which family its address
-// is, as on Linux.
-func appendECN(oob []byte, ecn uint8) []byte {
-	oob = appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+// appendECN appends the IP_TOS message for an IPv4 destination and the
+// IPV6_TCLASS one otherwise, each carrying ecn as a C int, the one length
+// ip_tos_from_control (bsd/netinet/in_tclass.c) accepts. A dual-stack
+// socket sends to a mapped address through udp_output, which reads either
+// kind, and to an IPv6 one through ip6_setpktopts, which reads IPV6_TCLASS.
+func appendECN(oob []byte, ecn uint8, v4 bool) []byte {
+	if v4 {
+		return appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+	}
 	return appendIntCmsg(oob, syscall.IPPROTO_IPV6, ipv6TClass, uint32(ecn))
 }

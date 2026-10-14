@@ -44,10 +44,14 @@ func packetECN(oob []byte) (uint8, bool) {
 	}
 }
 
-// appendECN appends the IP_ECN and IPV6_ECN messages, both carrying ecn
-// as an INT, so that one datagram's marking does not depend on which
-// family its address is, as on Linux.
-func appendECN(oob []byte, ecn uint8) []byte {
-	oob = appendIntCmsg(oob, syscall.IPPROTO_IP, ipECN, uint32(ecn))
+// appendECN appends the IP_ECN message for an IPv4 destination and the
+// IPV6_ECN one otherwise, each carrying ecn as an INT. One message only:
+// WSASendMsg answers WSAEINVAL to a message of the other family (seen on
+// an AF_INET socket handed both), and a dual-stack socket takes the IPv4
+// one for a mapped destination, as msquic sends it.
+func appendECN(oob []byte, ecn uint8, v4 bool) []byte {
+	if v4 {
+		return appendIntCmsg(oob, syscall.IPPROTO_IP, ipECN, uint32(ecn))
+	}
 	return appendIntCmsg(oob, syscall.IPPROTO_IPV6, ipv6ECN, uint32(ecn))
 }

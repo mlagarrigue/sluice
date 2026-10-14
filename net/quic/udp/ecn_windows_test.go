@@ -30,7 +30,7 @@ func TestPacketECNReadsForgedControlMessages(t *testing.T) {
 	if got, ok := packetECN(v6); !ok || got != 3 {
 		t.Fatalf("IPv6: ecn %d ok %v, want CE", got, ok)
 	}
-	if _, ok := packetECN(v4[:len(v4)-2]); ok { // cut into the INT
+	if _, ok := packetECN(v4[:len(v4)-(cmsgSpace(4)-cmsgLen(4))-2]); ok { // cut into the INT, past the padding
 		t.Fatal("a truncated message reported an ECN field")
 	}
 	if _, ok := packetECN(nil); ok {
@@ -38,21 +38,22 @@ func TestPacketECNReadsForgedControlMessages(t *testing.T) {
 	}
 }
 
-// appendECN writes two messages the same walk reads back.
+// appendECN writes one message per family the same walk reads back.
 func TestAppendECNRoundTrips(t *testing.T) {
-	oob := appendECN(nil, 2)
-	if ecn, ok := packetECN(oob); !ok || ecn != 2 {
-		t.Fatalf("first message: ecn %d ok %v", ecn, ok)
-	}
-	level, typ, _, rest, ok := nextCmsg(oob)
-	if !ok || level != syscall.IPPROTO_IP || typ != ipECN {
-		t.Fatalf("first message is %d/%d", level, typ)
-	}
-	level, typ, data, rest, ok := nextCmsg(rest)
-	if !ok || level != syscall.IPPROTO_IPV6 || typ != ipv6ECN || binary.NativeEndian.Uint32(data) != 2 {
-		t.Fatalf("second message is %d/%d with %x", level, typ, data)
-	}
-	if rest != nil {
-		t.Fatalf("%d bytes after the two messages", len(rest))
+	for _, tc := range []struct {
+		v4         bool
+		level, typ int
+	}{{true, syscall.IPPROTO_IP, ipECN}, {false, syscall.IPPROTO_IPV6, ipv6ECN}} {
+		oob := appendECN(nil, 2, tc.v4)
+		if ecn, ok := packetECN(oob); !ok || ecn != 2 {
+			t.Fatalf("v4 %v: ecn %d ok %v", tc.v4, ecn, ok)
+		}
+		level, typ, data, rest, ok := nextCmsg(oob)
+		if !ok || level != tc.level || typ != tc.typ || binary.NativeEndian.Uint32(data) != 2 {
+			t.Fatalf("v4 %v: message is %d/%d with %x", tc.v4, level, typ, data)
+		}
+		if rest != nil {
+			t.Fatalf("v4 %v: %d bytes after the message", tc.v4, len(rest))
+		}
 	}
 }

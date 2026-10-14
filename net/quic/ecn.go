@@ -168,8 +168,9 @@ func writeMarked(pc net.PacketConn, b []byte, to net.Addr, ecn uint8, oob []byte
 		_, err = pc.WriteTo(b, to)
 		return oob, err
 	}
-	oob = udp.AppendECN(oob, ecn)
-	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ua.AddrPort())
+	ap := ua.AddrPort()
+	oob = udp.AppendECN(oob, ecn, ap.Addr())
+	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ap)
 	return oob, err
 }
 

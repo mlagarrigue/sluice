@@ -17,4 +17,4 @@ func enableECN(fd uintptr, v6 bool) error { return errNoECN }
 
 func packetECN(oob []byte) (uint8, bool) { return 0, false }
 
-func appendECN(oob []byte, ecn uint8) []byte { return oob }
+func appendECN(oob []byte, ecn uint8, v4 bool) []byte { return oob }

@@ -130,8 +130,9 @@ func writeMarked(dst net.PacketConn, data []byte, to net.Addr, ecn uint8, oob []
 		_, _ = dst.WriteTo(data, to)
 		return oob
 	}
-	oob = udp.AppendECN(oob[:0], ecn)
-	_, _, _ = uc.WriteMsgUDPAddrPort(data, oob, ua.AddrPort())
+	ap := ua.AddrPort()
+	oob = udp.AppendECN(oob[:0], ecn, ap.Addr())
+	_, _, _ = uc.WriteMsgUDPAddrPort(data, oob, ap)
 	return oob
 }
 
