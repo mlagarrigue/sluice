@@ -219,8 +219,10 @@ func PacketECN(oob []byte) (ecn uint8, ok bool) {
 // codepoints [PacketECN] documents. dst is the datagram's destination: an
 // IPv4 or IPv4-mapped address gets the IPv4 option, any other the IPv6
 // one, because a kernel reads the option of the family it sends through
-// and Winsock refuses the other family's message outright. Where
-// [EnableECN] is unsupported, oob is returned unchanged.
+// and Winsock refuses the other family's message outright. Winsock also
+// refuses CE, the codepoint only the network sets; a transport sends
+// ECT(0) or ECT(1). Where [EnableECN] is unsupported, oob is returned
+// unchanged.
 func AppendECN(oob []byte, ecn uint8, dst netip.Addr) []byte {
 	return appendECN(oob, ecn, dst.Unmap().Is4())
 }

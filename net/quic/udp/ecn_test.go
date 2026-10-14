@@ -47,7 +47,13 @@ func TestECNMarkIsReadBack(t *testing.T) {
 			}
 			defer cli.Close()
 			to := netip.AddrPortFrom(netip.MustParseAddr(tc.peer), uint16(srv.LocalAddr().(*net.UDPAddr).Port)) //nolint:gosec // G115: a port
-			for _, want := range []uint8{2, 3, 1} {
+			marks := []uint8{2, 3, 1}
+			if runtime.GOOS == "windows" {
+				// Winsock refuses CE from an application: only the network
+				// sets it, and WSASendMsg answers WSAEINVAL.
+				marks = []uint8{2, 1}
+			}
+			for _, want := range marks {
 				oob := udp.AppendECN(nil, want, to.Addr())
 				if _, _, err := cli.WriteMsgUDPAddrPort([]byte{want}, oob, to); err != nil {
 					t.Fatalf("WriteMsgUDP with mark %d: %v", want, err)
