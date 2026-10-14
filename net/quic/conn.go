@@ -234,17 +234,23 @@ type Conn struct {
 	// buffers and holding it would only grow.
 	readTaken atomic.Bool
 
-	streams     map[uint64]*Stream
-	closedIDs   map[uint64]struct{}
-	closedOrder []uint64
-	accepted    chan *Stream
-	closed      chan struct{}
-	closeErr    error
-	closeSent   bool
-	draining    bool
-	peerClose   peerClose
-	once        sync.Once
-	timerKick   chan struct{}
+	// streams holds every stream that is open at this end, and it is the
+	// whole memory of which streams closed: an identifier below what has
+	// been opened (seenPeer*, opened*) that is not in the table belongs to
+	// a stream that closed, however long ago. No bounded list of closed
+	// identifiers stands beside it — the one that used to let the 1025th
+	// closure forget the first, so a late or forged frame on that stream
+	// reopened it, delivered an HTTP/3 request twice and credited
+	// MAX_STREAMS twice (see streamFor).
+	streams   map[uint64]*Stream
+	accepted  chan *Stream
+	closed    chan struct{}
+	closeErr  error
+	closeSent bool
+	draining  bool
+	peerClose peerClose
+	once      sync.Once
+	timerKick chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
 
@@ -647,7 +653,6 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,
 		streams:             make(map[uint64]*Stream),
-		closedIDs:           make(map[uint64]struct{}),
 		accepted:            make(chan *Stream, 64),
 		closed:              make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),

@@ -495,33 +495,59 @@ func (c *Conn) Stream(id uint64) *Stream {
 	if s := c.streams[id]; s != nil {
 		return s
 	}
-	s := newStream(c, id)
-	if _, closed := c.closedIDs[id]; closed {
+	// Within what has been opened and absent from the table means closed
+	// (see Conn.streams): a tombstone, deliberately not re-registered.
+	count := id/4 + 1
+	uni := id&0x02 != 0
+	localInitiated := (id&1 == 0) == c.isClient
+	opened := c.seenPeerBidi
+	switch {
+	case localInitiated && uni:
+		opened = c.openedUni
+	case localInitiated:
+		opened = c.openedBidi
+	case uni:
+		opened = c.seenPeerUni
+	}
+	if count <= opened {
+		s := newStream(c, id)
 		s.writeReset = true
 		s.sendClosed = true
 		s.recvDone = true
-		return s // a tombstone, deliberately not re-registered
+		return s
 	}
-	localInitiated := (id&1 == 0) == c.isClient
-	if localInitiated {
-		count := id/4 + 1
-		if id&0x02 != 0 {
-			c.openedUni = max(c.openedUni, count)
-		} else {
-			c.openedBidi = max(c.openedBidi, count)
-		}
+	if !localInitiated {
+		s := newStream(c, id)
+		c.streams[id] = s
+		return s
 	}
-	c.streams[id] = s
-	return s
+	// Using a local identifier out of order opens every lower-numbered
+	// stream of its kind (RFC 9000 §2.1): they are registered so a frame the
+	// peer may now legitimately send on one of them — MAX_STREAM_DATA,
+	// STOP_SENDING — finds a stream and not an error, and so the table's
+	// rule above stays true. The ones the caller never uses live until
+	// the connection closes, which is the price of the caller's choice.
+	first := opened
+	if uni {
+		c.openedUni = count
+	} else {
+		c.openedBidi = count
+	}
+	for n := first + 1; n <= count; n++ {
+		nid := (n-1)*4 + id&0x03
+		c.streams[nid] = newStream(c, nid)
+	}
+	return c.streams[id]
 }
 
 // maybeRemoveLocked retires a stream once both directions are done: the
 // receive side has delivered its FIN or been reset, and the send side has
-// said its final word (FIN or RESET_STREAM). The identifier is remembered so
-// that frames still in flight are tolerated rather than reopening the
-// stream, and — for peer-initiated streams — the slot is granted back with
-// MAX_STREAMS, which is what stops a long-lived connection dying of stream
-// arithmetic. Callers hold c.mu.
+// said its final word (FIN or RESET_STREAM). Leaving the table is what marks
+// the stream closed (see Conn.streams): frames still in flight for it are
+// tolerated rather than reopening it, for as long as the connection lives.
+// For peer-initiated streams the slot is granted back with MAX_STREAMS,
+// which is what stops a long-lived connection dying of stream arithmetic.
+// Callers hold c.mu.
 func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if !s.sendClosed {
 		return
@@ -533,16 +559,6 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 		return
 	}
 	delete(c.streams, s.id)
-	c.closedIDs[s.id] = struct{}{}
-	c.closedOrder = append(c.closedOrder, s.id)
-	// The closed set is a memory, and memories are bounded: oldest first,
-	// because frames for a stream closed long ago come from a peer that is
-	// not confused but hostile, and re-refusing them cheaply is enough.
-	for len(c.closedOrder) > 1024 {
-		delete(c.closedIDs, c.closedOrder[0])
-		c.closedOrder = c.closedOrder[1:]
-	}
-
 	if (s.id&1 == 0) != c.isClient { // peer-initiated: grant the slot back
 		if s.id&0x02 != 0 {
 			c.localMaxStreamsUni++

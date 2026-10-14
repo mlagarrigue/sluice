@@ -1211,27 +1211,41 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 		c.mu.Unlock()
 		return s, false, nil
 	}
-	if _, closed := c.closedIDs[id]; closed {
-		c.mu.Unlock()
-		return nil, true, nil
-	}
+	// Opening stream N opens every lower-numbered stream of its kind with
+	// it (§2.1), so the count in use is the highest identifier's ordinal,
+	// and every stream at or below it is in the table until it closes. An
+	// identifier within that count and absent from the table is therefore
+	// a stream that closed: its frame is tolerated — ignored, never
+	// answered, no stream created, no MAX_STREAMS credit returned —
+	// however long ago the closure was. §19.8 and §19.10 reserve
+	// STREAM_STATE_ERROR for a locally initiated stream that "has not yet
+	// been created": one past what this end opened.
+	count := id/4 + 1
+	uni := id&0x02 != 0
 	peerInitiated := (id&1 == 0) != c.isClient
 	if !peerInitiated {
+		opened := c.openedBidi
+		if uni {
+			opened = c.openedUni
+		}
 		c.mu.Unlock()
+		if count <= opened {
+			return nil, true, nil
+		}
 		return nil, false, &transportError{
 			code: transportStreamState,
 			err:  fmt.Errorf("%w: the peer sent on stream %d, which this end never opened", ErrQUIC, id),
 		}
 	}
-	// Opening stream N implicitly opens every lower-numbered stream of its
-	// kind (§3.2), so the count in use is the highest identifier's ordinal.
-	count := id/4 + 1
-	uni := id&0x02 != 0
 	limit := c.localMaxStreamsBidi
 	seen := &c.seenPeerBidi
 	if uni {
 		limit = c.localMaxStreamsUni
 		seen = &c.seenPeerUni
+	}
+	if count <= *seen {
+		c.mu.Unlock()
+		return nil, true, nil
 	}
 	if count > limit {
 		c.mu.Unlock()
@@ -1240,11 +1254,19 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 			err:  fmt.Errorf("%w: the peer opened stream %d, past the %d allowed", ErrQUIC, id, limit),
 		}
 	}
-	if count > *seen {
-		*seen = count
+	// The lower-numbered streams this frame opens with its own are
+	// registered too, in identifier order, so a frame for one of them that
+	// arrives later — reordered, or simply sent second — finds its stream
+	// rather than the closed-stream tolerance above. newStream closes the
+	// direction a unidirectional stream lacks.
+	opened := make([]*Stream, 0, count-*seen)
+	for n := *seen + 1; n <= count; n++ {
+		nid := (n-1)*4 + id&0x03
+		s := newStream(c, nid)
+		c.streams[nid] = s
+		opened = append(opened, s)
 	}
-	s := newStream(c, id) // newStream closes the direction a unidirectional stream lacks
-	c.streams[id] = s
+	*seen = count
 	batchMode := c.batchMode
 	c.mu.Unlock()
 
@@ -1254,13 +1276,15 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 		// peer feels it through this connection's flow control — nothing is
 		// dropped and nothing torn down (the 65th stream used to be fatal
 		// here).
-		select {
-		case c.accepted <- s:
-		case <-c.closed:
-			return nil, false, errClosed
+		for _, s := range opened {
+			select {
+			case c.accepted <- s:
+			case <-c.closed:
+				return nil, false, errClosed
+			}
 		}
 	}
-	return s, false, nil
+	return opened[len(opened)-1], false, nil
 }
 
 // settleBatchConsumption credits flow control — per stream and per
