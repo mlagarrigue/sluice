@@ -582,7 +582,18 @@ func boolBit(b bool, bit uint64) uint64 {
 // already accepted. A connection has no such switch — the only thing above
 // it that could wake its acceptors is [Conn.Close], which ends it — hence the
 // context here.
+//
+// A stream the peer opened before the connection ended is still handed
+// out, ahead of the error that says it ended: the peer's data on it has
+// arrived — a [Conn.Shutdown] on its side waited for exactly that — and a
+// select that picked at random between the queue and the closed signal
+// handed the error one time in a hundred, and lost the stream.
 func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
+	select {
+	case s := <-c.accepted:
+		return s, nil
+	default:
+	}
 	select {
 	case s := <-c.accepted:
 		return s, nil

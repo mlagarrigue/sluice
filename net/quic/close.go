@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -246,6 +248,7 @@ func (c *Conn) closeOnce(code uint64, app bool) {
 	c.once.Do(func() {
 		c.mu.Lock()
 		c.sendCloseLocked(code, app)
+		c.enterClosingLocked()
 		c.mu.Unlock()
 		close(c.closed)
 		c.wakeOwnedReadLoop()
@@ -301,6 +304,18 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	if !c.handshakeConfirmed {
 		lowest = spaceInitial
 	}
+	// The close leaves on its own, now: whatever a writer gathered or
+	// batched before it goes first, and nothing of the close joins a batch
+	// — the closing state below keeps each of its datagrams as written.
+	c.flushDatagramLocked()
+	c.flushBatchLocked()
+	batching := c.batching
+	c.batching = false
+	c.closing.capturing = c.incoming != nil
+	defer func() {
+		c.closing.capturing = false
+		c.batching = batching
+	}()
 	now := time.Now()
 	for space := newest; space >= lowest; space-- {
 		sp := &c.spaces[space]
@@ -327,8 +342,9 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 		frame = AppendVarint(frame, 0) // no reason phrase, deliberately
 
 		// closeSent is already set, so sendPacketLocked would refuse; write
-		// the packet directly. Best effort: the peer's idle timer covers a
-		// loss.
+		// the packet directly. Best effort: a loss is repaired by the
+		// closing state when a listener manages the connection, and by
+		// the peer's idle timer otherwise.
 		_ = c.writePacketLocked(sp, space, frame, nil, sendOpts{ackOnly: true}, now)
 	}
 }
@@ -344,4 +360,123 @@ func (c *Conn) idleExpired() {
 	c.closeSent = true // suppress the CONNECTION_CLOSE a Close would send
 	c.mu.Unlock()
 	_ = c.Close()
+}
+
+// The closing state (RFC 9000 §10.2.1). Once this end's CONNECTION_CLOSE
+// has left, the peer may still be sending: the close itself may have been
+// lost, or packets were in flight when it went. A connection that simply
+// vanished would answer those with a stateless reset (§10.3) — the listener
+// no longer routing its identifier — and the peer would learn that this end
+// lost its state, never the code it closed with. So a [Listener]-managed
+// connection stays routable for three probe timeouts after its close, and
+// every datagram the listener attributes to it in that time earns the same
+// sealed CONNECTION_CLOSE again, at a bounded rate.
+//
+// Only the listener's connections: a connection that owns its socket
+// ([Dial], the standalone [Accept]) gives the socket back to its caller the
+// moment Close returns — the caller may close it or dial again on it — and
+// nothing of this package may keep reading it. §10.2 allows ending the
+// state early for an endpoint that can close its socket; it asks servers
+// that keep their socket open not to, which is exactly the listener.
+//
+// What is kept is what §10.2.1 says suffices — the sealed datagram(s) of
+// the close, where they went, and a count of what arrived — not the keys:
+// the datagrams are never opened. The packet goes out again byte for byte,
+// which §10.2.1 names as the exception to the one-packet-number-per-packet
+// rule (§12.3) made for exactly this. Two bounds on what leaves: the reply
+// goes out on the first datagram received, then on the second, the fourth,
+// the eighth — the "progressively increasing number of received packets"
+// §10.2.1 suggests, since the first reply is the repair and the rest are
+// insurance against its own loss — and, because nothing received is
+// authenticated, no more than three times the bytes received from the
+// peer's address (§10.2.1's rule for an endpoint without keys), from the
+// peer's address only (a new address is unvalidated, and discarded).
+type closingState struct {
+	// active is read by Listener.dispatch on every datagram without
+	// taking the connection's mu: the hot path of every open connection
+	// is one atomic load, and only a closing connection's datagrams pay
+	// for the lock below.
+	active atomic.Bool
+	// capturing makes writeLocked keep a copy of what it writes, for the
+	// duration of sendCloseLocked.
+	capturing bool
+	datagrams [][]byte
+	via       net.PacketConn
+	to        net.Addr
+	received  int   // datagrams from the peer since the close left
+	nextReply int   // the count at which the close goes out again
+	sent      int64 // bytes sent while closing, against 3× received
+	recv      int64
+}
+
+// closingPeriodLocked is how long the closing state lasts: three probe
+// timeouts (§10.2), computed at the moment the close leaves.
+func (c *Conn) closingPeriodLocked() time.Duration {
+	return 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+}
+
+// keepClosingDatagramLocked is writeLocked's hook: a copy of each datagram
+// of the close, and the socket and address it left by.
+func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Addr) {
+	c.closing.datagrams = append(c.closing.datagrams, append([]byte(nil), b...))
+	c.closing.via, c.closing.to = pc, to
+}
+
+// enterClosingLocked runs in closeOnce after the close left: when a
+// datagram of it was kept, the connection stays routable for the closing
+// period and answers; otherwise — a connection that owns its socket, or
+// one that ended without sending a close: idle timeout, stateless reset,
+// the peer's own close — there is nothing to keep and gone closes now.
+func (c *Conn) enterClosingLocked() {
+	if len(c.closing.datagrams) == 0 {
+		close(c.gone)
+		return
+	}
+	c.closing.nextReply = 1
+	c.closing.active.Store(true)
+	time.AfterFunc(c.closingPeriodLocked(), c.leaveClosing)
+}
+
+// leaveClosing ends the closing state: the kept datagrams are released,
+// and gone tells the listener it may forget the connection — after which
+// a late packet gets the stateless reset §10.2 allows "once its closing
+// state ends".
+func (c *Conn) leaveClosing() {
+	c.mu.Lock()
+	c.closing.active.Store(false)
+	c.closing.datagrams = nil
+	c.mu.Unlock()
+	close(c.gone)
+}
+
+// answerClosing is what Listener.dispatch does with a datagram it routed
+// to a connection in the closing state: count it and, at the counts and
+// within the byte budget described on closingState, send the kept close
+// again. The return says whether the datagram was the closing state's to
+// handle; false means the connection is open and the datagram goes to its
+// read loop as usual. Nothing in the datagram is parsed or opened.
+func (c *Conn) answerClosing(datagram []byte, from net.Addr) bool {
+	if !c.closing.active.Load() {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cs := &c.closing
+	if len(cs.datagrams) == 0 || !sameAddr(from, cs.to) {
+		return true // the state ended under us, or an unvalidated address
+	}
+	cs.received++
+	cs.recv += int64(len(datagram))
+	if cs.received != cs.nextReply {
+		return true
+	}
+	cs.nextReply *= 2
+	for _, d := range cs.datagrams {
+		if cs.sent+int64(len(d)) > 3*cs.recv {
+			break
+		}
+		cs.sent += int64(len(d))
+		_, _ = cs.via.WriteTo(d, cs.to)
+	}
+	return true
 }

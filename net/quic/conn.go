@@ -283,6 +283,13 @@ type Conn struct {
 	peerClose peerClose
 	once      sync.Once
 	timerKick chan struct{}
+	// closing is what a [Listener]-managed connection keeps after its own
+	// CONNECTION_CLOSE left, for the closing state of RFC 9000 §10.2.1;
+	// gone is closed when that state ends — at once when there is none —
+	// and is what the listener waits on before it forgets the connection.
+	// See close.go.
+	closing closingState
+	gone    chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
 
@@ -687,6 +694,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		streams:             make(map[uint64]*Stream),
 		accepted:            make(chan *Stream, 64),
 		closed:              make(chan struct{}),
+		gone:                make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),
 		maxDatagram:         1200, // until a probe proves the path carries more (pmtu.go)
 		connSend:            sendQuota{},

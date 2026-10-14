@@ -540,6 +540,14 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 	c := l.byDCID[string(dcid)]
 	l.mu.Unlock()
 	if c != nil {
+		// A connection whose CONNECTION_CLOSE has left stays routed for
+		// its closing period (RFC 9000 §10.2.1) and answers from here, on
+		// this loop — its own read loop is gone — with the close again:
+		// a peer that missed the first hears the code instead of the
+		// stateless reset an unknown identifier would earn below.
+		if c.answerClosing(datagram, from) {
+			return
+		}
 		// Never block here: this loop serves every connection on the socket,
 		// and a connection whose consumer lags (a full accept queue, a
 		// stream callback applying back-pressure) legitimately stops
@@ -966,8 +974,14 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
 		return // the handshake path closes on every failure, same as Accept's
 	}
 
+	// Forgotten once its closing state ends (gone), not when it closes:
+	// a connection that sent a CONNECTION_CLOSE stays routable for three
+	// probe timeouts so that dispatch can repeat the close to a peer that
+	// missed it (§10.2.1), and only then do its identifiers — and the
+	// MaxConns slot they hold — come free. §10.2 asks a server that keeps
+	// its socket open not to cut this short.
 	go func() {
-		<-c.closed
+		<-c.gone
 		l.forget(c)
 	}()
 

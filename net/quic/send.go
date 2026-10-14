@@ -979,6 +979,9 @@ func (c *Conn) kickTimer() {
 // stops there, and the count is what keeps a socket refusing every send
 // from being silent.
 func (c *Conn) writeLocked(pc net.PacketConn, b []byte, to net.Addr) error {
+	if c.closing.capturing {
+		c.keepClosingDatagramLocked(pc, b, to) // the CONNECTION_CLOSE, for the closing state
+	}
 	_, err := pc.WriteTo(b, to)
 	return c.wroteLocked(err)
 }
