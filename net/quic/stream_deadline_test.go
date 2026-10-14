@@ -135,10 +135,12 @@ func TestWriteDeadlinePassesWithoutCredit(t *testing.T) {
 	server.SetManualCredit(true) // the server reads but never grants more
 	cs, _ := openAccepted(t, client, server)
 
-	if err := cs.SetDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+	// The clock starts before the deadline is set, not after: measured
+	// from a later instant, a deadline that matured on time looks early.
+	start := time.Now()
+	if err := cs.SetDeadline(start.Add(100 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
 	n, err := cs.Write(make([]byte, 1024))
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("Write = %d, %v; want os.ErrDeadlineExceeded", n, err)
