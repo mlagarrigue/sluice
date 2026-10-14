@@ -204,6 +204,123 @@ func TestListenerDiscardsSmallInitialDatagrams(t *testing.T) {
 	}
 }
 
+// statelessCloseCodes opens every Initial among writes under the server
+// keys dcid derives (what a stateless close is sealed with) and returns the
+// transport code of each CONNECTION_CLOSE found — empty when the listener
+// answered with anything else, or nothing.
+func statelessCloseCodes(tb testing.TB, writes [][]byte, dcid []byte) []uint64 {
+	tb.Helper()
+	secrets, err := initialSecrets(dcid)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	opener, err := newPacketOpener(secrets.Server)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	var codes []uint64
+	for _, w := range writes {
+		h, _, err := parseLongHeader(w)
+		if err != nil || h.Type != packetInitial {
+			continue
+		}
+		opened, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			continue
+		}
+		frames, err := parseFrames(nil, opened)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for _, f := range frames {
+			if f.Type == frameConnectionClose {
+				codes = append(codes, f.value)
+			}
+		}
+	}
+	return codes
+}
+
+// RFC 9000 §8.1.3: a token this listener's key never signed — a NEW_TOKEN
+// from another server of the same name, or a Retry token from a listener
+// since restarted — proves nothing and is not an error either: the client
+// is unvalidated, which with the Retry flow on means a Retry, not the
+// INVALID_TOKEN close §8.1.2 reserves for a Retry token this listener
+// issued and cannot accept.
+func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:foreign")
+	dcid, scid := []byte("dst-cid1"), []byte("src-cid1")
+
+	// Genuinely encoded, same shape, same address — under another key.
+	other, err := newRetryTokenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc)
+
+	writes := pc.taken()
+	if len(writes) != 1 {
+		t.Fatalf("the listener wrote %d datagrams for a foreign token, want one Retry", len(writes))
+	}
+	if h, _, err := parseLongHeader(writes[0]); err != nil || h.Type != packetRetry {
+		t.Errorf("the answer is %v (type %d), want a Retry", err, h.Type)
+	}
+	if codes := statelessCloseCodes(t, writes, dcid); len(codes) != 0 {
+		t.Errorf("a foreign token was closed with %v; §8.1.3 wants the client treated as unvalidated", codes)
+	}
+
+	// The witness: the same token under this listener's key but for another
+	// address is a Retry token this listener issued and cannot accept —
+	// INVALID_TOKEN (§8.1.2), as before.
+	elsewhere := appendRetryToken(nil, l.key, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc)
+	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
+		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
+	}
+}
+
+// Without the Retry flow, the same foreign token leaves the client exactly
+// where a tokenless one stands: admitted on the direct path, under the
+// amplification limit, and never closed for it.
+func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:foreign")
+	dcid, scid := []byte("dst-cid2"), []byte("src-cid2")
+
+	other, err := newRetryTokenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc)
+
+	l.mu.Lock()
+	pending := len(l.pendingConns)
+	c := l.byDCID[string(dcid)]
+	l.mu.Unlock()
+	if pending != 1 || c == nil {
+		t.Fatalf("a foreign token started %d connection attempts (routed: %v), want one on the direct path", pending, c != nil)
+	}
+	if !c.amplActive {
+		t.Error("the connection a foreign token started is exempt from the amplification limit; it proved nothing")
+	}
+	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 0 {
+		t.Errorf("a foreign token was closed with %v on the direct path", codes)
+	}
+}
+
 // Past half of MaxPendingConns, a tokenless Initial gets a stateless Retry
 // instead of a connection: the remaining slots are kept for addresses that
 // prove themselves across the extra round trip.

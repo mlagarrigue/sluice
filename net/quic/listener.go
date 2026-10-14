@@ -714,10 +714,12 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// handing out stateless Retries is how the remaining slots are kept
 	// for addresses that prove themselves; and an Initial already carrying
 	// a token, which only the Retry flow can verify — a token must never
-	// reach the direct path, where the handshake it starts would not echo
-	// retry_source_connection_id and the client would refuse it.
-	if len(h.Token) > 0 || l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2 {
-		l.handleRetryFlow(datagram, from, h, &keys, via)
+	// reach the direct path unexamined, where the handshake it starts
+	// would not echo retry_source_connection_id and the client would
+	// refuse it.
+	retry := l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2
+	if len(h.Token) > 0 || retry {
+		l.handleRetryFlow(datagram, from, h, &keys, via, retry)
 		return
 	}
 	l.bootstrapConn(datagram, from, h, nil, &keys, via)
@@ -774,39 +776,55 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // resource an attacker spends by sending one of these and walking away. A
 // second Initial carrying a valid token proves the address and continues
 // exactly like handleNewInitial would have without AlwaysRetry, except
-// already validated.
-func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn) {
-	if len(h.Token) == 0 {
-		newSCID, err := randomID(listenerCIDLen)
-		if err != nil {
-			return // nothing to send; the client's own retransmission tries again
+// already validated. retry says whether an Initial that proves nothing is
+// answered with a Retry or admitted on the direct path, the choice the
+// dispatcher made for a tokenless one.
+func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, retry bool) {
+	if len(h.Token) > 0 {
+		rt, err := verifyRetryToken(h.Token, l.key, from)
+		switch {
+		case errors.Is(err, errForeignToken):
+			// RFC 9000 §8.1.3: a token the server cannot validate — here,
+			// one its key never signed, so a NEW_TOKEN from another server
+			// of the same name or a token from a listener since restarted —
+			// makes the client unvalidated, not wrong: it continues below
+			// as if it had sent no token, "including potentially sending a
+			// Retry packet". INVALID_TOKEN is kept for the token this
+			// listener provably issued (§8.1.2), where the client is known
+			// to hold a Retry token it will not replace.
+		case err != nil:
+			// RFC 9000 §8.1.2: an Initial whose Retry token cannot be
+			// validated — expired, or issued to another address — SHOULD
+			// be answered with an immediate INVALID_TOKEN close, so the
+			// client learns now instead of eating its whole handshake
+			// timeout. The answer is stateless — no Conn, no table entry —
+			// and small against the ≥1200-byte datagram that provably
+			// arrived (§8.1's limit allows three times that).
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
+		case !bytes.Equal(h.DCID, rt.newSCID):
+			// This Initial's own destination identifier must be the one
+			// the Retry offered — anything else is a token replayed onto
+			// an attempt it was never issued for: equally impossible to
+			// validate, equally worth telling the client about now.
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
+		default:
+			l.bootstrapConn(datagram, from, h, &rt, keys, via)
+			return
 		}
-		token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
-		pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
-		_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
+	}
+	if !retry {
+		l.bootstrapConn(datagram, from, h, nil, keys, via)
 		return
 	}
-
-	rt, err := verifyRetryToken(h.Token, l.key, from)
+	newSCID, err := randomID(listenerCIDLen)
 	if err != nil {
-		// RFC 9000 §8.1.2: an Initial whose token cannot be validated SHOULD
-		// be answered with an immediate INVALID_TOKEN close, so the client
-		// learns now instead of eating its whole handshake timeout. The
-		// answer is stateless — no Conn, no table entry — and small against
-		// the ≥1200-byte datagram that provably arrived (§8.1's limit allows
-		// three times that).
-		l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
-		return
+		return // nothing to send; the client's own retransmission tries again
 	}
-	// This Initial's own destination identifier must be the one the Retry
-	// offered — anything else is a token replayed onto an attempt it was
-	// never issued for: equally impossible to validate, equally worth
-	// telling the client about now.
-	if !bytes.Equal(h.DCID, rt.newSCID) {
-		l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
-		return
-	}
-	l.bootstrapConn(datagram, from, h, &rt, keys, via)
+	token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
+	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
+	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
 }
 
 // sendStatelessClose answers one Initial with a stateless Initial-level

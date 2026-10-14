@@ -597,7 +597,10 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 
 // RFC 9000 §8.1.2: an Initial whose Retry token cannot be validated is
 // answered with an immediate INVALID_TOKEN close, so the client learns now
-// instead of eating its whole handshake timeout.
+// instead of eating its whole handshake timeout. The token here is this
+// listener's own, expired: a token its key never signed is not an invalid
+// Retry token but an unvalidated client (§8.1.3; see
+// TestForeignTokenIsAnsweredWithARetry).
 func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
 	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
@@ -606,7 +609,8 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	}
 	defer l.Close()
 
-	// A sealed, padded Initial carrying a token this listener never issued.
+	// A sealed, padded Initial carrying a token this listener issued, to
+	// this address, for this identifier — a full TTL ago.
 	dcid, scid := []byte("post-ret"), []byte("cl-scid0")
 	secrets, err := initialSecrets(dcid)
 	if err != nil {
@@ -616,7 +620,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := make([]byte, 64) // long enough to look like a token, verifies as nothing
+	token := appendRetryTokenAt(nil, l.key, time.Now().Add(-2*retryTokenTTL), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
 	const pnLen = 4
 	var header []byte
 	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))

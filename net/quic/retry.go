@@ -93,22 +93,32 @@ type retryToken struct {
 	odcid, newSCID []byte
 }
 
+// errForeignToken is verifyRetryToken's answer to a token this listener's
+// key did not sign: too short to carry its MAC, or a MAC under another key.
+// Nothing proves it was ever a Retry token — a client may be presenting a
+// NEW_TOKEN from another server of the same name, or a token from a listener
+// since restarted — so RFC 9000 §8.1.3 has the server treat the client as
+// unvalidated, not as an error; INVALID_TOKEN (§8.1.2) is for a token
+// this listener provably issued and cannot accept.
+var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQUIC)
+
 // VerifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
 // the peer address it is arriving from. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,
 // which is everything [newServerConn] needs beyond what the Initial itself
-// carries.
+// carries. A token the HMAC does not recognise is [errForeignToken]; any
+// other error is a token this listener issued and will not honour.
 func verifyRetryToken(token []byte, key retryTokenKey, peer net.Addr) (retryToken, error) {
 	const macLen = sha256.Size
 	if len(token) < macLen {
-		return retryToken{}, fmt.Errorf("%w: a Retry token shorter than its own MAC", ErrQUIC)
+		return retryToken{}, errForeignToken
 	}
 	body, mac := token[:len(token)-macLen], token[len(token)-macLen:]
 	want := hmac.New(sha256.New, key[:])
 	want.Write(body)
 	if subtle.ConstantTimeCompare(want.Sum(nil), mac) != 1 {
-		return retryToken{}, fmt.Errorf("%w: a Retry token that does not verify", ErrQUIC)
+		return retryToken{}, errForeignToken
 	}
 
 	issued, rest, err := Varint(body)
