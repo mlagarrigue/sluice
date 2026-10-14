@@ -76,6 +76,12 @@ type Stream struct {
 // whether it is bidirectional (RFC 9000 §2.1).
 func (s *Stream) ID() uint64 { return s.id }
 
+// sendOnly says the stream is unidirectional and this end opened it (RFC
+// 9000 §2.1): the peer never writes on it.
+func (s *Stream) sendOnly() bool {
+	return s.id&0x02 != 0 && (s.id&1 == 0) == s.conn.isClient
+}
+
 func newStream(c *Conn, id uint64) *Stream {
 	s := &Stream{id: id, conn: c, ready: make(chan struct{}, 1)}
 	if c.hasPeerParams {
@@ -199,7 +205,15 @@ func (s *Stream) endForRead() {
 // stream that is quiet because its producer is slow is not an error. With
 // one, a Read that has nothing to deliver when it passes returns
 // [os.ErrDeadlineExceeded], as a [net.Conn] does.
+//
+// A unidirectional stream this end opened ([Conn.OpenUniStream], or
+// [Conn.Stream] with a local unidirectional identifier) has no receive side:
+// Read refuses it with an error at once rather than waiting for bytes the
+// peer may never send.
 func (s *Stream) Read(p []byte) (int, error) {
+	if s.sendOnly() {
+		return 0, fmt.Errorf("%w: stream %d is unidirectional and this end opened it: nothing to read", ErrQUIC, s.id)
+	}
 	for {
 		s.mu.Lock()
 		if len(s.buf) > 0 {
@@ -597,13 +611,37 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 // withholds credit, which the idle timeout bounds: a peer that never grants
 // and never speaks ends the connection, and the wait with it.
 func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
+	return c.open(ctx, false)
+}
+
+// OpenUniStream opens a unidirectional stream from this end — one this end
+// writes and the peer only reads — within the peer's MAX_STREAMS grant for
+// unidirectional streams (RFC 9000 §4.6). It waits, gives up and reports
+// exactly as [Conn.OpenStream] does: the credit arrives and the stream comes
+// out; the context ends and its error comes back verbatim; the connection
+// closes meanwhile and the error says so. STREAMS_BLOCKED of the
+// unidirectional kind (§19.14) goes out once per exhaustion of the limit.
+//
+// The stream it returns refuses [Stream.Read] with an error rather than
+// blocking: the peer never writes on it, so nothing could ever arrive. For
+// a unidirectional stream whose number the application protocol fixes —
+// HTTP/3's control stream is stream 3 — use [Conn.Stream], which picks by
+// identifier and leaves conformance to the grant to the caller.
+func (c *Conn) OpenUniStream(ctx context.Context) (*Stream, error) {
+	return c.open(ctx, true)
+}
+
+// open is the body of OpenStream and OpenUniStream: the two differ only in
+// which counter and grant they read and in the identifier's type bit.
+func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.hasPeerParams {
 		return nil, fmt.Errorf("%w: opening a stream before the handshake delivered the peer's limits", ErrQUIC)
 	}
-	if c.openedBidi >= c.peerMaxStreamsBidi {
-		if err := c.waitBidiCreditLocked(ctx); err != nil {
+	opened, limit := c.localStreamCounters(uni)
+	if *opened >= *limit {
+		if err := c.waitStreamCreditLocked(ctx, uni); err != nil {
 			return nil, err
 		}
 	}
@@ -611,28 +649,46 @@ func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
 	if c.isClient {
 		base = 0
 	}
-	id := base + 4*c.openedBidi
-	c.openedBidi++
+	if uni {
+		base |= 0x02
+	}
+	id := base + 4**opened
+	*opened++
 	s := newStream(c, id)
 	c.streams[id] = s
 	return s, nil
 }
 
-// waitBidiCreditLocked parks under mu until the peer's bidirectional grant
-// exceeds what this end has opened, the context ends, or the connection
-// closes. The waits ride c.cond, which the MAX_STREAMS handler broadcasts
-// when the limit rises and closeOnce on the way out; the context's expiry
-// broadcasts too, under mu, so a Wait that has not yet parked cannot miss
-// it. Called only once a wait is certain: the common path, credit at hand,
-// pays nothing for the timer.
-func (c *Conn) waitBidiCreditLocked(ctx context.Context) error {
+// localStreamCounters returns how many streams of the kind this end has
+// opened and how many the peer allows, for open and its wait to read and
+// advance the same pair. Callers hold c.mu.
+func (c *Conn) localStreamCounters(uni bool) (opened, limit *uint64) {
+	if uni {
+		return &c.openedUni, &c.peerMaxStreamsUni
+	}
+	return &c.openedBidi, &c.peerMaxStreamsBidi
+}
+
+// waitStreamCreditLocked parks under mu until the peer's grant for the
+// kind of stream exceeds what this end has opened, the context ends, or
+// the connection closes. The waits ride c.cond, which the MAX_STREAMS
+// handler broadcasts when the limit rises and closeOnce on the way out; the
+// context's expiry broadcasts too, under mu, so a Wait that has not yet
+// parked cannot miss it. Called only once a wait is certain: the common
+// path, credit at hand, pays nothing for the timer.
+func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
 		c.cond.Broadcast()
 		c.mu.Unlock()
 	})
 	defer stop()
-	for c.openedBidi >= c.peerMaxStreamsBidi {
+	opened, limit := c.localStreamCounters(uni)
+	told, frame := &c.bidiBlockedTold, uint64(frameStreamsBlocked)
+	if uni {
+		told, frame = &c.uniBlockedTold, frameStreamsBlocked|1
+	}
+	for *opened >= *limit {
 		select {
 		case <-c.closed:
 			return errClosed
@@ -641,9 +697,9 @@ func (c *Conn) waitBidiCreditLocked(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !c.bidiBlockedTold {
-			c.bidiBlockedTold = true
-			c.control = appendFrame(c.control, frameStreamsBlocked, c.peerMaxStreamsBidi)
+		if !*told {
+			*told = true
+			c.control = appendFrame(c.control, frame, *limit)
 			c.flushControlLocked()
 		}
 		c.cond.Wait()
@@ -665,7 +721,7 @@ func (c *Conn) waitBidiCreditLocked(ctx context.Context) error {
 // and for answering on streams the peer itself opened, where the limit being
 // spent is the peer's, not this end's. The caller therefore owns conformance
 // to the grant; to open a stream of this end's choosing under flow control,
-// use OpenStream.
+// use OpenStream or OpenUniStream.
 func (c *Conn) Stream(id uint64) *Stream {
 	c.mu.Lock()
 	defer c.mu.Unlock()

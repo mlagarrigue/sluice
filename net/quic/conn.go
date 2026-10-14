@@ -194,11 +194,12 @@ type Conn struct {
 	localMaxStreamsUni  uint64
 	openedBidi          uint64 // opened by this end
 	openedUni           uint64
-	// bidiBlockedTold records that STREAMS_BLOCKED went out for the current
-	// bidirectional limit, so a parked OpenStream says it once per
-	// exhaustion rather than once per wake-up; a MAX_STREAMS that raises
-	// the limit clears it.
+	// bidiBlockedTold and uniBlockedTold record that STREAMS_BLOCKED went
+	// out for the current limit of that kind, so a parked OpenStream or
+	// OpenUniStream says it once per exhaustion rather than once per
+	// wake-up; a MAX_STREAMS that raises the limit clears it.
 	bidiBlockedTold bool
+	uniBlockedTold  bool
 	seenPeerBidi    uint64 // highest count the peer has opened
 	seenPeerUni     uint64
 

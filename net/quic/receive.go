@@ -864,8 +864,9 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 					c.peerMaxStreamsBidi = f.value
 					c.bidiBlockedTold = false
 				}
-			} else {
-				c.peerMaxStreamsUni = max(c.peerMaxStreamsUni, f.value)
+			} else if f.value > c.peerMaxStreamsUni {
+				c.peerMaxStreamsUni = f.value
+				c.uniBlockedTold = false
 			}
 			c.cond.Broadcast()
 			c.mu.Unlock()
