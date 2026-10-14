@@ -1044,14 +1044,18 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 // checks are RFC 9000 §7.3's authentication of the handshake against the
 // packets that carried it: the identifiers each side saw on the wire must be
 // the ones the handshake names, or someone spliced two conversations.
-// idleDuration converts an announced max_idle_timeout to a Duration,
-// saturating. The field is a varint of up to 2^62-1 milliseconds, far past
-// what a Duration holds, and a wrapped product turns a peer's "practically
-// never" into a deadline already passed.
+// idleDuration converts an announced max_idle_timeout (max_ack_delay uses
+// it too) to a Duration, saturating. The field is a varint of up to 2^62-1
+// milliseconds, far past what a Duration holds, and a wrapped product turns
+// a peer's "practically never" into a deadline already passed. The
+// saturation point is a whole number of milliseconds: appendParameters
+// re-encodes the Duration in milliseconds, and a value that was not one
+// (math.MaxInt64 is not) would parse back different — the drift
+// FuzzParseParameters caught.
 func idleDuration(ms uint64) time.Duration {
 	const most = uint64(math.MaxInt64 / int64(time.Millisecond))
 	if ms > most {
-		return math.MaxInt64
+		ms = most
 	}
 	return time.Duration(ms) * time.Millisecond //nolint:gosec // G115: bounded by most just above
 }
