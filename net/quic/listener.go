@@ -59,7 +59,8 @@ type ListenerConfig struct {
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
-	// overload. Zero means [defaultMaxPendingConns].
+	// overload. Zero means [defaultMaxPendingConns]. Accepted connections
+	// are not counted here: MaxConns bounds the total.
 	MaxPendingConns int
 
 	// HandshakeTimeout bounds how long one handshake may hold a pending
@@ -72,6 +73,27 @@ type ListenerConfig struct {
 	// succeed on. Zero means [DefaultHandshakeTimeout], the client's
 	// figure; a negative value is refused by [NewListener].
 	HandshakeTimeout time.Duration
+
+	// MaxConns bounds every connection the listener carries — mid-handshake,
+	// parked for [Listener.Accept], or accepted and in use — where
+	// MaxPendingConns bounds only the first two. Beyond it a new Initial is
+	// refused with a stateless CONNECTION_REFUSED (RFC 9000 §5.2.2), the
+	// same answer as a full pending table; a connection counts until it is
+	// closed on this end or the peer's close is heard. Zero means no bound:
+	// unlike MaxPendingConns, a total has no figure that suits every
+	// deployment, so an unset one limits nothing. Negative is refused by
+	// [NewListener].
+	MaxConns int
+
+	// MaxConnsPerIP is the same bound applied per source IP address — the
+	// port ignored, an IPv4-mapped IPv6 address counted with its IPv4
+	// form — so that one peer cannot hold the whole MaxConns on its own.
+	// The address is the one the first Initial came from: a peer that later
+	// migrates to another address keeps its count on the first, since the
+	// bound is on admission. Zero means no bound: a figure that is fair
+	// to a home connection starves a carrier-grade NAT, so the operator
+	// chooses. Negative is refused by [NewListener].
+	MaxConnsPerIP int
 
 	// PreferredAddress is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
@@ -158,8 +180,14 @@ type Listener struct {
 	// is always also in byDCID; the reverse is not true once a connection
 	// is accepted.
 	pendingConns map[*Conn]struct{}
-	closed       bool
-	discarded    uint64
+	// connsByIP counts the connections in keysOf by the source address
+	// their first Initial came from (sourceIP), what MaxConnsPerIP bounds;
+	// ipOf remembers each connection's key so forget can give the count
+	// back without the address. MaxConns itself reads len(keysOf).
+	connsByIP map[string]int
+	ipOf      map[*Conn]string
+	closed    bool
+	discarded uint64
 	// resetKey derives stateless reset tokens (resetTokenFor); resetWindow
 	// and resetsSent are the one-second budget maybeSendStatelessReset
 	// spends, and resetsTo its per-source share of it. resetsTo only gains
@@ -195,6 +223,12 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	case lcfg.HandshakeTimeout == 0:
 		lcfg.HandshakeTimeout = DefaultHandshakeTimeout
 	}
+	if lcfg.MaxConns < 0 {
+		return nil, fmt.Errorf("%w: a negative MaxConns", ErrQUIC)
+	}
+	if lcfg.MaxConnsPerIP < 0 {
+		return nil, fmt.Errorf("%w: a negative MaxConnsPerIP", ErrQUIC)
+	}
 	key, err := newRetryTokenKey()
 	if err != nil {
 		return nil, err
@@ -217,6 +251,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),
 		pendingConns: make(map[*Conn]struct{}),
+		connsByIP:    make(map[string]int),
+		ipOf:         make(map[*Conn]string),
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -647,8 +683,14 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
+	total, fromIP := len(l.keysOf), l.connsByIP[sourceIP(from)]
 	l.mu.Unlock()
-	if pending >= l.lcfg.MaxPendingConns {
+	// The three bounds refuse the same way; only the pending table's
+	// high-water mark below turns the Retry flow on, since Retry defends
+	// that table's slots, not the total.
+	if pending >= l.lcfg.MaxPendingConns ||
+		(l.lcfg.MaxConns > 0 && total >= l.lcfg.MaxConns) ||
+		(l.lcfg.MaxConnsPerIP > 0 && fromIP >= l.lcfg.MaxConnsPerIP) {
 		// RFC 9000 §5.2.2: a server with no room SHOULD say so — a
 		// stateless CONNECTION_REFUSED close costs one sealed packet
 		// against a decrypted ≥1200-byte Initial and spares the client its
@@ -807,6 +849,9 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	l.routeLocked(string(c.scid), c)
 	l.routeLocked(firstKey, c)
 	l.pendingConns[c] = struct{}{}
+	ip := sourceIP(from)
+	l.ipOf[c] = ip
+	l.connsByIP[ip]++
 	l.mu.Unlock()
 
 	go l.runHandshake(c, datagram, from)
@@ -971,6 +1016,16 @@ func (l *Listener) forget(c *Conn) {
 		}
 	}
 	delete(l.keysOf, c)
+	// The per-address count follows ipOf, not keysOf: a connection the
+	// closing listener turned away before registering (above) has keys but
+	// no address, and a second forget of the same one finds neither.
+	if ip, counted := l.ipOf[c]; counted {
+		delete(l.ipOf, c)
+		l.connsByIP[ip]--
+		if l.connsByIP[ip] <= 0 {
+			delete(l.connsByIP, ip)
+		}
+	}
 	l.mu.Unlock()
 }
 
@@ -1065,7 +1120,7 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 		l.resetWindow, l.resetsSent = now, 0
 		clear(l.resetsTo)
 	}
-	src := resetSource(from)
+	src := sourceIP(from)
 	if l.resetsSent >= maxResetsPerSecond || l.resetsTo[src] >= maxResetsPerSourcePerSecond {
 		l.mu.Unlock()
 		l.noteDiscard()
@@ -1090,9 +1145,11 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	_, _ = via.WriteTo(pkt, from)
 }
 
-// resetSource is the per-source key of the stateless reset budget: the IP
-// address without its port, or the whole address where it is not IP.
-func resetSource(from net.Addr) string {
+// sourceIP is the per-source key of the stateless reset budget and of
+// MaxConnsPerIP: the IP address without its port, an IPv4-mapped IPv6
+// address reduced to its IPv4 form, or the whole address where it is not
+// IP.
+func sourceIP(from net.Addr) string {
 	if ua, ok := from.(*net.UDPAddr); ok {
 		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
 			return string(ip.Unmap().AsSlice())

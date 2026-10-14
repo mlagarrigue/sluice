@@ -7,11 +7,13 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -953,5 +955,114 @@ func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
 	}
 	if _, err := NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{HandshakeTimeout: -time.Second}); err == nil {
 		t.Error("NewListener accepted a negative HandshakeTimeout")
+	}
+}
+
+// capRefusesTheSecondDial checks one admission bound end to end: a listener
+// under lcfg admits one connection, refuses the next from the same loopback
+// address with CONNECTION_REFUSED, and admits again once the first is gone
+// and the listener has forgotten it.
+func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
+	t.Helper()
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), lcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	dial := func() (*Conn, error) {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Dial(pc, spc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	}
+
+	first, err := dial()
+	if err != nil {
+		t.Fatalf("the first Dial under the cap: %v", err)
+	}
+	start := time.Now()
+	second, err := dial()
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("the second Dial got a connection; the cap is 1")
+	}
+	if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "code 0x2") {
+		t.Fatalf("the second Dial failed with %v; want CONNECTION_REFUSED (0x2) during the handshake", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the refusal took %v to reach the client", elapsed)
+	}
+
+	// Closing the first lets the listener forget it, which gives the
+	// slot back — to the total and to the address alike.
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		l.mu.Lock()
+		carried, perIP := len(l.keysOf), len(l.connsByIP)
+		l.mu.Unlock()
+		if carried == 0 && perIP == 0 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("2 s after the close the listener still carries %d connections, %d addresses", carried, perIP)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	third, err := dial()
+	if err != nil {
+		t.Fatalf("the Dial after the first closed: %v", err)
+	}
+	_ = third.Close()
+}
+
+// MaxConns bounds what the listener carries in total, accepted connections
+// included — the pending table alone would have let the second one in.
+func TestMaxConnsRefusesBeyondTheCap(t *testing.T) {
+	capRefusesTheSecondDial(t, ListenerConfig{MaxConns: 1})
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConns: -1}); err == nil {
+		t.Error("NewListener accepted a negative MaxConns")
+	}
+}
+
+// MaxConnsPerIP applies the same bound per source address, keyed on the IP
+// alone: ports differ between the two dials, and an IPv4-mapped IPv6
+// address counts with its IPv4 form. Two addresses stay apart. (Proving the
+// second IP is admitted would need a second loopback address, which macOS
+// and Windows do not route by default; the key is what decides it.)
+func TestMaxConnsPerIPCountsBySourceAddress(t *testing.T) {
+	capRefusesTheSecondDial(t, ListenerConfig{MaxConnsPerIP: 1})
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: -1}); err == nil {
+		t.Error("NewListener accepted a negative MaxConnsPerIP")
+	}
+
+	v4a := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1000})
+	v4b := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2000})
+	mapped := sourceIP(&net.UDPAddr{IP: net.ParseIP("::ffff:127.0.0.1"), Port: 3000})
+	other := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1000})
+	if v4a != v4b {
+		t.Errorf("two ports of one address key apart: %q vs %q", v4a, v4b)
+	}
+	if v4a != mapped {
+		t.Errorf("an IPv4-mapped address keys apart from its IPv4 form: %q vs %q", mapped, v4a)
+	}
+	if v4a == other {
+		t.Errorf("two addresses share the key %q", v4a)
 	}
 }
