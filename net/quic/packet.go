@@ -1,6 +1,9 @@
 package quic
 
-import "fmt"
+import (
+	"crypto/rand"
+	"fmt"
+)
 
 // MaxConnectionIDLen is the longest connection identifier QUIC version 1
 // allows (RFC 9000 §17.2). The field that carries it is a byte, so a peer can
@@ -174,7 +177,16 @@ func parseShortHeader(b []byte, dcidLen int) (shortHeader, error) {
 // them against fingerprinting, a traffic-analysis concern this package does
 // not take on (the Retry builder makes the same call).
 func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte {
-	dst = append(dst, 0xc0, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version 0 is what marks the packet
+	// §17.2.1: the seven bits under the header form are "set to an
+	// arbitrary value by the server", with the SHOULD of keeping 0x40 on so
+	// the packet still looks like QUIC to a demultiplexer (RFC 7983). Drawn
+	// rather than fixed, so a client cannot come to depend on them — the
+	// same greasing §17.2's own Fixed Bit asks of future versions — and
+	// crypto/rand because the package already imports it; a byte per
+	// Version Negotiation is no cost worth a second generator.
+	var unused [1]byte
+	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
+	dst = append(dst, 0xc0|unused[0]&0x3f, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version 0 is what marks the packet
 	dst = append(dst, dcid...)
 	dst = append(dst, byte(len(scid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, scid...)

@@ -937,11 +937,22 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 				return eliciting, err
 			}
 
-		// NEW_TOKEN stores tokens this package will never spend; the
-		// *_BLOCKED frames are the peer saying our grants are the
+		case f.Type == frameNewToken:
+			// §19.7: only a server hands out tokens, and a server that
+			// receives one closes with PROTOCOL_VIOLATION. A client stores
+			// nothing — this package never spends a token — so the frame is
+			// legal and inert there.
+			if !c.isClient {
+				return eliciting, &transportError{
+					code: transportProtocolViolation,
+					err:  fmt.Errorf("%w: a client sent a NEW_TOKEN frame", ErrQUIC),
+				}
+			}
+
+		// The *_BLOCKED frames are the peer saying our grants are the
 		// bottleneck, which consumption already answers with fresh grants.
 		// All legal, all deliberately inert.
-		case f.Type == frameNewToken, f.Type == frameDataBlocked,
+		case f.Type == frameDataBlocked,
 			f.Type == frameStreamDataBlocked,
 			f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1,
 			f.Type == framePing:
@@ -1185,20 +1196,23 @@ func (c *Conn) settleProbeLocked(out ackOutcome) {
 }
 
 // peerAckDelayExponent is the scale the peer applies to its ACK delay
-// fields. Callers hold mu.
+// fields: what it announced, or RFC 9000 §18.2's default of 3 only when it
+// announced nothing. An announced 0 is a multiplier of 1, not the default —
+// read as 3 it would inflate every ACK delay eightfold and with it the RTT
+// sample. Callers hold mu.
 func (c *Conn) peerAckDelayExponent() uint64 {
-	if c.hasPeerParams && c.peerParams.AckDelayExponent != 0 {
+	if c.hasPeerParams && c.peerParams.sawAckDelayExponent {
 		return c.peerParams.AckDelayExponent
 	}
 	return 3
 }
 
 // peerMaxAckDelayLocked is how long the peer said it may sit on an
-// acknowledgement — the protocol default of 25 ms unless announced. It caps
-// the delay field of incoming ACKs and pads the probe timeout. Callers hold
-// mu.
+// acknowledgement — §18.2's default of 25 ms only when it said nothing; an
+// announced 0 is 0. It caps the delay field of incoming ACKs and pads the
+// probe timeout. Callers hold mu.
 func (c *Conn) peerMaxAckDelayLocked() time.Duration {
-	if c.hasPeerParams && c.peerParams.MaxAckDelay != 0 {
+	if c.hasPeerParams && c.peerParams.sawMaxAckDelay {
 		return c.peerParams.MaxAckDelay
 	}
 	return 25 * time.Millisecond

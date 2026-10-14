@@ -160,9 +160,18 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		f.Data, rest, err = bytesN(rest, 8)
 		return f, rest, err
 
+	case f.Type == frameMaxStreams, f.Type == frameMaxStreams|1,
+		f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1:
+		// §19.11 and §19.14: a count over 2^60 names stream identifiers no
+		// varint can carry, and the frame is FRAME_ENCODING_ERROR — the
+		// code the caller maps every parse failure here to.
+		rest, err = takeVarints(rest, &f.value)
+		if err == nil && f.value > maxStreamsLimit {
+			return f, nil, fmt.Errorf("%w: a stream count of %d, over 2^60", ErrQUIC, f.value)
+		}
+		return f, rest, err
+
 	case f.Type == frameMaxData, f.Type == frameDataBlocked,
-		f.Type == frameMaxStreams, f.Type == frameMaxStreams|1,
-		f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1,
 		f.Type == frameRetireConnectionID:
 		rest, err = takeVarints(rest, &f.value)
 		return f, rest, err

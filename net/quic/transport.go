@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 )
 
@@ -61,15 +62,25 @@ type TransportParameters struct {
 	InitialMaxStreamsBidi          uint64
 	InitialMaxStreamsUni           uint64
 
-	// AckDelayExponent scales the peer's ACK delay fields; zero means the
-	// protocol default of 3. Read so a peer that announces another value
-	// does not skew this end's round-trip estimate.
+	// AckDelayExponent scales the peer's ACK delay fields. Read so a peer
+	// that announces another value does not skew this end's round-trip
+	// estimate. RFC 9000 §18.2 gives the default of 3 to a peer that is
+	// *silent*, not to one that announces 0: sawAckDelayExponent tells the
+	// two apart, and the field here is whatever the peer wrote.
 	AckDelayExponent uint64
 
 	// MaxAckDelay is how long the peer may sit on an acknowledgement,
-	// which loss recovery adds to its probe timeout. Zero means the
-	// protocol default of 25.
+	// which loss recovery adds to its probe timeout. As above, the §18.2
+	// default of 25 ms is for an absent parameter (sawMaxAckDelay), and an
+	// announced 0 is read as 0.
 	MaxAckDelay time.Duration
+
+	// sawAckDelayExponent and sawMaxAckDelay record that the peer announced
+	// the parameter at all, since 0 is a legal value of both and not the
+	// default (RFC 9000 §18.2). Neither is announced by this package, so
+	// appendParameters has no use for them.
+	sawAckDelayExponent bool
+	sawMaxAckDelay      bool
 
 	// OriginalDCID is the connection identifier the client first used, echoed
 	// by the server. It is what ties the handshake to the packets that
@@ -317,31 +328,44 @@ func parameterError(err error) error {
 
 func parseParameters(b []byte) (TransportParameters, error) {
 	var p TransportParameters
-	var seen uint64 // a bit per known identifier; they all sit below 0x10
+	// §7.4: no identifier twice, known or not — two values for one limit
+	// is a peer this end cannot reason about, and an unknown one that the
+	// peer itself repeats is the same malformed block. The defined
+	// identifiers all sit below 64 and take a bit each; anything above
+	// (extensions, §18.1's reserved values) goes in a slice no longer than
+	// the block has parameters.
+	var seen uint64
+	var seenHigh []uint64
 	for len(b) > 0 {
+		// A block that stops mid-varint or mid-value is a malformed
+		// parameter, and §7.4's TRANSPORT_PARAMETER_ERROR names it better
+		// than the INTERNAL_ERROR an unwrapped parse error would close
+		// with.
 		id, rest, err := Varint(b)
 		if err != nil {
-			return p, err
+			return p, parameterError(fmt.Errorf("%w: a transport parameter identifier cut short", ErrQUIC))
 		}
 		length, rest, err := Varint(rest)
 		if err != nil {
-			return p, err
+			return p, parameterError(fmt.Errorf("%w: transport parameter %#x has its length cut short", ErrQUIC, id))
 		}
 		if length > uint64(len(rest)) {
 			return p, parameterError(fmt.Errorf("%w: a transport parameter of %d bytes, %d remain", ErrQUIC, length, len(rest)))
 		}
-		val, rest, err := bytesN(rest, int(length)) //nolint:gosec // G115: checked above
-		if err != nil {
-			return p, err
-		}
-		b = rest
+		val := rest[:length]
+		b = rest[length:]
 
 		if id < 64 {
 			bit := uint64(1) << id
-			if known(id) && seen&bit != 0 {
+			if seen&bit != 0 {
 				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
 			}
 			seen |= bit
+		} else {
+			if slices.Contains(seenHigh, id) {
+				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
+			}
+			seenHigh = append(seenHigh, id)
 		}
 
 		switch id {
@@ -376,7 +400,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			// §18.2: active_connection_id_limit below 2 is
 			// TRANSPORT_PARAMETER_ERROR. The value caps how many identifiers
 			// this end issues for itself (quic/migration.go).
-			v, _, err := Varint(val)
+			v, err := integerParameter(id, val)
 			if err != nil {
 				return p, err
 			}
@@ -388,7 +412,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			paramInitialMaxStreamBidiL, paramInitialMaxStreamBidiR, paramInitialMaxStreamUni,
 			paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni,
 			paramAckDelayExponent, paramMaxAckDelay:
-			v, _, err := Varint(val)
+			v, err := integerParameter(id, val)
 			if err != nil {
 				return p, err
 			}
@@ -405,31 +429,44 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				p.InitialMaxStreamDataBidiRemote = v
 			case paramInitialMaxStreamUni:
 				p.InitialMaxStreamDataUni = v
-			case paramInitialMaxStreamsBidi:
-				p.InitialMaxStreamsBidi = v
-			case paramInitialMaxStreamsUni:
-				p.InitialMaxStreamsUni = v
+			case paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni:
+				// §4.6: over 2^60 the limit names stream identifiers no
+				// varint can carry; in a parameter that is
+				// TRANSPORT_PARAMETER_ERROR (the frame's twin is
+				// FRAME_ENCODING_ERROR, parseFrame).
+				if v > maxStreamsLimit {
+					return p, parameterError(fmt.Errorf("%w: initial_max_streams %d is over 2^60", ErrQUIC, v))
+				}
+				if id == paramInitialMaxStreamsBidi {
+					p.InitialMaxStreamsBidi = v
+				} else {
+					p.InitialMaxStreamsUni = v
+				}
 			case paramAckDelayExponent:
 				p.AckDelayExponent = v
+				p.sawAckDelayExponent = true
 			case paramMaxAckDelay:
 				p.MaxAckDelay = idleDuration(v)
+				p.sawMaxAckDelay = true
 			}
 		}
 	}
 	return p, nil
 }
 
-// known reports whether an identifier is one this package decodes, which is
-// the set the duplicate check applies to.
-func known(id uint64) bool {
-	switch id {
-	case paramOriginalDCID, paramMaxIdleTimeout, paramMaxUDPPayloadSize,
-		paramInitialMaxData, paramInitialMaxStreamBidiL, paramInitialMaxStreamBidiR,
-		paramInitialMaxStreamUni, paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni,
-		paramAckDelayExponent, paramMaxAckDelay, paramInitialSourceCID, paramRetrySourceCID,
-		paramStatelessResetToken, paramPreferredAddress, paramActiveConnIDLimit,
-		paramDisableActiveMigration:
-		return true
+// maxStreamsLimit is the largest stream count a MAX_STREAMS frame or an
+// initial_max_streams_* parameter may carry (RFC 9000 §4.6): 2^60 streams of
+// one type and direction reach stream identifier 2^62-1, the varint ceiling.
+const maxStreamsLimit = 1 << 60
+
+// integerParameter decodes a parameter whose whole value is one varint. The
+// value's announced length must match the integer's own, both ways: bytes
+// left after it, or a varint cut short by it, are a value this end cannot
+// read, which §7.4 makes TRANSPORT_PARAMETER_ERROR.
+func integerParameter(id uint64, val []byte) (uint64, error) {
+	v, rest, err := Varint(val)
+	if err != nil || len(rest) != 0 {
+		return 0, parameterError(fmt.Errorf("%w: transport parameter %#x is %d bytes, not one integer", ErrQUIC, id, len(val)))
 	}
-	return false
+	return v, nil
 }
