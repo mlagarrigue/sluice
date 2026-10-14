@@ -704,3 +704,89 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 		t.Fatalf("a near-miss token ended the connection: %v", err)
 	}
 }
+
+// RFC 9002 §7.6: persistent congestion is two ack-eliciting losses further
+// apart than three probe intervals with nothing acknowledged between them,
+// after a round-trip sample — established by an ACK, never by a count of
+// probe timeouts. The window then collapses to its minimum below the
+// slow-start threshold the loss event just halved.
+func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
+	run := func(t *testing.T, spacing time.Duration, sampled bool) (cwnd, ssthresh, initial int) {
+		t.Helper()
+		pcA, pcB := newLoopbackPair(t)
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		defer c.Close()
+		if err := c.installInitial([]byte("dcid0000")); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		c.mu.Lock()
+		initial = c.cc.cwnd
+		if sampled {
+			// pto = 100ms + 1ms + 25ms (the peer's default max_ack_delay,
+			// counted whatever the space, §7.6.1): the duration is 378ms.
+			c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true}
+		}
+		sp := &c.spaces[spaceInitial]
+		for pn := range uint64(5) {
+			sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-time.Second + time.Duration(pn)*spacing), size: 1200, ackEliciting: true, payload: []byte{byte(pn)}})
+			c.cc.onSent(now, 1200)
+		}
+		sp.sent.record(sentPacket{pn: 5, sentAt: now, ackEliciting: true}) // sized 0: its ACK grows nothing
+		sp.nextPN = 6
+		c.mu.Unlock()
+
+		var peer ackTracker
+		peer.record(5, now)
+		if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.cc.cwnd, c.cc.ssthresh, initial
+	}
+
+	cwnd, ssthresh, initial := run(t, 100*time.Millisecond, true) // losses 0–4 span 400ms > 378ms
+	if cwnd != 2400 || ssthresh != initial/2 {
+		t.Errorf("cwnd %d, ssthresh %d after persistent congestion; want the minimum 2400 under %d", cwnd, ssthresh, initial/2)
+	}
+	if cwnd, _, initial := run(t, 50*time.Millisecond, true); cwnd != initial/2 { // 200ms: one loss event
+		t.Errorf("cwnd %d after losses spanning 200ms, want one halving to %d", cwnd, initial/2)
+	}
+	if cwnd, _, initial := run(t, 100*time.Millisecond, false); cwnd != initial/2 { // no sample yet
+		t.Errorf("cwnd %d after losses before any round-trip sample, want one halving to %d", cwnd, initial/2)
+	}
+}
+
+// RFC 9002 §7.6.1: probe timeouts do not establish persistent congestion —
+// three unanswered probes used to collapse the window on their own.
+func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	initial := c.cc.cwnd
+	sp := &c.spaces[spaceInitial]
+	sp.lastElicit = now
+	sp.sent.record(sentPacket{pn: 0, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing}})
+	sp.nextPN = 1
+	c.mu.Unlock()
+
+	for i := 1; i <= 3; i++ {
+		now = now.Add(10 * time.Second) // past any backoff of the initial PTO
+		c.actOnDeadlines(now)
+	}
+	c.mu.Lock()
+	ptoCount, cwnd := c.ptoCount, c.cc.cwnd
+	c.mu.Unlock()
+	if ptoCount != 3 {
+		t.Fatalf("ptoCount %d after three expiries, want 3", ptoCount)
+	}
+	if cwnd != initial {
+		t.Errorf("cwnd %d after three probe timeouts, want %d untouched", cwnd, initial)
+	}
+}

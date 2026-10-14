@@ -464,3 +464,66 @@ func TestSkippedPacketNumberOncePerWindow(t *testing.T) {
 		t.Fatalf("%d gaps in %d numbers with a window of %d, want between %d and %d", skips, sent, window, lo, hi)
 	}
 }
+
+// RFC 9002 §7.6.2: the span an ACK's loss batch reports is measured between
+// ack-eliciting losses only, and an acknowledged packet between two losses
+// starts it over — whether this frame acknowledged it or an earlier one did.
+func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
+	now := time.Now()
+	at := func(ms int) time.Time { return now.Add(-time.Duration(ms) * time.Millisecond) }
+	sent := func(pn uint64, ms int, eliciting bool) sentPacket {
+		return sentPacket{pn: pn, sentAt: at(ms), size: 50, ackEliciting: eliciting, payload: []byte{byte(pn)}}
+	}
+	ack := func(t *testing.T, s *sentTracker, now time.Time, pns ...uint64) ackOutcome {
+		t.Helper()
+		var peer ackTracker
+		for _, pn := range pns {
+			peer.record(pn, now)
+		}
+		f := ackFrameFor(t, &peer)
+		var rtt rttEstimator
+		out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	t.Run("between the oldest and newest ack-eliciting losses", func(t *testing.T) {
+		var s sentTracker
+		s.record(sent(0, 1000, true))
+		s.record(sent(1, 900, true))
+		s.record(sent(2, 800, false)) // an ACK-only packet: no bound, no break
+		s.record(sent(3, 700, true))
+		s.record(sent(6, 0, true))
+		out := ack(t, &s, now, 6)
+		if out.lostCount != 4 || out.lostSpan != 300*time.Millisecond {
+			t.Errorf("%d losses spanning %v, want 4 spanning 300ms (packets 0 to 3)", out.lostCount, out.lostSpan)
+		}
+	})
+	t.Run("an acknowledgement in the same frame splits the run", func(t *testing.T) {
+		var s sentTracker
+		for pn, ms := range []int{1000, 900, 800, 700, 600} {
+			s.record(sent(uint64(pn), ms, true)) //nolint:gosec // G115: a loop index
+		}
+		s.record(sent(6, 0, true))
+		out := ack(t, &s, now, 2, 6) // packet 2 sits between the losses
+		if out.lostCount != 4 || out.lostSpan != 100*time.Millisecond {
+			t.Errorf("%d losses spanning %v, want 4 spanning 100ms (runs 0–1 and 3–4)", out.lostCount, out.lostSpan)
+		}
+	})
+	t.Run("an earlier acknowledgement splits it too", func(t *testing.T) {
+		var s sentTracker
+		for pn, ms := range []int{1000, 900, 800, 700, 600} {
+			s.record(sent(uint64(pn), ms, true)) //nolint:gosec // G115: a loop index
+		}
+		s.record(sent(6, 0, true))
+		if out := ack(t, &s, at(650), 2); out.lostCount != 0 {
+			t.Fatalf("%d losses on the first ACK, want none yet", out.lostCount)
+		}
+		out := ack(t, &s, now, 6)
+		if out.lostCount != 4 || out.lostSpan != 100*time.Millisecond {
+			t.Errorf("%d losses spanning %v, want 4 spanning 100ms (packet 2 was acknowledged before)", out.lostCount, out.lostSpan)
+		}
+	})
+}

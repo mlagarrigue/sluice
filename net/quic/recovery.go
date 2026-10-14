@@ -30,6 +30,9 @@ const (
 	timeThresholdDen = 8
 	// granularity is the timer's floor: below it, loss timers fire on noise.
 	granularity = time.Millisecond
+	// persistentCongestionThreshold is how many probe intervals of
+	// unbroken loss make persistent congestion (§7.6.1, kPersistentCongestionThreshold).
+	persistentCongestionThreshold = 3
 	// initialRTT stands in before the first sample (§6.2.2).
 	initialRTT = 333 * time.Millisecond
 )
@@ -217,6 +220,12 @@ type ackOutcome struct {
 	// pre-recovery straggler in a batch must not shield a genuinely new
 	// loss epoch from the window reduction it deserves.
 	latestLossSent time.Time
+	// lostSpan is the longest interval between the send times of two
+	// ack-eliciting packets this batch declared lost with nothing
+	// acknowledged between them — what RFC 9002 §7.6.2 measures against
+	// the persistent-congestion duration, which the connection knows and
+	// the tracker does not (it includes the peer's max_ack_delay).
+	lostSpan time.Duration
 	// probeAcked and probeLost report a DPLPMTUD probe's fate by packet
 	// number (pmtu.go matches it against the probe in flight); probeLostBytes
 	// leave flight without the window shrinking.
@@ -240,6 +249,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	// packets; only the ones still in s.packets cost anything.
 	i := len(s.packets) - 1
 	marked := 0
+	var largestMarked uint64 // the first mark is the highest: both walks descend
 	optimistic := false
 	err := decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
 		if s.hasSkipped && lo <= s.skipped && s.skipped <= hi {
@@ -256,6 +266,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		}
 		for i >= 0 && s.packets[i].pn >= lo {
 			if !s.packets[i].acked {
+				if marked == 0 {
+					largestMarked = s.packets[i].pn
+				}
 				s.packets[i].acked = true
 				marked++
 			}
@@ -272,73 +285,95 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		return out, nil
 	}
 
-	kept := s.packets[:0]
-	var largestAckedInFrame uint64
-	for _, p := range s.packets {
-		if !p.acked {
-			kept = append(kept, p)
-			continue
-		}
-		out.newlyAckedCount++
-		onPath := s.onPath(&p)
-		if onPath {
-			out.newlyAcked += p.size
-			if !p.sentAt.Before(growAfter) {
-				out.growableBytes += p.size
-			}
-			if p.sentAt.After(out.latestAckedSent) {
-				out.latestAckedSent = p.sentAt
-			}
-		}
-		if p.ackEliciting {
-			out.sawAckEliciting = true
-		}
-		if p.pmtuProbe {
-			out.probeAcked, out.probeAckedPN = true, p.pn
-		}
-		if p.pn == largest {
-			out.largestWasNew = true
-			out.largestEliciting = p.ackEliciting && onPath
-			out.largestSentAt = p.sentAt
-		}
-		if p.pn > largestAckedInFrame {
-			largestAckedInFrame = p.pn
-		}
-	}
-	s.packets = kept
-	if out.newlyAckedCount > 0 && (!s.hasLargestAcked || largestAckedInFrame > s.largestAcked) {
-		s.largestAcked = largestAckedInFrame
+	// The largest ever acknowledged persists (A.10); the one before this
+	// frame is remembered for the persistent-congestion span below.
+	prevLargest, hadPrev := s.largestAcked, s.hasLargestAcked
+	if marked > 0 && (!hadPrev || largestMarked > prevLargest) {
+		s.largestAcked = largestMarked
 		s.hasLargestAcked = true
 	}
 
-	// Loss: anything packetThreshold below the largest acknowledged, or older
-	// than the time threshold, is gone (§6.1). Whatever is too young for
-	// either arms the loss timer instead. The scan runs on every ACK, not
-	// just the ones with news: the timer was cleared above, and an ACK that
-	// repeats old news used to disarm a pending loss deadline for good —
-	// the loss then surfaced only on a later new ACK, or on the PTO.
+	// One pass in packet-number order: what the frame marked is released,
+	// then anything packetThreshold below the largest acknowledged, or
+	// older than the time threshold, is gone (§6.1), and whatever is too
+	// young for either arms the loss timer instead. The loss scan runs on
+	// every ACK, not just the ones with news: the timer was cleared here,
+	// and an ACK that repeats old news used to disarm a pending loss
+	// deadline for good — the loss then surfaced only on a later new ACK,
+	// or on the PTO.
+	//
+	// The same pass measures the batch for RFC 9002 §7.6: the longest span
+	// between the send times of two ack-eliciting packets declared lost
+	// with nothing acknowledged between them — the only state it needs is
+	// where the current run began, because the order here is the send
+	// order. An acknowledged packet between two losses starts the run over
+	// whether this frame acknowledged it or an earlier one did: the
+	// earlier ones are all at or below the previous largest acknowledged,
+	// so a run that straddles that number is cut there. (A run can also
+	// straddle a packet acknowledged two frames ago and below that number;
+	// the RFC allows per-space state that errs on the side of declaring.)
 	s.lossTime = time.Time{}
+	var threshold time.Duration
+	var lostBefore time.Time
 	if s.hasLargestAcked {
-		largest := s.largestAcked
-		threshold := max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
-		lostBefore := now.Add(-threshold)
-		kept = s.packets[:0]
-		for _, p := range s.packets {
-			lostByCount := p.pn+packetThreshold <= largest
-			lostByTime := p.pn < largest && p.sentAt.Before(lostBefore)
+		threshold = max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
+		lostBefore = now.Add(-threshold)
+	}
+	var runStart time.Time
+	var runStartPN uint64
+	kept := s.packets[:0]
+	for _, p := range s.packets {
+		if p.acked {
+			runStart = time.Time{}
+			out.newlyAckedCount++
+			onPath := s.onPath(&p)
+			if onPath {
+				out.newlyAcked += p.size
+				if !p.sentAt.Before(growAfter) {
+					out.growableBytes += p.size
+				}
+				if p.sentAt.After(out.latestAckedSent) {
+					out.latestAckedSent = p.sentAt
+				}
+			}
+			if p.ackEliciting {
+				out.sawAckEliciting = true
+			}
+			if p.pmtuProbe {
+				out.probeAcked, out.probeAckedPN = true, p.pn
+			}
+			if p.pn == largest {
+				out.largestWasNew = true
+				out.largestEliciting = p.ackEliciting && onPath
+				out.largestSentAt = p.sentAt
+			}
+			continue
+		}
+		if s.hasLargestAcked {
+			lostByCount := p.pn+packetThreshold <= s.largestAcked
+			lostByTime := p.pn < s.largestAcked && p.sentAt.Before(lostBefore)
 			if lostByCount || lostByTime {
-				s.declareLost(&out, &p)
+				if s.declareLost(&out, &p) {
+					if hadPrev && runStartPN < prevLargest && prevLargest < p.pn {
+						runStart = time.Time{}
+					}
+					if runStart.IsZero() {
+						runStart, runStartPN = p.sentAt, p.pn
+					} else if span := p.sentAt.Sub(runStart); span > out.lostSpan {
+						out.lostSpan = span
+					}
+				}
 				continue
 			}
-			if p.pn < largest && s.lossTime.IsZero() {
+			if p.pn < s.largestAcked && s.lossTime.IsZero() {
 				// Not lost yet by time, but older than the largest: it will
 				// be, if nothing acknowledges it by then.
 				s.lossTime = p.sentAt.Add(threshold)
 			}
-			kept = append(kept, p)
 		}
-		s.packets = kept
+		kept = append(kept, p)
 	}
+	s.packets = kept
 	return out, nil
 }
 
@@ -391,27 +426,29 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 // path sent it; but only a packet sent on the current path releases flight
 // bytes and dates the loss — the newest loss gates the congestion event
 // (RFC 9002 B.8) — because a previous path's loss says nothing about this
-// one (RFC 9000 §9.4, pathStart).
-func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket) {
+// one (RFC 9000 §9.4, pathStart). It reports whether the loss counts for
+// persistent congestion: ack-eliciting (§7.6.2) and on this path.
+func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket) bool {
 	onPath := s.onPath(p)
 	if p.pmtuProbe {
 		out.probeLost, out.probeLostPN = true, p.pn
 		if onPath {
 			out.probeLostBytes += p.size
 		}
-		return
+		return false
 	}
 	out.lostCount++
 	if len(p.payload) > 0 {
 		out.lost = append(out.lost, p.payload)
 	}
 	if !onPath {
-		return
+		return false
 	}
 	out.lostBytes += p.size
 	if p.sentAt.After(out.latestLossSent) {
 		out.latestLossSent = p.sentAt
 	}
+	return p.ackEliciting
 }
 
 // oldestEliciting is what the probe timeout is armed on.
@@ -680,9 +717,14 @@ func (p *pacer) delay(cwnd int, srtt time.Duration) time.Duration {
 	return d
 }
 
-// onPersistentCongestion collapses the window to its minimum (§7.6.2), taken
-// when a probe timeout has backed off repeatedly with nothing acknowledged:
-// the path is not dropping a packet, it is gone.
+// onPersistentCongestion collapses the window to its minimum (§7.6.2, B.8):
+// an ACK just proved that everything sent over more than three probe
+// intervals was lost — the path is not dropping a packet, it was gone. The
+// slow-start threshold is not touched here: the loss event that precedes
+// this call in the same batch (onLost, B.8's order) already halved it, and
+// the window climbs back to it in slow start the way a TCP sender does
+// after an RTO (RFC 5681 §3.1). The recovery period is cleared so that the
+// first loss on the revived path is a new event.
 func (c *newReno) onPersistentCongestion() {
 	c.cwnd = 2 * c.maxDatagram
 	c.recoveryStart = time.Time{}

@@ -1173,6 +1173,16 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// counted against.
 		if out.lostBytes > 0 {
 			c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+			// RFC 9002 §7.6: two ack-eliciting losses further apart than
+			// the persistent-congestion duration — three probe intervals,
+			// max_ack_delay included whatever the space (§7.6.1) — with
+			// nothing acknowledged between them, after a round-trip sample
+			// exists (§7.6.2: the initial RTT would make the duration a
+			// guess). Only an ACK can establish it; probe timeouts count
+			// for nothing here, by design (§7.6.1).
+			if c.rtt.sampled && out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
+				c.cc.onPersistentCongestion()
+			}
 		}
 	}
 	c.settleProbeLocked(out)

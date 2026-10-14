@@ -171,13 +171,12 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	if anyExpired {
 		c.ptoCount++
 		c.ptoFired++
-		// Three unanswered probes with exponential backoff: the path is
-		// not dropping a packet, it is gone. Collapse the window (a
-		// simplification of RFC 9002 §7.6's persistent-congestion test,
-		// on the safe side of it).
-		if c.ptoCount >= 3 {
-			c.cc.onPersistentCongestion()
-		}
+		// The window is not touched: a timeout proves nothing about the
+		// path (RFC 9002 §6.2.4), and persistent congestion is a span of
+		// losses an ACK establishes (§7.6, handleAck), not a count of
+		// probes — three unanswered probes used to collapse it here, and
+		// a sender pausing between small writes restarts this timer at
+		// every send without a single acknowledgement (§7.6.1).
 		for space, fired := range expired {
 			if fired {
 				c.sendProbeLocked(space)
