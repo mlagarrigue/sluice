@@ -705,7 +705,7 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 		// whole handshake timeout. (This used to be a silent drop, argued
 		// as "no different from a listen backlog dropping a SYN" — but TCP
 		// has RST for the loud variant, and QUIC's equivalent is this.)
-		l.sendStatelessClose(from, h, keys.secrets, transportConnectionRefused, via)
+		l.sendStatelessClose(from, h, &keys, transportConnectionRefused, via)
 		return
 	}
 
@@ -724,30 +724,49 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 }
 
 // initialKeys is what checking a client's first Initial derived: the
-// secrets, and the opener that just authenticated it. Handed on so the
-// answer — a stateless close or the connection's own Initial keys — does
-// not run the key schedule a second time for the same identifier.
+// extracted Initial secret, the client's direction expanded from it, and
+// the opener that just authenticated the packet. Handed on so the answer —
+// a stateless close or the connection's own Initial keys — does not run
+// the key schedule a second time for the same identifier. The server's
+// direction is not derived here: an Initial answered with a Retry, or
+// refused outright, never seals anything under it, and the listener's cost
+// per unauthenticated datagram is what a flood multiplies.
 type initialKeys struct {
-	secrets secrets
+	initial []byte // hkdf.Extract's output, both directions' parent
+	client  []byte
 	opener  *packetOpener // the client's direction, which a server opens
+}
+
+// secrets expands the server's direction and returns both, for the paths
+// that seal: a stateless close, or the connection being set up.
+func (k *initialKeys) secrets() (secrets, error) {
+	server, err := expandLabel(k.initial, "server in", 32)
+	if err != nil {
+		return secrets{}, err
+	}
+	return secrets{Client: k.client, Server: server}, nil
 }
 
 // initialPacketDecrypts checks an Initial against the keys its destination
 // identifier derives (RFC 9001 §5.2) — the cheapest possible proof that the
 // sender is a QUIC client and not noise shaped like one.
 func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
-	s, err := initialSecrets(h.DCID)
+	initial, err := extractInitial(h.DCID)
 	if err != nil {
 		return initialKeys{}, false
 	}
-	opener, err := newPacketOpener(s.Client)
+	client, err := expandLabel(initial, "client in", 32)
+	if err != nil {
+		return initialKeys{}, false
+	}
+	opener, err := newPacketOpener(client)
 	if err != nil {
 		return initialKeys{}, false
 	}
 	if _, _, err = opener.Open(h.Raw, h.PNOffset, 0); err != nil {
 		return initialKeys{}, false
 	}
-	return initialKeys{secrets: s, opener: opener}, true
+	return initialKeys{initial: initial, client: client, opener: opener}, true
 }
 
 // handleRetryFlow implements RFC 9000 §8.1.2 statelessly: a first Initial
@@ -776,7 +795,7 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 		// answer is stateless — no Conn, no table entry — and small against
 		// the ≥1200-byte datagram that provably arrived (§8.1's limit allows
 		// three times that).
-		l.sendStatelessClose(from, h, keys.secrets, transportInvalidToken, via)
+		l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
 		return
 	}
 	// This Initial's own destination identifier must be the one the Retry
@@ -784,7 +803,7 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 	// never issued for: equally impossible to validate, equally worth
 	// telling the client about now.
 	if !bytes.Equal(h.DCID, rt.newSCID) {
-		l.sendStatelessClose(from, h, keys.secrets, transportInvalidToken, via)
+		l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
 		return
 	}
 	l.bootstrapConn(datagram, from, h, &rt, keys, via)
@@ -796,10 +815,15 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 // pending table (§5.2.2). The keys are the ones the client derived from its
 // own destination identifier (RFC 9001 §5.2), so only the endpoint that
 // sent — or saw — that Initial can read the answer; the identifiers are
-// echoed swapped, exactly as a server's first genuine packet would. s is
-// what the decrypt check already derived from h.DCID.
-func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, s secrets, code uint64, via net.PacketConn) {
+// echoed swapped, exactly as a server's first genuine packet would. keys is
+// what the decrypt check already derived from h.DCID; the server's
+// direction is expanded here, on the one refusal that seals.
+func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initialKeys, code uint64, via net.PacketConn) {
 	l.noteDiscard() // the Initial itself is still refused, and still counted
+	s, err := keys.secrets()
+	if err != nil {
+		return
+	}
 	sealer, err := newPacketSealer(s.Server)
 	if err != nil {
 		return

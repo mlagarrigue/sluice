@@ -683,7 +683,10 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 	}
 
 	if keys != nil {
-		err = c.installInitialKeys(keys.secrets, keys.opener)
+		var s secrets
+		if s, err = keys.secrets(); err == nil {
+			err = c.installInitialKeys(s, keys.opener)
+		}
 	} else {
 		err = c.installInitial(h.DCID)
 	}

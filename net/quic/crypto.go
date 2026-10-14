@@ -48,9 +48,9 @@ type secrets struct {
 // against tampering in flight, and hides nothing from an observer. Treating
 // it as confidentiality is the mistake this comment exists to prevent.
 func initialSecrets(dcid []byte) (secrets, error) {
-	initial, err := hkdf.Extract(sha256.New, dcid, initialSalt)
+	initial, err := extractInitial(dcid)
 	if err != nil {
-		return secrets{}, fmt.Errorf("quic: extracting the initial secret: %w", err)
+		return secrets{}, err
 	}
 	client, err := expandLabel(initial, "client in", 32)
 	if err != nil {
@@ -61,6 +61,19 @@ func initialSecrets(dcid []byte) (secrets, error) {
 		return secrets{}, err
 	}
 	return secrets{Client: client, Server: server}, nil
+}
+
+// extractInitial is the first half of initialSecrets: the secret both
+// directions expand from. A listener keeps it instead of both directions,
+// because most Initials it sees never need the server's — an answer sealed
+// under Retry's fixed key, or no answer at all — and the expansion is paid
+// only on the path that seals.
+func extractInitial(dcid []byte) ([]byte, error) {
+	initial, err := hkdf.Extract(sha256.New, dcid, initialSalt)
+	if err != nil {
+		return nil, fmt.Errorf("quic: extracting the initial secret: %w", err)
+	}
+	return initial, nil
 }
 
 // expandLabel is TLS 1.3's HKDF-Expand-Label (RFC 8446 §7.1) over SHA-256,

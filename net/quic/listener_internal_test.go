@@ -868,6 +868,50 @@ func BenchmarkListenerRefusedInitial(b *testing.B) {
 	}
 }
 
+// BenchmarkListenerRetriedInitial measures the front door's cost for a
+// first Initial answered with a Retry: the decrypt check, then a token and
+// a packet sealed under Retry's fixed key — the server's own Initial secret
+// is never needed, and never derived.
+func BenchmarkListenerRetriedInitial(b *testing.B) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	dgram := sealedClientInitial(b, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 9, 9, 9})
+	from := fakeFuzzAddr("client:retried")
+	b.ReportAllocs()
+	for b.Loop() {
+		l.dispatch(dgram, from, l.pc)
+		pc.taken()
+	}
+}
+
+// BenchmarkListenerUndecryptableInitial measures what a flood of noise
+// shaped like Initials costs: a full key schedule for the client's
+// direction and one failed decrypt per datagram, nothing more.
+func BenchmarkListenerUndecryptableInitial(b *testing.B) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	dgram := sealedClientInitial(b, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 9, 9, 9})
+	dgram[len(dgram)-1] ^= 0xff // the tag no longer matches
+	from := fakeFuzzAddr("client:noise")
+	before := l.DiscardedPackets()
+	l.dispatch(dgram, from, l.pc)
+	if l.DiscardedPackets() != before+1 || len(pc.taken()) != 0 {
+		b.Fatal("the corrupted Initial was not refused silently")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		l.dispatch(dgram, from, l.pc)
+	}
+}
+
 // A connection whose read loop is busy for a moment must not lose the burst
 // a large response draws back: the listener queues up to connQueueLen
 // datagrams before it drops. A queue of 8 dropped this burst and stalled
