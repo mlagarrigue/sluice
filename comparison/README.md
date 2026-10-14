@@ -15,7 +15,7 @@ compression — and every axis of the internal study is a flag:
 
 | Axis | Flag | Today |
 |---|---|---|
-| A — transport | `-transport nethttp-h1` (R), `nethttp-h2`, `httpstream-h1`, `httpstream-h2`, `httpstream-h3` | h3 refused until axis A |
+| A — transport | `-transport nethttp-h1` (R), `nethttp-h2`, `httpstream-h1`, `httpstream-h2`, `httpstream-h3` | all five; `httpstream-h3` listens on UDP (`net/quic`), TLS always |
 | B — driver | `-driver sluice` (R), `pgx` | both, under the same gateway and connection budget |
 | C — grouping | `-gateway-size 64 -gateway-within 2ms` | any positive values |
 | D — transport batch | `-max-requests-per-batch`, `-max-requests-per-conn` (`-1` unbounded) | httpstream transports only |

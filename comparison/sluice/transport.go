@@ -14,10 +14,12 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/httpstream"
+	"github.com/mlagarrigue/sluice/net/quic"
 	"github.com/mlagarrigue/sluice/web"
 )
 
@@ -25,7 +27,8 @@ const maxBody = 1 << 16
 
 // serve runs the app on ln with the transport the options name, until ctx is
 // cancelled. It takes a listener rather than an address so that the test can
-// bind port 0 and read the port back.
+// bind port 0 and read the port back. httpstream-h3 runs on a packet socket,
+// not a stream listener: see serveH3.
 func serve(ctx context.Context, o options, a *app, ln net.Listener) error {
 	if o.tls {
 		cfg, err := tlsConfig(o)
@@ -35,13 +38,55 @@ func serve(ctx context.Context, o options, a *app, ln net.Listener) error {
 		ln = tls.NewListener(ln, cfg)
 	}
 	if o.httpstream() {
-		return httpstream.Serve(ctx, ln, httpstream.Config{
-			MaxBodyBytes:        maxBody,
-			MaxRequestsPerBatch: o.maxRequestsPerBatch,
-			MaxRequestsPerConn:  o.perConn(),
-		}, a.handler())
+		return httpstream.Serve(ctx, ln, httpstreamConfig(o), a.handler())
 	}
 	return serveNetHTTP(ctx, o, a, ln)
+}
+
+// httpstreamConfig is axis D's budget, the same under every httpstream
+// transport.
+func httpstreamConfig(o options) httpstream.Config {
+	return httpstream.Config{
+		MaxBodyBytes:        maxBody,
+		MaxRequestsPerBatch: o.maxRequestsPerBatch,
+		MaxRequestsPerConn:  o.perConn(),
+	}
+}
+
+// serveH3 is axis A's UDP transport: one quic.Listener on pc, one
+// httpstream.ServeH3 per accepted connection, until ctx is cancelled. The
+// TLS config is a parameter rather than built here so that the test can hand
+// over the certificate its client trusts; run passes tlsConfig(o).
+func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *tls.Config) error {
+	cfg := httpstreamConfig(o)
+	ln, err := quic.NewListener(pc, tlsCfg, cfg.TransportParameters(), quic.ListenerConfig{})
+	if err != nil {
+		return err
+	}
+	handle := a.handler()
+	var wg sync.WaitGroup
+	accepted := make(chan error, 1)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				accepted <- err
+				return
+			}
+			wg.Go(func() { _ = httpstream.ServeH3(ctx, c, cfg, handle) })
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		err = ln.Close()
+		<-accepted
+		wg.Wait()
+		return errors.Join(ctx.Err(), err)
+	case err := <-accepted:
+		_ = ln.Close()
+		wg.Wait()
+		return err
+	}
 }
 
 // serveNetHTTP is R's transport: net/http, srv.Serve on the (TLS) listener,
@@ -202,6 +247,8 @@ func tlsConfig(o options) (*tls.Config, error) {
 		cfg.NextProtos = []string{"http/1.1"}
 	case transportNetHTTPH2, transportHTTPStreamH2:
 		cfg.NextProtos = []string{"h2"}
+	case transportHTTPStreamH3:
+		cfg.NextProtos = []string{"h3"}
 	default:
 		return nil, errors.New("tlsConfig: transport without a TLS protocol")
 	}

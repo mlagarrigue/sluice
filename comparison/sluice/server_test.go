@@ -16,10 +16,14 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	quicgo "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
 )
@@ -42,14 +46,17 @@ const (
 
 // variants are what the binary implements today. R first: the others are
 // compared to it.
-var variants = []struct {
+type variant struct {
 	name string
 	args []string
-}{
+}
+
+var variants = []variant{
 	{"R", nil},
 	{"nethttp-h2", []string{"-transport", "nethttp-h2"}},
 	{"httpstream-h1", []string{"-transport", "httpstream-h1"}},
 	{"httpstream-h2", []string{"-transport", "httpstream-h2"}},
+	{"httpstream-h3", []string{"-transport", "httpstream-h3"}},
 	{"pgx", []string{"-driver", "pgx"}},
 	{"gateway-16-500us", []string{"-gateway-size", "16", "-gateway-within", "500us"}},
 	{"gateway-256-8ms", []string{"-gateway-size", "256", "-gateway-within", "8ms"}},
@@ -87,10 +94,6 @@ func start(tb testing.TB, args ...string) *server {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", o.listen)
-	if err != nil {
-		tb.Fatal(err)
-	}
 	// One certificate for the server and the client: the listener is
 	// wrapped here with a certificate the test holds, and serve told not to
 	// wrap it again.
@@ -103,12 +106,12 @@ func start(tb testing.TB, args ...string) *server {
 		tb.Fatal(err)
 	}
 	cfg.Certificates = []tls.Certificate{cert}
-	tlsLn := tls.NewListener(ln, cfg)
-	o.tls = false
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	clientTLS := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, o, a, tlsLn) }()
 	tb.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
@@ -117,8 +120,39 @@ func start(tb testing.TB, args ...string) *server {
 		_ = a.Close()
 	})
 
-	pool := x509.NewCertPool()
-	pool.AddCert(cert.Leaf)
+	if o.transport == transportHTTPStreamH3 {
+		// Axis A: a packet socket, and quic-go's HTTP/3 client over a 1-RTT
+		// handshake (sluice speaks no 0-RTT; the default dialer would try
+		// early data first) — the construction interop/h3_test.go uses.
+		pc, err := net.ListenPacket("udp", o.listen)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		go func() { done <- serveH3(ctx, o, a, pc, cfg) }()
+		tr := &http3.Transport{
+			TLSClientConfig: clientTLS,
+			QUICConfig:      &quicgo.Config{MaxIdleTimeout: 30 * time.Second},
+			Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quicgo.Config) (*quicgo.Conn, error) {
+				return quicgo.DialAddr(ctx, addr, tlsCfg, cfg)
+			},
+			DisableCompression: true,
+		}
+		tb.Cleanup(func() { _ = tr.Close() })
+		return &server{
+			url:    "https://" + pc.LocalAddr().String(),
+			client: &http.Client{Transport: tr, Timeout: 30 * time.Second},
+			o:      o,
+		}
+	}
+
+	ln, err := net.Listen("tcp", o.listen)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tlsLn := tls.NewListener(ln, cfg)
+	o.tls = false
+	go func() { done <- serve(ctx, o, a, tlsLn) }()
+
 	h2 := strings.HasSuffix(o.transport, "-h2")
 	tr := &http.Transport{
 		TLSClientConfig:     &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
@@ -333,8 +367,11 @@ func TestVariantsAnswerLikeR(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantProto := "HTTP/1.1"
-			if strings.HasSuffix(s.o.transport, "-h2") {
+			switch {
+			case strings.HasSuffix(s.o.transport, "-h2"):
 				wantProto = "HTTP/2.0"
+			case s.o.transport == transportHTTPStreamH3:
+				wantProto = "HTTP/3.0"
 			}
 			if r.proto != wantProto {
 				t.Fatalf("spoke %s, want %s", r.proto, wantProto)
@@ -374,7 +411,7 @@ func countWrites(t *testing.T) int64 {
 // criterion: a variant the code does not have is refused, never served as R.
 func TestUnimplementedVariantsRefuse(t *testing.T) {
 	refused := [][]string{
-		{"-transport", "httpstream-h3"},
+		{"-transport", "httpstream-h3", "-tls=false"},
 		{"-driver", "libpq"},
 		{"-response", "stream"},
 		{"-compression", "br"},
@@ -398,11 +435,20 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 // go test -run '^$' -bench . -cpuprofile cpu.out, then go tool pprof -top.
 // Sixty-four clients over keep-alive connections against R, which is the
 // shape of the generator's virtual users. The figures are a profile's
-// context, never a result of the study.
+// context, never a result of the study. SLUICE_STUDY_VARIANT names one of
+// `variants` to profile instead of R (the in-process pre-signal of an axis).
 
 func benchScenario(b *testing.B, pick func(r *rand.Rand, k int64) request) {
 	b.Helper()
-	s := start(b)
+	var args []string
+	if name := os.Getenv("SLUICE_STUDY_VARIANT"); name != "" {
+		i := slices.IndexFunc(variants, func(v variant) bool { return v.name == name })
+		if i < 0 {
+			b.Fatalf("SLUICE_STUDY_VARIANT=%s: not a variant", name)
+		}
+		args = variants[i].args
+	}
+	s := start(b, args...)
 	r := rand.New(rand.NewPCG(1, 1)) //nolint:gosec // G404: same keys every run
 	perm := r.Perm(keySpace)
 	reqs := make([]request, len(perm))

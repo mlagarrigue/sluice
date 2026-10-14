@@ -79,7 +79,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.key, "key", "", "TLS key file (PEM), with -cert")
 
 	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
-		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (not implemented until axis A)")
+		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (QUIC, UDP)")
 	fs.StringVar(&o.driver, "driver", driverSluice,
 		"axis B: sluice (R, database/postgres), pgx (jackc/pgx v5; same gateway, same connections)")
 	fs.IntVar(&o.gatewaySize, "gateway-size", 64, "axis C: gateway Size, the largest batch of unit reads")
@@ -121,7 +121,9 @@ func (o options) validate() error {
 			return fmt.Errorf("-transport %s: %w without -tls (h2c is not a configuration of the study)", o.transport, errNotImplemented)
 		}
 	case transportHTTPStreamH3:
-		return fmt.Errorf("-transport %s: %w until axis A", o.transport, errNotImplemented)
+		if !o.tls {
+			return fmt.Errorf("-transport %s: QUIC is always TLS, -tls=false has no meaning", o.transport)
+		}
 	default:
 		return fmt.Errorf("-transport %q: unknown", o.transport)
 	}
