@@ -143,8 +143,9 @@ type Listener struct {
 	// pendingConns is only the connections that have not yet reached the
 	// accept queue — handshakes in progress, and completed ones waiting
 	// for room in a full queue (see MaxPendingConns for why those still
-	// count) — the subset Close ends. An entry here is always also in
-	// byDCID; the reverse is not true once a connection is accepted.
+	// count) — the subset the pending table's limit bounds. An entry here
+	// is always also in byDCID; the reverse is not true once a connection
+	// is accepted.
 	pendingConns map[*Conn]struct{}
 	closed       bool
 	discarded    uint64
@@ -258,16 +259,18 @@ func (l *Listener) Accept() (*Conn, error) {
 	}
 }
 
-// Close stops the dispatch loop and ends every connection whose handshake
-// has not completed, and every completed one still queued for Accept —
-// nobody can Accept it any more, and left alone it would hold its
-// goroutines until its idle timeout. A connection already handed out by
-// Accept is the caller's to manage from here — untouched, exactly as
-// [net.Listener.Close] leaves an already-accepted [net.Conn] alone.
-//
-// The connections end before the sockets close, so their CONNECTION_CLOSE
-// still leaves and their peers stop now rather than at their own idle
-// timeout.
+// Close stops the dispatch loop and ends every connection this listener
+// routes — handshakes in progress, completed ones still queued for Accept,
+// and the ones Accept already handed out — each with a CONNECTION_CLOSE
+// (NO_ERROR, RFC 9000 §10.2) sent before the shared sockets close. This is
+// where the [net.Listener] analogy stops: a TCP connection owns its socket
+// and outlives its listener, but every connection here reads and writes
+// through the listener's socket and can neither send nor receive once that
+// socket is gone. Left alone, an accepted connection would hold its
+// goroutines until its own idle timeout, and its peer would wait out its
+// idle timeout too without ever hearing why. Close does not wait for
+// anything in flight: a caller that wants its responses delivered first
+// ends its connections itself before closing the listener.
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	if l.closed {
@@ -275,8 +278,11 @@ func (l *Listener) Close() error {
 		return nil
 	}
 	l.closed = true
-	toClose := make([]*Conn, 0, len(l.pendingConns))
-	for c := range l.pendingConns {
+	// keysOf lists every connection still routed, accepted or not; a
+	// connection that ended forgot itself already. Ended after mu is
+	// released: Conn.Close takes the connection's own lock.
+	toClose := make([]*Conn, 0, len(l.keysOf))
+	for c := range l.keysOf {
 		toClose = append(toClose, c)
 	}
 	l.mu.Unlock()

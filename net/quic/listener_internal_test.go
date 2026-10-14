@@ -625,8 +625,10 @@ func TestForgetUsesThePerConnectionIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = l.Close() }()
 	a, b := &Conn{}, &Conn{}
+	// Bare values with no state to end: Close ends every routed connection,
+	// so b leaves the table before it, and a already did.
+	defer func() { l.forget(b); _ = l.Close() }()
 	l.mu.Lock()
 	l.routeLocked("a-scid", a)
 	l.routeLocked("shared", a) // a client-chosen first identifier...

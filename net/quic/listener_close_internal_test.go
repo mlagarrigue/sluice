@@ -103,6 +103,43 @@ func TestListenerCloseEndsQueuedConnections(t *testing.T) {
 	}
 }
 
+// A connection Accept already handed out is ended by Listener.Close too,
+// and its peer hears a CONNECTION_CLOSE before the shared socket goes:
+// unlike a TCP connection, it has no socket of its own to outlive the
+// listener on. Before, Close only closed the socket under it — alive on
+// the server until its idle timeout, dead for the peer without a word.
+func TestListenerCloseEndsAcceptedConnections(t *testing.T) {
+	l, pc := newInternalUDPListener(t, "udp", "127.0.0.1:0", ListenerConfig{})
+	client := dialInternal(t, loopbackSocket(t), pc.LocalAddr())
+	server, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !isClosed(server) {
+		t.Error("the accepted server connection survived Listener.Close")
+	}
+	select {
+	case <-client.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("the client never learned its accepted connection was closed")
+	}
+	// A transport NO_ERROR close is clean: not an Err, and not the
+	// application close PeerClosed reports. What proves the client heard
+	// the frame rather than, say, timing out is the close it recorded.
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if !client.peerClose.seen || client.peerClose.app || client.peerClose.code != transportNoError {
+		t.Errorf("the client recorded %+v, want a transport NO_ERROR close", client.peerClose)
+	}
+	if client.closeErr != nil {
+		t.Errorf("a clean close left Err = %v", client.closeErr)
+	}
+}
+
 // A handshake that completes while the accept queue is full parks on it;
 // Close must end that connection too, along with the one in the queue.
 func TestListenerCloseEndsConnectionsBlockedOnAFullQueue(t *testing.T) {
