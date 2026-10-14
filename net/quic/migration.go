@@ -509,7 +509,7 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
 	c.resetPMTULocked()
-	c.cc = newNewReno(c.maxDatagram)
+	c.cc = newController(c.params.Congestion, c.maxDatagram)
 	c.ptoCount = 0
 	for i := range c.spaces {
 		c.spaces[i].sent.pathStart = now

@@ -714,6 +714,11 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	if params.ActiveConnIDLimit < 2 {
 		params.ActiveConnIDLimit = 4
 	}
+	// An algorithm this build does not know runs the default, and Stats
+	// says so: the choice is local, so there is no peer to refuse it.
+	if params.Congestion.Algorithm > CongestionCubic {
+		params.Congestion.Algorithm = CongestionNewReno
+	}
 	c := &Conn{
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,
@@ -745,7 +750,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		// authenticated packet and seeds the pool in adoptPeerCID.
 		c.peerCIDs = []peerCID{{seq: 0, cid: dcid, used: true}}
 	}
-	c.cc = newNewReno(c.maxDatagram)
+	c.cc = newController(c.params.Congestion, c.maxDatagram)
 	// §7.7: the pacer's bucket is the initial window, which is also the
 	// freshly-built controller's cwnd.
 	c.pacer.burst = int64(c.cc.window())
@@ -1471,6 +1476,11 @@ type Stats struct {
 	// is a path losing packets faster than it recovers.
 	CongestionWindow int
 
+	// Algorithm is the congestion controller this end sends with
+	// ([TransportParameters.Congestion]), as built: an unknown choice reads
+	// back as the default it fell to.
+	Algorithm CongestionAlgorithm
+
 	// BytesInFlight is how many bytes are sent and neither acknowledged nor
 	// declared lost (§B.2). It rises on every ack-eliciting send, falls
 	// when an ACK arrives or a loss is declared, and reads zero once
@@ -1525,6 +1535,7 @@ func (c *Conn) Stats() Stats {
 		RTTVariance:           c.rtt.variance,
 		LatestRTT:             c.rtt.latest,
 		CongestionWindow:      c.cc.window(),
+		Algorithm:             c.params.Congestion.Algorithm,
 		BytesInFlight:         c.cc.bytesInFlight(),
 		LostPackets:           c.lostPackets,
 		BytesRetransmitted:    c.bytesRetransmitted,

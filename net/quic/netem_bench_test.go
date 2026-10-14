@@ -6,6 +6,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -160,7 +161,21 @@ type netemLink struct {
 	prof     netemProfile
 	up, down bottleneck
 	paths    uint64
+	// cc is the congestion controller both ends of a transfer on this
+	// link are built with; the zero value is the package's default.
+	cc quic.CongestionAlgorithm
 }
+
+// benchAlgorithm is the controller the path benchmarks run:
+// SLUICE_QUIC_CC=cubic for CUBIC, anything else for the default, so one
+// test binary measures both sides of a controller A/B when the rounds
+// alternate the variable (docs/benchmarks.md).
+var benchAlgorithm = func() quic.CongestionAlgorithm {
+	if os.Getenv("SLUICE_QUIC_CC") == "cubic" {
+		return quic.CongestionCubic
+	}
+	return quic.CongestionNewReno
+}()
 
 // path wires a client and a server packet connection through two
 // forwarders on this link. dialTo is where the client addresses its
@@ -209,6 +224,8 @@ func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 	start := time.Now()
 	clientPC, serverPC, dialTo, stop := link.path()
 	defer stop()
+	params := wideParameters()
+	params.Congestion.Algorithm = link.cc
 
 	type result struct {
 		n   int64
@@ -226,7 +243,7 @@ func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 			done <- result{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(tb), wideParameters())
+		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(tb), params)
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -245,7 +262,7 @@ func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 		done <- result{n: got}
 	}()
 
-	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), wideParameters())
+	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), params)
 	if err != nil {
 		return transfer{}, fmt.Errorf("Dial: %w", err)
 	}
@@ -286,7 +303,7 @@ func benchTransfer(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(total))
 	for b.Loop() {
-		t, err := transferOnce(b, &netemLink{prof: prof}, total)
+		t, err := transferOnce(b, &netemLink{prof: prof, cc: benchAlgorithm}, total)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -304,7 +321,7 @@ func benchTwoFlows(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(2 * total))
 	for b.Loop() {
-		link := &netemLink{prof: prof}
+		link := &netemLink{prof: prof, cc: benchAlgorithm}
 		var (
 			wg   sync.WaitGroup
 			res  [2]transfer

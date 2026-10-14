@@ -66,6 +66,26 @@ func TestStatsReportsRTTWindowAndFlight(t *testing.T) {
 	}
 }
 
+// A connection built with CongestionCubic runs CUBIC: Stats says so, and
+// the transfer completes on a lossy path. The controller does not have to
+// be fast here, only chosen; its figures are docs/benchmarks.md's.
+func TestCubicIsChosenPerConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a 512 KiB transfer over an emulated 4 ms lossy path")
+	}
+	link := &netemLink{prof: netemProfile{owd: 2 * time.Millisecond, loss: 0.02}, cc: quic.CongestionCubic}
+	tr, err := transferOnce(t, link, 512<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.stats.Algorithm != quic.CongestionCubic {
+		t.Errorf("Stats.Algorithm = %v, want cubic", tr.stats.Algorithm)
+	}
+	if tr.stats.LostPackets == 0 {
+		t.Error("a 2% lossy path lost nothing: the transfer did not exercise the controller")
+	}
+}
+
 // On a path that loses one datagram in twenty, the sender's LostPackets
 // moves; the server, which only acknowledges, loses nothing it tracks.
 func TestStatsCountsLostPackets(t *testing.T) {

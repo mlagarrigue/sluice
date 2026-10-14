@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -118,6 +119,14 @@ type TransportParameters struct {
 	// client.
 	DisableActiveMigration bool
 
+	// Congestion chooses the congestion controller this endpoint sends
+	// with. It is local: never encoded on the wire, never read from the
+	// peer, which runs whatever it likes (RFC 9002 §7 leaves the choice to
+	// each sender). Experimental: the default is NewReno until another
+	// algorithm has been measured against a real client, and the zero
+	// value is that default.
+	Congestion CongestionConfig
+
 	// sawStatelessResetToken and sawPreferredAddress record that the peer
 	// announced these server-only parameters (§18.2). A *client* announcing
 	// either is a protocol violation a server must refuse with
@@ -140,6 +149,45 @@ type TransportParameters struct {
 	// client reads it and migrates on its own (see [Conn.PreferredAddress]).
 	// Server-only: a client announcing one is refused.
 	preferredAddress *preferredAddress
+}
+
+// CongestionConfig is the congestion-control choice a connection is built
+// with ([TransportParameters.Congestion]). Only the algorithm is chosen
+// today; its parameters are the RFC's. Experimental.
+type CongestionConfig struct {
+	// Algorithm names the controller. Unknown values run the default.
+	Algorithm CongestionAlgorithm
+}
+
+// CongestionAlgorithm names a congestion controller this package
+// implements. Each one answers the same questions from the sender (when a
+// packet may leave, how fast) and differs in how it reads loss.
+type CongestionAlgorithm uint8
+
+const (
+	// CongestionNewReno is RFC 9002 §7's controller: the window grows by
+	// one datagram per round trip and halves on each loss epoch. The
+	// default, and the one every benchmark figure of this package was
+	// measured with.
+	CongestionNewReno CongestionAlgorithm = iota
+
+	// CongestionCubic is RFC 9438's controller: after a loss the window
+	// shrinks to seven tenths and grows back along a cubic curve, flat
+	// around the size the loss happened at and steep away from it, so a
+	// long round trip no longer costs a window a datagram at a time.
+	// Experimental: measured on this package's emulated paths only.
+	CongestionCubic
+)
+
+// String is the name the dashboard prints: "newreno", "cubic".
+func (a CongestionAlgorithm) String() string {
+	switch a {
+	case CongestionNewReno:
+		return "newreno"
+	case CongestionCubic:
+		return "cubic"
+	}
+	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }
 
 // PreferredAddress is RFC 9000 §18.2's preferred_address: up to one

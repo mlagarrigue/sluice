@@ -327,7 +327,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			if onPath {
 				out.newlyAcked += p.size
 				if cc != nil {
-					cc.onAcked(ackEvent{now: now, sentAt: p.sentAt, size: p.size})
+					cc.onAcked(ackEvent{now: now, sentAt: p.sentAt, size: p.size, srtt: rtt.current()})
 				}
 			}
 			if p.ackEliciting {
@@ -540,9 +540,10 @@ type congestionController interface {
 
 // ackEvent is one newly acknowledged packet, as onAcked sees it.
 type ackEvent struct {
-	now    time.Time // when the acknowledgement was processed
-	sentAt time.Time // when the packet left
-	size   int       // bytes it occupied on the wire
+	now    time.Time     // when the acknowledgement was processed
+	sentAt time.Time     // when the packet left
+	size   int           // bytes it occupied on the wire
+	srtt   time.Duration // the smoothed round trip as it stood before this frame
 }
 
 // lossEvent is one batch of losses, as onLost sees it. latestSent is the
@@ -553,6 +554,19 @@ type lossEvent struct {
 	now        time.Time
 	latestSent time.Time
 	bytes      int
+}
+
+// newController builds the controller a connection's parameters name, at
+// its initial window for the current datagram size. Two sites build one —
+// newConn and a migration's resetPathStateLocked — and neither knows the
+// algorithms by name.
+func newController(cfg CongestionConfig, maxDatagram int) congestionController {
+	switch cfg.Algorithm {
+	case CongestionCubic:
+		return newCubic(maxDatagram)
+	default:
+		return newNewReno(maxDatagram)
+	}
 }
 
 // newReno is §7's congestion controller, the RFC's own default and the
@@ -652,6 +666,22 @@ func (c *newReno) pacingRate(srtt time.Duration) float64 {
 	return 1.25 * float64(w) / max(srtt, granularity).Seconds()
 }
 
+// absorb is the part of an acknowledgement every loss-based controller
+// shares, whatever curve it grows its window along: the packet leaves the
+// flight, closes its round if it was sent after the round's mark, and the
+// result says whether it earns growth at all — not if it predates the
+// recovery start (B.5's per-packet test, see onAcked), not if the window
+// was not what limited the sender this round (§7.8, see onAcked). CUBIC
+// (cubic.go) calls it first and grows its own way on a yes.
+func (c *newReno) absorb(ev ackEvent) bool {
+	c.inFlight = max(c.inFlight-ev.size, 0)
+	useful := c.limited || (c.cwnd < c.ssthresh && 2*c.maxInFlight >= c.cwnd)
+	if !c.roundMark.IsZero() && !ev.sentAt.Before(c.roundMark) {
+		c.roundMark = time.Time{}
+	}
+	return useful && !ev.sentAt.Before(c.recoveryStart)
+}
+
 // onAcked grows the window: by the packet's bytes in slow start, by one
 // datagram per window's worth in avoidance (§7.3.1, §7.3.3). A packet sent
 // before recovery began releases flight but earns nothing (B.5 applies that
@@ -670,12 +700,7 @@ func (c *newReno) pacingRate(srtt time.Duration) float64 {
 // application-limited one sits far below. A packet sent at or after the
 // round's mark closes the round, and the next send opens the next one.
 func (c *newReno) onAcked(ev ackEvent) {
-	c.inFlight = max(c.inFlight-ev.size, 0)
-	useful := c.limited || (c.cwnd < c.ssthresh && 2*c.maxInFlight >= c.cwnd)
-	if !c.roundMark.IsZero() && !ev.sentAt.Before(c.roundMark) {
-		c.roundMark = time.Time{}
-	}
-	if ev.sentAt.Before(c.recoveryStart) || !useful {
+	if !c.absorb(ev) {
 		return
 	}
 	if c.cwnd < c.ssthresh {
