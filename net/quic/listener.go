@@ -186,6 +186,9 @@ type Listener struct {
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
 	ipOf      map[*Conn]string
+	// spent is the Retry tokens that already admitted a connection, which a
+	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
+	spent     spentTokens
 	closed    bool
 	discarded uint64
 	// resetKey derives stateless reset tokens (resetTokenFor); resetWindow
@@ -809,6 +812,14 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 			// validate, equally worth telling the client about now.
 			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
 			return
+		case !l.consumeRetryToken(h.DCID):
+			// RFC 9000 §8.1.4: a token admits one connection. The same one
+			// echoed again — after that connection's identifiers came free,
+			// since while it lives dispatch routes the replay to it — is a
+			// Retry token this listener issued and will not honour twice,
+			// and the client holding it accepts no other (§8.1.2).
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
 		default:
 			l.bootstrapConn(datagram, from, h, &rt, keys, via)
 			return
@@ -825,6 +836,14 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 	token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
 	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
 	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
+}
+
+// consumeRetryToken marks the token bound to newSCID as spent and reports
+// whether it was still unspent — see spentTokens.
+func (l *Listener) consumeRetryToken(newSCID []byte) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.spent.consume(newSCID, time.Now())
 }
 
 // sendStatelessClose answers one Initial with a stateless Initial-level

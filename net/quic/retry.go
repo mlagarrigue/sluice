@@ -29,6 +29,56 @@ import (
 // after.
 const retryTokenTTL = 10 * time.Second
 
+// spentTokens remembers each Retry token that already admitted a connection,
+// keyed by the identifier the token bound (the connection's first DCID), for
+// the rest of the token's life. RFC 9000 §8.1.4 asks that replay be
+// prevented or limited, and the TTL alone only limits it: while the
+// connection lives a replay routes to it (byDCID), but a handshake that
+// fails in a millisecond frees the identifier with most of the TTL left,
+// and the same token would then open a second connection from the same
+// address without the round trip that validated the first. One entry per
+// Retry-born connection for at most retryTokenTTL; past spentTokensCap the
+// oldest is dropped, which bounds the memory at the price of a replay
+// becoming possible again for a token older than the cap's worth of
+// admissions — limited, as §8.1.4 allows, under a load the per-address and
+// pending-table limits already cap elsewhere. Every method is called with
+// the listener's mu held.
+type spentTokens struct {
+	byID  map[string]time.Time // newSCID → when the token can no longer verify
+	order []string             // byID's keys, oldest expiry first
+}
+
+// spentTokensCap bounds spentTokens: an entry is a key of listenerCIDLen
+// bytes and a time, under 100 bytes with the map's own overhead, so the
+// cap is about 1.6 MB at worst — and reaching it takes that many Retry
+// tokens consumed by connections within one retryTokenTTL.
+const spentTokensCap = 1 << 14
+
+// consume records newSCID's token as spent until expiry and reports whether
+// it was still unspent — false is a replay. now is the caller's clock, so
+// expiries stay in insertion order and the sweep below stops at the first
+// live one.
+func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
+	if s.byID == nil {
+		s.byID = make(map[string]time.Time)
+	}
+	id := string(newSCID)
+	if exp, spent := s.byID[id]; spent && now.Before(exp) {
+		return false
+	}
+	for len(s.order) > 0 && !now.Before(s.byID[s.order[0]]) {
+		delete(s.byID, s.order[0])
+		s.order = s.order[1:]
+	}
+	if len(s.order) >= spentTokensCap {
+		delete(s.byID, s.order[0])
+		s.order = s.order[1:]
+	}
+	s.byID[id] = now.Add(retryTokenTTL)
+	s.order = append(s.order, id)
+	return true
+}
+
 // AppendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
 // identifier to address it to (the client's own SCID from the Initial it
 // answers), newSCID is the identifier the client should use as its DCID

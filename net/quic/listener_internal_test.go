@@ -321,6 +321,66 @@ func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
 	}
 }
 
+// RFC 9000 §8.1.4: a Retry token admits one connection. Once that
+// connection is forgotten — its identifiers free again, most of the token's
+// TTL still ahead — the same token from the same address is answered with
+// INVALID_TOKEN (§8.1.2: the client holds a Retry token and accepts no
+// other), not with a second connection that skipped the round trip.
+func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:replay")
+	scid := []byte("src-cid3")
+
+	// The Retry flow, as a client would walk it: a tokenless Initial, the
+	// Retry it earns, and the second Initial echoing the token under the
+	// identifier the Retry chose.
+	l.dispatch(sealedClientInitial(t, []byte("dst-cid3"), scid), from, l.pc)
+	writes := pc.taken()
+	if len(writes) != 1 {
+		t.Fatalf("the listener wrote %d datagrams for a first Initial, want one Retry", len(writes))
+	}
+	retry, _, err := parseLongHeader(writes[0])
+	if err != nil || retry.Type != packetRetry {
+		t.Fatalf("the answer is %v (type %d), want a Retry", err, retry.Type)
+	}
+	newSCID, token := retry.SCID, retry.Token
+	second := sealedClientInitialWithToken(t, newSCID, scid, token)
+	l.dispatch(second, from, l.pc)
+
+	l.mu.Lock()
+	c := l.byDCID[string(newSCID)]
+	l.mu.Unlock()
+	if c == nil {
+		t.Fatal("the Initial echoing the token started no connection")
+	}
+	if c.amplActive {
+		t.Error("the connection the token admitted still pays the amplification limit")
+	}
+
+	// The connection ends and is forgotten, as a failed handshake or a
+	// finished closing period would leave it; the token has most of its
+	// TTL left.
+	_ = c.Close()
+	l.forget(c)
+	pc.taken()
+
+	l.dispatch(second, from, l.pc)
+	l.mu.Lock()
+	again := l.byDCID[string(newSCID)]
+	l.mu.Unlock()
+	if again != nil {
+		t.Error("the same token opened a second connection from the same address")
+	}
+	if codes := statelessCloseCodes(t, pc.taken(), newSCID); len(codes) != 1 || codes[0] != transportInvalidToken {
+		t.Errorf("the replayed token got %v, want one INVALID_TOKEN close", codes)
+	}
+}
+
 // Past half of MaxPendingConns, a tokenless Initial gets a stateless Retry
 // instead of a connection: the remaining slots are kept for addresses that
 // prove themselves across the extra round trip.
