@@ -59,6 +59,10 @@ func TestShutdownDeliversTheTailBeforeClosing(t *testing.T) {
 		t.Fatalf("client Err after Shutdown: %v", err)
 	}
 	// The server saw the client's NO_ERROR close: reported, not judged.
+	// Shutdown returned once the close was sent, not once the server read
+	// it, and the stream's last bytes were acknowledged before it left: the
+	// read above can finish with the close datagram still on its way.
+	waitFor(t, "the server to read the close", func() bool { return server.Err() != nil })
 	if ce, ok := errors.AsType[*quic.ConnectionError](server.Err()); !ok || ce.Application || ce.Code != 0 {
 		t.Fatalf("server Err after the client's Shutdown = %v, want the ConnectionError for NO_ERROR", server.Err())
 	}
