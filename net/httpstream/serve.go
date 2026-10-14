@@ -50,6 +50,10 @@ import (
 //     A handler therefore matches names case-insensitively, which is what
 //     [Request.Get] does — reading Headers directly by byte comparison is the
 //     mistake this line exists to prevent.
+//   - **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
+//     Cookie into one field per pair for compression's sake; they reach the
+//     handler joined again by "; " as one field, which is what HTTP/1.1
+//     delivers, and count as one field under [Config.MaxHeaders].
 //   - **The body is complete and bounded.** An element handed over is a whole
 //     request: its body has arrived in full, under [Config.MaxBodyBytes].
 //     There are no partial reads to finish and no framing left to check.

@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered)
+- **Revised:** 2026-10-14 (the cookie arrives whole)
 - **Theme:** httpstream
 
 ## Problem
@@ -27,6 +27,10 @@ enforces it:
    what the client sent.
 4. **The body is complete and bounded.** An element is a whole request
    under `MaxBodyBytes`; no partial reads, no framing left to check.
+5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
+   `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);
+   the handler sees them joined again by `"; "` as one field, as HTTP/1.1
+   delivers it, and `MaxHeaders` counts that one field, not the crumbs.
 
 ## Rationale
 

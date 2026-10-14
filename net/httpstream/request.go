@@ -59,6 +59,39 @@ func (r Request) Get(name string) []byte {
 	return nil
 }
 
+// fieldCount is how many fields a decoded block yields once its cookie
+// crumbs are joined (RFC 9113 §8.2.3, RFC 9114 §4.2.1): a crumb after the
+// first is part of one field, not a field. It is what [Config.MaxHeaders]
+// bounds, so a client that splits its cookie per pair — net/http's HTTP/2
+// transport does — stands where an HTTP/1.1 client sending the same cookie
+// in one field stands, instead of 70 cookies being refused on HTTP/2 and
+// HTTP/3 alone.
+func fieldCount(fields []Header) int {
+	crumbs := 0
+	for _, h := range fields {
+		if string(h.Name) == "cookie" {
+			crumbs++
+		}
+	}
+	if crumbs > 1 {
+		return len(fields) - (crumbs - 1)
+	}
+	return len(fields)
+}
+
+// appendCrumb joins one more cookie crumb to the cookie's value with the
+// delimiter RFC 9113 §8.2.3 and RFC 9114 §4.2.1 prescribe, "; ". The first
+// crumb's bytes sit in the decoder's buffer next to the fields that follow,
+// so the join takes a buffer of its own the first time (owned false) and
+// grows that one afterwards.
+func appendCrumb(cookie []byte, owned bool, crumb []byte) []byte {
+	if !owned {
+		cookie = append(make([]byte, 0, 2*(len(cookie)+2+len(crumb))), cookie...)
+	}
+	cookie = append(cookie, ';', ' ')
+	return append(cookie, crumb...)
+}
+
 // hostFieldName is shared rather than built per request: the name is a
 // constant, and it is the value that borrows the read buffer.
 var hostFieldName = []byte("host")

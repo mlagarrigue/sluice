@@ -814,7 +814,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// moment the count exists: the byte bound is not this bound — a
 			// block of near-empty fields fits the bytes while making every
 			// [Request.Get] walk hundreds of entries.
-			if len(st.headers) > a.cfg.MaxHeaders {
+			if fieldCount(st.headers) > a.cfg.MaxHeaders {
 				return fmt.Errorf("%w: over %d header fields",
 					ErrTooLarge, a.cfg.MaxHeaders)
 			}
@@ -865,6 +865,7 @@ func (a *h3Assembler) buildRequest(st *h3Stream) error {
 	var method, path, scheme, authority []byte
 	regular := st.headers[:0]
 	seenRegular := false
+	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
 	for _, h := range st.headers {
 		// h.Name stays []byte throughout: binding string(h.Name) to a
 		// variable allocates per field, while a conversion feeding only a
@@ -935,6 +936,16 @@ func (a *h3Assembler) buildRequest(st *h3Stream) error {
 				return fmt.Errorf("%w: content-length %q is not a length", ErrH3Protocol, h.Value)
 			}
 			st.declared = n
+		case "cookie":
+			// §4.2.1: cookie crumbs MUST be joined by "; " before a generic
+			// server application sees them — the handler here — as on the
+			// HTTP/2 side (RFC 9113 §8.2.3).
+			if cookie >= 0 {
+				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
+				cookieOwned = true
+				continue
+			}
+			cookie = len(regular)
 		}
 		regular = append(regular, h)
 	}

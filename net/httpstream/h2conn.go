@@ -780,7 +780,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// enforces is not this bound: a block of near-empty fields fits the
 	// bytes while making every [Request.Get] walk hundreds of entries. A
 	// stream error, not a connection error — the table is already consistent.
-	if len(fields) > s.cfg.MaxHeaders {
+	if fieldCount(fields) > s.cfg.MaxHeaders {
 		return nil, streamFail(st.id, errEnhanceYourCalm,
 			"%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
 	}
@@ -970,6 +970,7 @@ func (s *h2Server) buildRequest(st *h2Stream) error {
 	var method, path, scheme, authority []byte
 	regular := st.headers[:0]
 	seenRegular := false
+	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
 	for _, h := range st.headers {
 		// h.Name stays []byte throughout: binding string(h.Name) to a
 		// variable allocates per field (verified with -gcflags=-m), while a
@@ -1036,6 +1037,18 @@ func (s *h2Server) buildRequest(st *h2Stream) error {
 				return err
 			}
 			st.declared = n
+		case "cookie":
+			// §8.2.3: a client may split its cookie into crumbs, one field
+			// per pair, and they MUST be joined by "; " before a generic
+			// server application sees them — the handler here. Left apart,
+			// [Request.Get] returned the first pair alone and every session
+			// cookie behind it went missing on HTTP/2 and HTTP/3 only.
+			if cookie >= 0 {
+				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
+				cookieOwned = true
+				continue
+			}
+			cookie = len(regular)
 		}
 		regular = append(regular, h)
 	}
