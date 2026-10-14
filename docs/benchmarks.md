@@ -269,6 +269,42 @@ sizes their batches, and `docs/guide/limits.md` no longer carries an exit
 condition on `net/httpstream`. A bigger batch still divides the cost by as
 much.
 
+## QUIC, on an emulated path
+
+`net/quic`'s three path benchmarks (`net/quic/netem_bench_test.go`) move one
+stream through an in-process middlebox that charges every datagram a one-way
+delay and, per profile, draws a loss or queues it behind a bottleneck. They
+measure the congestion controller, not the CPU: a transfer takes as long as
+the path lets it, so the figure is goodput — bytes the receiver got per
+second of wall clock — and the machine's load barely moves it. What moves
+it is how fast the window grows (`Clean`), how loss is detected and growth
+resumed (`Loss1pct`), and whether bursts overrun a shallow buffer
+(`Bottleneck`, whose line rate is 6.25 MB/s: the sender reaches 71% of it,
+and the rest is what the pacing item in the backlog is about).
+
+| Benchmark | Path | Transfer | Median | Goodput | Spread |
+|---|---|---|---|---|---|
+| `BenchmarkTransferClean` | 20 ms RTT, no loss | 8 MiB | 238.5 ms | 35.2 MB/s | ±1% |
+| `BenchmarkTransferLoss1pct` | 20 ms RTT, 1% loss each way | 4 MiB | 4.31 s | 0.97 MB/s | ±4% |
+| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 950 ms | 4.41 MB/s | ±1% |
+
+```
+go test -run=XXX -bench='BenchmarkTransfer(Clean|Loss1pct|Bottleneck)$' -count=8 ./net/quic/ | tee after.txt
+benchstat before.txt after.txt
+```
+
+**These rows are ceilings.** Eight rounds on 2026-10-14, medians by
+`benchstat`, go1.26.9, the same laptop as the rest of this document, not
+pinned: an emulation that sleeps on timers in several goroutines must not
+be. A change to `net/quic` that puts a median more than **15% below** its
+row is a regression until it is explained; one that puts it above replaces
+the row. The CI gate does not watch them yet. `gate.sh` builds and lists
+`internal/bench` alone; `ab.sh` runs each binary pinned to one core under
+`GOMAXPROCS=1`, which these benchmarks cannot run under; and the gate rules
+on a 3% effect by sign test where these need a 15% bound on the median.
+Until it learns those three things, the comparison is by hand: the command
+above on the tree before and after, back to back, machine idle.
+
 ---
 
 ## Measured in one session

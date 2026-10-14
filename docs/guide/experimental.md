@@ -54,7 +54,7 @@ level.
 conn, err := quic.Dial(pc, addr, tlsConfig, quic.DefaultParameters())                     // client side
 ln, err := quic.NewListener(pc, tlsConfig, quic.DefaultParameters(), quic.ListenerConfig{}) // server side
 conn, err := ln.Accept()
-stats := conn.Stats() // discarded packets, write failures, key updates
+stats := conn.Stats() // counters, RTT, congestion window, bytes in flight, losses
 ```
 
 The **transport parameters** are the limits each end announces to the

@@ -144,6 +144,7 @@ type ackOutcome struct {
 	// oldest packet alone starves the ACK that straddles a recovery exit).
 	growableBytes   int
 	lostBytes       int
+	lostCount       uint64   // packets behind lostBytes, for Stats.LostPackets
 	lost            [][]byte // payloads to queue for retransmission
 	sawAckEliciting bool     // any newly acked packet was ack-eliciting
 	// latestLossSent is when the *newest* lost packet in this batch was
@@ -248,6 +249,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			}
 			if lostByCount || lostByTime {
 				out.lostBytes += p.size
+				out.lostCount++
 				if len(p.payload) > 0 {
 					out.lost = append(out.lost, p.payload)
 				}
@@ -305,6 +307,7 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 		}
 		if p.sentAt.Before(lostBefore) {
 			out.lostBytes += p.size
+			out.lostCount++
 			if len(p.payload) > 0 {
 				out.lost = append(out.lost, p.payload)
 			}

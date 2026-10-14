@@ -123,10 +123,11 @@ func wideParameters() quic.TransportParameters {
 
 // transferOnce runs one connection over the path and moves total bytes
 // client-to-server on a single stream, returning when the server has read
-// them all. The handshake rides inside the measurement; at these transfer
-// sizes it is two round trips against a second of data.
-func transferOnce(b *testing.B, prof netemProfile, total int) {
-	b.Helper()
+// them all, with the sender's counters as they stood then. The handshake
+// rides inside the measurement; at these transfer sizes it is two round
+// trips against a second of data.
+func transferOnce(tb testing.TB, prof netemProfile, total int) quic.Stats {
+	tb.Helper()
 	clientPC, serverPC, dialTo, stop := netemPath(prof)
 	defer stop()
 
@@ -146,13 +147,13 @@ func transferOnce(b *testing.B, prof netemProfile, total int) {
 			done <- result{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(b), wideParameters())
+		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(tb), wideParameters())
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		s, err := conn.AcceptStream(b.Context())
+		s, err := conn.AcceptStream(tb.Context())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -167,34 +168,35 @@ func transferOnce(b *testing.B, prof netemProfile, total int) {
 
 	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), wideParameters())
 	if err != nil {
-		b.Fatalf("Dial: %v", err)
+		tb.Fatalf("Dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	s, err := conn.OpenStream(b.Context())
+	s, err := conn.OpenStream(tb.Context())
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	chunk := make([]byte, 64<<10)
 	for sent := 0; sent < total; sent += len(chunk) {
 		if _, err := s.Write(chunk); err != nil {
-			b.Fatalf("after %d bytes: %v (conn: %v)", sent, err, conn.Err())
+			tb.Fatalf("after %d bytes: %v (conn: %v)", sent, err, conn.Err())
 		}
 	}
 	if err := s.CloseWrite(); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 
 	select {
 	case r := <-done:
 		if r.err != nil {
-			b.Fatalf("the server: %v", r.err)
+			tb.Fatalf("the server: %v", r.err)
 		}
 		if r.n != int64(total) {
-			b.Fatalf("the server read %d of %d bytes", r.n, total)
+			tb.Fatalf("the server read %d of %d bytes", r.n, total)
 		}
 	case <-time.After(120 * time.Second):
-		b.Fatal("the transfer did not finish")
+		tb.Fatal("the transfer did not finish")
 	}
+	return conn.Stats()
 }
 
 func benchTransfer(b *testing.B, prof netemProfile, total int) {

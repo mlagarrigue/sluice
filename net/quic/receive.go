@@ -1164,6 +1164,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if len(out.lost) > 0 || out.lostBytes > 0 {
 		sp.retrans = append(sp.retrans, out.lost...)
 		c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+		c.lostPackets += out.lostCount
 	}
 	c.settleProbeLocked(out)
 	return nil

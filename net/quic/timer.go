@@ -144,6 +144,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 			if out.lostBytes > 0 {
 				sp.retrans = append(sp.retrans, out.lost...)
 				c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+				c.lostPackets += out.lostCount
 				c.retransmitLocked()
 			}
 			c.settleProbeLocked(out)
@@ -167,6 +168,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	}
 	if anyExpired {
 		c.ptoCount++
+		c.ptoFired++
 		// Three unanswered probes with exponential backoff: the path is
 		// not dropping a packet, it is gone. Collapse the window (a
 		// simplification of RFC 9002 §7.6's persistent-congestion test,

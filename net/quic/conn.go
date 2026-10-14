@@ -110,6 +110,12 @@ type Conn struct {
 	streamDeadline time.Time
 
 	ptoCount int
+	// lostPackets and ptoFired are the cumulative counters Stats reports:
+	// packets declared lost by either detection path (an ACK's packet or
+	// time threshold, the loss timer), DPLPMTUD probes excepted, and probe
+	// timeouts that fired. Neither is ever reset.
+	lostPackets uint64
+	ptoFired    uint64
 	// maxDatagram bounds every datagram sent on the path in use: 1200 until
 	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
@@ -1379,6 +1385,54 @@ type Stats struct {
 	// received of a kind this package does not handle — most likely one a
 	// newer Go release added that this package does not know yet.
 	UnhandledTLSEvents uint64
+
+	// SmoothedRTT is the round-trip estimate loss recovery runs on
+	// (RFC 9002 §5.3, smoothed_rtt): an exponentially weighted mean of the
+	// samples, moved by every ACK that newly covers the largest packet it
+	// names, the peer's declared ACK delay subtracted. Zero before the first
+	// sample, which the handshake supplies. It is what a probe timeout and
+	// the loss time threshold are scaled by.
+	SmoothedRTT time.Duration
+
+	// MinRTT is the smallest round trip sampled (§5.2, min_rtt): the path's
+	// propagation delay, as close as this end can know it. It only ever
+	// falls, except across a migration, which starts it over.
+	MinRTT time.Duration
+
+	// RTTVariance is the mean deviation of the samples from SmoothedRTT
+	// (§5.3, rttvar). A variance that climbs while the mean holds is a
+	// path whose queue is filling and emptying.
+	RTTVariance time.Duration
+
+	// CongestionWindow is how many bytes the congestion controller lets
+	// this end have in flight (RFC 9002 §7): it grows on every ACK, halves
+	// on a loss epoch and collapses after three unanswered probe timeouts.
+	// A window that stays near 2 × 1200 on a connection that keeps writing
+	// is a path losing packets faster than it recovers.
+	CongestionWindow int
+
+	// BytesInFlight is how many bytes are sent and neither acknowledged nor
+	// declared lost (§B.2). It rises on every ack-eliciting send, falls
+	// when an ACK arrives or a loss is declared, and reads zero once
+	// everything written has been acknowledged. BytesInFlight approaching
+	// CongestionWindow is a sender limited by the path, not by its data.
+	BytesInFlight int
+
+	// LostPackets is how many packets loss recovery declared lost (§6.1),
+	// by either path that can: an ACK proving a packet three behind or too
+	// old, or the loss timer maturing on one left too young to call. A
+	// DPLPMTUD probe that goes missing is not counted: its size was the
+	// question, and its loss is no congestion event (RFC 9000 §14.4). A
+	// retransmission is not a second loss until it is itself declared.
+	LostPackets uint64
+
+	// ProbeTimeouts is how many times the probe timeout fired (§6.2):
+	// acknowledgements stopped arriving for a whole timeout, and this end
+	// sent probes to find out whether anything still gets through. It
+	// counts expiries, not probes sent: a pass that probes two packet
+	// number spaces together is one. A count that moves on a quiet path is
+	// a peer that stalls, or ACKs that do not come back.
+	ProbeTimeouts uint64
 }
 
 // Stats reports the connection's counters, consistently with each other.
@@ -1390,6 +1444,13 @@ func (c *Conn) Stats() Stats {
 		KeyUpdates:         c.ku.updates,
 		WriteFailures:      c.writeFailures,
 		UnhandledTLSEvents: c.unhandledTLSEvents.Load(),
+		SmoothedRTT:        c.rtt.smoothed,
+		MinRTT:             c.rtt.min,
+		RTTVariance:        c.rtt.variance,
+		CongestionWindow:   c.cc.cwnd,
+		BytesInFlight:      c.cc.inFlight,
+		LostPackets:        c.lostPackets,
+		ProbeTimeouts:      c.ptoFired,
 	}
 }
 
