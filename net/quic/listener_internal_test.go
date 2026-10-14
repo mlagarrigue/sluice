@@ -52,6 +52,14 @@ func sealedClientInitial(tb testing.TB, dcid, scid []byte) []byte {
 // shape of a client's second Initial after a Retry.
 func sealedClientInitialWithToken(tb testing.TB, dcid, scid, token []byte) []byte {
 	tb.Helper()
+	return sealedClientInitialFirstByte(tb, 0xc0, dcid, scid, token)
+}
+
+// sealedClientInitialFirstByte is sealedClientInitialWithToken with the
+// high nibble of the first byte chosen by the caller — 0xc0 for a client's
+// real Initial, 0xcc for one with the reserved bits set.
+func sealedClientInitialFirstByte(tb testing.TB, first byte, dcid, scid, token []byte) []byte {
+	tb.Helper()
 	secrets, err := initialSecrets(dcid)
 	if err != nil {
 		tb.Fatal(err)
@@ -62,7 +70,7 @@ func sealedClientInitialWithToken(tb testing.TB, dcid, scid, token []byte) []byt
 	}
 	const pnLen = 4
 	var header []byte
-	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))
+	header = append(header, first|byte(packetInitial)<<4|byte(pnLen-1))
 	header = append(header, 0, 0, 0, 1) // version 1
 	header = append(header, byte(len(dcid)))
 	header = append(header, dcid...)

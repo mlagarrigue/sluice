@@ -566,7 +566,30 @@ func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64)
 	if err != nil {
 		return nil, 0, usedCurrent, fmt.Errorf("%w: the packet did not authenticate", ErrQUIC)
 	}
+	// RFC 9000 §17.2 and §17.3.1: the reserved bits of the first byte —
+	// 0x0c under a long header, 0x18 under a short one — are zero once both
+	// protections are off, or the packet is PROTOCOL_VIOLATION. Checked
+	// here, after the AEAD and not before: refused on the unprotected
+	// header alone, a forgery nobody authenticated could end the
+	// connection, and the timing would tell the forger its mask guess was
+	// right (RFC 9001 §9.5). The one error openPhased returns for a packet
+	// that did authenticate, which is how the caller tells it apart.
+	if buf[0]&reservedBits(buf[0]) != 0 {
+		return nil, 0, used, &transportError{
+			code: transportProtocolViolation,
+			err:  fmt.Errorf("%w: reserved bits set in the first byte %#x", ErrQUIC, buf[0]),
+		}
+	}
 	return payload, pn, used, nil
+}
+
+// reservedBits is the mask of the first byte's reserved bits for the header
+// form the byte announces.
+func reservedBits(first byte) byte {
+	if first&0x80 != 0 {
+		return 0x0c
+	}
+	return 0x18
 }
 
 // maskFirstByte covers the bits of the first byte that are not needed to

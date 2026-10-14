@@ -380,6 +380,14 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 		}
 		payload, pn, used, err := opener.openPhased(raw, pnOffset, largest)
 		if err != nil {
+			// A transportError is the one refusal of a packet that did
+			// authenticate (reserved bits, §17.2): the peer's own
+			// violation, ended as one. Everything below is bytes nobody
+			// proved they sent.
+			if te, ok := errors.AsType[*transportError](err); ok {
+				c.abort(te)
+				return te
+			}
 			// A datagram that names this connection but does not
 			// authenticate can still be the peer's stateless reset: a
 			// resetting peer may reuse the identifier it was sent (§10.3).
