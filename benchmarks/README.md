@@ -357,6 +357,52 @@ another Execute to be told there are none. One whole round trip, bought by
 asking for one row less than you could have. `QueryConfig.BatchRows` now says
 so.
 
+### Compression, which the study measures before `web` offers it
+
+Axis F of the internal study: the list-1000 document (50 037 bytes of
+JSON, the rows `pgdev.sh fixtures` writes) encoded in process by the
+standard library's `compress/gzip` and `compress/flate`, one writer per
+level reset per response, the whole buffered body in one write — the way
+the study's server does it under `-compression` (`comparison/sluice` on
+`main`). `none` is the copy the codecs replace. `BenchmarkListCompress`,
+`go test -bench 'BenchmarkListCompress' -benchtime 2000x`; 15 paired rounds
+on 2026-10-14, every codec in the same round as its `none`, one laptop
+session, so the ratios are the figure and the microseconds are its context.
+
+| codec | µs/req (median) | against `none`: median ratio, range, rounds won | B/op · allocs/op | output | compression ratio |
+|---|---|---|---|---|---|
+| `none` | 58 | — | 57 353 · 1 | 50 037 B | ×1.00 |
+| `gzip1` | 275 | ×5.2 (×3.3..×8.0), 0/15 | 14 175 · 1 | 8 831 B | ×5.67 |
+| `gzip6` | 1 302 | ×23.6 (×15.7..×42.4), 0/15 | 13 975 · 1 | 7 579 B | ×6.60 |
+| `deflate6` | 1 204 | ×22.0 (×14.2..×41.8), 0/15 | 13 571 · 1 | 7 561 B | ×6.62 |
+
+`versus.sh` says the same in its own words — `SLOWER`, 0 wins of 14 against
+`none` for each codec — and a quieter earlier run put the absolute figures
+at about half (29, 159, 680 and 781 µs); the ratios held.
+
+What the stage costs is therefore not in doubt and not small: **gzip at
+level 1 is a quarter of a millisecond per list, level 6 more than a
+millisecond**, on a request whose database read is about a millisecond
+(the `= ANY` row above). What it buys is 41 KB per response, and whether
+that is worth a millisecond of CPU depends entirely on the link: on
+loopback it is a pure loss, on the study's throttled network (§8.4) it may
+pay for itself many times over. That is the measurement the study makes on
+the VM campaign, with the client decoding; this one only prices the stage.
+Two readings it does allow:
+
+- **Level 6 buys 14 % fewer bytes than level 1 for 4.7× the CPU.** Deflate
+  6 and gzip 6 are the same encoder with a different envelope (18 bytes of
+  gzip header and trailer), as the output sizes say.
+- **One allocation per response** — the output buffer — once the writer is
+  reused. A fresh `gzip.NewWriterLevel` per response would add its
+  tables (hundreds of KB at level 6) to every request; the pool is the
+  whole design of the stage.
+
+None of this is an API of `web`: the study measures first and decides
+after (§8.5). `klauspost/compress` is in this module's graph already
+(indirect, through fiber) and claims a faster deflate; it is a second
+comparison, not this one.
+
 ## What is not measured yet
 
 The connector against pgx / lib/pq / `database/sql`, the web comparison with
