@@ -9,7 +9,9 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -33,7 +35,21 @@ type fakeServer struct {
 	// wrong for free: see errNotAsked.
 	scanned  int
 	triggers int
+
+	// mu guards everything above, because a client may send and read on two
+	// goroutines at once — Tx.Pipeline does — exactly as it may on a socket.
+	// asked is closed and replaced by every Write, so a Read that found
+	// nothing to deliver can wait for the client to ask instead of
+	// complaining at once; see Read.
+	mu    sync.Mutex
+	asked chan struct{}
 }
+
+// askWait bounds how long a Read waits for the client to send something a
+// backend answers. A client that sends on another goroutine asks within
+// microseconds; a script that reads before asking is a bug, reported as
+// errNotAsked once this has elapsed rather than as a hang.
+const askWait = time.Second
 
 // errNotAsked reports a script read from before the client asked to be
 // answered.
@@ -50,21 +66,40 @@ type fakeServer struct {
 var errNotAsked = errors.New("fakeServer: read before the client sent anything that makes a backend deliver (Sync, Flush, Query, CopyDone or CopyFail)")
 
 func (s *fakeServer) Read(p []byte) (int, error) {
-	if s.readBuf.Len() == 0 {
+	deadline := time.Now().Add(askWait)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.readBuf.Len() == 0 {
 		if s.pos >= len(s.responses) {
 			return 0, io.EOF
 		}
 		s.scanClient()
-		if s.triggers == 0 {
+		if s.triggers > 0 {
+			// Decremented, not cleared: a client may send several
+			// deliverable messages before reading any of them — which is
+			// what pipelining is — and each one is owed its own answer.
+			// Clearing the count made the second read of such a batch look
+			// like a read nobody had asked for.
+			s.triggers--
+			s.readBuf.Write(s.responses[s.pos])
+			s.pos++
+			break
+		}
+		// Nothing to deliver yet. A real backend would block here until the
+		// client's Sync arrives, which it may be sending on another
+		// goroutine right now; wait for the next Write, bounded.
+		if s.asked == nil {
+			s.asked = make(chan struct{})
+		}
+		asked := s.asked
+		s.mu.Unlock()
+		select {
+		case <-asked:
+		case <-time.After(time.Until(deadline)):
+			s.mu.Lock()
 			return 0, errNotAsked
 		}
-		// Decremented, not cleared: a client may send several deliverable
-		// messages before reading any of them — which is what pipelining is —
-		// and each one is owed its own answer. Clearing the count made the
-		// second read of such a batch look like a read nobody had asked for.
-		s.triggers--
-		s.readBuf.Write(s.responses[s.pos])
-		s.pos++
+		s.mu.Lock()
 	}
 	return s.readBuf.Read(p)
 }
@@ -107,14 +142,26 @@ func (s *fakeServer) scanClient() {
 }
 
 func (s *fakeServer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
 	s.writes++
-	return s.sent.Write(p)
+	n, err := s.sent.Write(p)
+	if s.asked != nil {
+		close(s.asked)
+		s.asked = nil
+	}
+	return n, err
 }
 
-func (s *fakeServer) Close() error { s.closed = true; return nil }
+func (s *fakeServer) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
 
 // clientMessages parses back everything the client wrote, as type bytes.
 func (s *fakeServer) clientMessages(t *testing.T) []byte {

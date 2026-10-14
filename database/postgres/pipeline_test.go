@@ -1,8 +1,12 @@
 package postgres
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -337,5 +341,137 @@ func TestPipelineToleratesANotification(t *testing.T) {
 	}
 	if conn.Err() != nil {
 		t.Errorf("a notification broke the connection: %v", conn.Err())
+	}
+}
+
+// A server does not wait for the end of a pipeline before answering: it
+// executes each part as it arrives and writes the result at once. Over a
+// transport with no buffer — net.Pipe, or a socket whose buffers are full —
+// that answer cannot leave until someone reads it, and a client still busy
+// sending the rest of the pipeline is not reading. The pipeline used to be
+// that client: everything written, one synchronous Flush, then the first
+// read. With the server blocked on its write and the client on its Flush,
+// nobody moved and nothing failed.
+//
+// The fake server here answers each message the moment it has read it, which
+// is the worst case of what a real one does.
+func TestPipelineReadsWhileItStillWrites(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close(); _ = server.Close() }()
+	// A deadline turns the hang this guards against into an error: the
+	// unfixed code fails here in seconds instead of at the test timeout.
+	if err := client.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	const parts = 64
+	param := bytes.Repeat([]byte("p"), 16<<10)
+	result := bytes.Repeat([]byte("r"), 4<<10)
+
+	served := make(chan error, 1)
+	go func() {
+		served <- answerAsRead(server, parts, result)
+	}()
+
+	conn := NewConn(client)
+	tx := &Tx{conn: conn}
+	ps := make([]Part, parts)
+	for i := range ps {
+		ps[i] = Part{SQL: "SELECT $1", Params: [][]byte{param}, ParamOIDs: []uint32{OIDText}}
+	}
+	var got []int
+	err := tx.Pipeline(t.Context(), ps, QueryConfig{}, func(i int, b sluice.Batch[Row]) bool {
+		for _, r := range b.Items {
+			if v, _ := r.Value(0); !bytes.Equal(v, result) {
+				t.Errorf("part %d: row is %d bytes, want %d", i, len(v), len(result))
+			}
+			got = append(got, i)
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("the fake server: %v", err)
+	}
+	if len(got) != parts {
+		t.Fatalf("%d parts were answered, want %d", len(got), parts)
+	}
+	for i, p := range got {
+		if p != i {
+			t.Fatalf("part %d was delivered as part %d", i, p)
+		}
+	}
+	if conn.Err() != nil {
+		t.Fatalf("the connection is broken: %v", conn.Err())
+	}
+}
+
+// answerAsRead is the fake server of [TestPipelineReadsWhileItStillWrites]:
+// it reads frontend messages one at a time and writes each one's answer
+// before reading the next. It stops at the Sync, having answered it.
+func answerAsRead(server net.Conn, parts int, result []byte) error {
+	rd := pgwire.NewReader(server)
+	executes := 0
+	for {
+		m, err := rd.Next()
+		if err != nil {
+			return fmt.Errorf("reading the client: %w", err)
+		}
+		var answer []byte
+		switch m.Type {
+		case pgwire.FrontendParse:
+			answer = beSimple(pgwire.BackendParseComplete)
+		case pgwire.FrontendBind:
+			answer = beSimple(pgwire.BackendBindComplete)
+		case pgwire.FrontendDescribe:
+			answer = beRowDescription([]string{"v"}, []uint32{OIDText})
+		case pgwire.FrontendExecute:
+			executes++
+			answer = append(beDataRow(result), beCommandComplete("SELECT 1")...)
+		case pgwire.FrontendSync:
+			if executes != parts {
+				return fmt.Errorf("%d Executes before the Sync, want %d", executes, parts)
+			}
+			_, err := server.Write(beReadyForQuery())
+			return err
+		default:
+			return fmt.Errorf("unexpected frontend message %q", m.Type)
+		}
+		if _, err := server.Write(answer); err != nil {
+			return fmt.Errorf("answering %q: %w", m.Type, err)
+		}
+	}
+}
+
+// A write that fails mid-pipeline ends the connection, and ends it now: the
+// reader waiting on the other side of the socket is released rather than
+// left reading a server that will never answer a Sync it never received.
+func TestPipelineSendFailureBreaksTheConnection(t *testing.T) {
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	if err := client.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// The server reads one message and hangs up.
+	go func() {
+		rd := pgwire.NewReader(server)
+		_, _ = rd.Next()
+		_ = server.Close()
+	}()
+
+	conn := NewConn(client)
+	tx := &Tx{conn: conn}
+	ps := make([]Part, 8)
+	for i := range ps {
+		ps[i] = Part{SQL: "SELECT 1"}
+	}
+	err := tx.Pipeline(t.Context(), ps, QueryConfig{}, func(int, sluice.Batch[Row]) bool { return true })
+	if !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("Pipeline returned %v, want ErrConnBroken", err)
+	}
+	if !errors.Is(conn.Err(), ErrConnBroken) {
+		t.Fatalf("the connection is not marked broken: %v", conn.Err())
 	}
 }

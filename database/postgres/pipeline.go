@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -93,8 +94,8 @@ type Part struct {
 //
 // # ctx guards the start, not the read
 //
-// ctx is checked **once**, before anything is sent. After the Flush the whole
-// sequence is already on its way to the server and the reader runs to the
+// ctx is checked **once**, before anything is sent. From the first byte out
+// the whole sequence is on its way to the server and the reader runs to the
 // final ReadyForQuery without consulting ctx again — unlike [Conn.Query],
 // which checks once per batch because its Execute asks for a batch at a time
 // and each pause is a place to stop. Here every part runs with no row limit,
@@ -153,7 +154,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	}
 	defer c.endBusy()
 
-	// Everything goes out before anything is read. The statement cache is
+	// Everything is buffered before anything is sent. The statement cache is
 	// deliberately not consulted: a cached name would have to be prepared in
 	// an earlier round trip, which is the round trip this is removing.
 	for _, p := range parts {
@@ -179,11 +180,43 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 		c.w.Execute("", 0)
 	}
 	c.w.Sync()
-	if err := c.w.Flush(); err != nil {
-		return c.breakConn(fmt.Errorf("sending the pipeline: %w", err))
-	}
 
-	return c.readPipeline(parts, batchRows, fn)
+	// The send and the read overlap, on purpose. The server executes each
+	// part as it arrives and starts answering at once, so with enough parts
+	// its send buffer fills before it has read the last of ours — and a
+	// server whose send buffer is full stops reading. A synchronous Flush
+	// here then never returns, the server never reaches our Sync, and both
+	// sides wait for the other with no error to show for it: 64 parts of a
+	// 16 KiB parameter answering 200 KB each were enough on one machine, the
+	// threshold being the kernel's socket autotuning. Reading while the
+	// write is still going keeps the server's buffer draining. The two
+	// goroutines share nothing: the writer owns the Writer's buffer, the
+	// reader owns the Reader's, and the socket under them is read and
+	// written concurrently as every net.Conn allows.
+	//
+	// A failed write is the end of the connection either way (the Writer's
+	// position is unknown after a partial one), so the sender closes the
+	// socket under the reader to release it, and its error is the one
+	// reported: whatever the reader saw afterwards is a consequence.
+	sent := make(chan error, 1)
+	go func() {
+		err := c.w.Flush()
+		if err != nil {
+			_ = c.rw.Close()
+		}
+		sent <- err
+	}()
+	// Joined on every way out, a panic in fn included: the next statement
+	// on this connection reuses the Writer's buffer, which is the sender's
+	// until it has returned.
+	join := sync.OnceValue(func() error { return <-sent })
+	defer func() { _ = join() }()
+	err := c.readPipeline(parts, batchRows, fn)
+	if sendErr := join(); sendErr != nil {
+		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		return c.broken
+	}
+	return err
 }
 
 // readPipeline consumes the answers to a pipelined sequence, in order.

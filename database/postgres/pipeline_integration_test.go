@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -166,5 +167,56 @@ func TestIntegrationPipelineCost(t *testing.T) {
 		elapsed := time.Since(start) / rounds
 		t.Logf("principals=%2d  batch latency=%-12v  per call=%v",
 			principals, elapsed, elapsed/batch)
+	}
+}
+
+// Enough parameter bytes going out and result bytes coming back that both
+// sides' socket buffers fill before the server has read the last part: 16 MiB
+// out, 51 MB back. The threshold is the kernel's socket autotuning, so it
+// moves from one machine to the next — 64 parts of 16 KiB answering 200 KB
+// hung on the reviewer's and not on the development container, where this
+// volume does. A pipeline that reads while it sends finishes in well under
+// the bound; one that flushes first never does.
+func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
+	conn := dial(t)
+	ctx := t.Context()
+
+	const parts = 256
+	param := bytes.Repeat([]byte("p"), 64<<10)
+	ps := make([]postgres.Part, parts)
+	for i := range ps {
+		ps[i] = postgres.Part{
+			SQL:       `SELECT repeat('r', 200000), length($1)`,
+			Params:    [][]byte{param},
+			ParamOIDs: []uint32{postgres.OIDText},
+		}
+	}
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // the read is the assertion
+
+	start := time.Now()
+	answered := 0
+	err = tx.Pipeline(ctx, ps, postgres.QueryConfig{}, func(i int, b sluice.Batch[postgres.Row]) bool {
+		for _, r := range b.Items {
+			v, _ := r.Value(0)
+			if len(v) != 200000 {
+				t.Errorf("part %d: result is %d bytes, want 200000", i, len(v))
+			}
+			answered++
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	if answered != parts {
+		t.Fatalf("%d rows answered, want %d", answered, parts)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("the pipeline took %v, want under 10 s", took)
 	}
 }
