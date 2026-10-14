@@ -185,6 +185,9 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if cc.window() != newNewReno(1200).cwnd {
 		t.Errorf("CUBIC's initial window is %d, want Reno's %d (RFC 9002 §7.2)", cc.window(), newNewReno(1200).cwnd)
 	}
+	if !cc.hs.armed {
+		t.Error("CUBIC's initial slow start has HyStart++ disarmed (RFC 9438 §4.10)")
+	}
 	// An algorithm this build does not know falls to the default, and the
 	// connection's Stats say which one runs.
 	pcA, pcB := newLoopbackPair(t)

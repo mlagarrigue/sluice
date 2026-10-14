@@ -15,9 +15,12 @@ import (
 // Reno-friendly region (§4.3) keeps it from doing worse than Reno.
 //
 // So cubic embeds newReno and overrides the three methods that read loss
-// and growth. The flight, the §7.8 utilisation test, the slow start (§4.10
-// allows Reno's; HyStart++ is a later step), the B.8 recovery gate and the
-// pacing rate are Reno's, unchanged. Windows are bytes, as RFC 9438 §4.1
+// and growth. The flight, the §7.8 utilisation test, the B.8 recovery gate
+// and the pacing rate are Reno's, unchanged. The slow start is Reno's too
+// (§4.10), with HyStart++ (RFC 9406, hystart.go) ending the initial one on
+// the round trip rising where the path's buffer lets it rise: §4.10
+// recommends it, and a slow start that ends on loss overshoots the path by
+// up to a window. Windows are bytes, as RFC 9438 §4.1
 // allows, with the datagram size as the segment wherever the RFC counts
 // segments; the curve is computed in floating point and the window held
 // as an integer, the fraction carried between acknowledgements.
@@ -49,6 +52,8 @@ type cubic struct {
 	// frac is the growth below one byte, carried: each acknowledgement
 	// earns (target − cwnd) · acked / cwnd bytes, usually a fraction.
 	frac float64
+	// hs is the initial slow start's HyStart++ state (hystart.go).
+	hs hystart
 }
 
 const (
@@ -65,7 +70,19 @@ const (
 var _ congestionController = (*cubic)(nil)
 
 func newCubic(maxDatagram int) *cubic {
-	return &cubic{newReno: *newNewReno(maxDatagram)}
+	return &cubic{newReno: *newNewReno(maxDatagram), hs: newHystart()}
+}
+
+// pacingRate is Reno's — twice the window per round trip in slow start,
+// five quarters in avoidance — except in Conservative Slow Start, where
+// the window grows a quarter per round trip and five quarters cover it:
+// pacing at twice the window there would burst into the buffer HyStart++
+// just saw filling.
+func (c *cubic) pacingRate(srtt time.Duration) float64 {
+	if c.hs.css {
+		return 1.25 * float64(c.cwnd) / max(srtt, granularity).Seconds()
+	}
+	return c.newReno.pacingRate(srtt)
 }
 
 // wCubic is Figure 1: the window the curve names t seconds into the stage.
@@ -93,8 +110,12 @@ func (c *cubic) startEpoch(now time.Time) {
 	c.frac = 0
 }
 
-// onAcked grows the window: Reno's way in slow start, and in avoidance by
-// what the curve or the Reno estimate says, whichever is higher (§4.2).
+// onAcked grows the window: Reno's way in slow start, HyStart++'s while the
+// initial slow start is armed (the round it reads is Reno's §7.8 round,
+// closed by absorb), and in avoidance by what the curve or the Reno
+// estimate says, whichever is higher (§4.2). When HyStart++ ends the slow
+// start the threshold is the window and the stage opens at the next
+// acknowledgement with wMax there and K = 0 (§4.10 of RFC 9438).
 // The clock first: an acknowledgement that earns growth advances t by the
 // time since the previous acknowledgement, and one that does not — the
 // window was not the limit this round — moves lastAck without advancing t,
@@ -103,10 +124,20 @@ func (c *cubic) startEpoch(now time.Time) {
 // acknowledgement arrives a long gap after the previous one, and the
 // sender was not using the window during it either.
 func (c *cubic) onAcked(ev ackEvent) {
+	inRound := !c.roundMark.IsZero()
 	earns := c.absorb(ev)
 	if c.cwnd < c.ssthresh {
+		gain := ev.size
+		if c.hs.armed {
+			var exit bool
+			gain, exit = c.hs.grow(ev.size, ev.now.Sub(ev.sentAt), inRound && c.roundMark.IsZero())
+			if exit {
+				c.ssthresh = c.cwnd
+				return
+			}
+		}
 		if earns {
-			c.cwnd += ev.size
+			c.cwnd += gain
 		}
 		return
 	}
@@ -175,6 +206,7 @@ func (c *cubic) onLost(ev lossEvent) {
 	c.cwndPrior = cwnd
 	c.ssthresh = max(int(math.Round(cwnd*cubicBeta)), 2*c.maxDatagram)
 	c.cwnd = c.ssthresh
+	c.hs.disarm()
 	c.startEpoch(ev.now)
 }
 
@@ -190,4 +222,5 @@ func (c *cubic) onPersistentCongestion() {
 	c.recoveryStart = time.Time{}
 	c.inEpoch = false
 	c.wMax = 0
+	c.hs.disarm()
 }
