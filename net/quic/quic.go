@@ -33,7 +33,9 @@
 //
 //   - A [Conn]: TLS 1.3 handshake via [crypto/tls.QUICConn], packet
 //     protection per RFC 9001, streams with interval reassembly, per-stream
-//     failure via [Stream.Reset] and [Stream.StopSending]. What the
+//     failure via [Stream.Reset] and [Stream.StopSending], and read and
+//     write deadlines ([Stream.SetReadDeadline], [Stream.SetWriteDeadline])
+//     with the [net.Conn] contract: [os.ErrDeadlineExceeded]. What the
 //     handshake settled is readable — [Conn.ConnectionState] for the
 //     negotiated protocol, server name and peer certificates — and so are
 //     the two addresses, [Conn.LocalAddr] and [Conn.RemoteAddr], the

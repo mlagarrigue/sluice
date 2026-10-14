@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"time"
 )
 
@@ -19,6 +20,9 @@ type sendOpts struct {
 	// how the window reopens, and a probe is how a stall is detected, so
 	// making either wait would be the deadlock it exists to break.
 	waitCwnd bool
+	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
+	// without bound.
+	deadline time.Time
 	// ackOnly marks a packet that elicits no acknowledgement and is not
 	// counted in flight (RFC 9002 §2).
 	ackOnly bool
@@ -98,7 +102,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 					c.kickTimer()
 				}
 			}
-			if err := c.waitForCreditLocked(); err != nil {
+			if err := c.waitForCreditLocked(opts.deadline); err != nil {
 				return err
 			}
 			if c.draining || c.closeSent {
@@ -836,14 +840,22 @@ func (c *Conn) sendProbeLocked(space int) {
 	}
 }
 
-// waitForCreditLocked parks the caller until credit arrives or the
-// connection ends. The read loop must never call it: the read loop is what
-// delivers the credit.
-func (c *Conn) waitForCreditLocked() error {
+// waitForCreditLocked parks the caller until credit arrives, the connection
+// ends, or deadline passes (zero: never; os.ErrDeadlineExceeded when it
+// does). The read loop must never call it: the read loop is what delivers
+// the credit.
+//
+// The deadline is checked before parking, not after: the timer loop's
+// broadcast at the deadline wakes the writer, whose own loop comes back
+// here — still out of credit — and finds the time passed.
+func (c *Conn) waitForCreditLocked(deadline time.Time) error {
 	select {
 	case <-c.closed:
 		return errClosed
 	default:
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return os.ErrDeadlineExceeded
 	}
 	// Nothing built waits with the writer, and while it sleeps the
 	// batch is closed: whoever takes mu meanwhile — the read loop and its

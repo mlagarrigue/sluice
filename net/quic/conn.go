@@ -102,6 +102,12 @@ type Conn struct {
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
+	// streamDeadline is the earliest read or write deadline a stream has
+	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
+	// what it holds when it matures and recomputes the next from the stream
+	// table. Zero while no stream has one. A deadline removed or moved later
+	// is not recomputed here: the loop fires once for nothing and moves on.
+	streamDeadline time.Time
 
 	ptoCount int
 	// maxDatagram bounds every datagram sent on the path in use: 1200 until

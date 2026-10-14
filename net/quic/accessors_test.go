@@ -13,11 +13,18 @@ import (
 // ends: the client Dial produced and the connection the listener accepted.
 func handshakePair(t *testing.T, serverCfg, clientCfg *tls.Config) (client, server *quic.Conn, l *quic.Listener, clientPC *net.UDPConn) {
 	t.Helper()
+	return handshakePairParams(t, serverCfg, clientCfg, quic.DefaultParameters())
+}
+
+// handshakePairParams is handshakePair with the server's transport
+// parameters chosen by the test: a small initial window, typically.
+func handshakePairParams(t *testing.T, serverCfg, clientCfg *tls.Config, serverParams quic.TransportParameters) (client, server *quic.Conn, l *quic.Listener, clientPC *net.UDPConn) {
+	t.Helper()
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err = quic.NewListener(pc, serverCfg, quic.DefaultParameters(), quic.ListenerConfig{})
+	l, err = quic.NewListener(pc, serverCfg, serverParams, quic.ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

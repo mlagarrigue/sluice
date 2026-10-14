@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Stream is one QUIC stream, read and written as bytes.
@@ -53,6 +55,10 @@ type Stream struct {
 	// still in flight. quic-go's client found that: one echo in twenty came
 	// back a frame short (interop/quicgo_test.go).
 	readEnded bool
+	// readDeadline is when a parked Read gives up (SetReadDeadline); zero
+	// means never. The connection's timer loop wakes the stream when it
+	// matures (Conn.streamDeadline).
+	readDeadline time.Time
 
 	// The send side, under conn.mu.
 	writeOff   uint64
@@ -60,6 +66,9 @@ type Stream struct {
 	writeReset bool // this end sent RESET_STREAM, or the peer sent STOP_SENDING
 	writeCode  uint64
 	sendClosed bool // FIN or RESET_STREAM sent: the peer knows this side's size
+	// writeDeadline is when a Write parked on credit or the congestion
+	// window gives up (SetWriteDeadline); zero means never.
+	writeDeadline time.Time
 }
 
 // ID reports the stream's identifier. Its two low bits say who opened it and
@@ -184,9 +193,11 @@ func (s *Stream) endForRead() {
 // bytes are real and were delivered before the sender changed its mind. Read
 // to the error.
 //
-// There is no per-read timeout: the connection's idle timeout is what bounds
-// a peer that went away, and a stream that is quiet because its producer is
-// slow is not an error.
+// Without a deadline ([Stream.SetReadDeadline]) the wait is unbounded: the
+// connection's idle timeout is what bounds a peer that went away, and a
+// stream that is quiet because its producer is slow is not an error. With
+// one, a Read that has nothing to deliver when it passes returns
+// [os.ErrDeadlineExceeded], as a [net.Conn] does.
 func (s *Stream) Read(p []byte) (int, error) {
 	for {
 		s.mu.Lock()
@@ -207,12 +218,16 @@ func (s *Stream) Read(p []byte) (int, error) {
 		}
 		ended := s.readEnded
 		abandoned, code := s.readReset, s.readCode
+		deadline := s.readDeadline
 		s.mu.Unlock()
 		if ended {
 			if abandoned {
 				return 0, fmt.Errorf("%w: stream %d was reset with code %#x", ErrQUIC, s.id, code)
 			}
 			return 0, io.EOF
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return 0, os.ErrDeadlineExceeded
 		}
 		select {
 		case <-s.ready:
@@ -224,11 +239,98 @@ func (s *Stream) Read(p []byte) (int, error) {
 
 // Write sends bytes as STREAM frames, waiting for credit when the peer's
 // flow-control grant or the congestion window is spent. The wait ends when
-// credit arrives, the stream is reset by either end, or the connection
-// closes — a peer that stays healthy but never grants credit holds the
+// credit arrives, the stream is reset by either end, the connection closes,
+// or the write deadline passes ([Stream.SetWriteDeadline], reported as
+// [os.ErrDeadlineExceeded] after the bytes that did go out). Without a
+// deadline, a peer that stays healthy but never grants credit holds the
 // writer, which is what transport flow control means.
 func (s *Stream) Write(p []byte) (int, error) {
 	return s.write(p, false)
+}
+
+// SetReadDeadline bounds every Read from now on, as [net.Conn] does: a Read
+// still parked when t passes returns [os.ErrDeadlineExceeded], and so does
+// every later one until the deadline is moved. The zero time removes it.
+// Setting a deadline wakes a Read already parked, so the new bound applies
+// to it too.
+func (s *Stream) SetReadDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.readDeadline = t
+	s.mu.Unlock()
+	s.signal()
+	s.conn.armStreamDeadline(t)
+	return nil
+}
+
+// SetWriteDeadline bounds every Write from now on: one parked on
+// flow-control credit or the congestion window when t passes returns
+// [os.ErrDeadlineExceeded] with the count of bytes already sent, and later
+// ones return it at once until the deadline is moved. The zero time removes
+// it. It is what lets a server stop waiting on a peer that keeps the
+// connection alive but never grants credit.
+func (s *Stream) SetWriteDeadline(t time.Time) error {
+	c := s.conn
+	c.mu.Lock()
+	s.writeDeadline = t
+	c.armStreamDeadlineLocked(t)
+	c.cond.Broadcast() // a writer parked on credit re-reads its deadline
+	c.mu.Unlock()
+	return nil
+}
+
+// SetDeadline sets both the read and the write deadline.
+func (s *Stream) SetDeadline(t time.Time) error {
+	_ = s.SetReadDeadline(t)
+	return s.SetWriteDeadline(t)
+}
+
+// armStreamDeadline records a stream deadline for the timer loop: the
+// earliest one armed is what the loop sleeps on.
+func (c *Conn) armStreamDeadline(t time.Time) {
+	c.mu.Lock()
+	c.armStreamDeadlineLocked(t)
+	c.mu.Unlock()
+}
+
+func (c *Conn) armStreamDeadlineLocked(t time.Time) {
+	if t.IsZero() {
+		return // nothing to wait for; a stale earlier deadline costs one spurious pass
+	}
+	if c.streamDeadline.IsZero() || t.Before(c.streamDeadline) {
+		c.streamDeadline = t
+		c.kickTimer()
+	}
+}
+
+// expireStreamDeadlinesLocked wakes whatever a matured stream deadline
+// holds — the stream's Read, the writers parked on cond — and returns the
+// earliest deadline still to come, zero when none is set. Callers hold mu;
+// taking s.mu under it is the one order the two locks allow.
+func (c *Conn) expireStreamDeadlinesLocked(now time.Time) time.Time {
+	var next time.Time
+	earlier := func(t time.Time) {
+		if !t.IsZero() && now.Before(t) && (next.IsZero() || t.Before(next)) {
+			next = t
+		}
+	}
+	wakeWriters := false
+	for _, s := range c.streams {
+		s.mu.Lock()
+		rd := s.readDeadline
+		s.mu.Unlock()
+		if !rd.IsZero() && !now.Before(rd) {
+			s.signal()
+		}
+		earlier(rd)
+		if wd := s.writeDeadline; !wd.IsZero() && !now.Before(wd) {
+			wakeWriters = true
+		}
+		earlier(s.writeDeadline)
+	}
+	if wakeWriters {
+		c.cond.Broadcast()
+	}
+	return next
 }
 
 // CloseWrite sends the FIN, which is what tells the peer a request or a
@@ -259,6 +361,12 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 	written := 0
 	c := s.conn
+	// A deadline already passed fails the write before it sends anything,
+	// as net.Conn does: the caller set it to stop, and stop includes the
+	// writes that follow the one it interrupted.
+	if dl := s.writeDeadline; !dl.IsZero() && !time.Now().Before(dl) {
+		return 0, os.ErrDeadlineExceeded
+	}
 	for {
 		if s.writeReset {
 			return written, fmt.Errorf("%w: stream %d is reset (code %#x) and takes no more writes",
@@ -278,7 +386,7 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 			// is entitled to know it is the bottleneck (§4.1) — then wait
 			// for MAX_DATA / MAX_STREAM_DATA to arrive on the read loop.
 			c.sendBlockedFramesLocked(s)
-			if err := c.waitForCreditLocked(); err != nil {
+			if err := c.waitForCreditLocked(s.writeDeadline); err != nil {
 				return written, err
 			}
 			continue
@@ -290,7 +398,8 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		frame = AppendVarint(frame, s.writeOff)
 		frame = AppendVarint(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
-		if err := c.sendPacketLocked(spaceApplication, frame, sendOpts{waitCwnd: true, own: true}); err != nil {
+		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
+		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			return written, err
 		}
 		s.writeOff += uint64(n)

@@ -83,6 +83,16 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		}
 	}
 
+	// A stream's read or write deadline (Stream.SetReadDeadline): the
+	// earliest one armed is what sleeps here; when it matures, the streams
+	// it holds are woken and the next earliest takes its place.
+	if !c.streamDeadline.IsZero() {
+		if !now.Before(c.streamDeadline) {
+			c.streamDeadline = c.expireStreamDeadlinesLocked(now)
+		}
+		earlier(c.streamDeadline)
+	}
+
 	// A writer parked at a flow-control limit re-announces *_BLOCKED
 	// periodically (§4.1): with its one announcement acknowledged it has
 	// nothing else in flight, and silence is how a waiting sender gets
