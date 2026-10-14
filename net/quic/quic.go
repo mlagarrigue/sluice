@@ -46,9 +46,10 @@
 //   - Flow control per RFC 9000 §4, both levels and both directions:
 //     senders wait for credit, receivers grant it as data is consumed, and
 //     a peer that overruns its grant loses the connection.
-//   - Lifecycle: CONNECTION_CLOSE both ways, HANDSHAKE_DONE, the negotiated
-//     idle timeout and the [Conn.SetKeepAlive] PING that holds a connection
-//     under it, transport-parameter validation with the §7.3
+//   - Lifecycle: CONNECTION_CLOSE both ways — at once with [Conn.Close],
+//     or once everything sent is acknowledged with [Conn.Shutdown] —
+//     HANDSHAKE_DONE, the negotiated idle timeout and the
+//     [Conn.SetKeepAlive] PING that holds a connection under it, transport-parameter validation with the §7.3
 //     identifier-binding checks, version-negotiation and Retry handling on
 //     the client (the Retry integrity tag is verified per RFC 9001 §5.8).
 //   - A server [Listener]: one shared [net.PacketConn] demultiplexed to

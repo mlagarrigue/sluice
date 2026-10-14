@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"time"
@@ -100,6 +101,84 @@ func (c *Conn) Close() error {
 func (c *Conn) CloseWithError(code uint64) error {
 	c.closeOnce(code, true)
 	return nil
+}
+
+// Shutdown closes the connection once every packet this end sent has been
+// acknowledged, so that a peer still reading the last stream bytes does not
+// see the CONNECTION_CLOSE before them. [Conn.Close] sends the close at
+// once, and what is still in flight — sent and not yet acknowledged, or
+// queued for retransmission after a loss — goes down with the connection:
+// correct for the transport, which promises nothing about delivery once
+// closed, and a lost tail for the application above it. Shutdown is the
+// close an application calls when it has finished writing and wants what it
+// wrote to arrive, the way [net/http.Server.Shutdown] waits for its
+// connections.
+//
+// Shutdown returns nil once the flight is empty and the connection closed,
+// and the context's error when the context ends first — the connection is
+// closed in both cases, Shutdown never leaves it open. A context that is
+// already done closes at once, without looking at the flight, and reports
+// its error: the caller did not want to wait, and nothing confirmed delivery.
+// A connection the peer closed meanwhile, or one already closed by this
+// end, returns nil: there is nothing left to deliver. Shutdown does not wait
+// for the peer to read, only for it to acknowledge; a peer that
+// acknowledges and then crashes is beyond any close's reach.
+func (c *Conn) Shutdown(ctx context.Context) error {
+	err := c.drain(ctx)
+	c.closeOnce(transportNoError, false)
+	return err
+}
+
+// drain waits under mu until no space holds an ack-eliciting packet in
+// flight or a payload queued for retransmission. The waits ride c.cond,
+// which handleAck broadcasts on every new acknowledgement and closeOnce on
+// the way out; the context's expiry broadcasts too, so the wait never
+// outlives the deadline. A retransmission queued by loss detection goes
+// out as a new packet whose acknowledgement wakes the wait like any other.
+func (c *Conn) drain(ctx context.Context) error {
+	stop := context.AfterFunc(ctx, func() {
+		c.mu.Lock()
+		c.cond.Broadcast()
+		c.mu.Unlock()
+	})
+	defer stop()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for {
+		select {
+		case <-c.closed:
+			return nil
+		default:
+		}
+		if c.draining {
+			return nil // the peer closed first; its close is on its way to closeOnce
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if c.flightEmptyLocked() {
+			return nil
+		}
+		c.cond.Wait()
+	}
+}
+
+// flightEmptyLocked reports whether every live space has nothing left to
+// deliver: no ack-eliciting packet awaiting acknowledgement and no payload
+// waiting to go again. ACK-only packets do not count — the peer never
+// acknowledges them (RFC 9000 §13.2.1), and nothing of the application's
+// rides in them.
+func (c *Conn) flightEmptyLocked() bool {
+	for space := range c.spaces {
+		sp := &c.spaces[space]
+		if sp.discarded {
+			continue
+		}
+		if _, ok := sp.sent.oldestEliciting(); ok || len(sp.retrans) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // closeOnce is the body Close and CloseWithError share: send the
