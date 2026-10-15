@@ -33,7 +33,7 @@ func TestShutdownDrainsEveryServerBeforeTheGateway(t *testing.T) {
 	defer cancel()
 	h3 := web.Start(ctx, func(ctx context.Context) error {
 		return httpstream.Serve(ctx, ln, httpstream.Config{ShutdownGrace: 5 * time.Second},
-			func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+			func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 				close(started)
 				<-release
 				// The in-flight request uses the gateway after Shutdown began.

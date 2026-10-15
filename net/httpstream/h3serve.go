@@ -68,6 +68,11 @@ import (
 // [crypto/tls.Config] announces it in NextProtos, and a connection that
 // settled on any other protocol is refused and closed rather than served,
 // as is any connection when [Config] refuses the configuration.
+//
+// The cancellation of ctx stops the connection normally, as below; when
+// [Config.ShutdownGrace] passes before the drain ends, the connection is
+// closed under its handler, whose context is cancelled, and ServeH3 returns
+// [ErrShutdownForced].
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
@@ -77,7 +82,35 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		_ = c.CloseWithError(h3InternalError)
 		return err
 	}
+	// The grace is a timer armed at the cancellation, not a context scoped
+	// to the drain: the wait at the bottom of serveH3 reads it too, after
+	// the connection has ended, and the drain can end — client gone, grace
+	// passed — before the handler has returned.
+	forced, force := context.WithCancel(context.Background())
+	defer force()
+	var graceTimer atomic.Pointer[time.Timer]
+	stop := context.AfterFunc(ctx, func() {
+		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, force))
+	})
+	defer func() {
+		stop()
+		// Stopped once ServeH3 has returned, when nobody reads it.
+		if t := graceTimer.Load(); t != nil {
+			t.Stop()
+		}
+	}()
+	err = serveH3(ctx, forced, c, cfg, handle)
+	if errors.Is(err, ErrShutdownForced) {
+		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
+			"connections", 1, "grace", cfg.ShutdownGrace)
+	}
+	return err
+}
 
+// serveH3 is [ServeH3] with its two stops apart, as a [Server] drives them:
+// the cancellation of drain is the normal stop, that of forced the forced
+// one, and forced is also the handler's context. cfg is resolved.
+func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	// The hand-off to the responder below is provably non-blocking only while
 	// the transport admits no more request streams than the channel can hold,
 	// and h3MaxServeStreams is where that proof is capped. A connection whose
@@ -146,24 +179,15 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// which is what [quic.Conn.ShutdownWithError] waits for: a close sent at
 	// once could reach the client before the response it follows. A request
 	// stream opened from the named identifier on is rejected on arrival
-	// (REQUEST_REJECTED, see the assembler's admit). Config.ShutdownGrace
-	// bounds the whole: when it passes, what is still open is closed under
-	// its handler and ServeH3 returns, as Serve does. The goroutine this
-	// runs on lives for the drain only — nothing is parked for the life of
-	// the connection.
-	//
-	// The grace is a timer armed at the cancellation, not a context scoped
-	// to the drain: the wait at the bottom of ServeH3 reads it too, after
-	// the connection has ended, and the drain can end — client gone, grace
-	// passed — before the handler has returned.
+	// (REQUEST_REJECTED, see the assembler's admit). The forced stop bounds
+	// the whole: when it comes, what is still open is closed under its
+	// handler and serveH3 returns, as Serve does. The goroutine this runs on
+	// lives for the drain only — nothing is parked for the life of the
+	// connection.
 	drained := make(chan struct{})
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
-	graceOver := make(chan struct{})
-	var graceTimer atomic.Pointer[time.Timer]
-	stop := context.AfterFunc(ctx, func() {
-		deadline := time.Now().Add(cfg.ShutdownGrace)
-		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, func() { close(graceOver) }))
+	stop := context.AfterFunc(drain, func() {
 		from := a.beginDrain()
 		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
@@ -174,24 +198,15 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		}
 		select {
 		case <-drained:
-			// The grace left bounds the acknowledgement too; past it the
+			// The forced stop bounds the acknowledgement too; at it the
 			// connection closes anyway, as Shutdown promises.
-			grace, cancel := context.WithDeadline(context.Background(), deadline)
-			defer cancel()
-			_ = c.ShutdownWithError(grace, h3GracefulCode())
-		case <-graceOver:
+			_ = c.ShutdownWithError(forced, h3GracefulCode())
+		case <-forced.Done():
 			_ = c.CloseWithError(h3GracefulCode())
 		case <-c.Done():
 		}
 	})
-	defer func() {
-		stop()
-		// Stopped once ServeH3 has returned, when nobody reads it; one
-		// that fires anyway closes a channel nobody waits on.
-		if t := graceTimer.Load(); t != nil {
-			t.Stop()
-		}
-	}()
+	defer stop()
 
 	// The channel is never closed, and both ends select on the connection
 	// instead. Closing it would be the natural thing and it is a panic waiting
@@ -230,7 +245,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		for {
 			select {
 			case b := <-in:
-				answerH3(c, b, handle, cfg.WriteTimeout, &writers)
+				answerH3(forced, c, b, handle, cfg.WriteTimeout, &writers)
 			case <-c.Done():
 				return
 			}
@@ -335,7 +350,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// its next yield, which returns false (see the package documentation),
 	// and its goroutine ends then. A handler that has not returned is the
 	// same case one level up: after a cancellation the wait for it ends
-	// with the grace, as Serve's does (ADR 0017 §2), and the goroutine
+	// with the forced stop, as Serve's does (ADR 0017 §2), and the goroutine
 	// below ends when the handler does. A connection the client ended is
 	// waited for in full — there is no grace to count from until the
 	// server is cancelled, which arms one.
@@ -347,7 +362,12 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	}()
 	select {
 	case <-finished:
-	case <-graceOver:
+	case <-forced.Done():
+		select {
+		case <-finished:
+		default:
+			return ErrShutdownForced
+		}
 	}
 	return h3CloseErr(c.Err())
 }
@@ -463,8 +483,8 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duration, writers *sync.WaitGroup) {
-	res, err := apply(handle, sluice.Batch[Request]{Items: b.reqs})
+func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duration, writers *sync.WaitGroup) {
+	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Every request of the batch is answered

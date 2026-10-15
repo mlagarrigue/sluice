@@ -214,6 +214,7 @@ package httpstream
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -409,13 +410,21 @@ type Config struct {
 
 	// ShutdownGrace is how long [Serve] or [ServeH3], once its context is
 	// cancelled, waits for the requests already in flight to be answered
-	// before it closes the connections still open. Zero means 5s. Every
-	// protocol. What it bounds is
-	// the handler and the response's writes together, not either alone:
-	// WriteTimeout governs one write, this governs how long a stopping
-	// server stays up for a response that was owed. Idle connections are
-	// closed at once and do not spend it. See docs/design/adr/0017.
+	// before it closes the connections still open, cancels their handlers'
+	// context and returns [ErrShutdownForced]. Zero means 5s. Every
+	// protocol. What it bounds is the handler and the response's writes
+	// together, not either alone: WriteTimeout governs one write, this
+	// governs how long a stopping server stays up for a response that was
+	// owed. Idle connections are closed at once and do not spend it. A
+	// [Server] does not read it: the context given to [Server.Shutdown] is
+	// its bound. See docs/design/adr/0017.
 	ShutdownGrace time.Duration
+
+	// Logger receives what the server reports besides the errors it
+	// returns — today, a warning with the number of connections a forced
+	// stop cut with requests in flight. Nil means [slog.Default]. Every
+	// protocol.
+	Logger *slog.Logger
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side
 	// already shut, reads and drops what the client still sends before the
@@ -483,6 +492,14 @@ func (c Config) resolve() (Config, error) {
 		c.LingerTimeout = min(c.ReadTimeout, time.Second)
 	}
 	return c, nil
+}
+
+// logger is c.Logger, or the default one.
+func (c Config) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
 }
 
 // orDefault sets *v to def when it is zero and refuses it when it is

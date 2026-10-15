@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestH3WriteTimeoutResetsAStarvedResponse(t *testing.T) {
 			clientParams.InitialMaxStreamDataBidiLocal = 64
 			yielded := make(chan bool, 1)
 			conn, _, _ := startH3With(t, Config{WriteTimeout: 200 * time.Millisecond}, quic.DefaultParameters(), clientParams,
-				func(b sluice.Batch[Request]) sluice.Batch[Response] {
+				func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					res := make([]Response, b.Len())
 					for i := range res {
 						res[i] = mode.body(yielded)

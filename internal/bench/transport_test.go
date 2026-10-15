@@ -98,7 +98,7 @@ func serveHTTPGateway(t *testing.T, be *backend, within time.Duration) string {
 // for.
 func serveStream(t *testing.T, be *backend) string {
 	t.Helper()
-	return startStream(t, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	return startStream(t, func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		ids := make([]int64, 0, b.Len())
 		for i := range b.Items {
 			ids = append(ids, targetID(b.Items[i].Target))
@@ -132,7 +132,7 @@ func serveStreamGateway(t *testing.T, be *backend, within time.Duration) string 
 		})
 	t.Cleanup(func() { _ = gw.Close() })
 
-	return startStream(t, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	return startStream(t, func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		// One submission for the connection's batch: the gateway sees it as
 		// company that has already arrived, and callers on other connections
 		// can still join the same window. This used to be a goroutine per

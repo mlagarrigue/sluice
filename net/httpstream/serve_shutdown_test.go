@@ -75,10 +75,10 @@ func serveUntilCancelled(t *testing.T, cfg Config, h Handler) (addr string, canc
 func TestShutdownDrainsInFlightRequest(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 5 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 5 * time.Second}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		close(entered)
 		<-release
-		return echoTarget(b)
+		return echoTarget(ctx, b)
 	})
 
 	c := dial(t, addr)
@@ -150,10 +150,10 @@ func TestShutdownClosesIdleConnectionsAtOnce(t *testing.T) {
 func TestShutdownGivesUpAfterTheGrace(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 200 * time.Millisecond}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 200 * time.Millisecond}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		close(entered)
 		<-release
-		return echoTarget(b)
+		return echoTarget(ctx, b)
 	})
 	// Registered after serveUntilCancelled's cleanup, so it runs before it:
 	// Serve is not waited for past the grace, but the handler's goroutine
@@ -189,10 +189,10 @@ func TestShutdownGivesUpAfterTheGrace(t *testing.T) {
 func TestServeShutdownDrainsH2Stream(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		close(entered)
 		<-release
-		return echoTarget(b)
+		return echoTarget(ctx, b)
 	})
 
 	c := dialH2(t, addr)

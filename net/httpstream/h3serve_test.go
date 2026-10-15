@@ -83,7 +83,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 // the server before ServeH3 opened stream 3 a STREAM_STATE_ERROR, which is
 // what this test used to race into one run in thirty.
 func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200}
@@ -162,7 +162,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 				return
 			}
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 		})
 	}()
@@ -269,7 +269,7 @@ func readH3Body(t *testing.T, s *quic.Stream) (body string, contentLength bool) 
 // order, an empty batch costs nothing, and the stream ends cleanly with no
 // content-length in the head.
 func TestH3StreamedBodyOverARealConnection(t *testing.T) {
-	conn, _, _ := startH3(t, quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -300,7 +300,7 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 	yielded := make(chan bool, 1)
-	conn, cancel, served := startH3With(t, Config{ShutdownGrace: 200 * time.Millisecond}, quic.DefaultParameters(), quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: 200 * time.Millisecond}, quic.DefaultParameters(), quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -365,7 +365,7 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			released.Store(0)
-			conn, _, _ := startH3(t, mode.params, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			conn, _, _ := startH3(t, mode.params, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 				res := make([]Response, b.Len())
 				for i := range res {
 					res[i] = Response{Status: 200, Body: []byte("ok")}
@@ -394,15 +394,22 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 
 // A handler that never returns does not hold ServeH3 past the grace: the
 // cancellation drains, the grace passes, the connection is closed under the
-// handler and ServeH3 returns, as Serve does (ADR 0017 §2). It used to wait
-// for the responder after the close, and the responder was inside the
-// handler.
+// handler, whose context is cancelled, and ServeH3 returns ErrShutdownForced,
+// as Serve does (ADR 0017 §2). It used to wait for the responder after the
+// close, and the responder was inside the handler; then it returned nil, the
+// same as a drain that ended in time.
 func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 	const grace = 200 * time.Millisecond
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	conn, cancel, served := startH3With(t, Config{ShutdownGrace: grace}, quic.DefaultParameters(), quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	handlerErr := make(chan error, 1)
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: grace}, quic.DefaultParameters(), quic.DefaultParameters(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		close(entered)
+		select {
+		case <-ctx.Done():
+		case <-release:
+		}
+		handlerErr <- ctx.Err()
 		<-release
 		res := make([]Response, b.Len())
 		for i := range res {
@@ -422,14 +429,22 @@ func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 	cancel()
 	select {
 	case err := <-served:
-		if err != nil {
-			t.Errorf("ServeH3 returned %v, wanted nil for a graceful close", err)
+		if !errors.Is(err, ErrShutdownForced) {
+			t.Errorf("ServeH3 returned %v, wanted ErrShutdownForced: the grace cut a request in flight", err)
 		}
 		if took := time.Since(cancelled); took < grace {
 			t.Errorf("ServeH3 returned %v after the cancellation, before the %v grace", took, grace)
 		}
 	case <-time.After(2 * grace):
 		t.Fatal("ServeH3 did not return after the grace: it waits on a handler that has not returned")
+	}
+	select {
+	case err := <-handlerErr:
+		if err == nil {
+			t.Error("the handler's context was not cancelled by the forced stop")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler's context was never cancelled")
 	}
 }
 
@@ -489,7 +504,7 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var served atomic.Int32
 			conn, _, _ := startH3With(t, tt.cfg, quic.DefaultParameters(), quic.DefaultParameters(),
-				func(b sluice.Batch[Request]) sluice.Batch[Response] {
+				func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					served.Add(int32(b.Len())) //nolint:gosec // G115: a test's batch size
 					res := make([]Response, b.Len())
 					for i := range res {

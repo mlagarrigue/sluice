@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 // trailerHandler answers /stream with a streamed body whose trailers report
 // what the producer counted, the gRPC shape, and anything else with a Body
 // and the same trailers. /refused sets a trailer the writer must refuse.
-func trailerHandler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func trailerHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, len(b.Items))
 	for i := range b.Items {
 		announce := []Header{{Name: []byte("Trailer"), Value: []byte("Grpc-Status, X-Sum")}}

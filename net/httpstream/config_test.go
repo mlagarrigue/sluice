@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -45,7 +46,7 @@ func mustTransportParameters(cfg Config) quic.TransportParameters {
 	return p
 }
 
-func nopHandler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func nopHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 }
 

@@ -49,7 +49,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		_ = ServeH3(ctx, conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(ctx, conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {
 				res[i] = Response{Status: 200, Body: []byte("small")}

@@ -56,7 +56,7 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 	if err != nil || batch.Len() == 0 {
 		return nil, nil, failed, err
 	}
-	res, err := apply(handle, batch)
+	res, err := apply(context.Background(), handle, batch)
 	if err != nil {
 		return nil, nil, failed, err
 	}
@@ -86,7 +86,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 	}
 
 	var sizes []int
-	out, _, _, err := serveH3Datagram(a, frames, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	out, _, _, err := serveH3Datagram(a, frames, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		sizes = append(sizes, b.Len())
 		res := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
@@ -405,7 +405,7 @@ func TestH3OverARealConnection(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			sizes <- b.Len()
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
@@ -791,7 +791,7 @@ func TestH3StreamedResponse(t *testing.T) {
 	a := testAssembler(Config{})
 	frames := []quic.Frame{streamFrame(0, h3Request("GET", "/export"), true)}
 
-	heads, bodies, _, err := serveH3Datagram(a, frames, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	heads, bodies, _, err := serveH3Datagram(a, frames, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -946,7 +946,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
@@ -1048,7 +1048,7 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 			served <- err
 			return
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
 		})
 	}()
@@ -1187,7 +1187,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/large" {
@@ -1311,7 +1311,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				select {
@@ -1402,7 +1402,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) != "/boom" {
@@ -1669,7 +1669,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 			served <- err
 			return
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			t.Error("the handler ran on a connection that did not negotiate h3")
 			return sluice.Batch[Response]{}
 		})
@@ -1732,7 +1732,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			close(entered)
 			<-release
 			res := make([]Response, 0, b.Len())

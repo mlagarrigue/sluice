@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -16,8 +17,10 @@ import (
 func newBenchH2Server(cfg H2Config) *h2Server {
 	cfg = cfg.mustResolve()
 	return &h2Server{
-		cfg:      cfg,
-		handler:  func(b sluice.Batch[Request]) sluice.Batch[Response] { return sluice.Batch[Response]{} },
+		cfg: cfg,
+		handler: func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{}
+		},
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
 		streams:  make(map[uint32]*h2Stream),
 		connWind: connWindow(cfg),

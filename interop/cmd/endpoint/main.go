@@ -282,7 +282,7 @@ func wwwPath(target string) (string, error) {
 // serveH3 serves HTTP/3 with net/httpstream: the runner's files from /www,
 // a 404 with an empty body otherwise.
 func serveH3(c *quic.Conn) {
-	err := httpstream.ServeH3(context.Background(), c, httpstream.Config{}, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	err := httpstream.ServeH3(context.Background(), c, httpstream.Config{}, func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, 0, b.Len())
 		for i := range b.Items {
 			r := &b.Items[i]

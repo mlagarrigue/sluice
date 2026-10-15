@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,7 @@ type cookieEcho struct {
 	fields []int
 }
 
-func (e *cookieEcho) handle(b sluice.Batch[Request]) sluice.Batch[Response] {
+func (e *cookieEcho) handle(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	res := make([]Response, 0, b.Len())

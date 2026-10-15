@@ -23,7 +23,7 @@ func ExampleServe() {
 
 	go func() {
 		_ = httpstream.Serve(ctx, ln, httpstream.Config{IdleTimeout: time.Second},
-			func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+			func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 				// One response per request, in order: on a pipelined
 				// connection the position is the only correlation there is.
 				out := make([]httpstream.Response, 0, b.Len())

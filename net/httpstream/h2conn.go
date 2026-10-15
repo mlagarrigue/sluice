@@ -226,8 +226,11 @@ type h2Answer struct {
 type h2Server struct {
 	cfg     H2Config
 	handler Handler
-	dec     *hpackDecoder
-	w       *h2Writer
+	// ctx is the handler's context: cancelled when the connection is cut
+	// rather than drained (see [Handler]).
+	ctx context.Context
+	dec *hpackDecoder
+	w   *h2Writer
 
 	streams map[uint32]*h2Stream
 	// open counts the streams the peer may still send on. It is not
@@ -334,10 +337,11 @@ const maxWindow = 1<<31 - 1
 // TLS is still not this function's job; a [net.Conn] from a [crypto/tls]
 // listener arrives here already decrypted.
 //
-// ctx cancels the connection. It reaches all three of its goroutines through
-// the socket: closing it unblocks the read the reader is parked in and the
-// write the writer is parked in, and both then unwind through their ordinary
-// error paths. That is [context.AfterFunc] rather than a fourth goroutine
+// ctx cancels the connection, and is the context the handler receives. It
+// reaches all three of the connection's goroutines through the socket:
+// closing it unblocks the read the reader is parked in and the write the
+// writer is parked in, and both then unwind through their ordinary error
+// paths. That is [context.AfterFunc] rather than a fourth goroutine
 // parked on ctx.Done() for the life of every connection. A connection
 // [Serve] hands over is not cut that way: Serve drains it (ADR 0017), and
 // serveH2Conn says how.
@@ -354,8 +358,10 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 
 // serveH2Conn is [ServeH2] with the shutdown state of a connection [Serve]
 // accepted. With a nil state the cancellation of ctx closes the socket, as
-// ServeH2 documents. With one, ctx is Serve's and its cancellation is the
-// shutdown, which the state carries as a drain: the connection then goes
+// ServeH2 documents. With one, ctx is the [Server]'s forced stop, which
+// closes the socket through the server's own bookkeeping and reaches the
+// handler through its context, and the normal stop is the drain the state
+// carries: the connection then goes
 // through RFC 9113 §6.8's graceful close rather than the socket's —
 //
 //   - first a GOAWAY with the last stream identifier at 2^31−1 and NO_ERROR,
@@ -382,6 +388,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg H2Config, h
 	s := &h2Server{
 		cfg:      cfg,
 		handler:  handler,
+		ctx:      ctx,
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
 		streams:  make(map[uint32]*h2Stream),
 		connWind: connWindow(cfg),
@@ -1335,7 +1342,7 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 func (s *h2Server) answer(b h2Batch) {
 	defer s.inFlight.Add(-int32(len(b.reqs))) //nolint:gosec // G115: a batch is bounded by MaxConcurrentStreams
 
-	res, err := apply(s.handler, sluice.Batch[Request]{Items: b.reqs})
+	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Neither is the peer's doing and

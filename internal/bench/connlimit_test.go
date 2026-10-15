@@ -66,7 +66,7 @@ func startTLSStream(b *testing.B, cfg httpstream.Config) (string, tls.Certificat
 	})
 
 	body := []byte(`{"status":"ok","service":"sluice"}`)
-	h := func(batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	h := func(_ context.Context, batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, batch.Len())
 		for i := range out {
 			out[i] = httpstream.Response{Status: 200, Body: body}

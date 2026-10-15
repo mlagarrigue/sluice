@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -81,7 +82,7 @@ func uploadThroughput(t *testing.T, window, size int) float64 {
 		WriteTimeout: 2 * time.Minute,
 		IdleTimeout:  2 * time.Minute,
 	}
-	addr, _ := serveH2(t, cfg, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, cfg, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200})

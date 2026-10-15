@@ -57,10 +57,23 @@ import (
 //   - **The body is complete and bounded.** An element handed over is a whole
 //     request: its body has arrived in full, under [Config.MaxBodyBytes].
 //     There are no partial reads to finish and no framing left to check.
-type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
+//
+// # The context
+//
+// ctx is cancelled when the server stops by force — [Server.Close], or the
+// grace of [Serve] or [ServeH3] passing with the handler still running — and
+// not when it stops normally, which lets the requests in flight finish. It is
+// the context a handler hands to what it calls on the batch's behalf, a
+// database query or an upstream request, so that a forced stop reaches them
+// rather than leaving them to run with nobody waiting for the answer. It is
+// one context for the whole batch, because the batch is answered as a whole:
+// a client that gives up on one request of it is not seen there.
+type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]
 
-// Serve accepts connections and drives handle over each one until ctx is
-// cancelled.
+// Serve accepts connections on ln and drives handle over each one until ctx
+// is cancelled. It is the shortest way to run a [Server]: the cancellation is
+// [Server.Shutdown] bounded by [Config.ShutdownGrace], followed by
+// [Server.Close] when the grace passes first.
 //
 // Every connection is one goroutine reading one stream of request batches.
 // There is no worker pool and no queue: the goroutine is the unit the runtime
@@ -77,21 +90,14 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // served. Treating it as fatal would let a burst of descriptor pressure end
 // every connection the server holds.
 //
-// Cancellation drains rather than cuts (docs/design/adr/0017). The listener
-// closes at once, so nothing new is admitted. A connection with no request
-// on it — parked between two keep-alive requests, or accepted and silent —
-// is closed at once too: nothing is owed to it, and waiting for it instead
-// means Serve returns when the last idle client happens to time out, which
-// is [Config.IdleTimeout] after the cancellation rather than at it. A
-// connection with a request in flight is left to finish it: the handler
-// runs to its end, the response goes out whole with Connection: close, and
-// the connection closes after it without reading another request. What
-// bounds that is [Config.ShutdownGrace]: when it passes, every connection
-// still open is closed under its handler and Serve returns without waiting
-// for the goroutines still inside one — a handler that has not returned by
-// then is the handler's bug, and holding the process up for it would turn
-// the bug into a hang. An HTTP/2 connection admitted by Serve is closed at
-// the cancellation, as before, until it learns to say GOAWAY first.
+// Cancellation drains rather than cuts (docs/design/adr/0017), as
+// [Server.Shutdown] describes. What bounds the drain is
+// [Config.ShutdownGrace]: when it passes, every connection still open is
+// closed under its handler, whose context is cancelled, and Serve returns
+// [ErrShutdownForced] without waiting for the goroutines still inside one —
+// a handler that has not returned by then is the handler's bug, and holding
+// the process up for it would turn the bug into a hang. A drain that ends
+// within the grace returns nil.
 //
 // What Serve speaks on a bare TCP listener is cleartext HTTP/1.1, with
 // prior-knowledge HTTP/2 sniffed from the preface. Cleartext is kept for
@@ -108,102 +114,34 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 	if handle == nil {
 		panic("httpstream: Serve requires a handler")
 	}
-	cfg, err := cfg.resolve()
+	resolved, err := cfg.resolve()
 	if err != nil {
 		return err
 	}
-	// Every field h2ConfigOf copies has just been resolved, so this cannot
-	// fail; it fills in what HTTP/2 alone has.
-	h2cfg, err := h2ConfigOf(cfg).resolve()
-	if err != nil {
-		return err
+	srv := &Server{Config: cfg, Handler: handle}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	select {
+	case err = <-served:
+		// The listener failed; what it accepted is drained all the same.
+		served = nil
+	case <-ctx.Done():
 	}
-
-	var wg sync.WaitGroup
-	live := newConnSet(cfg.MaxConns)
-	stop := make(chan struct{})
-	var once sync.Once
-	shutdown := func() {
-		once.Do(func() {
-			close(stop)
-			// The drain is armed before the listener closes: a connection
-			// that reads "refused" on a new dial can then rely on every
-			// live connection already seeing the shutdown. The other order
-			// let a handler finish between the two and answer without
-			// Connection: close on what was the connection's last response.
-			// Nothing is accepted in between either way: add refuses once
-			// the set is closed, which drain does first.
-			live.drain()
-			_ = ln.Close()
-		})
+	grace, cancel := context.WithTimeout(context.Background(), resolved.ShutdownGrace)
+	defer cancel()
+	if srv.Shutdown(grace) != nil {
+		_ = srv.Close()
+		err = errors.Join(err, ErrShutdownForced)
 	}
-	defer func() {
-		shutdown()
-		// The drain's end: every connection finished, or the grace passed
-		// and what is left is closed under its handler. The wait after
-		// that is not resumed — see the note on cancellation above.
-		finished := make(chan struct{})
-		go func() { wg.Wait(); close(finished) }()
-		grace := time.NewTimer(cfg.ShutdownGrace)
-		defer grace.Stop()
-		select {
-		case <-finished:
-		case <-grace.C:
-			live.closeAll()
-		}
-	}()
-	go func() {
-		select {
-		case <-ctx.Done():
-			shutdown()
-		case <-stop:
-		}
-	}()
-
-	var tempDelay time.Duration // how long to wait after a temporary Accept failure
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-stop:
-				return nil // asked to stop: not a failure
-			default:
-			}
-			if ne, ok := errors.AsType[net.Error](err); ok && ne.Temporary() { //nolint:staticcheck // SA1019: Temporary is what Accept still reports EMFILE and ECONNABORTED through, as net/http reads it
-				// The same shape as the QUIC read loop's readBackoff and
-				// deliberately not shared with it: four lines are cheaper
-				// than a dependency between the two packages.
-				tempDelay = min(max(tempDelay*2, 5*time.Millisecond), time.Second)
-				t := time.NewTimer(tempDelay)
-				select {
-				case <-stop:
-					t.Stop()
-					return nil
-				case <-t.C:
-				}
-				continue
-			}
-			return fmt.Errorf("httpstream: accepting: %w", err)
-		}
-		tempDelay = 0
-		st := live.add(c)
-		if st == nil {
-			// Over MaxConns, or the shutdown ran between Accept and here and
-			// this connection would never be closed by it. Either way it is
-			// closed with nothing read and nothing written: a response would
-			// cost the request's read, which is what the bound refuses to
-			// spend on a peer in excess (see Config.MaxConns).
-			_ = c.Close()
-			continue
-		}
-		wg.Go(func() {
-			defer func() { live.remove(c); _ = c.Close() }()
-			serveAny(ctx, c, st, cfg, h2cfg, handle)
-		})
+	if served != nil {
+		// Shutdown closed the listener, so this returns now: nil, or the
+		// listener's failure if it came first.
+		err = errors.Join(<-served, err)
 	}
+	return err
 }
 
-// connSet is the connections Serve has accepted and not yet finished with,
+// connSet is the connections a [Server] has accepted and not yet finished with,
 // each with where it stands between two requests. It exists for the
 // shutdown: close the ones that owe nothing, then, when the grace has
 // passed, the rest. It is also where Config.MaxConns binds, since it already
@@ -214,6 +152,10 @@ type connSet struct {
 	conns  map[net.Conn]*connState
 	closed bool
 	max    int // Config.MaxConns; zero is unbounded
+	// wg counts the connections admitted and not yet removed. It is added to
+	// under mu while the set is open, so a Wait begun after drain races no
+	// Add.
+	wg sync.WaitGroup
 	// draining is cancelled when the shutdown begins; every connection's state
 	// shares it, which is how the request reader learns not to read another
 	// request and how an HTTP/2 connection learns to say GOAWAY. A context
@@ -274,13 +216,30 @@ func (s *connSet) add(c net.Conn) *connState {
 	}
 	st := &connState{drain: s.draining}
 	s.conns[c] = st
+	s.wg.Add(1)
 	return st
 }
 
 func (s *connSet) remove(c net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.conns, c)
+	if _, ok := s.conns[c]; ok {
+		delete(s.conns, c)
+		s.wg.Done()
+	}
+}
+
+// busy is the number of connections with a request in flight.
+func (s *connSet) busy() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, st := range s.conns {
+		if st.phase.Load() == connBusy {
+			n++
+		}
+	}
+	return n
 }
 
 // drain begins the shutdown: it refuses new connections, tells the readers
@@ -319,7 +278,7 @@ func (s *connSet) closeAll() {
 // c is a [prefixConn] even when nothing was peeked: it is where a streamed
 // response's peer watch (see watchPeer) puts back what it read ahead. st is
 // the shutdown's view of the connection, nil when nothing is watching it.
-func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
+func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, handle Handler) {
 	src := newRequestReader(c, st, cfg)
 	// Reused for every batch on this connection, growing toward whatever the
 	// largest one needed and never shrinking back — the ordinary trade of a
@@ -329,7 +288,7 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 
 	stopped := false
 	src.Stream()(func(b sluice.Batch[Request]) bool {
-		res, err := apply(handle, b)
+		res, err := apply(ctx, handle, b)
 		if err != nil {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
@@ -432,7 +391,7 @@ func firstMethod(reqs []Request) []byte {
 
 // apply runs the handler and checks what it returned, since a batch of the
 // wrong length would answer the wrong caller.
-func apply(handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
+func apply(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A panic in the handler is the caller's bug and must not take
@@ -441,7 +400,7 @@ func apply(handle Handler, b sluice.Batch[Request]) (res []Response, err error) 
 			err = fmt.Errorf("httpstream: the handler panicked: %v", r)
 		}
 	}()
-	out := handle(b)
+	out := handle(ctx, b)
 	if len(out.Items) != b.Len() {
 		return nil, fmt.Errorf("httpstream: the handler answered %d of %d requests; "+
 			"a pipelined connection correlates by position, so a dropped or added "+
@@ -538,7 +497,7 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, h2cfg 
 	// The peeked bytes are the start of a request: busy from here, and the
 	// reader takes over the phase from its first read.
 	st.set(connBusy)
-	serveConn(&prefixConn{Conn: c, head: peek}, st, cfg, handle)
+	serveConn(ctx, &prefixConn{Conn: c, head: peek}, st, cfg, handle)
 }
 
 // h2ConfigOf is the [H2Config] a [Serve] connection that turns out to be

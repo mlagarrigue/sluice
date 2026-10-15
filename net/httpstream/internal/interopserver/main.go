@@ -108,7 +108,7 @@ func tlsConfig() *tls.Config {
 
 // handle answers each request with its target, and /stream with a streamed
 // body: one response per request, in order, as every httpstream handler.
-func handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]

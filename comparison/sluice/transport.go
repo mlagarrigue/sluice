@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -54,10 +53,11 @@ func httpstreamConfig(o options) httpstream.Config {
 	}
 }
 
-// serveH3 is axis A's UDP transport: one quic.Listener on pc, one
-// httpstream.ServeH3 per accepted connection, until ctx is cancelled. The
-// TLS config is a parameter rather than built here so that the test can hand
-// over the certificate its client trusts; run passes tlsConfig(o).
+// serveH3 is axis A's UDP transport: one quic.Listener on pc served by an
+// httpstream.Server until ctx is cancelled, then stopped normally, and by
+// force if the drain outlasts the default grace. The TLS config is a
+// parameter rather than built here so that the test can hand over the
+// certificate its client trusts; run passes tlsConfig(o).
 func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *tls.Config) error {
 	cfg := httpstreamConfig(o)
 	params, err := cfg.TransportParameters()
@@ -68,30 +68,20 @@ func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *
 	if err != nil {
 		return err
 	}
-	handle := a.handler()
-	var wg sync.WaitGroup
-	accepted := make(chan error, 1)
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				accepted <- err
-				return
-			}
-			wg.Go(func() { _ = httpstream.ServeH3(ctx, c, cfg, handle) })
-		}
-	}()
+	srv := &httpstream.Server{Config: cfg, Handler: a.handler()}
+	served := make(chan error, 1)
+	go func() { served <- srv.ServeQUIC(ln) }()
 	select {
-	case <-ctx.Done():
-		err = ln.Close()
-		<-accepted
-		wg.Wait()
-		return errors.Join(ctx.Err(), err)
-	case err := <-accepted:
-		_ = ln.Close()
-		wg.Wait()
+	case err := <-served:
 		return err
+	case <-ctx.Done():
 	}
+	grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if srv.Shutdown(grace) != nil {
+		_ = srv.Close()
+	}
+	return errors.Join(ctx.Err(), <-served)
 }
 
 // serveNetHTTP is R's transport: net/http, srv.Serve on the (TLS) listener,
@@ -240,7 +230,7 @@ var (
 // (DoBatch), which is what the transport's batch is for; the other requests
 // are answered one by one on this goroutine.
 func (a *app) handler() httpstream.Handler {
-	return func(batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	return func(_ context.Context, batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, batch.Len())
 		var unitIdx []int
 		var unitKeys []int64

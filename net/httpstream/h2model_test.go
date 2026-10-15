@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -56,7 +57,7 @@ func (c *h2client) drain(id uint32, grant uint32, timeout time.Duration) string 
 // took the connection — and every other request on it — with it.
 func TestH2StreamedResponsePastTheInitialWindow(t *testing.T) {
 	const chunk, chunks = 16 << 10, 20 // 320 KiB, near five times 65535
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -279,7 +280,7 @@ func TestH2RefusesMalformedTrailers(t *testing.T) {
 // guess and no settling to wait for.
 func TestH2ConnectionsLeaveNoGoroutines(t *testing.T) {
 	const chunk, chunks = 4 << 10, 8
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			if string(r.Target) == "/export" {

@@ -22,7 +22,7 @@ import (
 // answered with its own target, and /stream with a body of three batches
 // pulled one at a time, so a streamed response crosses a wire a client that
 // shares no code reads.
-func h3Handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+func h3Handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]

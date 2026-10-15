@@ -367,11 +367,11 @@ func serveH2(t *testing.T, cfg H2Config, h Handler) (addr string, sizes func() [
 			}
 			wg.Go(func() {
 				defer func() { _ = c.Close() }()
-				_ = ServeH2(ctx, c, cfg, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+				_ = ServeH2(ctx, c, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					mu.Lock()
 					seen = append(seen, b.Len())
 					mu.Unlock()
-					return h(b)
+					return h(ctx, b)
 				})
 			})
 		}
@@ -524,7 +524,7 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 // others up — which is exactly what it does over HTTP/1.1, where order is
 // the only correlation there is.
 func TestH2StreamedResponse(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{
@@ -625,7 +625,7 @@ func TestH2HeaderBlockSplitInsideAFieldIsAccepted(t *testing.T) {
 // The client here honours its window, which is what makes the test fail
 // before the fix instead of passing by ignoring the protocol.
 func TestH2UploadPastTheInitialStreamWindow(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: fmt.Append(nil, len(r.Body))})
@@ -665,7 +665,7 @@ func TestH2UploadPastTheInitialStreamWindow(t *testing.T) {
 // visible only on a second SETTINGS, which is why it survives a first read.
 func TestH2SecondInitialWindowSizeAdjustsFromThePreviousValue(t *testing.T) {
 	const body = 1500
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -701,7 +701,7 @@ func TestH2SecondInitialWindowSizeAdjustsFromThePreviousValue(t *testing.T) {
 // writing the response.
 func TestH2WaitsForTheWindowInsteadOfRefusing(t *testing.T) {
 	const body = 200
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -763,7 +763,7 @@ func TestH2RefusesAWindowUpdateThatOverflows(t *testing.T) {
 // Trailers are legal — this server allows "TE: trailers" itself — and a
 // second header block after the body must not be read as a second request.
 func TestH2TrailersDoNotEndTheConnection(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Body...)})
@@ -848,7 +848,7 @@ func TestH2RefusesDataAfterEndStream(t *testing.T) {
 // sends :authority and no Host — and the three protocols disagree about what
 // a request even looks like.
 func TestAuthorityReachesTheHandlerAsHost(t *testing.T) {
-	handler := func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	handler := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Get("host")...)})
@@ -1047,7 +1047,7 @@ func TestH2RapidResetBoundIsARateNotALifetimeCount(t *testing.T) {
 // refused this from the first commit; HTTP/2 rendered it with an unsigned
 // helper that turns a negative code into an empty field.
 func TestH2RefusesAStatusThatIsNotOne(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 700})
@@ -1078,7 +1078,7 @@ func TestH2RefusesAStatusThatIsNotOne(t *testing.T) {
 // connection. It used to be a GOAWAY: one panic on one request cost every
 // other request in flight on that connection.
 func TestH2HandlerPanicAnswersOneStream(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		for _, r := range b.Items {
 			if string(r.Target) == "/boom" {
 				panic("SECRET-/var/run/keys")
@@ -1190,7 +1190,7 @@ const staticTableLen = 61
 // restored — which is what proves the table's bookkeeping, not just its
 // ceiling, survived the round trip.
 func TestH2HPACKTableShrinkToZeroThenRestore(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Get("x-custom")...)})
@@ -1338,7 +1338,7 @@ func TestH2AdvertisedMaxFrameSizeKeepsTheProtocolFloor(t *testing.T) {
 // WriteTimeout resets it.
 func TestH2ServesInFlightResponsesAfterPeerGoAway(t *testing.T) {
 	const body = 200
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -1499,7 +1499,7 @@ func TestH2AssemblyDeadlineEndsAStalledUpload(t *testing.T) {
 func TestH2RepeatedSettingsEntriesMeanTheLastValue(t *testing.T) {
 	t.Run("the last duplicate wins", func(t *testing.T) {
 		const body = 300
-		addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for range b.Items {
 				out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -1561,7 +1561,7 @@ func TestH2RepeatedSettingsEntriesMeanTheLastValue(t *testing.T) {
 func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 	release := make(chan struct{})
 	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/hold" {
@@ -1627,7 +1627,7 @@ func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 func TestH2DataBehindARefusedStreamIsTolerated(t *testing.T) {
 	release := make(chan struct{})
 	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/hold" {
@@ -1849,7 +1849,7 @@ func TestH2RefusesTrailersWithoutEndStream(t *testing.T) {
 func TestH2RefusesConnectionSpecificResponseFields(t *testing.T) {
 	for _, field := range []string{"connection", "transfer-encoding", "keep-alive", "upgrade", "content-length"} {
 		t.Run(field, func(t *testing.T) {
-			addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 				out := make([]Response, 0, b.Len())
 				for range b.Items {
 					out = append(out, Response{Status: 200, Headers: []Header{
@@ -2190,7 +2190,7 @@ func TestH2IdleTimeoutRunsAgainAfterAnAnsweredRequest(t *testing.T) {
 // closed-stream ring, and used to keep a copy of it there — body and all — so
 // a live connection held MaxConcurrentStreams × MaxBodyBytes for nothing.
 func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, b.Len())
 		for i := range out {
 			out[i] = Response{Status: 204}
@@ -2270,7 +2270,7 @@ func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
 
 // panickingProducer answers /boom with a stream that yields one chunk and
 // then panics, and anything else with its own target.
-func panickingProducer(b sluice.Batch[Request]) sluice.Batch[Response] {
+func panickingProducer(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]
@@ -2295,7 +2295,7 @@ func panickingProducer(b sluice.Batch[Request]) sluice.Batch[Response] {
 // for the connection's life — grew to match.
 func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 	const bodyLen = 4 << 20
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: bytes.Repeat([]byte("x"), bodyLen)}
@@ -2329,7 +2329,7 @@ func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 // before the write received a HEADERS over its limit.
 func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 	big := bytes.Repeat([]byte("v"), 20000)
-	addr, _ := serveH2(t, H2Config{MaxFrameSize: 1 << 20}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{MaxFrameSize: 1 << 20}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Headers: []Header{{Name: []byte("x-big"), Value: big}}, Body: []byte("ok")}
@@ -2358,7 +2358,7 @@ func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 // decoder that saw the setting shrink expects the update, and nghttp2 ends
 // the connection with COMPRESSION_ERROR when it is missing.
 func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: []byte("ok")}
@@ -2425,7 +2425,7 @@ func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
 // one that stopped waiting, and on that stream alone.
 func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
 	addr, _ := serveH2(t, H2Config{WriteTimeout: 300 * time.Millisecond},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i, r := range b.Items {
 				res[i] = Response{Status: 200}
@@ -2467,7 +2467,7 @@ func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
 func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	addr, _ := serveH2(t, H2Config{WriteTimeout: timeout},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {
 				res[i] = Response{Status: 200, Body: bytes.Repeat([]byte{'d'}, 4096)}
@@ -2522,7 +2522,7 @@ func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
 // refusal of a reset stream could not reach it.
 func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2544,7 +2544,7 @@ func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 // what tells it, since nothing is ever written that could fail.
 func TestH2StreamedEmptyBatchesStopWhenTheConnectionCloses(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2583,7 +2583,7 @@ func TestServeAppliesMaxConcurrentStreamsToHTTP2(t *testing.T) {
 // answers 500 instead, as it does any response it will not put on the wire,
 // and a response under the limit is unaffected.
 func TestH2HonoursThePeersMaxHeaderListSize(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			res := Response{Status: 200}
@@ -2722,7 +2722,7 @@ func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
 func TestH2ConfigFollowsConfig(t *testing.T) {
 	const size = 2 << 20
 	var seen atomic.Int64
-	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			seen.Store(int64(len(r.Body)))

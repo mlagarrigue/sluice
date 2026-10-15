@@ -3,6 +3,7 @@ package httpstream
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ var testDate = []byte(handlerDate)
 
 // dateHandler answers / with a 200, /missing with a 404, /dated with a 200
 // carrying its own Date, and panics on /boom so the layer answers 500.
-func dateHandler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func dateHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]

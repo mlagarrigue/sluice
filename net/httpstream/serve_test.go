@@ -33,11 +33,11 @@ func serveTest(t *testing.T, cfg Config, h Handler) (addr string, sizes func() [
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Serve(ctx, ln, cfg, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = Serve(ctx, ln, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			mu.Lock()
 			seen = append(seen, b.Len())
 			mu.Unlock()
-			return h(b)
+			return h(ctx, b)
 		})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
@@ -51,7 +51,7 @@ func serveTest(t *testing.T, cfg Config, h Handler) (addr string, sizes func() [
 
 // echoTarget answers each request with its own target, so a test can tell
 // which answer belongs to which request.
-func echoTarget(b sluice.Batch[Request]) sluice.Batch[Response] {
+func echoTarget(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]
@@ -212,7 +212,7 @@ func TestConnectionCloseEndsTheStream(t *testing.T) {
 // A handler that answers the wrong number of requests would answer the wrong
 // caller, since position is the only correlation a pipelined connection has.
 func TestHandlerThatDropsARequestIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		// The mistake the gateway documents: filtering an element out of a
 		// pipeline that correlates by position.
 		return sluice.Batch[Response]{Items: nil}
@@ -229,7 +229,7 @@ func TestHandlerThatDropsARequestIsRefused(t *testing.T) {
 // A panic in the handler is the caller's bug and must not take the process
 // down with it — the same bargain web.Recover makes over net/http.
 func TestHandlerPanicBecomesA500(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] {
 		panic("the caller's own bug")
 	})
 	c := dial(t, addr)
@@ -244,7 +244,7 @@ func TestHandlerPanicBecomesA500(t *testing.T) {
 // A header value carrying CRLF would end the field early and let what follows
 // be read as another response. Refused at the only place it can be.
 func TestResponseSplittingIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Headers: []Header{{
@@ -368,7 +368,7 @@ func newReader(c net.Conn) *bufio.Reader { return bufio.NewReader(c) }
 // — which is why this test leaves one deliberately unfinished.
 func TestABatchIsNotOverwrittenByTheNextRead(t *testing.T) {
 	seen := make(chan []string, 4)
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		bodies := make([]string, 0, b.Len())
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
@@ -408,7 +408,7 @@ func TestABatchIsNotOverwrittenByTheNextRead(t *testing.T) {
 // them is unusual.
 func TestStreamedResponseOverHTTP11(t *testing.T) {
 	pulls := make(chan int, 8)
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -491,7 +491,7 @@ func TestStreamedResponseOverHTTP11(t *testing.T) {
 // get to desync a pipelined HEAD request behind it.
 func TestStreamedResponseCarriesNoBodyOnHEAD(t *testing.T) {
 	var headPulled atomic.Bool
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			method := string(req.Method)
@@ -543,7 +543,7 @@ func TestStreamedResponseCarriesNoBodyOnHEAD(t *testing.T) {
 
 // A response cannot say two things about its payload.
 func TestResponseWithBothBodyAndStreamIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Body:   []byte("here"),
@@ -568,7 +568,7 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 	var produced atomic.Int64
 	started, returned := make(chan struct{}), make(chan struct{})
 	addr, _ := serveTest(t, Config{WriteTimeout: 300 * time.Millisecond},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: []Response{{
 				Status: 200,
 				Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -609,7 +609,7 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 // when the client asked for keep-alive, since EOF is the only end such a
 // body has.
 func TestStreamedResponseToHTTP10IsCloseDelimited(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -657,7 +657,7 @@ func TestStreamedResponseToHTTP10IsCloseDelimited(t *testing.T) {
 // nothing said leaves the client to guess which request was at fault. The
 // responses already owed ahead of it still go out first.
 func TestStreamedBatchAnswers500WhenAResponseFailsBeforeItsFirstByte(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			if string(req.Target) == "/bad" {
@@ -706,7 +706,7 @@ func TestStreamedBatchAnswers500WhenAResponseFailsBeforeItsFirstByte(t *testing.
 // and in order — they are coalesced into shared writes around the stream, and
 // coalescing must not change what the client reads.
 func TestStreamedBatchKeepsBufferedNeighboursInOrder(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			if string(req.Target) == "/stream" {
@@ -867,7 +867,7 @@ func waitStopped(t *testing.T, stopped <-chan struct{}) {
 // on a next write it may never make.
 func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -939,7 +939,7 @@ func TestSniffDeadlineCoversTheWholePreface(t *testing.T) {
 // Connection: close written by the server, and the connection ends — where
 // a refusal turned an ordinary HTTP/1.1 request to close into a 500.
 func TestHandlerConnectionCloseIsHonoured(t *testing.T) {
-	closer := func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	closer := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for i, r := range b.Items {
 			res := Response{Status: 200, Body: append([]byte(nil), r.Target...)}
@@ -1244,7 +1244,7 @@ func TestWriteBatchAnnouncesKeepAliveAsServe(t *testing.T) {
 
 // A streamed response keeps the connection too, and says so the same way.
 func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
 				yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("part")}})
@@ -1276,7 +1276,7 @@ func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
 // fieldsEcho answers each request with its header names, then its trailers
 // as name=value, so a test reads where one section ends and the other
 // begins.
-func fieldsEcho(b sluice.Batch[Request]) sluice.Batch[Response] {
+func fieldsEcho(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]

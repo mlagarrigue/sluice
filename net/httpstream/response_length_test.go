@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -22,7 +23,7 @@ import (
 // records whether its producer ran, for the HEAD answer that must not pull
 // it.
 func lengthHandler(pulled *bool) Handler {
-	return func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	return func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, len(b.Items))
 		for i := range b.Items {
 			chunks := []string{"ab", "cde"}

@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 
 // caseHandler answers every request 200 with the fields an HTTP/1.1 handler
 // would spell: a capitalised Content-Type and a mixed-case custom name.
-func caseHandler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func caseHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for range b.Items {
 		out = append(out, Response{Status: 200, Headers: []Header{

@@ -154,7 +154,7 @@ confrontation is what it lacks, not a measurement.
 
 ```go
 rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
-handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
     ex := stream.Exchanges(nil, b)       // one envelope per request
     rt.Route(ex)                         // which route for each
     stream.Authenticate(verifier, ex)    // who is calling
@@ -184,7 +184,8 @@ three produce the same thing: **batches of requests**, and one handler type
 serves them without knowing which carried them.
 
 ```go
-handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+    // ctx is cancelled if the server stops by force: hand it to what you call
     out := make([]httpstream.Response, 0, b.Len())
     for _, r := range b.Items {
         out = append(out, httpstream.Response{Status: 200, Body: append([]byte("you asked for "), r.Target...)})

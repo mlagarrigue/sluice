@@ -114,7 +114,7 @@ func FuzzH2Connection(f *testing.F) {
 // fuzzH2Handler is a small, fast handler with nothing that could itself stall
 // a fuzz case: the property under test is the connection's own bookkeeping,
 // not a handler's behaviour.
-func fuzzH2Handler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func fuzzH2Handler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]
