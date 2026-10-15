@@ -3,6 +3,7 @@ package httpstream
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -176,5 +177,91 @@ func TestShutdownGivesUpAfterTheGrace(t *testing.T) {
 	}
 	if _, err := bufio.NewReader(c).ReadByte(); err == nil {
 		t.Fatal("the connection was left open past the grace")
+	}
+}
+
+// TestServeShutdownDrainsH2Stream: the context is cancelled while an HTTP/2
+// handler is still working. The client reads GOAWAY NO_ERROR naming 2^31−1
+// and a PING; once it acknowledges the PING, a second GOAWAY names the one
+// stream taken, and a stream opened after it is refused; the response then
+// arrives whole, the server closes, and Serve returns well before the grace
+// (RFC 9113 §6.8, ADR 0017 §5).
+func TestServeShutdownDrainsH2Stream(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	addr, cancel, done := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		close(entered)
+		<-release
+		return echoTarget(b)
+	})
+
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/slow")
+	c.flush()
+	<-entered
+	cancel()
+
+	c.pump(func() bool { return len(c.goAways) >= 1 && len(c.pinged) >= 1 })
+	if len(c.goAways) < 1 || len(c.pinged) < 1 {
+		t.Fatalf("after the cancellation: %d GOAWAY and %d PING, want one of each before anything closes", len(c.goAways), len(c.pinged))
+	}
+	// The first GOAWAY forbids new streams without naming the last one taken:
+	// 2^31−1 is a stream the client can never have reached.
+	if last, code := goAwayLast(c.goAways[0]), goAwayCode(c.goAways[0]); last != 1<<31-1 || code != errNoError {
+		t.Fatalf("first GOAWAY: last stream %d, code %#x; want 2^31-1 and NO_ERROR", last, code)
+	}
+	if len(c.goAways) > 1 {
+		t.Fatalf("%d GOAWAY before the PING was acknowledged, want one", len(c.goAways))
+	}
+
+	// A conformant client acknowledges the PING (§6.7); the round trip the
+	// first GOAWAY allowed for is then over, and the second names stream 1.
+	c.frame(h2Frame{Type: framePing, Flags: flagAck, Payload: c.pinged[0]})
+	c.flush()
+	c.pump(func() bool { return len(c.goAways) >= 2 })
+	if len(c.goAways) < 2 {
+		t.Fatal("no second GOAWAY after the PING acknowledgement")
+	}
+	if last, code := goAwayLast(c.goAways[1]), goAwayCode(c.goAways[1]); last != 1 || code != errNoError {
+		t.Fatalf("second GOAWAY: last stream %d, code %#x; want 1 and NO_ERROR", last, code)
+	}
+
+	// A stream opened past the second GOAWAY is refused, and the connection
+	// survives the refusal: the answer to stream 1 is still owed.
+	c.request(3, "GET", "/late")
+	c.flush()
+	c.pump(func() bool { _, seen := c.resets[3]; return seen })
+	if code, seen := c.resets[3]; !seen || code != errRefusedStream {
+		t.Fatalf("stream 3 after GOAWAY: reset %v with %#x, want REFUSED_STREAM", seen, code)
+	}
+
+	close(release)
+	c.pump(func() bool { return c.ended[1] })
+	if !c.ended[1] || c.got[1] != "/slow" {
+		t.Fatalf("stream 1: ended %v body %q, want the whole answer", c.ended[1], c.got[1])
+	}
+	// Then the server closes, with nothing more on the wire.
+	if err := c.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	tmp := make([]byte, 64)
+	for {
+		n, err := c.conn.Read(tmp)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("after the answer: %v, want the server to close", err)
+		}
+		c.in = append(c.in, tmp[:n]...)
+		c.parse()
+		if len(c.goAways) > 2 {
+			t.Fatalf("%d GOAWAY in all, want two", len(c.goAways))
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return once the stream was drained")
 	}
 }

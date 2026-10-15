@@ -202,8 +202,9 @@ type h2Server struct {
 	streams map[uint32]*h2Stream
 	// open counts the streams the peer may still send on. It is not
 	// len(streams), which also holds the ones kept for the closed-stream
-	// grace period.
-	open int
+	// grace period. Written by the reader; the responder reads it to know
+	// whether a drained connection is finished, hence the atomic.
+	open atomic.Int32
 	// inFlight counts requests handed to the responder and not yet answered.
 	// open + inFlight is what SETTINGS_MAX_CONCURRENT_STREAMS bounds, and the
 	// sum is invariant across the hand-off — which is what makes the batch
@@ -239,6 +240,17 @@ type h2Server struct {
 	trailers []Header
 
 	goingAway bool
+
+	// drainStep is where the graceful shutdown stands (see serveH2Conn):
+	// drainNone, then drainBegun once the first GOAWAY and the PING are
+	// queued, then drainAnnounced once the PING's acknowledgement has had
+	// the second GOAWAY sent. Written by the drain's function and the
+	// reader, read by the responder.
+	drainStep atomic.Int32
+	// drained is set by the responder just before it closes the socket of a
+	// drained connection, so the reader knows the error that unparks it is
+	// the close and not a failure.
+	drained atomic.Bool
 
 	// readEnded is set by the reader once it has stopped reading — the peer
 	// closed, the connection was cancelled, or a connection error ended it.
@@ -283,8 +295,40 @@ const maxWindow = 1<<31 - 1
 // the socket: closing it unblocks the read the reader is parked in and the
 // write the writer is parked in, and both then unwind through their ordinary
 // error paths. That is [context.AfterFunc] rather than a fourth goroutine
-// parked on ctx.Done() for the life of every connection.
+// parked on ctx.Done() for the life of every connection. A connection
+// [Serve] hands over is not cut that way: Serve drains it (ADR 0017), and
+// serveH2Conn says how.
 func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) error {
+	return serveH2Conn(ctx, c, nil, cfg, handler)
+}
+
+// serveH2Conn is [ServeH2] with the shutdown state of a connection [Serve]
+// accepted. With a nil state the cancellation of ctx closes the socket, as
+// ServeH2 documents. With one, ctx is Serve's and its cancellation is the
+// shutdown, which the state carries as a drain: the connection then goes
+// through RFC 9113 §6.8's graceful close rather than the socket's —
+//
+//   - first a GOAWAY with the last stream identifier at 2^31−1 and NO_ERROR,
+//     which tells the peer to open nothing more, and a PING, which measures
+//     the round trip during which its streams already on the wire arrive;
+//   - at the PING's acknowledgement, a second GOAWAY naming the last stream
+//     actually taken, after which a new stream is refused (REFUSED_STREAM,
+//     the code that says it may be retried elsewhere);
+//   - when no stream is open or in flight, the close — by the reader if that
+//     is already true at the second GOAWAY, by the responder when it has
+//     written the last answer.
+//
+// The reader also keeps the state's phase: busy while a stream is open or in
+// flight, idle otherwise, so the drain closes an idle HTTP/2 connection at
+// once as it does an idle HTTP/1.1 one. The phase is the reader's view at
+// its last batch, which runs late when the last answer went out and the peer
+// has since said nothing: that connection is drained like a busy one and
+// closes one round trip after the cancellation rather than at it. Writing the
+// phase from the responder too would make it exact, and would also let an
+// idle verdict land after a stream the reader has just opened; late is the
+// safe side. A peer that never acknowledges the PING holds the connection
+// until Serve's grace closes it, which is the bound every drain has.
+func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg H2Config, handler Handler) error {
 	cfg = cfg.withDefaults()
 	s := &h2Server{
 		cfg:      cfg,
@@ -294,8 +338,13 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		recvWind: connRecvWindow,
 		w:        newH2Writer(c, cfg),
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
+	if st == nil {
+		stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+		defer stop()
+	} else {
+		stop := context.AfterFunc(st.drain, s.beginDrain)
+		defer stop()
+	}
 
 	go s.w.run()
 	if err := s.hello(); err != nil {
@@ -312,6 +361,19 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		defer close(answered)
 		for b := range in {
 			s.answer(b)
+			// The last answer of a drained connection closes it. open is read
+			// before inFlight because finish moves a stream the other way
+			// round, inFlight up then open down: read in this order, a
+			// stream mid-hand-off is counted at least once. Nothing opens
+			// after the second GOAWAY, so both at zero is final. The writer
+			// goes first so the answer is on the wire before the socket
+			// closes under the reader.
+			if s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 {
+				s.drained.Store(true)
+				s.w.stop()
+				<-s.w.done
+				_ = c.Close()
+			}
 		}
 	}()
 
@@ -331,6 +393,17 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		}
 		if len(ready) > 0 {
 			in <- h2Batch{reqs: ready, ids: ids}
+		}
+		live := s.open.Load() > 0 || s.inFlight.Load() > 0
+		if live {
+			st.set(connBusy)
+		} else {
+			st.set(connIdle)
+		}
+		if !live && s.drainStep.Load() == drainAnnounced {
+			// Drained with nothing left to answer: the second GOAWAY is out
+			// and this end owes nothing more, so this is the clean close.
+			return false
 		}
 		// A peer's GOAWAY does not stop the reader. While answers are still
 		// owed, the WINDOW_UPDATE and PING an in-flight response depends on
@@ -355,11 +428,20 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 	<-answered
 
 	err := errors.Join(fatal, ignoreEOF(src.Err()))
+	if s.drained.Load() {
+		// The responder closed the socket under this reader once the last
+		// answer was written; the read error that unparked it is that close.
+		err = nil
+	}
 	code := uint32(errNoError)
 	if err != nil {
 		code = codeFor(err)
 	}
-	s.goAway(code)
+	if err != nil || s.drainStep.Load() < drainAnnounced {
+		// A drained connection has already said its last GOAWAY, and a
+		// third one would only repeat it; a failure after it is still told.
+		s.goAway(code)
+	}
 	s.w.stop()
 	<-s.w.done
 	return errors.Join(err, s.w.failure())
@@ -484,7 +566,7 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 // alive, and each of those somethings arrives through consume. A peer that
 // sends nothing at all is the frame reader's own timeout's to end.
 func (s *h2Server) expireAssembly() error {
-	if s.open == 0 {
+	if s.open.Load() == 0 {
 		return nil
 	}
 	now := time.Now()
@@ -567,7 +649,7 @@ func (s *h2Server) retire(id uint32, state h2State) {
 		return
 	}
 	if st.state == stateOpen {
-		s.open--
+		s.open.Add(-1)
 		s.closedRing = append(s.closedRing, id)
 		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
 			delete(s.streams, s.closedRing[0])
@@ -607,6 +689,16 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 
 	case framePing:
 		if f.Flags&flagAck != 0 {
+			if s.drainStep.Load() == drainBegun && string(f.Payload) == drainPing {
+				// The round trip the first GOAWAY allowed for is over: every
+				// stream the peer opened before it saw that GOAWAY is in,
+				// and the second GOAWAY names the last of them. Set before
+				// the frame goes out so a HEADERS later in this very batch
+				// is refused rather than taken past the identifier it names.
+				s.goingAway = true
+				s.goAwayWith(s.lastID, errNoError)
+				s.drainStep.Store(drainAnnounced)
+			}
 			return nil, nil
 		}
 		return nil, s.w.control(h2Frame{Type: framePing, Flags: flagAck, Payload: f.Payload})
@@ -1133,7 +1225,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		// opened that many more streams before its trailers arrived.
 		return nil, fmt.Errorf("%w: stream %d reopens one already used", ErrH2Protocol, id)
 	}
-	if s.goingAway || s.open+int(s.inFlight.Load()) >= s.cfg.MaxConcurrentStreams {
+	if s.goingAway || int(s.open.Load())+int(s.inFlight.Load()) >= s.cfg.MaxConcurrentStreams {
 		// §5.1.2 makes this a stream error, and REFUSED_STREAM is the code
 		// that tells the client nothing was processed — so it may retry the
 		// request elsewhere rather than assume it half-happened. The same
@@ -1173,7 +1265,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
 	s.streams[id] = st
-	s.open++
+	s.open.Add(1)
 	s.w.open(id)
 	return st, nil
 }
@@ -1611,10 +1703,44 @@ func addWindow(cur, delta int32) (int32, error) {
 // who caused the failure. The code is what a peer acts on; the text stays on
 // this side, where the caller reads it as ServeH2's return value.
 func (s *h2Server) goAway(code uint32) {
+	s.goAwayWith(s.lastID, code)
+}
+
+// goAwayWith is goAway with the last stream identifier chosen by the caller:
+// the graceful shutdown's first GOAWAY names 2^31−1, a stream the peer can
+// never have reached, before the reader knows the real one (RFC 9113 §6.8).
+func (s *h2Server) goAwayWith(last, code uint32) {
 	payload := make([]byte, 8)
-	be32put(payload[:4], s.lastID)
+	be32put(payload[:4], last)
 	be32put(payload[4:8], code)
 	_ = s.w.control(h2Frame{Type: frameGoAway, Payload: payload})
+}
+
+// The steps of a graceful shutdown, in drainStep; see serveH2Conn.
+const (
+	drainNone int32 = iota
+	drainBegun
+	drainAnnounced
+)
+
+// drainPing is the opaque data of the PING the shutdown sends after its
+// first GOAWAY, so its acknowledgement is told apart from any other.
+const drainPing = "shutdown"
+
+// maxStreamID is the highest stream identifier the protocol has (RFC 9113
+// §5.1.1), and what the first GOAWAY of a graceful shutdown names.
+const maxStreamID = 1<<31 - 1
+
+// beginDrain is the shutdown's first step, run by the drain's
+// [context.AfterFunc] on a goroutine of its own: the GOAWAY that forbids new
+// streams without yet naming the last one taken, and the PING whose
+// acknowledgement will. Both are queued before the step is recorded, so the
+// second GOAWAY the reader sends at the acknowledgement cannot be queued
+// ahead of the first (§6.8: the identifier sent must never increase).
+func (s *h2Server) beginDrain() {
+	s.goAwayWith(maxStreamID, errNoError)
+	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
+	s.drainStep.Store(drainBegun)
 }
 
 func be32(b []byte) uint32 {

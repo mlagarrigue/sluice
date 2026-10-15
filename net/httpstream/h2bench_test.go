@@ -32,7 +32,7 @@ func newBenchH2Server(cfg H2Config) *h2Server {
 // leaves no dynamic-table state behind.
 func resetBenchH2Server(s *h2Server) {
 	clear(s.streams)
-	s.open = 0
+	s.open.Store(0)
 	s.inFlight.Store(0)
 	s.lastID = 0
 	s.closedRing = s.closedRing[:0]

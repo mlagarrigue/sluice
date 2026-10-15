@@ -569,10 +569,12 @@ func (w *h2Writer) finish(id uint32, cur, spare *h2Job) error {
 
 // control queues a control frame, blocking while the queue is at its bound.
 //
-// Blocking is the design: the read goroutine is the only caller, and a peer
-// that sends PING faster than this end can answer must be made to wait on TCP
-// rather than have its frames buffered without limit. It is the S1 bound the
-// project asks for, put where the pressure is.
+// Blocking is the design: the read goroutine is the caller — the shutdown's
+// first GOAWAY, queued from the drain's own goroutine, is the one exception
+// and queues two frames once — and a peer that sends PING faster than this
+// end can answer must be made to wait on TCP rather than have its frames
+// buffered without limit. It is the S1 bound the project asks for, put where
+// the pressure is.
 func (w *h2Writer) control(f h2Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

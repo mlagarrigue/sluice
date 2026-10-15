@@ -36,8 +36,13 @@ type h2client struct {
 	resetCount map[uint32]int
 	settings   map[uint16]uint32
 	pings      int
-	goAway     []byte
-	sawGoAway  bool
+	// pinged is the payload of each PING the server sent and this client
+	// has not acknowledged, oldest first.
+	pinged    [][]byte
+	goAway    []byte
+	sawGoAway bool
+	// goAways is every GOAWAY payload in order; goAway is the last of them.
+	goAways [][]byte
 	// maxData is the largest DATA payload seen, for the tests about the
 	// size frames leave at.
 	maxData int
@@ -152,9 +157,12 @@ func (c *h2client) parse() {
 		case framePing:
 			if flags&flagAck != 0 {
 				c.pings++
+			} else {
+				c.pinged = append(c.pinged, append([]byte(nil), payload...))
 			}
 		case frameGoAway:
 			c.goAway = append([]byte(nil), payload...)
+			c.goAways = append(c.goAways, c.goAway)
 			c.sawGoAway = true
 		}
 		c.in = c.in[9+length:]
@@ -170,6 +178,15 @@ func (c *h2client) waitGoAway() []byte {
 		c.t.Fatal("the connection did not end with GOAWAY")
 	}
 	return c.goAway
+}
+
+// goAwayLast is the last stream identifier out of a GOAWAY payload (RFC 9113
+// §6.8).
+func goAwayLast(payload []byte) uint32 {
+	if len(payload) < 8 {
+		return ^uint32(0)
+	}
+	return binary.BigEndian.Uint32(payload[:4]) & 0x7fffffff
 }
 
 // goAwayCode is the error code out of a GOAWAY payload (RFC 9113 §6.8).

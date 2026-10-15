@@ -193,22 +193,26 @@ type connSet struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]*connState
 	closed bool
-	// draining is closed when the shutdown begins; every connection's state
+	// draining is cancelled when the shutdown begins; every connection's state
 	// shares it, which is how the request reader learns not to read another
-	// request.
-	draining chan struct{}
+	// request and how an HTTP/2 connection learns to say GOAWAY. A context
+	// rather than a channel so the latter is a [context.AfterFunc], not a
+	// goroutine parked for the life of every connection.
+	draining   context.Context
+	beginDrain context.CancelFunc
 }
 
 func newConnSet() *connSet {
-	return &connSet{conns: map[net.Conn]*connState{}, draining: make(chan struct{})}
+	draining, begin := context.WithCancel(context.Background())
+	return &connSet{conns: map[net.Conn]*connState{}, draining: draining, beginDrain: begin}
 }
 
 // connState is what the shutdown needs to know about one connection: whether
 // a request is in flight on it. It is written by the goroutine serving the
 // connection and read by the shutdown, hence the atomic.
 type connState struct {
-	phase    atomic.Int32
-	draining <-chan struct{}
+	phase atomic.Int32
+	drain context.Context
 }
 
 // The phases a connection moves through, as the shutdown sees them.
@@ -218,12 +222,9 @@ const (
 	// Closing it owes nobody an answer.
 	connIdle int32 = iota
 	// connBusy: a request has begun to arrive, is being handled or is being
-	// answered. The shutdown waits for it, up to the grace.
+	// answered — on HTTP/2, a stream is open or in flight. The shutdown
+	// waits for it, up to the grace.
 	connBusy
-	// connUndrained: a protocol the drain does not reach yet (HTTP/2 over
-	// Serve, until the GOAWAY slice). Closed at the shutdown, as it always
-	// was.
-	connUndrained
 )
 
 // set records the phase. A nil state is a connection nothing watches — a
@@ -236,15 +237,7 @@ func (st *connState) set(phase int32) {
 
 // drainingNow reports whether the shutdown has begun; never, for a nil state.
 func (st *connState) drainingNow() bool {
-	if st == nil {
-		return false
-	}
-	select {
-	case <-st.draining:
-		return true
-	default:
-		return false
-	}
+	return st != nil && st.drain.Err() != nil
 }
 
 // add registers a connection, returning nil if the set has already been
@@ -255,7 +248,7 @@ func (s *connSet) add(c net.Conn) *connState {
 	if s.closed {
 		return nil
 	}
-	st := &connState{draining: s.draining}
+	st := &connState{drain: s.draining}
 	s.conns[c] = st
 	return st
 }
@@ -270,13 +263,15 @@ func (s *connSet) remove(c net.Conn) {
 // not to take another request, and closes every connection that has none in
 // flight. The order matters against the reader, which marks itself idle
 // before it looks at draining: a reader that marked itself after this scan
-// sees the channel closed; one that marked itself before is closed here.
-// Either way no idle connection outlives the call.
+// sees the context cancelled; one that marked itself before is closed here.
+// Either way no idle connection outlives the call. An HTTP/2 connection with
+// a stream open is told instead (see serveH2Conn): the cancellation runs its
+// GOAWAY, and it closes itself once the stream is answered.
 func (s *connSet) drain() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
-	close(s.draining)
+	s.beginDrain()
 	for c, st := range s.conns {
 		if st.phase.Load() != connBusy {
 			_ = c.Close()
@@ -471,8 +466,10 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, h2cfg 
 		return // silent past IdleTimeout, or gone: nothing to hand on
 	}
 	if isH2 {
-		st.set(connUndrained)
-		_ = ServeH2(ctx, prefixed(c, peek), h2cfg, handle)
+		// Busy until the reader has seen the first batch: a preface is
+		// followed by a request, and the reader keeps the phase from there.
+		st.set(connBusy)
+		_ = serveH2Conn(ctx, prefixed(c, peek), st, h2cfg, handle)
 		return
 	}
 	// The peeked bytes are the start of a request: busy from here, and the
