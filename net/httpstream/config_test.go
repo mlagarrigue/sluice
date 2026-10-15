@@ -62,6 +62,7 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		{"MaxConns", Config{MaxConns: -1}, "-1"},
 		{"ShutdownGrace", Config{ShutdownGrace: -time.Second}, "-1s"},
 		{"LingerTimeout", Config{LingerTimeout: -time.Second}, "-1s"},
+		{"KeepAlive", Config{KeepAlive: -time.Second}, "-1s"},
 		// RFC 9113 §6.5.2 bounds what this end may advertise: a frame size
 		// below 2^14 or over 2^24-1, a window over 2^31-1.
 		{"MaxFrameSize", Config{MaxFrameSize: -1}, "-1"},

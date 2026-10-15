@@ -355,6 +355,7 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 	if err != nil {
 		return err
 	}
+	setTCPKeepAlive(c, cfg.KeepAlive)
 	// The grace is a timer armed at the cancellation, as in ServeH3. When it
 	// passes it closes the socket, which unwinds the connection's goroutines
 	// through their ordinary error paths, and only then cancels the

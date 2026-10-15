@@ -436,6 +436,28 @@ type Config struct {
 	// its bound. See docs/design/adr/0017.
 	ShutdownGrace time.Duration
 
+	// KeepAlive is how long a connection may stay silent before this end
+	// sends something to keep it, and the paths between, alive: a PING on
+	// HTTP/3 (see [quic.Conn.SetKeepAlive], which holds it to half the idle
+	// timeout the two ends negotiated), a TCP keep-alive probe on HTTP/1.1
+	// and HTTP/2, over TLS too. What it is for is a client that keeps a
+	// connection between two requests across a NAT or a load balancer that
+	// forgets a silent flow, or a QUIC idle timeout shorter than the gaps
+	// between requests. [Serve] and [Server] apply it to every connection
+	// they accept; [ServeH2] and [ServeH3] to the one they are handed. Zero
+	// sends nothing of this end's own: an HTTP/3 connection stays silent,
+	// and a TCP connection keeps what its listener set — one from
+	// [net.Listen] probes every 15s. Every protocol.
+	//
+	// Over HTTP/1.1 and HTTP/2 it does not hold a connection open against
+	// IdleTimeout, which counts requests, not packets. Over HTTP/3 it does:
+	// IdleTimeout is there the transport's, which every PING restarts, so a
+	// connection stays open until the client closes it or the server
+	// stops. That is the price: a client that opened a connection and went
+	// silent holds its state for as long as it stays, where the idle
+	// timeout would otherwise have reclaimed it.
+	KeepAlive time.Duration
+
 	// Logger receives what the server reports besides the errors it
 	// returns — today, a warning with the number of connections a forced
 	// stop cut with requests in flight. Nil means [slog.Default]. Every
@@ -594,6 +616,9 @@ func (c Config) resolve() (Config, error) {
 	}
 	if c.MaxConns < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
+	}
+	if c.KeepAlive < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.KeepAlive %v is negative — zero means none", c.KeepAlive))
 	}
 	if c.LingerTimeout < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.LingerTimeout %v is negative — zero means a second, or ReadTimeout if shorter", c.LingerTimeout))

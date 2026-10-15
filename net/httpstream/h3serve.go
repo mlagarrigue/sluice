@@ -133,6 +133,9 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		_ = c.CloseWithError(h3InternalError)
 		return fmt.Errorf("httpstream: ServeH3 on a connection that negotiated %q, not h3", proto)
 	}
+	if cfg.KeepAlive > 0 {
+		c.SetKeepAlive(cfg.KeepAlive)
+	}
 	a := newH3Assembler(cfg)
 	// Manual flow-control credit closes the security report's M-3 residue:
 	// an auto-crediting window reopens for bytes this layer still retains,
@@ -615,10 +618,11 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 // writeH3Bounded writes p on s with writeTimeout to finish, and the FIN with
 // it when fin is set, reporting whether it all went out. A write the peer
 // starves of credit past the timeout is given up on and its stream reset
-// with H3_REQUEST_CANCELLED (RFC 9114 §8.1): the peer granted less than the
-// response needs, which it is entitled to do, and this end is the one that
-// stopped waiting — the same reading as the HTTP/2 writer's CANCEL after its
-// write timeout. Any other failure means the stream is already gone.
+// with H3_REQUEST_CANCELLED, the code RFC 9114 §4.1.1 says a server SHOULD
+// abort with when it "abandons a response after partial processing": the
+// peer granted less than the response needs, which it is entitled to do,
+// and this end is the one that stopped waiting — the same reading as the
+// HTTP/2 writer's CANCEL after its write timeout. Any other failure means the stream is already gone.
 func writeH3Bounded(s *quic.Stream, p []byte, fin bool, writeTimeout time.Duration) bool {
 	_ = s.SetWriteDeadline(time.Now().Add(writeTimeout))
 	write := s.Write

@@ -497,3 +497,108 @@ func (l *lockedWriter) String() string {
 	defer l.mu.Unlock()
 	return l.w.String()
 }
+
+// serveQUICFor starts srv on a QUIC listener and returns a client dialled to
+// it with clientParams. The server's end of the datagram pair is closed only
+// once the client has ended, or five seconds on: a real socket's datagrams
+// outlive its close, where the pair's would be lost with it — and the
+// CONNECTION_CLOSE a server sends on its way out with them.
+func serveQUICFor(t *testing.T, srv *Server, clientParams quic.TransportParameters) *quic.Conn {
+	t.Helper()
+	serverPC, clientPC := dgram.Pair()
+	clientDone := make(chan struct{})
+	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
+	ln, err := quic.NewListener(lingerPC{serverPC, clientDone}, h3ServerTLS(t), quic.DefaultParameters(), quic.ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.ServeQUIC(ln) }()
+	t.Cleanup(func() { _ = srv.Close(); _ = ln.Close() })
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	go func() { <-conn.Done(); close(clientDone) }()
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// lingerPC closes its packet conn once until is closed, or five seconds on.
+type lingerPC struct {
+	net.PacketConn
+	until <-chan struct{}
+}
+
+func (c lingerPC) Close() error {
+	select {
+	case <-c.until:
+	case <-time.After(5 * time.Second):
+	}
+	return c.PacketConn.Close()
+}
+
+// Server.Close ends an HTTP/3 connection the way RFC 9114 §8.1 has an
+// endpoint end one it has no error to signal on: an application close with
+// H3_NO_ERROR, or a code from the reserved space that greases it. The
+// listener's close used to win the race and end the connection with the
+// transport's own NO_ERROR, which an HTTP/3 client reads as a close below
+// its protocol.
+func TestServerCloseEndsHTTP3WithH3NoError(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		name := "idle"
+		if busy {
+			name = "busy"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newStopHandler()
+			defer close(h.release)
+			handle := h.handle
+			if !busy {
+				handle = echoTarget
+			}
+			srv := &Server{Config: Config{Logger: discardLogger()}, Handler: handle}
+			c := &h3StopClient{conn: serveQUICFor(t, srv, quic.DefaultParameters())}
+			c.ask(t)
+			if busy {
+				<-h.entered
+			} else {
+				// One answered request: the connection is served, not
+				// merely handed to the listener.
+				c.answer(t)
+			}
+			if err := srv.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if !c.cut(t) {
+				t.Fatal("the connection outlived Close")
+			}
+			ce, ok := errors.AsType[*quic.ConnectionError](c.conn.Err())
+			if !ok || !ce.Application || (ce.Code != h3NoError && (ce.Code < 0x21 || (ce.Code-0x21)%0x1f != 0)) {
+				t.Fatalf("the client read %v, want an application close with H3_NO_ERROR", c.conn.Err())
+			}
+		})
+	}
+}
+
+// Config.KeepAlive keeps an HTTP/3 connection served by a Server open past
+// the idle timeout its client announced, which ServeQUIC's caller could not
+// do itself: ServeQUIC does not hand the *quic.Conn back.
+func TestServerKeepAliveHoldsAnHTTP3ConnectionPastTheIdleTimeout(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	params := quic.DefaultParameters()
+	params.MaxIdleTimeout = idle
+	srv := &Server{Config: Config{KeepAlive: 50 * time.Millisecond}, Handler: echoTarget}
+	c := &h3StopClient{conn: serveQUICFor(t, srv, params)}
+
+	c.ask(t)
+	c.answer(t)
+	select {
+	case <-c.conn.Done():
+		t.Fatalf("the connection ended after %v of silence: %v", idle, c.conn.Err())
+	case <-time.After(4 * idle):
+	}
+	c.ask(t)
+	if got := c.answer(t); got != "/slow" {
+		t.Fatalf("the second request read %q, want /slow", got)
+	}
+}

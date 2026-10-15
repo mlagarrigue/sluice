@@ -2,11 +2,11 @@ package httpstream
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice/net/quic"
@@ -57,7 +57,7 @@ type Server struct {
 	// its connections before it closes its listener, so they are the HTTP/3
 	// half of what Shutdown waits for.
 	quicLoops sync.WaitGroup
-	h3Open    atomic.Int64 // HTTP/3 connections being served
+	h3Conns   map[*quic.Conn]struct{} // HTTP/3 connections being served
 }
 
 // init resolves the configuration once, whichever method comes first; the
@@ -68,6 +68,7 @@ func (s *Server) init() error {
 		s.live = newConnSet(max(s.cfg.MaxConns, 0))
 		s.forced, s.force = context.WithCancel(context.Background())
 		s.listeners = map[net.Listener]struct{}{}
+		s.h3Conns = map[*quic.Conn]struct{}{}
 	})
 	return s.err
 }
@@ -129,6 +130,7 @@ func (s *Server) Serve(ln net.Listener) error {
 			return fmt.Errorf("httpstream: accepting: %w", err)
 		}
 		tempDelay = 0
+		setTCPKeepAlive(c, s.cfg.KeepAlive)
 		st := s.live.add(c)
 		if st == nil {
 			// Over MaxConns, or the shutdown ran between Accept and here and
@@ -192,12 +194,14 @@ func (s *Server) ServeQUIC(ln *quic.Listener) error {
 				continue
 			}
 			conns.Add(1)
-			s.h3Open.Add(1)
+			s.h3Conns[c] = struct{}{}
 			s.mu.Unlock()
 			go func() {
 				defer conns.Done()
-				defer s.h3Open.Add(-1)
 				_ = serveH3(s.live.draining, s.forced, c, s.cfg, s.Handler)
+				s.mu.Lock()
+				delete(s.h3Conns, c)
+				s.mu.Unlock()
 			}()
 		}
 	}()
@@ -258,10 +262,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // upstream call — learns it too. Close does not wait for the handlers to
 // return. When it cut connections that had requests in flight it says so
 // to [Config.Logger], with their number. It returns nil.
+//
+// An HTTP/3 connection is closed with H3_NO_ERROR, the code RFC 9114 §8.1
+// gives a close with no error to signal, before its listener: closing a
+// [quic.Listener] ends what it carries with the transport's own NO_ERROR,
+// which tells an HTTP/3 client the connection ended below its protocol.
 func (s *Server) Close() error {
 	_ = s.init()
 	s.stop()
-	cut := s.live.busy() + int(s.h3Open.Load())
+	s.mu.Lock()
+	h3 := make([]*quic.Conn, 0, len(s.h3Conns))
+	for c := range s.h3Conns {
+		h3 = append(h3, c)
+	}
+	s.mu.Unlock()
+	cut := s.live.busy() + len(h3)
+	for _, c := range h3 {
+		_ = c.CloseWithError(h3GracefulCode())
+	}
 	s.force()
 	s.live.closeAll()
 	if cut > 0 {
@@ -286,5 +304,20 @@ func (s *Server) stop() {
 	s.live.drain()
 	for ln := range s.listeners {
 		_ = ln.Close()
+	}
+}
+
+// setTCPKeepAlive has the TCP connection c is, or the one under it when c is
+// TLS, probe a silent peer every period ([Config.KeepAlive]). A period of
+// zero, or a connection that is not TCP, is left as it is.
+func setTCPKeepAlive(c net.Conn, period time.Duration) {
+	if period == 0 {
+		return
+	}
+	if tc, ok := c.(*tls.Conn); ok {
+		c = tc.NetConn()
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetKeepAliveConfig(net.KeepAliveConfig{Enable: true, Idle: period, Interval: period})
 	}
 }
