@@ -66,7 +66,8 @@ func readAll(t *testing.T, c net.Conn, cfg Config) (bodies [][]byte, err error) 
 	t.Helper()
 	src := Requests(c, cfg)
 	src.Stream()(func(b sluice.Batch[Request]) bool {
-		for _, r := range b.Items {
+		for i := range b.Items {
+			r := &b.Items[i]
 			bodies = append(bodies, append([]byte(nil), r.Body...))
 		}
 		return true

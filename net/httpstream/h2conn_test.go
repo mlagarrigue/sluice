@@ -788,6 +788,36 @@ func TestH2TrailersDoNotEndTheConnection(t *testing.T) {
 	}
 }
 
+// RFC 9113 §8.1: a trailing HEADERS block reaches the handler in
+// Request.Trailers, apart from the head's fields — whether the head left
+// room behind its fields in their storage or not.
+func TestH2RequestTrailersReachTheHandler(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, fieldsEcho)
+	c := dialH2(t, addr)
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: headBlock("POST", "/t", [2]string{"te", "trailers"}),
+	})
+	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("hi")})
+	trailers := literal(nil, "x-sum", "1")
+	trailers = literal(trailers, "x-sig", "a b")
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders | flagEndStream,
+		StreamID: 1, Payload: trailers,
+	})
+	c.request(3, "GET", "/none")
+	c.flush()
+
+	bodies := c.bodies(2)
+	if got, want := bodies[1], "te host | x-sum=1 x-sig=a b"; got != want {
+		t.Errorf("stream 1 answered %q, want %q", got, want)
+	}
+	if got, want := bodies[3], "host |"; got != want {
+		t.Errorf("stream 3 answered %q, want %q", got, want)
+	}
+}
+
 // RFC 9113 §5.1: DATA on a half-closed(remote) stream is STREAM_CLOSED.
 // Accepted silently, it lets a body keep growing past the bound it was
 // already measured against.
@@ -2242,7 +2272,8 @@ func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
 // then panics, and anything else with its own target.
 func panickingProducer(b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		if string(r.Target) != "/boom" {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 			continue

@@ -123,7 +123,8 @@ func FuzzH3Assembler(f *testing.F) {
 				delivered += uint64(len(f.Data))
 			}
 			batch, ids, failed, err := a.Frames(frames)
-			for _, r := range batch.Items {
+			for i := range batch.Items {
+				r := &batch.Items[i]
 				handedOff += uint64(len(r.Body))
 			}
 			// A connection error abandons the rest of its batch unread, so

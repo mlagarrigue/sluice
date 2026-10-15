@@ -116,7 +116,8 @@ func FuzzH2Connection(f *testing.F) {
 // not a handler's behaviour.
 func fuzzH2Handler(b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 	}
 	return sluice.Batch[Response]{Items: out}

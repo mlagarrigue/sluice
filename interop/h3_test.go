@@ -24,7 +24,8 @@ import (
 // shares no code reads.
 func h3Handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		switch string(r.Target) {
 		case "/stream":
 			out = append(out, httpstream.Response{Status: 200, Stream: h3Streamed})

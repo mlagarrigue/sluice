@@ -27,7 +27,8 @@ func ExampleServe() {
 				// One response per request, in order: on a pipelined
 				// connection the position is the only correlation there is.
 				out := make([]httpstream.Response, 0, b.Len())
-				for _, r := range b.Items {
+				for i := range b.Items {
+					r := &b.Items[i]
 					out = append(out, httpstream.Response{
 						Status: 200,
 						Body:   append([]byte("you asked for "), r.Target...),

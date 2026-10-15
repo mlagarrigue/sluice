@@ -98,7 +98,7 @@ type reader struct {
 	// [postgres.Rows] applied to a different wire protocol.
 	batch   []Request
 	headers []Header
-	bounds  [][2]int // each request's span in headers
+	bounds  [][3]int // each request's span in headers: its headers, then its trailers
 
 	// pending is what the last batch consumed, compacted at the start of the
 	// next round rather than before that batch was yielded: its elements
@@ -225,7 +225,7 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			}
 			return nil, 0, perr
 		}
-		r.bounds = append(r.bounds, [2]int{start, len(r.headers)})
+		r.bounds = append(r.bounds, [3]int{start, start + len(req.Headers), len(r.headers)})
 		r.batch = append(r.batch, req)
 		used += n
 		if !req.KeepAlive {
@@ -258,8 +258,13 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 	// The header views are taken now, not during the loop: appending to the
 	// arena may move its backing array, so a sub-slice handed out earlier
 	// would point at the array the next request outgrew.
-	for i := range r.batch {
-		r.batch[i].Headers = r.headers[r.bounds[i][0]:r.bounds[i][1]]
+	// Each view is capped at its own end, so a handler appending to one
+	// request's fields cannot write over the next ones in the arena.
+	for i, b := range r.bounds {
+		r.batch[i].Headers = r.headers[b[0]:b[1]:b[1]]
+		if b[2] > b[1] {
+			r.batch[i].Trailers = r.headers[b[1]:b[2]:b[2]]
+		}
 	}
 	return r.batch, used, nil
 }

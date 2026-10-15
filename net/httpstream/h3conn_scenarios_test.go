@@ -303,10 +303,11 @@ func TestH3FinMidFrameIsAFrameError(t *testing.T) {
 	}
 }
 
-// Trailers are not served, but their bytes answer to the same octet rules as
-// everything else that could be re-serialised toward an HTTP/1.1 hop — and a
-// frame after them is a second request trying to ride the stream.
-func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
+// Trailers reach the handler in Request.Trailers, apart from the headers,
+// and their bytes answer to the same octet rules as everything else that
+// could be re-serialised toward an HTTP/1.1 hop — and a frame after them is
+// a second request trying to ride the stream.
+func TestH3RequestTrailersReachTheHandler(t *testing.T) {
 	head := h3Request("POST", "/t")
 	head = appendH3Frame(head, h3Data, []byte("x"))
 
@@ -314,9 +315,12 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 		return appendH3Frame(nil, h3Headers, appendQPACK(nil, fields))
 	}
 
-	// Clean trailers: the request completes, the trailers do not reach it.
+	// Clean trailers: the request completes and carries them, apart.
 	a := testAssembler(Config{})
-	stream := append(append([]byte(nil), head...), trailers(Header{Name: []byte("x-sum"), Value: []byte("ok")})...)
+	stream := append(append([]byte(nil), head...), trailers(
+		Header{Name: []byte("x-sum"), Value: []byte("ok")},
+		Header{Name: []byte("x-sig"), Value: []byte("a b")},
+	)...)
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +328,17 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 	if batch.Len() != 1 || len(failed) != 0 {
 		t.Fatalf("a request with clean trailers was refused: batch=%d failed=%v", batch.Len(), failed)
 	}
-	if got := batch.Items[0].Get("x-sum"); got != nil {
-		t.Errorf("a trailer field reached the request as %q", got)
+	r := batch.Items[0]
+	if got := r.Get("x-sum"); got != nil {
+		t.Errorf("a trailer field reached the headers as %q", got)
+	}
+	if len(r.Trailers) != 2 ||
+		string(r.Trailers[0].Name) != "x-sum" || string(r.Trailers[0].Value) != "ok" ||
+		string(r.Trailers[1].Name) != "x-sig" || string(r.Trailers[1].Value) != "a b" {
+		t.Errorf("Trailers = %q, want x-sum: ok, x-sig: a b", r.Trailers)
+	}
+	if len(r.Headers) != cap(r.Headers) {
+		t.Errorf("Headers has room for %d more fields: an append would overwrite the trailers", cap(r.Headers)-len(r.Headers))
 	}
 
 	// Malformed trailers are the request's fault: a stream error, the

@@ -100,8 +100,8 @@ func serveStream(t *testing.T, be *backend) string {
 	t.Helper()
 	return startStream(t, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		ids := make([]int64, 0, b.Len())
-		for _, r := range b.Items {
-			ids = append(ids, targetID(r.Target))
+		for i := range b.Items {
+			ids = append(ids, targetID(b.Items[i].Target))
 		}
 		be.load(ids)
 		out := make([]httpstream.Response, 0, b.Len())
@@ -138,8 +138,8 @@ func serveStreamGateway(t *testing.T, be *backend, within time.Duration) string 
 		// can still join the same window. This used to be a goroutine per
 		// element around Do; DoBatch is that composition as an API.
 		ids := make([]int64, b.Len())
-		for i, r := range b.Items {
-			ids[i] = targetID(r.Target)
+		for i := range b.Items {
+			ids[i] = targetID(b.Items[i].Target)
 		}
 		out := make([]httpstream.Response, b.Len())
 		for i, o := range gw.DoBatch(context.Background(), ids) {

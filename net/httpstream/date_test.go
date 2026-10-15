@@ -42,7 +42,8 @@ var testDate = []byte(handlerDate)
 // carrying its own Date, and panics on /boom so the layer answers 500.
 func dateHandler(b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		switch string(r.Target) {
 		case "/missing":
 			out = append(out, Response{Status: 404})

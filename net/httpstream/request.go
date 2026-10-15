@@ -29,10 +29,24 @@ type Request struct {
 	Target []byte
 
 	// Headers is the request's field section, in the order the client sent
-	// it. Trailer fields are validated against the same bounds, then
-	// dropped, on every protocol: this package delivers complete requests,
-	// and a field arriving after the body has nobody left to inform.
+	// it.
 	Headers []Header
+
+	// Trailers is the request's trailer section, in the order the client
+	// sent it, or nil when it sent none: the fields after the body of a
+	// chunked HTTP/1.1 request, or of a trailing HEADERS on HTTP/2 and
+	// HTTP/3. The whole request is read before the handler is called, so
+	// they are here as soon as the body is. They are held to the bounds the
+	// headers are held to, separately: a trailer section of its own up to
+	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
+	//
+	// They are kept apart from Headers on purpose and nothing in them is
+	// interpreted. RFC 9110 §6.5 has a trailer stored separately and never
+	// merged into the header section unless the field's own definition
+	// allows it: a Content-Length or Authorization arriving after the body
+	// came too late to frame, route or authorise this request, and a
+	// handler that reads one from here takes that on knowingly.
+	Trailers []Header
 
 	// Body is the request's content, exactly the bytes the client sent once
 	// the transfer coding is undone: a chunked body arrives joined, and
@@ -492,6 +506,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	// backing array, so a sub-slice handed out mid-parse would dangle the way
 	// a retained batch does. The caller re-slices once the batch is complete.
 	req.Headers = out[start:]
+	headersEnd := len(out)
 	consumed += n
 	rest = rest[n:]
 
@@ -508,14 +523,21 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	}
 
 	if chunked {
-		body, n, cerr := decodeChunked(rest, cfg, progress, consumed)
+		body, n, trailers, cerr := decodeChunked(rest, cfg, progress, consumed, out)
 		if cerr != nil {
 			if errors.Is(cerr, errIncomplete) && expectsContinue(req) {
 				return req, 0, out, errExpectContinue
 			}
 			return req, 0, out, cerr
 		}
+		out = trailers
 		req.Body = body
+		// The same views as Headers, after the same appends; capped, so a
+		// handler appending to Headers cannot write over the trailers.
+		req.Headers = out[start:headersEnd:headersEnd]
+		if len(out) > headersEnd {
+			req.Trailers = out[headersEnd:]
+		}
 		return req, consumed + n, out, nil
 	}
 	length, err := contentLength(req, cfg)
@@ -802,11 +824,12 @@ type chunkProgress struct {
 // validated prefix when the body is still incomplete. On any other outcome
 // it is cleared: the request is done, or the connection is.
 //
-// Trailer fields are parsed and discarded — parsed, so a trailer section
-// that is not made of field lines is refused like any other framing fault,
-// and discarded because this package delivers complete requests, where a
-// field arriving after the body has nobody left to inform.
-func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd int) (body []byte, consumed int, err error) {
+// Trailer fields are parsed — a trailer section that is not made of field
+// lines is refused like any other framing fault — and appended to arena by
+// the moving pass, which returns it as out. They are views into buf past
+// the body, where the in-place copy never writes: decoded data only moves
+// toward the front, and the trailer section is behind every chunk.
+func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd int, arena []Header) (body []byte, consumed int, out []Header, err error) {
 	var local chunkProgress
 	if progress == nil {
 		progress = &local
@@ -814,23 +837,24 @@ func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd i
 		*progress = chunkProgress{}
 	}
 	progress.headersEnd = headersEnd
-	if _, _, err := walkChunks(buf, cfg, progress, false); err != nil {
+	if _, _, _, err := walkChunks(buf, cfg, progress, false, nil); err != nil {
 		if !errors.Is(err, errIncomplete) {
 			*progress = chunkProgress{}
 		}
-		return nil, 0, err
+		return nil, 0, arena, err
 	}
 	*progress = chunkProgress{}
-	w, r, _ := walkChunks(buf, cfg, &local, true)
-	return buf[:w], r, nil
+	w, r, out, _ := walkChunks(buf, cfg, &local, true, arena)
+	return buf[:w], r, out, nil
 }
 
 // walkChunks walks the chunked framing at the front of buf from the state in
 // p, copying the data down over it when move is set. w is where the decoded
 // body ends, r where the encoded form does. p is advanced past each chunk
 // and trailer line as it is validated, so an errIncomplete leaves it at the
-// last whole one and the next call starts there.
-func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, err error) {
+// last whole one and the next call starts there. The moving pass appends
+// the trailer fields to out; the validating pass only counts them.
+func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Header) (w, r int, fields []Header, err error) {
 	w, r = p.w, p.r
 	if move {
 		// The moving pass starts from zero: chunk data is copied down over
@@ -842,13 +866,13 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 		line, rest, ok := cutCRLF(buf[r:], maxChunkLineBytes)
 		if !ok {
 			if len(buf)-r > maxChunkLineBytes+1 {
-				return 0, 0, fmt.Errorf("%w: a chunk-size line over %d bytes", ErrMalformed, maxChunkLineBytes)
+				return 0, 0, out, fmt.Errorf("%w: a chunk-size line over %d bytes", ErrMalformed, maxChunkLineBytes)
 			}
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		size, serr := parseChunkSize(line, cfg.MaxBodyBytes-w)
 		if serr != nil {
-			return 0, 0, serr
+			return 0, 0, out, serr
 		}
 		r = len(buf) - len(rest)
 		if size == 0 {
@@ -858,10 +882,10 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 			break
 		}
 		if len(rest) < size+2 {
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		if rest[size] != '\r' || rest[size+1] != '\n' {
-			return 0, 0, fmt.Errorf("%w: chunk data is not ended by CRLF", ErrMalformed)
+			return 0, 0, out, fmt.Errorf("%w: chunk data is not ended by CRLF", ErrMalformed)
 		}
 		if move {
 			copy(buf[w:], rest[:size])
@@ -884,21 +908,25 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 		line, rest, ok := cutCRLF(buf[r:], limit)
 		if !ok {
 			if len(buf)-r > limit+1 {
-				return 0, 0, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
+				return 0, 0, out, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 			}
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		trailerBytes += len(buf) - len(rest) - r
 		r = len(buf) - len(rest)
 		if len(line) == 0 {
-			return w, r, nil
+			return w, r, out, nil
 		}
 		if trailerFields >= cfg.MaxHeaders {
-			return 0, 0, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, cfg.MaxHeaders)
+			return 0, 0, out, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, cfg.MaxHeaders)
 		}
 		trailerFields++
-		if _, err := parseHeaderLine(line); err != nil {
-			return 0, 0, err
+		h, err := parseHeaderLine(line)
+		if err != nil {
+			return 0, 0, out, err
+		}
+		if move {
+			out = append(out, h)
 		}
 		if !move {
 			p.r, p.trailerBytes, p.trailerFields = r, trailerBytes, trailerFields

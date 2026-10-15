@@ -113,9 +113,6 @@ type h3Assembler struct {
 	// calls: nothing drain does retains the slice past its own use, so there
 	// is no reason to allocate it fresh every time a stream's buffer drains.
 	frames []h3Frame
-	// trailers is where a trailing HEADERS decodes to, validated and then
-	// dropped — reused across streams, never a request's.
-	trailers []Header
 }
 
 // maxRefusedRemembered bounds the tombstones. A peer still sending on a
@@ -953,20 +950,23 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
 			}
 			if st.gotHead {
-				// Trailers: validated against the same bounds, then dropped,
-				// on every protocol (see Request.Headers) — and their bytes
-				// are held to the same octet rules as everything else that
-				// could be re-serialised toward an HTTP/1.1 hop (§4.1.2,
-				// §10.3): decoded, validated, then dropped.
-				if a.trailers, err = a.qpack.Decode(a.trailers[:0], f.Payload); err != nil {
+				// Trailers: held to the head's bounds and delivered in
+				// Request.Trailers — and their bytes are held to the same
+				// octet rules as everything else that could be
+				// re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3).
+				// Decoded behind the head's fields in the same storage:
+				// Request.Headers is capped at its own length, so neither
+				// overwrites the other.
+				trailers, err := a.qpack.Decode(st.headers[len(st.headers):], f.Payload)
+				if err != nil {
 					return sectionRefused(err)
 				}
 				// Same field-count bound as the request block below.
-				if len(a.trailers) > a.cfg.MaxHeaders {
+				if len(trailers) > a.cfg.MaxHeaders {
 					return h3StatusFail(431, "%w: over %d trailer fields",
 						ErrTooLarge, a.cfg.MaxHeaders)
 				}
-				for _, h := range a.trailers {
+				for _, h := range trailers {
 					if len(h.Name) == 0 {
 						return fmt.Errorf("%w: an empty trailer name", ErrH3Protocol)
 					}
@@ -979,6 +979,9 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					if !validFieldValue(h.Value) {
 						return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrH3Protocol, h.Name)
 					}
+				}
+				if len(trailers) > 0 {
+					st.req.Trailers = trailers
 				}
 				st.gotTrailers = true
 				continue
@@ -1000,6 +1003,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				return err
 			}
 			st.headers, st.declared, st.req = req.Headers, declared, req
+			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 			st.gotHead = true
 		case h3Data:
 			if !st.gotHead {

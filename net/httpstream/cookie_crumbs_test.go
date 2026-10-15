@@ -23,7 +23,8 @@ func (e *cookieEcho) handle(b sluice.Batch[Request]) sluice.Batch[Response] {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	res := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		n := 0
 		for _, h := range r.Headers {
 			if string(h.Name) == "cookie" {

@@ -140,8 +140,8 @@ func (e *Exchange) Refused() bool { return e.Status != 0 }
 // handler can reuse one slice across batches. The exchanges alias the
 // requests and follow the same lifetime.
 func Exchanges(dst []Exchange, b sluice.Batch[httpstream.Request]) []Exchange {
-	for _, r := range b.Items {
-		dst = append(dst, Exchange{Request: r, Route: RouteNone})
+	for i := range b.Items {
+		dst = append(dst, Exchange{Request: b.Items[i], Route: RouteNone})
 	}
 	return dst
 }

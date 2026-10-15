@@ -284,7 +284,8 @@ func wwwPath(target string) (string, error) {
 func serveH3(c *quic.Conn) {
 	err := httpstream.ServeH3(context.Background(), c, httpstream.Config{}, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, 0, b.Len())
-		for _, r := range b.Items {
+		for i := range b.Items {
+			r := &b.Items[i]
 			out = append(out, h3File(string(r.Target)))
 		}
 		return sluice.Batch[httpstream.Response]{Items: out}

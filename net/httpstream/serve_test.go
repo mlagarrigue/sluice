@@ -53,7 +53,8 @@ func serveTest(t *testing.T, cfg Config, h Handler) (addr string, sizes func() [
 // which answer belongs to which request.
 func echoTarget(b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 	}
 	return sluice.Batch[Response]{Items: out}
@@ -1270,4 +1271,49 @@ func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
 	wantLine(t, head, "Connection: keep-alive", true)
 	wantLine(t, head, "Keep-Alive: timeout=30", true)
 	wantLine(t, head, "Transfer-Encoding: chunked", true)
+}
+
+// fieldsEcho answers each request with its header names, then its trailers
+// as name=value, so a test reads where one section ends and the other
+// begins.
+func fieldsEcho(b sluice.Batch[Request]) sluice.Batch[Response] {
+	out := make([]Response, 0, b.Len())
+	for i := range b.Items {
+		r := &b.Items[i]
+		var body []byte
+		for _, h := range r.Headers {
+			body = append(append(body, h.Name...), ' ')
+		}
+		body = append(body, '|')
+		for _, h := range r.Trailers {
+			body = append(append(append(append(body, ' '), h.Name...), '='), h.Value...)
+		}
+		out = append(out, Response{Status: 200, Body: body})
+	}
+	return sluice.Batch[Response]{Items: out}
+}
+
+// RFC 9112 §7.1.2 and RFC 9110 §6.5: the trailer section of a chunked
+// request reaches the handler in Request.Trailers, apart from its headers.
+// Two requests pipelined in one write share the batch's field arena, so
+// each must see its own trailers and nothing of its neighbour's fields.
+func TestRequestTrailersReachTheHandler(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, fieldsEcho)
+	c := dial(t, addr)
+
+	fmt.Fprint(c, "POST /a HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n"+
+		"2\r\nhi\r\n0\r\nX-Sum: 1\r\nX-Sig: a b\r\n\r\n"+
+		"POST /b HTTP/1.1\r\nHost: h\r\nX-Extra: e\r\nTransfer-Encoding: chunked\r\n\r\n"+
+		"0\r\nX-Sum: 2\r\n\r\n"+
+		"POST /c HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+	br := bufio.NewReader(c)
+	for _, want := range []string{
+		"Host Transfer-Encoding | X-Sum=1 X-Sig=a b",
+		"Host X-Extra Transfer-Encoding | X-Sum=2",
+		"Host Transfer-Encoding |",
+	} {
+		if _, body := readResponse(t, br); body != want {
+			t.Errorf("answered %q, want %q", body, want)
+		}
+	}
 }

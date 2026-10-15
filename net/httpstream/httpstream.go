@@ -144,8 +144,9 @@
 // consumes DATA, bounds concurrent streams, counts RST_STREAM against the
 // rapid-reset bound (CVE-2023-44487), and tracks a header block across
 // CONTINUATION with the count and total bounded (CVE-2024-27316). Trailers
-// are decoded then discarded rather than refused, because HPACK's shared
-// table means an undecoded block corrupts every one after it.
+// are delivered in [Request.Trailers]; on a stream already ended or reset
+// they are decoded then discarded rather than refused, because HPACK's
+// shared table means an undecoded block corrupts every one after it.
 //
 // HPACK and QPACK are transcribed from their RFCs rather than typed, and
 // pinned by the RFCs' own vectors (RFC 7541 Appendix C, including C.4 for
@@ -182,10 +183,10 @@
 //
 //   - **Transfer-Encoding, except "chunked" alone.** A chunked body with no
 //     Content-Length beside it is decoded — bounded by [Config.MaxBodyBytes],
-//     chunk extensions ignored, trailers parsed and discarded. A coding this
-//     server does not implement is answered 501; Transfer-Encoding beside
-//     Content-Length — the request-smuggling pair in its entirety — or on an
-//     HTTP/1.0 request is answered 400.
+//     chunk extensions ignored, trailers delivered in [Request.Trailers]. A
+//     coding this server does not implement is answered 501;
+//     Transfer-Encoding beside Content-Length — the request-smuggling pair
+//     in its entirety — or on an HTTP/1.0 request is answered 400.
 //   - **A repeated or non-numeric Content-Length**, answered 400.
 //   - **Absolute-form and authority-form targets** — only origin-form, a
 //     target starting with "/", is accepted. The others exist for proxies and

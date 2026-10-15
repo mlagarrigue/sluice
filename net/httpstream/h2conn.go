@@ -260,9 +260,11 @@ type h2Server struct {
 	// states what the bound means.
 	resets int
 	served int
-	// trailers is where a trailing header block is decoded to and left. It is
-	// reused rather than allocated per block, and it is never a request's.
-	trailers []Header
+	// discard is where a header block nobody will read is decoded to and
+	// left — one for a stream already ended or reset, which must still go
+	// through the decoder (see headers). It is reused rather than allocated
+	// per block, and it is never a request's.
+	discard []Header
 
 	goingAway bool
 
@@ -889,8 +891,14 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// refusal after this point is a stream error, which by then can be one
 	// because the shared decoder is already consistent.
 	dst := st.headers
-	if st.gotHead || st.state != stateOpen {
-		dst = s.trailers[:0]
+	switch {
+	case st.state != stateOpen:
+		dst = s.discard[:0]
+	case st.gotHead:
+		// Trailers, decoded behind the head's fields in the same storage:
+		// Request.Headers is capped at its own length, so neither overwrites
+		// the other, and a stream whose head left room costs no allocation.
+		dst = st.headers[len(st.headers):]
 	}
 	fields, err := s.dec.Decode(dst, st.block)
 	st.block = st.block[:0]
@@ -905,7 +913,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		// stream has already been reset, and refusing an oversized block on
 		// it would send a second RST_STREAM — and charge a second reset —
 		// for a stream that is gone.
-		s.trailers = fields
+		s.discard = fields
 		return nil, nil
 	}
 	// The field-count bound the h1 parser applies as it reads, applied here
@@ -922,12 +930,11 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
 	case st.gotHead:
-		// A trailer section: validated against the same bounds, then
-		// dropped, on every protocol (see Request.Headers) — but it
-		// ends the message, and §8.1 makes a pseudo-header in it malformed:
-		// a trailer that carries :status or :path is a second request's head
-		// pretending to be the end of this one.
-		s.trailers = fields
+		// A trailer section, held to the head's bounds and delivered in
+		// Request.Trailers — but it ends the message, and §8.1 makes a
+		// pseudo-header in it malformed: a trailer that carries :status or
+		// :path is a second request's head pretending to be the end of this
+		// one.
 		st.gotTrailers = true
 		// §8.1: the trailer block is the one that ends the stream, so a
 		// second HEADERS without END_STREAM is a malformed request, a stream
@@ -957,6 +964,9 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 					"%w: the trailer %q holds a control character", ErrH2Protocol, h.Name)
 			}
 		}
+		if len(fields) > 0 {
+			st.req.Trailers = fields
+		}
 		return s.finish(st)
 	}
 
@@ -969,6 +979,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		return nil, streamError{id: st.id, code: errProtocolError, err: err}
 	}
 	st.headers, st.declared, st.req = req.Headers, declared, req
+	st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 	if st.endStream {
 		return s.finish(st)
 	}

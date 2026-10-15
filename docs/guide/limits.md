@@ -152,12 +152,13 @@ Three reasons come up, and the difference matters:
   path. gzip and deflate will come from the standard library, zstd and
   brotli from a maintained module, the day the measurement says what each
   brings.
-- **Request trailers are validated, then dropped** — identically over
+- **Request trailers arrive apart from the headers** — identically over
   HTTP/1.1, 2 and 3: parsed, held to the same bounds as the headers
-  (`MaxHeaders`, `MaxHeaderBytes`), refused when malformed, then lost
-  before the handler. The package delivers complete requests, and a field
-  arriving after the body has nobody left to inform. A `Request.Trailers`
-  field will come with the first consumer who asks for one.
+  (`MaxHeaders`, `MaxHeaderBytes`), refused when malformed, then handed to
+  the handler in `Request.Trailers`, never merged into `Request.Headers`.
+  A trailer is a field that arrived after the body (a checksum, a
+  signature); RFC 9110 §6.5 keeps it apart because the request was
+  already framed and routed by then, so nothing in the package reads it.
 
 ## Experimental: the exit conditions
 
