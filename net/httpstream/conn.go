@@ -209,6 +209,16 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			break
 		}
 		if perr != nil {
+			// A refused request costs itself, not the valid ones parsed
+			// ahead of it in this pass: those are returned and served, and
+			// the next pass re-parses the refused one from the front of the
+			// buffer with the batch empty — then the error is the
+			// connection's, and the caller answers it after the responses
+			// that came before (RFC 9112 §9.3). Returning the error now
+			// would throw away a batch the handler never saw.
+			if len(r.batch) > 0 {
+				break
+			}
 			return nil, 0, perr
 		}
 		r.bounds = append(r.bounds, [2]int{start, len(r.headers)})

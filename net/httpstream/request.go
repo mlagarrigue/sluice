@@ -430,6 +430,13 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	out = arena
 	start := len(arena)
 
+	// RFC 9112 §2.2: at least one empty line before the request-line is
+	// ignored — the CRLF some clients send after a body. One, exactly: a
+	// second is a request line with no method, as it always was.
+	skipped := 0
+	if len(buf) >= 2 && buf[0] == '\r' && buf[1] == '\n' {
+		buf, skipped = buf[2:], 2
+	}
 	line, rest, ok := cutCRLF(buf, cfg.MaxRequestLineBytes)
 	if !ok {
 		if len(buf) > cfg.MaxRequestLineBytes+1 {
@@ -437,7 +444,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		}
 		return req, 0, out, errIncomplete
 	}
-	consumed = len(buf) - len(rest)
+	consumed = skipped + len(buf) - len(rest)
 
 	method, target, version, err := splitRequestLine(line)
 	if err != nil {
@@ -479,7 +486,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	if chunked {
 		body, n, cerr := decodeChunked(rest, cfg, progress, consumed)
 		if cerr != nil {
-			if errors.Is(cerr, errIncomplete) && fieldHasToken(req.Headers, "expect", "100-continue") {
+			if errors.Is(cerr, errIncomplete) && expectsContinue(req) {
 				return req, 0, out, errExpectContinue
 			}
 			return req, 0, out, cerr
@@ -492,7 +499,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		return req, 0, out, err
 	}
 	if len(rest) < length {
-		if fieldHasToken(req.Headers, "expect", "100-continue") {
+		if expectsContinue(req) {
 			return req, 0, out, errExpectContinue
 		}
 		return req, 0, out, errIncomplete
@@ -523,6 +530,14 @@ func connectionOptions(headers []Header) (hasClose, hasKeepAlive bool) {
 		}
 	}
 	return hasClose, hasKeepAlive
+}
+
+// expectsContinue reports whether the request is owed an interim 100 before
+// its body. Never on HTTP/1.0: RFC 9110 §15.2 forbids a 1xx to such a client
+// (it would read the interim as the response), and §10.1.1 says Expect is
+// ignored there — the body is waited for as if the field were absent.
+func expectsContinue(req Request) bool {
+	return !req.http10 && fieldHasToken(req.Headers, "expect", "100-continue")
 }
 
 // fieldHasToken reports whether token appears as a member of the

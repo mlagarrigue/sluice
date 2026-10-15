@@ -1016,3 +1016,58 @@ func TestHostIsAnAuthorityOnHTTP1(t *testing.T) {
 		})
 	}
 }
+
+// A parse error costs the request that carries it, not the valid ones parsed
+// ahead of it in the same read: those are served, in order, and the 400
+// closes the connection after them (RFC 9112 §9.3 orders the responses).
+func TestRequestsParsedBeforeAnErrorAreServed(t *testing.T) {
+	addr, sizes := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\nGET * HTTP/1.1\r\nHost: h\r\n\r\n")
+	br := bufio.NewReader(c)
+	if status, body := readResponse(t, br); !strings.Contains(status, "200") || body != "/a" {
+		t.Fatalf("first response %q %q, want 200 /a", status, body)
+	}
+	if status, _ := readResponse(t, br); !strings.Contains(status, "400") {
+		t.Fatalf("second response %q, want 400", status)
+	}
+	if got := sizes(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("batch sizes %v, want the one valid request alone", got)
+	}
+}
+
+// RFC 9112 §2.2: a server SHOULD ignore at least one empty line before a
+// request-line — the CRLF some clients send after a body.
+func TestAnEmptyLineBeforeARequestLineIsIgnored(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\n\r\nGET /b HTTP/1.1\r\nHost: h\r\n\r\n")
+	br := bufio.NewReader(c)
+	for _, want := range []string{"/a", "/b"} {
+		if status, body := readResponse(t, br); !strings.Contains(status, "200") || body != want {
+			t.Fatalf("response %q %q, want 200 %s", status, body, want)
+		}
+	}
+}
+
+// RFC 9110 §15.2: a server MUST NOT send a 1xx to an HTTP/1.0 client, and
+// §10.1.1 says Expect is ignored there; the request is otherwise served.
+func TestNo100ContinueToAnHTTP10Client(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "POST /x HTTP/1.0\r\nHost: h\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")
+	if err := c.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var one [1]byte
+	if n, err := c.Read(one[:]); err == nil {
+		t.Fatalf("%d byte(s) arrived before the body was sent: an interim response to an HTTP/1.0 client", n)
+	}
+	if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(c, "ab")
+	if status, body := readResponse(t, bufio.NewReader(c)); !strings.Contains(status, "200") || body != "/x" {
+		t.Fatalf("response %q %q, want 200 /x", status, body)
+	}
+}
