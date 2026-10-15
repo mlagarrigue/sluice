@@ -435,3 +435,24 @@ func TestSilentConnectionIsWaitedOnOnce(t *testing.T) {
 		t.Errorf("%d reads of a silent connection, want 1", c.reads)
 	}
 }
+
+// A Content-Encoding is the handler's: the body arrives as sent, still
+// compressed, and the field with it. Nothing is decoded and nothing is
+// refused with a 415, since what a handler accepts is not the parser's to
+// know.
+func TestRequestBodyKeepsItsContentEncoding(t *testing.T) {
+	gz := "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00" // gzip of nothing
+	raw := req("POST /x HTTP/1.1", "Host: h", "Content-Encoding: gzip", "Content-Length: 20")
+	raw = append(raw, gz...)
+
+	r, _, err := parse(t, raw)
+	if err != nil {
+		t.Fatalf("parse returned %v", err)
+	}
+	if string(r.Body) != gz {
+		t.Errorf("body = %q, want the compressed bytes as sent", r.Body)
+	}
+	if got := string(r.Get("content-encoding")); got != "gzip" {
+		t.Errorf("Content-Encoding = %q, want it kept for the handler", got)
+	}
+}

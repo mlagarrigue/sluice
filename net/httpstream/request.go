@@ -29,7 +29,16 @@ type Request struct {
 	Target []byte
 
 	Headers []Header
-	Body    []byte
+
+	// Body is the request's content, exactly the bytes the client sent once
+	// the transfer coding is undone: a chunked body arrives joined, and
+	// nothing else is decoded. A Content-Encoding (gzip, br) is the
+	// handler's to read and to undo — the field stays in Headers and the
+	// body stays compressed. The package neither decodes a coding nor
+	// refuses one with a 415: it has no view on what a handler accepts, and
+	// a second parser between the socket and the handler is what this
+	// package exists not to be.
+	Body []byte
 
 	// KeepAlive reports whether the connection may serve another request
 	// after this one, per the version and the Connection header.
