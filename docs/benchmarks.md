@@ -51,7 +51,12 @@ task, throttling — cancels out of a ratio instead of landing on whichever
 side ran first. The verdict is a **sign test** over the paired rounds: did
 "after" win enough rounds that chance is no longer a credible explanation?
 It assumes nothing about the noise's distribution, and one wild round cannot
-swing it. Validated in both directions: the same binary on both sides reads
+swing it. Two things pairing does not cancel are alternated instead: the
+order inside a round, and the path each binary starts from. The same bytes
+of `BenchmarkHPACKDecode` measured 292 ns from one file name and 230 ns from
+another, so each side runs from two copies under names of different
+lengths, swapped every other round; an effect of one name then lands in
+half the rounds, which the sign test reads as noise. Validated in both directions: the same binary on both sides reads
 `noise` where raw medians showed up to +21%; a real change reads
 `faster -52.7%`, 10 wins out of 10; an untouched benchmark reads `noise`.
 
@@ -548,15 +553,17 @@ days: the eight within 0.94–1.02 of `main` for CUBIC, `Bottleneck` the
 
 **The CI gate watches eight of the Reno rows** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
-`gate.sh`'s on every pull request. It differs from `gate.sh` in the three
-ways these rows require: it builds `net/quic`'s test binary rather than
-`internal/bench`'s; it runs the two binaries unpinned, with the runtime's
-own `GOMAXPROCS`, since the emulation sleeps on timers in several
-goroutines; and it rules on the median of eight transfers a side,
-interleaved before/after so drift cancels, red when the median after is
-more than 15% above the median before rather than on a 3% effect by sign
-test. One transfer per round (`-benchtime=1x`): the figure is a transfer's
-wall clock, not a rate the harness scales. `Reorder` stays out of the gate:
+`gate.sh`'s on every pull request and every push to `main`. It differs
+from `gate.sh` in the three ways these rows require: it builds
+`net/quic`'s test binary rather than `internal/bench`'s; it runs the two
+binaries unpinned, with the runtime's own `GOMAXPROCS`, since the emulation
+sleeps on timers in several goroutines; and it rules on the median of
+eight transfers a side, interleaved before/after so drift cancels, red
+when the median after is more than 6% above the median before rather than
+on a 3% effect by sign test. Ten passes on an identical tree kept every
+ratio within 0.970–1.015; an initial window halved put four rows 11–24%
+above. One transfer per round (`-benchtime=1x`): the figure is a
+transfer's wall clock, not a rate the harness scales. `Reorder` stays out of the gate:
 on an identical tree its median moved 7% between the two sides (the eight
 gated profiles, under 2.1%), because a spurious loss is declared or not by
 a few microseconds of scheduling. To run the gate by hand against the tree

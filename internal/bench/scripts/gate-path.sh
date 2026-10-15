@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI regression gate for the emulated-path benchmarks of net/quic: paired A/B
 # of the working tree against a base ref, failing on any benchmark whose
-# median transfer is more than 15% slower.
+# median transfer is more than 6% slower.
 #
 #   internal/bench/scripts/gate-path.sh <base-ref> [rounds]
 #
@@ -9,20 +9,21 @@
 # rather than more names in its GATED set:
 #
 #   - they live in net/quic, and gate.sh lists and builds internal/bench alone;
-#   - ab.sh pins each binary to one core under GOMAXPROCS=1, and an emulation
-#     that sleeps on timers in several goroutines (the middlebox, both
-#     endpoints) must not be — pinned, the path is the scheduler;
+#   - gate.sh measures pinned to one core under GOMAXPROCS=1, and an
+#     emulation that sleeps on timers in several goroutines (the middlebox,
+#     both endpoints) must not be — pinned, the path is the scheduler;
 #   - they measure the congestion controller, not the CPU: a transfer takes as
 #     long as the path lets it, so the machine's load barely moves the figure
-#     and the spread is 1-4%. gate.sh's 3% effect by sign test is a CPU bound;
-#     the rule docs/benchmarks.md states for these rows is 15% on the median.
+#     and the spread is 1-3%. gate.sh's 3% effect by sign test is a CPU
+#     bound; these rows are judged on the median, with a wider bound.
 #
 # So: build net/quic's test binary from both trees, run the gated benchmarks
-# as interleaved rounds (before, after, before, after...) so drift cancels out
-# of the comparison as it does in ab.sh, one transfer per round
-# (-test.benchtime=1x: the figure is one transfer's wall clock, and the
-# median of eight transfers is the statistic), and fail when the 'after'
-# median exceeds the 'before' median by more than PATHEFFECT.
+# through ab.sh unpinned (CORE=''), whose interleaved rounds cancel drift and
+# whose two names per side and alternating order keep the binary's path and
+# the running order out of the comparison, one transfer per round
+# (BENCHTIME=1x: the figure is one transfer's wall clock, and the median of
+# eight transfers is the statistic), and fail when the 'after' median exceeds
+# the 'before' median by more than PATHEFFECT.
 #
 # The round count lives here: CI calls the script without one.
 set -euo pipefail
@@ -41,13 +42,15 @@ PKG="./net/quic"
 # its figure moves 7% with nothing changed.
 GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurstLoss$|BenchmarkTransferBottleneck$|BenchmarkTransferDeepBuffer$|BenchmarkTransferTwoFlows$|BenchmarkTransferRTT40$|BenchmarkTransferRTT80$'
 
-# 15%: the bound docs/benchmarks.md sets on these rows, above their measured
-# spread (±4% on the lossy profile) and below what a change to the controller
-# itself costs: slow-start growth halved puts Clean at +43% (measured
-# 2026-10-14, the injection this gate was proven red on). What it does not
-# see: an initial window halved costs Clean +8%, inside the bound — a change
-# of that size is for the local protocol, docs/benchmarks.md's command.
-PATHEFFECT="${PATHEFFECT:-0.15}"
+# 6%: four times the widest upward spread measured on an identical tree, and
+# below what an initial window halved costs. Measured 2026-10-15, ten passes
+# of this script on an identical tree: every gated ratio within 0.970-1.015,
+# Bottleneck 0.988-1.015. The initial window halved (recovery.go, ten
+# datagrams to five): RTT40 1.239, Clean 1.133, RTT80 1.120, Bottleneck
+# 1.108 — four rows red; at the 15% this bound was before, RTT40 alone saw
+# that injection. A runner whose identical-tree spread reaches 1.04 is the signal
+# to raise it.
+PATHEFFECT="${PATHEFFECT:-0.06}"
 PCT="$(awk -v e="$PATHEFFECT" 'BEGIN { printf "%d%%", e * 100 }')"
 
 # Every gated name must name a benchmark that exists — see gate.sh for why a
@@ -74,33 +77,25 @@ cleanup() {
 trap cleanup EXIT
 
 echo "building 'after' from the working tree..."
-go test -c -o "$BINDIR/quic.after" "$ROOT/$PKG"
+go test -c -o "$BINDIR/bench.after" "$ROOT/$PKG"
 
 WORKTREE="$(mktemp -d)"
 echo "building 'before' from $BASE..."
 git -C "$ROOT" worktree add -q --detach "$WORKTREE" "$BASE"
-( cd "$WORKTREE" && go test -c -o "$BINDIR/quic.before" "$PKG" )
+( cd "$WORKTREE" && go test -c -o "$BINDIR/bench.before" "$PKG" )
 git -C "$ROOT" worktree remove --force "$WORKTREE"
 WORKTREE=""
 
 echo "measuring $ROUNDS interleaved rounds, one transfer each..."
-rows="$(for r in $(seq 1 "$ROUNDS"); do
-  for side in before after; do
-    "$BINDIR/quic.$side" -test.bench="$GATED" -test.benchtime=1x -test.count=1 -test.run='^$' 2>/dev/null \
-      | awk -v s="$side" '
-          /^Benchmark/ {
-            for (i = 2; i <= NF; i++) if ($i == "ns/op") print s, $1, $(i-1)
-          }'
-  done
-done)"
+rows="$(BINDIR="$BINDIR" CORE='' BENCHTIME=1x "$ROOT/internal/bench/scripts/ab.sh" "$GATED" "$ROUNDS")"
 
 # Medians per side, then the verdict. The name is printed without its -N
 # suffix, which is GOMAXPROCS and differs between machines.
 out="$(awk -v EFFECT="$PATHEFFECT" -v ROUNDS="$ROUNDS" '
   {
-    name = $2; sub(/-[0-9]+$/, "", name)
+    name = $3; sub(/-[0-9]+$/, "", name)
     n[$1, name]++
-    v[$1, name, n[$1, name]] = $3
+    v[$1, name, n[$1, name]] = $4
     seen[name] = 1
   }
   function median(side, name,    k, i, j, t, a) {
