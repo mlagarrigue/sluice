@@ -1474,3 +1474,57 @@ func TestIntegrationAnUnaskedEncodingBreaksTheConnection(t *testing.T) {
 		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
 	}
 }
+
+// ExecParams against a real server: the tag of each command is the server's,
+// RowsAffected reads its count, and a statement without one says so. A
+// temporary table, so no other suite's table is touched.
+func TestIntegrationExecParamsRowsAffected(t *testing.T) {
+	conn := dial(t)
+	ctx := t.Context()
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_exec_params (x int8, v text)"); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err := conn.ExecParams(ctx, "INSERT INTO sluice_exec_params SELECT $1, 'a' FROM generate_series(1, 3)",
+		[][]byte{postgres.AppendInt8(nil, 7)}, []uint32{postgres.OIDInt8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "INSERT 0 3" || n != 3 || !ok {
+		t.Errorf("INSERT: tag %q, RowsAffected() = %d, %v; want INSERT 0 3, 3, true", tag, n, ok)
+	}
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	tag, err = tx.ExecParams(ctx, "UPDATE sluice_exec_params SET v = $2 WHERE x = $1",
+		[][]byte{postgres.AppendInt8(nil, 7), postgres.AppendText(nil, "b'; DROP TABLE x; --")},
+		[]uint32{postgres.OIDInt8, postgres.OIDText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "UPDATE 3" || n != 3 || !ok {
+		t.Errorf("UPDATE: tag %q, RowsAffected() = %d, %v; want UPDATE 3, 3, true", tag, n, ok)
+	}
+	tag, err = tx.ExecParams(ctx, "DELETE FROM sluice_exec_params WHERE x = $1",
+		[][]byte{postgres.AppendInt8(nil, 8)}, []uint32{postgres.OIDInt8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "DELETE 0" || n != 0 || !ok {
+		t.Errorf("DELETE: tag %q, RowsAffected() = %d, %v; want DELETE 0, 0, true", tag, n, ok)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err = conn.ExecParams(ctx, "SET application_name = 'sluice_exec_params'", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "SET" || ok {
+		t.Errorf("SET: tag %q, RowsAffected() = %d, %v; want SET and no count", tag, n, ok)
+	}
+}

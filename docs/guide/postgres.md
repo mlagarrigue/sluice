@@ -323,9 +323,19 @@ if err != nil { return err }
 defer tx.Rollback() // a no-op if Commit succeeded: the safety net
 
 if err := tx.SetLocal(ctx, "app.tenant_id", tenant); err != nil { return err } // visible to row-level security
-if err := tx.Exec(ctx, "UPDATE orders SET …"); err != nil { return err }
+tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
+	[][]byte{postgres.AppendText(nil, customer)}, []uint32{postgres.OIDText})
+if err != nil { return err }
+n, _ := tag.RowsAffected() // how many rows changed, by the server's count
 return tx.Commit(ctx)
 ```
+
+`ExecParams` sends the values as **bound parameters** (`$1`, `$2`…): they
+travel apart from the SQL text and cannot be read as SQL. It returns the
+**tag** the server sends when the statement completes (`UPDATE 3`,
+`INSERT 0 1`); `RowsAffected` reads its count, and answers "no count" for a
+statement that has none, such as `SET`. `Exec` takes no values at all: it is
+for statements without parameters (creating a table, `SET`…).
 
 `Rollback` takes no context, on purpose: it runs from a `defer`, often
 after the request's context has expired, and a block left open on a reused

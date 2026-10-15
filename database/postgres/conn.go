@@ -601,68 +601,70 @@ type QueryConfig struct {
 // whole drains the rest of its result instead; [FetchAuto] says when that
 // happens without being asked.
 func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
-	batchRows, batchBytes := batchBounds(cfg)
-
 	// queryErr is what Source.Err reports. It is written by the stream below
 	// and read after consumption, on the same goroutine: a Stream is
 	// synchronous, so there is nothing to synchronise.
 	var queryErr error
 
 	stream := sluice.Stream[Row](func(yield func(sluice.Batch[Row]) bool) {
-		if c.broken != nil {
-			queryErr = c.broken
-			return
-		}
-		// Checked before anything is written: a caller who has already given
-		// up should cost the server nothing at all, not one wasted round trip
-		// followed by a resynchronisation.
-		if err := ctx.Err(); err != nil {
-			queryErr = fmt.Errorf("abandoning the query before it was sent: %w", err)
-			return
-		}
-		if cfg.Fetch > FetchBatches {
-			queryErr = fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
-			return
-		}
-		q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1}
-		if cfg.Demand != nil {
-			if cfg.Fetch == FetchAll {
-				queryErr = errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
-				return
-			}
-			if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
-				queryErr = fmt.Errorf("postgres: QueryConfig.KeyParam %d names no parameter among %d", cfg.KeyParam, len(params))
-				return
-			}
-			q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
-		}
-		w := c.watchCancel(ctx)
-		queryErr = settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
-		q.recordRows(queryErr)
-		// Settled after the deferred resync has read to ReadyForQuery, so the
-		// cache's provisional entry is confirmed or dropped on the server's
-		// last word — see [Conn.settleParse] for what a kept-but-unparsed
-		// entry would poison.
-		c.settleParse(queryErr)
-		// A plan the server rejected as stale is dropped here rather than
-		// retried: the retry would usually work and would hide that something
-		// migrated the schema under a live connection. The entry is gone, so
-		// the caller's own retry re-prepares and succeeds.
-		if isStalePlan(queryErr) {
-			c.forgetStatement(sql, cfg.ParamOIDs)
-			queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
-		}
-		// A statement the server says it does not hold is dropped for the
-		// same reason, from the other direction: this happens on a cache hit
-		// whose server-side half has vanished — a pooler's DISCARD ALL, a
-		// swapped backend — and keeping the entry re-binds the dead name
-		// forever. See [isMissingStatement].
-		if isMissingStatement(queryErr) {
-			c.forgetStatement(sql, cfg.ParamOIDs)
-		}
+		queryErr = c.runQuery(ctx, sql, params, cfg, nil, yield)
 	})
 
 	return sluice.NewSource(stream, func() error { return queryErr })
+}
+
+// runQuery is one execution of [Conn.Query], delivering to yield. A non-nil
+// tag receives the statement's CommandComplete tag; nil copies nothing, so a
+// streamed query pays for no tag it was not asked for.
+func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, tag *CommandTag, yield func(sluice.Batch[Row]) bool) error {
+	batchRows, batchBytes := batchBounds(cfg)
+	if c.broken != nil {
+		return c.broken
+	}
+	// Checked before anything is written: a caller who has already given
+	// up should cost the server nothing at all, not one wasted round trip
+	// followed by a resynchronisation.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("abandoning the query before it was sent: %w", err)
+	}
+	if cfg.Fetch > FetchBatches {
+		return fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
+	}
+	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: tag}
+	if cfg.Demand != nil {
+		if cfg.Fetch == FetchAll {
+			return errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
+		}
+		if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
+			return fmt.Errorf("postgres: QueryConfig.KeyParam %d names no parameter among %d", cfg.KeyParam, len(params))
+		}
+		q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
+	}
+	w := c.watchCancel(ctx)
+	queryErr := settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
+	q.recordRows(queryErr)
+	// Settled after the deferred resync has read to ReadyForQuery, so the
+	// cache's provisional entry is confirmed or dropped on the server's
+	// last word — see [Conn.settleParse] for what a kept-but-unparsed
+	// entry would poison.
+	c.settleParse(queryErr)
+	// A plan the server rejected as stale is dropped here rather than
+	// retried: the retry would usually work and would hide that something
+	// migrated the schema under a live connection. The entry is gone, so
+	// the caller's own retry re-prepares and succeeds.
+	if isStalePlan(queryErr) {
+		c.forgetStatement(sql, cfg.ParamOIDs)
+		queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
+	}
+	// A statement the server says it does not hold is dropped for the
+	// same reason, from the other direction: this happens on a cache hit
+	// whose server-side half has vanished — a pooler's DISCARD ALL, a
+	// swapped backend — and keeping the entry re-binds the dead name
+	// forever. See [isMissingStatement].
+	if isMissingStatement(queryErr) {
+		c.forgetStatement(sql, cfg.ParamOIDs)
+	}
+	return queryErr
 }
 
 // query holds one execution's state, so Conn keeps none between calls.
@@ -697,6 +699,9 @@ type query struct {
 	entry    int
 	rowsRead int
 	complete bool
+
+	// tag receives the CommandComplete tag, nil when nobody asked for it.
+	tag *CommandTag
 }
 
 // recordRows tells the cache how many rows this execution produced, or that
@@ -1021,6 +1026,10 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// The result is finished; what is held is the last batch. Read to
 			// the end, its row count is now the statement's to remember.
 			q.complete = true
+			if q.tag != nil && m.Type == pgwire.BackendCommandComplete {
+				// Copied: the body borrows the reader's buffer.
+				*q.tag = CommandTag(bytes.TrimSuffix(m.Body, []byte{0}))
+			}
 			q.emit(yield)
 			return true, nil
 
