@@ -2419,6 +2419,65 @@ func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
 	}
 }
 
+// A peer that grants its window one byte at a time, each grant just before
+// WriteTimeout would pass, makes one byte of progress per timeout — "data
+// dribble", CVE-2019-9511. The deadline is not refreshed by a write that
+// small: it advances only once a job has put a few KiB on the wire, so the
+// stream is reset within a few timeouts instead of being held, with its
+// responder, for as long as the peer cares to drip.
+func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	addr, _ := serveH2(t, H2Config{WriteTimeout: timeout},
+		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i := range res {
+				res[i] = Response{Status: 200, Body: bytes.Repeat([]byte{'d'}, 4096)}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 1})})
+	c.request(1, "GET", "/drip")
+	c.flush()
+
+	// One byte of credit every two thirds of the timeout, so the stream is
+	// never stalled for a whole timeout and only the progress rule can end
+	// it. pump is not used: its read deadline is longer than the drip.
+	start := time.Now()
+	tmp := make([]byte, 4096)
+	for time.Since(start) < 10*timeout {
+		c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: windowUpdatePayload(1)})
+		c.flush()
+		if err := c.conn.SetReadDeadline(time.Now().Add(2 * timeout / 3)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			n, err := c.conn.Read(tmp)
+			c.in = append(c.in, tmp[:n]...)
+			c.parse()
+			if err != nil {
+				break
+			}
+		}
+		if _, reset := c.resets[1]; reset || c.sawGoAway {
+			break
+		}
+	}
+	code, reset := c.resets[1]
+	if !reset {
+		t.Fatalf("after %v of one-byte grants the stream was still open with %d bytes written: "+
+			"every byte refreshed the deadline", time.Since(start).Round(time.Millisecond), len(c.got[1]))
+	}
+	if code != 0x8 {
+		t.Errorf("the dribbled stream was reset with %#x, want CANCEL (0x8)", code)
+	}
+	if elapsed := time.Since(start); elapsed > 3*timeout {
+		t.Errorf("the reset took %v, want under %v", elapsed.Round(time.Millisecond), 3*timeout)
+	}
+}
+
 // A producer of cadence ticks on a stream the peer resets learns it on its
 // next batch: an empty batch is never handed to the writer, so the writer's
 // refusal of a reset stream could not reach it.

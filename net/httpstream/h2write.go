@@ -94,13 +94,27 @@ type h2Job struct {
 	headSent bool
 	endSent  bool
 
-	// deadline is refreshed every time the job writes something. It bounds
-	// the wait for credit, not the response.
+	// deadline bounds the wait for credit, not the response. It is refreshed
+	// when the head goes out and then each time the job has written
+	// h2ProgressFloor bytes since the last refresh — progress counts in
+	// bytes, not in writes, since a peer that grants one byte per timeout
+	// would otherwise hold the stream open forever (data dribble,
+	// CVE-2019-9511). written is that count.
 	deadline time.Time
+	written  int
 
 	done bool
 	err  error
 }
+
+// h2ProgressFloor is what one job must write, between two refreshes of its
+// deadline, for the deadline to move: a quarter of the smallest frame a peer
+// may ask for, 4 KiB per WriteTimeout — 400 bytes a second at the 10s
+// default, which no client that is reading falls under. It is a constant
+// rather than a share of the peer's SETTINGS_MAX_FRAME_SIZE so that the peer
+// cannot move it; a writer that advances slower is reset by the same
+// expiry as one that was granted nothing, with the same CANCEL.
+const h2ProgressFloor = defaultMaxFrameSize / 4
 
 func (j *h2Job) complete() bool {
 	return j.headSent && j.off == len(j.data) && (!j.end || j.endSent)
@@ -413,7 +427,10 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	j.endSent = j.endSent || flags&flagEndStream != 0
 	w.connWind -= spent
 	w.windows[j.id] -= spent
-	j.deadline = time.Now().Add(w.cfg.WriteTimeout)
+	if j.written += n; j.written >= h2ProgressFloor {
+		j.written = 0
+		j.deadline = time.Now().Add(w.cfg.WriteTimeout)
+	}
 	return n, nil
 }
 

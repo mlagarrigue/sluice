@@ -187,7 +187,11 @@ type H2Config struct {
 	//
 	// WriteTimeout bounds two things: one write to the socket, and the wait
 	// for the flow-control credit one stream needs. A peer that grants
-	// nothing for that long has its stream reset rather than held forever.
+	// nothing for that long has its stream reset rather than held forever,
+	// and so has one that grants too little: the wait restarts only once
+	// 4 KiB of the response have gone out since it last did, not on every
+	// byte, so a peer that drips one byte of credit per timeout is reset at
+	// the second timeout rather than kept (data dribble, CVE-2019-9511).
 	//
 	// ReadTimeout also bounds one request's whole assembly, from its HEADERS
 	// to its END_STREAM, as it does on the HTTP/1.1 side. The frame-level
