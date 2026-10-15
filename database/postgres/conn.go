@@ -118,6 +118,11 @@ type Conn struct {
 	// query is running. Zero for a Conn built by NewConn.
 	cancelKey CancelKey
 
+	// cancelDial is [StartupConfig.CancelDial], kept so a context that ends
+	// mid-statement can reach the server. Nil without the option, and for a
+	// Conn built by NewConn.
+	cancelDial func(context.Context) (io.ReadWriteCloser, error)
+
 	// inTx records that a transaction is open, whether it was opened by
 	// [Conn.Begin] or by a [Copier]. It exists so a second BEGIN is refused:
 	// PostgreSQL answers a nested one with a warning and ignores it, and the
@@ -516,12 +521,16 @@ type QueryConfig struct {
 // [sluice.Source.Err] reports ctx.Err() wrapped, so errors.Is against
 // [context.Canceled] and [context.DeadlineExceeded] answers.
 //
-// What ctx cannot do is interrupt a statement the server is still executing.
-// Between sending a query and the first row, this client is blocked in a read
-// and the server is doing work no context of ours reaches. Two things bound
-// that, and neither is ctx: a server-side statement timeout, which is the one
-// to reach for, and [CancelRequest], which is best-effort and needs a second
-// connection.
+// What ctx cannot do on its own is interrupt a statement the server is still
+// executing. Between sending a query and the first row, this client is
+// blocked in a read and the server is doing work no context of ours reaches.
+// [StartupConfig.CancelDial] closes that gap: with it set, a ctx that ends
+// during that read opens a second connection and sends [CancelRequest], the
+// server aborts the statement, and the stream ends with ctx.Err() wrapped —
+// a round trip later rather than when the statement would have finished —
+// on a connection that stays usable. Without it, two things bound the
+// statement and neither is ctx: a server-side statement timeout, and a
+// [CancelRequest] the caller sends itself.
 //
 // # The consumer's pull reaches the server
 //
@@ -588,7 +597,8 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 			}
 			q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
 		}
-		queryErr = q.run(sql, params, cfg.ParamOIDs, yield)
+		w := c.watchCancel(ctx)
+		queryErr = settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
 		q.recordRows(queryErr)
 		// Settled after the deferred resync has read to ReadyForQuery, so the
 		// cache's provisional entry is confirmed or dropped on the server's

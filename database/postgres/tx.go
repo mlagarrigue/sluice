@@ -196,7 +196,8 @@ func (c *Conn) Exec(ctx context.Context, sql string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("abandoning the statement: %w", err)
 	}
-	return c.execUser(sql)
+	w := c.watchCancel(ctx)
+	return settleCancel(ctx, w, c.execUser(sql))
 }
 
 // execUser runs a caller's simple statement behind the busy guard and turns a

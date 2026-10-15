@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -140,6 +141,33 @@ type StartupConfig struct {
 	// The keys are written in sorted order, so one configuration always
 	// produces one packet.
 	Params map[string]string
+
+	// CancelDial opens a second connection to the same server, for the one
+	// message that can interrupt a statement the server is still executing.
+	// With it set, a context that ends while [Conn.Query] or [Conn.Exec] is
+	// waiting on the server sends a [CancelRequest] through that connection;
+	// the server aborts the statement with SQLSTATE 57014, the statement
+	// ends with ctx.Err() wrapped, and the connection stays usable. Nil, the
+	// zero value, keeps a context at its batch boundaries: a statement the
+	// server is executing runs to its end, or to the server's own
+	// statement_timeout.
+	//
+	//	CancelDial: func(ctx context.Context) (io.ReadWriteCloser, error) {
+	//	    return (&net.Dialer{}).DialContext(ctx, "tcp", "db.internal:5432")
+	//	},
+	//
+	// The connection it returns is closed after the packet is written. Its
+	// ctx carries the values of the one that ended, and a deadline of its
+	// own, five seconds: a server that cannot be reached by then is left
+	// alone and the statement runs to its end. The packet carries the
+	// session's secret ([CancelKey]), so where the main connection needed
+	// TLS this one does too: negotiate it inside CancelDial — SSLRequest,
+	// the server's 'S', then [crypto/tls] — and return the *tls.Conn.
+	//
+	// The cancellation is advisory, as [CancelRequest] explains: a
+	// statement already finishing finishes, and its result is returned as
+	// if the context had held.
+	CancelDial func(ctx context.Context) (io.ReadWriteCloser, error)
 }
 
 // Startup performs the startup and authentication exchange over an established
@@ -206,6 +234,7 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 	}
 
 	c := NewConn(rw)
+	c.cancelDial = cfg.CancelDial
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
 	if err := c.w.Flush(); err != nil {

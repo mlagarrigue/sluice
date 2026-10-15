@@ -1,10 +1,12 @@
 package postgres
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // cancelRequestCode goes where a startup packet carries its protocol version.
@@ -93,7 +95,8 @@ func (c *Conn) CancelKey() CancelKey { return c.cancelKey }
 // bound a query's cost are the context passed to [Conn.Query], which stops the
 // client pulling, and a server-side statement timeout, which stops the server
 // working. Reach for CancelRequest when a backend is stuck inside a statement
-// that neither of those will end.
+// that neither of those will end — or let [StartupConfig.CancelDial] send it
+// for you the moment a context ends mid-statement.
 func CancelRequest(rw io.ReadWriteCloser, key CancelKey) error {
 	defer rw.Close() //nolint:errcheck // the socket is one-shot and the server closes it first
 
@@ -126,4 +129,88 @@ func parseBackendKeyData(body []byte) (CancelKey, error) {
 		PID:    binary.BigEndian.Uint32(body[0:4]),
 		Secret: binary.BigEndian.Uint32(body[4:8]),
 	}, nil
+}
+
+// sqlstateQueryCanceled is what the server answers a statement it interrupted
+// with, whether on a CancelRequest or on its own statement_timeout.
+const sqlstateQueryCanceled = "57014"
+
+// cancelTimeout bounds the second connection a cancellation opens: the dial
+// and the write of the packet. The context that triggered the cancellation
+// is already over, so it cannot be the bound; a dial that takes longer than
+// this is a server that cannot be reached, and the statement runs to its
+// end as it would have without the option.
+const cancelTimeout = 5 * time.Second
+
+// cancelWatch is the goroutine that answers a context ending while the
+// server is still executing a statement: it opens the second connection
+// [StartupConfig.CancelDial] provides and sends the [CancelRequest]. The
+// statement's own goroutine is blocked in a read all the while, and is
+// released by the server's query_canceled error — which is why nothing here
+// touches the connection the statement owns.
+type cancelWatch struct {
+	stop func() bool
+	done chan struct{}
+	err  error // written by the goroutine before done is closed
+}
+
+// watchCancel arms the watch for one statement. It is nil, and costs
+// nothing, when there is no dialer to open the second connection with, no
+// key to name the backend by, or a context that can never end.
+func (c *Conn) watchCancel(ctx context.Context) *cancelWatch {
+	if c.cancelDial == nil || ctx.Done() == nil || !c.cancelKey.Known() {
+		return nil
+	}
+	w := &cancelWatch{done: make(chan struct{})}
+	w.stop = context.AfterFunc(ctx, func() {
+		defer close(w.done)
+		w.err = c.sendCancel(ctx)
+	})
+	return w
+}
+
+// end disarms the watch once the statement is over. A cancellation already
+// under way is waited for — it is bounded by cancelTimeout — so that no
+// goroutine of this statement outlives it and no packet of this statement
+// lands on the next one. It reports how the cancellation went; nil when
+// none was sent or when the packet was written.
+func (w *cancelWatch) end() error {
+	if w == nil || w.stop() {
+		return nil
+	}
+	<-w.done
+	return w.err
+}
+
+// sendCancel opens the second connection and sends the packet. The context
+// that fired is kept for its values and nothing else: its deadline is past.
+func (c *Conn) sendCancel(ctx context.Context) error {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
+	defer cancel()
+	rw, err := c.cancelDial(dctx)
+	if err != nil {
+		return fmt.Errorf("opening the connection for the cancellation: %w", err)
+	}
+	return CancelRequest(rw, c.cancelKey)
+}
+
+// settleCancel folds what the cancellation did into the error the statement
+// ends with. The server's query_canceled that answered our request becomes
+// ctx.Err(), wrapped, so errors.Is against the context errors answers the way
+// [Conn.Query] promises; the server's error stays reachable through
+// errors.As. A cancellation that could not be sent is named next to the
+// context error it failed to serve, so a deadline that was not honoured
+// says why — and says nothing when the statement finished anyway.
+func settleCancel(ctx context.Context, w *cancelWatch, err error) error {
+	cerr := w.end()
+	if ctx.Err() == nil || err == nil {
+		return err
+	}
+	if e, ok := errors.AsType[*Error](err); ok && e.Code == sqlstateQueryCanceled {
+		return fmt.Errorf("abandoning the statement: %w (the server cancelled it: %w)", ctx.Err(), err)
+	}
+	if cerr != nil && errors.Is(err, ctx.Err()) {
+		return fmt.Errorf("%w (%w)", err, cerr)
+	}
+	return err
 }

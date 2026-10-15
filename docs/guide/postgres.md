@@ -37,6 +37,9 @@ conn, err := postgres.Startup(nc, postgres.StartupConfig{
     Database: "orders",
     Password: os.Getenv("PGPASSWORD"),
     Params:   map[string]string{"application_name": "orders-etl"},
+    CancelDial: func(ctx context.Context) (io.ReadWriteCloser, error) { // lets a context reach a running statement
+        return (&net.Dialer{}).DialContext(ctx, "tcp", "db.internal:5432")
+    },
 })
 if err != nil { return err }
 nc.SetDeadline(time.Time{}) // the deadline stays on the socket: lifted, or it ends the first slow query
@@ -47,6 +50,17 @@ The deadline set for the handshake is not `Startup`'s: it stays on the
 connection, and a query still running thirty seconds later would die with
 an `i/o timeout`, connection lost. Lift it once connected, or set a fresh
 one per query if that is your policy.
+
+The context passed to a query is checked between batches, which stops the
+client pulling; it cannot reach a server that has not sent its first row
+yet, because the client is waiting on it. `CancelDial` closes that gap: it
+opens a **second connection** to the same server, through which a context
+that ends mid-statement sends the protocol's cancellation. The server
+aborts the statement, the query ends with the context's error a round trip
+later, and the connection stays usable. Without it, a statement the server
+is executing runs to its end, or to the server's `statement_timeout`. Where
+the main connection is encrypted, this one must be too: the packet carries
+the session's cancellation secret.
 
 By default, authentication uses SCRAM-SHA-256: the password never travels
 as is. Sending it in cleartext is possible but must be asked for explicitly

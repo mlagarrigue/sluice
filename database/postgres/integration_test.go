@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math"
 	"net"
 	"net/netip"
@@ -1259,5 +1260,71 @@ func TestIntegrationHandshakeDeadlineIsLifted(t *testing.T) {
 	}
 	if err := conn.Err(); err != nil {
 		t.Errorf("the connection is broken after the query: %v", err)
+	}
+}
+
+// A context that ends while the server is still executing the statement
+// reaches the server through StartupConfig.CancelDial: pg_sleep(5) under a
+// 300 ms deadline ends well inside a second, with the deadline as the error
+// and the server's 57014 behind it, and the connection serves the next
+// query. Only a real server can prove this one — it is the server's
+// cancellation handling that the scripted tests cannot disagree with.
+func TestIntegrationCancelDialInterruptsTheRunningStatement(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	cfg.CancelDial = func(ctx context.Context) (io.ReadWriteCloser, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
+	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dialling %s: %v", addr, err)
+	}
+	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := postgres.Startup(nc, cfg)
+	if err != nil {
+		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if !conn.CancelKey().Known() {
+		t.Fatal("the server sent no cancellation key")
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	src := conn.Query(ctx, "SELECT pg_sleep(5)", nil, postgres.QueryConfig{})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	took := time.Since(start)
+	err = src.Err()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pg_sleep(5) under a 300ms deadline ended after %v with %v, want context.DeadlineExceeded", took, err)
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		t.Errorf("Err = %v, want the server's 57014 reachable through errors.As", err)
+	}
+	if took > time.Second {
+		t.Errorf("the cancellation took %v to end the statement, want well under a second", took)
+	}
+	t.Logf("pg_sleep(5) cancelled after %v", took)
+
+	src = conn.Query(t.Context(), "SELECT 1", nil, postgres.QueryConfig{})
+	rows := 0
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		rows += len(b.Items)
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the query after the cancellation: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("SELECT 1 after the cancellation returned %d rows", rows)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken after the cancellation: %v", err)
 	}
 }
