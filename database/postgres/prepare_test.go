@@ -101,6 +101,22 @@ func drain(t *testing.T, src sluice.Source[Row]) error {
 // they test is the cache, not how FetchAuto would fetch a statement it knows.
 var batched = QueryConfig{Fetch: FetchBatches}
 
+// A negative bound is a mistake, not a way to say "off": zero is. It is
+// refused before anything reaches the socket, and the cache stays as it was.
+func TestStatementCacheRefusesANegativeBound(t *testing.T) {
+	conn := NewConn(&fakeServer{})
+	if err := conn.PrepareStatements(8); err != nil {
+		t.Fatal(err)
+	}
+	err := conn.PrepareStatements(-1)
+	if err == nil || !strings.Contains(err.Error(), "-1") {
+		t.Fatalf("PrepareStatements(-1) = %v, want a refusal naming -1", err)
+	}
+	if conn.stmts == nil || conn.stmts.max != 8 {
+		t.Errorf("the refused call changed the cache: %+v", conn.stmts)
+	}
+}
+
 // Off must mean exactly what it meant before the cache existed: the unnamed
 // statement, re-parsed every time.
 func TestStatementCacheOff(t *testing.T) {
