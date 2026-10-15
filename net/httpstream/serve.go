@@ -430,8 +430,18 @@ func statusFor(err error) int {
 		// answered 501, not 400 — the request may be well-formed; the server
 		// is the one missing the feature.
 		return 501
+	case errors.Is(err, errRequestLineTooLong):
+		// RFC 9112 §3: a request-target longer than the server will parse
+		// MUST be answered 414 — the client learns which part was too long.
+		return 414
+	case errors.Is(err, errHeadersTooLarge):
+		// RFC 6585 §5: header fields too large in total or singly are 431.
+		return 431
 	case errors.Is(err, ErrTooLarge):
 		return 413
+	case errors.Is(err, errVersionUnsupported):
+		// RFC 9110 §15.6.6: a version this server does not speak is 505.
+		return 505
 	case errors.Is(err, ErrMalformed):
 		return 400
 	}

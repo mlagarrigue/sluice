@@ -440,7 +440,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	line, rest, ok := cutCRLF(buf, cfg.MaxRequestLineBytes)
 	if !ok {
 		if len(buf) > cfg.MaxRequestLineBytes+1 {
-			return req, 0, out, fmt.Errorf("%w: the request line is over %d bytes", ErrTooLarge, cfg.MaxRequestLineBytes)
+			return req, 0, out, fmt.Errorf("%w: over %d bytes", errRequestLineTooLong, cfg.MaxRequestLineBytes)
 		}
 		return req, 0, out, errIncomplete
 	}
@@ -594,7 +594,13 @@ func splitRequestLine(line []byte) (method, target, version []byte, err error) {
 		return nil, nil, nil, err
 	}
 	if v := string(version); v != "HTTP/1.1" && v != "HTTP/1.0" {
-		return nil, nil, nil, fmt.Errorf("%w: unsupported version %q", ErrMalformed, version)
+		// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3). A version
+		// of that shape is one this server declines, answered 505; anything
+		// else is not a request line.
+		if len(v) == 8 && v[:5] == "HTTP/" && '0' <= v[5] && v[5] <= '9' && v[6] == '.' && '0' <= v[7] && v[7] <= '9' {
+			return nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
+		}
+		return nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
 	}
 	return method, target, version, nil
 }
@@ -605,7 +611,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 	start, consumed := len(arena), 0
 	for {
 		if consumed > cfg.MaxHeaderBytes {
-			return arena, 0, fmt.Errorf("%w: headers over %d bytes", ErrTooLarge, cfg.MaxHeaderBytes)
+			return arena, 0, fmt.Errorf("%w: over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 		}
 		// The budget counts line endings, so the line itself gets two
 		// bytes less than what is left of it.
@@ -613,7 +619,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 		line, rest, ok := cutCRLF(buf[consumed:], limit)
 		if !ok {
 			if len(buf)-consumed > limit+1 {
-				return arena, 0, fmt.Errorf("%w: a header line is over the bound", ErrTooLarge)
+				return arena, 0, fmt.Errorf("%w: a header line is over the bound", errHeadersTooLarge)
 			}
 			return arena, 0, errIncomplete
 		}
@@ -628,7 +634,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 			return arena, 0, fmt.Errorf("%w: obsolete line folding", ErrMalformed)
 		}
 		if len(arena)-start >= cfg.MaxHeaders {
-			return arena, 0, fmt.Errorf("%w: over %d header fields", ErrTooLarge, cfg.MaxHeaders)
+			return arena, 0, fmt.Errorf("%w: over %d fields", errHeadersTooLarge, cfg.MaxHeaders)
 		}
 		h, err := parseHeaderLine(line)
 		if err != nil {
@@ -852,7 +858,7 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 		line, rest, ok := cutCRLF(buf[r:], limit)
 		if !ok {
 			if len(buf)-r > limit+1 {
-				return 0, 0, fmt.Errorf("%w: trailers over %d bytes", ErrTooLarge, cfg.MaxHeaderBytes)
+				return 0, 0, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 			}
 			return 0, 0, errIncomplete
 		}
@@ -862,7 +868,7 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 			return w, r, nil
 		}
 		if trailerFields >= cfg.MaxHeaders {
-			return 0, 0, fmt.Errorf("%w: over %d trailer fields", ErrTooLarge, cfg.MaxHeaders)
+			return 0, 0, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, cfg.MaxHeaders)
 		}
 		trailerFields++
 		if _, err := parseHeaderLine(line); err != nil {

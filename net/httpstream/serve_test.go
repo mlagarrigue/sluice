@@ -271,6 +271,15 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 		{"no Host", "GET /x HTTP/1.1\r\n\r\n", "400"},
 		{"absolute-form", "GET http://elsewhere/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 		{"body over the bound", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 999999999\r\n\r\n", "413"},
+		// RFC 9112 §3: the request-target over the bound is 414, not 413.
+		{"request line over the bound", "GET /" + strings.Repeat("x", 9<<10) + " HTTP/1.1\r\nHost: h\r\n\r\n", "414"},
+		// RFC 6585 §5: header fields over the bound are 431, not 413.
+		{"headers over the bound", "GET /x HTTP/1.1\r\nHost: h\r\nX: " + strings.Repeat("y", 70<<10) + "\r\n\r\n", "431"},
+		{"too many header fields", "GET /x HTTP/1.1\r\nHost: h\r\n" + strings.Repeat("X: y\r\n", 200) + "\r\n", "431"},
+		// RFC 9110 §15.6.6: a well-formed version this server does not
+		// speak is 505; a version that is not one is still 400.
+		{"version not supported", "GET /x HTTP/3.0\r\nHost: h\r\n\r\n", "505"},
+		{"version that is not one", "GET /x HTTP/one\r\nHost: h\r\n\r\n", "400"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

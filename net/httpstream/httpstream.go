@@ -225,6 +225,26 @@ var ErrMalformed = errors.New("httpstream: malformed request")
 // ErrTooLarge reports a request past one of [Config]'s bounds.
 var ErrTooLarge = errors.New("httpstream: request exceeds a configured bound")
 
+// errRequestLineTooLong and errHeadersTooLarge are internal: the two bounds
+// an HTTP/1.1 refusal has its own status for. Both wrap [ErrTooLarge], so a
+// caller matching on it sees no change; they exist because the status a
+// client is told differs — RFC 9112 §3 puts a request-target the server will
+// not parse at 414, RFC 6585 §5 puts header fields it will not hold at 431 —
+// and a client told 413 for either goes looking at a body that was never the
+// problem. A body over MaxBodyBytes stays the plain ErrTooLarge, which is 413.
+var (
+	errRequestLineTooLong = fmt.Errorf("%w: the request line", ErrTooLarge)
+	errHeadersTooLarge    = fmt.Errorf("%w: the header fields", ErrTooLarge)
+)
+
+// errVersionUnsupported is internal: the request line carries an HTTP-version
+// the grammar accepts and this server does not speak. It wraps [ErrMalformed]
+// for callers and is answered 505 rather than 400 (RFC 9110 §15.6.6): the
+// line is well-formed, the version is the disagreement, and 505 is the status
+// that tells a client to try another. A version the grammar refuses — no
+// digits, no slash — is a malformed line and stays 400.
+var errVersionUnsupported = fmt.Errorf("%w: HTTP version", ErrMalformed)
+
 // errUnsupportedCoding is internal: a request declared a transfer coding this
 // server does not implement. Distinct from [ErrMalformed] because the honest
 // answer is 501, not 400 (RFC 9112 §6.1: a coding not understood SHOULD be
