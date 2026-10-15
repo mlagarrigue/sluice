@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -22,6 +23,43 @@ func TestPipelineRefusesANilCallback(t *testing.T) {
 	err := tx.Pipeline(t.Context(), []Part{{SQL: "SELECT 1"}}, QueryConfig{}, nil)
 	if err == nil {
 		t.Fatal("a nil callback was accepted")
+	}
+}
+
+// The byte bound cuts a pipelined part's batches as it cuts a query's: six
+// rows of a megabyte under BatchBytes of four megabytes reach the caller as
+// 4 and 2, for the part they belong to.
+func TestPipelineBatchBytesCutsABatchEarly(t *testing.T) {
+	const rowBytes = 1 << 20
+	value := bytes.Repeat([]byte("x"), rowBytes)
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	for range 6 {
+		script = append(script, beDataRow(value)...)
+	}
+	script = append(script, beCommandComplete("SELECT 6")...)
+	script = append(script, beReadyForQuery()...)
+
+	srv := &fakeServer{responses: [][]byte{script}}
+	conn := NewConn(srv)
+	tx := &Tx{conn: conn}
+
+	var sizes []int
+	err := tx.Pipeline(t.Context(), []Part{{SQL: "SELECT v"}}, QueryConfig{BatchBytes: 4 * rowBytes},
+		func(i int, b sluice.Batch[Row]) bool {
+			if i != 0 {
+				t.Errorf("a batch for part %d, want 0", i)
+			}
+			sizes = append(sizes, b.Len())
+			return true
+		})
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	if want := []int{4, 2}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v rows, want %v", sizes, want)
 	}
 }
 

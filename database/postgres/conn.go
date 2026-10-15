@@ -224,8 +224,9 @@ func (c *Conn) execBusy(sql string) error {
 // where a fresh one leaves it stale but stable. It is one small allocation
 // per query, against the accumulator's buffers — the expensive part — which
 // are reused.
-func (c *Conn) beginResult(desc []Field, batchRows int) (*Rows, []Row) {
+func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Row) {
 	c.rowsScratch.Init(desc, batchRows)
+	c.rowsScratch.SetMaxBytes(batchBytes)
 	return &c.rowsScratch, c.itemsScratch[:0]
 }
 
@@ -383,6 +384,23 @@ const (
 	FetchBatches
 )
 
+// defaultBatchBytes is the byte bound on a batch when [QueryConfig.BatchBytes]
+// is zero: the same 64 MiB as a message from the server, so the two defaults
+// bound memory by one number.
+const defaultBatchBytes = 64 << 20
+
+// batchBounds resolves a QueryConfig's row and byte bounds to their defaults.
+func batchBounds(cfg QueryConfig) (rows, size int) {
+	rows, size = cfg.BatchRows, cfg.BatchBytes
+	if rows <= 0 {
+		rows = sluice.DefaultBatchSize
+	}
+	if size <= 0 {
+		size = defaultBatchBytes
+	}
+	return rows, size
+}
+
 // QueryConfig states the bounds a query runs under. They are the caller's,
 // per S1: none has a value that suits every result.
 type QueryConfig struct {
@@ -420,6 +438,21 @@ type QueryConfig struct {
 	// trap is gone once the statement is known to fit — [FetchAuto] then asks
 	// for every row — but the first execution still falls into it.
 	BatchRows int
+
+	// BatchBytes bounds the values a batch holds, in bytes. BatchRows bounds
+	// a batch in rows, which says nothing about its size: a thousand rows of
+	// a megabyte each are a gigabyte, held until the batch is delivered — and
+	// a server, pooler or man in the middle can make every row that wide. A
+	// batch that would grow past BatchBytes is delivered as it is and the
+	// row that did not fit opens the next; nothing fails, the consumer sees
+	// more and smaller batches. A single row wider than the bound travels in
+	// a batch of its own — it is bounded by [StartupConfig.MaxMessage] — so
+	// memory per batch is at most BatchBytes plus one row.
+	//
+	// A value of zero or less means 64 MiB, the same default as a message
+	// from the server. The cut is on this side of the wire: the server
+	// still sends BatchRows rows per round trip.
+	BatchBytes int
 
 	// Fetch says whether the rows are asked for in batches of BatchRows or
 	// all at once. The zero value, [FetchAuto], asks for everything when the
@@ -559,10 +592,7 @@ type QueryConfig struct {
 // whole drains the rest of its result instead; [FetchAuto] says when that
 // happens without being asked.
 func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
-	batchRows := cfg.BatchRows
-	if batchRows <= 0 {
-		batchRows = sluice.DefaultBatchSize
-	}
+	batchRows, batchBytes := batchBounds(cfg)
 
 	// queryErr is what Source.Err reports. It is written by the stream below
 	// and read after consumption, on the same goroutine: a Stream is
@@ -585,7 +615,7 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 			queryErr = fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
 			return
 		}
-		q := &query{conn: c, ctx: ctx, batchRows: batchRows, fetch: cfg.Fetch, entry: -1}
+		q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1}
 		if cfg.Demand != nil {
 			if cfg.Fetch == FetchAll {
 				queryErr = errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
@@ -628,14 +658,15 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 
 // query holds one execution's state, so Conn keeps none between calls.
 type query struct {
-	conn      *Conn
-	ctx       context.Context
-	batchRows int
-	fetch     Fetch
-	allRows   bool // decided in run: every row asked for at once
-	synced    bool // the Sync went out with the query, so resync must not send another
-	rows      *Rows
-	items     []Row // reused: one Row view per row of the current batch
+	conn       *Conn
+	ctx        context.Context
+	batchRows  int
+	batchBytes int
+	fetch      Fetch
+	allRows    bool // decided in run: every row asked for at once
+	synced     bool // the Sync went out with the query, so resync must not send another
+	rows       *Rows
+	items      []Row // reused: one Row view per row of the current batch
 
 	// The pushdown side, nil without a QueryConfig.Demand. stmt and params
 	// are kept so a bound can re-bind the portal; bound is the one last
@@ -891,7 +922,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// lost conversation.
 				return false, err
 			}
-			q.rows, q.items = c.beginResult(desc, q.batchRows)
+			q.rows, q.items = c.beginResult(desc, q.batchRows, q.batchBytes)
 
 		case pgwire.BackendDataRow:
 			if q.rows == nil {
@@ -908,7 +939,13 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// the per-row loop the regression gate watches, and a test in
 				// front of the Append measured +2.4% in a paired A/B. The
 				// Append already had to be checked, so the check is free.
-				if !q.allRows || !q.rows.Full() {
+				//
+				// The byte bound cuts the same way on either fetch: the batch
+				// is handed on and the row opens the next. The row bound does
+				// so only when every row was asked for at once — in the
+				// batched fetch the server was told how many to send, and a
+				// batch that overflows is a server that did not listen.
+				if !errors.Is(err, errBatchBytes) && (!q.allRows || !q.rows.Full()) {
 					// A DataRow the reader framed whole but this package
 					// could not read: a column wider than its description
 					// said, a field count that disagrees. The connection is

@@ -646,6 +646,64 @@ func TestConnCloseSkipsTerminateWhenBroken(t *testing.T) {
 	}
 }
 
+// A batch is bounded in bytes as in rows: twenty rows of a megabyte under
+// BatchBytes of eight megabytes arrive as 8, 8 and 4, nothing fails, and the
+// connection serves the next query. Before the bound, the twenty rows were
+// one batch of twenty megabytes — and a hostile server could make it two
+// gigabytes with rows individually legal.
+func TestBatchBytesCutsABatchEarly(t *testing.T) {
+	const rows, rowBytes = 20, 1 << 20
+	value := bytes.Repeat([]byte("x"), rowBytes)
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	for range rows {
+		script = append(script, beDataRow(value)...)
+	}
+	script = append(script, beCommandComplete("SELECT 20")...)
+	script = append(script, beReadyForQuery()...)
+
+	var next []byte
+	next = append(next, beSimple(pgwire.BackendParseComplete)...)
+	next = append(next, beSimple(pgwire.BackendBindComplete)...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beDataRow(int8Val(1))...)
+	next = append(next, beCommandComplete("SELECT 1")...)
+	next = append(next, beReadyForQuery()...)
+
+	srv := &fakeServer{responses: [][]byte{script, next}}
+	conn := NewConn(srv)
+
+	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchBytes: 8 * rowBytes, Fetch: FetchAll})
+	var sizes []int
+	src.Stream()(func(b sluice.Batch[Row]) bool {
+		sizes = append(sizes, b.Len())
+		for _, r := range b.Items {
+			if v, _ := r.Value(0); len(v) != rowBytes {
+				t.Errorf("a row of %d bytes, want %d", len(v), rowBytes)
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if want := []int{8, 8, 4}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v rows, want %v", sizes, want)
+	}
+
+	seen := 0
+	src = conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})
+	src.Stream()(func(b sluice.Batch[Row]) bool { seen += b.Len(); return true })
+	if err := src.Err(); err != nil {
+		t.Fatalf("the next query: %v", err)
+	}
+	if seen != 1 {
+		t.Errorf("the next query returned %d rows, want 1", seen)
+	}
+}
+
 // FetchAll sends the Sync with the query instead of a Flush, so the answer and
 // the ReadyForQuery arrive together. One round trip instead of two.
 func TestFetchAllSendsSyncInsteadOfFlush(t *testing.T) {

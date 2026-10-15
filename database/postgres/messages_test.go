@@ -282,6 +282,43 @@ func TestRowsBounded(t *testing.T) {
 	}
 }
 
+// The byte bound is a cut: the row that would take a non-empty batch past it
+// is refused so the caller can hand the batch on, and is accepted once the
+// batch is empty — even when it is wider than the bound on its own.
+func TestRowsCutAtTheByteBound(t *testing.T) {
+	r := NewRows(1, 100)
+	r.SetMaxBytes(32)
+	value := make([]byte, 20)
+	if err := r.Append(dataRow(value)); err != nil {
+		t.Fatalf("the first row: %v", err)
+	}
+	err := r.Append(dataRow(value))
+	if !errors.Is(err, ErrTooManyRows) || !errors.Is(err, errBatchBytes) {
+		t.Fatalf("the row past the bound returned %v, want ErrTooManyRows marked as the byte bound", err)
+	}
+	if r.Len() != 1 {
+		t.Errorf("the accumulator holds %d rows, want the 1 it had", r.Len())
+	}
+	r.Reset()
+	if err := r.Append(dataRow(value)); err != nil {
+		t.Fatalf("the same row after a reset: %v", err)
+	}
+	r.Reset()
+	if err := r.Append(dataRow(make([]byte, 40))); err != nil {
+		t.Fatalf("a row wider than the bound, alone in its batch: %v", err)
+	}
+	if err := r.Append(dataRow(nil)); !errors.Is(err, errBatchBytes) {
+		t.Errorf("an empty row after a full batch returned %v, want the byte bound", err)
+	}
+	r.SetMaxBytes(0)
+	r.Reset()
+	for range 3 {
+		if err := r.Append(dataRow(value)); err != nil {
+			t.Fatalf("with the bound removed: %v", err)
+		}
+	}
+}
+
 // The frontend builders must produce what the reader reads back, with the
 // framing this package computes rather than the caller.
 func TestWriterExtendedQuerySequence(t *testing.T) {

@@ -123,10 +123,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	}
 	c := tx.conn
 
-	batchRows := cfg.BatchRows
-	if batchRows <= 0 {
-		batchRows = sluice.DefaultBatchSize
-	}
+	batchRows, batchBytes := batchBounds(cfg)
 
 	// Every part is validated before the first byte is buffered — the same
 	// order [Tx.Savepoints] uses, and not for style: a refusal discovered
@@ -211,7 +208,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	// until it has returned.
 	join := sync.OnceValue(func() error { return <-sent })
 	defer func() { _ = join() }()
-	err := c.readPipeline(parts, batchRows, fn)
+	err := c.readPipeline(parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
 		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
 		return c.broken
@@ -231,7 +228,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 // Stopping mid-answer would still owe the drain to ReadyForQuery — the whole
 // pipeline, since parts run with no row limit — so checking here buys no
 // earlier stop. See the "ctx guards the start" section on [Tx.Pipeline].
-func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Batch[Row]) bool) error {
+func (c *Conn) readPipeline(parts []Part, batchRows, batchBytes int, fn func(int, sluice.Batch[Row]) bool) error {
 	// A panic in fn would otherwise abandon the connection mid-pipeline with
 	// broken still nil — and the next query would read this pipeline's
 	// leftover rows as its own. The same rule as query.run's deferred resync
@@ -287,7 +284,7 @@ func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Bat
 				// The connection's per-query scratch, exactly as query.run
 				// uses it: parts run one after another, and each part's rows
 				// are delivered before the next one's description arrives.
-				rows, items = c.beginResult(desc, batchRows)
+				rows, items = c.beginResult(desc, batchRows, batchBytes)
 			}
 
 		case pgwire.BackendDataRow:
@@ -299,7 +296,19 @@ func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Bat
 				continue
 			}
 			if err := rows.Append(m.Body); err != nil {
-				return c.abortPipeline(err)
+				// The byte bound is a cut, as in readChunk: hand the batch
+				// on, and the row opens the next. Anything else is a row
+				// this package could not read.
+				if !errors.Is(err, errBatchBytes) {
+					return c.abortPipeline(err)
+				}
+				if !emit() {
+					stopped = true
+					continue
+				}
+				if err := rows.Append(m.Body); err != nil {
+					return c.abortPipeline(err)
+				}
 			}
 			if rows.Full() && !emit() {
 				stopped = true
