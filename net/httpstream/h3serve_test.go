@@ -165,12 +165,14 @@ func TestH3StreamedBodyOverARealConnection(t *testing.T) {
 
 // A producer blocked in its own code — not in its yield — does not hold
 // ServeH3 once the connection has ended. It learns at its next yield, which
-// returns false.
+// returns false. The cancellation drains the connection first (ADR 0017): a
+// response in flight is waited for up to ShutdownGrace, and this producer
+// never finishes, so the grace is what ends the connection — kept short here.
 func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 	yielded := make(chan bool, 1)
-	conn, cancel, served := startH3(t, quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: 200 * time.Millisecond}, quic.DefaultParameters(), quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Stream: func(yield func(sluice.Batch[[]byte]) bool) {

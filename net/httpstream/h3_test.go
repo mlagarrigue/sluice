@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -1680,5 +1681,180 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 	case <-conn.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("the client never saw the refused connection end")
+	}
+}
+
+// TestServeH3ShutdownDrainsRequest: the context is cancelled while a handler
+// is still working. The client reads GOAWAY on the control stream naming the
+// stream after the one it opened; a request opened from there on is rejected
+// REQUEST_REJECTED; the first response then arrives whole, and the connection
+// closes with an application code — H3_NO_ERROR or its grease — well before
+// the grace (RFC 9114 §5.2, ADR 0017 §5).
+func TestServeH3ShutdownDrainsRequest(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { <-serverDone })
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			serverUp <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		serverUp <- nil
+		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			close(entered)
+			<-release
+			res := make([]Response, 0, b.Len())
+			for _, r := range b.Items {
+				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	}()
+
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := <-serverUp; err != nil {
+		t.Fatalf("the server: %v", err)
+	}
+
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(h3Request("GET", "/slow")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the handler was never reached")
+	}
+	cancel()
+
+	// The server's control stream: its type, SETTINGS, then the GOAWAY.
+	control := conn.Stream(3)
+	if err := control.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	var goAway *h3Frame
+	tmp := make([]byte, 1024)
+	for goAway == nil {
+		n, err := control.Read(tmp)
+		raw = append(raw, tmp[:n]...)
+		if _, body, verr := quic.Varint(raw); verr == nil {
+			frames, _, perr := parseH3Frames(nil, body, 1<<20)
+			if perr != nil {
+				t.Fatalf("the control stream did not parse: %v", perr)
+			}
+			for i := range frames {
+				if frames[i].Type == h3GoAway {
+					goAway = &frames[i]
+				}
+			}
+		}
+		if err != nil && goAway == nil {
+			t.Fatalf("no GOAWAY on the control stream before: %v", err)
+		}
+	}
+	if id, _, err := quic.Varint(goAway.Payload); err != nil || id != 4 {
+		t.Fatalf("GOAWAY names stream %d (%v), want 4: the one after the request stream", id, err)
+	}
+
+	// A request from the named stream on is rejected, and the connection
+	// survives the rejection: the first answer is still owed.
+	late, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := late.Write(h3Request("GET", "/late")); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := late.Read(tmp); err == nil {
+		t.Fatalf("the late request was answered with %d bytes, want REQUEST_REJECTED", n)
+	}
+	if code, reset := late.WasReset(); !reset || code != h3RequestRejected {
+		t.Fatalf("the late request: reset %v with %#x, want H3_REQUEST_REJECTED", reset, code)
+	}
+
+	close(release)
+	if err := s.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var reply []byte
+	for {
+		n, err := s.Read(tmp)
+		reply = append(reply, tmp[:n]...)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading the answer: %v", err)
+		}
+	}
+	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	if err != nil {
+		t.Fatalf("the answer did not parse: %v", err)
+	}
+	var body string
+	for _, f := range frames {
+		if f.Type == h3Data {
+			body = string(f.Payload)
+		}
+	}
+	if body != "answering /slow" {
+		t.Fatalf("the answer carried %q, want it whole", body)
+	}
+
+	// Then the connection closes, with an application code, and ServeH3
+	// returns long before the grace.
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection stayed open after the last answer")
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application {
+		t.Fatalf("the connection ended with %v, want an application close", conn.Err())
+	}
+	if ce.Code != h3NoError && (ce.Code < 0x21 || (ce.Code-0x21)%0x1f != 0) {
+		t.Fatalf("closed with %#x, want H3_NO_ERROR or a grease code", ce.Code)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeH3 did not return once the request was drained")
 	}
 }

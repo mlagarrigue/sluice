@@ -3,6 +3,8 @@ package httpstream
 import (
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -22,12 +24,38 @@ import (
 // streams, so the requests it completes are a batch before this code sees
 // them. Nothing waits, and the peer does nothing unusual.
 //
-// It is not safe for concurrent use, and it is per connection: a stream
-// identifier means nothing outside one.
+// It is not safe for concurrent use — the shutdown's state under mu is the
+// one exception, and says so — and it is per connection: a stream identifier
+// means nothing outside one.
 type h3Assembler struct {
 	cfg     Config
 	qpack   *qpackDecoder
 	streams map[uint64]*h3Stream
+
+	// The graceful shutdown's state (RFC 9114 §5.2; ServeH3 says how it is
+	// used). mu is shared with the goroutine that begins the shutdown and
+	// is taken on the admission of a new request stream and at the GOAWAY,
+	// never per frame: it is what makes the identifier the GOAWAY names and
+	// the streams this assembler admitted agree — a stream is either
+	// admitted before the GOAWAY, and below its identifier, or rejected.
+	mu       sync.Mutex
+	accepted bool   // whether a request stream was ever admitted
+	last     uint64 // the highest request stream admitted, when accepted
+	draining bool   // the GOAWAY is decided: streams from rejectFrom on are rejected
+	// rejectFrom is the identifier the GOAWAY carries: the first request
+	// stream this connection rejects (§5.2: "the indicated identifier or
+	// greater are rejected"), zero when none was ever admitted.
+	rejectFrom uint64
+	// inFlight counts the request streams admitted and not yet retired:
+	// still assembling, queued for the handler, being handled or being
+	// answered. The assembler retires a stream that leaves without a
+	// request (failed, forgotten); the response writer retires the rest.
+	inFlight atomic.Int64
+	// Finish, when set, is called by retire when the last in-flight stream
+	// of a draining connection retires: nothing more is owed, the
+	// connection may close. It must not block — it runs on the read
+	// goroutine or a writer's.
+	Finish func()
 
 	// refused remembers streams this assembler already rejected, so frames
 	// still arriving on them are dropped instead of re-opening assembly for
@@ -287,6 +315,16 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		}
 		st := a.streams[f.StreamID]
 		if st == nil {
+			if !a.admit(f.StreamID) {
+				// Past the GOAWAY's identifier: §5.2 has the server reject
+				// what it said it would, and REQUEST_REJECTED is the code
+				// that says nothing was processed, so the client retries
+				// elsewhere.
+				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: stream %d opened after GOAWAY(%d)",
+					ErrH3Protocol, f.StreamID, a.rejectFrom))
+				a.release(f.StreamID, len(f.Data))
+				continue
+			}
 			if len(a.streams) >= a.cfg.MaxConcurrentStreams {
 				// §5.2 wants a request refused rather than a connection lost
 				// when a server is at its limit, and REQUEST_REJECTED tells
@@ -298,6 +336,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			}
 			st = &h3Stream{declared: -1, deadline: now.Add(a.cfg.ReadTimeout)}
 			a.streams[f.StreamID] = st
+			a.inFlight.Add(1)
 		}
 		// The unparsed bytes are framing, not body: a request whose body is
 		// exactly MaxBodyBytes arrives as its HEADERS frame plus a DATA
@@ -441,8 +480,9 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 	if st := a.streams[id]; st != nil {
 		a.assembling -= len(st.buf) + len(st.req.Body)
 		a.release(id, len(st.buf)+len(st.req.Body))
+		delete(a.streams, id)
+		a.retire()
 	}
-	delete(a.streams, id)
 	a.tombstone(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
 }
@@ -473,8 +513,58 @@ func (a *h3Assembler) Forget(id uint64) {
 		a.assembling -= len(st.buf) + len(st.req.Body)
 		a.release(id, len(st.buf)+len(st.req.Body))
 		delete(a.streams, id)
+		a.retire()
 	}
 	a.tombstone(id)
+}
+
+// admit decides, under mu, whether a new request stream may be served: not
+// once the GOAWAY is decided and the stream is at or past its identifier.
+// An admitted stream raises last, which is what the GOAWAY will be computed
+// from — a stream refused later for the concurrency limit raises it too,
+// which §5.2 allows ("servers MAY reject individual requests on streams
+// below the indicated ID").
+func (a *h3Assembler) admit(id uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.draining && id >= a.rejectFrom {
+		return false
+	}
+	if !a.accepted || id > a.last {
+		a.accepted, a.last = true, id
+	}
+	return true
+}
+
+// beginDrain decides the GOAWAY, under mu, and returns the identifier it
+// carries: the request stream after the highest one admitted, or zero when
+// none was. From here on admit rejects every stream from that identifier.
+func (a *h3Assembler) beginDrain() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.draining = true
+	if a.accepted {
+		a.rejectFrom = a.last + 4
+	}
+	return a.rejectFrom
+}
+
+// retire takes one request stream out of the in-flight count and, when it
+// was the last one of a draining connection, calls Finish. The count is
+// read after the decrement and the flag after that, under mu; beginDrain
+// sets the flag under mu before it reads the count: whichever of the two
+// runs second sees the other's write, so a connection that empties as the
+// GOAWAY is decided is finished exactly once, by one of them.
+func (a *h3Assembler) retire() {
+	if a.inFlight.Add(-1) != 0 {
+		return
+	}
+	a.mu.Lock()
+	draining := a.draining
+	a.mu.Unlock()
+	if draining && a.Finish != nil {
+		a.Finish()
+	}
 }
 
 // uni folds one frame of a client unidirectional stream (RFC 9114 §6.2): the

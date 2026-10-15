@@ -112,13 +112,6 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
 	}
 
-	// A cancelled server ends with an application close, which is the graceful
-	// end RFC 9114 §5.2 describes (GOAWAY, which would precede it on the
-	// control stream, is not implemented — a client just sees the connection
-	// end cleanly rather than being invited to retry elsewhere).
-	stop := context.AfterFunc(ctx, func() { _ = c.CloseWithError(h3GracefulCode()) })
-	defer stop()
-
 	// RFC 9114 §6.2.1: each endpoint opens a control stream and sends
 	// SETTINGS as its first frame. A peer is entitled to wait for it, so a
 	// server that never sends one is a server a conformant client hangs on.
@@ -127,6 +120,45 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	if _, err := control.Write(appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
 		return err
 	}
+
+	// A cancelled server drains (ADR 0017), the way RFC 9114 §5.2 has it:
+	// GOAWAY on the control stream naming the first request stream this
+	// connection rejects — the one after the highest it admitted, decided
+	// under the assembler's lock so no stream is both admitted and named —
+	// then every admitted request is answered, then the connection closes
+	// H3_NO_ERROR (or §8.1's grease) once the last answer is acknowledged,
+	// which is what [quic.Conn.ShutdownWithError] waits for: a close sent at
+	// once could reach the client before the response it follows. A request
+	// stream opened from the named identifier on is rejected on arrival
+	// (REQUEST_REJECTED, see the assembler's admit). Config.ShutdownGrace
+	// bounds the whole: when it passes, what is still open is closed under
+	// its handler, as Serve does. The goroutine this runs on lives for the
+	// drain only — nothing is parked for the life of the connection.
+	drained := make(chan struct{})
+	var finishOnce sync.Once
+	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
+	stop := context.AfterFunc(ctx, func() {
+		from := a.beginDrain()
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
+		if a.inFlight.Load() == 0 {
+			a.Finish()
+		}
+		grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
+		defer cancel()
+		select {
+		case <-drained:
+			// The grace left bounds the acknowledgement too; past it the
+			// connection closes anyway, as Shutdown promises.
+			_ = c.ShutdownWithError(grace, h3GracefulCode())
+		case <-grace.Done():
+			_ = c.CloseWithError(h3GracefulCode())
+		case <-c.Done():
+		}
+	})
+	defer stop()
 
 	// The channel is never closed, and both ends select on the connection
 	// instead. Closing it would be the natural thing and it is a panic waiting
@@ -220,6 +252,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 			// must not reach into it.
 			fieldSection: a.peerMaxFieldSection(),
 			credit:       a.Credit,
+			retire:       a.retire,
 		}:
 		case <-c.Done():
 		}
@@ -276,6 +309,10 @@ type h3Batch struct {
 	// credited every byte twice, so MAX_DATA ran ahead of what this server
 	// had consumed without bound.
 	credit func(streamID, n uint64)
+	// retire, when set, is called once per request when its response has
+	// left — or its writer has given up — which is how a draining connection
+	// learns it owes nothing more.
+	retire func()
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
@@ -352,6 +389,12 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duratio
 			defer func() {
 				if !detached {
 					writers.Done()
+				}
+				// Retired at the goroutine's very end, a streamed producer's
+				// pull included: the drain waits for the body it is writing,
+				// bounded by the grace, where ServeH3's own return does not.
+				if b.retire != nil {
+					b.retire()
 				}
 			}()
 			writeH3Response(c, id, r, method, b.fieldSection, writeTimeout, func() {
