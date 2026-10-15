@@ -51,14 +51,10 @@ query run an hour later is bounded by its own context alone.
 > than once: cancelling a running query goes through a second connection to
 > the same server, opened the same way.
 
-The context passed to a query is checked between batches, which stops the
-client pulling; it cannot reach a server that has not sent its first row
-yet, because the client is waiting on it. That is where the recipe serves:
-a context that ends mid-statement opens a **second connection** with it and
-sends the protocol's cancellation. The server aborts the statement, the
-query ends with the context's error a round trip later, and the connection
-stays usable. The second connection is encrypted when the main one is: the
-packet carries the session's cancellation secret.
+A context that expires while the server is running a statement cancels it
+on the server, through that second connection:
+[Cancelling a running query](#cancelling-a-running-query) says why this
+matters and what the package does for you.
 
 By default, authentication uses SCRAM-SHA-256: the password never travels
 as is. Sending it in cleartext is possible but must be asked for explicitly
@@ -149,6 +145,146 @@ you know which server is on the other side.
 > here). Without it, a server that accepts TLS directly could be fooled by a
 > client that believes it is talking to something else; the label closes
 > that confusion.
+
+### Cancelling a running query
+
+A statement running on the server does not stop because your program no
+longer wants its answer. As long as it runs, three things stay taken:
+
+- its **locks**: the reservations a statement places on rows or tables so
+  that nobody changes them underneath it. A long `UPDATE` blocks every other
+  `UPDATE` on the same rows;
+- the server's processor, memory and disks, which every other query shares;
+- the connection itself: the protocol lets nothing else through until the
+  statement has finished.
+
+The classic case is a slow query behind an HTTP deadline: the visitor left
+long ago, the database is still working for them, and the following queries
+wait on its locks.
+
+The context passed to a query is not enough to stop it. It is checked
+between two batches, which stops the client pulling; but while the server
+is computing and has not sent its first row, the client is waiting for it,
+and the server knows nothing about the context. The protocol has a separate
+message for this, the **CancelRequest**: a small packet that carries the
+**cancellation key** the server gave to the session (its process number and
+a secret), and that travels on a **second connection** to the same server,
+because the first one is busy with the running statement and its bytes are
+taken.
+
+On a connection opened by `Connect`, you have nothing to write. As soon as
+a context ends while the connection is waiting for the server (in `Query`,
+`Exec`, `ExecParams`, `Copier.WriteTuples` or `Tx.Pipeline`) the package:
+
+1. reopens a connection with the recipe given to `Connect`;
+2. writes the CancelRequest on it;
+3. waits for the server to close that second connection. This is the
+   **confirmation**: the server notifies the statement before closing, and
+   nothing is sent on the main connection before that close, so a
+   cancellation still on its way cannot land on the next statement.
+
+The server then abandons the statement with code `57014`
+(`query_canceled`). The call returns the context's error, wrapped (the
+server's error stays reachable through `errors.As`), and the connection
+stays usable:
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+defer cancel()
+err := conn.Exec(ctx, "UPDATE orders SET status = 'late' WHERE due < now()")
+if errors.Is(err, context.DeadlineExceeded) {
+    // the server abandoned the UPDATE and released its locks; conn is still good
+}
+```
+
+For COPY and the pipeline, the same cancellation has the effects of their
+shape. A `WriteTuples` that was waiting for the server's answer returns the
+context's error, the transaction rolled back; a context that expires **between**
+two batches leaves the transaction open, and it is up to you to choose
+between `Abort` and `Close` ([In bulk: COPY](#in-bulk-copy)). In a pipeline,
+the part in progress fails, the following ones do not run, and `Pipeline`
+returns the context's error next to `ErrPipelineAborted`, the transaction
+aborted as after any failure of a part.
+
+**When nothing confirms.** `Config.CancelTimeout` (5 seconds by default)
+bounds the three steps together. If the recipe fails, or if the server does
+not close in time, the package no longer knows where the request is: lost,
+or still on its way to the server, where it would cancel the statement
+after this one. So it closes the main connection, which is also what frees
+your call, blocked on a read the server might never serve. The call returns
+the context's error with `ErrConnBroken`: the connection is no longer good,
+open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
+that says why.
+
+One case stands apart: the statement finished just before the close
+reached it. The call then returns its real result (`nil`, the rows
+delivered) and it is the next call that finds `ErrConnBroken`. The warning,
+with `statement_completed=true`, is the only trace of the failed
+cancellation. The reason: an `INSERT` reported as failed after being
+committed would be replayed by the caller, and the row would exist twice.
+
+**The recipe does the cancelling.** Since cancellation goes through the
+recipe, it has the recipe's properties. With `DialTCP`, the cancellation
+secret crosses the network in cleartext; anyone who reads it can cancel
+this session's queries until it closes. That is harmless on a loopback:
+
+```go
+conn, err := postgres.Connect(ctx, postgres.DialTCP("127.0.0.1:5432"), cfg)
+```
+
+With `DialTLS`, each cancellation negotiates TLS like the main connection,
+with the same configuration; the server accepts a CancelRequest inside TLS:
+
+```go
+conn, err := postgres.Connect(ctx, postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots}), cfg)
+```
+
+A **recipe of your own** (a UNIX socket, a tunnel, a proxy) is any function
+of the shape `DialFunc`. For example, the UNIX socket of a server on the
+same machine (here at the path used by the Debian and Ubuntu packages):
+
+```go
+unix := func(ctx context.Context) (io.ReadWriteCloser, error) {
+    var d net.Dialer
+    return d.DialContext(ctx, "unix", "/var/run/postgresql/.s.PGSQL.5432")
+}
+conn, err := postgres.Connect(ctx, unix, cfg)
+```
+
+It must keep three promises, and any `net.Conn` opened inside the function
+keeps them: return a **new** connection on every call, respect the context
+it receives (otherwise the cancellation overruns `CancelTimeout`), and
+accept a `Close` while a `Read` is blocked.
+
+The trap is the first promise. A recipe that opens the socket once and
+returns it on every call gets through `Connect` without trouble, and then
+the first cancellation receives the very connection it was meant to cancel:
+
+```go
+nc, err := net.Dial("tcp", "db.internal:5432")
+dial := func(context.Context) (io.ReadWriteCloser, error) { return nc, nil } // wrong: always the same socket
+```
+
+The package recognises this case and refuses it (written on the main
+connection, the packet would be read as a message of the conversation in
+progress), which means an unconfirmed cancellation: connection closed,
+`ErrConnBroken`. A different wrapper around the same socket, however, is not
+recognised. The rule is therefore simple: open **inside** the function,
+never before.
+
+A `Conn` built by `NewConn` has no recipe, so no automatic cancellation:
+it is up to you to open the second connection and call `CancelRequest` with
+`conn.CancelKey()`.
+
+> **In plain terms: an advisory cancellation.** The CancelRequest is a
+> request, not an order. The server looks at it at moments of its choosing
+> (checkpoints scattered through its code, between two rows read for
+> instance) and a statement that was finishing finishes: the answer may then
+> arrive with its result rather than with `57014`. Cancelling is not undoing
+> either: what a transaction has already committed stays committed. And a
+> cancellation only leaves if your program is there to send it; to bound the
+> server's work even when the client has vanished, add a limit on the server
+> side, `statement_timeout` in `Params`.
 
 ## Reading
 
