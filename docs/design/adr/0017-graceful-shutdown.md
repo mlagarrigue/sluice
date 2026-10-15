@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** —
+- **Revised:** 2026-10-15 (HTTP/2 drains)
 - **Theme:** httpstream
 
 ## Problem
@@ -50,10 +50,14 @@ before the gateway, its last batches fail.
      shutdown that begins once the header is out can no longer be
      announced: the client finds the close at its next request, the case
      §9.6 describes for a connection the server closed.
-   - HTTP/2 (slice 2): GOAWAY `NO_ERROR` with the last stream identifier
-     at 2^31−1, then, one round trip later, a second GOAWAY with the last
-     stream actually taken (RFC 9113 §6.8); the open streams finish, the
-     connection closes.
+   - HTTP/2: GOAWAY `NO_ERROR` with the last stream identifier at 2^31−1
+     and a PING, then, at the PING's acknowledgement — the round trip
+     RFC 9113 §6.8 asks to allow for the streams already on the wire — a
+     second GOAWAY with the last stream actually taken; a stream opened
+     past it is refused `REFUSED_STREAM`, the open streams finish, the
+     connection closes. A peer that never acknowledges the PING is closed
+     by the grace. A connection with no stream open closes at once, like
+     an idle HTTP/1.1 one.
    - HTTP/3 (slice 3): a GOAWAY frame with the identifier of the last
      accepted stream, then `H3_NO_ERROR` once the accepted requests are
      processed (RFC 9114 §5.2: "An endpoint that completes a graceful
