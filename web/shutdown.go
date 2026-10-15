@@ -6,8 +6,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
+
+// A Server is anything that stops by draining: [http.Server] is one, and so
+// is every Serve(ctx) once [Start] has run it. [Shutdown] takes one; several
+// become one through [Servers].
+//
+// Shutdown stops admitting work and returns once the work already admitted
+// has finished, or once ctx is done, whichever comes first. Returning early
+// does not cancel the drain — the server keeps finishing on its own — it only
+// stops waiting for it, and says so with ctx's error.
+type Server interface {
+	Shutdown(context.Context) error
+}
 
 // Shutdown stops a server and then the things it was serving from, in that
 // order.
@@ -21,7 +34,7 @@ import (
 // point of view, it is broken. Every one of them answers 500 during what was
 // supposed to be a clean stop.
 //
-// So: [http.Server.Shutdown] first, which stops accepting and waits for the
+// So: [Server.Shutdown] first, which stops accepting and waits for the
 // handlers already running. Only once they have all returned is there nothing
 // left that could call a gateway, and only then is it safe to close one.
 //
@@ -30,6 +43,15 @@ import (
 // This is three lines of code and it is here because the order is not
 // discoverable: both spellings compile, both look symmetrical, and the wrong
 // one fails only under load during a deploy.
+//
+// A process that serves on more than one front — an [http.Server] for HTTP/1.1
+// and HTTP/2, a Serve(ctx) for HTTP/3 — drains them together, since none of
+// them calls the other, and closes the gateway after the last one:
+//
+//	h3 := web.Start(ctx, func(ctx context.Context) error {
+//	    return httpstream.Serve(ctx, ln, cfg, handle)
+//	})
+//	err := web.Shutdown(ctx, web.Servers(srv, h3), ordersGateway, conn)
 //
 // # What ctx bounds
 //
@@ -43,7 +65,7 @@ import (
 // The closers are **always** run, and their failures are joined with the
 // server's. A shutdown that abandons half its cleanup because the first step
 // timed out is the shape of bug this function exists to remove.
-func Shutdown(ctx context.Context, srv *http.Server, closers ...io.Closer) error {
+func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 	if srv == nil {
 		return errors.New("web: Shutdown requires a server")
 	}
@@ -61,6 +83,92 @@ func Shutdown(ctx context.Context, srv *http.Server, closers ...io.Closer) error
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Servers is several servers as one, for [Shutdown] to stop together.
+//
+// They drain at the same time, not one after the other: the front of a
+// process is one layer whatever the number of listeners, and nothing on it
+// calls anything else on it, so a serial drain would only add the graces up.
+// Shutdown returns once every one of them has, with their failures joined;
+// a nil entry is skipped.
+func Servers(srvs ...Server) Server {
+	return servers(srvs)
+}
+
+type servers []Server
+
+func (ss servers) Shutdown(ctx context.Context) error {
+	errs := make([]error, len(ss))
+	var wg sync.WaitGroup
+	for i, s := range ss {
+		if s == nil {
+			continue
+		}
+		wg.Go(func() { errs[i] = s.Shutdown(ctx) })
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// Start runs serve on its own goroutine and returns the handle that stops it.
+//
+// It is for a server whose only stop signal is its context — httpstream's
+// Serve and ServeH3, or any Serve(ctx) written in that shape — so that
+// [Shutdown] can stop it next to an [http.Server] and in the same order. The
+// handle's Shutdown cancels the context serve was given and waits for serve
+// to return, which is when that server's own drain, bounded by its own grace,
+// is over. Nothing is added to the server: it still has one signal, and the
+// handle is what composes it.
+//
+//	h3 := web.Start(ctx, func(ctx context.Context) error {
+//	    return httpstream.Serve(ctx, ln, cfg, handle)
+//	})
+//	select {
+//	case <-ctx.Done():
+//	case <-h3.Done():
+//	}
+//	err := web.Shutdown(drain, web.Servers(srv, h3), gw)
+//
+// ctx is the parent of what serve gets: cancelling it stops the server too,
+// which is the signal.NotifyContext shape. A serve that returns on its own —
+// a listener failed, a port was in use — is reported by [Started.Done], and
+// its error comes back from the next Shutdown, where a main function reads it.
+func Start(ctx context.Context, serve func(context.Context) error) *Started {
+	if serve == nil {
+		panic("web: Start requires a serve function")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	s := &Started{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(s.done)
+		s.err = serve(ctx)
+	}()
+	return s
+}
+
+// A Started is a Serve(ctx) that [Start] is running. It is a [Server].
+type Started struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error // written before done is closed, read after
+}
+
+// Done is closed when serve has returned, whether it was asked to or not.
+func (s *Started) Done() <-chan struct{} { return s.done }
+
+// Shutdown cancels serve's context and waits for it to return, or for ctx
+// to be done, whichever comes first. It returns what serve returned — nil
+// for a server that stopped because it was asked to — or ctx's error when
+// the wait ended first. Calling it again waits again.
+func (s *Started) Shutdown(ctx context.Context) error {
+	s.cancel()
+	select {
+	case <-s.done:
+		return s.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // DefaultReadHeaderTimeout is the header deadline [Serve] and [ServeTLS] give
