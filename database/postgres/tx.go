@@ -197,7 +197,7 @@ func (c *Conn) Exec(ctx context.Context, sql string) error {
 		return fmt.Errorf("abandoning the statement: %w", err)
 	}
 	w := c.watchCancel(ctx)
-	return settleCancel(ctx, w, c.execUser(sql))
+	return c.settleCancel(ctx, w, c.execUser(sql))
 }
 
 // CommandTag is the server's word on a statement it completed: "UPDATE 3",

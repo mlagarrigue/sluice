@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -553,11 +555,154 @@ func TestExecCancelsTheRunningStatementThroughTheRecipe(t *testing.T) {
 	})
 }
 
-// A cancellation that cannot be sent leaves the statement to run, as without
-// the option — and when the query then ends on the context at a batch
-// boundary, the error says why the deadline was not honoured earlier. A
-// statement that finishes on its own keeps its result: a deadline the
-// server beat is not an error.
+// recordHandler keeps every record it is handed, so a test can read the
+// warnings a connection logged.
+type recordHandler struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (h *recordHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *recordHandler) WithGroup(string) slog.Handler            { return h }
+
+func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.recs = append(h.recs, r.Clone())
+	return nil
+}
+
+// warning returns the one warning logged, failing the test on any other
+// count, and checks the secret is nowhere in it.
+func (h *recordHandler) warning(t *testing.T, secret string) map[string]slog.Value {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.recs) != 1 || h.recs[0].Level != slog.LevelWarn {
+		t.Fatalf("logged %d records, want one warning: %v", len(h.recs), h.recs)
+	}
+	attrs := map[string]slog.Value{}
+	h.recs[0].Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value
+		if strings.Contains(a.Value.String(), secret) {
+			t.Errorf("the warning's %s carries the cancellation secret", a.Key)
+		}
+		return true
+	})
+	return attrs
+}
+
+// cancelHolding is a DialFunc whose server reads the packet and holds the
+// second connection open for hold before closing it; a negative hold never
+// closes it, and the connection ends when the client gives up on it.
+func cancelHolding(hold time.Duration, packets chan<- []byte) DialFunc {
+	return func(context.Context) (io.ReadWriteCloser, error) {
+		c, s := net.Pipe()
+		go func() {
+			defer func() { _ = s.Close() }()
+			pkt := make([]byte, 16)
+			if _, err := io.ReadFull(s, pkt); err != nil {
+				return
+			}
+			packets <- pkt
+			if hold < 0 {
+				_, _ = io.Copy(io.Discard, s)
+				return
+			}
+			time.Sleep(hold)
+		}()
+		return c, nil
+	}
+}
+
+// The close of the second connection is the server's only word that it
+// acted on the request, and nothing goes out on the main one before it: a
+// request still in flight would otherwise cancel the next statement. The
+// server aborts the statement at once and keeps the cancellation
+// connection open two seconds more — the statement ends then, not before,
+// and the connection is good.
+func TestTheStatementWaitsForTheServerToConfirmTheCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(2*time.Second, packets)
+
+		go func() {
+			<-srv.read
+			<-packets
+			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"), beReadyForQuery())
+		}()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		err := conn.Exec(ctx, "CALL slow()")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Exec = %v, want it to wrap context.DeadlineExceeded", err)
+		}
+		if took := time.Since(start); took != 2100*time.Millisecond {
+			t.Errorf("Exec returned %v after it was sent, want 2.1s: the deadline, then the server's close", took)
+		}
+		if err := conn.Err(); err != nil {
+			t.Errorf("the connection is broken after a confirmed cancellation: %v", err)
+		}
+	})
+}
+
+// A server that takes the packet and never closes the connection has
+// confirmed nothing: at CancelTimeout the main connection is closed — the
+// statement's read is released by it, the server never answering — and
+// the call ends with the context's error and ErrConnBroken, one warning
+// logged.
+func TestAnUnconfirmedCancellationBreaksTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 7, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(-1, packets)
+		conn.cancelTimeout = 2 * time.Second
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
+
+		go func() {
+			<-srv.read
+			<-packets // and the statement runs on
+		}()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		src := conn.Query(ctx, "SELECT pg_sleep(60)", nil, QueryConfig{})
+		src.Stream()(func(sluice.Batch[Row]) bool { return true })
+		err := src.Err()
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrConnBroken) {
+			t.Fatalf("Err = %v, want both context.DeadlineExceeded and ErrConnBroken", err)
+		}
+		if !strings.Contains(err.Error(), "CancelTimeout") {
+			t.Errorf("Err = %v, want it to name CancelTimeout", err)
+		}
+		if took := time.Since(start); took != 2100*time.Millisecond {
+			t.Errorf("Query returned %v after it was sent, want the deadline plus the 2s CancelTimeout", took)
+		}
+		if !errors.Is(conn.Err(), ErrConnBroken) {
+			t.Errorf("conn.Err() = %v, want ErrConnBroken", conn.Err())
+		}
+		attrs := logs.warning(t, testSecret)
+		if done := attrs["statement_completed"]; done.Kind() != slog.KindBool || done.Bool() {
+			t.Errorf("statement_completed = %v, want false", done)
+		}
+		if pid := attrs["pid"]; pid.Kind() != slog.KindUint64 || pid.Uint64() != 7 {
+			t.Errorf("pid = %v, want 7", pid)
+		}
+	})
+}
+
+// A recipe that cannot reach the server breaks the connection at once,
+// without waiting for CancelTimeout: nothing else would end a statement the
+// server may run forever, and the error names both the context and why the
+// cancellation could not be sent.
 func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
@@ -568,21 +713,47 @@ func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 			dials++
 			return nil, errDial
 		}
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
+		go func() { <-srv.read }()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		src := conn.Query(ctx, "SELECT id FROM slow", nil, QueryConfig{})
+		src.Stream()(func(sluice.Batch[Row]) bool { return true })
+		err := src.Err()
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, errDial) || !errors.Is(err, ErrConnBroken) {
+			t.Fatalf("Err = %v, want context.DeadlineExceeded, the dial error and ErrConnBroken", err)
+		}
+		if took := time.Since(start); took != 100*time.Millisecond {
+			t.Errorf("Query returned %v after it was sent, want the 100ms deadline", took)
+		}
+		if dials != 1 {
+			t.Errorf("the recipe was called %d times, want 1", dials)
+		}
+		logs.warning(t, testSecret)
+	})
+}
+
+// A statement that completed while its cancellation failed keeps its
+// result — an INSERT reported failed after it committed is an INSERT
+// retried — and the connection is closed behind it, the warning being the
+// only trace.
+func TestACompletedStatementKeepsItsResultWhenTheCancellationFails(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		conn.cancelDial = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			<-ctx.Done() // a dial that hangs to the bound
+			return nil, ctx.Err()
+		}
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
 
 		go func() {
 			<-srv.read
-			// The server takes longer than the context allows, then suspends
-			// after one row: the boundary where ctx is checked.
-			time.Sleep(time.Second)
-			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(1)),
-				beSimple(pgwire.BackendPortalSuspended))
-			<-srv.read // the Executes asked ahead, then the Sync
-			<-srv.read
-			srv.write(t, beReadyForQuery())
-			// A statement that beats the deadline: one row and done.
-			<-srv.read
-			time.Sleep(time.Second)
+			time.Sleep(200 * time.Millisecond)
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
 				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(7)),
 				beCommandComplete("SELECT 1"))
@@ -592,31 +763,65 @@ func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
-		src := conn.Query(ctx, "SELECT id FROM slow", nil, QueryConfig{BatchRows: 1})
-		src.Stream()(func(sluice.Batch[Row]) bool { return true })
-		err := src.Err()
-		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, errDial) {
-			t.Fatalf("Err = %v, want both context.DeadlineExceeded and the dial error", err)
-		}
-		if dials != 1 {
-			t.Errorf("the recipe was called %d times, want 1", dials)
-		}
-
-		ctx, cancel = context.WithTimeout(t.Context(), 100*time.Millisecond)
-		defer cancel()
-		src = conn.Query(ctx, "SELECT 7", nil, QueryConfig{})
+		start := time.Now()
+		src := conn.Query(ctx, "SELECT 7", nil, QueryConfig{})
 		rows := 0
 		src.Stream()(func(b sluice.Batch[Row]) bool { rows += len(b.Items); return true })
 		if err := src.Err(); err != nil {
-			t.Fatalf("a statement that finished on its own: %v", err)
+			t.Fatalf("a statement that completed: %v", err)
 		}
 		if rows != 1 {
 			t.Errorf("%d rows, want the 1 the server sent", rows)
 		}
-		if err := conn.Err(); err != nil {
-			t.Errorf("the connection is broken: %v", err)
+		if took := time.Since(start); took != 100*time.Millisecond+defaultCancelTimeout {
+			t.Errorf("Query returned %v after it was sent, want the deadline plus the default CancelTimeout", took)
+		}
+		if !errors.Is(conn.Err(), ErrConnBroken) {
+			t.Errorf("conn.Err() = %v, want ErrConnBroken", conn.Err())
+		}
+		if done := logs.warning(t, testSecret)["statement_completed"]; done.Kind() != slog.KindBool || !done.Bool() {
+			t.Errorf("statement_completed = %v, want true", done)
 		}
 	})
+}
+
+// A recipe that hands back the main connection would write the packet into
+// the statement's own byte stream, where the server reads it as a message.
+// It is refused unwritten, and the connection closed as for any
+// cancellation not confirmed.
+func TestARecipeReturningTheMainConnectionIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		conn.cancelDial = func(context.Context) (io.ReadWriteCloser, error) { return conn.rw, nil }
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
+		go func() { <-srv.read }()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		err := conn.Exec(ctx, "CALL slow()")
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrConnBroken) {
+			t.Fatalf("Exec = %v, want both context.DeadlineExceeded and ErrConnBroken", err)
+		}
+		if !strings.Contains(err.Error(), "connection being cancelled") {
+			t.Errorf("Exec = %v, want it to say the recipe returned the connection being cancelled", err)
+		}
+		synctest.Wait()
+		if n := len(srv.read); n != 0 {
+			t.Errorf("the main connection carried %d writes after the statement, want none", n)
+		}
+		logs.warning(t, testSecret)
+	})
+
+	// A type == would panic on is compared as different, not crashed on.
+	type uncomparable struct {
+		io.ReadWriteCloser
+		_ []byte
+	}
+	if sameTransport(uncomparable{}, uncomparable{}) {
+		t.Error("two values of an uncomparable type compared as the same connection")
+	}
 }
 
 // Nothing is armed without a key, a dialer or a context that can end: no
@@ -650,7 +855,7 @@ func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
 	}
 	cancel()
 	// Stopped before it fired: the context ending now dials nothing.
-	if err := settleCancel(ctx, nil, nil); err != nil {
+	if err := conn.settleCancel(ctx, nil, nil); err != nil {
 		t.Errorf("settling nothing: %v", err)
 	}
 }

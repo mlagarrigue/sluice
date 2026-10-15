@@ -174,11 +174,18 @@ type Copier struct {
 // ctx is checked once per [Copier.WriteTuples] — the same per-batch
 // granularity [Conn.Query] uses, and for the same reason: a batch of tuples is
 // the unit that goes on the wire, so there is nothing finer to stop between.
+// On a connection opened by [Connect], ctx ending *during* a WriteTuples that
+// waits on the server sends a [CancelRequest], as for [Conn.Query], and the
+// server aborts the COPY. Waiting for its answer — the transaction opening,
+// the commit at RowsPerTx and the triggers it runs — WriteTuples returns
+// ctx.Err() wrapped, with the transaction rolled back. Waiting on a full
+// socket, it returns once the server has drained it, and the abort is read
+// by the Close or Abort that follows.
 //
-// A cancelled copy leaves the open transaction **open**, deliberately. The
-// caller decides what a half-loaded transaction is worth: [Copier.Abort] rolls
-// it back and tells the server why, [Copier.Close] commits what got through.
-// Neither consults ctx — a cleanup path that refuses to run because the
+// A copy cancelled between two batches leaves the open transaction **open**,
+// deliberately. The caller decides what a half-loaded transaction is worth:
+// [Copier.Abort] rolls it back and tells the server why, [Copier.Close]
+// commits what got through. Neither consults ctx — a cleanup path that refuses to run because the
 // context is cancelled is how a transaction is left open for the vacuum
 // horizon to trip over, which is the failure this type spends its
 // documentation avoiding.
@@ -233,9 +240,22 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		return err
 	}
 	defer cp.conn.endBusy()
+	// Watched like a statement: the batch may open the transaction, wait on
+	// a server that has stopped reading, or commit — and a commit is where
+	// the server runs what the rows set off, triggers and constraints.
+	w := cp.conn.watchCancel(cp.ctx)
+	if err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows)); err != nil {
+		return cp.fail(err)
+	}
+	return nil
+}
+
+// write is WriteTuples once the batch is accepted: everything that talks to
+// the server.
+func (cp *Copier) write(tuples []byte, rows int) error {
 	if !cp.inTx {
 		if err := cp.beginTx(); err != nil {
-			return cp.fail(err)
+			return err
 		}
 	}
 
@@ -252,13 +272,13 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		// the time WriteTuples returns the bytes are gone and `tuples` is
 		// theirs again — which is the contract this method already promises.
 		if err := cp.writeData(tuples); err != nil {
-			return cp.fail(err)
+			return err
 		}
 	} else {
 		cp.buf = append(cp.buf, tuples...)
 		if len(cp.buf) >= cp.cfg.MaxMessage {
 			if err := cp.flushData(); err != nil {
-				return cp.fail(err)
+				return err
 			}
 		}
 	}
@@ -268,9 +288,7 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 	// within it, which is what makes RowsPerTx a floor: splitting the
 	// caller's bytes at a row boundary would mean parsing every tuple.
 	if cp.rowsTx >= cp.cfg.RowsPerTx {
-		if err := cp.commitTx(); err != nil {
-			return cp.fail(err)
-		}
+		return cp.commitTx()
 	}
 	return nil
 }

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -128,6 +130,12 @@ type Conn struct {
 	// ends mid-statement can reach the server through a second connection.
 	// Nil for a Conn built by NewConn.
 	cancelDial DialFunc
+
+	// cancelTimeout and logger are [Config.CancelTimeout] and
+	// [Config.Logger] as given, zero and nil included; [Conn.sendCancel]
+	// and [Conn.log] read the defaults into them.
+	cancelTimeout time.Duration
+	logger        *slog.Logger
 
 	// inTx records that a transaction is open, whether it was opened by
 	// [Conn.Begin] or by a [Copier]. It exists so a second BEGIN is refused:
@@ -643,7 +651,8 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 		q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
 	}
 	w := c.watchCancel(ctx)
-	queryErr := settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
+	defer w.disarm()
+	queryErr := c.settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
 	q.recordRows(queryErr)
 	// Settled after the deferred resync has read to ReadyForQuery, so the
 	// cache's provisional entry is confirmed or dropped on the server's

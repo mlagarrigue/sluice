@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
@@ -243,7 +245,29 @@ type Config struct {
 	// NegotiateProtocolVersion and the connection continues under 3.0;
 	// nothing breaks, and the key is the four-byte one.
 	ProtocolMinor int
+
+	// CancelTimeout bounds each cancellation the connection sends on its
+	// own when a context ends mid-statement: opening the second
+	// connection, writing the [CancelRequest], and waiting for the server
+	// to close it — the only sign the protocol gives that the request was
+	// handled. Zero, the default, is 5 seconds; [Connect] refuses a
+	// negative value before anything is sent.
+	//
+	// A cancellation not confirmed in time closes the connection, and the
+	// statement ends with [ErrConnBroken]: a request still on its way could
+	// reach the server during the next statement and cancel that one
+	// instead.
+	CancelTimeout time.Duration
+
+	// Logger receives the warnings the connection has no error to return
+	// through: a cancellation that failed although the statement
+	// completed. Nil means [slog.Default]. The cancellation key's secret is
+	// never logged.
+	Logger *slog.Logger
 }
+
+// defaultCancelTimeout is [Config.CancelTimeout] when it is zero.
+const defaultCancelTimeout = 5 * time.Second
 
 // startup performs the startup and authentication exchange over a
 // connection already open: [Connect] calls it once it has dialled, and the
@@ -268,6 +292,7 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 
 	c := NewConn(rw)
 	_, c.encodingChosen = cfg.Params["client_encoding"]
+	c.cancelTimeout, c.logger = cfg.CancelTimeout, cfg.Logger
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
 	if err := c.w.Flush(); err != nil {
@@ -318,6 +343,9 @@ func startupBody(cfg Config) ([]byte, error) {
 	}
 	if v := cfg.ProtocolMinor; v != 0 && v != 2 {
 		return nil, fmt.Errorf("postgres: Config.ProtocolMinor %d asks for protocol 3.%d — this package speaks 3.0 (0) and 3.2 (2)", v, v)
+	}
+	if cfg.CancelTimeout < 0 {
+		return nil, fmt.Errorf("postgres: Config.CancelTimeout %v is negative — zero means the default, %v", cfg.CancelTimeout, defaultCancelTimeout)
 	}
 
 	// Sorted, not map order: ranging a map here would make the same

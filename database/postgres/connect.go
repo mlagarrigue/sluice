@@ -16,9 +16,13 @@ import (
 // again for each cancellation, because a [CancelRequest] travels on a
 // connection of its own.
 //
-// It must return a new connection every time it is called, and it must
-// honour ctx: a dial that ignores it holds [Connect] past the caller's
-// deadline. [DialTCP] and [DialTLS] are the two recipes most deployments
+// It must return a new connection every time it is called — a recipe that
+// hands back the connection being cancelled is refused, and the cancellation
+// with it — and it must honour ctx: a dial that ignores it holds [Connect]
+// past the caller's deadline, and a cancellation past
+// [Config.CancelTimeout]. The connection's Close must be safe to call while
+// a Read is blocked, as every net.Conn's is: it is how a cancellation that
+// cannot be confirmed releases the statement waiting on the server. [DialTCP] and [DialTLS] are the two recipes most deployments
 // need; a recipe of your own — a UNIX socket, a proxy, a custom resolver — is
 // any function of this shape.
 type DialFunc func(ctx context.Context) (io.ReadWriteCloser, error)
@@ -143,14 +147,25 @@ func ctxOr(ctx context.Context, err error) error {
 //
 // # The recipe is kept
 //
-// dial opens the connection, and it is kept: a context that ends while
-// [Conn.Query] or [Conn.Exec] waits on a statement the server is still
-// executing calls it again, to send a [CancelRequest] on a connection of
-// its own. The server aborts the statement with SQLSTATE 57014, the call
-// ends with ctx.Err() wrapped, and the connection stays usable. That is why
-// Connect takes a recipe rather than a socket: cancelling needs a second
-// connection to the same server, made the same way — over TLS when the
-// main one is, since the packet carries the session's secret.
+// dial opens the connection, and it is kept: a context that ends while the
+// connection waits on a statement the server is still executing —
+// [Conn.Query], [Conn.Exec], [Conn.ExecParams], [Copier.WriteTuples],
+// [Tx.Pipeline] — calls it again, to send a [CancelRequest] on a connection
+// of its own. That is why Connect takes a recipe rather than a socket:
+// cancelling needs a second connection to the same server, made the same
+// way — over TLS when the main one is, since the packet carries the
+// session's secret.
+//
+// The cancellation is confirmed before the call returns: the server closes
+// the second connection once it has signalled the backend, and nothing is
+// sent on the main one until then, so a request in flight cannot cancel the
+// next statement instead. The server aborts the statement with SQLSTATE
+// 57014, the call ends with ctx.Err() wrapped, and the connection stays
+// usable. A cancellation not confirmed within [Config.CancelTimeout] — the
+// recipe failing, the server not closing — closes the connection instead:
+// the call ends with ctx.Err() and [ErrConnBroken], and [Config.Logger]
+// receives a warning, the one trace left when the statement had completed
+// anyway.
 //
 // # ctx bounds the connection, not the session
 //

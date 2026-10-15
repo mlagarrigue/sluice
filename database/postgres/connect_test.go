@@ -65,6 +65,9 @@ func TestConnectRefusesABadConfigWithoutDialling(t *testing.T) {
 	if _, err := Connect(t.Context(), dial, Config{}); err == nil || !strings.Contains(err.Error(), "User") {
 		t.Errorf("Connect without a User = %v, want the refusal to name User", err)
 	}
+	if _, err := Connect(t.Context(), dial, Config{User: "u", CancelTimeout: -time.Second}); err == nil || !strings.Contains(err.Error(), "CancelTimeout") {
+		t.Errorf("Connect with a negative CancelTimeout = %v, want the refusal to name CancelTimeout", err)
+	}
 	if dials != 0 {
 		t.Errorf("the recipe was called %d times for a refused configuration, want 0", dials)
 	}

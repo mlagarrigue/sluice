@@ -1416,6 +1416,81 @@ func cancelInterrupts(t *testing.T, conn *postgres.Conn) {
 	}
 }
 
+// Exec waits on the server the way Query does, and the same deadline reaches
+// it through the same recipe.
+func TestIntegrationCancelInterruptsExec(t *testing.T) {
+	conn := dialCancellable(t, 0)
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		return conn.Exec(ctx, "SELECT pg_sleep(5)")
+	})
+}
+
+// A COPY's commit is where the server runs what the rows set off: here a
+// trigger sleeping five seconds per row. The deadline reaches it, the
+// transaction is rolled back, and the connection serves the next query.
+func TestIntegrationCancelInterruptsCopy(t *testing.T) {
+	conn := dialCancellable(t, 0)
+	for _, sql := range []string{
+		"CREATE TEMP TABLE sluice_cancel_copy (id bigint)",
+		"CREATE FUNCTION pg_temp.sluice_slow_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$",
+		"CREATE TRIGGER sluice_slow BEFORE INSERT ON sluice_cancel_copy FOR EACH ROW EXECUTE FUNCTION pg_temp.sluice_slow_row()",
+	} {
+		if err := exec(t, conn, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		cp, err := conn.CopyFrom(ctx, "COPY sluice_cancel_copy (id) FROM STDIN WITH (FORMAT BINARY)",
+			postgres.CopyConfig{RowsPerTx: 1})
+		if err != nil {
+			return err
+		}
+		row := postgres.AppendField(postgres.AppendTupleHeader(nil, 1), postgres.AppendInt8(nil, 1))
+		return cp.WriteTuples(row, 1)
+	})
+}
+
+// A pipeline runs its parts without a pause the client could stop at, so
+// the cancellation is what ends a part that sleeps.
+func TestIntegrationCancelInterruptsPipeline(t *testing.T) {
+	conn := dialCancellable(t, 0)
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		tx, err := conn.Begin(t.Context(), postgres.TxConfig{})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback() //nolint:errcheck // the pipeline's error is the one checked
+		return tx.Pipeline(ctx, []postgres.Part{{SQL: "SELECT 1"}, {SQL: "SELECT pg_sleep(5)"}, {SQL: "SELECT 2"}},
+			postgres.QueryConfig{}, func(int, sluice.Batch[postgres.Row]) bool { return true })
+	})
+}
+
+// cancelEnds runs a call that waits five seconds on the server under a
+// 300 ms deadline, checks the server cut it short, then that conn serves
+// the next query.
+func cancelEnds(t *testing.T, conn *postgres.Conn, run func(context.Context) error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := run(ctx)
+	took := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ended after %v with %v, want context.DeadlineExceeded", took, err)
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		t.Errorf("err = %v, want the server's 57014 reachable through errors.As", err)
+	}
+	if took > time.Second {
+		t.Errorf("the cancellation took %v to end the call, want well under a second", took)
+	}
+	t.Logf("cancelled after %v", took)
+	if err := exec(t, conn, "SELECT 1"); err != nil {
+		t.Fatalf("the statement after the cancellation: %v", err)
+	}
+}
+
 // A SET client_encoding is announced by the server mid-session. Unasked for,
 // it ends the connection, since every text decoder here reads UTF-8; with the
 // encoding chosen at startup, the caller decodes and the connection stays.
