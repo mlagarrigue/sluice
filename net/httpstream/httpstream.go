@@ -329,6 +329,15 @@ type Config struct {
 	// Zero means 10s.
 	WriteTimeout time.Duration
 
+	// ShutdownGrace is how long [Serve], once its context is cancelled,
+	// waits for the requests already in flight to be answered before it
+	// closes the connections still open. Zero means 5s. What it bounds is
+	// the handler and the response's writes together, not either alone:
+	// WriteTimeout governs one write, this governs how long a stopping
+	// server stays up for a response that was owed. Idle connections are
+	// closed at once and do not spend it. See docs/design/adr/0017.
+	ShutdownGrace time.Duration
+
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
 	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
@@ -371,6 +380,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.WriteTimeout <= 0 {
 		c.WriteTimeout = 10 * time.Second
+	}
+	if c.ShutdownGrace <= 0 {
+		c.ShutdownGrace = 5 * time.Second
 	}
 	return c
 }

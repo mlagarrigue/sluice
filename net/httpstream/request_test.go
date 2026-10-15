@@ -427,7 +427,7 @@ func (c *timeoutConn) Close() error                     { return nil }
 func TestSilentConnectionIsWaitedOnOnce(t *testing.T) {
 	c := &timeoutConn{}
 	cfg := Config{}.withDefaults()
-	serveAny(t.Context(), c, cfg, h2ConfigOf(cfg, 0), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	serveAny(t.Context(), c, nil, cfg, h2ConfigOf(cfg, 0), func(b sluice.Batch[Request]) sluice.Batch[Response] {
 		t.Error("the handler ran for a connection that sent nothing")
 		return sluice.Batch[Response]{}
 	})

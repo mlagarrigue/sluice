@@ -67,7 +67,7 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // already schedules well, and a pool in front of it would add a queue whose
 // bound nobody chose.
 //
-// Serve returns when ctx is cancelled and every connection has finished, or
+// Serve returns when ctx is cancelled and the connections have drained, or
 // when the listener fails. It closes the listener on the way out. A
 // temporary Accept failure — a [net.Error] whose Temporary reports true,
 // which is how the kernel says it ran out of descriptors (EMFILE, ENFILE)
@@ -77,12 +77,21 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // served. Treating it as fatal would let a burst of descriptor pressure end
 // every connection the server holds.
 //
-// Cancellation reaches the connections, not only the listener. A goroutine
-// parked in Accept is released by closing the listener under it; a goroutine
-// parked reading a keep-alive connection is released by closing that
-// connection, and nothing else does it — waiting for them instead means Serve
-// returns when the last idle client happens to time out, which is
-// [Config.IdleTimeout] after the cancellation rather than at it.
+// Cancellation drains rather than cuts (docs/design/adr/0017). The listener
+// closes at once, so nothing new is admitted. A connection with no request
+// on it — parked between two keep-alive requests, or accepted and silent —
+// is closed at once too: nothing is owed to it, and waiting for it instead
+// means Serve returns when the last idle client happens to time out, which
+// is [Config.IdleTimeout] after the cancellation rather than at it. A
+// connection with a request in flight is left to finish it: the handler
+// runs to its end, the response goes out whole with Connection: close, and
+// the connection closes after it without reading another request. What
+// bounds that is [Config.ShutdownGrace]: when it passes, every connection
+// still open is closed under its handler and Serve returns without waiting
+// for the goroutines still inside one — a handler that has not returned by
+// then is the handler's bug, and holding the process up for it would turn
+// the bug into a hang. An HTTP/2 connection admitted by Serve is closed at
+// the cancellation, as before, until it learns to say GOAWAY first.
 //
 // What Serve speaks on a bare TCP listener is cleartext HTTP/1.1, with
 // prior-knowledge HTTP/2 sniffed from the preface. Cleartext is kept for
@@ -103,19 +112,30 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 	h2cfg := h2ConfigOf(cfg, h2Streams)
 
 	var wg sync.WaitGroup
-	live := &connSet{conns: map[net.Conn]struct{}{}}
+	live := newConnSet()
 	stop := make(chan struct{})
 	var once sync.Once
 	shutdown := func() {
 		once.Do(func() {
 			close(stop)
 			_ = ln.Close()
-			live.closeAll()
+			live.drain()
 		})
 	}
 	defer func() {
 		shutdown()
-		wg.Wait()
+		// The drain's end: every connection finished, or the grace passed
+		// and what is left is closed under its handler. The wait after
+		// that is not resumed — see the note on cancellation above.
+		finished := make(chan struct{})
+		go func() { wg.Wait(); close(finished) }()
+		grace := time.NewTimer(cfg.ShutdownGrace)
+		defer grace.Stop()
+		select {
+		case <-finished:
+		case <-grace.C:
+			live.closeAll()
+		}
 	}()
 	go func() {
 		select {
@@ -151,7 +171,8 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 			return fmt.Errorf("httpstream: accepting: %w", err)
 		}
 		tempDelay = 0
-		if !live.add(c) {
+		st := live.add(c)
+		if st == nil {
 			// The shutdown ran between Accept and here, so this connection
 			// would never be closed by it.
 			_ = c.Close()
@@ -159,30 +180,84 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 		}
 		wg.Go(func() {
 			defer func() { live.remove(c); _ = c.Close() }()
-			serveAny(ctx, c, cfg, h2cfg, handle)
+			serveAny(ctx, c, st, cfg, h2cfg, handle)
 		})
 	}
 }
 
-// connSet is the connections Serve has accepted and not yet finished with. It
-// exists for one operation — close every one of them at once — and holds
-// nothing else.
+// connSet is the connections Serve has accepted and not yet finished with,
+// each with where it stands between two requests. It exists for the
+// shutdown: close the ones that owe nothing, then, when the grace has
+// passed, the rest.
 type connSet struct {
 	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
+	conns  map[net.Conn]*connState
 	closed bool
+	// draining is closed when the shutdown begins; every connection's state
+	// shares it, which is how the request reader learns not to read another
+	// request.
+	draining chan struct{}
 }
 
-// add registers a connection, reporting false if the set has already been
+func newConnSet() *connSet {
+	return &connSet{conns: map[net.Conn]*connState{}, draining: make(chan struct{})}
+}
+
+// connState is what the shutdown needs to know about one connection: whether
+// a request is in flight on it. It is written by the goroutine serving the
+// connection and read by the shutdown, hence the atomic.
+type connState struct {
+	phase    atomic.Int32
+	draining <-chan struct{}
+}
+
+// The phases a connection moves through, as the shutdown sees them.
+const (
+	// connIdle: nothing has arrived for the next request — the connection
+	// is parked, in the preface sniff or between two keep-alive requests.
+	// Closing it owes nobody an answer.
+	connIdle int32 = iota
+	// connBusy: a request has begun to arrive, is being handled or is being
+	// answered. The shutdown waits for it, up to the grace.
+	connBusy
+	// connUndrained: a protocol the drain does not reach yet (HTTP/2 over
+	// Serve, until the GOAWAY slice). Closed at the shutdown, as it always
+	// was.
+	connUndrained
+)
+
+// set records the phase. A nil state is a connection nothing watches — a
+// test driving serveConn directly — and takes no note.
+func (st *connState) set(phase int32) {
+	if st != nil {
+		st.phase.Store(phase)
+	}
+}
+
+// drainingNow reports whether the shutdown has begun; never, for a nil state.
+func (st *connState) drainingNow() bool {
+	if st == nil {
+		return false
+	}
+	select {
+	case <-st.draining:
+		return true
+	default:
+		return false
+	}
+}
+
+// add registers a connection, returning nil if the set has already been
 // closed and this one therefore has to be closed by its caller.
-func (s *connSet) add(c net.Conn) bool {
+func (s *connSet) add(c net.Conn) *connState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return false
+		return nil
 	}
-	s.conns[c] = struct{}{}
-	return true
+	st := &connState{draining: s.draining}
+	s.conns[c] = st
+	return st
 }
 
 func (s *connSet) remove(c net.Conn) {
@@ -191,23 +266,42 @@ func (s *connSet) remove(c net.Conn) {
 	delete(s.conns, c)
 }
 
-func (s *connSet) closeAll() {
+// drain begins the shutdown: it refuses new connections, tells the readers
+// not to take another request, and closes every connection that has none in
+// flight. The order matters against the reader, which marks itself idle
+// before it looks at draining: a reader that marked itself after this scan
+// sees the channel closed; one that marked itself before is closed here.
+// Either way no idle connection outlives the call.
+func (s *connSet) drain() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	close(s.draining)
+	for c, st := range s.conns {
+		if st.phase.Load() != connBusy {
+			_ = c.Close()
+		}
+	}
+}
+
+// closeAll closes what the grace did not drain. The map is kept: remove
+// still runs for each connection when its goroutine ends.
+func (s *connSet) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for c := range s.conns {
 		_ = c.Close()
 	}
-	s.conns = nil
 }
 
 // serveConn runs one connection to its end, answering whatever it can and
 // closing when it cannot.
 //
 // c is a [prefixConn] even when nothing was peeked: it is where a streamed
-// response's peer watch (see watchPeer) puts back what it read ahead.
-func serveConn(c *prefixConn, cfg Config, handle Handler) {
-	src := Requests(c, cfg)
+// response's peer watch (see watchPeer) puts back what it read ahead. st is
+// the shutdown's view of the connection, nil when nothing is watching it.
+func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
+	src := newRequestReader(c, st, cfg)
 	// Reused for every batch on this connection, growing toward whatever the
 	// largest one needed and never shrinking back — the ordinary trade of a
 	// reused buffer against a per-batch allocation, paid once per connection
@@ -221,6 +315,15 @@ func serveConn(c *prefixConn, cfg Config, handle Handler) {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
 			return false
+		}
+		if st.drainingNow() && len(b.Items) > 0 {
+			// The shutdown began while the handler ran: this batch is the
+			// connection's last, and its last response says so (RFC 9112
+			// §9.6) the way a request's own Connection: close would — the
+			// reader reads the same field and stops after it. A shutdown
+			// that begins once the header is out cannot be announced; the
+			// client finds the close at its next request instead.
+			b.Items[len(b.Items)-1].KeepAlive = false
 		}
 		// A streamed response is written as it is produced rather than
 		// gathered first, which is the whole point of it: the batch's
@@ -362,16 +465,20 @@ func writeAll(c net.Conn, cfg Config, buf []byte) error {
 //
 // The peeked bytes are handed on rather than re-read, since a connection
 // cannot be rewound.
-func serveAny(ctx context.Context, c net.Conn, cfg Config, h2cfg H2Config, handle Handler) {
+func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, h2cfg H2Config, handle Handler) {
 	peek, isH2, err := sniffPreface(c, cfg)
 	if err != nil {
 		return // silent past IdleTimeout, or gone: nothing to hand on
 	}
 	if isH2 {
+		st.set(connUndrained)
 		_ = ServeH2(ctx, prefixed(c, peek), h2cfg, handle)
 		return
 	}
-	serveConn(&prefixConn{Conn: c, head: peek}, cfg, handle)
+	// The peeked bytes are the start of a request: busy from here, and the
+	// reader takes over the phase from its first read.
+	st.set(connBusy)
+	serveConn(&prefixConn{Conn: c, head: peek}, st, cfg, handle)
 }
 
 // h2ConfigOf is the [H2Config] a [Serve] connection that turns out to be
@@ -445,6 +552,11 @@ func prefixed(c net.Conn, head []byte) net.Conn {
 	}
 	return &prefixConn{Conn: c, head: head}
 }
+
+// buffered reports whether bytes put back in front of the connection are
+// waiting to be read — the start of a request, as far as the shutdown is
+// concerned.
+func (c *prefixConn) buffered() bool { return len(c.head) > 0 }
 
 func (c *prefixConn) Read(p []byte) (int, error) {
 	if len(c.head) > 0 {

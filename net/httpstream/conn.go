@@ -33,8 +33,15 @@ import (
 // caller answers with a status and closes, since a stream whose framing is in
 // doubt cannot be resynchronised.
 func Requests(c net.Conn, cfg Config) sluice.Source[Request] {
+	return newRequestReader(c, nil, cfg)
+}
+
+// newRequestReader is Requests with the shutdown's view of the connection attached,
+// which [Serve] has and a caller of Requests does not.
+func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Request] {
 	cfg = cfg.withDefaults()
-	r := &reader{conn: c, cfg: cfg}
+	r := &reader{conn: c, cfg: cfg, state: st}
+	r.held, _ = c.(interface{ buffered() bool })
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })
 }
 
@@ -55,6 +62,15 @@ type reader struct {
 	n      int // bytes held in buf
 	served int
 	err    error
+
+	// state is where this connection stands for Serve's shutdown — idle
+	// between requests, busy once one has begun — and whether the shutdown
+	// has begun. Nil when no Serve is behind this reader.
+	state *connState
+	// held is the connection's own view of bytes already read and put back
+	// in front of it (a [prefixConn]): they are the start of a request even
+	// while buf is empty, so the connection is not idle.
+	held interface{ buffered() bool }
 
 	// deadline is the current request's absolute read deadline, held fixed
 	// once set rather than re-armed on every read. A sliding per-read
@@ -255,7 +271,7 @@ func (r *reader) fill() error {
 	// and held there — see the field comment on deadline — so a request has
 	// exactly ReadTimeout to arrive in full, not ReadTimeout since whenever
 	// it last sent a byte.
-	idle := r.n == 0
+	idle := r.n == 0 && (r.held == nil || !r.held.buffered())
 	deadline := time.Now().Add(r.cfg.IdleTimeout)
 	if !idle {
 		if r.deadline.IsZero() {
@@ -263,13 +279,34 @@ func (r *reader) fill() error {
 		}
 		deadline = r.deadline
 	}
+	if r.state != nil {
+		if idle {
+			// Marked before the shutdown is looked at, so that a shutdown
+			// beginning between the two either sees the mark and closes
+			// this connection, or is seen here — see connSet.drain.
+			r.state.set(connIdle)
+			if r.state.drainingNow() {
+				return io.EOF // the shutdown reads no further request
+			}
+		} else {
+			r.state.set(connBusy)
+		}
+	}
 	if err := r.conn.SetReadDeadline(deadline); err != nil {
 		return err
 	}
 
 	n, err := r.conn.Read(r.buf[r.n:])
 	r.n += n
+	if r.state != nil && n > 0 {
+		r.state.set(connBusy)
+	}
 	if err != nil {
+		if idle && r.state != nil && r.state.drainingNow() {
+			// Closed under this read by the shutdown, between requests: a
+			// clean end, nothing was owed.
+			return io.EOF
+		}
 		if errors.Is(err, io.EOF) {
 			if r.n == 0 {
 				return io.EOF // a clean close between requests
