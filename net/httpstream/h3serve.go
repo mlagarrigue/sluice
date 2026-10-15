@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -132,12 +133,22 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// stream opened from the named identifier on is rejected on arrival
 	// (REQUEST_REJECTED, see the assembler's admit). Config.ShutdownGrace
 	// bounds the whole: when it passes, what is still open is closed under
-	// its handler, as Serve does. The goroutine this runs on lives for the
-	// drain only — nothing is parked for the life of the connection.
+	// its handler and ServeH3 returns, as Serve does. The goroutine this
+	// runs on lives for the drain only — nothing is parked for the life of
+	// the connection.
+	//
+	// The grace is a timer armed at the cancellation, not a context scoped
+	// to the drain: the wait at the bottom of ServeH3 reads it too, after
+	// the connection has ended, and the drain can end — client gone, grace
+	// passed — before the handler has returned.
 	drained := make(chan struct{})
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
+	graceOver := make(chan struct{})
+	var graceTimer atomic.Pointer[time.Timer]
 	stop := context.AfterFunc(ctx, func() {
+		deadline := time.Now().Add(cfg.ShutdownGrace)
+		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, func() { close(graceOver) }))
 		from := a.beginDrain()
 		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
@@ -146,19 +157,26 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		if a.inFlight.Load() == 0 {
 			a.Finish()
 		}
-		grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
-		defer cancel()
 		select {
 		case <-drained:
 			// The grace left bounds the acknowledgement too; past it the
 			// connection closes anyway, as Shutdown promises.
+			grace, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
 			_ = c.ShutdownWithError(grace, h3GracefulCode())
-		case <-grace.Done():
+		case <-graceOver:
 			_ = c.CloseWithError(h3GracefulCode())
 		case <-c.Done():
 		}
 	})
-	defer stop()
+	defer func() {
+		stop()
+		// Stopped once ServeH3 has returned, when nobody reads it; one
+		// that fires anyway closes a channel nobody waits on.
+		if t := graceTimer.Load(); t != nil {
+			t.Stop()
+		}
+	}()
 
 	// The channel is never closed, and both ends select on the connection
 	// instead. Closing it would be the natural thing and it is a panic waiting
@@ -260,14 +278,28 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	})
 
 	<-c.Done()
-	<-answered
-	// Every writer that is writing exits once the connection is done: its
-	// writes fail. A writer inside a streamed producer is not waited for —
-	// the producer is the caller's code, and one blocked on something other
-	// than its yield would hold this return forever. It learns the
-	// connection is gone at its next yield, which returns false (see the
-	// package documentation), and its goroutine ends then.
-	writers.Wait()
+	// The responder exits at its next select, and every writer that is
+	// writing exits once the connection is done: its writes fail. A writer
+	// inside a streamed producer is not waited for — the producer is the
+	// caller's code, and one blocked on something other than its yield
+	// would hold this return forever. It learns the connection is gone at
+	// its next yield, which returns false (see the package documentation),
+	// and its goroutine ends then. A handler that has not returned is the
+	// same case one level up: after a cancellation the wait for it ends
+	// with the grace, as Serve's does (ADR 0017 §2), and the goroutine
+	// below ends when the handler does. A connection the client ended is
+	// waited for in full — there is no grace to count from until the
+	// server is cancelled, which arms one.
+	finished := make(chan struct{})
+	go func() {
+		<-answered
+		writers.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-graceOver:
+	}
 	return h3CloseErr(c.Err())
 }
 

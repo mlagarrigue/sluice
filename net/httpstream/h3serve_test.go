@@ -263,3 +263,44 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 		})
 	}
 }
+
+// A handler that never returns does not hold ServeH3 past the grace: the
+// cancellation drains, the grace passes, the connection is closed under the
+// handler and ServeH3 returns, as Serve does (ADR 0017 §2). It used to wait
+// for the responder after the close, and the responder was inside the
+// handler.
+func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
+	const grace = 200 * time.Millisecond
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	conn, cancel, served := startH3With(t, Config{ShutdownGrace: grace}, quic.DefaultParameters(), quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		close(entered)
+		<-release
+		res := make([]Response, b.Len())
+		for i := range res {
+			res[i] = Response{Status: 200, Body: []byte("late")}
+		}
+		return sluice.Batch[Response]{Items: res}
+	})
+	defer close(release)
+
+	askH3(t, conn, h3Request("GET", "/stuck"))
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler never ran")
+	}
+	cancelled := time.Now()
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("ServeH3 returned %v, wanted nil for a graceful close", err)
+		}
+		if took := time.Since(cancelled); took < grace {
+			t.Errorf("ServeH3 returned %v after the cancellation, before the %v grace", took, grace)
+		}
+	case <-time.After(2 * grace):
+		t.Fatal("ServeH3 did not return after the grace: it waits on a handler that has not returned")
+	}
+}
