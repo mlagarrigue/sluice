@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"cmp"
 	"errors"
 	"testing"
 
@@ -13,36 +14,46 @@ import (
 // impossible (RFC 9113 §8.3.1, RFC 9114 §4.3.1, RFC 3986 §3.2).
 //
 // A nil authority or host means the field is absent; an empty string means
-// it is sent empty.
+// it is sent empty. The scheme is https unless the case names one.
 func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 	type testCase struct {
 		name            string
 		method, path    string
 		authority, host *string
 		accepted        bool
+		scheme          string
 	}
 	tests := []testCase{
-		{"a plain authority", "GET", "/x", ptr("h"), nil, true},
-		{"an empty :authority", "GET", "/x", ptr(""), nil, false},
-		{"an empty host", "GET", "/x", nil, ptr(""), false},
-		{"userinfo in :authority", "GET", "/x", ptr("u@h"), nil, false},
-		{"userinfo in host", "GET", "/x", nil, ptr("u@h"), false},
-		{"a path in :authority", "GET", "/x", ptr("h/x"), nil, false},
-		{"a name with a port", "GET", "/x", ptr("h:8080"), nil, true},
-		{"an empty port", "GET", "/x", ptr("h:"), nil, true},
-		{"a port that is not digits", "GET", "/x", ptr("h:8a"), nil, false},
-		{"an IPv6 literal with a port", "GET", "/x", ptr("[::1]:8443"), nil, true},
-		{"an unclosed IPv6 literal", "GET", "/x", ptr("[::1"), nil, false},
-		{"host agreeing with :authority", "GET", "/x", ptr("h"), ptr("h"), true},
-		{"host disagreeing with :authority", "GET", "/x", ptr("a"), ptr("b"), false},
-		{"OPTIONS *", "OPTIONS", "*", ptr("h"), nil, true},
-		{"GET *", "GET", "*", ptr("h"), nil, false},
+		{"a plain authority", "GET", "/x", ptr("h"), nil, true, ""},
+		{"an empty :authority", "GET", "/x", ptr(""), nil, false, ""},
+		{"an empty host", "GET", "/x", nil, ptr(""), false, ""},
+		{"userinfo in :authority", "GET", "/x", ptr("u@h"), nil, false, ""},
+		{"userinfo in host", "GET", "/x", nil, ptr("u@h"), false, ""},
+		{"a path in :authority", "GET", "/x", ptr("h/x"), nil, false, ""},
+		{"a name with a port", "GET", "/x", ptr("h:8080"), nil, true, ""},
+		{"an empty port", "GET", "/x", ptr("h:"), nil, true, ""},
+		{"a port that is not digits", "GET", "/x", ptr("h:8a"), nil, false, ""},
+		{"an IPv6 literal with a port", "GET", "/x", ptr("[::1]:8443"), nil, true, ""},
+		{"an unclosed IPv6 literal", "GET", "/x", ptr("[::1"), nil, false, ""},
+		{"host agreeing with :authority", "GET", "/x", ptr("h"), ptr("h"), true, ""},
+		{"host disagreeing with :authority", "GET", "/x", ptr("a"), ptr("b"), false, ""},
+		{"OPTIONS *", "OPTIONS", "*", ptr("h"), nil, true, ""},
+		{"GET *", "GET", "*", ptr("h"), nil, false, ""},
+		// RFC 9113 §8.3.1, RFC 9114 §4.3.1: http and https have a mandatory
+		// authority component, so a request naming none is malformed, as
+		// HTTP/1.1 answers 400 to a missing Host; a scheme without one is
+		// delivered as it came.
+		{"no authority at all", "GET", "/x", nil, nil, false, ""},
+		{"no authority at all over http", "GET", "/x", nil, nil, false, "http"},
+		{"host alone", "GET", "/x", nil, ptr("h"), true, ""},
+		{"no authority for a scheme that needs none", "GET", "/x", nil, nil, true, "file"},
 	}
 	fieldsOf := func(tt testCase) []Header {
+		scheme := cmp.Or(tt.scheme, "https")
 		fields := []Header{
 			{Name: []byte(":method"), Value: []byte(tt.method)},
 			{Name: []byte(":path"), Value: []byte(tt.path)},
-			{Name: []byte(":scheme"), Value: []byte("https")},
+			{Name: []byte(":scheme"), Value: []byte(scheme)},
 		}
 		if tt.authority != nil {
 			fields = append(fields, Header{Name: []byte(":authority"), Value: []byte(*tt.authority)})

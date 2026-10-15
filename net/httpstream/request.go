@@ -142,7 +142,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	var method, path, scheme, authority []byte
 	regular := fields[:0]
 	declared = -1
-	seenRegular := false
+	seenRegular, hostSeen := false, false
 	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
 	for _, h := range fields {
 		// h.Name stays []byte throughout: binding string(h.Name) to a
@@ -197,6 +197,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		case "host":
 			// The same rule as :authority below: a host that is not an
 			// authority is malformed, not a request with an odd host.
+			hostSeen = true
 			if !validAuthority(h.Value) {
 				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)
 			}
@@ -250,6 +251,14 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	}
 	if authority != nil && !validAuthority(authority) {
 		return req, 0, fmt.Errorf("%w: :authority %q is not an authority", protocolErr, authority)
+	}
+	// RFC 9113 §8.3.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
+	// component needs :authority or host, as HTTP/1.1 needs Host (400).
+	// Without this a handler routing on host saw it missing on two of the
+	// three protocols only. Other schemes, which may have no authority at
+	// all, are delivered as they came.
+	if authority == nil && !hostSeen && (equalFold(scheme, "http") || equalFold(scheme, "https")) {
+		return req, 0, fmt.Errorf("%w: no :authority or host for scheme %q", protocolErr, scheme)
 	}
 	regular, err = withAuthority(regular, authority, protocolErr)
 	if err != nil {

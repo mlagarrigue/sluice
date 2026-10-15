@@ -203,6 +203,7 @@ func fuzzHeadBlock(method, path string) []byte {
 	block = fuzzLiteral(block, ":method", method)
 	block = fuzzLiteral(block, ":path", path)
 	block = fuzzLiteral(block, ":scheme", "http")
+	block = fuzzLiteral(block, ":authority", "h")
 	return block
 }
 

@@ -188,17 +188,20 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":path"), []byte("/a")},
 			{[]byte(":path"), []byte("/b")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a connection-specific field", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("connection"), []byte("keep-alive")},
 		}},
 		{"an uppercase field name", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("X-Bad"), []byte("v")},
 		}},
 		{"a pseudo-header after a regular field", []Header{
@@ -206,11 +209,13 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte("x-ok"), []byte("v")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :path that is not origin-form", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("http://elsewhere/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		// RFC 9114 §4.1.2/§10.3: QPACK can carry any byte, so the h1
 		// parser's octet rules apply to what it decoded — these are the
@@ -220,34 +225,40 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\r\nx-smuggled: b")},
 		}},
 		{"a NUL in a field value", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\x00b")},
 		}},
 		{"a field name that is not a token", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x note"), []byte("v")},
 		}},
 		{"a :method that is not a token", []Header{
 			{[]byte(":method"), []byte("GET T")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :scheme that is not a token", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("ht\rtps")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :path with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x\ry")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"an :authority with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
@@ -275,6 +286,7 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\x0cb")},
 		}},
 	}

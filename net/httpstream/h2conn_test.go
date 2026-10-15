@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -82,12 +83,16 @@ func (c *h2client) frame(f h2Frame) {
 	c.buf = append(c.buf, b...)
 }
 
-// headBlock encodes a request's field section, without framing it.
+// headBlock encodes a request's field section, without framing it. The
+// authority is "h" unless extra names one.
 func headBlock(method, path string, extra ...[2]string) []byte {
 	var block []byte
 	block = literal(block, ":method", method)
 	block = literal(block, ":path", path)
 	block = literal(block, ":scheme", "http")
+	if !slices.ContainsFunc(extra, func(kv [2]string) bool { return kv[0] == ":authority" }) {
+		block = literal(block, ":authority", "h")
+	}
 	for _, kv := range extra {
 		block = literal(block, kv[0], kv[1])
 	}
@@ -265,7 +270,7 @@ func (c *h2client) request(id uint32, method, path string, extra ...[2]string) {
 		Type:     frameHeaders,
 		Flags:    flagEndHeaders | flagEndStream,
 		StreamID: id,
-		Payload:  headBlock(method, path, append([][2]string{{":authority", "h"}}, extra...)...),
+		Payload:  headBlock(method, path, extra...),
 	})
 }
 
@@ -486,6 +491,7 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 			block = literal(block, ":method", "GET")
 			block = literal(block, ":path", "/x")
 			block = literal(block, ":scheme", "http")
+			block = literal(block, ":authority", "h")
 			block = tt.block(block)
 			f, _ := appendH2Frame(nil, h2Frame{
 				Type: frameHeaders, Flags: flagEndHeaders | flagEndStream,
@@ -590,7 +596,7 @@ func TestH2HeaderBlockSplitInsideAFieldIsAccepted(t *testing.T) {
 	addr, _ := serveTest(t, Config{}, echoTarget)
 	c := dialH2(t, addr)
 
-	block := headBlock("GET", "/split", [2]string{":authority", "h"})
+	block := headBlock("GET", "/split")
 	head, rest := block[:5], block[5:]
 	// END_STREAM rides on HEADERS; the CONTINUATION that closes the block
 	// cannot carry it, which is the other half of what this exercises.
@@ -881,7 +887,7 @@ func TestH2RapidResetBoundIsARateNotALifetimeCount(t *testing.T) {
 	cancel := func(c *h2client, id uint32) {
 		c.frame(h2Frame{
 			Type: frameHeaders, Flags: flagEndHeaders, StreamID: id,
-			Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+			Payload: headBlock("POST", "/upload"),
 		})
 		c.frame(h2Frame{
 			Type: frameRSTStream, StreamID: id,
@@ -1852,7 +1858,7 @@ func TestH2PriorityOfTheWrongLengthResetsOnlyItsStream(t *testing.T) {
 	// to reset. On an idle one there is not (see the test below).
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
-		Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+		Payload: headBlock("POST", "/upload"),
 	})
 	c.frame(h2Frame{Type: framePriority, StreamID: 1, Payload: make([]byte, 4)})
 	c.flush()
@@ -1926,7 +1932,7 @@ func TestH2OversizedBlockOnAClosedStreamIsNotResetAgain(t *testing.T) {
 	// Open stream 1, then have the client reset it.
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
-		Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+		Payload: headBlock("POST", "/upload"),
 	})
 	c.frame(h2Frame{Type: frameRSTStream, StreamID: 1, Payload: []byte{0, 0, 0, 0x8}})
 	// A trailer section already in flight, over MaxHeaders.
@@ -2064,7 +2070,7 @@ func TestH2ContinuationPaddedFlagDoesNotCarveUpTheBlock(t *testing.T) {
 	addr, _ := serveTest(t, Config{}, echoTarget)
 	c := dialH2(t, addr)
 
-	block := headBlock("GET", "/padded", [2]string{":authority", "h"})
+	block := headBlock("GET", "/padded")
 	split := len(block) / 2
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndStream,
@@ -2168,7 +2174,7 @@ func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
 			Type:     frameHeaders,
 			Flags:    flagEndHeaders,
 			StreamID: id,
-			Payload:  headBlock("POST", "/upload", [2]string{":authority", "h"}),
+			Payload:  headBlock("POST", "/upload"),
 		})
 		c.data(id, body, true)
 		c.flush()
@@ -2593,7 +2599,7 @@ func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			// A small block that decodes large: each indexed reference to the
 			// static table's accept-encoding entry is one byte on the wire
 			// and 60 in the list, so the compressed bound is nowhere near.
-			block := headBlock("GET", "/x", [2]string{":authority", "h"})
+			block := headBlock("GET", "/x")
 			for range 4096/60 + 1 {
 				block = append(block, hpackIndexed(16)...)
 			}
@@ -2609,7 +2615,7 @@ func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
 		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func(c *h2client) {
 			c.frame(h2Frame{
 				Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
-				Payload: headBlock("POST", "/x", [2]string{":authority", "h"}),
+				Payload: headBlock("POST", "/x"),
 			})
 			c.data(1, bytes.Repeat([]byte{'b'}, 2048), true)
 		}, 413},
@@ -2652,14 +2658,14 @@ func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
 	addr, _ := serveTest(t, Config{MaxHeaderBytes: 4096}, echoTarget)
 	c := dialH2(t, addr)
 
-	block := headBlock("GET", "/x", [2]string{":authority", "h"})
+	block := headBlock("GET", "/x")
 	for range 4096/60 + 1 {
 		block = append(block, hpackIndexed(16)...)
 	}
 	block = append(block, hpackIncIndexed("x-kept", "v")...) // past the bound, indexed anyway
 	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
 	// Stream 3 names that entry: the first dynamic index.
-	next := headBlock("GET", "/y", [2]string{":authority", "h"})
+	next := headBlock("GET", "/y")
 	next = append(next, hpackIndexed(staticTableLen+1)...)
 	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 3, Payload: next})
 	c.flush()
