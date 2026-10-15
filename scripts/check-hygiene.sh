@@ -55,4 +55,13 @@ for f in $(git ls-files | grep -E '^\.[^/]+$'); do
   esac
 done
 
+# Every shell script is tracked executable. Checked on the index, not the
+# disk: a checkout on another machine gets the mode git recorded. The path
+# benchmarks' gate, committed 100644, failed its CI job with "Permission
+# denied" from the day it was written; run on pull requests alone, nobody
+# saw it until the job ran on a push.
+for f in $(git ls-files -s | awk '$4 ~ /[.]sh$/ && $1 != "100755" { print $4 }'); do
+  echo "check-hygiene: $f is tracked without the executable bit" >&2; status=1
+done
+
 exit $status
