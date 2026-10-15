@@ -185,7 +185,7 @@ func TestH2RefusesDataPastTheStreamWindow(t *testing.T) {
 	// A large MaxFrameSize, configured deliberately: at the 16384 default a
 	// client cannot overshoot the stream window at all, because the server
 	// replenishes it long before a conformant frame could reach the edge.
-	addr, _ := serveH2(t, H2Config{MaxFrameSize: 1 << 20}, echoTarget)
+	addr, _ := serveH2(t, Config{MaxFrameSize: 1 << 20}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.frame(h2Frame{
@@ -280,7 +280,7 @@ func TestH2RefusesMalformedTrailers(t *testing.T) {
 // guess and no settling to wait for.
 func TestH2ConnectionsLeaveNoGoroutines(t *testing.T) {
 	const chunk, chunks = 4 << 10, 8
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			if string(r.Target) == "/export" {

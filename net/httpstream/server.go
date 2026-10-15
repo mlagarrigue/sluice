@@ -42,8 +42,7 @@ type Server struct {
 
 	once sync.Once
 	cfg  Config // Config, resolved
-	h2   H2Config
-	err  error // what resolving Config refused
+	err  error  // what resolving Config refused
 	// live is the HTTP/1.1 and HTTP/2 connections, and its draining context
 	// is the normal stop of every protocol: HTTP/3 connections read it too.
 	live *connSet
@@ -66,11 +65,6 @@ type Server struct {
 func (s *Server) init() error {
 	s.once.Do(func() {
 		s.cfg, s.err = s.Config.resolve()
-		if s.err == nil {
-			// Every field h2ConfigOf copies has just been resolved, so this
-			// cannot fail; it fills in what HTTP/2 alone has.
-			s.h2, s.err = h2ConfigOf(s.cfg).resolve()
-		}
 		s.live = newConnSet(max(s.cfg.MaxConns, 0))
 		s.forced, s.force = context.WithCancel(context.Background())
 		s.listeners = map[net.Listener]struct{}{}
@@ -147,7 +141,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 		go func() {
 			defer func() { s.live.remove(c); _ = c.Close() }()
-			serveAny(s.forced, c, st, s.cfg, s.h2, s.Handler)
+			serveAny(s.forced, c, st, s.cfg, s.Handler)
 		}()
 	}
 }

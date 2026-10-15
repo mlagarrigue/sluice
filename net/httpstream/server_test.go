@@ -270,6 +270,21 @@ func TestServerCloseCancelsTheHandler(t *testing.T) {
 	}
 }
 
+// A Server reaches the HTTP/2 bounds through its one Config: the stream
+// window that carried an upload eleven times faster at 100 ms of RTT
+// (h2rtt_test.go) is advertised as set. A Server and Serve used to be held
+// to the 65535-byte default, the field being reachable through ServeH2
+// alone.
+func TestServerHonoursInitialWindowSize(t *testing.T) {
+	srv := &Server{Config: Config{InitialWindowSize: 1 << 20}, Handler: echoTarget}
+	addr, _ := serveTCP(t, srv)
+	c := dialH2(t, addr)
+	c.pump(func() bool { return len(c.settings) > 0 })
+	if got := c.settings[settingInitialWindowSize]; got != 1<<20 {
+		t.Fatalf("advertised SETTINGS_INITIAL_WINDOW_SIZE %d, want %d", got, 1<<20)
+	}
+}
+
 // Serve's grace passing with a request in flight is not a clean stop: Serve
 // returns ErrShutdownForced, the handler's context is cancelled, and the
 // Logger says so. A drain that ends within the grace returns nil. It used to

@@ -343,12 +343,12 @@ func (c *h2client) bodies(want int) map[uint32]string {
 	return c.got
 }
 
-// serveH2 starts a prior-knowledge HTTP/2 server with its own [H2Config] —
+// serveH2 starts a prior-knowledge HTTP/2 server with its own [Config] —
 // for the tests whose subject is a knob [Serve]'s Config does not carry, such
 // as MaxConcurrentStreams. The handler is wrapped exactly as serveTest wraps
 // it, so batch sizes are read through the returned accessor rather than
 // through a shared slice the handler goroutine is still appending to.
-func serveH2(t *testing.T, cfg H2Config, h Handler) (addr string, sizes func() []int) {
+func serveH2(t *testing.T, cfg Config, h Handler) (addr string, sizes func() []int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1560,7 +1560,7 @@ func TestH2RepeatedSettingsEntriesMeanTheLastValue(t *testing.T) {
 // not one per CONTINUATION fragment.
 func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 	release := make(chan struct{})
-	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: 1},
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
@@ -1626,7 +1626,7 @@ func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 // request a conformant client had in flight.
 func TestH2DataBehindARefusedStreamIsTolerated(t *testing.T) {
 	release := make(chan struct{})
-	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: 1},
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
@@ -2120,7 +2120,7 @@ func TestH2ContinuationPaddedFlagDoesNotCarveUpTheBlock(t *testing.T) {
 	}
 }
 
-// H2Config.MaxHeaders bounds how many fields one block may decode to, the
+// Config.MaxHeaders bounds how many fields one block may decode to, the
 // same bound the HTTP/1.1 parser applies — the byte bound alone admits
 // hundreds of near-empty fields that cost a scan on every Request.Get. The
 // refusal costs the one stream, not the connection.
@@ -2152,7 +2152,7 @@ func TestH2RefusesABlockOfTooManyFields(t *testing.T) {
 // served one request escaped IdleTimeout for good. And an idle close is the
 // graceful one: GOAWAY(NO_ERROR), not the INTERNAL_ERROR a failure carries.
 func TestH2IdleTimeoutRunsAgainAfterAnAnsweredRequest(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{IdleTimeout: 200 * time.Millisecond}, echoTarget)
+	addr, _ := serveH2(t, Config{IdleTimeout: 200 * time.Millisecond}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.request(1, "GET", "/once")
@@ -2190,7 +2190,7 @@ func TestH2IdleTimeoutRunsAgainAfterAnAnsweredRequest(t *testing.T) {
 // closed-stream ring, and used to keep a copy of it there — body and all — so
 // a live connection held MaxConcurrentStreams × MaxBodyBytes for nothing.
 func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, b.Len())
 		for i := range out {
 			out[i] = Response{Status: 204}
@@ -2248,7 +2248,7 @@ func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
 // there used to end the process; it costs its own stream, and the connection
 // keeps serving.
 func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, panickingProducer)
+	addr, _ := serveH2(t, Config{}, panickingProducer)
 	c := dialH2(t, addr)
 
 	c.request(1, "GET", "/boom")
@@ -2295,7 +2295,7 @@ func panickingProducer(_ context.Context, b sluice.Batch[Request]) sluice.Batch[
 // for the connection's life — grew to match.
 func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 	const bodyLen = 4 << 20
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: bytes.Repeat([]byte("x"), bodyLen)}
@@ -2329,7 +2329,7 @@ func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 // before the write received a HEADERS over its limit.
 func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 	big := bytes.Repeat([]byte("v"), 20000)
-	addr, _ := serveH2(t, H2Config{MaxFrameSize: 1 << 20}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{MaxFrameSize: 1 << 20}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Headers: []Header{{Name: []byte("x-big"), Value: big}}, Body: []byte("ok")}
@@ -2358,7 +2358,7 @@ func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 // decoder that saw the setting shrink expects the update, and nghttp2 ends
 // the connection with COMPRESSION_ERROR when it is missing.
 func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: []byte("ok")}
@@ -2424,7 +2424,7 @@ func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
 // once WriteTimeout passes with nothing written: CANCEL, since this end is the
 // one that stopped waiting, and on that stream alone.
 func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{WriteTimeout: 300 * time.Millisecond},
+	addr, _ := serveH2(t, Config{WriteTimeout: 300 * time.Millisecond},
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i, r := range b.Items {
@@ -2466,7 +2466,7 @@ func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
 // responder, for as long as the peer cares to drip.
 func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
 	const timeout = 300 * time.Millisecond
-	addr, _ := serveH2(t, H2Config{WriteTimeout: timeout},
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout},
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i := range res {
@@ -2522,7 +2522,7 @@ func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
 // refusal of a reset stream could not reach it.
 func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2544,7 +2544,7 @@ func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 // what tells it, since nothing is ever written that could fail.
 func TestH2StreamedEmptyBatchesStopWhenTheConnectionCloses(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2714,12 +2714,11 @@ func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
 	}
 }
 
-// An HTTP/2 connection [Serve] accepts runs under the bounds Config names,
-// not under H2Config's own: a Serve caller who raised MaxBodyBytes to 3 MiB
-// has raised it for HTTP/2 as well, and a 2 MiB upload is accepted rather
-// than refused at H2Config's 1 MiB default. This is the end-to-end lock on
-// h2ConfigOf being the one place an H2Config is derived from a Config.
-func TestH2ConfigFollowsConfig(t *testing.T) {
+// An HTTP/2 connection [Serve] accepts runs under the bounds Config names: a
+// Serve caller who raised MaxBodyBytes to 3 MiB has raised it for HTTP/2 as
+// well, and a 2 MiB upload is accepted rather than refused at the 1 MiB
+// default.
+func TestServeBoundsHTTP2ByConfig(t *testing.T) {
 	const size = 2 << 20
 	var seen atomic.Int64
 	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
@@ -2768,42 +2767,5 @@ func TestH2ConfigFollowsConfig(t *testing.T) {
 	}
 	if got := seen.Load(); got != size {
 		t.Errorf("the handler saw a %d-byte body, want %d", got, size)
-	}
-}
-
-// The defaults the two configurations share are chosen once: an empty
-// H2Config and an empty Config bound a request alike, and deriving the one
-// from the other changes nothing. The test that would catch a default edited
-// on one side only.
-func TestH2ConfigDefaultsFollowConfig(t *testing.T) {
-	cfg := Config{}.mustResolve()
-	for _, h2 := range []struct {
-		name string
-		cfg  H2Config
-	}{
-		{"empty H2Config", H2Config{}.mustResolve()},
-		{"derived from Config", h2ConfigOf(cfg).mustResolve()},
-	} {
-		want := H2Config{
-			MaxHeaderBlockBytes:  cfg.MaxHeaderBytes,
-			MaxHeaders:           cfg.MaxHeaders,
-			MaxBodyBytes:         cfg.MaxBodyBytes,
-			MaxConcurrentStreams: cfg.MaxConcurrentStreams,
-			IdleTimeout:          cfg.IdleTimeout,
-			ReadTimeout:          cfg.ReadTimeout,
-			WriteTimeout:         cfg.WriteTimeout,
-		}
-		got := H2Config{
-			MaxHeaderBlockBytes:  h2.cfg.MaxHeaderBlockBytes,
-			MaxHeaders:           h2.cfg.MaxHeaders,
-			MaxBodyBytes:         h2.cfg.MaxBodyBytes,
-			MaxConcurrentStreams: h2.cfg.MaxConcurrentStreams,
-			IdleTimeout:          h2.cfg.IdleTimeout,
-			ReadTimeout:          h2.cfg.ReadTimeout,
-			WriteTimeout:         h2.cfg.WriteTimeout,
-		}
-		if got != want {
-			t.Errorf("%s: shared bounds = %+v, Config's are %+v", h2.name, got, want)
-		}
 	}
 }

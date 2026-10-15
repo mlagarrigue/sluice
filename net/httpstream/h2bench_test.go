@@ -14,14 +14,14 @@ import (
 // consume's success path — HEADERS that complete in one frame, no window
 // updates — never touches s.w, so a writer that is never run is enough to
 // benchmark the frame-to-request path in isolation from the socket.
-func newBenchH2Server(cfg H2Config) *h2Server {
+func newBenchH2Server(cfg Config) *h2Server {
 	cfg = cfg.mustResolve()
 	return &h2Server{
 		cfg: cfg,
 		handler: func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
 		},
-		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
+		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
 		connWind: connWindow(cfg),
 		recvWind: connWindow(cfg),
@@ -74,14 +74,14 @@ func BenchmarkH2Consume(b *testing.B) {
 			for i := range depth {
 				id := uint32(2*i + 1)
 				raw := h2HeadersFrame(id, fmt.Sprintf("/orders/%d", i))
-				parsed, _, err := parseFrame(raw, H2Config{}.mustResolve())
+				parsed, _, err := parseFrame(raw, defaultMaxFrameSize)
 				if err != nil {
 					b.Fatal(err)
 				}
 				frames = append(frames, parsed)
 			}
 
-			s := newBenchH2Server(H2Config{})
+			s := newBenchH2Server(Config{})
 			b.ReportAllocs()
 			for b.Loop() {
 				resetBenchH2Server(s)
@@ -139,7 +139,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			// One connection, writer and server for the whole loop, so the
 			// alloc signal is streamBody's own and not the setup's.
 			conn := &countingConn{}
-			cfg := H2Config{}.mustResolve()
+			cfg := Config{}.mustResolve()
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()

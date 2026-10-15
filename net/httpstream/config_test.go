@@ -22,16 +22,6 @@ func (c Config) mustResolve() Config {
 	return r
 }
 
-// mustResolve is [H2Config.resolve] for a test whose configuration is valid
-// by construction.
-func (c H2Config) mustResolve() H2Config {
-	r, err := c.resolve()
-	if err != nil {
-		panic(err)
-	}
-	return r
-}
-
 // testAssembler is newH3Assembler on a configuration resolved as ServeH3
 // resolves it.
 func testAssembler(cfg Config) *h3Assembler { return newH3Assembler(cfg.mustResolve()) }
@@ -72,8 +62,19 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		{"MaxConns", Config{MaxConns: -1}, "-1"},
 		{"ShutdownGrace", Config{ShutdownGrace: -time.Second}, "-1s"},
 		{"LingerTimeout", Config{LingerTimeout: -time.Second}, "-1s"},
+		// RFC 9113 §6.5.2 bounds what this end may advertise: a frame size
+		// below 2^14 or over 2^24-1, a window over 2^31-1.
+		{"MaxFrameSize", Config{MaxFrameSize: -1}, "-1"},
+		{"MaxFrameSize", Config{MaxFrameSize: defaultMaxFrameSize - 1}, "16383"},
+		{"MaxFrameSize", Config{MaxFrameSize: maxFrameSize + 1}, "16777216"},
+		{"MaxFramesPerBatch", Config{MaxFramesPerBatch: -1}, "-1"},
+		{"MaxContinuationFrames", Config{MaxContinuationFrames: -1}, "-1"},
+		{"InitialWindowSize", Config{InitialWindowSize: -1}, "-1"},
+		{"InitialWindowSize", Config{InitialWindowSize: maxWindow + 1}, "2147483648"},
+		{"MaxPendingControlBytes", Config{MaxPendingControlBytes: -1}, "-1"},
+		{"MaxWriteBufferBytes", Config{MaxWriteBufferBytes: -1}, "-1"},
 	} {
-		t.Run(tc.field, func(t *testing.T) {
+		t.Run(tc.field+"="+tc.value, func(t *testing.T) {
 			want := fmt.Sprintf("Config.%s %s", tc.field, tc.value)
 
 			// Serve refuses before the listener is read: a closed one would
@@ -102,6 +103,15 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 			if _, err := tc.cfg.TransportParameters(); err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("TransportParameters: %v, want an error naming %q", err, want)
 			}
+
+			// A connection whose peer has gone: served, it would fail on the
+			// preface with an error that names no field.
+			h2c, h2s := net.Pipe()
+			_ = h2c.Close()
+			defer func() { _ = h2s.Close() }()
+			if err := ServeH2(t.Context(), h2s, tc.cfg, nopHandler); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("ServeH2: %v, want an error naming %q", err, want)
+			}
 		})
 	}
 }
@@ -118,53 +128,14 @@ func TestTransportParametersRefusesMoreStreamsThanServeH3Serves(t *testing.T) {
 	}
 }
 
-// The HTTP/2 bounds are refused the same way, and so are a frame size and a
-// window RFC 9113 §6.5.2 does not let this end advertise.
-func TestH2ConfigRefusesAnOutOfRangeValue(t *testing.T) {
-	for _, tc := range []struct {
-		field string
-		cfg   H2Config
-		value string
-	}{
-		{"MaxFrameSize", H2Config{MaxFrameSize: -1}, "-1"},
-		{"MaxFrameSize", H2Config{MaxFrameSize: defaultMaxFrameSize - 1}, "16383"},
-		{"MaxFrameSize", H2Config{MaxFrameSize: maxFrameSize + 1}, "16777216"},
-		{"MaxFramesPerBatch", H2Config{MaxFramesPerBatch: -1}, "-1"},
-		{"MaxContinuationFrames", H2Config{MaxContinuationFrames: -1}, "-1"},
-		{"MaxHeaderBlockBytes", H2Config{MaxHeaderBlockBytes: -1}, "-1"},
-		{"MaxHeaders", H2Config{MaxHeaders: -1}, "-1"},
-		{"MaxBodyBytes", H2Config{MaxBodyBytes: -1}, "-1"},
-		{"InitialWindowSize", H2Config{InitialWindowSize: -1}, "-1"},
-		{"InitialWindowSize", H2Config{InitialWindowSize: maxWindow + 1}, "2147483648"},
-		{"MaxConcurrentStreams", H2Config{MaxConcurrentStreams: -1}, "-1"},
-		{"MaxPendingControlBytes", H2Config{MaxPendingControlBytes: -1}, "-1"},
-		{"MaxWriteBufferBytes", H2Config{MaxWriteBufferBytes: -1}, "-1"},
-		{"IdleTimeout", H2Config{IdleTimeout: -time.Second}, "-1s"},
-		{"ReadTimeout", H2Config{ReadTimeout: -time.Second}, "-1s"},
-		{"WriteTimeout", H2Config{WriteTimeout: -time.Second}, "-1s"},
-	} {
-		t.Run(tc.field+"="+tc.value, func(t *testing.T) {
-			want := fmt.Sprintf("H2Config.%s %s", tc.field, tc.value)
-			// A connection whose peer has gone: served, it would fail on the
-			// preface with an error that names no field.
-			client, server := net.Pipe()
-			_ = client.Close()
-			defer func() { _ = server.Close() }()
-			if err := ServeH2(t.Context(), server, tc.cfg, nopHandler); err == nil || !strings.Contains(err.Error(), want) {
-				t.Errorf("ServeH2: %v, want an error naming %q", err, want)
-			}
-		})
-	}
-}
-
 // Every value inside a range is kept as given, the ends included.
-func TestH2ConfigKeepsTheEndsOfItsRanges(t *testing.T) {
+func TestConfigKeepsTheEndsOfTheHTTP2Ranges(t *testing.T) {
 	for _, size := range []int{defaultMaxFrameSize, maxFrameSize} {
-		if got := (H2Config{MaxFrameSize: size}).mustResolve().MaxFrameSize; got != size {
+		if got := (Config{MaxFrameSize: size}).mustResolve().MaxFrameSize; got != size {
 			t.Errorf("MaxFrameSize %d became %d", size, got)
 		}
 	}
-	if got := (H2Config{InitialWindowSize: maxWindow}).mustResolve().InitialWindowSize; got != maxWindow {
+	if got := (Config{InitialWindowSize: maxWindow}).mustResolve().InitialWindowSize; got != maxWindow {
 		t.Errorf("InitialWindowSize %d became %d", maxWindow, got)
 	}
 }

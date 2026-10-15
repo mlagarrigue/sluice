@@ -26,7 +26,7 @@ func benchResponse() Response {
 // response header round-tripped through string(h.Name) / string(h.Value) on
 // its way into the block.
 func BenchmarkH2Encode(b *testing.B) {
-	s := newBenchH2Server(H2Config{})
+	s := newBenchH2Server(Config{})
 	r := benchResponse()
 	method := []byte("GET")
 	maxFrame := s.cfg.MaxFrameSize

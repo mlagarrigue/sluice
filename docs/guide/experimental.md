@@ -91,7 +91,7 @@ not supported yet.
 | HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2` |
 | HTTP/1.1 behind nginx or Envoy, upstream connections reused | Yes, with a setting on the proxy: its upstream idle timeout must be **shorter** than `IdleTimeout` (30 s by default), so that the proxy closes first instead of reusing a connection this server is closing and reporting a 502. Every response that keeps the connection does announce `Connection: keep-alive` and `Keep-Alive: timeout=<IdleTimeout in seconds>`, but neither proxy reads that value: nginx ignores the header and keeps its upstream connections 60 s by default, Envoy strips it and keeps them an hour. With nginx: `upstream app { server 10.0.0.1:8080; keepalive 16; keepalive_timeout 25s; }`; with Envoy: `idle_timeout: 25s` under `common_http_protocol_options` in the cluster's `HttpProtocolOptions`. HTTP/2 announces the end with `GOAWAY` instead. | `net/httpstream/response.go`, `keepAliveField` |
 | HTTP/2 clients with a reduced HPACK table (nghttp2, Envoy) | Yes: the table size requested by `SETTINGS_HEADER_TABLE_SIZE` is honored from the next header block, in the same critical section as the acknowledgement. | `net/httpstream/h2write.go`, `ackSettings` |
-| HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `H2Config.InitialWindowSize` raises it, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/h2frame.go`, `H2Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
+| HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `Config.InitialWindowSize` raises it, for `Serve`, `Server` and `ServeH2` alike, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/httpstream.go`, `Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
 | QUIC clients behind a mobile NAT (address change in the middle of a connection) | Yes: four active connection IDs per endpoint, enough for a NAT rebind and a deliberate rotation to overlap; the new path is validated by `PATH_CHALLENGE` before it is believed. | `net/quic/migration.go`, `maxLocalActiveCIDs` and `migrateLocked` |
 | QUIC server on a host with several addresses | **Linux only**: `net/quic/udp` learns which address a datagram arrived on and answers from it. Elsewhere, `EnablePacketInfo` returns `errors.ErrUnsupported` and the kernel picks the source by route: the client sees a reply come from an address it never wrote to, which for QUIC is a different path. Bind the socket to one specific address, or stay on Linux. | `net/quic/udp/udp.go`, `EnablePacketInfo` |
 
@@ -194,7 +194,7 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
 }
 
 httpstream.Serve(ctx, ln, httpstream.Config{IdleTimeout: time.Second}, handle) // HTTP/1.1 on a net.Listener
-httpstream.ServeH2(ctx, conn, httpstream.H2Config{}, handle)                    // HTTP/2 on a connection
+httpstream.ServeH2(ctx, conn, httpstream.Config{}, handle)                      // HTTP/2 on a connection
 httpstream.ServeH3(ctx, quicConn, httpstream.Config{}, handle)                  // HTTP/3 on a *quic.Conn
 ```
 
@@ -239,7 +239,7 @@ holding back the first one: a producer that yields tiny batches at a high
 rate pays one write per round of the writer and one wake-up of the reader on
 the client side per DATA frame. Size your batches accordingly — a bigger
 batch divides that cost by as much — and remember that
-`H2Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
+`Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
 producer may be, per stream.
 
 ## `pushdown` — no longer experimental

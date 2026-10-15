@@ -283,9 +283,9 @@ var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w
 // deployment that needs more says so. Zero is the only value that means
 // something else: a negative bound is refused, with an error naming the
 // field, by every function that takes a Config. A field that one protocol has no use
-// for says which protocols read it; the bounds HTTP/2 alone has live in
-// [H2Config], and [Serve] derives that from this one so that a bound the two
-// share is set once. See docs/design/adr/0018.
+// for says which protocols read it, and a bound the protocols share is set
+// once, here, whichever function serves the connection. See
+// docs/design/adr/0018.
 type Config struct {
 	// MaxRequestLineBytes bounds the method, target and version together.
 	// Zero means 8 KiB. HTTP/1.1 only: HTTP/2 and HTTP/3 carry them as
@@ -294,10 +294,9 @@ type Config struct {
 
 	// MaxHeaderBytes bounds all headers of one request together, including
 	// their names, colons and line endings. Zero means 32 KiB. Every
-	// protocol: over HTTP/2 it is the header block ([H2Config]'s
-	// MaxHeaderBlockBytes), over HTTP/3 the field section, and both
-	// announce it to the peer as their MAX_HEADER_LIST_SIZE or
-	// MAX_FIELD_SECTION_SIZE setting.
+	// protocol: over HTTP/2 it is the header block, CONTINUATION frames
+	// included, over HTTP/3 the field section, and both announce it to the
+	// peer as their MAX_HEADER_LIST_SIZE or MAX_FIELD_SECTION_SIZE setting.
 	MaxHeaderBytes int
 
 	// MaxHeaders bounds how many header fields one request may carry. Zero
@@ -315,12 +314,18 @@ type Config struct {
 	// server hold at once is therefore that sum times MaxConns, and a server
 	// without MaxConns has no such bound. Over HTTP/2 and HTTP/3, where
 	// several bodies assemble at once, four times this value bounds what one
-	// connection holds across all of them.
+	// connection holds across all of them. The per-stream bound alone is not
+	// a connection bound: flow-control windows are replenished as DATA is
+	// buffered, so without the aggregate cap a peer could park
+	// MaxConcurrentStreams × MaxBodyBytes — 100 MiB at the defaults — by
+	// never finishing any of its uploads. The factor of four keeps several
+	// full-size concurrent uploads legal while bounding the parked memory to
+	// the same order as one window's worth of honest traffic.
 	MaxBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
 	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
-	// frames ([H2Config.MaxFramesPerBatch]) and an HTTP/3 batch is what one
+	// frames (MaxFramesPerBatch) and an HTTP/3 batch is what one
 	// datagram carried, each already bounded by MaxConcurrentStreams. It is
 	// what keeps a client that writes ten
 	// thousand requests in one burst from turning them into one batch and one
@@ -340,7 +345,10 @@ type Config struct {
 	// streams, [quic.DefaultParameters] grants exactly that as its
 	// InitialMaxStreamsBidi, so a zero config admits what the transport
 	// invites, and HTTP/2 advertises the same number as
-	// SETTINGS_MAX_CONCURRENT_STREAMS ([H2Config.MaxConcurrentStreams]).
+	// SETTINGS_MAX_CONCURRENT_STREAMS. Over HTTP/2 a stream holds its slot
+	// until its response has been written, so the queue between the read
+	// goroutine and the handler never holds more than this many requests —
+	// which is what lets the reader hand a batch over without blocking on it.
 	// It exists beside MaxRequestsPerBatch because the two bound different
 	// things — one is how many requests ride one hand-off, the other how
 	// much assembly state a peer may park — and tuning the batch size must
@@ -367,8 +375,11 @@ type Config struct {
 	// idle timeout (60s and one hour by default) must be set below this one,
 	// or they reuse a connection this server is closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
 	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
-	// clock does not run while a response is owed ([H2Config]'s
-	// IdleTimeout); over HTTP/3 the transport keeps it, as the
+	// clock does not run while this end owes the peer answers — a streamed
+	// response may take minutes during which a well-behaved client has
+	// nothing to send — and once the last answer is out the connection ends
+	// with GOAWAY(NO_ERROR) after between one and two IdleTimeouts of
+	// silence; over HTTP/3 the transport keeps it, as the
 	// max_idle_timeout that [Config.TransportParameters] derives from this
 	// field, so a connection ServeH3 serves on other parameters has the
 	// idle timeout those parameters say, not this one.
@@ -388,6 +399,11 @@ type Config struct {
 	// keeps the connection alive but never grants credit sees its stream
 	// reset with H3_REQUEST_CANCELLED when it passes, instead of holding the
 	// response's goroutine and body for as long as the idle timeout allows.
+	// Over HTTP/2 it bounds one write to the socket and the wait for the
+	// flow-control credit one stream needs, and that wait restarts only once
+	// 4 KiB of the response have gone out since it last did: a peer that
+	// drips one byte of credit per timeout is reset at the second timeout
+	// rather than kept (data dribble, CVE-2019-9511).
 	// Zero means 10s. Every protocol.
 	WriteTimeout time.Duration
 
@@ -435,6 +451,85 @@ type Config struct {
 	// only.
 	LingerTimeout time.Duration
 
+	// MaxFrameSize is the largest frame payload accepted. Zero means 16384,
+	// the protocol's own initial value. Any other value outside
+	// [16384, 1<<24-1] is refused: the value is advertised as
+	// SETTINGS_MAX_FRAME_SIZE and RFC 9113 §6.5.2 bounds that to
+	// [2^14, 2^24-1] — a smaller value on the wire is an illegal setting a
+	// conformant client must treat as a connection error, §4.2 obliges this
+	// end to receive 16384-byte frames regardless, and 1<<24-1 is what the
+	// length field can express. HTTP/2 only.
+	//
+	// It also caps the frames this end sends: a peer may advertise up to
+	// 16 MiB, and a frame that large is a buffer that large on this side.
+	// It is a transport bound, not a body bound: bodies are bounded by
+	// MaxBodyBytes across frames, however large each frame may be.
+	MaxFrameSize int
+
+	// MaxFramesPerBatch bounds how many HTTP/2 frames are handed over at
+	// once. Zero means 64. HTTP/2 only.
+	MaxFramesPerBatch int
+
+	// MaxContinuationFrames bounds how many CONTINUATION frames may follow
+	// one HEADERS before END_HEADERS arrives. Zero means 16. HTTP/2 only.
+	//
+	// This is not a tuning knob. A peer may legally split a header block
+	// across CONTINUATION frames, and a server that accepts an unbounded
+	// number of them can be made to read and buffer forever without ever
+	// completing a request — CVE-2024-27316's shape, and the reason the bound
+	// exists rather than the count being trusted.
+	MaxContinuationFrames int
+
+	// InitialWindowSize is the flow-control window this server grants each
+	// HTTP/2 request stream, advertised as SETTINGS_INITIAL_WINDOW_SIZE and
+	// topped back up as the body is consumed. Zero means 65535, the
+	// protocol's own initial value; a value over 2^31-1 — the largest a
+	// window can be (RFC 9113 §6.5.2) — is refused rather than advertised as
+	// a setting the peer must refuse. HTTP/2 only: HTTP/3's windows are the
+	// QUIC transport's, in [Config.TransportParameters].
+	//
+	// The window is what a client may have in flight on one stream before it
+	// hears back, so on a link with latency it is the ceiling on an upload's
+	// throughput: 65535 bytes per round trip is about 0.65 MB/s at 100 ms of
+	// RTT, whatever the link carries. The test behind this field moves a
+	// 4 MiB body over a proxy that adds 100 ms of round trip; a window of
+	// 1 MiB carried it eleven times faster than the default on that bench
+	// (0.48 MB/s against 5.5 MB/s, h2rtt_test.go).
+	//
+	// What it costs: a client may send the whole window before this end has
+	// read any of it, so the window is memory the peer can make this side
+	// hold, per stream. It is bounded above by MaxBodyBytes — a body over
+	// that bound is refused whatever the window granted — and across the
+	// connection by the aggregate 4×MaxBodyBytes bound, so a window larger
+	// than MaxBodyBytes only lets the peer hit the 413 sooner. The
+	// connection-level window follows this one: it is raised to
+	// MaxConcurrentStreams times the stream window, capped at 2^31-1, so that
+	// the connection never queues what the streams alone would admit.
+	InitialWindowSize int
+
+	// MaxPendingControlBytes bounds the HTTP/2 control frames — SETTINGS and
+	// PING acknowledgements, WINDOW_UPDATE, RST_STREAM — waiting to be
+	// written. Zero means 16 KiB. HTTP/2 only.
+	//
+	// It is the S1 bound on the one queue a peer fills directly: a client can
+	// send PING faster than this end can answer, and the answer to that is to
+	// stop reading until the queue drains, not to buffer without limit. The
+	// pressure then sits in the peer's send buffer, which is what TCP flow
+	// control is for.
+	MaxPendingControlBytes int
+
+	// MaxWriteBufferBytes is how much HTTP/2 response payload the writer
+	// gathers before one write to the socket. Zero means 64 KiB. A round
+	// always holds at least one whole frame, so below the frame size in use a
+	// round is one frame: the value is honoured as a bound on gathering, not
+	// as a reason to split a frame. HTTP/2 only.
+	//
+	// It is the round of the writer's round-robin: one stream on its own gets
+	// the whole of it and pays a single syscall for it, and several streams
+	// share it a frame at a time so that a large response does not hold a
+	// small one behind it.
+	MaxWriteBufferBytes int
+
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
 	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
@@ -447,11 +542,8 @@ type Config struct {
 	QPACKStatic []Header
 }
 
-// The defaults a bound takes when its field is zero. Each is chosen here and
-// nowhere else: [Config.resolve] and [H2Config.resolve] both read
-// these for the bounds the two configurations share, so that a server run
-// through [Serve] and one run through [ServeH2] on an empty configuration
-// are bounded alike (docs/design/adr/0018).
+// The defaults a bound takes when its field is zero, named because more than
+// [Config.resolve] reads them.
 const (
 	defaultMaxHeaderBytes = 32 << 10
 	defaultMaxHeaders     = 64
@@ -478,7 +570,28 @@ func (c Config) resolve() (Config, error) {
 		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
 		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
 		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
+		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
+		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),
+		orDefault("Config.MaxPendingControlBytes", &c.MaxPendingControlBytes, 16<<10),
+		orDefault("Config.MaxWriteBufferBytes", &c.MaxWriteBufferBytes, 64<<10),
 	)
+	// RFC 9113 §6.5.2 bounds both settings; a value outside would be
+	// advertised as a setting a conformant peer must answer with a connection
+	// error, so every connection would end at its first SETTINGS.
+	switch {
+	case c.MaxFrameSize == 0:
+		c.MaxFrameSize = defaultMaxFrameSize
+	case c.MaxFrameSize < defaultMaxFrameSize || c.MaxFrameSize > maxFrameSize:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxFrameSize %d is outside %d..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.MaxFrameSize, defaultMaxFrameSize, maxFrameSize, defaultMaxFrameSize))
+	}
+	switch {
+	case c.InitialWindowSize == 0:
+		c.InitialWindowSize = defaultInitialWindow
+	case c.InitialWindowSize < 0 || c.InitialWindowSize > maxWindow:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.InitialWindowSize, maxWindow, defaultInitialWindow))
+	}
 	if c.MaxConns < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
 	}

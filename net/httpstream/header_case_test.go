@@ -73,7 +73,7 @@ func checkLowercaseFields(t *testing.T, f map[string][]string) {
 // handler's own Date is recognised and not doubled, and the refusals — a
 // connection-specific field, content-length — hold whatever the case.
 func TestLowercasedNameFeedsTheEncoder(t *testing.T) {
-	s := newBenchH2Server(H2Config{})
+	s := newBenchH2Server(Config{})
 	s.date = testDate
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("Content-Type"), Value: []byte("text/plain")},

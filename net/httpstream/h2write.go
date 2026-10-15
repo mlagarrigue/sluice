@@ -35,7 +35,7 @@ import (
 // # The scheduling policy, stated
 //
 // Round-robin over the streams that have data queued, one frame each per pass,
-// repeated until the round's byte budget ([H2Config.MaxWriteBufferBytes]) is
+// repeated until the round's byte budget ([Config.MaxWriteBufferBytes]) is
 // spent or nothing can progress. One stream alone therefore gets the whole
 // budget and pays one syscall for it; eight streams share it evenly and none
 // is starved by a large neighbour. No priorities: RFC 9113 deprecated the
@@ -54,7 +54,7 @@ import (
 var errStreamGone = errors.New("httpstream: the stream ended before its response was written")
 
 // errWriteStalled reports a stream the peer never granted credit for. It is
-// bounded by [H2Config.WriteTimeout] rather than waited on forever, which is
+// bounded by [Config.WriteTimeout] rather than waited on forever, which is
 // what keeps a shutdown from hanging on a peer that stopped reading.
 var errWriteStalled = errors.New("httpstream: the peer granted no window before the write timeout")
 
@@ -127,7 +127,7 @@ func (j *h2Job) complete() bool {
 
 type h2Writer struct {
 	conn net.Conn
-	cfg  H2Config
+	cfg  Config
 
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -183,7 +183,7 @@ type h2Writer struct {
 // so — nothing would use it.
 const hpackEncoderTableSize = 4096
 
-func newH2Writer(c net.Conn, cfg H2Config) *h2Writer {
+func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 	w := &h2Writer{
 		conn:      c,
 		cfg:       cfg,
@@ -518,7 +518,7 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 // is always done by the time it is needed, and its buffer can be reused.
 //
 // The only wait is for room: a queued job holding one round's budget or more
-// of unframed bytes ([H2Config.MaxWriteBufferBytes]) is a peer that reads
+// of unframed bytes ([Config.MaxWriteBufferBytes]) is a peer that reads
 // slower than the producer yields, and the producer then runs at the window's
 // pace, bounded by the same deadline every stalled job has. This is the whole
 // difference between a batch on HTTP/2 and on HTTP/3 before it: deliver
@@ -850,7 +850,7 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 }
 
 // setMaxFrame applies the peer's SETTINGS_MAX_FRAME_SIZE, capped at this
-// end's own [H2Config.MaxFrameSize].
+// end's own [Config.MaxFrameSize].
 //
 // The peer's value is a ceiling it will accept, not a size this end must
 // use (RFC 9113 §4.2). Taken as is, a peer advertising 16 MiB made one DATA

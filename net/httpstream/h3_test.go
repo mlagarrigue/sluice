@@ -1516,7 +1516,7 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("h3, name %q: got %v, want ErrH3Protocol", name, err)
 		}
-		s := newBenchH2Server(H2Config{})
+		s := newBenchH2Server(Config{})
 		if _, err := s.appendHead(nil, 1, []byte("GET"), r, defaultMaxFrameSize); !errors.Is(err, ErrH2Protocol) {
 			t.Errorf("h2, name %q: got %v, want ErrH2Protocol", name, err)
 		}

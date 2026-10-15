@@ -66,7 +66,7 @@ func FuzzH2Connection(f *testing.F) {
 		// that is legitimately waiting on flow-control credit or a peer
 		// that never arrives unwinds well within the deadline instead of
 		// racing it.
-		cfg := H2Config{
+		cfg := Config{
 			ReadTimeout:  200 * time.Millisecond,
 			WriteTimeout: 200 * time.Millisecond,
 			IdleTimeout:  200 * time.Millisecond,
@@ -157,7 +157,7 @@ func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeH2(t.Context(), server, H2Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
+		done <- ServeH2(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
 	}()
 	go func() { _, _ = io.Copy(io.Discard, client) }()
 

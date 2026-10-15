@@ -275,7 +275,7 @@ func TestResponseContentLengthRefused(t *testing.T) {
 // answer is read raw: a producer that misses its length gets RST_STREAM,
 // never END_STREAM, and the batch past the length never leaves.
 func TestResponseContentLengthResetsTheHTTP2Stream(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, lengthHandler(nil))
+	addr, _ := serveH2(t, Config{}, lengthHandler(nil))
 	c := dialH2(t, addr)
 	for i, path := range []string{"/short", "/long", "/after"} {
 		id := uint32(2*i + 1)

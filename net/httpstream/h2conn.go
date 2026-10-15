@@ -40,8 +40,8 @@ import (
 //     scheduling. See [h2Writer].
 //
 // Everything between them is bounded, and the bounds are stated in
-// [H2Config]. The one that is not a setting is the batch queue: it holds at
-// most [H2Config.MaxConcurrentStreams] batches, which it can never exceed
+// [Config]. The one that is not a setting is the batch queue: it holds at
+// most [Config.MaxConcurrentStreams] batches, which it can never exceed
 // because every batch carries at least one request and a request occupies a
 // stream slot from the moment it is admitted until its response is written.
 // That is why the reader can hand a batch over without ever blocking — and it
@@ -88,7 +88,7 @@ const connRecvWindow = 1 << 20
 // admitted stream to spend its whole window at once, so that the connection's
 // credit never binds before the streams' own does, and never below the floor
 // the default configuration always granted.
-func connWindow(cfg H2Config) int32 {
+func connWindow(cfg Config) int32 {
 	sum := min(int64(cfg.MaxConcurrentStreams)*int64(cfg.InitialWindowSize), maxWindow)
 	return int32(max(sum, connRecvWindow)) //nolint:gosec // G115: capped at maxWindow
 }
@@ -157,7 +157,7 @@ type h2Stream struct {
 	// block or nothing: a peer may split one at any byte, including inside an
 	// integer or a Huffman string, so decoding per frame refuses a client
 	// that is doing nothing wrong. The byte bound is already enforced a layer
-	// down by MaxHeaderBlockBytes, so holding the fragments adds nothing
+	// down by MaxHeaderBytes, so holding the fragments adds nothing
 	// unbounded.
 	block []byte
 	// endStream remembers END_STREAM from the HEADERS frame, because the
@@ -224,7 +224,7 @@ type h2Answer struct {
 }
 
 type h2Server struct {
-	cfg     H2Config
+	cfg     Config
 	handler Handler
 	// ctx is the handler's context: cancelled when the connection is cut
 	// rather than drained (see [Handler]).
@@ -261,7 +261,7 @@ type h2Server struct {
 	recvWind int32
 	// assembling is the sum of the bodies still being assembled across all
 	// open streams — what the aggregate 4×MaxBodyBytes bound (see
-	// [H2Config.MaxBodyBytes]) is measured against. Windows are replenished
+	// [Config.MaxBodyBytes]) is measured against. Windows are replenished
 	// as DATA is buffered, so this, not flow control, is what bounds the
 	// memory a peer can park by never finishing its uploads.
 	assembling int
@@ -346,9 +346,11 @@ const maxWindow = 1<<31 - 1
 // [Serve] hands over is not cut that way: Serve drains it (ADR 0017), and
 // serveH2Conn says how.
 //
-// A configuration [H2Config] refuses is returned as an error before a byte
-// is read, and the connection is left to the caller.
-func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) error {
+// cfg is the [Config] [Serve] takes: ServeH2 reads the fields that say
+// they bound HTTP/2 and ignores the others. A configuration it refuses is
+// returned as an error before a byte is read, and the connection is left to
+// the caller.
+func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error {
 	cfg, err := cfg.resolve()
 	if err != nil {
 		return err
@@ -384,12 +386,12 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 // idle verdict land after a stream the reader has just opened; late is the
 // safe side. A peer that never acknowledges the PING holds the connection
 // until Serve's grace closes it, which is the bound every drain has.
-func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg H2Config, handler Handler) error {
+func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, handler Handler) error {
 	s := &h2Server{
 		cfg:      cfg,
 		handler:  handler,
 		ctx:      ctx,
-		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
+		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
 		connWind: connWindow(cfg),
 		recvWind: connWindow(cfg),
@@ -559,10 +561,10 @@ func (s *h2Server) hello() error {
 	var payload []byte
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
-		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},    //nolint:gosec // G115: bounded by withDefaults
-		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)},   //nolint:gosec // G115: same
-		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},             //nolint:gosec // G115: same
-		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBlockBytes)}, //nolint:gosec // G115: same
+		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},  //nolint:gosec // G115: bounded by withDefaults
+		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)}, //nolint:gosec // G115: same
+		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},           //nolint:gosec // G115: same
+		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBytes)},    //nolint:gosec // G115: same
 	}
 	for _, kv := range settings {
 		payload = binary.BigEndian.AppendUint16(payload, uint16(kv[0])) //nolint:gosec // G115: setting identifiers are 16 bits
@@ -1074,7 +1076,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	// The aggregate bound, beside the per-stream one: windows are granted
 	// back as DATA is buffered here, so flow control does not bound what a
 	// connection's unfinished uploads hold together — this does. See
-	// [H2Config.MaxBodyBytes] for the factor. A reset rather than a 413:
+	// [Config.MaxBodyBytes] for the factor. A reset rather than a 413:
 	// this request alone is under its bound, so it is not the one that is
 	// too large, and the status would say otherwise.
 	if s.assembling+len(body) > 4*s.cfg.MaxBodyBytes {
@@ -1627,8 +1629,8 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // last DATA frame when the end catches that job in time. The producer still
 // cannot run away: [h2Writer.extend] makes it wait once a queued job holds a
 // round's budget of unframed bytes, so what is held is bounded by
-// [H2Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
-// pull after [H2Config.WriteTimeout] as before.
+// [Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
+// pull after [Config.WriteTimeout] as before.
 //
 // Before that, the hand-off blocked until the bytes were written, and a
 // streamed response paid one write, two goroutine hand-offs and one TCP
