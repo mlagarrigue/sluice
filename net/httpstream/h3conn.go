@@ -1111,6 +1111,7 @@ type h3Scratch struct {
 	head   []byte
 	fields []Header
 	qpack  []byte
+	names  []byte   // lowercased copies of the field names a handler spelled in HTTP/1.1 case
 	status [3]byte  // checkStatus bounds a final status to 200..599
 	clen   [20]byte // enough digits for any int
 }
@@ -1136,15 +1137,18 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	noLength, noBody := noLengthAndBody(status, method)
 	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
 	hasDate := false
+	sc.names = sc.names[:0]
 	for _, h := range r.Headers {
-		if !lowerASCII(h.Name) {
-			return nil, fmt.Errorf("%w: response field %q is not lowercase", ErrH3Protocol, h.Name)
-		}
+		// A name the handler spelled in HTTP/1.1 case goes on the wire
+		// lowercase (RFC 9114 §4.2), from a copy in sc.names: the handler's
+		// bytes are borrowed, never written. The copies outlive the loop,
+		// since fields holds them until appendQPACK reads them.
+		name := lowerName(h.Name, &sc.names)
 		// The octet rule the HTTP/1.1 writer applies (response.go): QPACK
 		// carries any byte, and a name holding a space or a colon becomes a
 		// second field, or a malformed one, at the first hop that
 		// re-serialises this response toward HTTP/1.1.
-		if !isToken(h.Name) {
+		if !isToken(name) {
 			return nil, fmt.Errorf("%w: response field %q is not a token", ErrH3Protocol, h.Name)
 		}
 		if hasCRLF(h.Value) {
@@ -1156,7 +1160,7 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		// The HTTP/2 writer's refusals, for the same reasons: a
 		// connection-specific field makes the response malformed (RFC 9114
 		// §4.2), and framing is this package's to state.
-		switch string(h.Name) {
+		switch string(name) {
 		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
 		case "content-length":
@@ -1164,7 +1168,7 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		case "date":
 			hasDate = true
 		}
-		fields = append(fields, h)
+		fields = append(fields, Header{Name: name, Value: h.Value})
 	}
 	if !hasDate {
 		// RFC 9110 §6.6.1's Date, as the other two writers add it: on every

@@ -262,6 +262,7 @@ type h2Server struct {
 	// touched by the reader: the responder is the only goroutine in answer.
 	out     []byte
 	block   []byte
+	names   []byte // lowercased copies of the response field names a handler spelled in HTTP/1.1 case
 	answers []h2Answer
 	// date is the batch's Date value, read from the clock once in answer
 	// (time.Now is 35 ns here, a fifth of a head) and from here by
@@ -1481,21 +1482,6 @@ func (s *h2Server) answer(b h2Batch) {
 	}
 }
 
-// hasDateField reports whether the caller dated the response itself: a
-// second pass over the headers, kept out of the encoding loop, which is the
-// encoder's hot path. The field costs the h2 head 35-40 ns of its 165
-// (measured, BenchmarkH2Encode): the 33 bytes written and framed, and this
-// scan. Variants that kept the value live across the loop measured the same
-// within noise.
-func hasDateField(headers []Header) bool {
-	for _, h := range headers {
-		if string(h.Name) == "date" {
-			return true
-		}
-	}
-	return false
-}
-
 // appendHead frames a response's HEADERS, and its CONTINUATION frames if the
 // block does not fit one. s.date is the batch's Date value, set by answer.
 func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, maxFrame int) ([]byte, error) {
@@ -1514,16 +1500,20 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// listSize is RFC 9113 §6.5.2's measure — names and values uncompressed,
 	// plus 32 per field — of what this block decodes to at the peer.
 	listSize := uint64(len(":status") + 3 + 32)
+	hasDate := false
+	s.names = s.names[:0]
 	for _, h := range r.Headers {
 		// h.Name and h.Value stay []byte into appendHPACK: a string binding
 		// here allocates twice per response field on the encode hot path.
-		if !lowerASCII(h.Name) {
-			return nil, fmt.Errorf("%w: response header %q is not lowercase", ErrH2Protocol, h.Name)
-		}
+		// A name the handler spelled in HTTP/1.1 case goes on the wire
+		// lowercase (RFC 9113 §8.2.1), from a copy: the handler's bytes are
+		// borrowed, never written. lowerName is one pass over the name,
+		// which is what the refusal it replaces cost.
+		name := lowerName(h.Name, &s.names)
 		// The h1 writer's octet rule: HPACK carries any byte, and a name
 		// with a space or a colon is a second field at the first hop that
 		// re-serialises this response toward HTTP/1.1.
-		if !isToken(h.Name) {
+		if !isToken(name) {
 			return nil, fmt.Errorf("%w: response header %q is not a token", ErrH2Protocol, h.Name)
 		}
 		if hasCRLF(h.Value) {
@@ -1540,16 +1530,18 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		// Content-length is the h1 writer's refusal for the h1 writer's
 		// reason: framing is this package's to state, and a second opinion
 		// on it is the smuggling class arriving from the inside.
-		switch string(h.Name) {
+		switch string(name) {
 		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH2Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH2Protocol)
+		case "date":
+			hasDate = true
 		}
-		block = appendHPACK(block, h.Name, h.Value)
-		listSize += uint64(len(h.Name)+len(h.Value)) + 32
+		block = appendHPACK(block, name, h.Value)
+		listSize += uint64(len(name)+len(h.Value)) + 32
 	}
-	if !hasDateField(r.Headers) {
+	if !hasDate {
 		// RFC 9110 §6.6.1's Date, as the h1 writer adds it: on every final
 		// response the handler did not date itself. The static table names
 		// the field (entry 33); the value is the batch's, formatted once.

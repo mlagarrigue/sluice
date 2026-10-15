@@ -15,10 +15,13 @@ type Response struct {
 	// Status is the HTTP status code. Zero means 200.
 	Status int
 
-	// Headers are sent as given. Content-Length is written by [WriteBatch]
-	// from the body and must not be set here. Date is added by the writer
-	// when the handler did not set one (RFC 9110 §6.6.1), on every final
-	// response, 5xx included.
+	// Headers are sent as given. Names are case-insensitive (RFC 9110
+	// §5.1): HTTP/1.1 writes them as spelled, HTTP/2 and HTTP/3 put them
+	// on the wire in lowercase, as those protocols require, without
+	// touching the handler's bytes. Content-Length is written by
+	// [WriteBatch] from the body and must not be set here. Date is added
+	// by the writer when the handler did not set one (RFC 9110 §6.6.1),
+	// on every final response, 5xx included.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
