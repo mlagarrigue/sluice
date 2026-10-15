@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 drains)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain)
 - **Theme:** httpstream
 
 ## Problem
@@ -58,10 +58,18 @@ before the gateway, its last batches fail.
      connection closes. A peer that never acknowledges the PING is closed
      by the grace. A connection with no stream open closes at once, like
      an idle HTTP/1.1 one.
-   - HTTP/3 (slice 3): a GOAWAY frame with the identifier of the last
-     accepted stream, then `H3_NO_ERROR` once the accepted requests are
-     processed (RFC 9114 §5.2: "An endpoint that completes a graceful
-     shutdown SHOULD use the H3_NO_ERROR error code").
+   - HTTP/3: a GOAWAY frame on the control stream naming the first request
+     stream the connection rejects — the one after the highest it admitted,
+     decided under the same lock as the admission so no stream is both
+     admitted and named (RFC 9114 §5.2: "requests with the indicated
+     identifier or greater are rejected") — a request from there on reset
+     `H3_REQUEST_REJECTED`, the admitted requests answered, then
+     `H3_NO_ERROR` (or §8.1's grease) once the last answer is
+     acknowledged, which `quic.Conn.ShutdownWithError` waits for: an
+     application close sent at once can overtake the response it follows.
+     Past the grace the connection is closed under its handler. What this
+     slice leaves: `ServeH3` still waits for a handler that has not
+     returned after the grace, where `Serve` does not (§2).
    - `web.Shutdown` (slice 3) stops every `Serve(ctx)` in this order, not
      only a `*http.Server`.
 
