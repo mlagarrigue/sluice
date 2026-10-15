@@ -200,8 +200,9 @@ type StartupConfig struct {
 
 	// Params sets additional runtime parameters in the startup packet —
 	// application_name, search_path, statement_timeout and the rest. It may
-	// not contain "user" or "database", which have fields of their own, and
-	// setting "client_encoding" overrides the UTF8 this package sends by
+	// not contain "user" or "database", which have fields of their own, nor
+	// "replication": this package does not speak the replication protocol.
+	// Setting "client_encoding" overrides the UTF8 this package sends by
 	// default. Without that override, the connection breaks whenever the
 	// server reports any other encoding — at startup, or after a SET
 	// client_encoding mid-session — since every text decoder here reads
@@ -382,6 +383,15 @@ func startupBody(cfg StartupConfig) ([]byte, error) {
 	}
 	if _, ok := cfg.Params["database"]; ok {
 		return nil, errors.New(`postgres: set the database in StartupConfig.Database, not in Params["database"]`)
+	}
+	// A walsender accepts only the simple query protocol ("Streaming
+	// Replication Protocol" in the protocol chapter): Query and ExecParams
+	// speak the extended one and would fail, and START_REPLICATION through
+	// Exec answers with a CopyBothResponse no drain here reads — the WAL
+	// would be discarded forever. Refused whatever the value, "off" included: the key buys
+	// nothing a plain connection lacks.
+	if _, ok := cfg.Params["replication"]; ok {
+		return nil, errors.New(`postgres: Params["replication"] asks for a replication connection, which this package does not speak`)
 	}
 	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
 		return nil, fmt.Errorf("postgres: StartupConfig.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)

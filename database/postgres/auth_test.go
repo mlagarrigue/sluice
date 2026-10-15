@@ -594,6 +594,11 @@ func TestStartupBodyRefusals(t *testing.T) {
 			StartupConfig{User: "orders", Params: map[string]string{"database": "other"}},
 			"StartupConfig.Database",
 		},
+		{
+			"a replication connection, whose COPY BOTH no drain here reads",
+			StartupConfig{User: "orders", Params: map[string]string{"replication": "database"}},
+			`Params["replication"]`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
