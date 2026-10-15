@@ -119,6 +119,16 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// Stream 3 is the first server-initiated unidirectional identifier.
 	control := c.Stream(3)
 	if _, err := control.Write(appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
+		// Closed on the way out, like the two refusals above. The one
+		// failure a live connection produces here is the client's
+		// STOP_SENDING on the control stream landing between Stream(3)
+		// and this write: the §6.2.1 error the callback below names,
+		// which used to leave the connection open with nobody serving it.
+		if code, reset := control.WasReset(); reset {
+			_ = c.CloseWithError(h3ClosedCriticalStream)
+			return controlStopped(code)
+		}
+		_ = c.CloseWithError(h3InternalError)
 		return err
 	}
 
@@ -232,10 +242,8 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		// a client that sends only the STOP_SENDING is caught when it next
 		// speaks, which for a client is its next request.
 		if code, reset := control.WasReset(); reset {
-			err := h3ConnectionError{Code: h3ClosedCriticalStream, Err: fmt.Errorf(
-				"%w: the client asked the control stream to stop (STOP_SENDING %#x)", ErrH3Protocol, code)}
 			_ = c.CloseWithError(h3ClosedCriticalStream)
-			return err
+			return controlStopped(code)
 		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own
 		// loop: a separate pass here used to run every Forget before the
@@ -334,6 +342,14 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	case <-graceOver:
 	}
 	return h3CloseErr(c.Err())
+}
+
+// controlStopped is the connection error for a client that asked the control
+// stream to stop (RFC 9114 §6.2.1): a critical stream closed, whenever the
+// refusal is noticed.
+func controlStopped(code uint64) error {
+	return h3ConnectionError{Code: h3ClosedCriticalStream, Err: fmt.Errorf(
+		"%w: the client asked the control stream to stop (STOP_SENDING %#x)", ErrH3Protocol, code)}
 }
 
 // h3CloseErr is what ServeH3 reports once the connection ended: nil for

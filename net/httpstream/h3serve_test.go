@@ -104,6 +104,86 @@ func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
 	}
 }
 
+// The same STOP_SENDING, arriving before SETTINGS has gone out: the write
+// of SETTINGS fails, and ServeH3 used to return that error with the
+// connection left open — a client waiting on a server nobody runs, until
+// the idle timeout. It is closed on the way out now, with the §6.2.1 code,
+// like every other refusal at the top of ServeH3.
+func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
+	serverUp := make(chan error, 1)
+	stopped := make(chan struct{})
+	served := make(chan error, 1)
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { <-serverDone })
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			serverUp <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		// Opened before ServeH3 runs, so the client's STOP_SENDING finds
+		// the stream — a STOP_SENDING for a stream this end never opened
+		// would be a transport error instead (RFC 9000 §19.5).
+		control := conn.Stream(3)
+		serverUp <- nil
+		<-stopped
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			if _, reset := control.WasReset(); reset {
+				break
+			}
+			if time.Now().After(deadline) {
+				served <- errors.New("the STOP_SENDING never reached the server")
+				return
+			}
+		}
+		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+		})
+	}()
+
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := <-serverUp; err != nil {
+		t.Fatalf("the server: %v", err)
+	}
+	if err := conn.Stream(3).StopSending(h3NoError); err != nil {
+		t.Fatalf("STOP_SENDING on the server's control stream: %v", err)
+	}
+	close(stopped)
+
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection stayed open after STOP_SENDING on the control stream before SETTINGS")
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application {
+		t.Fatalf("the connection ended with %v, want an application close", conn.Err())
+	}
+	if ce.Code != h3ClosedCriticalStream {
+		t.Fatalf("closed with %#x, want H3_CLOSED_CRITICAL_STREAM (%#x)", ce.Code, h3ClosedCriticalStream)
+	}
+	if err := <-served; !errors.Is(err, ErrH3Protocol) {
+		t.Fatalf("ServeH3 returned %v, want ErrH3Protocol", err)
+	}
+}
+
 // askH3 sends one request on a fresh stream and returns the stream.
 func askH3(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
 	t.Helper()
