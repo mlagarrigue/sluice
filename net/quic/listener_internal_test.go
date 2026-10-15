@@ -13,6 +13,7 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1284,5 +1285,30 @@ func TestMaxConnsPerIPCountsBySourceAddress(t *testing.T) {
 	}
 	if v4a == other {
 		t.Errorf("two addresses share the key %q", v4a)
+	}
+}
+
+// A negative bound is refused rather than turned into the default, and every
+// faulty field is named in the one error, with its value and what zero means
+// (docs/design/adr/0018).
+func TestListenerConfigRefusesNegativeValues(t *testing.T) {
+	_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+		MaxPendingConns:  -1,
+		HandshakeTimeout: -time.Second,
+		MaxConns:         -2,
+		MaxConnsPerIP:    -3,
+	})
+	if err == nil {
+		t.Fatal("NewListener accepted negative ListenerConfig values")
+	}
+	for _, want := range []string{
+		"ListenerConfig.MaxPendingConns -1 is negative — zero means 1024",
+		"ListenerConfig.HandshakeTimeout -1s is negative — zero means " + DefaultHandshakeTimeout.String(),
+		"ListenerConfig.MaxConns -2 is negative — zero means no bound",
+		"ListenerConfig.MaxConnsPerIP -3 is negative — zero means no bound",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
 	}
 }

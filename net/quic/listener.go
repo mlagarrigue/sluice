@@ -59,8 +59,9 @@ type ListenerConfig struct {
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
-	// overload. Zero means [defaultMaxPendingConns]. Accepted connections
-	// are not counted here: MaxConns bounds the total.
+	// overload. Zero means 1024; a negative value is refused by
+	// [NewListener]. Accepted connections are not counted here: MaxConns
+	// bounds the total.
 	MaxPendingConns int
 
 	// HandshakeTimeout bounds how long one handshake may hold a pending
@@ -205,6 +206,36 @@ type Listener struct {
 	done     chan struct{} // closed when every read loop has returned
 }
 
+// resolve applies the defaults zero stands for and returns an error naming
+// every field whose value is negative: a negative bound is the caller's
+// mistake, said at start rather than quietly turned into the default
+// (docs/design/adr/0018).
+func (c ListenerConfig) resolve() (ListenerConfig, error) {
+	var err error
+	if c.MaxPendingConns < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxPendingConns %d is negative — zero means %d", c.MaxPendingConns, defaultMaxPendingConns))
+	}
+	if c.HandshakeTimeout < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.HandshakeTimeout %v is negative — zero means %v", c.HandshakeTimeout, DefaultHandshakeTimeout))
+	}
+	if c.MaxConns < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConns %d is negative — zero means no bound", c.MaxConns))
+	}
+	if c.MaxConnsPerIP < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
+	}
+	if err != nil {
+		return ListenerConfig{}, err
+	}
+	if c.MaxPendingConns == 0 {
+		c.MaxPendingConns = defaultMaxPendingConns
+	}
+	if c.HandshakeTimeout == 0 {
+		c.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	return c, nil
+}
+
 // NewListener starts demultiplexing pc. cfg and params are what every
 // accepted connection's handshake uses — the same arguments [Accept] takes,
 // since a Listener is [Accept] generalised to a shared socket rather than a
@@ -217,20 +248,9 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err := requireALPN(cfg); err != nil {
 		return nil, err
 	}
-	if lcfg.MaxPendingConns <= 0 {
-		lcfg.MaxPendingConns = defaultMaxPendingConns
-	}
-	switch {
-	case lcfg.HandshakeTimeout < 0:
-		return nil, fmt.Errorf("%w: a negative HandshakeTimeout", ErrQUIC)
-	case lcfg.HandshakeTimeout == 0:
-		lcfg.HandshakeTimeout = DefaultHandshakeTimeout
-	}
-	if lcfg.MaxConns < 0 {
-		return nil, fmt.Errorf("%w: a negative MaxConns", ErrQUIC)
-	}
-	if lcfg.MaxConnsPerIP < 0 {
-		return nil, fmt.Errorf("%w: a negative MaxConnsPerIP", ErrQUIC)
+	lcfg, err := lcfg.resolve()
+	if err != nil {
+		return nil, err
 	}
 	key, err := newRetryTokenKey()
 	if err != nil {
