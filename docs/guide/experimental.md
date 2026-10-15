@@ -106,6 +106,38 @@ says what the code decides, not what an external review has confirmed.
 > explicitly, a test covers it, and the row says where to read the reason.
 > It takes nothing away from the *experimental* label of `net/quic`.
 
+The "clear text" row points to TLS; this is what goes in front. The package
+does not terminate TLS ([ADR 0014](../design/adr/0014-tls-stays-in-front.md)):
+`crypto/tls` wraps the listener, and `Serve` reads the decrypted stream as
+it would read a bare socket.
+
+```go
+tlsConfig := &tls.Config{
+    Certificates: []tls.Certificate{cert},
+    MinVersion:   tls.VersionTLS12,
+    CipherSuites: []uint16{ // TLS 1.2 only: TLS 1.3 picks its own, all AEAD
+        tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+        tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+        tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+        tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+        tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+        tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+    },
+    NextProtos: []string{"h2", "http/1.1"}, // ALPN: a browser opens HTTP/2 this way only
+}
+err := httpstream.Serve(ctx, tls.NewListener(ln, tlsConfig), httpstream.Config{}, handle)
+```
+
+TLS 1.3 alone would do (`MinVersion: tls.VersionTLS13`, no `CipherSuites`):
+all of its suites are **AEAD** (encryption and authentication in one pass)
+and Go picks them itself. The list only serves clients still on TLS 1.2, to
+keep them off the suites RFC 9113 (Appendix A) prohibits for HTTP/2; the
+compression and renegotiation it prohibits too, `crypto/tls` never does on
+the server side. The package itself checks nothing of what was negotiated:
+it reads neither the version, nor the suite, nor the ALPN, and the preface
+picks the protocol, as in clear text. `scripts/interop-http.sh` replays
+curl and h2spec over `https://` with exactly this configuration.
+
 ## `web/stream` — the same middle, for the other transport
 
 `web` provides the middle of the supported path (route, authenticate,
