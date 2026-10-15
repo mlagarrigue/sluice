@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -175,5 +177,39 @@ func TestFetchOutOfRangeIsRefused(t *testing.T) {
 	}
 	if srv.sent.Len() != 0 {
 		t.Errorf("%d bytes sent for a refused query", srv.sent.Len())
+	}
+}
+
+// A batch bound out of range is refused before anything is sent, by an error
+// naming the field, rather than replaced by a default nobody chose: zero is
+// the default, a negative value or a byte bound past 1 GiB is a typo.
+func TestOutOfRangeBatchBoundsAreRefused(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		cfg   QueryConfig
+	}{
+		{"BatchRows", QueryConfig{BatchRows: -1}},
+		{"BatchBytes", QueryConfig{BatchBytes: -1}},
+		{"BatchBytes", QueryConfig{BatchBytes: maxBatchBytes + 1}},
+	} {
+		srv := &fakeServer{}
+		err := drain(t, NewConn(srv).Query(t.Context(), "SELECT id", nil, tc.cfg))
+		if err == nil || !strings.Contains(err.Error(), "QueryConfig."+tc.field) {
+			t.Errorf("Query with %+v returned %v, want an error naming %s", tc.cfg, err, tc.field)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("Query with %+v sent %d bytes", tc.cfg, srv.sent.Len())
+		}
+
+		srv = &fakeServer{}
+		tx := &Tx{conn: NewConn(srv)}
+		err = tx.Pipeline(t.Context(), []Part{{SQL: "SELECT 1"}}, tc.cfg,
+			func(int, sluice.Batch[Row]) bool { return true })
+		if err == nil || !strings.Contains(err.Error(), "QueryConfig."+tc.field) {
+			t.Errorf("Pipeline with %+v returned %v, want an error naming %s", tc.cfg, err, tc.field)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("Pipeline with %+v sent %d bytes", tc.cfg, srv.sent.Len())
+		}
 	}
 }

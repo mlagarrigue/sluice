@@ -582,3 +582,19 @@ func TestParseRowDescriptionRefusesTrailingBytes(t *testing.T) {
 		t.Fatalf("ParseRowDescription accepted a trailing byte: %v", err)
 	}
 }
+
+// The byte bound of a Rows is the caller's code, not data: a negative one, or
+// one past what the offsets address, is a programming error and panics rather
+// than becoming the ceiling.
+func TestRowsPanicsOnAnOutOfRangeByteBound(t *testing.T) {
+	for _, n := range []int{-1, maxRowBytes + 1} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewRows with a byte bound of %d did not panic", n)
+				}
+			}()
+			NewRows(1, 4, n)
+		}()
+	}
+}

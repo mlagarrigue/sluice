@@ -124,8 +124,9 @@ Three reasons come up, and the difference matters:
   A batch whose values reach it is delivered with the row that crossed it,
   and the next row opens the next batch: nothing fails, the consumer sees
   more and smaller batches, and `Config.Logger` gets one warning per result.
-  `QueryConfig.BatchBytes` sets it, up to 1 GiB; a single row wider than the
-  bound travels alone, so memory per batch is the bound plus one row.
+  `QueryConfig.BatchBytes` sets it, up to 1 GiB; past it, or below zero, the
+  query is refused. A single row wider than the bound travels alone, so
+  memory per batch is the bound plus one row.
 - **`pushdown` pushes the limit and the key bound, not the column set**:
   the SQL is the caller's and its select list is not rewritten.
 

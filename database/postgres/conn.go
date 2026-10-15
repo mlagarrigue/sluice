@@ -425,23 +425,32 @@ const (
 // bound memory by one number.
 const defaultBatchBytes = 64 << 20
 
-// maxBatchBytes is the largest byte bound a batch is given. A batch closes
+// maxBatchBytes is the largest byte bound a batch accepts. A batch closes
 // with the row that crossed its bound in it, and that row is at most
 // [maxMaxMessage], so a bound of 1 GiB keeps the batch under the 2 GiB its
 // int32 offsets allow: past it, [Rows.Append] would refuse a row the bound
 // was meant to cut, not fail on.
 const maxBatchBytes = 1 << 30
 
-// batchBounds resolves a QueryConfig's row and byte bounds to their defaults.
-func batchBounds(cfg QueryConfig) (rows, size int) {
+// batchBounds resolves a QueryConfig's row and byte bounds, zero to its
+// default and anything else out of range to an error: a typo behind a
+// fallback runs with a bound nobody chose and cannot be found from the
+// behaviour it produces (ADR 0018).
+func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 	rows, size = cfg.BatchRows, cfg.BatchBytes
-	if rows <= 0 {
+	if rows < 0 {
+		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchRows %d is negative — zero means the default, %d", rows, sluice.DefaultBatchSize)
+	}
+	if size < 0 || size > maxBatchBytes {
+		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchBytes %d is outside 1..%d bytes — zero means the default, %d", size, maxBatchBytes, defaultBatchBytes)
+	}
+	if rows == 0 {
 		rows = sluice.DefaultBatchSize
 	}
-	if size <= 0 {
+	if size == 0 {
 		size = defaultBatchBytes
 	}
-	return rows, min(size, maxBatchBytes)
+	return rows, size, nil
 }
 
 // QueryConfig states the bounds a query runs under. They are the caller's,
@@ -449,7 +458,7 @@ func batchBounds(cfg QueryConfig) (rows, size int) {
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
 	// asked for exactly that many at a time — what bounds the rows in flight.
-	// A value of zero or less means [sluice.DefaultBatchSize].
+	// Zero means [sluice.DefaultBatchSize]; a negative value is refused.
 	//
 	// # Two batches in flight
 	//
@@ -493,9 +502,9 @@ type QueryConfig struct {
 	// travels in a batch of its own — it is bounded by [Config.MaxMessage] —
 	// so memory per batch is at most BatchBytes plus one row.
 	//
-	// A value of zero or less means 64 MiB, the same default as a message
-	// from the server; anything above 1 GiB means 1 GiB, which keeps a batch
-	// and its last row within the 2 GiB a batch can address. The cut is on
+	// Zero means 64 MiB, the same default as a message from the server; a
+	// negative value or one above 1 GiB is refused, the ceiling keeping a
+	// batch and its last row within the 2 GiB a batch can address. The cut is on
 	// this side of the wire: the server still sends BatchRows rows per round
 	// trip.
 	BatchBytes int
@@ -655,7 +664,6 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 // tag receives the statement's CommandComplete tag; nil copies nothing, so a
 // streamed query pays for no tag it was not asked for.
 func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, tag *CommandTag, yield func(sluice.Batch[Row]) bool) error {
-	batchRows, batchBytes := batchBounds(cfg)
 	if c.broken != nil {
 		return c.broken
 	}
@@ -667,6 +675,10 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	}
 	if cfg.Fetch > FetchBatches {
 		return fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
+	}
+	batchRows, batchBytes, err := batchBounds(cfg)
+	if err != nil {
+		return err
 	}
 	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: tag}
 	if cfg.Demand != nil {

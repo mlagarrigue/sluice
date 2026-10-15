@@ -263,16 +263,21 @@ var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 
 // NewRows returns an accumulator for results of the given width, holding at
 // most maxRows rows per batch, and full once its values reach maxBytes bytes.
-// A maxBytes of zero or less, or above what the offsets allow, means that
-// 2 GiB ceiling alone.
+// A maxBytes of zero means the 2 GiB the offsets allow, alone; a negative one,
+// or one above that ceiling, panics — the bound is the caller's code, not
+// data, so a wrong one is a programming error, as an out-of-range
+// [Rows.Value] is.
 func NewRows(fields, maxRows, maxBytes int) *Rows {
 	return &Rows{fields: fields, maxRows: maxRows, maxBytes: rowBytes(maxBytes)}
 }
 
-// rowBytes resolves a byte bound on a batch to the range the int32 offsets
-// allow.
+// rowBytes resolves a byte bound on a batch, zero to the ceiling the int32
+// offsets allow, and panics on one outside it.
 func rowBytes(n int) int {
-	if n <= 0 || n > maxRowBytes {
+	if n < 0 || n > maxRowBytes {
+		panic(fmt.Sprintf("postgres: Rows byte bound %d is outside 0..%d", n, maxRowBytes))
+	}
+	if n == 0 {
 		return maxRowBytes
 	}
 	return n

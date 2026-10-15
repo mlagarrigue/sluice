@@ -814,3 +814,17 @@ func TestExecFailsCopyToStdoutInsteadOfDiscardingIt(t *testing.T) {
 		t.Errorf("the statement after a refused copy-out returned %v", err)
 	}
 }
+
+// A negative ChunkBytes is refused, not read as the default: zero is how the
+// default is asked for.
+func TestCopyRefusesANegativeChunkBytes(t *testing.T) {
+	srv := &fakeServer{}
+	_, err := NewConn(srv).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
+		CopyConfig{RowsPerTx: 1, ChunkBytes: -1})
+	if err == nil || !strings.Contains(err.Error(), "CopyConfig.ChunkBytes") {
+		t.Errorf("CopyFrom with ChunkBytes -1 returned %v, want an error naming ChunkBytes", err)
+	}
+	if srv.sent.Len() != 0 {
+		t.Errorf("a refused copy sent %d bytes", srv.sent.Len())
+	}
+}

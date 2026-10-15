@@ -126,7 +126,10 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	}
 	c := tx.conn
 
-	batchRows, batchBytes := batchBounds(cfg)
+	batchRows, batchBytes, err := batchBounds(cfg)
+	if err != nil {
+		return err
+	}
 
 	// Every part is validated before the first byte is buffered — the same
 	// order [Tx.Savepoints] uses, and not for style: a refusal discovered
@@ -213,7 +216,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	defer func() { _ = join() }()
 	w := c.watchCancel(ctx)
 	defer w.disarm()
-	err := c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
+	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
 		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
 		err = c.broken

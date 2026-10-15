@@ -59,11 +59,14 @@ type CopyConfig struct {
 
 	// ChunkBytes is how many bytes accumulate in one CopyData before it is
 	// sent. Message boundaries need not fall on row boundaries — the server
-	// concatenates them — so this is purely a buffering choice, and a value
-	// of zero or less means 64 KiB. It bounds what is written; what is read
-	// from the server is bounded by [Config.MaxMessage], a separate number.
+	// concatenates them — so this is purely a buffering choice. Zero means
+	// 64 KiB; a negative value is refused. It bounds what is written; what is
+	// read from the server is bounded by [Config.MaxMessage], a separate number.
 	ChunkBytes int
 }
+
+// defaultChunkBytes is the CopyData size when [CopyConfig.ChunkBytes] is zero.
+const defaultChunkBytes = 64 << 10
 
 // AppendTupleHeader begins one row of a binary COPY stream by writing its
 // field count.
@@ -203,8 +206,11 @@ func (c *Conn) CopyFrom(ctx context.Context, sql string, cfg CopyConfig) (*Copie
 	if cfg.RowsPerTx <= 0 {
 		return nil, errors.New("postgres: CopyConfig.RowsPerTx must be positive — a transaction granularity nobody chose is one nobody owns")
 	}
-	if cfg.ChunkBytes <= 0 {
-		cfg.ChunkBytes = 64 << 10
+	if cfg.ChunkBytes < 0 {
+		return nil, fmt.Errorf("postgres: CopyConfig.ChunkBytes %d is negative — zero means the default, %d", cfg.ChunkBytes, defaultChunkBytes)
+	}
+	if cfg.ChunkBytes == 0 {
+		cfg.ChunkBytes = defaultChunkBytes
 	}
 	return &Copier{conn: c, ctx: ctx, sql: sql, cfg: cfg}, nil
 }
