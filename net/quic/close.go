@@ -189,6 +189,17 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 	return err
 }
 
+// ShutdownWithError is [Conn.Shutdown] with an application-level close code,
+// which is how HTTP/3 ends a graceful shutdown with H3_NO_ERROR (RFC 9114
+// §5.2) once its last response has been acknowledged. It waits as Shutdown
+// does and closes in every case, like it; only the frame the peer reads
+// differs, as between [Conn.Close] and [Conn.CloseWithError].
+func (c *Conn) ShutdownWithError(ctx context.Context, code uint64) error {
+	err := c.drain(ctx)
+	c.closeOnce(code, true)
+	return err
+}
+
 // drain waits under mu until no space holds an ack-eliciting packet in
 // flight or a payload queued for retransmission. The waits ride c.cond,
 // which handleAck broadcasts on every new acknowledgement and closeOnce on
