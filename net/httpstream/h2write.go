@@ -437,6 +437,15 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 // deliver queues jobs and returns when every one of them has been written, has
 // been dropped because its stream is gone, or has run out of time.
 //
+// That it waits for the wire, rather than returning once the jobs are queued,
+// is the connection's backpressure: the responder that called it reads no
+// further batch until this one is on the socket, so what a connection holds
+// is one batch of answers, not every answer a handler could produce while the
+// peer withholds credit. It is the same frontier the HTTP/1.1 responder has
+// in its blocking socket write, bounded by the same WriteTimeout. Returning
+// early under a byte budget would let the handler run one batch ahead of a
+// peer that reads; against one that does not, it would only buy memory.
+//
 // It returns an error only when the write side itself failed, which ends the
 // connection. A per-stream outcome is left on the job, where the caller reads
 // it and decides — that is the whole difference between one bad stream and a
