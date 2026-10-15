@@ -70,8 +70,34 @@ func countedPair(t *testing.T) (client, server *Conn, sent *atomic.Int64) {
 // response had gone without it (RFC 9000 §13.2.1 says an ACK SHOULD ride
 // other frames), and the stream's slot came back as a MAX_STREAMS of its
 // own the moment the stream retired.
+//
+// The client acknowledges the response localMaxAckDelay after it, and the
+// server's probe timeout fires barely past that (RFC 9002 §6.2.1: smoothed
+// RTT, four variances, the peer's max_ack_delay — a millisecond of margin
+// on loopback). A client timer that late, common under -race, draws probes
+// (§6.2.4) that are not this test's subject: an exchange that saw the
+// timeout fire proves nothing either way, and is run again.
 func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 	client, server, sent := countedPair(t)
+	for range 5 {
+		timeouts := server.Stats().ProbeTimeouts
+		n := smallExchange(t, client, server, sent)
+		if server.Stats().ProbeTimeouts != timeouts {
+			t.Logf("the probe timeout fired during the exchange (%d datagrams): again", n)
+			continue
+		}
+		if n != 1 {
+			t.Errorf("the server wrote %d datagrams for one small exchange, want 1", n)
+		}
+		return
+	}
+	t.Fatal("the probe timeout fired during every exchange")
+}
+
+// smallExchange runs one request and response on a new stream and returns
+// how many datagrams the server wrote for it.
+func smallExchange(t *testing.T, client, server *Conn, sent *atomic.Int64) int64 {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
@@ -105,9 +131,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(4 * localMaxAckDelay) // whatever was delayed has left by now
-	if n := sent.Load() - before; n != 1 {
-		t.Errorf("the server wrote %d datagrams for one small exchange, want 1", n)
-	}
+	return sent.Load() - before
 }
 
 // A retired peer stream's slot comes back an eighth of the initial limit at
