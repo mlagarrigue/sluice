@@ -246,23 +246,25 @@ func (c H2Config) withDefaults() H2Config {
 	if c.MaxContinuationFrames <= 0 {
 		c.MaxContinuationFrames = 16
 	}
+	// The bounds shared with [Config] take Config's defaults, chosen once in
+	// httpstream.go; only what HTTP/2 alone has is chosen here.
 	if c.MaxHeaderBlockBytes <= 0 {
-		c.MaxHeaderBlockBytes = 64 << 10
+		c.MaxHeaderBlockBytes = defaultMaxHeaderBytes
 	}
 	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = 64
+		c.MaxHeaders = defaultMaxHeaders
 	}
 	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = 30 * time.Second
+		c.IdleTimeout = defaultIdleTimeout
 	}
 	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = 10 * time.Second
+		c.ReadTimeout = defaultReadTimeout
 	}
 	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = 10 * time.Second
+		c.WriteTimeout = defaultWriteTimeout
 	}
 	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = 1 << 20
+		c.MaxBodyBytes = defaultMaxBodyBytes
 	}
 	if c.MaxConcurrentStreams <= 0 {
 		c.MaxConcurrentStreams = defaultMaxConcurrency

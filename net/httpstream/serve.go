@@ -105,11 +105,8 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 	if handle == nil {
 		panic("httpstream: Serve requires a handler")
 	}
-	// Taken before the defaults: a zero MaxConcurrentStreams is HTTP/2's own
-	// default of 100, not the 64 Config's default is sized to HTTP/3 by.
-	h2Streams := cfg.MaxConcurrentStreams
 	cfg = cfg.withDefaults()
-	h2cfg := h2ConfigOf(cfg, h2Streams)
+	h2cfg := h2ConfigOf(cfg)
 
 	var wg sync.WaitGroup
 	live := newConnSet(cfg.MaxConns)
@@ -537,8 +534,12 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, h2cfg 
 }
 
 // h2ConfigOf is the [H2Config] a [Serve] connection that turns out to be
-// HTTP/2 runs under. streams is Config.MaxConcurrentStreams as the caller set
-// it, zero included.
+// HTTP/2 runs under, and the one place it is derived from a [Config]: every
+// bound the two share takes Config's value, defaults already applied, so a
+// Serve caller sets each bound once and HTTP/1.1 and HTTP/2 are bounded
+// alike (docs/design/adr/0018). What HTTP/2 alone has — frame size,
+// windows, the CONTINUATION and control-queue bounds — stays on H2Config's
+// own defaults.
 //
 // MaxFrameSize is left to its default on purpose. It is a transport bound
 // with a protocol floor of 16384 (RFC 9113 §4.2/§6.5.2), not a body bound:
@@ -546,12 +547,12 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, h2cfg 
 // SETTINGS value, and a large one hand the peer a megabyte-sized frame
 // ceiling to amplify SETTINGS processing against. Bodies are bounded by
 // MaxBodyBytes across frames, however large each frame is allowed to be.
-func h2ConfigOf(cfg Config, streams int) H2Config {
+func h2ConfigOf(cfg Config) H2Config {
 	return H2Config{
 		MaxBodyBytes:         cfg.MaxBodyBytes,
 		MaxHeaderBlockBytes:  cfg.MaxHeaderBytes,
 		MaxHeaders:           cfg.MaxHeaders,
-		MaxConcurrentStreams: streams,
+		MaxConcurrentStreams: cfg.MaxConcurrentStreams,
 		IdleTimeout:          cfg.IdleTimeout,
 		ReadTimeout:          cfg.ReadTimeout,
 		WriteTimeout:         cfg.WriteTimeout,

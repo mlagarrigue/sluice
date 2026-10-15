@@ -400,36 +400,50 @@ type Config struct {
 	QPACKStatic []Header
 }
 
+// The defaults a bound takes when its field is zero. Each is chosen here and
+// nowhere else: [Config.withDefaults] and [H2Config.withDefaults] both read
+// these for the bounds the two configurations share, so that a server run
+// through [Serve] and one run through [ServeH2] on an empty configuration
+// are bounded alike (docs/design/adr/0018).
+const (
+	defaultMaxHeaderBytes = 32 << 10
+	defaultMaxHeaders     = 64
+	defaultMaxBodyBytes   = 1 << 20
+	defaultIdleTimeout    = 30 * time.Second
+	defaultReadTimeout    = 10 * time.Second
+	defaultWriteTimeout   = 10 * time.Second
+)
+
 func (c Config) withDefaults() Config {
 	if c.MaxRequestLineBytes <= 0 {
 		c.MaxRequestLineBytes = 8 << 10
 	}
 	if c.MaxHeaderBytes <= 0 {
-		c.MaxHeaderBytes = 32 << 10
+		c.MaxHeaderBytes = defaultMaxHeaderBytes
 	}
 	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = 64
+		c.MaxHeaders = defaultMaxHeaders
 	}
 	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = 1 << 20
+		c.MaxBodyBytes = defaultMaxBodyBytes
 	}
 	if c.MaxRequestsPerBatch <= 0 {
 		c.MaxRequestsPerBatch = 64
 	}
 	if c.MaxConcurrentStreams <= 0 {
-		c.MaxConcurrentStreams = 64
+		c.MaxConcurrentStreams = defaultMaxConcurrency
 	}
 	if c.MaxRequestsPerConn <= 0 {
 		c.MaxRequestsPerConn = 1024
 	}
 	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = 30 * time.Second
+		c.IdleTimeout = defaultIdleTimeout
 	}
 	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = 10 * time.Second
+		c.ReadTimeout = defaultReadTimeout
 	}
 	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = 10 * time.Second
+		c.WriteTimeout = defaultWriteTimeout
 	}
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 5 * time.Second

@@ -370,15 +370,20 @@ type h3Batch struct {
 // configuration's own admission bounds, for the connection ServeH3 will
 // serve: stream windows that fit a full request (MaxBodyBytes plus header
 // room), a connection window that fits the 4×MaxBodyBytes aggregate
-// assembly cap, and the stream count ServeH3 admits. Serving a connection
-// built with these lets ServeH3 run the transport under manual
-// flow-control credit, where a peer's window only reopens for bytes this
-// server has actually stopped retaining — the strongest memory bound the
-// layer offers. Any other parameters work too; below these windows ServeH3
-// falls back to delivery-time crediting, bounded by the assembler's caps.
+// assembly cap, the stream count ServeH3 admits, and [Config.IdleTimeout]
+// as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
+// own above the transport's, so this is the one place the field reaches an
+// HTTP/3 connection, and a zero field is the 30s every protocol defaults
+// to. Serving a connection built with these lets ServeH3 run the transport
+// under manual flow-control credit, where a peer's window only reopens for
+// bytes this server has actually stopped retaining — the strongest memory
+// bound the layer offers. Any other parameters work too; below these
+// windows ServeH3 falls back to delivery-time crediting, bounded by the
+// assembler's caps, and the idle timeout is whatever those parameters say.
 func (c Config) TransportParameters() quic.TransportParameters {
 	c = c.withDefaults()
 	p := quic.DefaultParameters()
+	p.MaxIdleTimeout = c.IdleTimeout
 	p.InitialMaxStreamDataBidiRemote = uint64(c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
 	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack               //nolint:gosec // G115: positive config
 	p.InitialMaxStreamsBidi = min(uint64(c.MaxConcurrentStreams), h3MaxServeStreams)          //nolint:gosec // G115: positive config

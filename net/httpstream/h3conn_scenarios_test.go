@@ -70,20 +70,20 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 	t.Fatalf("a body of %d bytes was accepted whole, over the %d-byte bound", sent, maxBody)
 }
 
-// The 65th concurrently open request stream on one connection: RFC 9114
-// §5.2 wants a request refused rather than the connection lost once a server
-// is at its limit, and H3Assembler enforces it as
-// [Config.MaxConcurrentStreams] — concurrently open, unfinished request
-// streams, not a lifetime total. The default is 64 (httpstream.go's
-// withDefaults, matching the transport's MAX_STREAMS grant), so the 65th
-// distinct stream opened while the other 64 are still unfinished is the one
-// that must be refused. MaxRequestsPerBatch is deliberately set to its
+// The stream over the limit on one connection: RFC 9114 §5.2 wants a
+// request refused rather than the connection lost once a server is at its
+// limit, and H3Assembler enforces it as [Config.MaxConcurrentStreams] —
+// concurrently open, unfinished request streams, not a lifetime total. The
+// default is 100 (httpstream.go's withDefaults, the floor RFC 9114 §6.1
+// recommends and the transport's own MAX_STREAMS grant), so the 101st
+// distinct stream opened while the other 100 are still unfinished is the
+// one that must be refused. MaxRequestsPerBatch is deliberately set to its
 // documented sweet spot of 8 here: a batching knob, it must not influence
 // admission, and before the two were separated it silently did.
-func TestH3The65thConcurrentStreamIsRefused(t *testing.T) {
+func TestH3TheStreamOverTheLimitIsRefused(t *testing.T) {
 	a := newH3Assembler(Config{MaxRequestsPerBatch: 8})
-	if a.cfg.MaxConcurrentStreams != 64 {
-		t.Fatalf("MaxConcurrentStreams defaults to %d, this test assumes 64", a.cfg.MaxConcurrentStreams)
+	if a.cfg.MaxConcurrentStreams != defaultMaxConcurrency {
+		t.Fatalf("MaxConcurrentStreams defaults to %d, not the %d HTTP/2 advertises", a.cfg.MaxConcurrentStreams, defaultMaxConcurrency)
 	}
 
 	var frames []quic.Frame
@@ -101,14 +101,14 @@ func TestH3The65thConcurrentStreamIsRefused(t *testing.T) {
 			a.cfg.MaxConcurrentStreams, batch.Len(), failed)
 	}
 
-	// The 65th distinct stream.
-	id65 := uint64(4 * a.cfg.MaxConcurrentStreams)
-	_, _, failed, err = a.Frames([]quic.Frame{streamFrame(id65, h3Request("GET", "/over"), false)})
+	// The first stream past the limit.
+	idOver := uint64(4 * a.cfg.MaxConcurrentStreams)
+	_, _, failed, err = a.Frames([]quic.Frame{streamFrame(idOver, h3Request("GET", "/over"), false)})
 	if err != nil {
-		t.Fatalf("the 65th stream failed the connection rather than being refused on its own: %v", err)
+		t.Fatalf("the stream over the limit failed the connection rather than being refused on its own: %v", err)
 	}
-	if len(failed) != 1 || failed[0].StreamID != id65 {
-		t.Fatalf("failed = %v, want stream %d refused", failed, id65)
+	if len(failed) != 1 || failed[0].StreamID != idOver {
+		t.Fatalf("failed = %v, want stream %d refused", failed, idOver)
 	}
 	if !errors.Is(failed[0].Err, ErrH3Protocol) {
 		t.Errorf("refusal error = %v, want it to wrap ErrH3Protocol", failed[0].Err)

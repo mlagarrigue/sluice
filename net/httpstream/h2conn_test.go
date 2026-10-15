@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2679,5 +2680,99 @@ func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
 	}
 	if got := h2Status(c.heads[3]); got != 200 {
 		t.Errorf("stream 3 got status %d, want 200 from an entry the refused block indexed", got)
+	}
+}
+
+// An HTTP/2 connection [Serve] accepts runs under the bounds Config names,
+// not under H2Config's own: a Serve caller who raised MaxBodyBytes to 3 MiB
+// has raised it for HTTP/2 as well, and a 2 MiB upload is accepted rather
+// than refused at H2Config's 1 MiB default. This is the end-to-end lock on
+// h2ConfigOf being the one place an H2Config is derived from a Config.
+func TestH2ConfigFollowsConfig(t *testing.T) {
+	const size = 2 << 20
+	var seen atomic.Int64
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, 0, b.Len())
+		for _, r := range b.Items {
+			seen.Store(int64(len(r.Body)))
+			out = append(out, Response{Status: 200})
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	u := &rttUploader{t: t, conn: conn, stream: initialWindow, connW: initialWindow, initial: initialWindow}
+	u.cond = sync.NewCond(&u.mu)
+	var preface []byte
+	preface = append(preface, Preface...)
+	preface, _ = appendH2Frame(preface, h2Frame{Type: frameSettings})
+	u.write(preface)
+	go u.read()
+
+	head, _ := appendH2Frame(nil, h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock("POST", "/upload")})
+	u.write(head)
+	payload := make([]byte, defaultMaxFrameSize)
+	for sent := 0; sent < size; {
+		n := u.credit(min(len(payload), size-sent))
+		f := h2Frame{Type: frameData, StreamID: 1, Payload: payload[:n]}
+		if sent+n == size {
+			f.Flags = flagEndStream
+		}
+		b, _ := appendH2Frame(nil, f)
+		u.write(b)
+		sent += n
+	}
+	u.mu.Lock()
+	for !u.done && u.err == nil {
+		u.cond.Wait()
+	}
+	err = u.err
+	u.mu.Unlock()
+	if err != nil {
+		t.Fatalf("a %d-byte upload under a %d-byte Config.MaxBodyBytes was refused: %v", size, 3<<20, err)
+	}
+	if got := seen.Load(); got != size {
+		t.Errorf("the handler saw a %d-byte body, want %d", got, size)
+	}
+}
+
+// The defaults the two configurations share are chosen once: an empty
+// H2Config and an empty Config bound a request alike, and deriving the one
+// from the other changes nothing. The test that would catch a default edited
+// on one side only.
+func TestH2ConfigDefaultsFollowConfig(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	for _, h2 := range []struct {
+		name string
+		cfg  H2Config
+	}{
+		{"empty H2Config", H2Config{}.withDefaults()},
+		{"derived from Config", h2ConfigOf(cfg).withDefaults()},
+	} {
+		want := H2Config{
+			MaxHeaderBlockBytes:  cfg.MaxHeaderBytes,
+			MaxHeaders:           cfg.MaxHeaders,
+			MaxBodyBytes:         cfg.MaxBodyBytes,
+			MaxConcurrentStreams: cfg.MaxConcurrentStreams,
+			IdleTimeout:          cfg.IdleTimeout,
+			ReadTimeout:          cfg.ReadTimeout,
+			WriteTimeout:         cfg.WriteTimeout,
+		}
+		got := H2Config{
+			MaxHeaderBlockBytes:  h2.cfg.MaxHeaderBlockBytes,
+			MaxHeaders:           h2.cfg.MaxHeaders,
+			MaxBodyBytes:         h2.cfg.MaxBodyBytes,
+			MaxConcurrentStreams: h2.cfg.MaxConcurrentStreams,
+			IdleTimeout:          h2.cfg.IdleTimeout,
+			ReadTimeout:          h2.cfg.ReadTimeout,
+			WriteTimeout:         h2.cfg.WriteTimeout,
+		}
+		if got != want {
+			t.Errorf("%s: shared bounds = %+v, Config's are %+v", h2.name, got, want)
+		}
 	}
 }
