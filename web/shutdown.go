@@ -18,6 +18,10 @@ import (
 // has finished, or once ctx is done, whichever comes first. Returning early
 // does not cancel the drain — the server keeps finishing on its own — it only
 // stops waiting for it, and says so with ctx's error.
+//
+// A server that can also stop by force — a Close() error method, as
+// [http.Server] and httpstream's Server have — is closed by [Shutdown] when
+// ctx ends before its drain did.
 type Server interface {
 	Shutdown(context.Context) error
 }
@@ -45,22 +49,25 @@ type Server interface {
 // one fails only under load during a deploy.
 //
 // A process that serves on more than one front — an [http.Server] for HTTP/1.1
-// and HTTP/2, a Serve(ctx) for HTTP/3 — drains them together, since none of
-// them calls the other, and closes the gateway after the last one:
+// and HTTP/2, an httpstream Server for HTTP/3 — drains them together, since
+// none of them calls the other, and closes the gateway after the last one:
 //
-//	h3 := web.Start(ctx, func(ctx context.Context) error {
-//	    return httpstream.Serve(ctx, ln, cfg, handle)
-//	})
+//	h3 := &httpstream.Server{Config: cfg, Handler: handle}
+//	go h3.ServeQUIC(quicLn)
 //	err := web.Shutdown(ctx, web.Servers(srv, h3), ordersGateway, conn)
 //
 // # What ctx bounds
 //
-// The server's drain. A deadline that expires means requests are still running
-// and the server gives up waiting; [http.ErrServerClosed] is not what comes
-// back then, [context.DeadlineExceeded] is, and the closers still run. That is
-// deliberate: a gateway left open because a handler hung is a goroutine and a
-// connection leaked for the life of the process, which is worse than closing
-// under a request that was not going to finish anyway.
+// The server's drain, and that is the stop in two steps of ADR 0017: the
+// normal stop first, the forced one when ctx ends before it finished. A
+// deadline that expires means requests are still running; a server with a
+// Close method is then closed, which cuts its connections and, for an
+// httpstream Server, cancels the context of every handler still running.
+// [http.ErrServerClosed] is not what comes back then, [context.DeadlineExceeded]
+// is, and the closers still run. That is deliberate: a gateway left open
+// because a handler hung is a goroutine and a connection leaked for the life
+// of the process, which is worse than closing under a request that was not
+// going to finish anyway.
 //
 // The closers are **always** run, and their failures are joined with the
 // server's. A shutdown that abandons half its cleanup because the first step
@@ -73,6 +80,13 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 	var errs []error
 	if err := srv.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("draining the server: %w", err))
+		// The drain gave up because ctx ended, not because it failed: what
+		// it left running is cut now rather than left to outlive the closers.
+		if c, ok := srv.(io.Closer); ok && ctx.Err() != nil {
+			if err := c.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("closing the server: %w", err))
+			}
+		}
 	}
 	for i, c := range closers {
 		if c == nil {
@@ -91,7 +105,8 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 // process is one layer whatever the number of listeners, and nothing on it
 // calls anything else on it, so a serial drain would only add the graces up.
 // Shutdown returns once every one of them has, with their failures joined;
-// a nil entry is skipped.
+// a nil entry is skipped. Close closes every one of them that has a Close
+// method, which is what [Shutdown] calls when its ctx ends first.
 func Servers(srvs ...Server) Server {
 	return servers(srvs)
 }
@@ -111,6 +126,16 @@ func (ss servers) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func (ss servers) Close() error {
+	var errs []error
+	for _, s := range ss {
+		if c, ok := s.(io.Closer); ok {
+			errs = append(errs, c.Close())
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Start runs serve on its own goroutine and returns the handle that stops it.
 //
 // It is for a server whose only stop signal is its context — httpstream's
@@ -121,19 +146,24 @@ func (ss servers) Shutdown(ctx context.Context) error {
 // is over. Nothing is added to the server: it still has one signal, and the
 // handle is what composes it.
 //
-//	h3 := web.Start(ctx, func(ctx context.Context) error {
+//	hs := web.Start(ctx, func(ctx context.Context) error {
 //	    return httpstream.Serve(ctx, ln, cfg, handle)
 //	})
 //	select {
 //	case <-ctx.Done():
-//	case <-h3.Done():
+//	case <-hs.Done():
 //	}
-//	err := web.Shutdown(drain, web.Servers(srv, h3), gw)
+//	err := web.Shutdown(drain, web.Servers(srv, hs), gw)
 //
 // ctx is the parent of what serve gets: cancelling it stops the server too,
 // which is the signal.NotifyContext shape. A serve that returns on its own —
 // a listener failed, a port was in use — is reported by [Started.Done], and
 // its error comes back from the next Shutdown, where a main function reads it.
+//
+// A Started has no Close: its one signal is the context, already cancelled
+// by Shutdown, and the forced stop is serve's own — httpstream's Serve
+// forces at its ShutdownGrace. A server with a forced stop of its own to
+// offer [Shutdown] is handed to it directly, as httpstream's Server is.
 func Start(ctx context.Context, serve func(context.Context) error) *Started {
 	if serve == nil {
 		panic("web: Start requires a serve function")

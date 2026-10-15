@@ -174,3 +174,85 @@ func TestServersDrainAtOnce(t *testing.T) {
 		t.Errorf("err = %v, want a clean drain and the closer's failure", err)
 	}
 }
+
+// The forced half of ADR 0017's stop: a handler that does not return within
+// Shutdown's ctx is cut by the server's Close, and its context learns it.
+func TestShutdownClosesAServerItCouldNotDrain(t *testing.T) {
+	started := make(chan struct{})
+	handlerCtx := make(chan error, 1)
+	srv := &httpstream.Server{Handler: func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+		close(started)
+		<-ctx.Done()
+		handlerCtx <- ctx.Err()
+		return sluice.Batch[httpstream.Response]{}
+	}}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	go func() {
+		if resp, err := http.Get("http://" + ln.Addr().String()); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-started
+
+	gw := &closerFunc{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = web.Shutdown(ctx, srv, gw)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown = %v, want the deadline", err)
+	}
+	if closed, _ := gw.state(); !closed {
+		t.Fatal("the gateway was not closed")
+	}
+	select {
+	case err := <-handlerCtx:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("handler context ended with %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler's context was not cancelled")
+	}
+}
+
+// The same with net/http: its Close cuts the connection the handler holds.
+func TestShutdownClosesAnHTTPServerItCouldNotDrain(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(started)
+		<-release
+	})}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	got := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String())
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		got <- err
+	}()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := web.Shutdown(ctx, srv); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown = %v, want the deadline", err)
+	}
+	select {
+	case err := <-got:
+		if err == nil {
+			t.Fatal("the request was answered; its connection should have been cut")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection was not cut")
+	}
+}
