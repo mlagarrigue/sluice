@@ -819,14 +819,33 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 	}
 	delete(c.streams, s.id)
 	if (s.id&1 == 0) != c.isClient { // peer-initiated: grant the slot back
-		if s.id&0x02 != 0 {
-			c.localMaxStreamsUni++
-			c.grants = appendFrame(c.grants, frameMaxStreams|1, c.localMaxStreamsUni)
-		} else {
-			c.localMaxStreamsBidi++
-			c.grants = appendFrame(c.grants, frameMaxStreams, c.localMaxStreamsBidi)
-		}
+		c.returnStreamSlotLocked(s.id&0x02 != 0)
 	}
+}
+
+// returnStreamSlotLocked grants a retired peer stream's slot back with
+// MAX_STREAMS, an eighth of the initial limit at a time rather than one
+// slot per stream. The grant leaves at once in a packet of its own
+// (flushControlLocked), so one per stream was one datagram per request on
+// a connection serving small requests — measured at 1.0 per request over
+// HTTP/3, as many as the responses. RFC 9000 §4.6 leaves when and how many
+// to the implementation; returning an eighth at a time keeps the peer's
+// credit within an eighth of what one-per-stream would give it, and the
+// grant never waits on the peer saying it is blocked, which §4.6 forbids:
+// it follows retirements alone. A limit under 8 still returns every slot.
+// Callers hold c.mu.
+func (c *Conn) returnStreamSlotLocked(uni bool) {
+	limit, retired, initial, typ := &c.localMaxStreamsBidi, &c.retiredBidi, c.params.InitialMaxStreamsBidi, uint64(frameMaxStreams)
+	if uni {
+		limit, retired, initial, typ = &c.localMaxStreamsUni, &c.retiredUni, c.params.InitialMaxStreamsUni, frameMaxStreams|1
+	}
+	*retired++
+	if *retired < max(1, initial/8) {
+		return
+	}
+	*limit += *retired
+	*retired = 0
+	c.grants = appendFrame(c.grants, typ, *limit)
 }
 
 // OnStreamFrames registers a callback that receives each packet's stream

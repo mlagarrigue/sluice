@@ -206,8 +206,12 @@ type Conn struct {
 	peerMaxStreamsUni   uint64
 	localMaxStreamsBidi uint64 // how many the peer may open
 	localMaxStreamsUni  uint64
-	openedBidi          uint64 // opened by this end
-	openedUni           uint64
+	// retiredBidi and retiredUni count the peer's retired streams whose
+	// slot has not been granted back yet; see returnStreamSlotLocked.
+	retiredBidi uint64
+	retiredUni  uint64
+	openedBidi  uint64 // opened by this end
+	openedUni   uint64
 	// bidiBlockedTold and uniBlockedTold record that STREAMS_BLOCKED went
 	// out for the current limit of that kind, so a parked OpenStream or
 	// OpenUniStream says it once per exhaustion rather than once per

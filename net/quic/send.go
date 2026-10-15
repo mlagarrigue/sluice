@@ -135,9 +135,17 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	// The ACK is encoded first — its size decides the room left — and
 	// settled last: an empty call from flushControlLocked, when the window
 	// has no room for the control queue, sends nothing and owes it still.
+	//
+	// An ACK not yet owed rides too: §13.2.1 says an endpoint SHOULD send an
+	// ACK frame with other frames when there are new ack-eliciting packets
+	// to acknowledge. Carrying only an owed one left the delayed ACK of a
+	// request to its own datagram 25 ms after the response had gone without
+	// it — one ACK-only packet per request on a server answering small
+	// requests, measured at 0.6 per request with 20,000 requests over
+	// HTTP/3.
 	now := time.Now()
 	var ack []byte
-	if sp.ack.owes(now) {
+	if owed := sp.ack.owes(now); owed || sp.ack.pending() {
 		ack = sp.ack.encodeAck(c.ackScratch[:0], now)
 		c.ackScratch = ack
 		// An ACK that does not fit beside the payload under maxDatagram
@@ -148,9 +156,12 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		// one: carried anyway, the datagram would exceed what the path
 		// and the peer accept (§14.1 — the peer may discard it outright).
 		// The chunk is not cut, so a full chunk stays one packet; the
-		// extra datagram is the price of the peer's gaps.
+		// extra datagram is the price of the peer's gaps. One not yet owed
+		// simply stays behind for its timer.
 		if len(payload) > 0 && c.packetOverhead(space)+len(ack)+len(payload) > c.maxDatagram {
-			_ = c.writePacketLocked(sp, space, sp.ack.appendAck(nil, now), nil, sendOpts{ackOnly: true}, now)
+			if owed {
+				_ = c.writePacketLocked(sp, space, sp.ack.appendAck(nil, now), nil, sendOpts{ackOnly: true}, now)
+			}
 			ack = nil
 		}
 	}

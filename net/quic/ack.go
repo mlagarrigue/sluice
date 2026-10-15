@@ -136,6 +136,13 @@ func (a *ackTracker) owes(now time.Time) bool {
 	return a.immediate || (!a.due.IsZero() && !now.Before(a.due))
 }
 
+// pending reports an ack-eliciting packet not yet acknowledged: owed now,
+// or waiting on the delayed-ACK timer. A packet leaving for another reason
+// carries it (sendPacketLocked); only owes decides when one leaves alone.
+func (a *ackTracker) pending() bool {
+	return len(a.ranges) > 0 && !a.due.IsZero()
+}
+
 // appendAck writes the ACK owed, if any, and clears the debt.
 func (a *ackTracker) appendAck(dst []byte, now time.Time) []byte {
 	if len(a.ranges) == 0 {
