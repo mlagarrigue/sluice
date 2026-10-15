@@ -985,3 +985,34 @@ func askQuietly(c net.Conn) (string, error) {
 	}
 	return bufio.NewReader(c).ReadString('\n')
 }
+
+// RFC 9112 §3.2: a Host that is not an authority is answered 400, by the same
+// rule HTTP/2 and HTTP/3 apply to :authority — and the asterisk-form target is
+// OPTIONS' alone.
+func TestHostIsAnAuthorityOnHTTP1(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"an empty Host", "GET /x HTTP/1.1\r\nHost:\r\n\r\n", "400"},
+		{"userinfo in Host", "GET /x HTTP/1.1\r\nHost: u@h\r\n\r\n", "400"},
+		{"a path and a space in Host", "GET /x HTTP/1.1\r\nHost: evil.com/x y@z\r\n\r\n", "400"},
+		{"a port that is not digits", "GET /x HTTP/1.1\r\nHost: h:8a\r\n\r\n", "400"},
+		{"an unclosed IPv6 literal", "GET /x HTTP/1.1\r\nHost: [::1\r\n\r\n", "400"},
+		{"an IPv6 literal with a port", "GET /x HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n", "200"},
+		{"OPTIONS *", "OPTIONS * HTTP/1.1\r\nHost: h\r\n\r\n", "200"},
+		{"GET *", "GET * HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, _ := serveTest(t, Config{}, echoTarget)
+			c := dial(t, addr)
+			fmt.Fprint(c, tt.raw)
+			status, _ := readResponse(t, bufio.NewReader(c))
+			if !strings.Contains(status, tt.want) {
+				t.Errorf("status = %q, want %s", status, tt.want)
+			}
+		})
+	}
+}

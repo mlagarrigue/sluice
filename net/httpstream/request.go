@@ -24,7 +24,8 @@ type Request struct {
 	// Target is raw and origin-form: it begins with "/", the query is still
 	// attached, and nothing has been percent-decoded — decoding before the
 	// handler decides what a segment means is how two layers route one
-	// request differently.
+	// request differently. The one other form is "*", on an OPTIONS request
+	// only (RFC 9110 §7.1: the server as a whole, not a resource on it).
 	Target []byte
 
 	Headers []Header
@@ -194,10 +195,10 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 			// one request becomes two HTTP/1.1 requests at the next hop.
 			return req, 0, fmt.Errorf("%w: the connection-specific field %q", protocolErr, h.Name)
 		case "host":
-			// The same refusal as an empty :authority below: a host that
-			// names nothing is malformed, not a request with an empty host.
-			if len(h.Value) == 0 {
-				return req, 0, fmt.Errorf("%w: an empty host", protocolErr)
+			// The same rule as :authority below: a host that is not an
+			// authority is malformed, not a request with an odd host.
+			if !validAuthority(h.Value) {
+				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)
 			}
 		case "te":
 			if string(h.Value) != "trailers" {
@@ -244,30 +245,119 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	if !isToken(scheme) {
 		return req, 0, fmt.Errorf("%w: :scheme is not a token", protocolErr)
 	}
-	if len(path) == 0 || path[0] != '/' {
-		return req, 0, fmt.Errorf("%w: :path is not origin-form", protocolErr)
+	if err := checkTarget(method, path, protocolErr); err != nil {
+		return req, 0, err
 	}
-	for _, c := range path {
-		if c <= 0x20 || c == 0x7f {
-			return req, 0, fmt.Errorf("%w: :path holds a control character", protocolErr)
-		}
-	}
-	for _, c := range authority {
-		if c <= 0x20 || c == 0x7f {
-			return req, 0, fmt.Errorf("%w: :authority holds a control character", protocolErr)
-		}
-	}
-	if authority != nil && len(authority) == 0 {
-		// RFC 9114 §4.3.1: an :authority present but empty names no host at
-		// all, and a handler routing on an empty host is a request that
-		// should have been refused as malformed.
-		return req, 0, fmt.Errorf("%w: an empty :authority", protocolErr)
+	if authority != nil && !validAuthority(authority) {
+		return req, 0, fmt.Errorf("%w: :authority %q is not an authority", protocolErr, authority)
 	}
 	regular, err = withAuthority(regular, authority, protocolErr)
 	if err != nil {
 		return req, 0, err
 	}
 	return Request{Method: method, Target: path, Headers: regular, KeepAlive: true}, declared, nil
+}
+
+// checkTarget applies the request-target rule every protocol shares: the
+// origin-form (RFC 9112 §3.2.1, RFC 9113 §8.3.1, RFC 9114 §4.3.1), or the
+// asterisk-form on an OPTIONS request alone (RFC 9112 §3.2.4) — "*" names the
+// server itself, which only OPTIONS may ask about, and any other method with
+// it is a request for no resource. Absolute-form and authority-form exist for
+// proxies, and a server that accepts them while routing on the path is how a
+// request reaches somewhere its authority said it would not.
+//
+// The octets are checked too: the target composes the request line of any
+// downstream HTTP/1.1 hop (RFC 9113 §10.3, RFC 9114 §10.3), and HPACK or
+// QPACK can carry any byte.
+func checkTarget(method, target []byte, protocolErr error) error {
+	if len(target) == 1 && target[0] == '*' {
+		if string(method) != "OPTIONS" {
+			return fmt.Errorf("%w: the asterisk-form target on a %s request", protocolErr, method)
+		}
+		return nil
+	}
+	if len(target) == 0 || target[0] != '/' {
+		return fmt.Errorf("%w: the target is not origin-form", protocolErr)
+	}
+	for _, c := range target {
+		if c <= 0x20 || c == 0x7f {
+			return fmt.Errorf("%w: the target holds a control character", protocolErr)
+		}
+	}
+	return nil
+}
+
+// authorityChar is RFC 3986 §3.2.2's reg-name alphabet — unreserved,
+// sub-delims and the '%' of a percent-encoding — plus the ':' an IP literal
+// needs inside its brackets. A userinfo's '@', a path's '/', a space and
+// every control character are outside it, which is what makes the rule below
+// a grammar check and not a list of things to refuse.
+var authorityChar = func() (t [256]bool) {
+	const allowed = "-._~!$&'()*+,;=%:"
+	for i := range 26 {
+		t['a'+i], t['A'+i] = true, true
+	}
+	for i := range 10 {
+		t['0'+i] = true
+	}
+	for i := range len(allowed) {
+		t[allowed[i]] = true
+	}
+	return t
+}()
+
+// validAuthority says whether b is an authority a request may name: RFC 9110
+// §7.2's uri-host [ ":" port ] — a registered name, an IPv4 address, or an IP
+// literal in brackets, with a port of digits, possibly none. It is the one
+// rule for HTTP/1.1's Host and HTTP/2's and HTTP/3's :authority, and it has
+// the same shape on each because the three deliver the value under one name
+// and a handler routes on it.
+//
+// The empty authority is refused: RFC 9114 §4.3.1 says so outright, RFC 9112
+// §3.3 lets a server reject it, and a handler routing on a host that names
+// nothing is a request that should have been refused. The userinfo RFC 3986
+// allows is refused too (RFC 9113 §8.3.1 and RFC 9114 §4.3.1 forbid it, and
+// RFC 9110's Host never had it): "u@h" delivered as a host is how a routing
+// layer reads the host that follows the '@' while the one before it was
+// looked at. Nothing beyond the grammar is checked — an IPv6 literal is not
+// parsed — because the contract leaves the bytes to the handler.
+func validAuthority(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	host := b
+	if b[0] == '[' {
+		end := indexByte(b, ']')
+		if end < 2 {
+			return false
+		}
+		for _, c := range b[1:end] {
+			if !authorityChar[c] {
+				return false
+			}
+		}
+		host = b[end+1:]
+		if len(host) == 0 {
+			return true
+		}
+		if host[0] != ':' {
+			return false
+		}
+	}
+	for i, c := range host {
+		if c == ':' {
+			for _, d := range host[i+1:] {
+				if d < '0' || d > '9' {
+					return false
+				}
+			}
+			return true
+		}
+		if !authorityChar[c] {
+			return false
+		}
+	}
+	return true
 }
 
 // tchar is RFC 9110's token character set, which both a method and a header
@@ -485,16 +575,8 @@ func splitRequestLine(line []byte) (method, target, version []byte, err error) {
 	if !isToken(method) {
 		return nil, nil, nil, fmt.Errorf("%w: the method is not a token", ErrMalformed)
 	}
-	// Origin-form only. Absolute-form and authority-form exist for proxies,
-	// and a server that accepts them while routing on the path is how a
-	// request reaches somewhere its Host said it would not.
-	if len(target) == 0 || target[0] != '/' {
-		return nil, nil, nil, fmt.Errorf("%w: the target is not origin-form", ErrMalformed)
-	}
-	for _, c := range target {
-		if c <= 0x20 || c == 0x7f {
-			return nil, nil, nil, fmt.Errorf("%w: the target holds a control character", ErrMalformed)
-		}
+	if err := checkTarget(method, target, ErrMalformed); err != nil {
+		return nil, nil, nil, err
 	}
 	if v := string(version); v != "HTTP/1.1" && v != "HTTP/1.0" {
 		return nil, nil, nil, fmt.Errorf("%w: unsupported version %q", ErrMalformed, version)
@@ -588,6 +670,11 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 		case equalFold(h.Name, "content-length"):
 			lengths++
 		case equalFold(h.Name, "host"):
+			// RFC 9112 §3.2: a Host with an invalid value is answered 400,
+			// and the value is valid by the rule :authority is held to.
+			if !validAuthority(h.Value) {
+				return false, fmt.Errorf("%w: Host %q is not an authority", ErrMalformed, h.Value)
+			}
 			hosts++
 		}
 	}

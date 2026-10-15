@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule)
 - **Theme:** httpstream
 
 ## Problem
@@ -19,9 +19,13 @@ enforces it:
 
 1. **Authority present, under one name.** Delivered as `host` on all three;
    a request carrying both `Host` and `:authority` in disagreement is
-   refused, not resolved.
+   refused, not resolved. The value is an authority by one grammar on all
+   three (RFC 9110 §7.2: a host, an optional port, no userinfo, never
+   empty); `Host: u@h` is refused on HTTP/1.1 as `:authority: u@h` is on
+   HTTP/2 and HTTP/3.
 2. **Target raw and origin-form.** Begins with `/`, query attached, nothing
-   percent-decoded. Other forms are refused by the parser.
+   percent-decoded. The one exception is `*` on an `OPTIONS` request (RFC
+   9110 §7.1), accepted on all three; other forms are refused by the parser.
 3. **Header names keep the case the protocol sent.** The handler matches
    case-insensitively (`Request.Get` does) rather than the package rewriting
    what the client sent.
