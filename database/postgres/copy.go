@@ -593,7 +593,11 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 				// position is still known and this drain can carry on to the
 				// ReadyForQuery it came for. Giving up here would break a
 				// connection *while recovering it*, which is the one place
-				// that has to succeed.
+				// that has to succeed. Unless recordParameter broke it: an
+				// encoding nobody asked for leaves nothing worth recovering.
+				if c.broken != nil {
+					return rolledBack, err
+				}
 				if serverErr == nil {
 					serverErr = err
 				}

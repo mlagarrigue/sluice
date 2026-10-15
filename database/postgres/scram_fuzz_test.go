@@ -166,7 +166,9 @@ func FuzzParseParameterStatus(f *testing.F) {
 		c := &Conn{}
 		rerr := c.recordParameter(body)
 		if rerr != nil {
-			if !errors.Is(rerr, ErrProtocol) {
+			// ErrConnBroken is the client_encoding refusal: this Conn did
+			// not choose an encoding, so anything but UTF8 ends it.
+			if !errors.Is(rerr, ErrProtocol) && !errors.Is(rerr, ErrConnBroken) {
 				t.Fatalf("recordParameter: unclassified error %v for %q", rerr, body)
 			}
 			if len(c.params) != 0 {

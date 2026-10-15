@@ -1435,3 +1435,58 @@ func TestSQLWithNULIsRefusedBeforeSending(t *testing.T) {
 		t.Errorf("connection broken by a refused statement: %v", conn.Err())
 	}
 }
+
+// A SET client_encoding mid-session is announced by a ParameterStatus before
+// the statement's ReadyForQuery. Unasked for, it would have every text decoder
+// read the new encoding's bytes as UTF-8 without an error, so the connection
+// ends at the announcement; a caller who chose the encoding at startup keeps
+// theirs.
+func TestAnEncodingChangeNobodyAskedForBreaksTheConnection(t *testing.T) {
+	setLatin1 := func() []byte {
+		var b []byte
+		b = append(b, beSimple(pgwire.BackendParseComplete)...)
+		b = append(b, beSimple(pgwire.BackendBindComplete)...)
+		b = append(b, beSimple(pgwire.BackendNoData)...)
+		b = append(b, beCommandComplete("SET")...)
+		b = append(b, beParameterStatus("client_encoding", "LATIN1")...)
+		return append(b, beReadyForQuery()...)
+	}
+	start := func(params map[string]string) *Conn {
+		t.Helper()
+		var b []byte
+		b = append(b, beAuth(authOK, "")...)
+		b = append(b, beParameterStatus("client_encoding", "UTF8")...)
+		b = append(b, beReadyForQuery()...)
+		srv := &fakeServer{responses: [][]byte{b, setLatin1(), setLatin1()}}
+		conn, err := Startup(srv, StartupConfig{User: "orders", Params: params})
+		if err != nil {
+			t.Fatalf("Startup: %v", err)
+		}
+		return conn
+	}
+	set := func(conn *Conn) error {
+		src := conn.Query(t.Context(), "SET client_encoding = 'LATIN1'", nil, QueryConfig{})
+		src.Stream()(func(sluice.Batch[Row]) bool { return true })
+		return src.Err()
+	}
+
+	conn := start(nil)
+	err := set(conn)
+	if !errors.Is(err, ErrConnBroken) || !strings.Contains(err.Error(), "LATIN1") {
+		t.Errorf("SET client_encoding to LATIN1 = %v, want ErrConnBroken naming the encoding", err)
+	}
+	if !errors.Is(conn.Err(), ErrConnBroken) {
+		t.Errorf("conn.Err() = %v after the encoding changed, want ErrConnBroken", conn.Err())
+	}
+
+	conn = start(map[string]string{"client_encoding": "UTF8"})
+	if err := set(conn); err != nil {
+		t.Errorf("SET client_encoding with the encoding chosen by the caller = %v, want it accepted", err)
+	}
+	if err := set(conn); err != nil {
+		t.Errorf("the next statement = %v, want the connection intact", err)
+	}
+	if got := conn.Parameter("client_encoding"); got != "LATIN1" {
+		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
+	}
+}

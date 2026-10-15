@@ -370,6 +370,10 @@ func (c *Conn) readPipeline(parts []Part, batchRows, batchBytes int, fn func(int
 			// This is where a SET's announcement lands, and dropping it is
 			// what makes Conn.Parameter report the opening state forever.
 			if err := c.recordParameter(m.Body); err != nil {
+				if c.broken != nil {
+					// An encoding nobody asked for: nothing left to drain.
+					return err
+				}
 				return c.abortPipeline(err)
 			}
 

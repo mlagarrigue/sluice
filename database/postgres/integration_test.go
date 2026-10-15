@@ -1380,3 +1380,29 @@ func TestIntegrationCancelDialInterruptsTheRunningStatement(t *testing.T) {
 		t.Errorf("the connection is broken after the cancellation: %v", err)
 	}
 }
+
+// A SET client_encoding is announced by the server mid-session. Unasked for,
+// it ends the connection, since every text decoder here reads UTF-8; with the
+// encoding chosen at startup, the caller decodes and the connection stays.
+func TestIntegrationAnUnaskedEncodingBreaksTheConnection(t *testing.T) {
+	conn := dial(t)
+	if err := exec(t, conn, "SET client_encoding = 'LATIN1'"); !errors.Is(err, postgres.ErrConnBroken) {
+		t.Fatalf("SET client_encoding = 'LATIN1' returned %v, want ErrConnBroken", err)
+	}
+	if !errors.Is(conn.Err(), postgres.ErrConnBroken) {
+		t.Errorf("conn.Err() = %v after the encoding changed, want ErrConnBroken", conn.Err())
+	}
+
+	addr, cfg := pgTarget(t)
+	cfg.Params = map[string]string{"client_encoding": "UTF8"}
+	conn = dialWith(t, addr, cfg)
+	if err := exec(t, conn, "SET client_encoding = 'LATIN1'"); err != nil {
+		t.Fatalf("SET client_encoding with the encoding chosen at startup = %v", err)
+	}
+	if err := exec(t, conn, "SELECT 1"); err != nil {
+		t.Errorf("the connection was unusable after a chosen encoding change: %v", err)
+	}
+	if got := conn.Parameter("client_encoding"); got != "LATIN1" {
+		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
+	}
+}

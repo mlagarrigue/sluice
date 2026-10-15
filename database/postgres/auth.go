@@ -165,8 +165,10 @@ type StartupConfig struct {
 	// application_name, search_path, statement_timeout and the rest. It may
 	// not contain "user" or "database", which have fields of their own, and
 	// setting "client_encoding" overrides the UTF8 this package sends by
-	// default. Without that override, [Startup] fails if the server reports
-	// any other encoding, since every text decoder here reads UTF-8.
+	// default. Without that override, the connection breaks whenever the
+	// server reports any other encoding — at startup, or after a SET
+	// client_encoding mid-session — since every text decoder here reads
+	// UTF-8.
 	//
 	// The keys are written in sorted order, so one configuration always
 	// produces one packet.
@@ -290,6 +292,7 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 
 	c := NewConn(rw)
 	c.cancelDial = cfg.CancelDial
+	_, c.encodingChosen = cfg.Params["client_encoding"]
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
 	if err := c.w.Flush(); err != nil {
@@ -507,15 +510,6 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			if cfg.RequireChannelBinding && !st.bound {
 				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and StartupConfig.RequireChannelBinding is set — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
 			}
-			// UTF8 was asked for, not granted: a pooler or a server-side
-			// default can answer with another encoding, and every text
-			// decoder here would then read its bytes as UTF-8 without error.
-			// A caller who set client_encoding themselves chose that.
-			if _, chosen := cfg.Params["client_encoding"]; !chosen {
-				if enc, reported := c.params["client_encoding"]; reported && !strings.EqualFold(enc, "UTF8") {
-					return c.breakConn(fmt.Errorf("postgres: the server reports client_encoding %q after UTF8 was requested, and this package decodes text as UTF-8", enc))
-				}
-			}
 			return nil
 
 		default:
@@ -668,6 +662,15 @@ func (c *Conn) recordParameter(body []byte) error {
 	}
 	if c.params == nil {
 		c.params = make(map[string]string)
+	}
+	if name == "client_encoding" && !c.encodingChosen && !strings.EqualFold(val, "UTF8") {
+		// UTF8 was asked for, not granted: a pooler or a server-side default
+		// can answer with another encoding at startup, and a SET can change
+		// it at any point after. Every text decoder here would then read its
+		// bytes as UTF-8 without error, so the connection ends at the
+		// announcement. Breaking it here is what makes the read loops stop
+		// rather than carry on as they do for a payload they cannot read.
+		return c.breakConn(fmt.Errorf("the server reports client_encoding %q, and this package decodes text as UTF-8 — set StartupConfig.Params[\"client_encoding\"] to decode another encoding yourself", val))
 	}
 	if _, known := c.params[name]; !known && len(c.params) >= MaxServerParameters {
 		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters", ErrProtocol, MaxServerParameters)

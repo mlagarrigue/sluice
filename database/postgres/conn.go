@@ -112,6 +112,12 @@ type Conn struct {
 	// startup. It is nil for a Conn built by NewConn, which never saw them.
 	params map[string]string
 
+	// encodingChosen is set when the caller named client_encoding in
+	// [StartupConfig.Params]. Without it, recordParameter breaks the
+	// connection on any client_encoding other than UTF8, whenever the server
+	// announces it: at startup, or after a SET mid-session.
+	encodingChosen bool
+
 	// cancelKey is the pgwire.BackendKeyData the server sent during startup. Written
 	// once, there, and read-only afterwards — which is what makes
 	// [Conn.CancelKey] the one method another goroutine may call while a
@@ -259,7 +265,10 @@ func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row])
 // that is already past it.
 //
 // A Conn built this way reports nothing from [Conn.Parameter], because the
-// ParameterStatus messages went past before it existed.
+// ParameterStatus messages went past before it existed. It holds the one
+// parameter it judges to the same rule as a Startup without
+// client_encoding in its Params: a later announcement of any encoding other
+// than UTF8 breaks it.
 //
 // It starts with the statement cache on; [Conn.PrepareStatements] changes the
 // bound or turns it off.
@@ -1040,7 +1049,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// the reader framed the message whole, so the position is
 				// still known. Same class as an unreadable DataRow above — the
 				// statement fails, the deferred resync recovers, and the
-				// socket stays. drainToReady makes the same call.
+				// socket stays. drainToReady makes the same call. An
+				// encoding nobody asked for is the exception: recordParameter
+				// broke the connection, and the deferred resync skips it.
 				return false, err
 			}
 
@@ -1174,6 +1185,11 @@ func (q *query) resync() error {
 				// ReadyForQuery it came for. Giving up here would break a
 				// connection *while recovering it*, which is the one place
 				// that has to succeed — the same call drainToReady makes.
+				// Unless recordParameter broke it: an encoding nobody asked
+				// for leaves nothing worth recovering.
+				if c.broken != nil {
+					return err
+				}
 				if serverErr == nil {
 					serverErr = err
 				}
