@@ -137,6 +137,30 @@ type StartupConfig struct {
 	// caller signing off on both.
 	AllowCleartextPassword bool
 
+	// RequireAuth refuses a server that declares the connection
+	// authenticated without having asked for a credential. The zero value
+	// accepts it, which is what a server configured for trust does; so does
+	// a server that is not the one the caller meant to reach, since
+	// AuthenticationOk is one message and proves nothing about who sent it.
+	// Set it when the role is meant to authenticate with a password: the
+	// absence of the exchange then means a misconfigured pg_hba.conf or a
+	// peer standing in for the server, and [Startup] fails with [ErrAuth]
+	// rather than hand queries to it.
+	RequireAuth bool
+
+	// RequireChannelBinding refuses a connection whose SCRAM exchange was
+	// not bound to the server's certificate (SCRAM-SHA-256-PLUS). The zero
+	// value binds when the server offers it and goes on without it
+	// otherwise, which protects against a stripped mechanism list only
+	// through the 'y' flag of RFC 5802 — a check the server makes, not this
+	// client. Set, it is this client that refuses: a connection that is not
+	// a *tls.Conn, before anything is sent; a server that offers
+	// SCRAM-SHA-256 without -PLUS, before the client's first SCRAM message;
+	// a server that asks for a cleartext password or asks for nothing at
+	// all. Each refusal is [ErrAuth] and names this field. It implies
+	// RequireAuth.
+	RequireChannelBinding bool
+
 	// Params sets additional runtime parameters in the startup packet —
 	// application_name, search_path, statement_timeout and the rest. It may
 	// not contain "user" or "database", which have fields of their own, and
@@ -255,6 +279,15 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 		return nil, err
 	}
 
+	ts, _ := rw.(tlsStater)
+	if cfg.RequireChannelBinding && ts == nil {
+		// Judged here rather than in startupBody because it is the transport,
+		// not the configuration, that is at fault — and before the startup
+		// packet, since no exchange over this connection could satisfy it.
+		_ = rw.Close()
+		return nil, fmt.Errorf("%w: StartupConfig.RequireChannelBinding is set and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so pass the *tls.Conn itself, not a wrapper around it", ErrAuth)
+	}
+
 	c := NewConn(rw)
 	c.cancelDial = cfg.CancelDial
 	c.r.SetMaxMessage(maxStartupMessage)
@@ -263,7 +296,6 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 		_ = rw.Close()
 		return nil, c.breakConn(fmt.Errorf("sending the startup packet: %w", err))
 	}
-	ts, _ := rw.(tlsStater)
 	if err := c.authenticate(cfg, ts); err != nil {
 		_ = rw.Close()
 		return nil, err
@@ -380,9 +412,24 @@ func appendParam(dst []byte, key, val string) []byte {
 	return append(append(dst, val...), 0)
 }
 
+// startupState is what authenticate carries from one server message to the
+// next: the SCRAM exchange, and what the server asked for on the way.
+type startupState struct {
+	scram
+
+	// asked is set once the server asked for a credential — a password or a
+	// SCRAM exchange — rather than declaring the connection authenticated
+	// outright. It is what StartupConfig.RequireAuth requires.
+	asked bool
+
+	// bound is set once the SCRAM exchange began as SCRAM-SHA-256-PLUS. It is
+	// what StartupConfig.RequireChannelBinding requires.
+	bound bool
+}
+
 // authenticate drives the exchange from the startup packet to ReadyForQuery.
 func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
-	var sc scram
+	var st startupState
 	for {
 		m, err := c.r.Next()
 		if err != nil {
@@ -401,7 +448,7 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			if err != nil {
 				return c.breakConn(err)
 			}
-			if err := c.authStep(&sc, code, data, cfg, ts); err != nil {
+			if err := c.authStep(&st, code, data, cfg, ts); err != nil {
 				return err
 			}
 
@@ -446,8 +493,19 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			// and then skipped its final message would otherwise have proved
 			// nothing about knowing the password, and this client would have
 			// handed one over for it.
-			if sc.started && !sc.verified {
+			if st.started && !st.verified {
 				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without completing the SCRAM exchange it started", ErrAuth))
+			}
+			// The same exit judges what the caller required of the exchange.
+			// A trust server, or a peer standing in for the server, sends
+			// AuthenticationOk and nothing before it; checked here rather
+			// than at that message so that a server skipping even that one
+			// is caught too.
+			if cfg.RequireAuth && !st.asked {
+				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without asking for a credential and StartupConfig.RequireAuth is set — pg_hba.conf authenticates this role with trust, or this is not the server it claims to be", ErrAuth))
+			}
+			if cfg.RequireChannelBinding && !st.bound {
+				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and StartupConfig.RequireChannelBinding is set — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
 			}
 			// UTF8 was asked for, not granted: a pooler or a server-side
 			// default can answer with another encoding, and every text
@@ -467,7 +525,8 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 }
 
 // authStep answers one AuthenticationRequest.
-func (c *Conn) authStep(sc *scram, code uint32, data []byte, cfg StartupConfig, ts tlsStater) error {
+func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg StartupConfig, ts tlsStater) error {
+	sc := &st.scram
 	switch code {
 	case authOK:
 		return nil
@@ -479,6 +538,11 @@ func (c *Conn) authStep(sc *scram, code uint32, data []byte, cfg StartupConfig, 
 		// unencrypted transport anyone on the path can ask the same question
 		// and keep the answer. The caller who knows the method and the
 		// transport are both sound says so with the flag.
+		if cfg.RequireChannelBinding {
+			// A password method binds to nothing, so there is no answer that
+			// would satisfy the caller: refused before the credential moves.
+			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and StartupConfig.RequireChannelBinding is set — only a SCRAM-SHA-256-PLUS exchange satisfies it", ErrAuth))
+		}
 		if !cfg.AllowCleartextPassword {
 			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and StartupConfig.AllowCleartextPassword is false — set it only over a transport the credential may cross, such as a verified *tls.Conn", ErrAuth))
 		}
@@ -489,6 +553,7 @@ func (c *Conn) authStep(sc *scram, code uint32, data []byte, cfg StartupConfig, 
 		// Whether that is acceptable is the transport's business, and the
 		// transport is the caller's — over a *tls.Conn it is fine, over a
 		// plain socket it is a credential on the wire.
+		st.asked = true
 		c.w.PasswordMessage(cfg.Password)
 		return c.flushAuth("sending the password")
 
@@ -503,6 +568,15 @@ func (c *Conn) authStep(sc *scram, code uint32, data []byte, cfg StartupConfig, 
 		mech, msg, err := sc.begin(data, cfg.Password, cs)
 		if err != nil {
 			return c.breakConn(err)
+		}
+		st.asked, st.bound = true, mech == mechSCRAMSHA256Plus
+		if cfg.RequireChannelBinding && !st.bound {
+			// Over TLS — a plain connection was refused in Startup — and the
+			// unbound mechanism was chosen all the same: the server did not
+			// offer -PLUS, or this connection shows no certificate to bind
+			// to. Refused before the client's first message, which is what
+			// the 'y' flag would otherwise leave to the server to judge.
+			return c.breakConn(fmt.Errorf("%w: the server offers %s without %s and StartupConfig.RequireChannelBinding is set — the server has no certificate the exchange can bind to (ssl = off, a pooler terminating TLS), a man in the middle removed the mechanism, or this connection's handshake shows no peer certificate", ErrAuth, mechSCRAMSHA256, mechSCRAMSHA256Plus))
 		}
 		c.w.SASLInitialResponse(mech, msg)
 		return c.flushAuth("starting the SCRAM exchange")

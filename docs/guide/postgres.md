@@ -68,6 +68,26 @@ as is. Sending it in cleartext is possible but must be asked for explicitly
 opened may carry a secret. To encrypt the connection, pass an already
 verified `*tls.Conn` instead of the raw socket.
 
+Two options make the client demand what the server only offers by default.
+`RequireAuth` refuses a server that declares the connection authenticated
+without asking for anything: that is what a role configured for `trust`
+gets, and also what an impostor sends, since the message proves nothing
+about who sent it. `RequireChannelBinding` refuses every exchange that is
+not SCRAM-SHA-256-PLUS, the variant bound to the server's certificate: a
+connection that is not a `*tls.Conn`, a server that does not offer the
+variant, a password asked for in cleartext. Both refusals arrive as
+`ErrAuth`, before any credential has left the client, and the message names
+the option.
+
+> **In plain terms: channel binding.** With SCRAM alone, the server proves
+> it knows your password and you prove you know it too, but neither side
+> proves *which* connection the proof was made on. An attacker who
+> terminates TLS between you and the server can relay the exchange. Channel
+> binding mixes a fingerprint of the server's certificate into the proof: a
+> relay holding another certificate fails. The server offers it when it has
+> a certificate (`ssl = on`); `RequireChannelBinding` makes its absence an
+> error instead of a silent fallback.
+
 > **In plain terms: no pool.** A *pool* is a reserve of open connections
 > shared by everyone. There is none here, because batching calls
 > (`gateway`, see [Web](web.md)) does with **one** connection what a pool

@@ -871,3 +871,27 @@ func TestStartupRefusesANULInThePassword(t *testing.T) {
 		t.Errorf("the error quotes the password: %v", err)
 	}
 }
+
+// A server configured for trust — or a peer standing in for the server —
+// declares the connection authenticated without asking for anything. The zero
+// value accepts that (TestStartupTrust); RequireAuth refuses it at the exit of
+// the exchange, whether AuthenticationOk was sent or skipped altogether.
+func TestStartupRequireAuthRefusesAnExchangeThatAskedNothing(t *testing.T) {
+	trust := append(beAuth(authOK, ""), beReady()...)
+	for name, script := range map[string][]byte{
+		"AuthenticationOk then ready":    trust,
+		"ready without AuthenticationOk": beReady(),
+	} {
+		srv := &fakeServer{responses: [][]byte{script}}
+		_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil", RequireAuth: true})
+		if !errors.Is(err, ErrAuth) {
+			t.Fatalf("%s: error = %v, want ErrAuth", name, err)
+		}
+		if !strings.Contains(err.Error(), "RequireAuth") {
+			t.Errorf("%s: error = %v, want it to name the field", name, err)
+		}
+		if !srv.closed {
+			t.Errorf("%s: connection left open after the refusal", name)
+		}
+	}
+}
