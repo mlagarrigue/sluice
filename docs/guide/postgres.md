@@ -22,52 +22,48 @@ standard library alone. What that buys:
 
 ## Connecting
 
-The network stays yours: which host, which timeout, encrypted or not are
-deployment choices the library cannot make for you. You open the
-connection; Sluice.go handles everything after, including
-**authentication** (proving to the server who you are):
+You give Sluice.go a **connection recipe** — how to reach the server — and
+it handles everything after, including **authentication** (proving to the
+server who you are):
 
 ```go
-nc, err := net.DialTimeout("tcp", "db.internal:5432", 5*time.Second)
-if err != nil { return err }
-nc.SetDeadline(time.Now().Add(30 * time.Second)) // past that, the handshake is abandoned
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // past that, give up
+defer cancel()
 
-conn, err := postgres.Startup(nc, postgres.StartupConfig{
+conn, err := postgres.Connect(ctx, postgres.DialTLS("db.internal:5432", nil), postgres.Config{
     User:     "orders",
     Database: "orders",
     Password: os.Getenv("PGPASSWORD"),
     Params:   map[string]string{"application_name": "orders-etl"},
-    CancelDial: func(ctx context.Context) (io.ReadWriteCloser, error) { // lets a context reach a running statement
-        return (&net.Dialer{}).DialContext(ctx, "tcp", "db.internal:5432")
-    },
 })
 if err != nil { return err }
-nc.SetDeadline(time.Time{}) // the deadline stays on the socket: lifted, or it ends the first slow query
 defer conn.Close()
 ```
 
-The deadline set for the handshake is not `Startup`'s: it stays on the
-connection, and a query still running thirty seconds later would die with
-an `i/o timeout`, connection lost. Lift it once connected, or set a fresh
-one per query if that is your policy.
+`DialTLS` encrypts the connection ([Encrypting the connection](#encrypting-the-connection));
+`DialTCP` opens a plain socket, for a loopback or a network that is already
+encrypted. The context bounds the dial and the handshake, nothing else:
+once `Connect` has returned, nothing of it stays on the connection, and a
+query run an hour later is bounded by its own context alone.
+
+> **In plain terms: the recipe.** `Connect` does not take a socket but a
+> function that knows how to open one. That is because it needs one more
+> than once: cancelling a running query goes through a second connection to
+> the same server, opened the same way.
 
 The context passed to a query is checked between batches, which stops the
 client pulling; it cannot reach a server that has not sent its first row
-yet, because the client is waiting on it. `CancelDial` closes that gap: it
-opens a **second connection** to the same server, through which a context
-that ends mid-statement sends the protocol's cancellation. The server
-aborts the statement, the query ends with the context's error a round trip
-later, and the connection stays usable. Without it, a statement the server
-is executing runs to its end, or to the server's `statement_timeout`. Where
-the main connection is encrypted, this one must be too: the packet carries
-the session's cancellation secret.
+yet, because the client is waiting on it. That is where the recipe serves:
+a context that ends mid-statement opens a **second connection** with it and
+sends the protocol's cancellation. The server aborts the statement, the
+query ends with the context's error a round trip later, and the connection
+stays usable. The second connection is encrypted when the main one is: the
+packet carries the session's cancellation secret.
 
 By default, authentication uses SCRAM-SHA-256: the password never travels
 as is. Sending it in cleartext is possible but must be asked for explicitly
-(`AllowCleartextPassword`), because only you know whether the network you
-opened may carry a secret. To encrypt the connection, pass an already
-verified `*tls.Conn` instead of the raw socket:
-[Encrypting the connection](#encrypting-the-connection) shows how to get one.
+(`AllowCleartextPassword`), because only you know whether the network your
+recipe reaches may carry a secret.
 
 Two options make the client demand what the server only offers by default.
 `RequireAuth` refuses a server that declares the connection authenticated
@@ -75,7 +71,7 @@ without asking for anything: that is what a role configured for `trust`
 gets, and also what an impostor sends, since the message proves nothing
 about who sent it. `RequireChannelBinding` refuses every exchange that is
 not SCRAM-SHA-256-PLUS, the variant bound to the server's certificate: a
-connection that is not a `*tls.Conn`, a server that does not offer the
+recipe that does not return a `*tls.Conn`, a server that does not offer the
 variant, a password asked for in cleartext. Both refusals arrive as
 `ErrAuth`, before any credential has left the client, and the message names
 the option.
@@ -108,46 +104,41 @@ eight bytes, a code in place of a protocol version — and the server answers
 with a single byte, `S` to accept or `N` to refuse. Only then does the TLS
 handshake start. A `tls.Dial` aimed straight at port 5432 therefore fails,
 with an error that looks like a certificate problem rather than a protocol
-mismatch. The negotiation is one write and one read:
+mismatch. `DialTLS` performs that negotiation:
 
 ```go
-raw, err := net.DialTimeout("tcp", "db.internal:5432", 5*time.Second)
+roots, err := x509.SystemCertPool()
 if err != nil { return err }
-
-req := make([]byte, 8)
-binary.BigEndian.PutUint32(req[0:], 8)        // length
-binary.BigEndian.PutUint32(req[4:], 80877103) // the SSLRequest code
-if _, err := raw.Write(req); err != nil { return err }
-
-answer := make([]byte, 1) // exactly one byte: what follows belongs to TLS
-if _, err := io.ReadFull(raw, answer); err != nil { return err }
-if answer[0] != 'S' {
-    raw.Close()
-    return errors.New("the server refused TLS") // no plaintext fallback
-}
-
-enc := tls.Client(raw, &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12})
-conn, err := postgres.Startup(enc, postgres.StartupConfig{ /* … */ })
+dial := postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
+conn, err := postgres.Connect(ctx, dial, postgres.Config{ /* … */ })
 ```
 
-Three things matter in those lines. Read **exactly one byte**, on the
-socket itself and not through a `bufio.Reader`: bytes read ahead would have
-been slipped in by a third party before encryption, and would be treated as
-coming from the server. On `N`, **close**: carrying on in plaintext is
-exactly what an attacker able to strip one byte is hoping for. And checking
-the certificate (`ServerName`, `RootCAs`) is yours, never
-`InsecureSkipVerify`: an encrypted connection to anyone at all protects
-against nothing. The complete, commented example is in
+Three things are done for you there. It reads **exactly one byte** before
+handing the socket to TLS: bytes read ahead would have been slipped in by a
+third party before encryption, and would be treated as coming from the
+server. On `N`, it **refuses** rather than carry on in plaintext, which is
+exactly what an attacker able to strip one byte is hoping for; on an error
+message, it refuses without repeating it, since nothing has authenticated
+the server yet. And when `ServerName` is empty, it fills in the host of the
+address, so the certificate is checked against the name you dialled. Which
+certificates to trust stays yours (`RootCAs`), never `InsecureSkipVerify`:
+an encrypted connection to anyone at all protects against nothing. The
+complete, commented example is in
 [`example_tls_test.go`](../../database/postgres/example_tls_test.go).
 
 Since PostgreSQL 17, the client may also skip the SSLRequest and open TLS
 directly (`sslnegotiation=direct` in libpq): one round trip fewer. The
 protocol then requires the client to announce **ALPN** `postgresql`, and
-the server refuses the handshake without it:
+the server refuses the handshake without it. No recipe provided does this;
+a recipe of your own is enough, since a recipe is any function of this
+shape:
 
 ```go
-enc, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", "db.internal:5432",
-    &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12, NextProtos: []string{"postgresql"}})
+direct := func(ctx context.Context) (io.ReadWriteCloser, error) {
+    d := tls.Dialer{Config: &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12, NextProtos: []string{"postgresql"}}}
+    return d.DialContext(ctx, "tcp", "db.internal:5432")
+}
+conn, err := postgres.Connect(ctx, direct, postgres.Config{ /* … */ })
 ```
 
 A server at 16 or older does not understand this form: it only fits when
@@ -158,9 +149,6 @@ you know which server is on the other side.
 > here). Without it, a server that accepts TLS directly could be fooled by a
 > client that believes it is talking to something else; the label closes
 > that confusion.
-
-The connection `CancelDial` opens goes through the same negotiation: it
-carries the session's secret.
 
 ## Reading
 

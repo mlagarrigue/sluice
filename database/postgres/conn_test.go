@@ -1458,7 +1458,7 @@ func TestAnEncodingChangeNobodyAskedForBreaksTheConnection(t *testing.T) {
 		b = append(b, beParameterStatus("client_encoding", "UTF8")...)
 		b = append(b, beReadyForQuery()...)
 		srv := &fakeServer{responses: [][]byte{b, setLatin1(), setLatin1()}}
-		conn, err := Startup(srv, StartupConfig{User: "orders", Params: params})
+		conn, err := startup(srv, Config{User: "orders", Params: params})
 		if err != nil {
 			t.Fatalf("Startup: %v", err)
 		}

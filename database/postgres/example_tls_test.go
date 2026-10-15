@@ -1,11 +1,10 @@
 package postgres_test
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"fmt"
-	"net"
 	"os"
 	"time"
 
@@ -14,15 +13,10 @@ import (
 
 // Connecting over TLS.
 //
-// This package does not dial and does not negotiate TLS. That is not a gap: a
-// TLS implementation is the last thing anyone should write twice, and
-// [crypto/tls] is configured by the caller because the decisions in it —
+// [crypto/tls] is configured by the caller, because the decisions in it —
 // which roots to trust, which version to floor, whether to pin — belong to
-// whoever runs the system and not to a connector.
-//
-// What this package needs from you is a connection that is already
-// encrypted. Everything from the startup packet onward runs inside it,
-// unchanged.
+// whoever runs the system and not to a connector. [postgres.DialTLS] takes
+// that configuration and does the one part that is PostgreSQL's own.
 //
 // # PostgreSQL does not speak TLS on connect
 //
@@ -33,8 +27,9 @@ import (
 // to refuse. Only then does the TLS handshake start.
 //
 // So a `tls.Dial` straight at port 5432 does not work, and the failure looks
-// like a handshake error rather than a protocol mismatch. The negotiation is
-// eight bytes and one read, shown below.
+// like a handshake error rather than a protocol mismatch. DialTLS sends the
+// request, refuses an `N` rather than continue in clear — the downgrade an
+// attacker who can strip one byte is hoping for — and shakes hands.
 func Example_tLS() {
 	addr := os.Getenv("SLUICE_PG")
 	if addr == "" {
@@ -42,70 +37,33 @@ func Example_tLS() {
 		return
 	}
 
-	raw, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		fmt.Println("dial:", err)
-		return
-	}
-
-	// The SSLRequest packet: length, then the magic number in place of a
-	// protocol version.
-	req := make([]byte, 8)
-	binary.BigEndian.PutUint32(req[0:], 8)
-	binary.BigEndian.PutUint32(req[4:], 80877103)
-	if _, err := raw.Write(req); err != nil {
-		_ = raw.Close()
-		fmt.Println("requesting TLS:", err)
-		return
-	}
-
-	answer := make([]byte, 1)
-	if _, err := raw.Read(answer); err != nil {
-		_ = raw.Close()
-		fmt.Println("reading the TLS answer:", err)
-		return
-	}
-	if answer[0] != 'S' {
-		// 'N' means the server will not do TLS. Continuing in plaintext here
-		// is the downgrade an attacker who can strip one byte is hoping for,
-		// so this refuses rather than falls back.
-		_ = raw.Close()
-		fmt.Println("the server refused TLS")
-		return
-	}
-
-	// Roots and hostname are the caller's decisions. InsecureSkipVerify is not
+	// Roots and hostname are the caller's decisions; DialTLS fills in the
+	// hostname from addr when ServerName is empty. InsecureSkipVerify is not
 	// one of them: an encrypted connection to whoever answered the socket
 	// protects against nothing an attacker on the path cannot already do.
 	roots, err := x509.SystemCertPool()
 	if err != nil {
-		_ = raw.Close()
 		fmt.Println("system roots:", err)
 		return
 	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		_ = raw.Close()
-		fmt.Println("splitting the address:", err)
-		return
-	}
-
-	enc := tls.Client(raw, &tls.Config{
-		ServerName: host,
+	dial := postgres.DialTLS(addr, &tls.Config{
 		RootCAs:    roots,
 		MinVersion: tls.VersionTLS12,
 	})
 
-	// From here on nothing is TLS-aware. Startup runs the authentication
+	// From here on nothing is TLS-aware. Connect runs the authentication
 	// exchange inside the encrypted connection, and Conn speaks the protocol
-	// through it exactly as it would through a plain socket.
-	conn, err := postgres.Startup(enc, postgres.StartupConfig{
+	// through it exactly as it would through a plain socket. The recipe is
+	// kept: a cancellation opens its second connection over TLS too.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, dial, postgres.Config{
 		User:     os.Getenv("SLUICE_PG_USER"),
 		Database: os.Getenv("SLUICE_PG_DB"),
 		Password: os.Getenv("SLUICE_PG_PASSWORD"),
 	})
 	if err != nil {
-		fmt.Println("startup:", err)
+		fmt.Println("connecting:", err)
 		return
 	}
 	defer func() { _ = conn.Close() }()

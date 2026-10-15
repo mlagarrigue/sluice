@@ -113,7 +113,7 @@ type Conn struct {
 	params map[string]string
 
 	// encodingChosen is set when the caller named client_encoding in
-	// [StartupConfig.Params]. Without it, recordParameter breaks the
+	// [Config.Params]. Without it, recordParameter breaks the
 	// connection on any client_encoding other than UTF8, whenever the server
 	// announces it: at startup, or after a SET mid-session.
 	encodingChosen bool
@@ -124,10 +124,10 @@ type Conn struct {
 	// query is running. Zero for a Conn built by NewConn.
 	cancelKey CancelKey
 
-	// cancelDial is [StartupConfig.CancelDial], kept so a context that ends
-	// mid-statement can reach the server. Nil without the option, and for a
-	// Conn built by NewConn.
-	cancelDial func(context.Context) (io.ReadWriteCloser, error)
+	// cancelDial is the recipe [Connect] was given, kept so a context that
+	// ends mid-statement can reach the server through a second connection.
+	// Nil for a Conn built by NewConn.
+	cancelDial DialFunc
 
 	// inTx records that a transaction is open, whether it was opened by
 	// [Conn.Begin] or by a [Copier]. It exists so a second BEGIN is refused:
@@ -259,14 +259,15 @@ func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row])
 // completed — a net.Conn, a TLS connection, or anything else with the same
 // shape.
 //
-// Use [Startup] instead unless you have a reason not to: it performs the
-// startup packet and authentication and hands back the same thing. NewConn is
+// Use [Connect] instead unless you have a reason not to: it dials, performs
+// the startup packet and authentication, and hands back the same thing —
+// with cancellation, which a Conn built here does not have. NewConn is
 // for a caller who has done that themselves, or who is speaking to something
 // that is already past it.
 //
 // A Conn built this way reports nothing from [Conn.Parameter], because the
 // ParameterStatus messages went past before it existed. It holds the one
-// parameter it judges to the same rule as a Startup without
+// parameter it judges to the same rule as a [Connect] without
 // client_encoding in its Params: a later announcement of any encoding other
 // than UTF8 breaks it.
 //
@@ -455,7 +456,7 @@ type QueryConfig struct {
 	// batch that would grow past BatchBytes is delivered as it is and the
 	// row that did not fit opens the next; nothing fails, the consumer sees
 	// more and smaller batches. A single row wider than the bound travels in
-	// a batch of its own — it is bounded by [StartupConfig.MaxMessage] — so
+	// a batch of its own — it is bounded by [Config.MaxMessage] — so
 	// memory per batch is at most BatchBytes plus one row.
 	//
 	// A value of zero or less means 64 MiB, the same default as a message
@@ -566,13 +567,14 @@ type QueryConfig struct {
 // What ctx cannot do on its own is interrupt a statement the server is still
 // executing. Between sending a query and the first row, this client is
 // blocked in a read and the server is doing work no context of ours reaches.
-// [StartupConfig.CancelDial] closes that gap: with it set, a ctx that ends
-// during that read opens a second connection and sends [CancelRequest], the
-// server aborts the statement, and the stream ends with ctx.Err() wrapped —
-// a round trip later rather than when the statement would have finished —
-// on a connection that stays usable. Without it, two things bound the
-// statement and neither is ctx: a server-side statement timeout, and a
-// [CancelRequest] the caller sends itself.
+// A Conn opened by [Connect] closes that gap: a ctx that ends during that
+// read opens a second connection with the same recipe and sends
+// [CancelRequest], the server aborts the statement, and the stream ends with
+// ctx.Err() wrapped — a round trip later rather than when the statement
+// would have finished — on a connection that stays usable. A Conn built by
+// [NewConn] has no recipe, and two things bound its statement, neither of
+// them ctx: a server-side statement timeout, and a [CancelRequest] the
+// caller sends itself.
 //
 // # The consumer's pull reaches the server
 //
@@ -1232,7 +1234,7 @@ func (c *Conn) breakConn(cause error) error {
 		if errors.Is(cause, pgwire.ErrMessageTooLarge) {
 			// The one break the caller can configure away, so the error
 			// names the field rather than leaving a number to look up.
-			cause = fmt.Errorf("%w; StartupConfig.MaxMessage raises the limit", cause)
+			cause = fmt.Errorf("%w; Config.MaxMessage raises the limit", cause)
 		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
 	}

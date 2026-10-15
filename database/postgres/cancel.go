@@ -25,7 +25,7 @@ const cancelRequestCode = 1234<<16 | 5678
 // the connection.
 //
 // Secret holds the key's bytes as the server sent them. Under protocol 3.0
-// they are always four; under 3.2 ([StartupConfig.ProtocolMinor]) they are 4
+// they are always four; under 3.2 ([Config.ProtocolMinor]) they are 4
 // to 256 — PostgreSQL 18 sends 32, and a pooler in between may send more. A
 // string rather than a []byte so that a CancelKey copied to another
 // goroutine shares nothing it could change under the connection, and stays
@@ -95,10 +95,9 @@ func (c *Conn) CancelKey() CancelKey { return c.cancelKey }
 // the rest of the session. The main connection being a *tls.Conn changes
 // nothing here: rw is a separate connection, and it is only as protected as
 // the caller makes it. Where the main connection needed TLS, negotiate it on
-// this one the same way — SSLRequest, the server's 'S', then [crypto/tls] —
-// and pass the *tls.Conn; PostgreSQL accepts a CancelRequest inside TLS. This
-// package does not do it for you for the reason [Startup] does not: the
-// transport and its certificate decisions are the caller's.
+// this one the same way — [DialTLS] does: SSLRequest, the server's 'S', then
+// [crypto/tls] — and pass the *tls.Conn; PostgreSQL accepts a CancelRequest
+// inside TLS.
 //
 // # What a nil error means, and what it does not
 //
@@ -113,8 +112,8 @@ func (c *Conn) CancelKey() CancelKey { return c.cancelKey }
 // bound a query's cost are the context passed to [Conn.Query], which stops the
 // client pulling, and a server-side statement timeout, which stops the server
 // working. Reach for CancelRequest when a backend is stuck inside a statement
-// that neither of those will end — or let [StartupConfig.CancelDial] send it
-// for you the moment a context ends mid-statement.
+// that neither of those will end. A [Conn] opened by [Connect] sends it for
+// you the moment a context ends mid-statement.
 func CancelRequest(rw io.ReadWriteCloser, key CancelKey) error {
 	defer rw.Close() //nolint:errcheck // the socket is one-shot and the server closes it first
 
@@ -177,7 +176,7 @@ const cancelTimeout = 5 * time.Second
 
 // cancelWatch is the goroutine that answers a context ending while the
 // server is still executing a statement: it opens the second connection
-// [StartupConfig.CancelDial] provides and sends the [CancelRequest]. The
+// with the recipe [Connect] was given and sends the [CancelRequest]. The
 // statement's own goroutine is blocked in a read all the while, and is
 // released by the server's query_canceled error — which is why nothing here
 // touches the connection the statement owns.

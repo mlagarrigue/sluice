@@ -1,8 +1,8 @@
 package orders_test
 
 import (
+	"context"
 	"fmt"
-	"net"
 	"os"
 	"strconv"
 	"sync"
@@ -146,20 +146,15 @@ func dialOrders(t *testing.T) *postgres.Conn {
 	if addr == "" {
 		t.Skip("SLUICE_PG is not set: no server to talk to")
 	}
-	cfg := postgres.StartupConfig{
+	cfg := postgres.Config{
 		User:     envOr("SLUICE_PG_USER", "postgres"),
 		Password: os.Getenv("SLUICE_PG_PASSWORD"),
 	}
 	cfg.Database = envOr("SLUICE_PG_DB", cfg.User)
 
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err != nil {
 		t.Fatalf("connecting as %s: %v", cfg.User, err)
 	}

@@ -1,8 +1,8 @@
 package postgres_test
 
 import (
+	"context"
 	"fmt"
-	"net"
 	"os"
 	"testing"
 	"time"
@@ -48,11 +48,9 @@ func savepointFixture(t *testing.T, conn *postgres.Conn) string {
 func second(t *testing.T) *postgres.Conn {
 	t.Helper()
 	addr, cfg := pgTarget(t)
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -117,7 +117,7 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 		return "", nil, fmt.Errorf("%w: a second AuthenticationSASL arrived during the same startup", ErrProtocol)
 	}
 	if password == "" {
-		return "", nil, fmt.Errorf("%w: the server asked for SCRAM and StartupConfig.Password is empty", ErrAuth)
+		return "", nil, fmt.Errorf("%w: the server asked for SCRAM and Config.Password is empty", ErrAuth)
 	}
 	names, err := parseMechanisms(mechanisms)
 	if err != nil {

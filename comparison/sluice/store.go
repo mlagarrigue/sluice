@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"time"
 
@@ -74,11 +73,9 @@ type sluiceStore struct {
 }
 
 func dial(cfg dbConfig) (*postgres.Conn, error) {
-	nc, err := net.DialTimeout("tcp", cfg.addr, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(cfg.addr), postgres.Config{
 		User: cfg.user, Database: cfg.database, Password: cfg.password,
 	})
 	if err != nil {
@@ -224,7 +221,7 @@ type pgxStore struct {
 }
 
 func pgxURL(cfg dbConfig) string {
-	// The connector dials in clear text (postgres.Startup over TCP), so pgx
+	// The connector dials in clear text (postgres.DialTCP), so pgx
 	// must too, or axis B would be measuring TLS.
 	u := url.URL{
 		Scheme:   "postgres",

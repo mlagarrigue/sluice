@@ -224,7 +224,7 @@ func TestStartupKeepsTheCancelKey(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		append(beAuth(0, ""), beReady()...),
 	}}
-	conn, err := Startup(srv, StartupConfig{User: "u", Database: "d"})
+	conn, err := startup(srv, Config{User: "u", Database: "d"})
 	if err != nil {
 		t.Fatalf("Startup returned %v", err)
 	}
@@ -335,7 +335,7 @@ func TestProtocol32LongCancelKeyRoundTrips(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		append(beAuth(0, ""), append(beBackendKeyDataSecret(secret), beReadyForQuery()...)...),
 	}}
-	conn, err := Startup(srv, StartupConfig{User: "u", ProtocolMinor: 2})
+	conn, err := startup(srv, Config{User: "u", ProtocolMinor: 2})
 	if err != nil {
 		t.Fatalf("Startup returned %v", err)
 	}
@@ -416,7 +416,7 @@ func (s *pipeServer) write(t *testing.T, msgs ...[]byte) {
 	}
 }
 
-// cancelPipe is a CancelDial whose second connection is a pipe: the packet
+// cancelPipe is a DialFunc whose second connection is a pipe: the packet
 // written into it is handed to the test, and the other end is closed the way
 // a server closes it.
 func cancelPipe(dials *int, packets chan<- []byte) func(context.Context) (io.ReadWriteCloser, error) {
@@ -434,14 +434,14 @@ func cancelPipe(dials *int, packets chan<- []byte) func(context.Context) (io.Rea
 	}
 }
 
-// The promise of StartupConfig.CancelDial: a context that ends while the
+// The promise of the recipe Connect keeps: a context that ends while the
 // server is still executing the statement reaches the server, the statement
 // ends with the context's error a round trip later, and the connection is
 // still good for the next query. Replayed from the client's side by a
 // server that answers nothing until the cancellation arrives — the real
 // pg_sleep, in effect — so a client that only checked ctx at batch
 // boundaries would sit in this test forever.
-func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
+func TestQueryCancelsTheRunningStatementThroughTheRecipe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
 		key := CancelKey{PID: 4242, Secret: "\x00\x00\x5e\xca"}
@@ -495,7 +495,7 @@ func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 			t.Errorf("the statement ended %v after it was sent, want the context's 300ms exactly (synctest)", took)
 		}
 		if dials != 1 {
-			t.Errorf("CancelDial was called %d times, want 1", dials)
+			t.Errorf("the recipe was called %d times, want 1", dials)
 		}
 
 		src = conn.Query(t.Context(), "SELECT 2", nil, QueryConfig{})
@@ -517,14 +517,14 @@ func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 			t.Errorf("the connection is broken: %v", err)
 		}
 		if dials != 1 {
-			t.Errorf("CancelDial was called %d times across both queries, want 1: the second context never ended", dials)
+			t.Errorf("the recipe was called %d times across both queries, want 1: the second context never ended", dials)
 		}
 	})
 }
 
 // Exec shares the mechanism: a context that ends while the server executes
 // the statement reaches it, and the error says so in the context's terms.
-func TestExecCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
+func TestExecCancelsTheRunningStatementThroughTheRecipe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
 		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
@@ -548,7 +548,7 @@ func TestExecCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 			t.Errorf("Exec = %v, want the server's 57014 reachable through errors.As", err)
 		}
 		if dials != 1 {
-			t.Errorf("CancelDial was called %d times, want 1", dials)
+			t.Errorf("the recipe was called %d times, want 1", dials)
 		}
 	})
 }
@@ -599,7 +599,7 @@ func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 			t.Fatalf("Err = %v, want both context.DeadlineExceeded and the dial error", err)
 		}
 		if dials != 1 {
-			t.Errorf("CancelDial was called %d times, want 1", dials)
+			t.Errorf("the recipe was called %d times, want 1", dials)
 		}
 
 		ctx, cancel = context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -624,7 +624,7 @@ func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
 	conn := NewConn(&fakeServer{})
 	dial := func(context.Context) (io.ReadWriteCloser, error) {
-		t.Error("CancelDial called")
+		t.Error("the recipe was called")
 		return nil, errors.New("called")
 	}
 	ctx, cancel := context.WithCancel(t.Context())

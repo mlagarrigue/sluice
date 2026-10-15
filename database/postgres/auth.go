@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"bytes"
-	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -129,15 +128,15 @@ const protocolMajor = 3 << 16
 // server is ready, so it costs a real workload nothing.
 const maxStartupMessage = 64 << 10
 
-// maxMaxMessage is the largest [StartupConfig.MaxMessage] accepted. PostgreSQL
+// maxMaxMessage is the largest [Config.MaxMessage] accepted. PostgreSQL
 // cannot build a message over 1 GiB — its allocation ceiling — so a bound
 // above that admits nothing a server can send and only widens what a
 // corrupted length prefix may ask for.
 const maxMaxMessage = 1 << 30
 
-// StartupConfig is what the server needs to know before it will answer a
+// Config is what the server needs to know before it will answer a
 // query. Only User has no sensible default.
-type StartupConfig struct {
+type Config struct {
 	// User is the role to connect as. Required: the protocol has no default
 	// for it, and a server given none refuses the connection.
 	User string
@@ -181,7 +180,7 @@ type StartupConfig struct {
 	// AuthenticationOk is one message and proves nothing about who sent it.
 	// Set it when the role is meant to authenticate with a password: the
 	// absence of the exchange then means a misconfigured pg_hba.conf or a
-	// peer standing in for the server, and [Startup] fails with [ErrAuth]
+	// peer standing in for the server, and [Connect] fails with [ErrAuth]
 	// rather than hand queries to it.
 	RequireAuth bool
 
@@ -216,33 +215,6 @@ type StartupConfig struct {
 	// produces one packet.
 	Params map[string]string
 
-	// CancelDial opens a second connection to the same server, for the one
-	// message that can interrupt a statement the server is still executing.
-	// With it set, a context that ends while [Conn.Query] or [Conn.Exec] is
-	// waiting on the server sends a [CancelRequest] through that connection;
-	// the server aborts the statement with SQLSTATE 57014, the statement
-	// ends with ctx.Err() wrapped, and the connection stays usable. Nil, the
-	// zero value, keeps a context at its batch boundaries: a statement the
-	// server is executing runs to its end, or to the server's own
-	// statement_timeout.
-	//
-	//	CancelDial: func(ctx context.Context) (io.ReadWriteCloser, error) {
-	//	    return (&net.Dialer{}).DialContext(ctx, "tcp", "db.internal:5432")
-	//	},
-	//
-	// The connection it returns is closed after the packet is written. Its
-	// ctx carries the values of the one that ended, and a deadline of its
-	// own, five seconds: a server that cannot be reached by then is left
-	// alone and the statement runs to its end. The packet carries the
-	// session's secret ([CancelKey]), so where the main connection needed
-	// TLS this one does too: negotiate it inside CancelDial — SSLRequest,
-	// the server's 'S', then [crypto/tls] — and return the *tls.Conn.
-	//
-	// The cancellation is advisory, as [CancelRequest] explains: a
-	// statement already finishing finishes, and its result is returned as
-	// if the context had held.
-	CancelDial func(ctx context.Context) (io.ReadWriteCloser, error)
-
 	// MaxMessage is the largest message accepted from the server once the
 	// connection is up, in bytes: a DataRow with all its values, a CopyData
 	// chunk. Zero, the default, is 64 MiB — enough for the rows a real
@@ -253,7 +225,7 @@ type StartupConfig struct {
 	// the stream position is then lost the connection is broken with it
 	// ([ErrMessageTooLarge], then [ErrConnBroken]).
 	//
-	// [Startup] refuses a value below 64 KiB — the handshake's own bound,
+	// [Connect] refuses a value below 64 KiB — the handshake's own bound,
 	// which this does not change — or above 1 GiB, before anything is
 	// sent. This bounds what is read; [CopyConfig.MaxMessage] is how much
 	// is written in one CopyData chunk.
@@ -261,7 +233,7 @@ type StartupConfig struct {
 
 	// ProtocolMinor is the minor protocol version asked for: 0, the default,
 	// asks for 3.0, which every server since 7.4 speaks; 2 asks for 3.2,
-	// which PostgreSQL 18 introduced. [Startup] refuses any other value
+	// which PostgreSQL 18 introduced. [Connect] refuses any other value
 	// before anything is sent — there is no 3.1, and nothing past 3.2 exists
 	// yet.
 	//
@@ -273,63 +245,12 @@ type StartupConfig struct {
 	ProtocolMinor int
 }
 
-// Startup performs the startup and authentication exchange over an established
-// connection and returns a [Conn] ready for queries.
-//
-//	nc, err := net.Dial("tcp", "db.internal:5432")
-//	// ... handle err, set a deadline: the transport stays the caller's
-//	conn, err := postgres.Startup(nc, postgres.StartupConfig{
-//	    User:     "orders",
-//	    Database: "orders",
-//	    Password: os.Getenv("PGPASSWORD"),
-//	})
-//
-// # What it does not do
-//
-// It does not dial and it does not negotiate TLS. The transport is the
-// caller's: which host, which timeout, which certificate pool and whether the
-// connection is encrypted at all are deployment decisions, and a library that
-// took them would be guessing at the one part of the setup it cannot see.
-// Pass a *tls.Conn and everything below runs inside it unchanged.
-//
-// It also sets no deadline of its own. This package takes its deadlines from
-// the connection it is given, the same way [Conn.Query] does, so a handshake
-// against an unresponsive server is bounded by the caller's SetDeadline and
-// not by a timeout invented here. That deadline stays on the connection once
-// Startup returns — this function has an io.ReadWriteCloser, not a way to
-// clear what the caller set — so a query still running when it passes dies
-// with an i/o timeout and the connection with it. Lift it
-// (SetDeadline(time.Time{})) once connected, or set a fresh one per query.
-//
-// # Which methods work
-//
-// SCRAM-SHA-256 (the default on every modern PostgreSQL) and its -PLUS form
-// over TLS, trust, and — only when [StartupConfig.AllowCleartextPassword]
-// says so — cleartext password.
-// The server's final signature is verified, which is what makes the
-// exchange mutual — a client that skips that check has authenticated itself to
-// whoever answered the socket.
-//
-// md5 is refused rather than implemented, and the error says so along with the
-// server-side fix.
-//
-// # Channel binding
-//
-// When rw is a *tls.Conn — or anything with its ConnectionState method — and
-// the server offers SCRAM-SHA-256-PLUS, the exchange is bound to the server's
-// certificate with tls-server-end-point (RFC 5929): a man in the middle that
-// terminates TLS with a certificate of its own cannot relay the proof. Over
-// TLS without -PLUS on offer, the client says it could have bound, so a
-// server whose -PLUS was stripped refuses. Over a plain socket binding is
-// declined explicitly, and a server offering only -PLUS is refused rather
-// than downgraded.
-//
-// # On failure
-//
-// The connection is closed. A failed startup leaves the socket at an unknown
-// position in the protocol, and since no [Conn] is returned there is nothing
-// the caller could close it through.
-func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
+// startup performs the startup and authentication exchange over a
+// connection already open: [Connect] calls it once it has dialled, and the
+// tests call it over a scripted server. It sets no deadline of its own, and it
+// closes rw on failure — the socket is then at an unknown position in the
+// protocol, and no [Conn] is returned to close it through.
+func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 	body, err := startupBody(cfg)
 	if err != nil {
 		_ = rw.Close()
@@ -342,11 +263,10 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 		// not the configuration, that is at fault — and before the startup
 		// packet, since no exchange over this connection could satisfy it.
 		_ = rw.Close()
-		return nil, fmt.Errorf("%w: StartupConfig.RequireChannelBinding is set and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so pass the *tls.Conn itself, not a wrapper around it", ErrAuth)
+		return nil, fmt.Errorf("%w: Config.RequireChannelBinding is set and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so the DialFunc must return the *tls.Conn itself, not a wrapper around it — DialTLS does", ErrAuth)
 	}
 
 	c := NewConn(rw)
-	c.cancelDial = cfg.CancelDial
 	_, c.encodingChosen = cfg.Params["client_encoding"]
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
@@ -374,15 +294,15 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 // Everything the caller supplied is judged before anything is written, so a
 // configuration this refuses costs no bytes on the wire and leaves the server
 // with nothing to half-read.
-func startupBody(cfg StartupConfig) ([]byte, error) {
+func startupBody(cfg Config) ([]byte, error) {
 	if cfg.User == "" {
-		return nil, errors.New("postgres: StartupConfig.User is empty, and the protocol has no default for it")
+		return nil, errors.New("postgres: Config.User is empty, and the protocol has no default for it")
 	}
 	if _, ok := cfg.Params["user"]; ok {
-		return nil, errors.New(`postgres: set the role in StartupConfig.User, not in Params["user"]`)
+		return nil, errors.New(`postgres: set the role in Config.User, not in Params["user"]`)
 	}
 	if _, ok := cfg.Params["database"]; ok {
-		return nil, errors.New(`postgres: set the database in StartupConfig.Database, not in Params["database"]`)
+		return nil, errors.New(`postgres: set the database in Config.Database, not in Params["database"]`)
 	}
 	// A walsender accepts only the simple query protocol ("Streaming
 	// Replication Protocol" in the protocol chapter): Query and ExecParams
@@ -394,10 +314,10 @@ func startupBody(cfg StartupConfig) ([]byte, error) {
 		return nil, errors.New(`postgres: Params["replication"] asks for a replication connection, which this package does not speak`)
 	}
 	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
-		return nil, fmt.Errorf("postgres: StartupConfig.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
+		return nil, fmt.Errorf("postgres: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
 	}
 	if v := cfg.ProtocolMinor; v != 0 && v != 2 {
-		return nil, fmt.Errorf("postgres: StartupConfig.ProtocolMinor %d asks for protocol 3.%d — this package speaks 3.0 (0) and 3.2 (2)", v, v)
+		return nil, fmt.Errorf("postgres: Config.ProtocolMinor %d asks for protocol 3.%d — this package speaks 3.0 (0) and 3.2 (2)", v, v)
 	}
 
 	// Sorted, not map order: ranging a map here would make the same
@@ -489,11 +409,11 @@ type startupState struct {
 
 	// asked is set once the server asked for a credential — a password or a
 	// SCRAM exchange — rather than declaring the connection authenticated
-	// outright. It is what StartupConfig.RequireAuth requires.
+	// outright. It is what Config.RequireAuth requires.
 	asked bool
 
 	// bound is set once the SCRAM exchange began as SCRAM-SHA-256-PLUS. It is
-	// what StartupConfig.RequireChannelBinding requires.
+	// what Config.RequireChannelBinding requires.
 	bound bool
 
 	// minor is the minor protocol version in force: the one asked for, until
@@ -509,7 +429,7 @@ type startupState struct {
 }
 
 // authenticate drives the exchange from the startup packet to ReadyForQuery.
-func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
+func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 	st := startupState{minor: uint32(cfg.ProtocolMinor)} //nolint:gosec // G115: 0 or 2, checked by startupBody
 	for {
 		m, err := c.r.Next()
@@ -596,10 +516,10 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			// than at that message so that a server skipping even that one
 			// is caught too.
 			if cfg.RequireAuth && !st.asked {
-				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without asking for a credential and StartupConfig.RequireAuth is set — pg_hba.conf authenticates this role with trust, or this is not the server it claims to be", ErrAuth))
+				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without asking for a credential and Config.RequireAuth is set — pg_hba.conf authenticates this role with trust, or this is not the server it claims to be", ErrAuth))
 			}
 			if cfg.RequireChannelBinding && !st.bound {
-				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and StartupConfig.RequireChannelBinding is set — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
+				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and Config.RequireChannelBinding is set — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
 			}
 			return nil
 
@@ -616,7 +536,7 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 // asked for, or when the startup packet named protocol options — parameters
 // starting with "_pq_." — it does not recognise. The second is tolerated: an
 // option is a request the server may decline, and the caller who set one in
-// [StartupConfig.Params] asked for it knowing that. What is refused is a
+// [Config.Params] asked for it knowing that. What is refused is a
 // message no server sends: a version above the one asked for, one this
 // package does not speak, an option nobody asked for, or a message that
 // declines nothing at all.
@@ -668,7 +588,7 @@ func negotiateProtocol(body []byte, asked uint32, params map[string]string) (uin
 }
 
 // authStep answers one AuthenticationRequest.
-func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg StartupConfig, ts tlsStater) error {
+func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg Config, ts tlsStater) error {
 	sc := &st.scram
 	switch code {
 	case authOK:
@@ -684,13 +604,13 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg StartupC
 		if cfg.RequireChannelBinding {
 			// A password method binds to nothing, so there is no answer that
 			// would satisfy the caller: refused before the credential moves.
-			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and StartupConfig.RequireChannelBinding is set — only a SCRAM-SHA-256-PLUS exchange satisfies it", ErrAuth))
+			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and Config.RequireChannelBinding is set — only a SCRAM-SHA-256-PLUS exchange satisfies it", ErrAuth))
 		}
 		if !cfg.AllowCleartextPassword {
-			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and StartupConfig.AllowCleartextPassword is false — set it only over a transport the credential may cross, such as a verified *tls.Conn", ErrAuth))
+			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and Config.AllowCleartextPassword is false — set it only over a transport the credential may cross, such as a verified *tls.Conn", ErrAuth))
 		}
 		if cfg.Password == "" {
-			return c.breakConn(fmt.Errorf("%w: the server asked for a password and StartupConfig.Password is empty", ErrAuth))
+			return c.breakConn(fmt.Errorf("%w: the server asked for a password and Config.Password is empty", ErrAuth))
 		}
 		// The password goes out as the server asked for it: in the clear.
 		// Whether that is acceptable is the transport's business, and the
@@ -701,7 +621,7 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg StartupC
 		return c.flushAuth("sending the password")
 
 	case authSASL:
-		// Read here rather than at Startup's entry: a *tls.Conn shakes hands
+		// Read here rather than at startup's entry: a *tls.Conn shakes hands
 		// on its first write, so only now is the certificate known.
 		var cs *tls.ConnectionState
 		if ts != nil {
@@ -714,12 +634,12 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg StartupC
 		}
 		st.asked, st.bound = true, mech == mechSCRAMSHA256Plus
 		if cfg.RequireChannelBinding && !st.bound {
-			// Over TLS — a plain connection was refused in Startup — and the
+			// Over TLS — a plain connection was refused in startup — and the
 			// unbound mechanism was chosen all the same: the server did not
 			// offer -PLUS, or this connection shows no certificate to bind
 			// to. Refused before the client's first message, which is what
 			// the 'y' flag would otherwise leave to the server to judge.
-			return c.breakConn(fmt.Errorf("%w: the server offers %s without %s and StartupConfig.RequireChannelBinding is set — the server has no certificate the exchange can bind to (ssl = off, a pooler terminating TLS), a man in the middle removed the mechanism, or this connection's handshake shows no peer certificate", ErrAuth, mechSCRAMSHA256, mechSCRAMSHA256Plus))
+			return c.breakConn(fmt.Errorf("%w: the server offers %s without %s and Config.RequireChannelBinding is set — the server has no certificate the exchange can bind to (ssl = off, a pooler terminating TLS), a man in the middle removed the mechanism, or this connection's handshake shows no peer certificate", ErrAuth, mechSCRAMSHA256, mechSCRAMSHA256Plus))
 		}
 		c.w.SASLInitialResponse(mech, msg)
 		return c.flushAuth("starting the SCRAM exchange")
@@ -819,7 +739,7 @@ func (c *Conn) recordParameter(body []byte) error {
 		// bytes as UTF-8 without error, so the connection ends at the
 		// announcement. Breaking it here is what makes the read loops stop
 		// rather than carry on as they do for a payload they cannot read.
-		return c.breakConn(fmt.Errorf("the server reports client_encoding %q, and this package decodes text as UTF-8 — set StartupConfig.Params[\"client_encoding\"] to decode another encoding yourself", val))
+		return c.breakConn(fmt.Errorf("the server reports client_encoding %q, and this package decodes text as UTF-8 — set Config.Params[\"client_encoding\"] to decode another encoding yourself", val))
 	}
 	if _, known := c.params[name]; !known && len(c.params) >= MaxServerParameters {
 		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters", ErrProtocol, MaxServerParameters)

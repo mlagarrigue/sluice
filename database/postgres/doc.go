@@ -10,8 +10,9 @@
 //
 // # The user path
 //
-// [Startup] opens a connection over any [io.ReadWriteCloser] — a plain socket
-// or a *tls.Conn the caller has already verified — and authenticates it. From
+// [Connect] opens a connection with a recipe — [DialTCP], [DialTLS] or one of
+// the caller's own — and authenticates it; the recipe is kept, so a context
+// that ends mid-statement cancels it on the server. From
 // there a [Conn] runs [Conn.Query] for rows as a [sluice.Source] of [Row]
 // batches, [Conn.Exec] for statements without a result, [Conn.Begin] for a
 // [Tx] with savepoints and SET LOCAL, and [Conn.CopyFrom] for binary COPY of
@@ -27,7 +28,7 @@
 //
 // SCRAM-SHA-256 is the default and needs nothing turned on. Cleartext
 // password authentication is an explicit opt-in through
-// [StartupConfig.AllowCleartextPassword], refused otherwise: the bytes on the
+// [Config.AllowCleartextPassword], refused otherwise: the bytes on the
 // wire are the credential, and only the caller knows whether the transport
 // they handed over may carry one.
 //
@@ -36,6 +37,6 @@
 // The protocol's framing and message layer lives in internal/pgwire and is
 // not part of this package's API: a mistake at the message layer is a
 // connection whose position in the protocol is unknown rather than an error
-// that can be returned. A caller wants [Startup] and what hangs off a [Conn];
+// that can be returned. A caller wants [Connect] and what hangs off a [Conn];
 // [NewConn] exists for a transport the caller has already authenticated.
 package postgres

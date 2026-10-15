@@ -84,15 +84,15 @@ Three reasons come up, and the difference matters:
   types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
   `macaddr`, `bit`) — on demand, as no use has asked for them yet. Each
   addition needs vectors taken from a real server.
-- **TLS is yours.** The connector dials nothing and negotiates no TLS: you
-  hand it an already open connection, encrypted or not. On purpose: which
-  host, which certificate, which timeout are deployment decisions. The
-  negotiation peculiar to PostgreSQL (SSLRequest, or ALPN for direct TLS
-  since 17) is shown in the
+- **Certificates are yours.** The connector opens the connection with
+  the recipe you give it: `DialTCP`, `DialTLS` (which performs the
+  SSLRequest peculiar to PostgreSQL), or your own (direct TLS since 17, a
+  UNIX socket, a proxy). Which certificates to trust stays your decision,
+  in the `tls.Config` you pass: see the
   [PostgreSQL guide](postgres.md#encrypting-the-connection).
 - **An RSA-PSS certificate whose salt is not the hash length is refused**
-  by `crypto/x509`, Go's standard library, before `Startup` is even
-  reached; libpq accepts it. It is OpenSSL's default when signing with
+  by `crypto/x509`, Go's standard library, in the TLS handshake, before
+  any authentication; libpq accepts it. It is OpenSSL's default when signing with
   PSS: re-sign with `-sigopt rsa_pss_saltlen:digest`.
 - **No LISTEN/NOTIFY, no notices.** A `LISTEN` goes through `Exec`, but
   the notifications that arrive afterwards are discarded, for want of an
@@ -118,7 +118,7 @@ Three reasons come up, and the difference matters:
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the
   connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
-  `StartupConfig.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
+  `Config.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
   itself allows per field; the handshake keeps its own 64 KiB bound.
 - **A batch is bounded at 64 MiB of values** as well as at `BatchRows` rows.
   A batch that would grow past it is delivered as it is and the row opens

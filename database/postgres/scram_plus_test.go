@@ -154,12 +154,12 @@ func scramPlusServer(nc net.Conn, cert tls.Certificate, password string, wantCB 
 // signature hash — and therefore the binding's — is SHA-384, not the SHA-256
 // the SCRAM itself uses.
 func TestStartupSCRAMPlusOverTLS(t *testing.T) {
-	startupSCRAMPlusOverTLS(t, StartupConfig{User: "orders", Password: "pencil"})
+	startupSCRAMPlusOverTLS(t, Config{User: "orders", Password: "pencil"})
 }
 
 // startupSCRAMPlusOverTLS runs a real TLS handshake and a real -PLUS exchange
 // against scramPlusServer, and fails the test unless Startup accepts it.
-func startupSCRAMPlusOverTLS(t *testing.T, cfg StartupConfig) {
+func startupSCRAMPlusOverTLS(t *testing.T, cfg Config) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
@@ -181,7 +181,7 @@ func startupSCRAMPlusOverTLS(t *testing.T, cfg StartupConfig) {
 	roots := x509.NewCertPool()
 	roots.AddCert(cert.Leaf)
 	enc := tls.Client(cn, &tls.Config{ServerName: "db.test", RootCAs: roots, MinVersion: tls.VersionTLS12})
-	conn, err := Startup(enc, cfg)
+	conn, err := startup(enc, cfg)
 	if serr := <-served; serr != nil {
 		t.Fatalf("server: %v", serr)
 	}
@@ -212,8 +212,8 @@ func TestStartupSCRAMOverTLSWithoutPlusDeclaresCapability(t *testing.T) {
 		beAuth(authSASLFinal, "v="+base64.StdEncoding.EncodeToString(make([]byte, 32))),
 	}}
 	leaf := &x509.Certificate{Raw: []byte("cert"), SignatureAlgorithm: x509.SHA256WithRSA}
-	_, _ = Startup(tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}}},
-		StartupConfig{User: "orders", Password: "pencil"})
+	_, _ = startup(tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}}},
+		Config{User: "orders", Password: "pencil"})
 
 	_, types, bodies := clientTraffic(t, srv.sent.Bytes())
 	if len(types) < 2 {
@@ -243,8 +243,8 @@ func TestStartupSCRAMPlusRefusesAnUnbindableCertificate(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		beAuth(authSASL, mechSCRAMSHA256Plus+"\x00"+mechSCRAMSHA256+"\x00\x00"),
 	}}
-	_, err = Startup(tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{cert.Leaf}}},
-		StartupConfig{User: "orders", Password: "pencil"})
+	_, err = startup(tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{cert.Leaf}}},
+		Config{User: "orders", Password: "pencil"})
 	if !errors.Is(err, ErrAuthUnsupported) {
 		t.Fatalf("Startup = %v, want ErrAuthUnsupported", err)
 	}
@@ -262,7 +262,7 @@ func TestStartupSCRAMWithoutTLSIgnoresPlus(t *testing.T) {
 		beAuth(authSASL, mechSCRAMSHA256Plus+"\x00"+mechSCRAMSHA256+"\x00\x00"),
 		beAuth(authSASLContinue, serverFirst),
 	}}
-	_, _ = Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, _ = startup(srv, Config{User: "orders", Password: "pencil"})
 	_, _, bodies := clientTraffic(t, srv.sent.Bytes())
 	if len(bodies) == 0 {
 		t.Fatal("client sent no SCRAM message")
@@ -281,7 +281,7 @@ func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
 	overTLS := func(srv *fakeServer) io.ReadWriteCloser {
 		return tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}}}
 	}
-	cfg := StartupConfig{User: "orders", Password: "pencil", RequireChannelBinding: true, AllowCleartextPassword: true}
+	cfg := Config{User: "orders", Password: "pencil", RequireChannelBinding: true, AllowCleartextPassword: true}
 
 	cases := []struct {
 		name      string
@@ -300,7 +300,7 @@ func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
 		if tc.tls {
 			rw = overTLS(srv)
 		}
-		_, err := Startup(rw, cfg)
+		_, err := startup(rw, cfg)
 		if !errors.Is(err, ErrAuth) {
 			t.Fatalf("%s: error = %v, want ErrAuth", tc.name, err)
 		}
@@ -325,5 +325,5 @@ func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
 // The exchange TestStartupSCRAMPlusOverTLS runs is exactly what both options
 // require, so with both set it is accepted unchanged.
 func TestStartupSCRAMPlusSatisfiesBothRequirements(t *testing.T) {
-	startupSCRAMPlusOverTLS(t, StartupConfig{User: "orders", Password: "pencil", RequireAuth: true, RequireChannelBinding: true})
+	startupSCRAMPlusOverTLS(t, Config{User: "orders", Password: "pencil", RequireAuth: true, RequireChannelBinding: true})
 }

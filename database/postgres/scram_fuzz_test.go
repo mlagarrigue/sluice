@@ -220,7 +220,7 @@ func FuzzAuthenticate(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		c := NewConn(fuzzPeer{bytes.NewReader(stream)})
-		err := c.authenticate(StartupConfig{User: "u", Password: "pw"}, nil)
+		err := c.authenticate(Config{User: "u", Password: "pw"}, nil)
 		if err == nil {
 			// Success ends at a ReadyForQuery and leaves a usable connection.
 			if c.Err() != nil || bytes.IndexByte(stream, pgwire.BackendReadyForQuery) < 0 {

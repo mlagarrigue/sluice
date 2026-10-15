@@ -1090,7 +1090,7 @@ Framing is trivial: ~20 useful message types, 1 type byte + an int32 length.
 
 Budget the codecs, not the parsing.
 
-> **The estimate held.** `postgres.Startup` is the startup packet
+> **The estimate held.** `postgres.Connect` is the startup packet
 > and the SASL exchange over `crypto/hmac`, `crypto/sha256`, `crypto/subtle`,
 > `crypto/rand` and `crypto/pbkdf2` — the last of which arrived in the standard
 > library in Go 1.24, so even the key derivation this section budgeted for did

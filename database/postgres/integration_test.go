@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"math"
-	"net"
 	"net/netip"
 	"os"
 	"slices"
@@ -44,7 +42,7 @@ import (
 // this package's reading of RFC 7677 is an implementation that did not read it
 // with the same eyes. Set SLUICE_PG_PASSWORD where the server asks for one.
 
-func pgTarget(t *testing.T) (addr string, cfg postgres.StartupConfig) {
+func pgTarget(t *testing.T) (addr string, cfg postgres.Config) {
 	t.Helper()
 	addr = os.Getenv("SLUICE_PG")
 	if addr == "" {
@@ -70,29 +68,16 @@ func dial(t *testing.T) *postgres.Conn {
 	return dialWith(t, addr, cfg)
 }
 
-// dialWith is dial with the StartupConfig the test chose.
-func dialWith(t *testing.T, addr string, cfg postgres.StartupConfig) *postgres.Conn {
+// dialWith is dial with the Config the test chose.
+func dialWith(t *testing.T, addr string, cfg postgres.Config) *postgres.Conn {
 	t.Helper()
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	// The deadline is set here rather than inside the package: this is the one
-	// place that knows how long a handshake is allowed to take.
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-
-	conn, err := postgres.Startup(nc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err != nil {
 		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	// And lifted here, for the same reason: it stays on the socket, and a
-	// test that outlives it would fail on an i/o timeout, not on its subject.
-	if err := nc.SetDeadline(time.Time{}); err != nil {
-		t.Fatal(err)
-	}
 
 	// The server describing itself is the cheapest possible check that the
 	// startup phase was read correctly, and it costs no round trip.
@@ -121,7 +106,7 @@ func TestIntegrationMaxMessageLiftsTheDefaultBound(t *testing.T) {
 	if !errors.Is(err, postgres.ErrMessageTooLarge) {
 		t.Fatalf("a %d-byte value under the default bound: %v, want ErrMessageTooLarge", size, err)
 	}
-	if !strings.Contains(err.Error(), "StartupConfig.MaxMessage") {
+	if !strings.Contains(err.Error(), "Config.MaxMessage") {
 		t.Errorf("the error does not name the field that raises the bound: %v", err)
 	}
 	if err := without.Err(); !errors.Is(err, postgres.ErrConnBroken) {
@@ -385,15 +370,9 @@ func TestIntegrationWrongPassword(t *testing.T) {
 		t.Skip("SLUICE_PG_PASSWORD is not set: the server is reached without a password")
 	}
 	cfg.Password += "-wrong"
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-
-	conn, err := postgres.Startup(nc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err == nil {
 		_ = conn.Close()
 		t.Skip("the server accepted a wrong password: pg_hba.conf trusts this connection")
@@ -1307,34 +1286,25 @@ func mustParseNumeric(s string) postgres.Numeric {
 	return n
 }
 
-// The guide and ExampleStartup bound the handshake with SetDeadline, and that
-// deadline stays on the socket: Startup has an io.ReadWriteCloser and cannot
-// clear it. Until 2026-10-15 neither lifted it afterwards, so every program
-// that copied them lost its connection to an i/o timeout at the 30 s mark —
-// found by a reviewer, reproduced, and this is the pattern that fixes it.
-// Without the SetDeadline(time.Time{}) below, the query after the sleep fails
-// on the kernel's timeout rather than on anything this package does.
-func TestIntegrationHandshakeDeadlineIsLifted(t *testing.T) {
+// Connect's context bounds the handshake and nothing after it. Until
+// 2026-10-15 the handshake was bounded by a SetDeadline the caller set and
+// had to lift, and every program that copied the guide without lifting it
+// lost its connection to an i/o timeout at the 30 s mark. Connect sets no
+// deadline on the socket, so a query run after its context has expired is
+// bounded by its own context alone.
+func TestIntegrationConnectLeavesNoDeadline(t *testing.T) {
 	addr, cfg := pgTarget(t)
 
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
 	const handshake = time.Second
-	if err := nc.SetDeadline(time.Now().Add(handshake)); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), handshake)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err != nil {
 		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
 	}
 	defer func() { _ = conn.Close() }()
-	if err := nc.SetDeadline(time.Time{}); err != nil {
-		t.Fatal(err)
-	}
 
-	// Outlive the handshake deadline, then ask for something.
+	// Outlive the handshake's context, then ask for something.
 	time.Sleep(handshake + handshake/2)
 	src := conn.Query(t.Context(), "SELECT 1", nil, postgres.QueryConfig{})
 	rows := 0
@@ -1354,12 +1324,12 @@ func TestIntegrationHandshakeDeadlineIsLifted(t *testing.T) {
 }
 
 // A context that ends while the server is still executing the statement
-// reaches the server through StartupConfig.CancelDial: pg_sleep(5) under a
+// reaches the server through the recipe Connect keeps: pg_sleep(5) under a
 // 300 ms deadline ends well inside a second, with the deadline as the error
 // and the server's 57014 behind it, and the connection serves the next
 // query. Only a real server can prove this one — it is the server's
 // cancellation handling that the scripted tests cannot disagree with.
-func TestIntegrationCancelDialInterruptsTheRunningStatement(t *testing.T) {
+func TestIntegrationCancelInterruptsTheRunningStatement(t *testing.T) {
 	cancelInterrupts(t, dialCancellable(t, 0))
 }
 
@@ -1393,15 +1363,12 @@ func TestIntegrationDeclinedProtocolOption(t *testing.T) {
 	_ = dialWith(t, addr, cfg)
 }
 
-// dialCancellable opens a connection asking for protocol 3.minor, with a
-// CancelDial to the same server.
+// dialCancellable opens a connection asking for protocol 3.minor; the
+// recipe it was opened with is the one each cancellation dials.
 func dialCancellable(t *testing.T, minor int) *postgres.Conn {
 	t.Helper()
 	addr, cfg := pgTarget(t)
 	cfg.ProtocolMinor = minor
-	cfg.CancelDial = func(ctx context.Context) (io.ReadWriteCloser, error) {
-		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
-	}
 	conn := dialWith(t, addr, cfg)
 	if !conn.CancelKey().Known() {
 		t.Fatal("the server sent no cancellation key")

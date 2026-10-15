@@ -414,8 +414,8 @@ func (cp *Copier) beginTx() error {
 // case, and a read that does not block needs one of two things this package
 // does not have: a goroutine owning the Reader across WriteTuples calls —
 // racing every Conn method the caller may use in between, and leaked by a
-// copier abandoned without Close or Abort — or a deadline on a transport
-// whose deadlines belong to the caller (see Startup). What is lost is
+// copier abandoned without Close or Abort — or a deadline on a socket this
+// package never sets one on (see Connect). What is lost is
 // bandwidth, bounded by one transaction's rows, which RowsPerTx sets.
 func (cp *Copier) commitTx() error {
 	c := cp.conn

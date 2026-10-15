@@ -1,10 +1,10 @@
 package postgres_test
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
-	"net"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -18,7 +18,7 @@ import (
 // computes it in be_tls_get_certificate_hash (be-secure-openssl.c), from the
 // hash OpenSSL's X509_get_signature_info reports — for RSASSA-PSS the hash
 // inside the signature parameters, which is what tlsServerEndPoint reads too.
-// If the two hashes differ, the server's proof does not verify and Startup
+// If the two hashes differ, the server's proof does not verify and Connect
 // fails.
 //
 // It needs a server with ssl = on and the certificate to trust in
@@ -30,7 +30,7 @@ import (
 // One RSA-PSS certificate is refused where PostgreSQL and libpq accept it:
 // a salt length other than the hash length, which is OpenSSL's default.
 // crypto/x509 does not parse that signature, so crypto/tls fails the
-// handshake before Startup is called; nothing in this package is reached.
+// handshake inside DialTLS; nothing in this package is reached.
 func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	addr, cfg := pgTarget(t)
 	caFile := os.Getenv("SLUICE_PG_TLS_CA")
@@ -45,41 +45,16 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	if !roots.AppendCertsFromPEM(ca) {
 		t.Fatalf("%s holds no PEM certificate", caFile)
 	}
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	t.Cleanup(func() { _ = nc.Close() })
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-
-	// SSLRequest: length 8, then 80877103 where a protocol version would be.
-	req := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), 80877103)
-	if _, err := nc.Write(req); err != nil {
-		t.Fatal(err)
-	}
-	answer := make([]byte, 1)
-	if _, err := nc.Read(answer); err != nil {
-		t.Fatal(err)
-	}
-	if answer[0] != 'S' {
-		t.Fatalf("the server answered %q to SSLRequest, want 'S': ssl is not on", answer[0])
-	}
-
-	tc := tls.Client(nc, &tls.Config{ServerName: host, RootCAs: roots, MinVersion: tls.VersionTLS12})
-	if err := tc.Handshake(); err != nil {
-		t.Fatalf("TLS handshake: %v", err)
-	}
-	leaf := tc.ConnectionState().PeerCertificates[0]
-	t.Logf("server certificate signed with %v", leaf.SignatureAlgorithm)
-	if want := os.Getenv("SLUICE_PG_TLS_SIGALG"); want != "" && leaf.SignatureAlgorithm.String() != want {
-		t.Fatalf("the server presented a certificate signed with %v, want %s", leaf.SignatureAlgorithm, want)
+	// DialTLS does the SSLRequest and the handshake; the wrapper only keeps
+	// the *tls.Conn it returns, unchanged, to read the certificate from.
+	var tc *tls.Conn
+	dial := postgres.DialTLS(addr, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
+	recipe := func(ctx context.Context) (io.ReadWriteCloser, error) {
+		rw, err := dial(ctx)
+		if c, ok := rw.(*tls.Conn); ok && tc == nil {
+			tc = c
+		}
+		return rw, err
 	}
 
 	// RequireChannelBinding turns every way of not binding into an error: a
@@ -87,13 +62,17 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	// Success here means the server verified a proof over its own hash of
 	// the certificate, and sent a signature that verified over ours.
 	cfg.RequireChannelBinding = true
-	conn, err := postgres.Startup(tc, cfg)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, recipe, cfg)
 	if err != nil {
-		t.Fatalf("startup with channel binding: %v", err)
+		t.Fatalf("connecting with channel binding: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if err := nc.SetDeadline(time.Time{}); err != nil {
-		t.Fatal(err)
+	leaf := tc.ConnectionState().PeerCertificates[0]
+	t.Logf("server certificate signed with %v", leaf.SignatureAlgorithm)
+	if want := os.Getenv("SLUICE_PG_TLS_SIGALG"); want != "" && leaf.SignatureAlgorithm.String() != want {
+		t.Fatalf("the server presented a certificate signed with %v, want %s", leaf.SignatureAlgorithm, want)
 	}
 
 	// The server's own account of the session: one row only if it is TLS.
