@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1359,36 +1360,66 @@ func TestIntegrationHandshakeDeadlineIsLifted(t *testing.T) {
 // query. Only a real server can prove this one — it is the server's
 // cancellation handling that the scripted tests cannot disagree with.
 func TestIntegrationCancelDialInterruptsTheRunningStatement(t *testing.T) {
+	cancelInterrupts(t, dialCancellable(t, 0))
+}
+
+// Protocol 3.2 against the server in front of it. Before 18 the server
+// negotiates down and the key stays four bytes — checked, then the rest is
+// skipped by name. From 18 on the secret is longer, and the CancelRequest
+// that carries it whole is the one that interrupts pg_sleep.
+func TestIntegrationProtocol32LongCancelKey(t *testing.T) {
+	conn := dialCancellable(t, 2)
+	secret := len(conn.CancelKey().Secret)
+	version := conn.Parameter("server_version")
+	major, _, _ := strings.Cut(version, ".")
+	if n, err := strconv.Atoi(major); err == nil && n < 18 {
+		if secret != 4 {
+			t.Fatalf("PostgreSQL %s negotiated down from 3.2, and the secret is %d bytes, want 4", version, secret)
+		}
+		t.Skipf("PostgreSQL %s speaks protocol 3.0: the long key needs 18", version)
+	}
+	if secret <= 4 {
+		t.Fatalf("PostgreSQL %s under protocol 3.2 sent a %d-byte secret, want more than 4", version, secret)
+	}
+	t.Logf("PostgreSQL %s sent a %d-byte secret", version, secret)
+	cancelInterrupts(t, conn)
+}
+
+// A protocol option the server does not know comes back in
+// NegotiateProtocolVersion, and the connection goes on without it.
+func TestIntegrationDeclinedProtocolOption(t *testing.T) {
 	addr, cfg := pgTarget(t)
+	cfg.Params = map[string]string{"_pq_.sluice_unknown": "on"}
+	_ = dialWith(t, addr, cfg)
+}
+
+// dialCancellable opens a connection asking for protocol 3.minor, with a
+// CancelDial to the same server.
+func dialCancellable(t *testing.T, minor int) *postgres.Conn {
+	t.Helper()
+	addr, cfg := pgTarget(t)
+	cfg.ProtocolMinor = minor
 	cfg.CancelDial = func(ctx context.Context) (io.ReadWriteCloser, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, cfg)
-	if err != nil {
-		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
-	}
-	defer func() { _ = conn.Close() }()
-	if err := nc.SetDeadline(time.Time{}); err != nil {
-		t.Fatal(err)
-	}
+	conn := dialWith(t, addr, cfg)
 	if !conn.CancelKey().Known() {
 		t.Fatal("the server sent no cancellation key")
 	}
+	return conn
+}
 
+// cancelInterrupts runs pg_sleep(5) under a 300 ms deadline on conn and
+// checks the server cut it short, then that conn serves the next query.
+func cancelInterrupts(t *testing.T, conn *postgres.Conn) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	src := conn.Query(ctx, "SELECT pg_sleep(5)", nil, postgres.QueryConfig{})
 	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
 	took := time.Since(start)
-	err = src.Err()
+	err := src.Err()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("pg_sleep(5) under a 300ms deadline ended after %v with %v, want context.DeadlineExceeded", took, err)
 	}

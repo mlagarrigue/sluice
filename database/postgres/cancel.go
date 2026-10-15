@@ -23,15 +23,29 @@ const cancelRequestCode = 1234<<16 | 5678
 // proof. Treat it the way a session token is treated — do not log it, do not
 // put it in an error message, do not hand it to anything that did not open
 // the connection.
+//
+// Secret holds the key's bytes as the server sent them. Under protocol 3.0
+// they are always four; under 3.2 ([StartupConfig.ProtocolMinor]) they are 4
+// to 256 — PostgreSQL 18 sends 32, and a pooler in between may send more. A
+// string rather than a []byte so that a CancelKey copied to another
+// goroutine shares nothing it could change under the connection, and stays
+// comparable with ==.
 type CancelKey struct {
 	PID    uint32
-	Secret uint32
+	Secret string
 }
+
+// The bounds the protocol puts on a secret: four bytes, the only length
+// before 3.2, up to the 256 a 3.2 message may carry.
+const (
+	minCancelSecret = 4
+	maxCancelSecret = 256
+)
 
 // Known reports whether a key was actually received. It is false for a [Conn]
 // built by [NewConn], which never saw the startup exchange, and for a server
 // that sent no pgwire.BackendKeyData.
-func (k CancelKey) Known() bool { return k.PID != 0 || k.Secret != 0 }
+func (k CancelKey) Known() bool { return k.PID != 0 || k.Secret != "" }
 
 // String deliberately hides the secret: a key that reaches a log is a key
 // anyone reading the log can cancel with.
@@ -41,6 +55,10 @@ func (k CancelKey) String() string {
 	}
 	return fmt.Sprintf("postgres.CancelKey{PID: %d, Secret: <redacted>}", k.PID)
 }
+
+// GoString hides the secret from %#v too, which would otherwise print the
+// fields one by one and the secret among them.
+func (k CancelKey) GoString() string { return k.String() }
 
 // CancelKey returns the cancellation key the server sent during startup, for
 // use with [CancelRequest]. It is zero — and [CancelKey.Known] is false — on a
@@ -103,31 +121,46 @@ func CancelRequest(rw io.ReadWriteCloser, key CancelKey) error {
 	if !key.Known() {
 		return errors.New("postgres: cannot cancel with an unknown key — the connection was built by NewConn, or the server sent no pgwire.BackendKeyData")
 	}
+	if n := len(key.Secret); n < minCancelSecret || n > maxCancelSecret {
+		// Refused rather than sent: the server matches the secret byte for
+		// byte, so a truncated or padded one cancels nothing, and the caller
+		// would read the nil error as a cancellation on its way.
+		return fmt.Errorf("postgres: cannot cancel with a %d-byte secret — the protocol carries %d to %d", n, minCancelSecret, maxCancelSecret)
+	}
 
-	// Sixteen bytes: the length itself, the code, the pid, the secret. Small
-	// enough to build on the stack rather than reach for a Writer, and the
-	// packet has no type byte for one to add.
-	var pkt [16]byte
-	binary.BigEndian.PutUint32(pkt[0:], 16)
+	// The length itself, the code, the pid, then the secret to the end of
+	// the packet: 16 bytes under protocol 3.0, at most 268 under 3.2. Built
+	// whole and written once, and the packet has no type byte for a Writer
+	// to add.
+	var buf [12 + maxCancelSecret]byte
+	n := 12 + len(key.Secret)
+	pkt := buf[:n]
+	binary.BigEndian.PutUint32(pkt[0:], uint32(n)) //nolint:gosec // G115: at most 268, bounded above
 	binary.BigEndian.PutUint32(pkt[4:], cancelRequestCode)
 	binary.BigEndian.PutUint32(pkt[8:], key.PID)
-	binary.BigEndian.PutUint32(pkt[12:], key.Secret)
+	copy(pkt[12:], key.Secret)
 
-	if _, err := rw.Write(pkt[:]); err != nil {
+	if _, err := rw.Write(pkt); err != nil {
 		return fmt.Errorf("postgres: sending the cancellation: %w", err)
 	}
 	return nil
 }
 
 // parseBackendKeyData reads the pid and secret the server sends once, during
-// startup.
-func parseBackendKeyData(body []byte) (CancelKey, error) {
-	if len(body) != 8 {
-		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes, want 8", ErrProtocol, len(body))
+// startup. minor is the protocol version in force: before 3.2 the secret is
+// exactly four bytes, from 3.2 on it runs to the end of the message, 4 to 256
+// bytes.
+func parseBackendKeyData(body []byte, minor uint32) (CancelKey, error) {
+	lo, hi := 4+minCancelSecret, 4+maxCancelSecret
+	if minor < 2 {
+		hi = lo
+	}
+	if len(body) < lo || len(body) > hi {
+		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes under protocol 3.%d, want %d to %d", ErrProtocol, len(body), minor, lo, hi)
 	}
 	return CancelKey{
 		PID:    binary.BigEndian.Uint32(body[0:4]),
-		Secret: binary.BigEndian.Uint32(body[4:8]),
+		Secret: string(body[4:]),
 	}, nil
 }
 

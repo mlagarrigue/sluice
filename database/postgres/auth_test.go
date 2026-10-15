@@ -34,10 +34,25 @@ func beParameterStatus(name, val string) []byte {
 	return frame(pgwire.BackendParameterStatus, name+"\x00"+val+"\x00")
 }
 
-func beBackendKeyData() []byte {
+// testSecret is the four-byte secret beBackendKeyData sends: 5678, big-endian.
+const testSecret = "\x00\x00\x16\x2e"
+
+func beBackendKeyData() []byte { return beBackendKeyDataSecret(testSecret) }
+
+func beBackendKeyDataSecret(secret string) []byte {
 	body := binary.BigEndian.AppendUint32(nil, 1234)
-	body = binary.BigEndian.AppendUint32(body, 5678)
-	return frame(pgwire.BackendBackendKeyData, string(body))
+	return frame(pgwire.BackendBackendKeyData, string(body)+secret)
+}
+
+// beNegotiate is a NegotiateProtocolVersion offering 3.minor and declining the
+// options named. The version goes as a whole word, as a real server sends it.
+func beNegotiate(minor uint32, options ...string) []byte {
+	body := binary.BigEndian.AppendUint32(nil, 3<<16|minor)
+	body = binary.BigEndian.AppendUint32(body, uint32(len(options)))
+	for _, o := range options {
+		body = append(append(body, o...), 0)
+	}
+	return frame(pgwire.BackendNegotiateProtocolVersion, string(body))
 }
 
 // beReady is the tail every successful startup ends with.
@@ -113,8 +128,8 @@ func TestStartupTrust(t *testing.T) {
 	if len(types) != 0 {
 		t.Errorf("client sent %q after the startup packet, want nothing", types)
 	}
-	if v := binary.BigEndian.Uint32(startup[:4]); v != startupVersion {
-		t.Errorf("protocol version = %#x, want %#x", v, startupVersion)
+	if v := binary.BigEndian.Uint32(startup[:4]); v != 3<<16 {
+		t.Errorf("protocol version = %#x, want %#x", v, 3<<16)
 	}
 	want := "user\x00orders\x00database\x00shop\x00client_encoding\x00UTF8\x00\x00"
 	if got := string(startup[4:]); got != want {
@@ -927,6 +942,80 @@ func TestStartupRequireAuthRefusesAnExchangeThatAskedNothing(t *testing.T) {
 		}
 		if !srv.closed {
 			t.Errorf("%s: connection left open after the refusal", name)
+		}
+	}
+}
+
+// A server older than 18 answers a 3.2 request with NegotiateProtocolVersion
+// offering 3.0; the connection continues under 3.0, four-byte key and all.
+func TestStartupFollowsANegotiatedDowngrade(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
+	}}
+	conn, err := Startup(srv, StartupConfig{User: "u", ProtocolMinor: 2})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.CancelKey().Secret; got != testSecret {
+		t.Errorf("CancelKey().Secret = %x, want %x", got, testSecret)
+	}
+}
+
+// A protocol option the server does not recognise is declined, not fatal: it
+// is a request the caller made knowing the server may say no.
+func TestStartupToleratesADeclinedProtocolOption(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0, "_pq_.sluice_test"), append(beAuth(0, ""), beReady()...)...),
+	}}
+	cfg := StartupConfig{User: "u", Params: map[string]string{"_pq_.sluice_test": "on"}}
+	if _, err := Startup(srv, cfg); err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+}
+
+// Every NegotiateProtocolVersion a server could not have meant breaks the
+// connection before authentication goes any further.
+func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		minor  int
+		params map[string]string
+		msgs   []byte
+	}{
+		{"above the version asked", 0, nil, beNegotiate(2)},
+		{"to 3.1", 2, nil, beNegotiate(1)},
+		{"the minor alone, without the major", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x00\x00\x00\x00\x00\x00\x00")},
+		{"another major", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x02\x00\x00\x00\x00\x00\x00")},
+		{"declining nothing", 2, nil, beNegotiate(2)},
+		{"an option never sent", 2, nil, beNegotiate(0, "_pq_.other")},
+		{"an option without the prefix", 2, map[string]string{"search_path": "x"}, beNegotiate(0, "search_path")},
+		{"a count the body cannot hold", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\xff\xff\xff\xff")},
+		{"a name without its terminator", 2, map[string]string{"_pq_.a": "1"}, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x01_pq_.a")},
+		{"bytes after the last option", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x00x")},
+		{"a truncated body", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00")},
+		{"sent twice", 2, nil, append(beNegotiate(0), beNegotiate(0)...)},
+		{"after authentication began", 2, nil, append(beAuth(0, ""), beNegotiate(0)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &fakeServer{responses: [][]byte{append(tc.msgs, append(beAuth(0, ""), beReady()...)...)}}
+			_, err := Startup(srv, StartupConfig{User: "u", ProtocolMinor: tc.minor, Params: tc.params})
+			if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrConnBroken) {
+				t.Fatalf("Startup returned %v, want ErrProtocol and ErrConnBroken", err)
+			}
+		})
+	}
+}
+
+// Only the minor versions this package speaks may be asked for, and a wrong
+// one is refused before the server hears anything.
+func TestStartupRefusesAnUnknownProtocolMinor(t *testing.T) {
+	for _, minor := range []int{-1, 1, 3} {
+		srv := &fakeServer{}
+		if _, err := Startup(srv, StartupConfig{User: "u", ProtocolMinor: minor}); err == nil {
+			t.Errorf("Startup accepted ProtocolMinor %d", minor)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("ProtocolMinor %d: % x went to the server", minor, srv.sent.Bytes())
 		}
 	}
 }

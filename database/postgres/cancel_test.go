@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -231,8 +232,8 @@ func TestStartupKeepsTheCancelKey(t *testing.T) {
 	if !key.Known() {
 		t.Fatal("the cancellation key was discarded")
 	}
-	if key.PID != 1234 || key.Secret != 5678 {
-		t.Errorf("CancelKey = {%d, %d}, want {1234, 5678}", key.PID, key.Secret)
+	if key.PID != 1234 || key.Secret != testSecret {
+		t.Errorf("CancelKey = {%d, %x}, want {1234, %x}", key.PID, key.Secret, testSecret)
 	}
 }
 
@@ -246,7 +247,7 @@ func TestNewConnHasNoCancelKey(t *testing.T) {
 
 func TestCancelRequestBytes(t *testing.T) {
 	srv := &fakeServer{}
-	if err := CancelRequest(srv, CancelKey{PID: 1234, Secret: 5678}); err != nil {
+	if err := CancelRequest(srv, CancelKey{PID: 1234, Secret: testSecret}); err != nil {
 		t.Fatalf("CancelRequest returned %v", err)
 	}
 
@@ -282,9 +283,12 @@ func TestCancelRequestRefusesAnUnknownKey(t *testing.T) {
 // The secret is a credential: anyone who reads it can cancel that backend. It
 // must not reach a log through the one method that gets called on everything.
 func TestCancelKeyStringHidesTheSecret(t *testing.T) {
-	s := CancelKey{PID: 1234, Secret: 5678}.String()
-	if strings.Contains(s, "5678") {
-		t.Errorf("String() = %q, and the secret is in it", s)
+	key := CancelKey{PID: 1234, Secret: "s3cr3t-s3cr3t"}
+	s := key.String()
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		if got := fmt.Sprintf(verb, key); strings.Contains(got, "s3cr3t") {
+			t.Errorf("Sprintf(%s) = %q, and the secret is in it", verb, got)
+		}
 	}
 	if !strings.Contains(s, "1234") {
 		t.Errorf("String() = %q, and the pid is not: the point is to be diagnosable", s)
@@ -294,10 +298,80 @@ func TestCancelKeyStringHidesTheSecret(t *testing.T) {
 	}
 }
 
-func TestParseBackendKeyDataRejectsShortBodies(t *testing.T) {
-	for _, n := range []int{0, 4, 7, 9} {
-		if _, err := parseBackendKeyData(make([]byte, n)); !errors.Is(err, ErrProtocol) {
-			t.Errorf("parseBackendKeyData(%d bytes) = %v, want ErrProtocol", n, err)
+// Before 3.2 the secret is exactly four bytes; from 3.2 on it is 4 to 256.
+func TestParseBackendKeyDataBounds(t *testing.T) {
+	for _, tc := range []struct {
+		minor uint32
+		n     int
+		ok    bool
+	}{
+		{0, 0, false},
+		{0, 4, false},
+		{0, 7, false},
+		{0, 8, true},
+		{0, 9, false},
+		{0, 36, false},
+		{2, 7, false},
+		{2, 8, true},
+		{2, 36, true},
+		{2, 260, true},
+		{2, 261, false},
+	} {
+		_, err := parseBackendKeyData(make([]byte, tc.n), tc.minor)
+		if tc.ok && err != nil {
+			t.Errorf("parseBackendKeyData(%d bytes, 3.%d) = %v, want nil", tc.n, tc.minor, err)
+		}
+		if !tc.ok && !errors.Is(err, ErrProtocol) {
+			t.Errorf("parseBackendKeyData(%d bytes, 3.%d) = %v, want ErrProtocol", tc.n, tc.minor, err)
+		}
+	}
+}
+
+// Protocol 3.2 end to end on the client side: the startup packet asks for it,
+// a 32-byte secret — what PostgreSQL 18 sends — is kept whole, and the
+// CancelRequest hands it back byte for byte, its length in the length word.
+func TestProtocol32LongCancelKeyRoundTrips(t *testing.T) {
+	secret := strings.Repeat("\xa5\x5a", 16)
+	srv := &fakeServer{responses: [][]byte{
+		append(beAuth(0, ""), append(beBackendKeyDataSecret(secret), beReadyForQuery()...)...),
+	}}
+	conn, err := Startup(srv, StartupConfig{User: "u", ProtocolMinor: 2})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	startup, _, _ := clientTraffic(t, srv.sent.Bytes())
+	if v := binary.BigEndian.Uint32(startup[:4]); v != 3<<16|2 {
+		t.Errorf("protocol version = %#x, want %#x", v, 3<<16|2)
+	}
+	key := conn.CancelKey()
+	if key.PID != 1234 || key.Secret != secret {
+		t.Fatalf("CancelKey = {%d, %x}, want {1234, %x}", key.PID, key.Secret, secret)
+	}
+
+	cancel := &fakeServer{}
+	if err := CancelRequest(cancel, key); err != nil {
+		t.Fatalf("CancelRequest returned %v", err)
+	}
+	want := binary.BigEndian.AppendUint32(nil, 12+32)
+	want = binary.BigEndian.AppendUint32(want, cancelRequestCode)
+	want = binary.BigEndian.AppendUint32(want, 1234)
+	want = append(want, secret...)
+	if got := cancel.sent.Bytes(); !bytes.Equal(got, want) {
+		t.Errorf("cancellation packet:\n got % x\nwant % x", got, want)
+	}
+}
+
+// A secret the protocol cannot carry is refused before a byte is written: the
+// server matches it whole, so a mangled one would cancel nothing while the
+// nil error said otherwise.
+func TestCancelRequestRefusesASecretOutOfBounds(t *testing.T) {
+	for _, n := range []int{1, 3, 257} {
+		srv := &fakeServer{}
+		if err := CancelRequest(srv, CancelKey{PID: 1, Secret: strings.Repeat("x", n)}); err == nil {
+			t.Errorf("CancelRequest accepted a %d-byte secret", n)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("%d-byte secret: % x went to the server", n, srv.sent.Bytes())
 		}
 	}
 }
@@ -370,7 +444,7 @@ func cancelPipe(dials *int, packets chan<- []byte) func(context.Context) (io.Rea
 func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
-		key := CancelKey{PID: 4242, Secret: 0x5eca}
+		key := CancelKey{PID: 4242, Secret: "\x00\x00\x5e\xca"}
 		conn.cancelKey = key
 		packets := make(chan []byte, 1)
 		dials := 0
@@ -382,8 +456,8 @@ func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 			if got := binary.BigEndian.Uint32(pkt[4:]); got != cancelRequestCode {
 				t.Errorf("cancel packet code = %#x, want %#x", got, cancelRequestCode)
 			}
-			if pid, secret := binary.BigEndian.Uint32(pkt[8:]), binary.BigEndian.Uint32(pkt[12:]); pid != key.PID || secret != key.Secret {
-				t.Errorf("cancel packet names pid %d secret %#x, want %d %#x", pid, secret, key.PID, key.Secret)
+			if pid, secret := binary.BigEndian.Uint32(pkt[8:]), string(pkt[12:]); pid != key.PID || secret != key.Secret {
+				t.Errorf("cancel packet names pid %d secret %x, want %d %x", pid, secret, key.PID, key.Secret)
 			}
 			// The server aborts the statement; the ReadyForQuery follows the
 			// client's Sync, as it does on every error.
@@ -453,7 +527,7 @@ func TestQueryCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 func TestExecCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
-		conn.cancelKey = CancelKey{PID: 1, Secret: 2}
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
 		packets := make(chan []byte, 1)
 		dials := 0
 		conn.cancelDial = cancelPipe(&dials, packets)
@@ -487,7 +561,7 @@ func TestExecCancelsTheRunningStatementThroughCancelDial(t *testing.T) {
 func TestQueryReportsACancellationThatCouldNotBeSent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)
-		conn.cancelKey = CancelKey{PID: 1, Secret: 2}
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
 		errDial := errors.New("no route to the server")
 		dials := 0
 		conn.cancelDial = func(context.Context) (io.ReadWriteCloser, error) {
@@ -563,7 +637,7 @@ func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
 	if w := conn.watchCancel(ctx); w != nil {
 		t.Error("armed without a key")
 	}
-	conn.cancelKey = CancelKey{PID: 1, Secret: 2}
+	conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
 	if w := conn.watchCancel(context.Background()); w != nil {
 		t.Error("armed on a context that can never end")
 	}

@@ -17,21 +17,22 @@ import (
 // backend, Describe from the frontend — is a bug waiting for a tired reader.
 const (
 	// Backend.
-	BackendErrorResponse   = 'E'
-	BackendNoticeResponse  = 'N'
-	BackendRowDescription  = 'T'
-	BackendDataRow         = 'D'
-	BackendCommandComplete = 'C'
-	BackendReadyForQuery   = 'Z'
-	BackendParseComplete   = '1'
-	BackendBindComplete    = '2'
-	BackendNoData          = 'n'
-	BackendPortalSuspended = 's'
-	BackendEmptyQuery      = 'I'
-	BackendAuthentication  = 'R'
-	BackendParameterStatus = 'S'
-	BackendBackendKeyData  = 'K'
-	BackendCloseComplete   = '3'
+	BackendErrorResponse            = 'E'
+	BackendNoticeResponse           = 'N'
+	BackendRowDescription           = 'T'
+	BackendDataRow                  = 'D'
+	BackendCommandComplete          = 'C'
+	BackendReadyForQuery            = 'Z'
+	BackendParseComplete            = '1'
+	BackendBindComplete             = '2'
+	BackendNoData                   = 'n'
+	BackendPortalSuspended          = 's'
+	BackendEmptyQuery               = 'I'
+	BackendAuthentication           = 'R'
+	BackendParameterStatus          = 'S'
+	BackendBackendKeyData           = 'K'
+	BackendNegotiateProtocolVersion = 'v'
+	BackendCloseComplete            = '3'
 
 	// BackendNotificationResponse is asynchronous by design: the docs say to
 	// accept it at any point in the protocol, including just before
