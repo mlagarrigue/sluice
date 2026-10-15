@@ -169,11 +169,17 @@ jobs:
   # unset, so this job is the only place they run.
   postgres:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 17 speaks protocol 3.0 only and negotiates a 3.2 request down; 18
+        # speaks 3.2, and with it the long cancellation key.
+        postgres: ["17", "18"]
     services:
       postgres:
-        # Pinned major: a new major changes catalogs and error texts, and that
-        # should arrive as a reviewed bump, not overnight.
-        image: postgres:17
+        # Pinned majors: a new major changes catalogs and error texts, and
+        # that should arrive as a reviewed bump, not overnight.
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -207,13 +213,20 @@ jobs:
             psql -U postgres -v ON_ERROR_STOP=1 < .devcontainer/postgres/init.sql
 
       # A skipped integration test reads exactly like a passing one, so the
-      # skips that mean "no server" or "wrong role" fail the job.
+      # skips that mean "no server" or "wrong role" fail the job, and so does
+      # the protocol 3.2 test not passing on the server that is there to run it.
       - name: Integration tests
         shell: bash
+        env:
+          PG_MAJOR: ${{ matrix.postgres }}
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
           if grep -E 'SLUICE_PG is not set|is a superuser' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
+            exit 1
+          fi
+          if [ "$PG_MAJOR" -ge 18 ] && ! grep -- '--- PASS: TestIntegrationProtocol32LongCancelKey' test.log; then
+            echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
 
