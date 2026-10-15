@@ -177,6 +177,16 @@ func (s *Started) Shutdown(ctx context.Context) error {
 // cannot pin connections for the life of the process.
 const DefaultReadHeaderTimeout = 10 * time.Second
 
+// DefaultIdleTimeout is how long [Serve] and [ServeTLS] let a keep-alive
+// connection wait for its next request when the server set no idle or read
+// deadline. Without it, a client that made one request and went quiet holds
+// its connection, and a file descriptor, for the life of the process. Two
+// minutes outlasts the idle timeout of the common proxies in front (60
+// seconds on most load balancers and on nginx's upstream pool), so the
+// server is not the side that closes a connection the proxy is about to
+// reuse; a proxy that keeps its connections longer wants a longer IdleTimeout.
+const DefaultIdleTimeout = 2 * time.Minute
+
 // Serve runs a server until ctx is cancelled, then shuts it down.
 //
 // It is the shape a main function wants: one call that blocks while the
@@ -205,6 +215,11 @@ const DefaultReadHeaderTimeout = 10 * time.Second
 // stance [DecodeJSON] takes by refusing an unbounded body. A negative
 // ReadHeaderTimeout is an explicit "no bound" and is left alone, as is any
 // server that already bounds its reads.
+//
+// The same holds between requests: a keep-alive connection waiting for its
+// next request has no deadline unless IdleTimeout or ReadTimeout gives it one.
+// Serve sets IdleTimeout to [DefaultIdleTimeout] on a server with neither; a
+// negative IdleTimeout is left alone.
 //
 // What Serve runs is cleartext ListenAndServe. That is kept for
 // interoperability — a TLS-terminating proxy in front, a health check, local
@@ -235,7 +250,8 @@ func Serve(ctx context.Context, srv *http.Server, grace time.Duration, closers .
 // HTTP/1.1 do not — see [gateway]'s note on the pipelining client. HTTP/2
 // removes that trap rather than the library doing it.
 //
-// srv gets the same ReadHeaderTimeout default as under [Serve].
+// srv gets the same ReadHeaderTimeout and IdleTimeout defaults as under
+// [Serve].
 //
 // certFile and keyFile are as [http.Server.ListenAndServeTLS] takes them, and
 // may be empty when srv.TLSConfig already carries the certificates.
@@ -253,6 +269,11 @@ func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen fu
 	// only a server bounding neither is unbounded.
 	if srv.ReadHeaderTimeout == 0 && srv.ReadTimeout <= 0 {
 		srv.ReadHeaderTimeout = DefaultReadHeaderTimeout
+	}
+	// The same fallback holds for IdleTimeout, and a zero there leaves a
+	// keep-alive connection waiting for its next request forever.
+	if srv.IdleTimeout == 0 && srv.ReadTimeout <= 0 {
+		srv.IdleTimeout = DefaultIdleTimeout
 	}
 	listenErr := make(chan error, 1)
 	go func() {

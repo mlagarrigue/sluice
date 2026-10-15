@@ -198,8 +198,12 @@ stopped: on context cancellation, it gives in-flight requests ten seconds
 to finish, then closes what it was handed — the gateway, the database
 connection. A server without `ReadHeaderTimeout` gets ten seconds by
 default: a client sending its headers one byte at a time cannot hold the
-process hostage. `Recover` turns a panic in a handler into a 500 response
-you observe, instead of killing the process and every request in flight.
+process hostage. Likewise, a server with neither `IdleTimeout` nor
+`ReadTimeout` gets two minutes: a *keep-alive* connection (kept open for
+the next request) that goes quiet after its response is closed instead of
+holding a file descriptor forever. `Recover` turns a panic in a handler
+into a 500 response you observe, instead of killing the process and every
+request in flight.
 
 ## The complete example
 
