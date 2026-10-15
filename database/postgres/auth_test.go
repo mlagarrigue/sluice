@@ -442,6 +442,41 @@ func TestStartupServerRefusal(t *testing.T) {
 	if !errors.Is(err, ErrConnBroken) {
 		t.Errorf("error = %v, want it to also report the connection as unusable", err)
 	}
+	// The text is the server's refusal. Read as "out of sync", a wrong
+	// password sends whoever sees it looking for a protocol fault.
+	if got := err.Error(); !strings.HasPrefix(got, "postgres: ERROR 28P01: password authentication failed") {
+		t.Errorf("error = %q, want it to read as the server's refusal", got)
+	}
+	if strings.Contains(err.Error(), "SASLprep") {
+		t.Errorf("error = %q names SASLprep, which a cleartext exchange does not involve", err)
+	}
+}
+
+// A SCRAM password failure with a non-ASCII password names the likely cause:
+// this package sends the password without SASLprep, so a server that stored
+// it normalised derived another key. An ASCII password, for which SASLprep is
+// the identity, gets no such hint.
+func TestStartupRefusalSASLprepHint(t *testing.T) {
+	for _, tt := range []struct {
+		password string
+		hint     bool
+	}{
+		{"correct horse", false},
+		{"ｐａｓｓ", true}, // fullwidth letters, which NFKC folds to "pass"
+	} {
+		srv := &fakeServer{responses: [][]byte{
+			beAuth(authSASL, "SCRAM-SHA-256\x00\x00"),
+			beErrorResponse("28P01", "password authentication failed for user \"orders\""),
+		}}
+		_, err := Startup(srv, StartupConfig{User: "orders", Password: tt.password})
+		var pgErr *Error
+		if !errors.As(err, &pgErr) || pgErr.Code != "28P01" {
+			t.Fatalf("password %q: error = %v, want a *postgres.Error with SQLSTATE 28P01", tt.password, err)
+		}
+		if got := strings.Contains(err.Error(), "SASLprep"); got != tt.hint {
+			t.Errorf("password %q: error = %q, SASLprep hint present = %v, want %v", tt.password, err, got, tt.hint)
+		}
+	}
 }
 
 // A server that closes the socket during startup usually refused the

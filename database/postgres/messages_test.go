@@ -53,6 +53,36 @@ func TestParseError(t *testing.T) {
 	}
 }
 
+// Every field the protocol defines lands in its own place. Position first: it
+// is what points a syntax error at its token, and without it the caller is
+// left counting characters in the message.
+func TestParseErrorAllFields(t *testing.T) {
+	body := errBody(
+		"S", "ERROR",
+		"C", "42601",
+		"M", "syntax error at or near \"FORM\"",
+		"P", "10",
+		"p", "3",
+		"q", "SELECT 1 FORM t",
+		"d", "int8",
+		"F", "scan.l",
+		"L", "1176",
+		"R", "scanner_yyerror",
+	)
+	e, err := ParseError(body)
+	if err != nil {
+		t.Fatalf("ParseError returned %v", err)
+	}
+	want := Error{
+		Severity: "ERROR", Code: "42601", Message: "syntax error at or near \"FORM\"",
+		Position: 10, InternalPosition: 3, InternalQuery: "SELECT 1 FORM t",
+		DataType: "int8", File: "scan.l", Line: "1176", Routine: "scanner_yyerror",
+	}
+	if *e != want {
+		t.Errorf("parsed %+v\nwant   %+v", *e, want)
+	}
+}
+
 // S is translated by the server's lc_messages; V, when present, is the same
 // severity untranslated, and is what Severity reports whichever comes first.
 func TestParseErrorPrefersNonLocalisedSeverity(t *testing.T) {
@@ -96,6 +126,10 @@ func TestParseErrorMalformed(t *testing.T) {
 	}{
 		{"no terminator", []byte("SERROR\x00")},
 		{"unterminated value", []byte{'S', 'E', 'R', 'R'}},
+		// A position that is not one would read as Position 0, "none sent".
+		{"non-numeric position", errBody("S", "ERROR", "P", "ten")},
+		{"zero position", errBody("S", "ERROR", "P", "0")},
+		{"negative internal position", errBody("S", "ERROR", "p", "-1")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

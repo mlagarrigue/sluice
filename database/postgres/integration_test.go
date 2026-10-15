@@ -349,7 +349,8 @@ func TestIntegrationCopy(t *testing.T) {
 func TestIntegrationServerError(t *testing.T) {
 	conn := dial(t)
 
-	src := conn.Query(t.Context(), "SELECT * FROM a_table_that_does_not_exist", nil, postgres.QueryConfig{})
+	const sql = "SELECT * FROM a_table_that_does_not_exist"
+	src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{})
 	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
 
 	var pgErr *postgres.Error
@@ -359,6 +360,11 @@ func TestIntegrationServerError(t *testing.T) {
 	if pgErr.Code != "42P01" {
 		t.Errorf("SQLSTATE = %q, want 42P01 (undefined_table)", pgErr.Code)
 	}
+	// The parser points at the token it failed on, counted in characters
+	// from 1; the text is ASCII, so the byte index is the same.
+	if want := strings.Index(sql, "a_table") + 1; pgErr.Position != want {
+		t.Errorf("Position = %d, want %d — the start of the missing table's name", pgErr.Position, want)
+	}
 	// And the connection survives a query error, which is the distinction the
 	// connector makes between a failed statement and a broken stream.
 	if conn.Err() != nil {
@@ -366,6 +372,37 @@ func TestIntegrationServerError(t *testing.T) {
 	}
 	if err := exec(t, conn, "SELECT 1"); err != nil {
 		t.Errorf("the connection was unusable after a query error: %v", err)
+	}
+}
+
+// A wrong password is refused by the server, and the error says so: a 28P01
+// a caller can find with errors.As, in a text that reads as a refusal rather
+// than as a protocol fault.
+func TestIntegrationWrongPassword(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	if cfg.Password == "" {
+		t.Skip("SLUICE_PG_PASSWORD is not set: the server is reached without a password")
+	}
+	cfg.Password += "-wrong"
+	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dialling %s: %v", addr, err)
+	}
+	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := postgres.Startup(nc, cfg)
+	if err == nil {
+		_ = conn.Close()
+		t.Skip("the server accepted a wrong password: pg_hba.conf trusts this connection")
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "28P01" {
+		t.Fatalf("error = %v, want a *postgres.Error with SQLSTATE 28P01 (invalid_password)", err)
+	}
+	if strings.Contains(err.Error(), "out of sync") {
+		t.Errorf("error = %q reads as a protocol fault, not as the server's refusal", err)
 	}
 }
 

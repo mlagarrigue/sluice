@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
@@ -42,7 +43,24 @@ type Error struct {
 	Table      string
 	Column     string
 	Constraint string // constraint name
-	Routine    string // the server's source routine; not localised, unlike Message
+	DataType   string // data type name, when the error concerns one
+
+	// Position is where in the statement text the error lies, counted in
+	// characters from 1 — not bytes — and 0 when the server sent none. It is
+	// what points a syntax error at its token.
+	Position int
+
+	// InternalPosition and InternalQuery are the same pair for a statement the
+	// server generated itself, such as the body of a PL/pgSQL function: the
+	// position counts into InternalQuery, not into the caller's text.
+	InternalPosition int
+	InternalQuery    string
+
+	// File, Line and Routine locate the error in the server's own source.
+	// None is localised, unlike Message.
+	File    string
+	Line    string
+	Routine string
 }
 
 // Error renders the error for a log line. The SQLSTATE comes first because it
@@ -104,6 +122,27 @@ func ParseError(body []byte) (*Error, error) {
 			e.Column = val
 		case 'n':
 			e.Constraint = val
+		case 'd':
+			e.DataType = val
+		case 'P', 'p':
+			// Numeric by the protocol's definition. A value that is not one
+			// would otherwise surface as Position 0, which reads as "the
+			// server gave none" — a silent loss rather than a refusal.
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("%w: ErrorResponse position %q is not a positive integer", ErrProtocol, val)
+			}
+			if typ == 'P' {
+				e.Position = n
+			} else {
+				e.InternalPosition = n
+			}
+		case 'q':
+			e.InternalQuery = val
+		case 'F':
+			e.File = val
+		case 'L':
+			e.Line = val
 		case 'R':
 			e.Routine = val
 		}
