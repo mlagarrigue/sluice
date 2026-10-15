@@ -408,6 +408,24 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 	})
 }
 
+// RFC 9204 §7.4: a value wider than the decoder can decode — past the 62 bits
+// §4.1.1 requires — is a *stream* error of type QPACK_DECOMPRESSION_FAILED
+// on a request stream, where the other decoding failures are the
+// connection's. A string length of 2^62 here; the connection goes on.
+func TestH3QPACKIntegerPastSixtyTwoBitsIsAStreamError(t *testing.T) {
+	a := newH3Assembler(Config{})
+	// Prefix, then a literal with a literal name whose 3-bit-prefix name
+	// length is 2^62: 0x27 then nine continuation octets.
+	section := []byte{0x00, 0x00, 0x27, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, appendH3Frame(nil, h3Headers, section), true)})
+	if err != nil {
+		t.Fatalf("one stream's oversized integer failed the connection: %v", err)
+	}
+	if batch.Len() != 0 || len(failed) != 1 || failed[0].Code != qpackDecompressionFailed {
+		t.Fatalf("batch=%d failed=%v, want one QPACK_DECOMPRESSION_FAILED refusal on the stream", batch.Len(), failed)
+	}
+}
+
 // uniOpen builds the bytes a client unidirectional stream opens with: its
 // type varint, then whatever follows.
 func uniOpen(typ uint64, rest ...byte) []byte {
@@ -827,6 +845,14 @@ func TestH3QPACKDecoderStreamIsRead(t *testing.T) {
 	}{
 		{"stream cancellation", [][]byte{{0x44}}, 0},
 		{"stream cancellation split across deliveries", [][]byte{{0x7f, 0x80}, {0x01, 0x48}}, 0},
+		// RFC 9204 §4.1.1: integers up to 62 bits decode, and a QUIC stream
+		// identifier is 62 bits wide. Stream 2^40 is one a long-lived client
+		// reaches; the decoder used to stop at 28 bits and close the
+		// connection over it.
+		{"stream cancellation of stream 2^40", [][]byte{{0x7f, 0xc1, 0xff, 0xff, 0xff, 0xff, 0x1f}}, 0},
+		{"stream cancellation of stream 2^62-1", [][]byte{{0x7f, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}}, 0},
+		{"stream cancellation of stream 2^62-1 split across deliveries", [][]byte{{0x7f, 0xc0, 0xff, 0xff}, {0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}}, 0},
+		{"stream cancellation past 62 bits", [][]byte{{0x7f, 0xc1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}}, qpackDecoderStreamError},
 		{"section acknowledgment", [][]byte{{0x84}}, qpackDecoderStreamError},
 		{"insert count increment", [][]byte{{0x01}}, qpackDecoderStreamError},
 		{"insert count increment of zero", [][]byte{{0x00}}, qpackDecoderStreamError},

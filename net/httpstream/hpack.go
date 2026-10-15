@@ -261,11 +261,13 @@ func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 			if size, block, err = hpackInt(block, 5); err != nil {
 				return dst, err
 			}
-			if int(size) > d.advertised { //nolint:gosec // G115: hpackInt refuses anything past 28 bits
+			// Compared in the integer's own width: hpackInt admits 62 bits,
+			// and the bound that protects the allocation is this one.
+			if size > uint64(d.advertised) { //nolint:gosec // G115: advertised is a non-negative setting
 				return dst, fmt.Errorf("%w: a table update asks for %d bytes, over the %d advertised",
 					ErrHPACK, size, d.advertised)
 			}
-			d.resize(int(size)) //nolint:gosec // G115: hpackInt refuses anything past 28 bits
+			d.resize(int(size)) //nolint:gosec // G115: bounded by advertised just above
 			continue
 
 		default: // §6.2.2 and §6.2.3: literal, without or never indexed
@@ -530,12 +532,27 @@ func (d *hpackDecoder) strRaw(block []byte) (raw []byte, huff bool, rest []byte,
 	return rest[:n], huff, rest[n:], nil
 }
 
+// The two ways a prefixed integer fails, told apart because a unidirectional
+// QPACK stream reads them differently: an integer that runs off the end has
+// simply not all arrived yet, where one wider than the format allows never
+// will be legal.
+var (
+	errIntegerShort = fmt.Errorf("%w: an integer runs off the end of the block", ErrHPACK)
+	errIntegerWide  = fmt.Errorf("%w: an integer wider than 62 bits", ErrHPACK)
+)
+
 // hpackInt decodes RFC 7541 §5.1's prefixed integer: n bits in the first
 // octet, then continuation octets seven bits at a time.
 //
-// The width is bounded rather than left to overflow: the format can express
-// arbitrarily large integers, and every use of one here is a length or an
-// index that a peer could otherwise make enormous with a few bytes.
+// The width is bounded at 62 bits, the bound RFC 9204 §4.1.1 makes every
+// QPACK decoder meet ("MUST be able to decode integers up to and including
+// 62 bits long"): a QUIC stream identifier is 62 bits wide, so a Stream
+// Cancellation naming a stream opened late in a long connection needs the
+// whole width. It used to stop at 28, which protected the allocations
+// downstream but killed a connection over a legal instruction. The bound now
+// guards only the arithmetic — nine continuation octets cannot overflow a
+// uint64 — and each caller checks the value against what it can allocate,
+// which is where that check belonged.
 func hpackInt(block []byte, n uint8) (v uint64, rest []byte, err error) {
 	if len(block) == 0 {
 		return 0, nil, fmt.Errorf("%w: an integer with no first octet", ErrHPACK)
@@ -548,18 +565,19 @@ func hpackInt(block []byte, n uint8) (v uint64, rest []byte, err error) {
 	}
 	for shift := uint(0); ; shift += 7 {
 		if len(block) == 0 {
-			return 0, nil, fmt.Errorf("%w: an integer runs off the end of the block", ErrHPACK)
+			return 0, nil, errIntegerShort
 		}
-		if shift > 21 {
-			// Four continuation octets carry more than any length or index
-			// this package will act on, and refusing here is what keeps a
-			// five-byte integer from becoming a huge allocation downstream.
-			return 0, nil, fmt.Errorf("%w: an integer wider than this decoder will act on", ErrHPACK)
+		if shift > 56 {
+			// A tenth continuation octet would shift past bit 63.
+			return 0, nil, errIntegerWide
 		}
 		b := block[0]
 		block = block[1:]
 		v += uint64(b&0x7f) << shift
 		if b&0x80 == 0 {
+			if v >= 1<<62 {
+				return 0, nil, errIntegerWide
+			}
 			return v, block, nil
 		}
 	}

@@ -112,7 +112,10 @@ func TestHPACKRefusals(t *testing.T) {
 		{"an index past the table", "ff00"},
 		{"a string longer than the block", "00 7f"},
 		{"an integer that runs off the end", "00 00 ff"},
-		{"an integer wider than a length can be", "00 00 ffffffffff7f"},
+		{"a string of 2^35 bytes, longer than the block", "00 00 ffffffffff7f"},
+		// RFC 9204 §4.1.1's 62 bits are decoded; 2^62 itself is not. The
+		// refusal used to fall at 28 bits, on the fifth continuation octet.
+		{"an integer past 62 bits", "00 00 ff81ffffffffffffff3f"},
 		{"a name index past the table", "7f00 00"},
 	}
 	for _, tt := range tests {

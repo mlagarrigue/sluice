@@ -429,8 +429,11 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				return sluice.Batch[Request]{}, nil, a.failed, ce
 			}
 			code := uint64(h3MessageError)
-			if errors.Is(err, ErrTooLarge) {
+			switch {
+			case errors.Is(err, ErrTooLarge):
 				code = h3ExcessiveLoad
+			case errors.Is(err, errIntegerWide):
+				code = qpackDecompressionFailed // RFC 9204 §7.4, on the stream
 			}
 			a.fail(f.StreamID, code, err)
 			continue
@@ -814,14 +817,13 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 		}
 		capacity, rest, err := hpackInt(u.buf, 5)
 		if err != nil {
-			// A 5-bit-prefix integer completes, or trips hpackInt's width
-			// bound, within six bytes; short of that the tail has simply
-			// not arrived yet.
-			if len(u.buf) < 6 {
+			// An integer that runs off the end has not all arrived yet; one
+			// wider than 62 bits (RFC 9204 §4.1.1) never will be legal.
+			if errors.Is(err, errIntegerShort) {
 				return nil
 			}
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: a dynamic-table capacity wider than any this decoder accepts", ErrH3Protocol)}
+				"%w: a dynamic-table capacity wider than 62 bits", ErrH3Protocol)}
 		}
 		if capacity != 0 {
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
@@ -852,16 +854,21 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 				"%w: an Insert Count Increment, but nothing was ever inserted", ErrH3Protocol)}
 		}
 		// Stream Cancellation: a stream identifier with a 6-bit prefix, and
-		// nothing for an encoder without a table to do about it.
+		// nothing for an encoder without a table to do about it. The
+		// identifier is a QUIC stream ID, 62 bits wide (RFC 9000 §2.1), and
+		// hpackInt admits the whole width: a decoder that stopped at 28 bits
+		// used to close the connection over the cancellation of stream
+		// 2^28 — a legal instruction a long-lived client reaches, since
+		// HTTP/3 caps no request count.
 		_, rest, err := hpackInt(u.buf, 6)
 		if err != nil {
-			// As in encoderInstructions: short of six bytes, the rest of
-			// the integer has not arrived yet.
-			if len(u.buf) < 6 {
+			// As in encoderInstructions: an integer that runs off the end
+			// has not all arrived yet.
+			if errors.Is(err, errIntegerShort) {
 				return nil
 			}
 			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
-				"%w: a Stream Cancellation naming a stream wider than any admitted", ErrH3Protocol)}
+				"%w: a Stream Cancellation naming a stream wider than 62 bits", ErrH3Protocol)}
 		}
 		u.buf = append(u.buf[:0], rest...)
 	}
@@ -1044,8 +1051,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 // malformed request on the stream, which left a client whose encoder is
 // broken retrying the same bytes on the next one.
 func sectionRefused(err error) error {
-	if errors.Is(err, errHeadersTooLarge) {
+	switch {
+	case errors.Is(err, errHeadersTooLarge):
 		return h3StatusError{status: 431, err: err}
+	case errors.Is(err, errIntegerWide):
+		// RFC 9204 §7.4: "a value larger than it is able to decode" is a
+		// *stream* error of type QPACK_DECOMPRESSION_FAILED on a request
+		// stream. Frames reads this through the sentinel.
+		return err
 	}
 	return h3ConnectionError{Code: qpackDecompressionFailed, Err: err}
 }
