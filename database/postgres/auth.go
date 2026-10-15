@@ -570,7 +570,7 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			}
 			// Unlike a query error, this one is terminal: there is no
 			// ReadyForQuery coming and no position to resynchronise to.
-			c.broken = refusal(serverErr, st.started, cfg.Password)
+			c.broken = refusal(serverErr, st.step != scramIdle, cfg.Password)
 			return c.broken
 
 		case pgwire.BackendReadyForQuery:
@@ -587,7 +587,7 @@ func (c *Conn) authenticate(cfg StartupConfig, ts tlsStater) error {
 			// and then skipped its final message would otherwise have proved
 			// nothing about knowing the password, and this client would have
 			// handed one over for it.
-			if st.started && !st.verified {
+			if st.step != scramIdle && st.step != scramVerified {
 				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without completing the SCRAM exchange it started", ErrAuth))
 			}
 			// The same exit judges what the caller required of the exchange.
