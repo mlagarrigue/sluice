@@ -414,6 +414,7 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duratio
 		}
 	}
 
+	date := dateFor(time.Now())
 	for i, id := range b.ids {
 		writers.Add(1)
 		go func(id uint64, r Response, method []byte) {
@@ -429,7 +430,7 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duratio
 					b.retire()
 				}
 			}()
-			writeH3Response(c, id, r, method, b.fieldSection, writeTimeout, func() {
+			writeH3Response(c, id, r, method, b.fieldSection, writeTimeout, date, func() {
 				detached = true
 				writers.Done()
 			})
@@ -454,15 +455,16 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, writeTimeout time.Duration, detach func()) {
+func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, writeTimeout time.Duration, date []byte, detach func()) {
 	s := c.Stream(id)
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
-	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc)
+	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)
 	if err != nil {
-		if head, err = appendH3Response(sc.head[:0], Response{Status: 500}, method, fieldSection, sc); err != nil {
+		if head, err = appendH3Response(sc.head[:0], Response{Status: 500}, method, fieldSection, sc, date); err != nil {
 			// Only reachable when the peer's MAX_FIELD_SECTION_SIZE is under
-			// a bare 500's own (:status and content-length, ~90 bytes): no
+			// a bare 500's own (:status, date and content-length, ~155
+			// bytes): no
 			// answer fits what the client said it accepts, so the stream is
 			// reset rather than sent a section §4.2.2 says it will refuse.
 			_ = s.Reset(h3InternalError)

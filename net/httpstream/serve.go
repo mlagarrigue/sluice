@@ -433,7 +433,7 @@ func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 	// closing is always true here: every caller is about to end the
 	// connection, so appendResponse writes the Connection: close itself
 	// rather than have it duplicated as a caller-supplied header.
-	buf, err := appendResponse(nil, method, true, Response{Status: status})
+	buf, err := appendResponse(nil, method, true, Response{Status: status}, dateFor(time.Now()))
 	if err != nil {
 		return err
 	}
@@ -733,7 +733,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 			// connection's last whatever the request's Connection field said.
 			closing = true
 		}
-		out, err := appendStreamedHeader(buf, closing, http10, noBody, r)
+		out, err := appendStreamedHeader(buf, closing, http10, noBody, r, dateFor(time.Now()))
 		if err != nil {
 			return fail(i, err)
 		}

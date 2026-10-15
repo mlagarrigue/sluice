@@ -1100,7 +1100,7 @@ func appendH3StreamedBody(dst []byte, chunks [][]byte) []byte {
 // — the internal responder path, which knows the method and calls that
 // instead.
 func appendH3ResponseBasic(dst []byte, r Response) ([]byte, error) {
-	return appendH3Response(dst, r, nil, 0, &h3Scratch{})
+	return appendH3Response(dst, r, nil, 0, &h3Scratch{}, dateFor(time.Now()))
 }
 
 // h3Scratch is one responder's reusable per-response state: the field list
@@ -1121,8 +1121,8 @@ type h3Scratch struct {
 // the peer's SETTINGS_MAX_FIELD_SECTION_SIZE — zero for unbounded — which
 // RFC 9114 §4.2.2 says a sender SHOULD NOT exceed. A field section that
 // would exceed it is refused here rather than sent to a client that told
-// us it will not accept it.
-func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection uint64, sc *h3Scratch) ([]byte, error) {
+// us it will not accept it. date is [dateFor]'s value for the batch.
+func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection uint64, sc *h3Scratch, date []byte) ([]byte, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
@@ -1135,6 +1135,7 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	}
 	noLength, noBody := noLengthAndBody(status, method)
 	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
+	hasDate := false
 	for _, h := range r.Headers {
 		if !lowerASCII(h.Name) {
 			return nil, fmt.Errorf("%w: response field %q is not lowercase", ErrH3Protocol, h.Name)
@@ -1160,8 +1161,16 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
+		case "date":
+			hasDate = true
 		}
 		fields = append(fields, h)
+	}
+	if !hasDate {
+		// RFC 9110 §6.6.1's Date, as the other two writers add it: on every
+		// final response the handler did not date itself. The value is the
+		// batch's, formatted once and never written after.
+		fields = append(fields, Header{Name: h3DateName, Value: date})
 	}
 	if !r.streamed() && !noLength {
 		// A streamed response has no length to state, which is what the
@@ -1189,11 +1198,13 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	return dst, nil
 }
 
-// h3StatusName and h3ContentLengthName are the two field names the responder
-// writes itself, kept as package bytes so no response re-allocates them.
+// h3StatusName, h3ContentLengthName and h3DateName are the three field names
+// the responder writes itself, kept as package bytes so no response
+// re-allocates them.
 var (
 	h3StatusName        = []byte(":status")
 	h3ContentLengthName = []byte("content-length")
+	h3DateName          = []byte("date")
 )
 
 // appendDigits writes v in decimal, the no-string itoa the response scratch

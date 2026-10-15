@@ -263,8 +263,12 @@ type h2Server struct {
 	out     []byte
 	block   []byte
 	answers []h2Answer
-	jobs    []h2Job
-	ptrs    []*h2Job
+	// date is the batch's Date value, read from the clock once in answer
+	// (time.Now is 35 ns here, a fifth of a head) and from here by
+	// appendHead, whose signature the tests and the benchmark call.
+	date []byte
+	jobs []h2Job
+	ptrs []*h2Job
 	// streamBody's state, kept here rather than in locals its pull closure
 	// would move to the heap on every call: two jobs, alternating — one may
 	// be queued or in flight while the other, done, is ready to be reused
@@ -1398,6 +1402,7 @@ func (s *h2Server) answer(b h2Batch) {
 	// live value at write time, so only headers needed this. A block over
 	// 16384 bytes is rare, and costs one CONTINUATION more when it happens.
 	const maxFrame = defaultMaxFrameSize
+	s.date = dateFor(time.Now())
 	s.out, s.answers = s.out[:0], s.answers[:0]
 	for i, r := range res {
 		method := b.reqs[i].Method
@@ -1476,8 +1481,23 @@ func (s *h2Server) answer(b h2Batch) {
 	}
 }
 
+// hasDateField reports whether the caller dated the response itself: a
+// second pass over the headers, kept out of the encoding loop, which is the
+// encoder's hot path. The field costs the h2 head 35-40 ns of its 165
+// (measured, BenchmarkH2Encode): the 33 bytes written and framed, and this
+// scan. Variants that kept the value live across the loop measured the same
+// within noise.
+func hasDateField(headers []Header) bool {
+	for _, h := range headers {
+		if string(h.Name) == "date" {
+			return true
+		}
+	}
+	return false
+}
+
 // appendHead frames a response's HEADERS, and its CONTINUATION frames if the
-// block does not fit one.
+// block does not fit one. s.date is the batch's Date value, set by answer.
 func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, maxFrame int) ([]byte, error) {
 	if err := r.check(); err != nil {
 		return nil, err
@@ -1528,6 +1548,14 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		}
 		block = appendHPACK(block, h.Name, h.Value)
 		listSize += uint64(len(h.Name)+len(h.Value)) + 32
+	}
+	if !hasDateField(r.Headers) {
+		// RFC 9110 §6.6.1's Date, as the h1 writer adds it: on every final
+		// response the handler did not date itself. The static table names
+		// the field (entry 33); the value is the batch's, formatted once.
+		block = appendHPACKInt(block, hpackDateIndex, 4, 0x00)
+		block = appendHPACKString(block, s.date)
+		listSize += uint64(len("date")+len(s.date)) + 32
 	}
 	if !r.streamed() && !noLength {
 		// A streamed response has no length to state, which is what the

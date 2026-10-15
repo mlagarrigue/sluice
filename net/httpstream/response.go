@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 )
@@ -15,7 +16,9 @@ type Response struct {
 	Status int
 
 	// Headers are sent as given. Content-Length is written by [WriteBatch]
-	// from the body and must not be set here.
+	// from the body and must not be set here. Date is added by the writer
+	// when the handler did not set one (RFC 9110 §6.6.1), on every final
+	// response, 5xx included.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
@@ -102,6 +105,7 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 // the connection always continued.
 func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, error) {
 	closeAfter := asksToClose(responses)
+	date := dateFor(time.Now())
 	for i, res := range responses {
 		var method []byte
 		if i < len(requests) {
@@ -109,7 +113,7 @@ func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, e
 		}
 		closing := i == len(responses)-1 && (closeAfter || i < len(requests) && !requests[i].KeepAlive)
 		var err error
-		if dst, err = appendResponse(dst, method, closing, res); err != nil {
+		if dst, err = appendResponse(dst, method, closing, res, date); err != nil {
 			return nil, err
 		}
 	}
@@ -151,8 +155,8 @@ func appendLastChunk(dst []byte) []byte {
 // instead — no framing header at all, the empty line to EOF — and the caller
 // has already marked the response closing, since EOF is the only end such a
 // body has.
-func appendStreamedHeader(dst []byte, closing, http10, noBody bool, res Response) ([]byte, error) {
-	dst, err := appendStatusAndHeaders(dst, res)
+func appendStreamedHeader(dst []byte, closing, http10, noBody bool, res Response, date []byte) ([]byte, error) {
+	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +173,8 @@ func appendStreamedHeader(dst []byte, closing, http10, noBody bool, res Response
 // appendStatusAndHeaders writes the status line and the caller's fields, and
 // refuses the two things a response must never carry from a caller: a header
 // that would split the response, and a framing header this package owns.
-func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
+// date is [dateFor]'s value for the batch, written when the caller set none.
+func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, error) {
 	status := res.Status
 	if status == 0 {
 		status = 200
@@ -183,6 +188,7 @@ func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
 	dst = append(dst, reason(status)...)
 	dst = append(dst, '\r', '\n')
 
+	hasDate := false
 	for _, h := range res.Headers {
 		if !isToken(h.Name) {
 			return nil, fmt.Errorf("%w: %q is not a header name", ErrMalformed, h.Name)
@@ -214,9 +220,21 @@ func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
 			// the bytes that follow. HTTP/2 and HTTP/3 refuse the same fields.
 			return nil, fmt.Errorf("%w: %s is connection-specific, not the caller's", ErrMalformed, h.Name)
 		}
+		hasDate = hasDate || equalFold(h.Name, "date")
 		dst = append(dst, h.Name...)
 		dst = append(dst, ':', ' ')
 		dst = append(dst, h.Value...)
+		dst = append(dst, '\r', '\n')
+	}
+	if !hasDate {
+		// RFC 9110 §6.6.1: an origin server with a clock sends Date on every
+		// response. A handler that set its own is believed — a cache in
+		// front of it may be dating the entry — and is not doubled. The
+		// field follows the caller's rather than leading them: the order of
+		// distinct fields carries no meaning (§5.3), and one pass over the
+		// headers is enough to know whether it is owed.
+		dst = append(dst, "Date: "...)
+		dst = append(dst, date...)
 		dst = append(dst, '\r', '\n')
 	}
 	return dst, nil
@@ -254,11 +272,11 @@ var headMethod = []byte("HEAD")
 // only to decide whether a body may follow — never to change the status or
 // headers a handler chose. closing marks the last response of a batch whose
 // last request will not be followed by another.
-func appendResponse(dst, method []byte, closing bool, res Response) ([]byte, error) {
+func appendResponse(dst, method []byte, closing bool, res Response, date []byte) ([]byte, error) {
 	if err := res.check(); err != nil {
 		return nil, err
 	}
-	dst, err := appendStatusAndHeaders(dst, res)
+	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
 		return nil, err
 	}

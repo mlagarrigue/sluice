@@ -693,13 +693,13 @@ func TestH3ResponseHonoursPeerFieldSectionLimit(t *testing.T) {
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("x-big"), Value: bytes.Repeat([]byte("v"), 100)},
 	}}
-	if _, err := appendH3Response(nil, res, nil, 64, &h3Scratch{}); err == nil {
+	if _, err := appendH3Response(nil, res, nil, 64, &h3Scratch{}, testDate); err == nil {
 		t.Error("a field section over the peer's limit was encoded")
 	}
-	if _, err := appendH3Response(nil, res, nil, 4096, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 4096, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a field section under the limit was refused: %v", err)
 	}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("no advertised limit still refused the response: %v", err)
 	}
 }
@@ -736,11 +736,11 @@ func TestH3ResponseRefusesControlBytesInFieldValues(t *testing.T) {
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("x-note"), Value: []byte("a\x00b")},
 	}}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err == nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
 		t.Error("a response field value with a NUL was encoded")
 	}
 	res.Headers[0].Value = []byte("a\tb")
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a response field value with an HTAB was refused: %v", err)
 	}
 }
@@ -1501,7 +1501,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 	for _, name := range []string{"x bad", "x:y", "x\x00", ""} {
 		r := Response{Status: 200, Headers: []Header{{Name: []byte(name), Value: []byte("v")}}}
-		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}); !errors.Is(err, ErrH3Protocol) {
+		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("h3, name %q: got %v, want ErrH3Protocol", name, err)
 		}
 		s := newBenchH2Server(H2Config{})
@@ -1510,7 +1510,7 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 		}
 	}
 	ok := Response{Status: 200, Headers: []Header{{Name: []byte("x-ok"), Value: []byte("v")}}}
-	if _, err := appendH3Response(nil, ok, []byte("GET"), 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, ok, []byte("GET"), 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("h3 refused a token name: %v", err)
 	}
 }

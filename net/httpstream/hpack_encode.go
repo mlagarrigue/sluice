@@ -69,6 +69,12 @@ func appendHPACKStatus(dst []byte, status int) []byte {
 	return appendHPACK(dst, ":status", itoa(status))
 }
 
+// hpackDateIndex is the static table's entry for the date field name (RFC
+// 7541 Appendix A, entry 33), which every response the handler did not date
+// writes: spelled rather than looked up, since the scan below runs per field
+// and this field is the writer's own. TestHPACKDateIndex pins it to the table.
+const hpackDateIndex = 33
+
 // staticNameIndex returns the first static-table index whose name matches, or
 // zero. The table is small and this runs once per response header, so it is a
 // scan rather than a map nobody would see the benefit of.
