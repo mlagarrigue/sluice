@@ -954,10 +954,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
 			}
 			if st.gotHead {
-				// Trailers, which this does not serve — but their bytes are
-				// held to the same octet rules as everything else that could
-				// be re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3):
-				// decoded, validated, then dropped.
+				// Trailers: validated against the same bounds, then dropped,
+				// on every protocol (see Request.Headers) — and their bytes
+				// are held to the same octet rules as everything else that
+				// could be re-serialised toward an HTTP/1.1 hop (§4.1.2,
+				// §10.3): decoded, validated, then dropped.
 				if a.trailers, err = a.qpack.Decode(a.trailers[:0], f.Payload); err != nil {
 					return sectionRefused(err)
 				}

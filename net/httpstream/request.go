@@ -28,6 +28,10 @@ type Request struct {
 	// only (RFC 9110 §7.1: the server as a whole, not a resource on it).
 	Target []byte
 
+	// Headers is the request's field section, in the order the client sent
+	// it. Trailer fields are validated against the same bounds, then
+	// dropped, on every protocol: this package delivers complete requests,
+	// and a field arriving after the body has nobody left to inform.
 	Headers []Header
 
 	// Body is the request's content, exactly the bytes the client sent once

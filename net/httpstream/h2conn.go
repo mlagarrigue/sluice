@@ -916,7 +916,8 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
 	case st.gotHead:
-		// A trailer section. Not served here, as on the HTTP/3 side — but it
+		// A trailer section: validated against the same bounds, then
+		// dropped, on every protocol (see Request.Headers) — but it
 		// ends the message, and §8.1 makes a pseudo-header in it malformed:
 		// a trailer that carries :status or :path is a second request's head
 		// pretending to be the end of this one.

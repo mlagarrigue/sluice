@@ -115,6 +115,12 @@ Three reasons come up, and the difference matters:
   path. gzip and deflate will come from the standard library, zstd and
   brotli from a maintained module, the day the measurement says what each
   brings.
+- **Request trailers are validated, then dropped** — identically over
+  HTTP/1.1, 2 and 3: parsed, held to the same bounds as the headers
+  (`MaxHeaders`, `MaxHeaderBytes`), refused when malformed, then lost
+  before the handler. The package delivers complete requests, and a field
+  arriving after the body has nobody left to inform. A `Request.Trailers`
+  field will come with the first consumer who asks for one.
 
 ## Experimental: the exit conditions
 
