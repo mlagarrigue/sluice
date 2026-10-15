@@ -118,8 +118,15 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 	shutdown := func() {
 		once.Do(func() {
 			close(stop)
-			_ = ln.Close()
+			// The drain is armed before the listener closes: a connection
+			// that reads "refused" on a new dial can then rely on every
+			// live connection already seeing the shutdown. The other order
+			// let a handler finish between the two and answer without
+			// Connection: close on what was the connection's last response.
+			// Nothing is accepted in between either way: add refuses once
+			// the set is closed, which drain does first.
 			live.drain()
+			_ = ln.Close()
 		})
 	}
 	defer func() {
