@@ -164,7 +164,11 @@ type StartupConfig struct {
 // It also sets no deadline of its own. This package takes its deadlines from
 // the connection it is given, the same way [Conn.Query] does, so a handshake
 // against an unresponsive server is bounded by the caller's SetDeadline and
-// not by a timeout invented here.
+// not by a timeout invented here. That deadline stays on the connection once
+// Startup returns — this function has an io.ReadWriteCloser, not a way to
+// clear what the caller set — so a query still running when it passes dies
+// with an i/o timeout and the connection with it. Lift it
+// (SetDeadline(time.Time{})) once connected, or set a fresh one per query.
 //
 // # Which methods work
 //

@@ -80,6 +80,11 @@ func dial(t *testing.T) *postgres.Conn {
 		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
+	// And lifted here, for the same reason: it stays on the socket, and a
+	// test that outlives it would fail on an i/o timeout, not on its subject.
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// The server describing itself is the cheapest possible check that the
 	// startup phase was read correctly, and it costs no round trip.
@@ -1209,4 +1214,50 @@ func mustParseNumeric(s string) postgres.Numeric {
 		panic(err)
 	}
 	return n
+}
+
+// The guide and ExampleStartup bound the handshake with SetDeadline, and that
+// deadline stays on the socket: Startup has an io.ReadWriteCloser and cannot
+// clear it. Until 2026-10-15 neither lifted it afterwards, so every program
+// that copied them lost its connection to an i/o timeout at the 30 s mark —
+// found by a reviewer, reproduced, and this is the pattern that fixes it.
+// Without the SetDeadline(time.Time{}) below, the query after the sleep fails
+// on the kernel's timeout rather than on anything this package does.
+func TestIntegrationHandshakeDeadlineIsLifted(t *testing.T) {
+	addr, cfg := pgTarget(t)
+
+	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dialling %s: %v", addr, err)
+	}
+	const handshake = time.Second
+	if err := nc.SetDeadline(time.Now().Add(handshake)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := postgres.Startup(nc, cfg)
+	if err != nil {
+		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Outlive the handshake deadline, then ask for something.
+	time.Sleep(handshake + handshake/2)
+	src := conn.Query(t.Context(), "SELECT 1", nil, postgres.QueryConfig{})
+	rows := 0
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		rows += len(b.Items)
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("a query after the handshake deadline: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("SELECT 1 returned %d rows", rows)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken after the query: %v", err)
+	}
 }

@@ -171,6 +171,12 @@ func ExampleStartup() {
 		fmt.Println("connecting:", err)
 		return
 	}
+	// The handshake deadline stays on the socket, so it is lifted here: left
+	// in place, it would end the first query still running at 30 s.
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		fmt.Println(err)
+		return
+	}
 	defer func() { _ = conn.Close() }()
 
 	fmt.Println("connected to", conn.Parameter("server_version"))

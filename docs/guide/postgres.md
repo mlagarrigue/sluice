@@ -39,8 +39,14 @@ conn, err := postgres.Startup(nc, postgres.StartupConfig{
     Params:   map[string]string{"application_name": "orders-etl"},
 })
 if err != nil { return err }
+nc.SetDeadline(time.Time{}) // the deadline stays on the socket: lifted, or it ends the first slow query
 defer conn.Close()
 ```
+
+The deadline set for the handshake is not `Startup`'s: it stays on the
+connection, and a query still running thirty seconds later would die with
+an `i/o timeout`, connection lost. Lift it once connected, or set a fresh
+one per query if that is your policy.
 
 By default, authentication uses SCRAM-SHA-256: the password never travels
 as is. Sending it in cleartext is possible but must be asked for explicitly
