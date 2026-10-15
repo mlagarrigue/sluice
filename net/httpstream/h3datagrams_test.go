@@ -88,7 +88,13 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 	if body, _ := readH3Body(t, s); body != "small" {
 		t.Fatalf("body %q, want %q", body, "small")
 	}
-	time.Sleep(quiet) // whatever was delayed has left by now
+	// Counted once the FIN is read, so every datagram of the response has
+	// been written, and not later: the client acknowledges the response
+	// max_ack_delay (25 ms) after it, the server's PTO fires barely past
+	// that, and a client timer a millisecond late — common under -race —
+	// draws two probes (RFC 9002 §6.2.4) that are not this test's subject.
+	// The request's ACK is still counted: it either rode the response or
+	// went before it.
 	if n := serverPC.writes.Load() - before; n != 1 {
 		t.Errorf("the server wrote %d datagrams for one small response, want 1", n)
 	}
