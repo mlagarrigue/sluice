@@ -1102,3 +1102,120 @@ func TestNo100ContinueToAnHTTP10Client(t *testing.T) {
 		t.Fatalf("response %q %q, want 200 /x", status, body)
 	}
 }
+
+// readFields reads one response's status line, header lines and body — the
+// body by its Content-Length, as readResponse does — and returns the header
+// lines, for a test about what a response says rather than what it carries.
+func readFields(t *testing.T, br *bufio.Reader) []string {
+	t.Helper()
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("reading the status line: %v", err)
+	}
+	var head []string
+	length := 0
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading headers: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+		head = append(head, line)
+		if name, value, ok := strings.Cut(line, ": "); ok && strings.EqualFold(name, "content-length") {
+			if _, err := fmt.Sscanf(value, "%d", &length); err != nil {
+				t.Fatalf("Content-Length %q: %v", value, err)
+			}
+		}
+	}
+	if _, err := readFull(br, make([]byte, length)); err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+	return head
+}
+
+// wantLine checks whether one exact header line is among head.
+func wantLine(t *testing.T, head []string, line string, want bool) {
+	t.Helper()
+	got := false
+	for _, h := range head {
+		got = got || h == line
+	}
+	if got != want {
+		t.Errorf("%q present = %v, want %v, in %q", line, got, want, head)
+	}
+}
+
+// The idle timeout is announced on every HTTP/1.1 response that keeps the
+// connection, named in Connection as RFC 9110 §7.6.1 requires of a
+// hop-by-hop field, so a proxy in front with a longer idle timeout of its
+// own closes first rather than reuse a connection this server is closing.
+// The response that closes says only that. An HTTP/1.0 client asking for
+// keep-alive gets the option back, which is what persists its connection
+// (RFC 9112 §9.3). WriteBatch on its own describes no connection and
+// announces nothing.
+func TestKeepAliveAnnouncesIdleTimeout(t *testing.T) {
+	addr, _ := serveTest(t, Config{IdleTimeout: 7 * time.Second}, echoTarget)
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\n")
+	head := readFields(t, br)
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+	wantLine(t, head, "Connection: close", false)
+
+	fmt.Fprint(c, "GET /b HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n")
+	head = readFields(t, br)
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+
+	fmt.Fprint(c, "GET /c HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+	head = readFields(t, br)
+	wantLine(t, head, "Connection: close", true)
+	wantLine(t, head, "Connection: keep-alive", false)
+	wantLine(t, head, "Keep-Alive: timeout=7", false)
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Errorf("after Connection: close, read %v, want EOF", err)
+	}
+
+	out, err := WriteBatch(nil, []Request{{Method: []byte("GET"), KeepAlive: true}}, []Response{{Status: 200}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "Keep-Alive") || strings.Contains(string(out), "Connection:") {
+		t.Errorf("WriteBatch alone described a connection it does not have: %q", out)
+	}
+}
+
+// A streamed response keeps the connection too, and says so the same way.
+func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		return sluice.Batch[Response]{Items: []Response{{
+			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+				yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("part")}})
+			},
+		}}}
+	})
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+	fmt.Fprint(c, "GET /report HTTP/1.1\r\nHost: h\r\n\r\n")
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	var head []string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line = strings.TrimRight(line, "\r\n"); line == "" {
+			break
+		}
+		head = append(head, line)
+	}
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=30", true)
+	wantLine(t, head, "Transfer-Encoding: chunked", true)
+}

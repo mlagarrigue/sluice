@@ -106,7 +106,19 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 // to close under it. requests may be shorter than responses or nil; the
 // responses past its end are written as if a body were always allowed and
 // the connection always continued.
+//
+// WriteBatch announces no Keep-Alive: it does not know how long the caller
+// keeps an idle connection. [Serve] does, and writes Connection: keep-alive
+// and Keep-Alive: timeout=<seconds> on every HTTP/1.1 response that does not
+// close (see [Config.IdleTimeout]).
 func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, error) {
+	return writeBatch(dst, requests, responses, nil)
+}
+
+// writeBatch is [WriteBatch] with the connection's Keep-Alive announcement,
+// [keepAliveField]'s bytes or nil, written on each response that is not the
+// connection's last.
+func writeBatch(dst []byte, requests []Request, responses []Response, keepAlive []byte) ([]byte, error) {
 	closeAfter := asksToClose(responses)
 	date := dateFor(time.Now())
 	for i, res := range responses {
@@ -116,11 +128,45 @@ func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, e
 		}
 		closing := i == len(responses)-1 && (closeAfter || i < len(requests) && !requests[i].KeepAlive)
 		var err error
-		if dst, err = appendResponse(dst, method, closing, res, date); err != nil {
+		if dst, err = appendResponse(dst, method, closing, keepAlive, res, date); err != nil {
 			return nil, err
 		}
 	}
 	return dst, nil
+}
+
+// keepAliveField is what an HTTP/1.1 response that does not close says about
+// the connection: Connection: keep-alive, then Keep-Alive: timeout=<seconds>
+// with cfg's IdleTimeout rounded down to whole seconds, built once per
+// connection and appended as is.
+//
+// The timeout is for the proxy in front: nginx keeps an upstream connection
+// 60s by default and Envoy an hour, and one that outlives this server's idle
+// timeout gets reused the moment it is being closed — a reset on a request
+// that was never read, which the proxy reports as a 502. Announced, the
+// proxy closes first (RFC 2068 §19.7.1.1 defines the field; RFC 9110 §7.6.1
+// requires Connection to name it, since it is hop-by-hop). The option also
+// answers an HTTP/1.0 client's Connection: keep-alive, which RFC 9112 §9.3
+// honours only when the response says keep-alive back; such a client was
+// served one request per connection before.
+//
+// Rounded down, never up: a timeout the server does not honour is the reset
+// again. Zero seconds is written as such — the socket closes within the
+// second, and the field says so.
+func keepAliveField(cfg Config) []byte {
+	dst := []byte("Connection: keep-alive\r\nKeep-Alive: timeout=")
+	dst = strconv.AppendInt(dst, int64(cfg.IdleTimeout/time.Second), 10)
+	return append(dst, '\r', '\n')
+}
+
+// appendConnection writes what the response says about the connection: the
+// writer's own Connection: close on the batch's last response when nothing
+// follows, else the connection's Keep-Alive announcement when it has one.
+func appendConnection(dst []byte, closing bool, keepAlive []byte) []byte {
+	if closing {
+		return append(dst, "Connection: close\r\n"...)
+	}
+	return append(dst, keepAlive...)
 }
 
 // appendChunked writes one chunk of a streamed HTTP/1.1 body: its length in
@@ -158,14 +204,15 @@ func appendLastChunk(dst []byte) []byte {
 // instead — no framing header at all, the empty line to EOF — and the caller
 // has already marked the response closing, since EOF is the only end such a
 // body has.
-func appendStreamedHeader(dst []byte, closing, http10, noBody bool, res Response, date []byte) ([]byte, error) {
+//
+// keepAlive is the connection's announcement for a response that is not
+// closing, see [appendConnection].
+func appendStreamedHeader(dst []byte, closing, http10, noBody bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
 	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
 		return nil, err
 	}
-	if closing {
-		dst = append(dst, "Connection: close\r\n"...)
-	}
+	dst = appendConnection(dst, closing, keepAlive)
 	if !noBody && !http10 {
 		dst = append(dst, "Transfer-Encoding: chunked\r\n"...)
 	}
@@ -274,8 +321,9 @@ var headMethod = []byte("HEAD")
 // appendResponse writes one response. method is the request it answers, used
 // only to decide whether a body may follow — never to change the status or
 // headers a handler chose. closing marks the last response of a batch whose
-// last request will not be followed by another.
-func appendResponse(dst, method []byte, closing bool, res Response, date []byte) ([]byte, error) {
+// last request will not be followed by another; keepAlive is what every
+// other response says instead, see [appendConnection].
+func appendResponse(dst, method []byte, closing bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
 	if err := res.check(); err != nil {
 		return nil, err
 	}
@@ -283,9 +331,7 @@ func appendResponse(dst, method []byte, closing bool, res Response, date []byte)
 	if err != nil {
 		return nil, err
 	}
-	if closing {
-		dst = append(dst, "Connection: close\r\n"...)
-	}
+	dst = appendConnection(dst, closing, keepAlive)
 
 	status := res.Status
 	if status == 0 {

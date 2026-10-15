@@ -339,7 +339,12 @@ type Config struct {
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
-	// requests. Zero means 30s.
+	// requests. Zero means 30s. [Serve] announces it on every HTTP/1.1
+	// response that does not close, as Keep-Alive: timeout=<seconds>, so a
+	// proxy in front with a longer idle timeout of its own (nginx: 60s by
+	// default) closes first rather than reuse a connection this server is
+	// closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
+	// end from GOAWAY.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its

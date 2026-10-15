@@ -77,3 +77,36 @@ func BenchmarkReadPipelined(b *testing.B) {
 		})
 	}
 }
+
+// What the Keep-Alive announcement costs per response: the same batch of
+// eight answers written by WriteBatch, which announces nothing, and by Serve's
+// writer, which appends the connection's two fields.
+func BenchmarkWriteBatch(b *testing.B) {
+	requests := make([]Request, 8)
+	responses := make([]Response, 8)
+	for i := range requests {
+		requests[i] = Request{Method: []byte("GET"), KeepAlive: true}
+		responses[i] = Response{Status: 200, Body: []byte(`{"id":7}`), Headers: []Header{
+			{Name: []byte("Content-Type"), Value: []byte("application/json")},
+		}}
+	}
+	for _, c := range []struct {
+		name      string
+		keepAlive []byte
+	}{
+		{"plain", nil},
+		{"keep-alive", keepAliveField(Config{}.withDefaults())},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			var out []byte
+			for b.Loop() {
+				var err error
+				if out, err = writeBatch(out[:0], requests, responses, c.keepAlive); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(responses)), "ns/response")
+		})
+	}
+}
