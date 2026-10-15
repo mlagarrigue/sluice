@@ -337,14 +337,14 @@ const maxWindow = 1<<31 - 1
 // TLS is still not this function's job; a [net.Conn] from a [crypto/tls]
 // listener arrives here already decrypted.
 //
-// ctx cancels the connection, and is the context the handler receives. It
-// reaches all three of the connection's goroutines through the socket:
-// closing it unblocks the read the reader is parked in and the write the
-// writer is parked in, and both then unwind through their ordinary error
-// paths. That is [context.AfterFunc] rather than a fourth goroutine
-// parked on ctx.Done() for the life of every connection. A connection
-// [Serve] hands over is not cut that way: Serve drains it (ADR 0017), and
-// serveH2Conn says how.
+// The cancellation of ctx stops the connection normally, as [Serve] stops
+// the connections it accepted (ADR 0017, serveH2Conn says how): a GOAWAY
+// and a PING, the streams already open answered whole, then the close. When
+// [Config.ShutdownGrace] passes before the drain ends, the connection is
+// closed under its handler, whose context is cancelled, the [Config.Logger]
+// is told, and ServeH2 returns [ErrShutdownForced]. The handler's context
+// carries ctx's values but not its cancellation, which is the normal stop
+// and not the handler's to see.
 //
 // cfg is the [Config] [Serve] takes: ServeH2 reads the fields that say
 // they bound HTTP/2 and ignores the others. A configuration it refuses is
@@ -355,15 +355,43 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 	if err != nil {
 		return err
 	}
-	return serveH2Conn(ctx, c, nil, cfg, handler)
+	// The grace is a timer armed at the cancellation, as in ServeH3. When it
+	// passes it closes the socket, which unwinds the connection's goroutines
+	// through their ordinary error paths, and only then cancels the
+	// handler's context: the other order lets a handler that returns at its
+	// cancellation have its answer written before the close. cut is set
+	// before either, since serveH2Conn may return between the two.
+	forced, force := context.WithCancel(context.WithoutCancel(ctx))
+	defer force()
+	var graceTimer atomic.Pointer[time.Timer]
+	var cut atomic.Bool
+	stop := context.AfterFunc(ctx, func() {
+		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, func() {
+			cut.Store(true)
+			_ = c.Close()
+			force()
+		}))
+	})
+	defer func() {
+		stop()
+		// Stopped once ServeH2 has returned, when nobody reads it.
+		if t := graceTimer.Load(); t != nil {
+			t.Stop()
+		}
+	}()
+	err = serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handler)
+	if cut.Load() {
+		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
+			"connections", 1, "grace", cfg.ShutdownGrace)
+		return ErrShutdownForced
+	}
+	return err
 }
 
-// serveH2Conn is [ServeH2] with the shutdown state of a connection [Serve]
-// accepted. With a nil state the cancellation of ctx closes the socket, as
-// ServeH2 documents. With one, ctx is the [Server]'s forced stop, which
-// closes the socket through the server's own bookkeeping and reaches the
-// handler through its context, and the normal stop is the drain the state
-// carries: the connection then goes
+// serveH2Conn is [ServeH2] once its two stops are set: ctx is the forced
+// stop, which closes the socket through its owner's bookkeeping — ServeH2's
+// grace timer, or a [Server]'s — and reaches the handler through its
+// context, and st.drain is the normal stop, which takes the connection
 // through RFC 9113 §6.8's graceful close rather than the socket's —
 //
 //   - first a GOAWAY with the last stream identifier at 2^31−1 and NO_ERROR,
@@ -377,15 +405,17 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 //     written the last answer.
 //
 // The reader also keeps the state's phase: busy while a stream is open or in
-// flight, idle otherwise, so the drain closes an idle HTTP/2 connection at
-// once as it does an idle HTTP/1.1 one. The phase is the reader's view at
+// flight, idle otherwise, so Serve's drain closes an idle HTTP/2 connection
+// at once as it does an idle HTTP/1.1 one; ServeH2 alone closes it at the
+// PING's acknowledgement. The phase is the reader's view at
 // its last batch, which runs late when the last answer went out and the peer
 // has since said nothing: that connection is drained like a busy one and
 // closes one round trip after the cancellation rather than at it. Writing the
 // phase from the responder too would make it exact, and would also let an
 // idle verdict land after a stream the reader has just opened; late is the
 // safe side. A peer that never acknowledges the PING holds the connection
-// until Serve's grace closes it, which is the bound every drain has.
+// until the grace closes it, which is the bound every drain has. A nil state
+// is a test driving the connection directly, which nothing drains.
 func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, handler Handler) error {
 	s := &h2Server{
 		cfg:      cfg,
@@ -397,10 +427,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		recvWind: connWindow(cfg),
 		w:        newH2Writer(c, cfg),
 	}
-	if st == nil {
-		stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-		defer stop()
-	} else {
+	if st != nil {
 		stop := context.AfterFunc(st.drain, s.beginDrain)
 		defer stop()
 	}

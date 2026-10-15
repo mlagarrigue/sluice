@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; `ServeH3` returns at the grace)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains)
 - **Theme:** httpstream
 
 ## Problem
@@ -14,7 +14,10 @@ connection was closed `H3_NO_ERROR` without waiting for its requests;
 down in which order a process that serves streams stops: if the gateway
 (which batches calls toward the back end) closes before the handlers, the
 handlers in flight see their calls refused; if the connection pools close
-before the gateway, its last batches fail.
+before the gateway, its last batches fail. Last, a grace that passed did not
+show: `Serve` returned `nil` whether it had answered everything or cut
+requests, and a `ServeH2` called directly still cut the socket at the
+cancellation.
 
 ## Decision
 
@@ -34,16 +37,31 @@ before the gateway, its last batches fail.
    still inside one: a handler that has not returned after the grace is
    the handler's bug, and waiting for it would turn the bug into a hang.
 
-3. **What closes at once.** The listener, and every connection with no
+3. **Two stops.** The normal stop admits nothing more and lets what is in
+   flight finish; the forced stop closes every connection and cancels the
+   context of every handler still running. `Server.Shutdown(ctx)` is the
+   first, `Server.Close` the second; a deployment calls the first on the
+   first signal and the second on the next, or when `Shutdown`'s `ctx`
+   ends. `Serve(ctx)` is that sequence with `ShutdownGrace` between the
+   two, and `ServeH2` and `ServeH3`, called directly on one connection,
+   keep the same contract: the cancellation of `ctx` is the normal stop,
+   the grace passing the forced one. Their handler receives a context that
+   carries `ctx`'s values but not its cancellation: the normal stop is not
+   the handler's business, only the forced one cancels it. When the grace
+   passes, `Serve`, `ServeH2` and `ServeH3` return `ErrShutdownForced` and
+   `Config.Logger` receives a warning with the number of connections cut;
+   a drain that ends within the grace returns `nil`.
+
+4. **What closes at once.** The listener, and every connection with no
    request in flight: between two keep-alive requests, or accepted and
    silent. Nothing is owed to it; waiting for it means returning one
    `IdleTimeout` late.
 
-4. **What finishes.** A connection on which a request has begun to arrive,
+5. **What finishes.** A connection on which a request has begun to arrive,
    is being handled or is being answered. The response goes out whole; no
    new request is read after it.
 
-5. **What each protocol tells the client.**
+6. **What each protocol tells the client.**
    - HTTP/1.1: the last response carries `Connection: close` (RFC 9112
      §9.6: the server "SHOULD send a "close" connection option in its
      final response" and "MUST NOT process any further requests"). A
@@ -56,8 +74,9 @@ before the gateway, its last batches fail.
      second GOAWAY with the last stream actually taken; a stream opened
      past it is refused `REFUSED_STREAM`, the open streams finish, the
      connection closes. A peer that never acknowledges the PING is closed
-     by the grace. A connection with no stream open closes at once, like
-     an idle HTTP/1.1 one.
+     by the grace. Under `Serve`, a connection with no stream open closes
+     at once, like an idle HTTP/1.1 one; a `ServeH2` called directly closes
+     it at the PING's acknowledgement, one round trip later.
    - HTTP/3: a GOAWAY frame on the control stream naming the first request
      stream the connection rejects — the one after the highest it admitted,
      decided under the same lock as the admission so no stream is both
@@ -77,7 +96,10 @@ before the gateway, its last batches fail.
      the return; `web.Servers(...)` drains several at once, the front being
      one layer whatever the number of listeners. The handle lives in `web`,
      not in `httpstream`, so that `web` does not import the transport and so
-     that a server keeps one signal.
+     that a server keeps one signal. When `ctx` ends before the drain does,
+     a server with a `Close` method is closed (§3's forced stop);
+     `web.Shutdown` then returns `context.DeadlineExceeded`, and the closers
+     still run.
 
 ## Rationale
 
@@ -87,10 +109,20 @@ during a write loses the client a response the server already computed
 and, for a POST, leaves it unable to tell whether to replay. That is why
 the drain is the rule and the cut the bounded exception.
 
-The bound is a duration per `Serve` rather than a separate `Shutdown(ctx)`:
-a `Serve(ctx)` has one stop signal, its context, and a second entry point
-would make the caller coordinate the two. `web.Shutdown` composes that
-signal across several servers; it does not add one.
+The bound of a `Serve(ctx)` is a duration rather than a second entry
+point: it has one stop signal, its context, and the caller has nothing to
+coordinate. A deployment that wants to hold both stops itself — one signal
+to drain, the next to cut — takes `Server`, whose `Shutdown` and `Close`
+are those two gestures; `Serve` is only their sequence at a fixed duration.
+`web.Shutdown` composes these signals across several servers; it does not
+add one.
+
+A forced stop that returns `nil` cannot be told from a clean one: the
+operator does not learn that responses were lost. Hence a sentinel,
+`ErrShutdownForced`, which `errors.Is` recognises, and a warning to the
+`Logger` giving the number of connections cut. A `ServeH2` that cut where
+`Serve` drains gave one protocol two contracts depending on the entry
+point: one contract, the drain, holds for all three functions.
 
 Closing idle connections at once rather than leaving them to the grace is
 what `net/http` does (`Shutdown` closes `StateIdle`), and it is what

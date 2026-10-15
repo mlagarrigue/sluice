@@ -339,6 +339,131 @@ func TestServeReportsAForcedShutdown(t *testing.T) {
 }
 
 // serveForError runs Serve until cancel and hands over what it returned.
+// serveH2Direct runs ServeH2 on the first connection to the address it
+// returns, under a context carrying stopKey, and cancel is that context's.
+func serveH2Direct(t *testing.T, cfg Config, h Handler) (addr string, cancel context.CancelFunc, served <-chan error) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), stopKey{}, "carried"))
+	t.Cleanup(cancel)
+	out := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			out <- err
+			return
+		}
+		defer func() { _ = c.Close() }()
+		out <- ServeH2(ctx, c, cfg, h)
+	}()
+	return ln.Addr().String(), cancel, out
+}
+
+type stopKey struct{}
+
+// ServeH2 called directly stops as Serve does: the cancellation of its
+// context is a GOAWAY, the request in flight answered whole, the handler's
+// context neither cancelled nor stripped of ctx's values, and nil. It used
+// to close the socket at the cancellation, under the handler.
+func TestServeH2DrainsOnCancellation(t *testing.T) {
+	t.Run("request in flight", func(t *testing.T) {
+		h := newStopHandler()
+		values := make(chan any, 1)
+		addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second, Logger: discardLogger()},
+			func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				values <- ctx.Value(stopKey{})
+				return h.handle(ctx, b)
+			})
+		c := &h2StopClient{c: dialH2(t, addr)}
+		c.ask(t)
+		<-h.entered
+		cancel()
+		c.c.pump(func() bool { return c.c.sawGoAway })
+		if !c.c.sawGoAway {
+			t.Fatal("no GOAWAY after the cancellation")
+		}
+		select {
+		case err := <-served:
+			t.Fatalf("ServeH2 returned %v with a request in flight", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(h.release)
+		if body := c.answer(t); body != "/slow" {
+			t.Fatalf("the answer was %q, want the whole of /slow", body)
+		}
+		if err := <-h.handlerErr; err != nil {
+			t.Errorf("the handler's context ended with %v in a normal stop", err)
+		}
+		if v := <-values; v != "carried" {
+			t.Errorf("the handler's context carried %v, want ctx's value", v)
+		}
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("ServeH2 returned %v, want nil for a stop", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("ServeH2 did not return once the request was answered")
+		}
+	})
+	t.Run("idle", func(t *testing.T) {
+		addr, cancel, served := serveH2Direct(t, Config{ShutdownGrace: 10 * time.Second}, echoTarget)
+		c := &h2StopClient{c: dialH2(t, addr)}
+		c.c.pump(func() bool { return len(c.c.settings) > 0 })
+		cancel()
+		c.c.pump(func() bool { return len(c.c.pinged) > 0 })
+		if len(c.c.pinged) == 0 {
+			t.Fatal("no drain PING after the cancellation")
+		}
+		c.c.frame(h2Frame{Type: framePing, Flags: flagAck, Payload: c.c.pinged[0]})
+		c.c.flush()
+		select {
+		case err := <-served:
+			if err != nil {
+				t.Errorf("ServeH2 returned %v, want nil for a stop", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("an idle ServeH2 did not return at the PING's acknowledgement")
+		}
+	})
+}
+
+// ServeH2's grace passing with a request in flight is a forced stop: the
+// connection is closed, the handler's context cancelled, the Logger told,
+// and ServeH2 returns ErrShutdownForced.
+func TestServeH2ReportsAForcedShutdown(t *testing.T) {
+	h := newStopHandler()
+	defer close(h.release)
+	log := &lockedWriter{}
+	cfg := Config{ShutdownGrace: 200 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(log, nil))}
+	addr, cancel, served := serveH2Direct(t, cfg, h.handle)
+	c := &h2StopClient{c: dialH2(t, addr)}
+	c.ask(t)
+	<-h.entered
+	cancel()
+	select {
+	case err := <-served:
+		if !errors.Is(err, ErrShutdownForced) {
+			t.Errorf("ServeH2 returned %v, want ErrShutdownForced", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH2 did not return after the grace")
+	}
+	if err := <-h.handlerErr; err == nil {
+		t.Error("the handler's context was not cancelled when the grace passed")
+	}
+	if !c.cut(t) {
+		t.Error("the answer was written although the grace passed")
+	}
+	if !strings.Contains(log.String(), "connections=1") {
+		t.Errorf("the Logger read %q, want the one connection cut", log.String())
+	}
+}
+
 func serveForError(t *testing.T, cfg Config, h Handler) (addr string, cancel context.CancelFunc, served <-chan error) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

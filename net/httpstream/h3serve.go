@@ -72,7 +72,8 @@ import (
 // The cancellation of ctx stops the connection normally, as below; when
 // [Config.ShutdownGrace] passes before the drain ends, the connection is
 // closed under its handler, whose context is cancelled, and ServeH3 returns
-// [ErrShutdownForced].
+// [ErrShutdownForced]. The handler's context carries ctx's values but not
+// its cancellation, which is the normal stop and not the handler's to see.
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
@@ -86,7 +87,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	// to the drain: the wait at the bottom of serveH3 reads it too, after
 	// the connection has ended, and the drain can end — client gone, grace
 	// passed — before the handler has returned.
-	forced, force := context.WithCancel(context.Background())
+	forced, force := context.WithCancel(context.WithoutCancel(ctx))
 	defer force()
 	var graceTimer atomic.Pointer[time.Timer]
 	stop := context.AfterFunc(ctx, func() {

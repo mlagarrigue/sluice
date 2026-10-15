@@ -12,7 +12,7 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
-// ErrShutdownForced is what [Serve] and [ServeH3] return when
+// ErrShutdownForced is what [Serve], [ServeH2] and [ServeH3] return when
 // [Config.ShutdownGrace] passed before the requests in flight were answered,
 // and the connections still carrying them were closed under their handlers.
 // A drain that ends within the grace returns nil.

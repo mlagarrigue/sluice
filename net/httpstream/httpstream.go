@@ -424,11 +424,11 @@ type Config struct {
 	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
 
-	// ShutdownGrace is how long [Serve] or [ServeH3], once its context is
-	// cancelled, waits for the requests already in flight to be answered
-	// before it closes the connections still open, cancels their handlers'
-	// context and returns [ErrShutdownForced]. Zero means 5s. Every
-	// protocol. What it bounds is the handler and the response's writes
+	// ShutdownGrace is how long [Serve], [ServeH2] or [ServeH3], once its
+	// context is cancelled, waits for the requests already in flight to be
+	// answered before it closes the connections still open, cancels their
+	// handlers' context and returns [ErrShutdownForced]. Zero means 5s.
+	// Every protocol. What it bounds is the handler and the response's writes
 	// together, not either alone: WriteTimeout governs one write, this
 	// governs how long a stopping server stays up for a response that was
 	// owed. Idle connections are closed at once and do not spend it. A
