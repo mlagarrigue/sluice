@@ -49,13 +49,17 @@ import (
 //
 // # Degenerate arguments
 //
-// workers of 1 or less is the explicit no-op: f applied inline, in order —
+// workers of 0 or 1 is the explicit no-op: f applied inline, in order —
 // with one worker there is no reordering to avoid, so the two operators agree.
+// A negative workers count panics.
 //
 // Unordered panics if f is nil.
 func Unordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]) sluice.Batch[B]) sluice.Stream[B] {
 	if f == nil {
 		panic("sluice: Unordered requires a non-nil f function")
+	}
+	if workers < 0 {
+		panic(negativeWorkers("Unordered", workers))
 	}
 	if workers <= 1 {
 		return func(yield func(sluice.Batch[B]) bool) {

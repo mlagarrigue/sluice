@@ -78,10 +78,11 @@ var ErrState = batch.NewSentinel("sluice: WithState state factory failed")
 //
 // # Degenerate arguments
 //
-// workers of 1 or less is the explicit no-op, like [Ordered]: mkState is
+// workers of 0 or 1 is the explicit no-op, like [Ordered]: mkState is
 // called exactly once, f is applied inline on the calling goroutine, and the
 // state is closed when the stream ends. WithState(s, 1, mk, f) is the way
-// to turn the concurrency off, not a slower way to keep it.
+// to turn the concurrency off, not a slower way to keep it. A negative workers
+// count panics.
 //
 // WithState panics if mkState or f is nil.
 func WithState[A, B, W any](
@@ -95,6 +96,9 @@ func WithState[A, B, W any](
 	}
 	if f == nil {
 		panic("sluice: WithState requires a non-nil f function")
+	}
+	if workers < 0 {
+		panic(negativeWorkers("WithState", workers))
 	}
 	if workers <= 1 {
 		return func(yield func(sluice.Batch[B]) bool) {

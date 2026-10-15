@@ -36,7 +36,6 @@ func TestParallel(t *testing.T) {
 		{"empty stream", 4, nil, 2, nil},
 		{"workers = 1 is the no-op path", 1, []int{1, 2, 3}, 2, []int{10, 20, 30}},
 		{"workers = 0 is the no-op path", 0, []int{1, 2, 3}, 2, []int{10, 20, 30}},
-		{"negative workers is the no-op path", -5, []int{1, 2, 3}, 2, []int{10, 20, 30}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

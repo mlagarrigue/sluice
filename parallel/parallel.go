@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"strconv"
 	"sync"
 
 	"github.com/mlagarrigue/sluice"
@@ -98,16 +99,19 @@ import (
 //
 // # Degenerate arguments
 //
-// workers of 1 or less is an explicit no-op: f is applied inline on the calling
+// workers of 0 or 1 is an explicit no-op: f is applied inline on the calling
 // goroutine, with no channel, no goroutine and no reordering buffer. §6.4
 // requires this to be stated rather than silently concurrent, so that
 // Ordered(s, 1, f) is a way to turn the concurrency off and not a slower way
-// to keep it.
+// to keep it. A negative workers count panics.
 //
 // Ordered panics if f is nil.
 func Ordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]) sluice.Batch[B]) sluice.Stream[B] {
 	if f == nil {
 		panic("sluice: Ordered requires a non-nil f function")
+	}
+	if workers < 0 {
+		panic(negativeWorkers("Ordered", workers))
 	}
 	if workers <= 1 {
 		// The explicit no-op §6.4 asks for: same shape, no concurrency.
@@ -122,6 +126,12 @@ func Ordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]) 
 		}
 		runParallel(s, fs, yield)
 	}
+}
+
+// negativeWorkers is the panic message of an operator handed a negative worker
+// count, in the form the root package gives a negative size.
+func negativeWorkers(op string, n int) string {
+	return "sluice: " + op + " workers " + strconv.Itoa(n) + " is negative — zero or one means no concurrency"
 }
 
 // job carries one batch through the workers, keeping its position so the output
