@@ -137,8 +137,16 @@ func TestHPACKBoundsTheDecodedList(t *testing.T) {
 	for range 64 {
 		block = append(block, 0xbe) // index 62: the entry just added
 	}
-	if _, err := d.Decode(nil, block); !errors.Is(err, ErrHPACK) {
-		t.Fatalf("Decode returned %v, want the list bound to refuse", err)
+	fields, err := d.Decode(nil, block)
+	if !errors.Is(err, ErrTooLarge) || errors.Is(err, ErrHPACK) {
+		t.Fatalf("Decode returned %v, want the list bound to refuse as too large, not as an HPACK fault", err)
+	}
+	if len(fields) != 0 {
+		t.Errorf("Decode kept %d fields of a refused list, want none", len(fields))
+	}
+	// The block was read to its end: the entry it added is in the table.
+	if _, err := d.Decode(nil, []byte{0xbe}); err != nil {
+		t.Fatalf("the entry the refused block added is gone: %v", err)
 	}
 }
 

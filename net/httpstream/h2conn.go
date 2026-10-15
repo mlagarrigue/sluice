@@ -95,6 +95,12 @@ type streamError struct {
 	id   uint32
 	code uint32
 	err  error
+	// status, when set, is answered on the stream before it is reset: a
+	// request over one of the configured bounds gets 431 or 413 and then
+	// RST_STREAM NO_ERROR, which RFC 9113 §8.1 lets a server send after a
+	// complete response to stop a request it will not read. A client behind
+	// a proxy acts on a status; a bare reset tells it nothing (§10.5.1).
+	status int
 }
 
 func (e streamError) Error() string { return e.err.Error() }
@@ -104,6 +110,12 @@ func (e streamError) Unwrap() error { return e.err }
 // other refusal here, so a caller keeps matching on the one error it knows.
 func streamFail(id, code uint32, format string, args ...any) error {
 	return streamError{id: id, code: code, err: fmt.Errorf(format, args...)}
+}
+
+// statusFail builds a stream error answered with status before the reset —
+// for the bounds [Config] documents a status for, nothing else.
+func statusFail(id uint32, status int, format string, args ...any) error {
+	return streamError{id: id, code: errNoError, status: status, err: fmt.Errorf(format, args...)}
 }
 
 // h2State is where a stream is in RFC 9113 §5.1's lifecycle, kept to the three
@@ -604,6 +616,9 @@ func (s *h2Server) reset(se streamError) error {
 	}
 	s.retire(se.id, stateClosed)
 	s.w.forget(se.id)
+	if se.status != 0 {
+		return s.w.refuse(se.id, se.status)
+	}
 	return s.w.control32(frameRSTStream, se.id, se.code)
 }
 
@@ -862,7 +877,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		st.block = nil // a retired stream keeps no scratch warm
 	}
 	if err != nil {
-		return nil, err
+		return nil, s.blockRefused(st, err)
 	}
 	if st.state == stateClosed {
 		// Tolerated, and before the field-count bound below on purpose: the
@@ -878,8 +893,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// bytes while making every [Request.Get] walk hundreds of entries. A
 	// stream error, not a connection error — the table is already consistent.
 	if fieldCount(fields) > s.cfg.MaxHeaders {
-		return nil, streamFail(st.id, errEnhanceYourCalm,
-			"%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
+		return nil, statusFail(st.id, 431, "%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
 	}
 
 	switch {
@@ -939,6 +953,22 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	return nil, nil
 }
 
+// blockRefused turns the decoder's error for a stream's header block into
+// this connection's: an HPACK fault is a connection error, the table being in
+// doubt; a list over its bound is a 431 on the stream, because the decoder
+// read the block to its end and the table is consistent (RFC 9113 §10.5.1).
+// On a stream already closed it is nothing at all, for the reason the
+// field-count bound in headers gives.
+func (s *h2Server) blockRefused(st *h2Stream, err error) error {
+	switch {
+	case !errors.Is(err, errHeadersTooLarge):
+		return err
+	case st.state == stateClosed:
+		return nil
+	}
+	return statusFail(st.id, 431, "%w", err)
+}
+
 func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	st := s.streams[f.StreamID]
 	if st == nil {
@@ -988,13 +1018,14 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 		body = body[:len(body)-pad]
 	}
 	if len(st.body)+len(body) > s.cfg.MaxBodyBytes {
-		return nil, streamFail(st.id, errEnhanceYourCalm,
-			"%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
+		return nil, statusFail(st.id, 413, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
 	}
 	// The aggregate bound, beside the per-stream one: windows are granted
 	// back as DATA is buffered here, so flow control does not bound what a
 	// connection's unfinished uploads hold together — this does. See
-	// [H2Config.MaxBodyBytes] for the factor.
+	// [H2Config.MaxBodyBytes] for the factor. A reset rather than a 413:
+	// this request alone is under its bound, so it is not the one that is
+	// too large, and the status would say otherwise.
 	if s.assembling+len(body) > 4*s.cfg.MaxBodyBytes {
 		return nil, streamFail(st.id, errEnhanceYourCalm,
 			"%w: over %d bytes buffered across this connection's unfinished requests",

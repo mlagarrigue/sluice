@@ -193,7 +193,17 @@ func newHPACKDecoder(maxSize, maxListSize int) *hpackDecoder {
 // one buffer this call allocates for the block's literals and never writes
 // after returning. Callers treat decoded fields as read-only, which they owe
 // every Header anyway.
+//
+// A list that decodes past maxListSize is not kept, but the block is still
+// read to its end — every literal with incremental indexing enters the table
+// — so that the table agrees with the peer's when the next block arrives.
+// RFC 9113 §10.5.1 asks for exactly
+// that ("the field block MUST be processed to ensure a consistent connection
+// state") so that the refusal can be a 431 on the one stream rather than a
+// connection error. The call then returns dst as it was and an error wrapping
+// [errHeadersTooLarge] — not [ErrHPACK], which names a table in doubt.
 func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
+	start := len(dst)
 	listSize := 0
 	var arena []byte // the block's unindexed literals; see appendFieldString
 	// fields records that a field representation has been decoded, after
@@ -220,7 +230,7 @@ func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 				e := staticTableBytes[idx-1]
 				listSize += len(e.Name) + len(e.Value) + hpackEntrySize
 				if listSize > d.maxListSize {
-					return dst, fmt.Errorf("%w: the header list passed %d bytes", ErrHPACK, d.maxListSize)
+					return d.decodeOver(dst[:start], block)
 				}
 				dst = append(dst, e)
 				fields = true
@@ -267,7 +277,7 @@ func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 			}
 			listSize += len(nameBytes) + len(valueBytes) + hpackEntrySize
 			if listSize > d.maxListSize {
-				return dst, fmt.Errorf("%w: the header list passed %d bytes", ErrHPACK, d.maxListSize)
+				return d.decodeOver(dst[:start], block)
 			}
 			dst = append(dst, Header{Name: nameBytes, Value: valueBytes})
 			fields = true
@@ -276,13 +286,79 @@ func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 
 		listSize += len(name) + len(value) + hpackEntrySize
 		if listSize > d.maxListSize {
-			return dst, fmt.Errorf("%w: the header list passed %d bytes", ErrHPACK, d.maxListSize)
+			return d.decodeOver(dst[:start], block)
 		}
 		// A view of the table entry, not a copy: entries are immutable.
 		dst = append(dst, Header{Name: name, Value: value})
 		fields = true
 	}
 	return dst, nil
+}
+
+// decodeOver finishes a block whose list has passed maxListSize: block is
+// what remains after the field that crossed it, dst what the caller handed in.
+// Nothing more is kept, but every representation is still read so that the
+// table ends where the peer's does — a literal with incremental indexing is
+// decoded in full and added, an index is still resolved, a literal the table
+// does not keep is skipped by its lengths with its octets left encoded. A
+// table size update is out of place here as it is after any field (§4.2).
+//
+// It is a function of its own so that the nominal loop above carries no
+// state for it: measured, a flag checked per field cost that loop a few
+// percent on BenchmarkHPACKDecode; split out, the loop measures as before.
+func (d *hpackDecoder) decodeOver(dst []Header, block []byte) ([]Header, error) {
+	for len(block) > 0 {
+		b := block[0]
+		var err error
+		switch {
+		case b&0x80 != 0: // §6.1 indexed field
+			var idx uint64
+			if idx, block, err = hpackInt(block, 7); err != nil {
+				return dst, err
+			}
+			if idx == 0 {
+				return dst, fmt.Errorf("%w: index 0 is not a field", ErrHPACK)
+			}
+			if _, _, err = d.at(idx); err != nil {
+				return dst, err
+			}
+		case b&0xc0 == 0x40: // §6.2.1 literal, incremental indexing
+			var name, value []byte
+			if name, value, block, err = d.literalBytes(block, 6, nil, 0); err != nil {
+				return dst, err
+			}
+			d.add(hpackEntry{name, value})
+		case b&0xe0 == 0x20: // §6.3 dynamic table size update
+			return dst, fmt.Errorf("%w: a table size update after a field", ErrHPACK)
+		default: // §6.2.2 and §6.2.3: literal, without or never indexed
+			if block, err = d.skipLiteral(block); err != nil {
+				return dst, err
+			}
+		}
+	}
+	return dst, fmt.Errorf("%w: the header list passed %d bytes", errHeadersTooLarge, d.maxListSize)
+}
+
+// skipLiteral walks past a literal representation with a 4-bit prefix (§6.2.2
+// and §6.2.3) without decoding its strings. The index of a table-named field
+// is still resolved: a bad one is an HPACK error whether or not the field is
+// kept.
+func (d *hpackDecoder) skipLiteral(block []byte) (rest []byte, err error) {
+	idx, rest, err := hpackInt(block, 4)
+	if err != nil {
+		return nil, err
+	}
+	if idx == 0 {
+		if _, _, rest, err = d.strRaw(rest); err != nil {
+			return nil, err
+		}
+	} else if _, _, err = d.at(idx); err != nil {
+		return nil, err
+	}
+	if _, _, rest, err = d.strRaw(rest); err != nil {
+		return nil, err
+	}
+	return rest, nil
 }
 
 // literalBytes decodes a literal representation whose index prefix is n bits:

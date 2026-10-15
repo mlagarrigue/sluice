@@ -1285,8 +1285,9 @@ func TestH2AdvertisedMaxFrameSizeKeepsTheProtocolFloor(t *testing.T) {
 	})
 	c.flush()
 
-	if code := c.waitReset(1); code != 0xb {
-		t.Errorf("a 16 KiB frame against a 1000-byte body bound reset with %#x, want ENHANCE_YOUR_CALM (0xb)", code)
+	if code := c.waitReset(1); code != errNoError || h2Status(c.heads[1]) != 413 {
+		t.Errorf("a 16 KiB frame against a 1000-byte body bound got status %d and reset %#x, want 413 then NO_ERROR",
+			h2Status(c.heads[1]), code)
 	}
 	if c.sawGoAway {
 		t.Error("a frame at the protocol's mandatory size ended the connection")
@@ -2096,14 +2097,14 @@ func TestH2RefusesABlockOfTooManyFields(t *testing.T) {
 	}
 	c.request(1, "GET", "/crowded", extra...)
 	c.flush()
-	if code := c.waitReset(1); code != 0xb {
-		t.Errorf("RST_STREAM carried code %#x, want ENHANCE_YOUR_CALM (0xb)", code)
+	if code := c.waitReset(1); code != errNoError || h2Status(c.heads[1]) != 431 {
+		t.Errorf("the crowded block got status %d and reset %#x, want 431 then NO_ERROR", h2Status(c.heads[1]), code)
 	}
 
 	// The connection survives, and a modest request is served.
 	c.request(3, "GET", "/modest")
 	c.flush()
-	if got := c.bodies(1)[3]; got != "/modest" {
+	if got := c.bodies(2)[3]; got != "/modest" {
 		t.Errorf("after the reset the request got %q, want %q", got, "/modest")
 	}
 }
@@ -2574,5 +2575,103 @@ func TestH2HonoursThePeersMaxHeaderListSize(t *testing.T) {
 	}
 	if c.sawGoAway {
 		t.Error("an over-limit response ended the connection")
+	}
+}
+
+// RFC 9113 §10.5.1 and §8.1: a request over one of the configured bounds is
+// answered on its own stream — 431 for its headers, 413 for its body — then
+// RST_STREAM NO_ERROR, and the connection survives with the request behind
+// it. A client behind a proxy acts on a status; a bare reset tells it nothing.
+func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
+	tests := []struct {
+		name   string
+		cfg    Config
+		stage  func(c *h2client)
+		status int
+	}{
+		{"a header list over MaxHeaderBytes", Config{MaxHeaderBytes: 4096}, func(c *h2client) {
+			// A small block that decodes large: each indexed reference to the
+			// static table's accept-encoding entry is one byte on the wire
+			// and 60 in the list, so the compressed bound is nowhere near.
+			block := headBlock("GET", "/x", [2]string{":authority", "h"})
+			for range 4096/60 + 1 {
+				block = append(block, hpackIndexed(16)...)
+			}
+			c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+		}, 431},
+		{"more than MaxHeaders fields", Config{MaxHeaders: 8}, func(c *h2client) {
+			extra := make([][2]string, 12)
+			for i := range extra {
+				extra[i] = [2]string{fmt.Sprintf("x-%d", i), "v"}
+			}
+			c.request(1, "GET", "/x", extra...)
+		}, 431},
+		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func(c *h2client) {
+			c.frame(h2Frame{
+				Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+				Payload: headBlock("POST", "/x", [2]string{":authority", "h"}),
+			})
+			c.data(1, bytes.Repeat([]byte{'b'}, 2048), true)
+		}, 413},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, sizes := serveTest(t, tt.cfg, echoTarget)
+			c := dialH2(t, addr)
+			tt.stage(c)
+			c.request(3, "GET", "/y")
+			c.flush()
+			c.pump(func() bool { _, reset := c.resets[1]; return reset && c.ended[3] || c.sawGoAway })
+
+			if c.sawGoAway {
+				t.Fatal("one oversized request ended the whole connection")
+			}
+			if got := h2Status(c.heads[1]); got != tt.status {
+				t.Errorf("stream 1 got status %d, want %d", got, tt.status)
+			}
+			if !c.ended[1] {
+				t.Error("the refusal did not end stream 1")
+			}
+			if code, reset := c.resets[1]; !reset || code != errNoError {
+				t.Errorf("stream 1 reset = %v %#x, want NO_ERROR after the status", reset, code)
+			}
+			if got := h2Status(c.heads[3]); got != 200 || !c.ended[3] {
+				t.Errorf("stream 3 got status %d, ended %v; want 200 after the refused stream", got, c.ended[3])
+			}
+			if got := sizes(); len(got) != 1 || got[0] != 1 {
+				t.Errorf("the handler saw batches %v, want the one healthy request", got)
+			}
+		})
+	}
+}
+
+// The field block of a refused request is still decoded to its end, as RFC
+// 9113 §10.5.1 requires: an entry it adds to the dynamic table after the list
+// passed the bound is there for the next request to name.
+func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxHeaderBytes: 4096}, echoTarget)
+	c := dialH2(t, addr)
+
+	block := headBlock("GET", "/x", [2]string{":authority", "h"})
+	for range 4096/60 + 1 {
+		block = append(block, hpackIndexed(16)...)
+	}
+	block = append(block, hpackIncIndexed("x-kept", "v")...) // past the bound, indexed anyway
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+	// Stream 3 names that entry: the first dynamic index.
+	next := headBlock("GET", "/y", [2]string{":authority", "h"})
+	next = append(next, hpackIndexed(staticTableLen+1)...)
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 3, Payload: next})
+	c.flush()
+	c.pump(func() bool { return c.ended[3] || c.sawGoAway })
+
+	if c.sawGoAway {
+		t.Fatal("the connection ended: the refused block left the table inconsistent")
+	}
+	if got := h2Status(c.heads[1]); got != 431 {
+		t.Errorf("stream 1 got status %d, want 431", got)
+	}
+	if got := h2Status(c.heads[3]); got != 200 {
+		t.Errorf("stream 3 got status %d, want 200 from an entry the refused block indexed", got)
 	}
 }

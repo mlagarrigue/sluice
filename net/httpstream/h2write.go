@@ -647,11 +647,7 @@ func (w *h2Writer) ackSettings(table uint32, haveTable bool) error {
 // the peer is owed at the front of its block. It runs once per change of the
 // setting, so it allocates rather than disturb the borrowed head in place.
 func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
-	block := make([]byte, 0, len(j.head)+10)
-	if w.tableMin < w.tableFinal {
-		block = appendHPACKInt(block, uint64(w.tableMin), 5, 0x20)
-	}
-	block = appendHPACKInt(block, uint64(w.tableFinal), 5, 0x20)
+	block := w.appendTableUpdate(make([]byte, 0, len(j.head)+10))
 	var flags byte
 	for rest := j.head; len(rest) >= frameHeaderSize; {
 		n := int(rest[0])<<16 | int(rest[1])<<8 | int(rest[2])
@@ -664,6 +660,54 @@ func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
 		rest = rest[frameHeaderSize+n:]
 	}
 	return appendHeaderFrames(nil, j.id, flags, block, w.maxFrame)
+}
+
+// appendTableUpdate writes the dynamic table size updates the peer is owed:
+// the minimum the setting passed through, when it went below where it ended,
+// then where it ended (RFC 7541 §4.2). The caller clears tableUpdate.
+func (w *h2Writer) appendTableUpdate(block []byte) []byte {
+	if w.tableMin < w.tableFinal {
+		block = appendHPACKInt(block, uint64(w.tableMin), 5, 0x20)
+	}
+	return appendHPACKInt(block, uint64(w.tableFinal), 5, 0x20)
+}
+
+// refuse answers a stream the reader refused with a bare status head —
+// :status and date, END_STREAM on it — then RST_STREAM NO_ERROR, both in
+// one critical section so that no other head lands between them.
+//
+// The request never reached the responder, so this is the one head that is
+// built outside appendHead; it stays correct for the same reasons that one
+// is. Nothing in it is indexed, so the encoder's table — always empty — is
+// untouched, and a size update the peer is owed goes out in front of this
+// block as it would in front of any other: nghttp2 answers its absence with
+// COMPRESSION_ERROR whatever block it is missing from.
+func (w *h2Writer) refuse(id uint32, status int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
+		w.cond.Wait()
+	}
+	if w.err != nil {
+		return w.err
+	}
+	var buf [64]byte // a size update, :status and date fit without the heap
+	block := buf[:0]
+	if w.tableUpdate {
+		block = w.appendTableUpdate(block)
+		w.tableUpdate = false
+	}
+	block = appendHPACKStatus(block, status)
+	block = appendHPACK(block, "date", dateFor(time.Now()))
+	err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: id, Payload: block})
+	if err != nil {
+		return err
+	}
+	if err := w.appendCtrl32(frameRSTStream, id, errNoError); err != nil {
+		return err
+	}
+	w.cond.Broadcast()
+	return nil
 }
 
 // control32 and appendCtrl32 queue a control frame whose payload is one
