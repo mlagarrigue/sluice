@@ -319,6 +319,30 @@ func TestStartupCleartextWithoutAPassword(t *testing.T) {
 	}
 }
 
+// MaxMessage outside what a server can ever need is a configuration error,
+// refused before the first byte like startupBody's other refusals: below the
+// handshake's own bound, or above the 1 GiB PostgreSQL can build. The two
+// bounds themselves are accepted.
+func TestStartupRefusesAMaxMessageOutOfBounds(t *testing.T) {
+	for _, n := range []int{-1, 1, maxStartupMessage - 1, maxMaxMessage + 1} {
+		srv := &fakeServer{}
+		_, err := Startup(srv, StartupConfig{User: "orders", MaxMessage: n})
+		if err == nil || !strings.Contains(err.Error(), "MaxMessage") {
+			t.Errorf("MaxMessage %d: error = %v, want a refusal naming the field", n, err)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("MaxMessage %d: %d bytes sent before the refusal", n, srv.sent.Len())
+		}
+	}
+	for _, n := range []int{0, maxStartupMessage, maxMaxMessage} {
+		srv := &fakeServer{}
+		_, err := Startup(srv, StartupConfig{User: "orders", MaxMessage: n})
+		if err != nil && strings.Contains(err.Error(), "MaxMessage") {
+			t.Errorf("MaxMessage %d: refused with %v, want it accepted", n, err)
+		}
+	}
+}
+
 // The downgrade M-9 names: against a client that answers whatever method the
 // peer asks for, an active MITM on a plain socket asks for cleartext before
 // SCRAM ever starts and keeps the password. The default must be a refusal

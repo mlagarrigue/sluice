@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,7 +66,12 @@ func pgTarget(t *testing.T) (addr string, cfg postgres.StartupConfig) {
 func dial(t *testing.T) *postgres.Conn {
 	t.Helper()
 	addr, cfg := pgTarget(t)
+	return dialWith(t, addr, cfg)
+}
 
+// dialWith is dial with the StartupConfig the test chose.
+func dialWith(t *testing.T, addr string, cfg postgres.StartupConfig) *postgres.Conn {
+	t.Helper()
 	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("dialling %s: %v", addr, err)
@@ -95,6 +101,52 @@ func dial(t *testing.T) *postgres.Conn {
 		t.Logf("connected to PostgreSQL %s as %s", v, cfg.User)
 	}
 	return conn
+}
+
+// A value over the default message bound — PostgreSQL allows 1 GiB per
+// field, the reader 64 MiB per message — is refused unread and breaks the
+// connection, with an error that names the field to raise; raised, the same
+// value is read whole. One message of 70 MB, not more: the runner's memory
+// is not the subject.
+func TestIntegrationMaxMessageLiftsTheDefaultBound(t *testing.T) {
+	const size = 70_000_000
+	const query = "SELECT repeat('x', 70000000)"
+	addr, cfg := pgTarget(t)
+
+	without := dialWith(t, addr, cfg)
+	src := without.Query(t.Context(), query, nil, postgres.QueryConfig{})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	err := src.Err()
+	if !errors.Is(err, postgres.ErrMessageTooLarge) {
+		t.Fatalf("a %d-byte value under the default bound: %v, want ErrMessageTooLarge", size, err)
+	}
+	if !strings.Contains(err.Error(), "StartupConfig.MaxMessage") {
+		t.Errorf("the error does not name the field that raises the bound: %v", err)
+	}
+	if err := without.Err(); !errors.Is(err, postgres.ErrConnBroken) {
+		t.Errorf("the connection after the refusal: %v, want ErrConnBroken", err)
+	}
+
+	cfg.MaxMessage = 128 << 20
+	with := dialWith(t, addr, cfg)
+	got := -1
+	src = with.Query(t.Context(), query, nil, postgres.QueryConfig{})
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			v, _ := row.Value(0)
+			got = len(v)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the same value with MaxMessage raised: %v", err)
+	}
+	if got != size {
+		t.Errorf("read a value of %d bytes, want %d", got, size)
+	}
+	if err := with.Err(); err != nil {
+		t.Errorf("the connection after the large value: %v", err)
+	}
 }
 
 // The claim the whole connector is built around, against a server that can

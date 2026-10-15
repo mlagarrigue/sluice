@@ -90,6 +90,11 @@ Three reasons come up, and the difference matters:
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
+- **A message from the server is bounded at 64 MiB** — a row with all its
+  values, a COPY chunk. Over it, the message is refused unread and the
+  connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
+  `StartupConfig.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
+  itself allows per field; the handshake keeps its own 64 KiB bound.
 - **`pushdown` pushes the limit and the key bound, not the column set**:
   the SQL is the caller's and its select list is not rewritten.
 

@@ -1167,6 +1167,11 @@ func (c *Conn) noteTxStatus(body []byte) {
 // reason, so a caller cannot keep going by ignoring one error.
 func (c *Conn) breakConn(cause error) error {
 	if c.broken == nil {
+		if errors.Is(cause, pgwire.ErrMessageTooLarge) {
+			// The one break the caller can configure away, so the error
+			// names the field rather than leaving a number to look up.
+			cause = fmt.Errorf("%w; StartupConfig.MaxMessage raises the limit", cause)
+		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
 	}
 	return c.broken

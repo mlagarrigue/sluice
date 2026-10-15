@@ -92,6 +92,12 @@ const startupVersion = 3 << 16
 // server is ready, so it costs a real workload nothing.
 const maxStartupMessage = 64 << 10
 
+// maxMaxMessage is the largest [StartupConfig.MaxMessage] accepted. PostgreSQL
+// cannot build a message over 1 GiB — its allocation ceiling — so a bound
+// above that admits nothing a server can send and only widens what a
+// corrupted length prefix may ask for.
+const maxMaxMessage = 1 << 30
+
 // StartupConfig is what the server needs to know before it will answer a
 // query. Only User has no sensible default.
 type StartupConfig struct {
@@ -168,6 +174,22 @@ type StartupConfig struct {
 	// statement already finishing finishes, and its result is returned as
 	// if the context had held.
 	CancelDial func(ctx context.Context) (io.ReadWriteCloser, error)
+
+	// MaxMessage is the largest message accepted from the server once the
+	// connection is up, in bytes: a DataRow with all its values, a CopyData
+	// chunk. Zero, the default, is 64 MiB — enough for the rows a real
+	// workload sends, small enough that a hostile or corrupted length
+	// prefix cannot exhaust the process. A workload that reads larger
+	// values (PostgreSQL allows up to 1 GiB per field) raises it
+	// deliberately: a message over the bound is refused unread, and since
+	// the stream position is then lost the connection is broken with it
+	// ([ErrMessageTooLarge], then [ErrConnBroken]).
+	//
+	// [Startup] refuses a value below 64 KiB — the handshake's own bound,
+	// which this does not change — or above 1 GiB, before anything is
+	// sent. This bounds what is read; [CopyConfig.MaxMessage] is how much
+	// is written in one CopyData chunk.
+	MaxMessage int
 }
 
 // Startup performs the startup and authentication exchange over an established
@@ -247,8 +269,12 @@ func Startup(rw io.ReadWriteCloser, cfg StartupConfig) (*Conn, error) {
 		return nil, err
 	}
 	// The handshake is over and the server has proved itself, so the ordinary
-	// bound applies from here.
-	c.r.SetMaxMessage(pgwire.DefaultMaxMessage)
+	// bound applies from here — the caller's when it named one.
+	limit := pgwire.DefaultMaxMessage
+	if cfg.MaxMessage != 0 {
+		limit = cfg.MaxMessage
+	}
+	c.r.SetMaxMessage(limit)
 	return c, nil
 }
 
@@ -267,6 +293,9 @@ func startupBody(cfg StartupConfig) ([]byte, error) {
 	}
 	if _, ok := cfg.Params["database"]; ok {
 		return nil, errors.New(`postgres: set the database in StartupConfig.Database, not in Params["database"]`)
+	}
+	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
+		return nil, fmt.Errorf("postgres: StartupConfig.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
 	}
 
 	// Sorted, not map order: ranging a map here would make the same
