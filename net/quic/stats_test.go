@@ -139,8 +139,16 @@ func TestDeliveryRateOnBottleneck(t *testing.T) {
 		t.Fatal(err)
 	}
 	rate := tr.stats.DeliveryRate
-	t.Logf("Stats.DeliveryRate %.0f B/s, %.3f of the line", rate, rate/line)
-	if rate < 0.8*line || rate > 1.05*line {
-		t.Fatalf("Stats.DeliveryRate %.0f B/s on a %d B/s line (%.2f of it): %+v", rate, line, rate/line, tr.stats)
+	// What the sender let the path carry. A Reno window halved by a loss in
+	// the last round trips is below the bandwidth-delay product, and the
+	// path then delivers that window per round trip, not the line: seen
+	// twice under the whole suite at 0.71 and 0.795 of the line, the window
+	// at 0.9 of the product and the rate at 0.98 of window/RTT. The estimator
+	// is measured against that ceiling; the line stays the ceiling of the
+	// ceiling.
+	ceiling := min(line, float64(tr.stats.CongestionWindow)/tr.stats.SmoothedRTT.Seconds())
+	t.Logf("Stats.DeliveryRate %.0f B/s, %.3f of the line, %.3f of window/RTT", rate, rate/line, rate/ceiling)
+	if rate < 0.8*ceiling || rate > 1.05*line {
+		t.Fatalf("Stats.DeliveryRate %.0f B/s on a %d B/s line (%.2f of it, %.2f of window/RTT): %+v", rate, line, rate/line, rate/ceiling, tr.stats)
 	}
 }

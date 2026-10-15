@@ -1587,9 +1587,10 @@ type Stats struct {
 	// took to send and the time they took to be acknowledged. Samples taken
 	// while the application had nothing to send are skipped — they measure
 	// the application, not the path — and so are intervals shorter than
-	// MinRTT. Zero until the first such sample. Over a bottleneck it reads
-	// the line rate, whatever CongestionWindow says: the window is what the
-	// sender allows itself, this is what the path actually carried.
+	// MinRTT. Zero until the first such sample. It is what the path carried,
+	// not what CongestionWindow allowed: over a bottleneck it reads the line
+	// rate while the window covers the bandwidth-delay product, and the
+	// window per round trip once a loss has cut the window below it.
 	DeliveryRate float64
 }
 
