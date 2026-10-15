@@ -527,40 +527,49 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		r = Response{Status: 500}
 	}
 	sc.head = head
-	if !writeH3Bounded(s, head, writeTimeout) {
-		return // the stream is gone or given up on; its neighbours are not
-	}
 	status := r.Status
 	if status == 0 {
 		status = 200
 	}
 	_, noBody := noLengthAndBody(status, method)
-	if r.streamed() && !noBody {
-		// The payload follows as DATA frames on the same stream, at the
-		// pace the producer supplies them — off the read goroutine, so
-		// packets and the credit this write waits on keep arriving.
-		//
-		// A HEAD or 204/304 response states no body and sends none —
-		// the producer is never pulled, the same way the HTTP/1.1 and
-		// HTTP/2 paths never do for these.
-		detach()
-		if !streamH3Body(c, s, r.Stream, writeTimeout) {
-			return
-		}
+	if !r.streamed() || noBody {
+		// The whole response is in head: it and the FIN leave in one write,
+		// one datagram for a response that fits one, where a write and then
+		// CloseWrite sent the FIN in a datagram of its own — one more per
+		// request, measured at 1.0 per request over 20,000 small responses.
+		_ = writeH3Bounded(s, head, true, writeTimeout)
+		return
+	}
+	if !writeH3Bounded(s, head, false, writeTimeout) {
+		return // the stream is gone or given up on; its neighbours are not
+	}
+	// The payload follows as DATA frames on the same stream, at the pace the
+	// producer supplies them — off the read goroutine, so packets and the
+	// credit this write waits on keep arriving. A HEAD or 204/304 response
+	// states no body and sends none: it took the branch above, and the
+	// producer is never pulled, the same way the HTTP/1.1 and HTTP/2 paths
+	// never do for these.
+	detach()
+	if !streamH3Body(c, s, r.Stream, writeTimeout) {
+		return
 	}
 	_ = s.CloseWrite()
 }
 
-// writeH3Bounded writes p on s with writeTimeout to finish, reporting whether
-// it all went out. A write the peer starves of credit past the timeout is
-// given up on and its stream reset with H3_REQUEST_CANCELLED (RFC 9114 §8.1):
-// the peer granted less than the response needs, which it is entitled to do,
-// and this end is the one that stopped waiting — the same reading as the
-// HTTP/2 writer's CANCEL after its write timeout. Any other failure means
-// the stream is already gone.
-func writeH3Bounded(s *quic.Stream, p []byte, writeTimeout time.Duration) bool {
+// writeH3Bounded writes p on s with writeTimeout to finish, and the FIN with
+// it when fin is set, reporting whether it all went out. A write the peer
+// starves of credit past the timeout is given up on and its stream reset
+// with H3_REQUEST_CANCELLED (RFC 9114 §8.1): the peer granted less than the
+// response needs, which it is entitled to do, and this end is the one that
+// stopped waiting — the same reading as the HTTP/2 writer's CANCEL after its
+// write timeout. Any other failure means the stream is already gone.
+func writeH3Bounded(s *quic.Stream, p []byte, fin bool, writeTimeout time.Duration) bool {
 	_ = s.SetWriteDeadline(time.Now().Add(writeTimeout))
-	if _, err := s.Write(p); err != nil {
+	write := s.Write
+	if fin {
+		write = s.WriteClose
+	}
+	if _, err := write(p); err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			_ = s.Reset(h3RequestCancelled)
 		}
@@ -591,7 +600,7 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], wr
 		if len(out) == 0 {
 			return true // an empty batch is cadence, not an end
 		}
-		if !writeH3Bounded(s, out, writeTimeout) {
+		if !writeH3Bounded(s, out, false, writeTimeout) {
 			ok = false
 			return false
 		}
