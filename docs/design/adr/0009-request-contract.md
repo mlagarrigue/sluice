@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-14 (the cookie arrives whole)
+- **Revised:** 2026-10-15 (what a bounded body costs)
 - **Theme:** httpstream
 
 ## Problem
@@ -43,3 +43,15 @@ this contract alone, which is what lets one handler serve all three
 protocols; anything the contract does not promise is explicitly not
 portable, and a handler relying on it anyway has a documented bug rather
 than a surprise.
+
+Article 4 has a cost, and it is accepted rather than streamed away: a
+connection's read buffer grows toward one request at its ceiling —
+request line, headers and body bounds together, about 1 MiB at the
+defaults — and holds it for `ReadTimeout` at most before an unfinished
+request is refused. The server's bound is that sum times `MaxConns`; a
+server without `MaxConns` has none. Streaming the body instead would hand
+the handler a request whose framing is still open, which is exactly what
+the contract exists to remove, and every `web/stream` stage would have to
+learn a partial element. It is revisited if a workload needs request
+bodies that do not fit in memory (uploads); until then the bound is a
+configuration, not a design.

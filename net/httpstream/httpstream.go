@@ -270,7 +270,14 @@ type Config struct {
 	// headers cost lookups rather than bytes.
 	MaxHeaders int
 
-	// MaxBodyBytes bounds one request body. Zero means 1 MiB.
+	// MaxBodyBytes bounds one request body. Zero means 1 MiB. A body is
+	// delivered whole, never streamed (docs/design/adr/0009, article 4), so
+	// this is also what one connection may hold in its read buffer: the
+	// buffer grows from 4 KiB toward MaxRequestLineBytes + MaxHeaderBytes +
+	// MaxBodyBytes as a request arrives, and a request that has not arrived
+	// in full after ReadTimeout is refused and the buffer freed. The most
+	// the request buffers of a server hold at once is therefore that sum
+	// times MaxConns, and a server without MaxConns has no such bound.
 	MaxBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
@@ -338,6 +345,12 @@ type Config struct {
 	// net/http does under netutil.LimitListener. There is no queue: a
 	// client that was refused retries, as it would after a reset. [ServeH3]
 	// is not bound by it; QUIC bounds its connections in the transport.
+	//
+	// It is also the memory bound: each connection may hold one request at
+	// its ceiling, MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes (about
+	// 1 MiB at the defaults), for ReadTimeout at most, so MaxConns times
+	// that sum is the most the request buffers occupy. A public socket sets
+	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
 
 	// ShutdownGrace is how long [Serve], once its context is cancelled,
