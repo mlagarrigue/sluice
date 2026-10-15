@@ -273,35 +273,52 @@ var errIdleTimeout = errors.New("httpstream: idle timeout")
 // still recognise it; the reader distinguishes it to answer the 100 once.
 var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w", errIncomplete)
 
-// Config bounds everything a client controls. There is no zero value that is
-// safe on a public socket, and the defaults below are modest rather than
-// generous — a deployment that needs more says so.
+// Config bounds everything a client controls, for every protocol this package
+// serves: [Serve] reads it for HTTP/1.1 and HTTP/2, [ServeH3] for HTTP/3.
+// Every bound is mandatory and none is a required parameter: the zero value
+// of each field is the default named in its comment, chosen modest rather
+// than generous, so that an empty Config is a bounded server and a
+// deployment that needs more says so. A field that one protocol has no use
+// for says which protocols read it; the bounds HTTP/2 alone has live in
+// [H2Config], and [Serve] derives that from this one so that a bound the two
+// share is set once. See docs/design/adr/0018.
 type Config struct {
 	// MaxRequestLineBytes bounds the method, target and version together.
-	// Zero means 8 KiB.
+	// Zero means 8 KiB. HTTP/1.1 only: HTTP/2 and HTTP/3 carry them as
+	// pseudo-header fields, under MaxHeaderBytes.
 	MaxRequestLineBytes int
 
 	// MaxHeaderBytes bounds all headers of one request together, including
-	// their names, colons and line endings. Zero means 32 KiB.
+	// their names, colons and line endings. Zero means 32 KiB. Every
+	// protocol: over HTTP/2 it is the header block ([H2Config]'s
+	// MaxHeaderBlockBytes), over HTTP/3 the field section, and both
+	// announce it to the peer as their MAX_HEADER_LIST_SIZE or
+	// MAX_FIELD_SECTION_SIZE setting.
 	MaxHeaderBytes int
 
 	// MaxHeaders bounds how many header fields one request may carry. Zero
 	// means 64. It exists beside MaxHeaderBytes because a thousand one-byte
-	// headers cost lookups rather than bytes.
+	// headers cost lookups rather than bytes. Every protocol.
 	MaxHeaders int
 
-	// MaxBodyBytes bounds one request body. Zero means 1 MiB. A body is
-	// delivered whole, never streamed (docs/design/adr/0009, article 4), so
-	// this is also what one connection may hold in its read buffer: the
-	// buffer grows from 4 KiB toward MaxRequestLineBytes + MaxHeaderBytes +
-	// MaxBodyBytes as a request arrives, and a request that has not arrived
-	// in full after ReadTimeout is refused and the buffer freed. The most
-	// the request buffers of a server hold at once is therefore that sum
-	// times MaxConns, and a server without MaxConns has no such bound.
+	// MaxBodyBytes bounds one request body. Zero means 1 MiB. Every
+	// protocol. A body is delivered whole, never streamed
+	// (docs/design/adr/0009, article 4), so this is also what one connection
+	// may hold in its read buffer: the buffer grows from 4 KiB toward
+	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes as a request
+	// arrives, and a request that has not arrived in full after ReadTimeout
+	// is refused and the buffer freed. The most the request buffers of a
+	// server hold at once is therefore that sum times MaxConns, and a server
+	// without MaxConns has no such bound. Over HTTP/2 and HTTP/3, where
+	// several bodies assemble at once, four times this value bounds what one
+	// connection holds across all of them.
 	MaxBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
-	// at once. Zero means 64. It is what keeps a client that writes ten
+	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
+	// frames ([H2Config.MaxFramesPerBatch]) and an HTTP/3 batch is what one
+	// datagram carried, each already bounded by MaxConcurrentStreams. It is
+	// what keeps a client that writes ten
 	// thousand requests in one burst from turning them into one batch and one
 	// allocation the size of the burst. For a client that sends one request
 	// at a time the bound never binds — a batch is whatever one read
@@ -314,22 +331,23 @@ type Config struct {
 	// MaxConcurrentStreams bounds how many request streams one HTTP/2 or
 	// HTTP/3 connection may have open and unfinished at once; the stream over
 	// it is refused (REFUSED_STREAM, H3_REQUEST_REJECTED) rather than the
-	// connection lost (RFC 9113 §5.1.2, RFC 9114 §5.2). For HTTP/3, zero
-	// means 64, the transport's own MAX_STREAMS grant
-	// ([quic.DefaultParameters]'s InitialMaxStreamsBidi), so a zero config
-	// admits exactly what the transport invites; for an HTTP/2 connection
-	// [Serve] accepts, zero keeps [H2Config.MaxConcurrentStreams]'s own
-	// default. It exists beside MaxRequestsPerBatch because the two bound
-	// different things — one is how many requests ride one hand-off, the
-	// other how much assembly state a peer may park — and tuning the batch
-	// size must not change who is admitted. HTTP/1.1, being sequential, has
-	// no use for it.
+	// connection lost (RFC 9113 §5.1.2, RFC 9114 §5.2). Zero means 100 for
+	// both: RFC 9114 §6.1 has an HTTP/3 server grant at least 100 request
+	// streams, [quic.DefaultParameters] grants exactly that as its
+	// InitialMaxStreamsBidi, so a zero config admits what the transport
+	// invites, and HTTP/2 advertises the same number as
+	// SETTINGS_MAX_CONCURRENT_STREAMS ([H2Config.MaxConcurrentStreams]).
+	// It exists beside MaxRequestsPerBatch because the two bound different
+	// things — one is how many requests ride one hand-off, the other how
+	// much assembly state a peer may park — and tuning the batch size must
+	// not change who is admitted. HTTP/2 and HTTP/3 only: HTTP/1.1, being
+	// sequential, has no use for it.
 	MaxConcurrentStreams int
 
 	// MaxRequestsPerConn bounds how many requests one HTTP/1.1 connection
 	// may make before it is closed. Zero means 1024, which is keep-alive
-	// with an end. HTTP/1.1 only: an HTTP/2 connection is bounded by
-	// [H2Config] and [Config.IdleTimeout], not by a request count. The end
+	// with an end. HTTP/1.1 only: an HTTP/2 or HTTP/3 connection is bounded
+	// by MaxConcurrentStreams and IdleTimeout, not by a request count. The end
 	// costs a client that does not pipeline a TCP and a TLS handshake every
 	// 1024 requests: +3.7% per request over loopback against no end at all,
 	// the handshake and nothing else (docs/benchmarks.md, "The connection
@@ -344,13 +362,20 @@ type Config struct {
 	// proxy in front with a longer idle timeout of its own (nginx: 60s by
 	// default) closes first rather than reuse a connection this server is
 	// closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
-	// end from GOAWAY.
+	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
+	// clock does not run while a response is owed ([H2Config]'s
+	// IdleTimeout); over HTTP/3 the transport keeps it, as the
+	// max_idle_timeout that [Config.TransportParameters] derives from this
+	// field, so a connection ServeH3 serves on other parameters has the
+	// idle timeout those parameters say, not this one.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its
-	// first byte has. Zero means 10s. This is the bound that answers
-	// slowloris: a client that sends a header byte a minute is disconnected
-	// by the clock rather than tolerated.
+	// first byte has. Zero means 10s. Every protocol. This is the bound
+	// that answers slowloris: a client that sends a header byte a minute is
+	// disconnected by the clock rather than tolerated; over HTTP/2 and
+	// HTTP/3 it is the stream still assembling that is reset, not the
+	// connection.
 	ReadTimeout time.Duration
 
 	// WriteTimeout is how long one batch of responses has to be written.
@@ -359,7 +384,7 @@ type Config struct {
 	// keeps the connection alive but never grants credit sees its stream
 	// reset with H3_REQUEST_CANCELLED when it passes, instead of holding the
 	// response's goroutine and body for as long as the idle timeout allows.
-	// Zero means 10s.
+	// Zero means 10s. Every protocol.
 	WriteTimeout time.Duration
 
 	// MaxConns bounds how many connections [Serve] holds open at once,
@@ -379,9 +404,10 @@ type Config struct {
 	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
 
-	// ShutdownGrace is how long [Serve], once its context is cancelled,
-	// waits for the requests already in flight to be answered before it
-	// closes the connections still open. Zero means 5s. What it bounds is
+	// ShutdownGrace is how long [Serve] or [ServeH3], once its context is
+	// cancelled, waits for the requests already in flight to be answered
+	// before it closes the connections still open. Zero means 5s. Every
+	// protocol. What it bounds is
 	// the handler and the response's writes together, not either alone:
 	// WriteTimeout governs one write, this governs how long a stopping
 	// server stays up for a response that was owed. Idle connections are
@@ -391,7 +417,7 @@ type Config struct {
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
 	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
-	// indexed field lines outright.
+	// indexed field lines outright. HTTP/3 only.
 	//
 	// It is an interop and testing override, kept by ADR 0013 so a
 	// decoder can be pinned against a table it did not transcribe itself.

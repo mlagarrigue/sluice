@@ -115,7 +115,9 @@ type H2Config struct {
 	MaxContinuationFrames int
 
 	// MaxHeaderBlockBytes bounds one header block, CONTINUATION frames
-	// included. Zero means 64 KiB.
+	// included, and is what this server advertises as
+	// SETTINGS_MAX_HEADER_LIST_SIZE. Zero means 32 KiB, as [Config]'s
+	// MaxHeaderBytes does: [Serve] sets this field from that one.
 	MaxHeaderBlockBytes int
 
 	// MaxHeaders bounds how many fields one header block may decode to,
@@ -166,7 +168,7 @@ type H2Config struct {
 
 	// MaxConcurrentStreams bounds how many requests one connection may have
 	// open or unanswered at once, and is what this server advertises as
-	// SETTINGS_MAX_CONCURRENT_STREAMS. Zero means 100.
+	// SETTINGS_MAX_CONCURRENT_STREAMS. Zero means 100, as [Config]'s does.
 	//
 	// It bounds two things at once, which is why it is one number: the stream
 	// state the peer can make this end allocate, and the requests waiting for
@@ -198,8 +200,8 @@ type H2Config struct {
 	// small one behind it.
 	MaxWriteBufferBytes int
 
-	// IdleTimeout, ReadTimeout and WriteTimeout are as [Config]'s, and answer
-	// the same slow-peer problem.
+	// IdleTimeout, ReadTimeout and WriteTimeout are as [Config]'s, with the
+	// same defaults, and answer the same slow-peer problem.
 	//
 	// IdleTimeout bounds a connection with nothing in flight. It does not run
 	// while this end owes the peer answers: a streamed response may take
@@ -287,9 +289,12 @@ func (c H2Config) withDefaults() H2Config {
 	return c
 }
 
-// defaultMaxConcurrency is SETTINGS_MAX_CONCURRENT_STREAMS' default here. The
-// protocol has no initial value for it — a peer that is told nothing may open
-// as many as it likes — so saying a number is the bound, not a preference.
+// defaultMaxConcurrency is SETTINGS_MAX_CONCURRENT_STREAMS' default here, and
+// [Config.MaxConcurrentStreams]'s for HTTP/3 as well. The HTTP/2 protocol
+// has no initial value for it — a peer that is told nothing may open as many
+// as it likes — so saying a number is the bound, not a preference; 100 is
+// the floor RFC 9114 §6.1 recommends an HTTP/3 server grant, and what
+// [quic.DefaultParameters] grants, so one number serves both protocols.
 const defaultMaxConcurrency = 100
 
 // ErrH2Protocol reports a frame sequence this package will not accept. Like
