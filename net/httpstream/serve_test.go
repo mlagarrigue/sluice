@@ -280,7 +280,10 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 		// RFC 9110 §15.6.6: a well-formed version this server does not
 		// speak is 505; a version that is not one is still 400.
 		{"version not supported", "GET /x HTTP/3.0\r\nHost: h\r\n\r\n", "505"},
+		{"HTTP/2 on an HTTP/1 connection", "GET /x HTTP/2.0\r\nHost: h\r\n\r\n", "505"},
 		{"version that is not one", "GET /x HTTP/one\r\nHost: h\r\n\r\n", "400"},
+		// The grammar allows one digit each side of the dot.
+		{"two-digit minor version", "GET /x HTTP/1.10\r\nHost: h\r\n\r\n", "400"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,6 +295,27 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 				t.Errorf("status = %q, want %s", status, tt.want)
 			}
 		})
+	}
+}
+
+// A higher minor version of HTTP/1 is served as HTTP/1.1 rather than refused
+// (RFC 9110 §6.2): the answer says HTTP/1.1, the version this server speaks,
+// and the connection persists for a second request as a 1.1 one would
+// (RFC 9112 §9.3).
+func TestHigherMinorVersionIsServedAsHTTP11(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	r := bufio.NewReader(c)
+
+	for _, target := range []string{"/a", "/b"} {
+		fmt.Fprintf(c, "GET %s HTTP/1.2\r\nHost: h\r\n\r\n", target)
+		status, body := readResponse(t, r)
+		if !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("%s: status = %q, want HTTP/1.1 200", target, status)
+		}
+		if body != target {
+			t.Errorf("%s: body = %q", target, body)
+		}
 	}
 }
 

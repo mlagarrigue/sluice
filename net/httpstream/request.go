@@ -477,8 +477,10 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	// HTTP/1.1 keeps the connection open unless told otherwise; HTTP/1.0
 	// closes it unless told otherwise. Getting this backwards is a hang, not
 	// a wrong answer, so the two versions are separated here rather than
-	// folded into a default.
-	http11 := string(version) == "HTTP/1.1"
+	// folded into a default. A minor version above 1 is processed as 1.1
+	// (RFC 9110 §6.2) and persists like it (RFC 9112 §9.3, "HTTP/1.1 (or
+	// later)"); splitRequestLine has already refused every other major.
+	http11 := version[7] != '0'
 	req.KeepAlive = http11
 	req.http10 = !http11
 
@@ -615,14 +617,16 @@ func splitRequestLine(line []byte) (method, target, version []byte, err error) {
 	if err := checkTarget(method, target, ErrMalformed); err != nil {
 		return nil, nil, nil, err
 	}
-	if v := string(version); v != "HTTP/1.1" && v != "HTTP/1.0" {
-		// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3). A version
-		// of that shape is one this server declines, answered 505; anything
-		// else is not a request line.
-		if len(v) == 8 && v[:5] == "HTTP/" && '0' <= v[5] && v[5] <= '9' && v[6] == '.' && '0' <= v[7] && v[7] <= '9' {
-			return nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
-		}
+	// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3): anything of
+	// another shape is not a request line. Of that shape, 505 refuses a major
+	// version (RFC 9110 §15.6.6), so only a major other than 1 is declined;
+	// any minor of 1 is served.
+	v := string(version)
+	if len(v) != 8 || v[:5] != "HTTP/" || v[5] < '0' || v[5] > '9' || v[6] != '.' || v[7] < '0' || v[7] > '9' {
 		return nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
+	}
+	if v[5] != '1' {
+		return nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
 	}
 	return method, target, version, nil
 }
