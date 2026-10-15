@@ -112,7 +112,7 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 	h2cfg := h2ConfigOf(cfg, h2Streams)
 
 	var wg sync.WaitGroup
-	live := newConnSet()
+	live := newConnSet(cfg.MaxConns)
 	stop := make(chan struct{})
 	var once sync.Once
 	shutdown := func() {
@@ -173,8 +173,11 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 		tempDelay = 0
 		st := live.add(c)
 		if st == nil {
-			// The shutdown ran between Accept and here, so this connection
-			// would never be closed by it.
+			// Over MaxConns, or the shutdown ran between Accept and here and
+			// this connection would never be closed by it. Either way it is
+			// closed with nothing read and nothing written: a response would
+			// cost the request's read, which is what the bound refuses to
+			// spend on a peer in excess (see Config.MaxConns).
 			_ = c.Close()
 			continue
 		}
@@ -188,11 +191,14 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 // connSet is the connections Serve has accepted and not yet finished with,
 // each with where it stands between two requests. It exists for the
 // shutdown: close the ones that owe nothing, then, when the grace has
-// passed, the rest.
+// passed, the rest. It is also where Config.MaxConns binds, since it already
+// counts every live connection: the one that would take it past max is not
+// admitted.
 type connSet struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]*connState
 	closed bool
+	max    int // Config.MaxConns; zero is unbounded
 	// draining is cancelled when the shutdown begins; every connection's state
 	// shares it, which is how the request reader learns not to read another
 	// request and how an HTTP/2 connection learns to say GOAWAY. A context
@@ -202,9 +208,9 @@ type connSet struct {
 	beginDrain context.CancelFunc
 }
 
-func newConnSet() *connSet {
+func newConnSet(maxConns int) *connSet {
 	draining, begin := context.WithCancel(context.Background())
-	return &connSet{conns: map[net.Conn]*connState{}, draining: draining, beginDrain: begin}
+	return &connSet{conns: map[net.Conn]*connState{}, max: maxConns, draining: draining, beginDrain: begin}
 }
 
 // connState is what the shutdown needs to know about one connection: whether
@@ -240,12 +246,15 @@ func (st *connState) drainingNow() bool {
 	return st != nil && st.drain.Err() != nil
 }
 
-// add registers a connection, returning nil if the set has already been
-// closed and this one therefore has to be closed by its caller.
+// add registers a connection, returning nil if it is not admitted — the set
+// has already been closed, or it is at max — and this one therefore has to
+// be closed by its caller. A slot frees in remove, which the connection's
+// goroutine runs when it is done with the socket, so a client that hung up
+// counts until the server has read its close.
 func (s *connSet) add(c net.Conn) *connState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || (s.max > 0 && len(s.conns) >= s.max) {
 		return nil
 	}
 	st := &connState{drain: s.draining}

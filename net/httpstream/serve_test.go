@@ -925,3 +925,63 @@ func TestHandlerConnectionOtherThanCloseIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// Config.MaxConns caps what Serve holds open at once: the connection over
+// the cap is closed as it is accepted, with nothing written, and a slot
+// freed by a connection that ended admits the next one.
+func TestServeRefusesConnectionsOverMaxConns(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxConns: 2}, echoTarget)
+
+	ask := func(c net.Conn) (string, error) {
+		if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+			return "", err
+		}
+		status, _ := readResponse(t, bufio.NewReader(c))
+		return status, nil
+	}
+	first, second := dial(t, addr), dial(t, addr)
+	for i, c := range []net.Conn{first, second} {
+		if status, err := ask(c); err != nil || !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("connection %d under the cap: status %q, err %v", i+1, status, err)
+		}
+	}
+
+	third := dial(t, addr)
+	if _, err := third.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err == nil {
+		n, err := third.Read(make([]byte, 1))
+		if n != 0 || err == nil {
+			t.Fatalf("the third connection read %d bytes, err %v: it was served over MaxConns 2", n, err)
+		}
+	}
+
+	// A slot frees when the server notices the close, which is a read on
+	// its side; the fourth connection is tried until it does.
+	_ = first.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetDeadline(time.Now().Add(time.Second))
+		status, err := askQuietly(c)
+		_ = c.Close()
+		if err == nil && strings.HasPrefix(status, "HTTP/1.1 200") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after one connection closed the next was still refused: status %q, err %v", status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// askQuietly sends one request and returns its status line, with every
+// failure reported as an error rather than ending the test, for the callers
+// that retry.
+func askQuietly(c net.Conn) (string, error) {
+	if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+		return "", err
+	}
+	return bufio.NewReader(c).ReadString('\n')
+}

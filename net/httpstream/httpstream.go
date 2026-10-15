@@ -329,6 +329,17 @@ type Config struct {
 	// Zero means 10s.
 	WriteTimeout time.Duration
 
+	// MaxConns bounds how many connections [Serve] holds open at once,
+	// HTTP/1.1 and HTTP/2 together. Zero means no bound. The connection
+	// over it is closed as it is accepted, with nothing written: answering
+	// 503 would mean reading its request, which is the cost the bound
+	// exists to refuse — a connection is a goroutine and a read buffer
+	// before its first byte says which protocol it speaks. This is what
+	// net/http does under netutil.LimitListener. There is no queue: a
+	// client that was refused retries, as it would after a reset. [ServeH3]
+	// is not bound by it; QUIC bounds its connections in the transport.
+	MaxConns int
+
 	// ShutdownGrace is how long [Serve], once its context is cancelled,
 	// waits for the requests already in flight to be answered before it
 	// closes the connections still open. Zero means 5s. What it bounds is
