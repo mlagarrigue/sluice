@@ -358,10 +358,10 @@ type Config struct {
 
 	// IdleTimeout is how long a connection may hold the socket open between
 	// requests. Zero means 30s. [Serve] announces it on every HTTP/1.1
-	// response that does not close, as Keep-Alive: timeout=<seconds>, so a
-	// proxy in front with a longer idle timeout of its own (nginx: 60s by
-	// default) closes first rather than reuse a connection this server is
-	// closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
+	// response that does not close, as Keep-Alive: timeout=<seconds>, for a
+	// proxy in front that reads it. nginx and Envoy do not: their upstream
+	// idle timeout (60s and one hour by default) must be set below this one,
+	// or they reuse a connection this server is closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
 	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
 	// clock does not run while a response is owed ([H2Config]'s
 	// IdleTimeout); over HTTP/3 the transport keeps it, as the

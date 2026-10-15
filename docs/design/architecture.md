@@ -550,8 +550,8 @@ N diagnostics, memory blows up.
 > drowns the signal.
 
 **`diagnostics.Collector`** is that ceiling, built by `NewCollector(limit)`, whose limit is a required argument —
-S1 says every bound is stated by the caller, and a limit nobody chose is a limit
-nobody owns. It keeps the first *n* in arrival order rather than the most severe:
+S1 requires a bound, and no default fits every use here, so the caller supplies
+it: a limit nobody chose is a limit nobody owns. It keeps the first *n* in arrival order rather than the most severe:
 stable ordering is what makes a report reproducible, and a collector that
 reshuffles under load answers differently for the same input depending on what
 came before. `Truncated()` reports what was dropped, because a truncation that is

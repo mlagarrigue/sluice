@@ -148,9 +148,12 @@ func writeBatch(dst []byte, requests []Request, responses []Response, keepAlive 
 // The timeout is for the proxy in front: nginx keeps an upstream connection
 // 60s by default and Envoy an hour, and one that outlives this server's idle
 // timeout gets reused the moment it is being closed — a reset on a request
-// that was never read, which the proxy reports as a 502. Announced, the
-// proxy closes first (RFC 2068 §19.7.1.1 defines the field; RFC 9110 §7.6.1
-// requires Connection to name it, since it is hop-by-hop). The option also
+// that was never read, which the proxy reports as a 502. A proxy that reads
+// the field closes first (RFC 2068 §19.7.1.1 defines it; RFC 9110 §7.6.1
+// requires Connection to name it, since it is hop-by-hop). Neither of those
+// two does: nginx ignores it (ngx_http_upstream.c) and Envoy strips it, so
+// in front of them the proxy's own upstream idle timeout is what must be set
+// below this one, as docs/guide/experimental.md shows. The option also
 // answers an HTTP/1.0 client's Connection: keep-alive, which RFC 9112 §9.3
 // honours only when the response says keep-alive back; such a client was
 // served one request per connection before.
