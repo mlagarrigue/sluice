@@ -50,6 +50,11 @@ type CopyConfig struct {
 	// a prefix, and the caller needs its own way to resume. That is the trade
 	// this parameter exists to make the caller take knowingly. 100 000 rows
 	// is a reasonable starting point on a wide table.
+	//
+	// It also bounds what an early failure costs. The server's answer is read
+	// when the transaction ends, so a row it refuses near the start — a
+	// duplicate key — still lets the rest of the transaction's rows go out,
+	// to be dropped by the server, before the error comes back.
 	RowsPerTx int
 
 	// MaxMessage is how many bytes accumulate in one CopyData before it is
@@ -400,6 +405,18 @@ func (cp *Copier) beginTx() error {
 	}
 }
 
+// commitTx ends the COPY and commits it, and is where the server's verdict on
+// the transaction's rows is first read.
+//
+// Not earlier, by decision. The server reports a bad row as soon as it meets
+// it and drops every CopyData after that, so reading between writes would
+// stop a doomed load sooner. But nothing is waiting to be read in the normal
+// case, and a read that does not block needs one of two things this package
+// does not have: a goroutine owning the Reader across WriteTuples calls —
+// racing every Conn method the caller may use in between, and leaked by a
+// copier abandoned without Close or Abort — or a deadline on a transport
+// whose deadlines belong to the caller (see Startup). What is lost is
+// bandwidth, bounded by one transaction's rows, which RowsPerTx sets.
 func (cp *Copier) commitTx() error {
 	c := cp.conn
 	// The trailer says "no more tuples": a field count of -1.

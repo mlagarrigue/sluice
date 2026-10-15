@@ -110,6 +110,11 @@ Three reasons come up, and the difference matters:
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
+- **A COPY learns of a server error only when its transaction ends.** A
+  row refused early (a duplicate key) does not stop the sending: the rest
+  of the transaction's rows still go out, and the server drops them
+  before it answers. The waste is bounded by `CopyConfig.RowsPerTx`; lower
+  it if your loads fail often and cross a slow link.
 - **A message from the server is bounded at 64 MiB** — a row with all its
   values, a COPY chunk. Over it, the message is refused unread and the
   connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
