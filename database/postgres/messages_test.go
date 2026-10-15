@@ -198,7 +198,7 @@ func dataRow(values ...[]byte) []byte {
 }
 
 func TestRowsAppend(t *testing.T) {
-	r := NewRows(3, 16)
+	r := NewRows(3, 16, 0)
 	if err := r.Append(dataRow([]byte("a"), nil, []byte("ccc"))); err != nil {
 		t.Fatalf("Append returned %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRowsAppend(t *testing.T) {
 // Reset keeps the storage and empties the content, which is what makes a batch
 // cost no allocation after the first.
 func TestRowsResetReusesStorage(t *testing.T) {
-	r := NewRows(1, 8)
+	r := NewRows(1, 8, 0)
 	for range 8 {
 		if err := r.Append(dataRow([]byte("value"))); err != nil {
 			t.Fatal(err)
@@ -266,7 +266,7 @@ func TestRowsResetReusesStorage(t *testing.T) {
 // at the wrong offset: every value after it would be plausible nonsense, so it
 // must fail rather than be interpreted.
 func TestRowsRejectsWrongWidth(t *testing.T) {
-	r := NewRows(2, 8)
+	r := NewRows(2, 8, 0)
 	if err := r.Append(dataRow([]byte("only one"))); !errors.Is(err, ErrProtocol) {
 		t.Errorf("got %v, want ErrProtocol", err)
 	}
@@ -291,7 +291,7 @@ func TestRowsRejectsMalformed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := NewRows(1, 8)
+			r := NewRows(1, 8, 0)
 			if err := r.Append(tt.body); !errors.Is(err, ErrProtocol) {
 				t.Errorf("got %v, want ErrProtocol", err)
 			}
@@ -302,7 +302,7 @@ func TestRowsRejectsMalformed(t *testing.T) {
 // The row limit is S1 applied to a result set: a query returning more than the
 // caller budgeted must fail rather than grow until the process dies.
 func TestRowsBounded(t *testing.T) {
-	r := NewRows(1, 2)
+	r := NewRows(1, 2, 0)
 	for range 2 {
 		if err := r.Append(dataRow([]byte("x"))); err != nil {
 			t.Fatal(err)
@@ -316,40 +316,43 @@ func TestRowsBounded(t *testing.T) {
 	}
 }
 
-// The byte bound is a cut: the row that would take a non-empty batch past it
-// is refused so the caller can hand the batch on, and is accepted once the
-// batch is empty — even when it is wider than the bound on its own.
-func TestRowsCutAtTheByteBound(t *testing.T) {
-	r := NewRows(1, 100)
-	r.SetMaxBytes(32)
+// The byte bound is a threshold, not a refusal: the row that takes the values
+// past it is accepted and the batch reports itself full, even when that row
+// is wider than the bound on its own. Only the row limit refuses.
+func TestRowsFullAtTheByteBound(t *testing.T) {
+	r := NewRows(1, 100, 32)
 	value := make([]byte, 20)
 	if err := r.Append(dataRow(value)); err != nil {
 		t.Fatalf("the first row: %v", err)
 	}
-	err := r.Append(dataRow(value))
-	if !errors.Is(err, ErrTooManyRows) || !errors.Is(err, errBatchBytes) {
-		t.Fatalf("the row past the bound returned %v, want ErrTooManyRows marked as the byte bound", err)
+	if r.Full() {
+		t.Fatal("Full with 20 of 32 bytes held")
 	}
-	if r.Len() != 1 {
-		t.Errorf("the accumulator holds %d rows, want the 1 it had", r.Len())
-	}
-	r.Reset()
 	if err := r.Append(dataRow(value)); err != nil {
-		t.Fatalf("the same row after a reset: %v", err)
+		t.Fatalf("the row that crosses the bound returned %v, want it accepted", err)
+	}
+	if !r.Full() || !r.fullOnBytes() {
+		t.Errorf("Full = %v, fullOnBytes = %v with 40 of 32 bytes held, want both", r.Full(), r.fullOnBytes())
+	}
+	if got := r.largestRow(); got != 20 {
+		t.Errorf("largestRow = %d, want 20", got)
 	}
 	r.Reset()
 	if err := r.Append(dataRow(make([]byte, 40))); err != nil {
 		t.Fatalf("a row wider than the bound, alone in its batch: %v", err)
 	}
-	if err := r.Append(dataRow(nil)); !errors.Is(err, errBatchBytes) {
-		t.Errorf("an empty row after a full batch returned %v, want the byte bound", err)
+	if !r.fullOnBytes() {
+		t.Error("a row wider than the bound does not fill its batch")
 	}
-	r.SetMaxBytes(0)
-	r.Reset()
+
+	unbounded := NewRows(1, 100, 0)
 	for range 3 {
-		if err := r.Append(dataRow(value)); err != nil {
-			t.Fatalf("with the bound removed: %v", err)
+		if err := unbounded.Append(dataRow(value)); err != nil {
+			t.Fatalf("with no byte bound: %v", err)
 		}
+	}
+	if unbounded.Full() {
+		t.Error("Full with no byte bound and 3 of 100 rows")
 	}
 }
 
@@ -415,7 +418,7 @@ func TestBindBinaryEncodesNull(t *testing.T) {
 // The panic carries the indices as a value rather than a formatted sentence,
 // so whoever recovers one can read them. This test pins that shape.
 func TestRowsValueOutOfRangePanics(t *testing.T) {
-	r := NewRows(2, 4)
+	r := NewRows(2, 4, 0)
 	if err := r.Append(dataRow(AppendInt8(nil, 1), AppendInt8(nil, 2))); err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +476,7 @@ func TestRowsValueOutOfRangePanics(t *testing.T) {
 // reads a value from the wrong offset, which is a plausible wrong answer
 // rather than an error.
 func TestRowsNullDoesNotShiftTheFieldAfterIt(t *testing.T) {
-	rows := NewRows(4, 8)
+	rows := NewRows(4, 8, 0)
 
 	// A value, a NULL, an empty value, a value. The empty one matters: it and
 	// the NULL both have end == start, and only the marker tells them apart.
@@ -504,7 +507,7 @@ func TestRowsNullDoesNotShiftTheFieldAfterIt(t *testing.T) {
 // Two NULLs in a row, and a value after them: the start has to walk back
 // through a marker that is itself a marker.
 func TestRowsConsecutiveNulls(t *testing.T) {
-	rows := NewRows(4, 8)
+	rows := NewRows(4, 8, 0)
 
 	if err := rows.Append(dataRow([]byte("x"), nil, nil, []byte("y"))); err != nil {
 		t.Fatal(err)
@@ -522,7 +525,7 @@ func TestRowsConsecutiveNulls(t *testing.T) {
 // A NULL at the very start of a row: there is no previous field to walk back
 // to, and the row before it ended somewhere.
 func TestRowsNullAtTheStartOfASecondRow(t *testing.T) {
-	rows := NewRows(2, 8)
+	rows := NewRows(2, 8, 0)
 
 	if err := rows.Append(dataRow([]byte("one"), []byte("two"))); err != nil {
 		t.Fatal(err)
@@ -552,7 +555,7 @@ func TestRowsRefuseABatchPastTheOffsetRange(t *testing.T) {
 	maxRowBytes = 32 // the same arithmetic, without allocating two gigabytes
 	defer func() { maxRowBytes = saved }()
 
-	r := NewRows(1, 100)
+	r := NewRows(1, 100, 0)
 	value := make([]byte, 20)
 	if err := r.Append(dataRow(value)); err != nil {
 		t.Fatalf("the first row did not fit under the bound: %v", err)

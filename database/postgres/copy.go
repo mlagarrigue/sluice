@@ -57,11 +57,12 @@ type CopyConfig struct {
 	// to be dropped by the server, before the error comes back.
 	RowsPerTx int
 
-	// MaxMessage is how many bytes accumulate in one CopyData before it is
+	// ChunkBytes is how many bytes accumulate in one CopyData before it is
 	// sent. Message boundaries need not fall on row boundaries — the server
 	// concatenates them — so this is purely a buffering choice, and a value
-	// of zero or less means 64 KiB.
-	MaxMessage int
+	// of zero or less means 64 KiB. It bounds what is written; what is read
+	// from the server is bounded by [Config.MaxMessage], a separate number.
+	ChunkBytes int
 }
 
 // AppendTupleHeader begins one row of a binary COPY stream by writing its
@@ -202,8 +203,8 @@ func (c *Conn) CopyFrom(ctx context.Context, sql string, cfg CopyConfig) (*Copie
 	if cfg.RowsPerTx <= 0 {
 		return nil, errors.New("postgres: CopyConfig.RowsPerTx must be positive — a transaction granularity nobody chose is one nobody owns")
 	}
-	if cfg.MaxMessage <= 0 {
-		cfg.MaxMessage = 64 << 10
+	if cfg.ChunkBytes <= 0 {
+		cfg.ChunkBytes = 64 << 10
 	}
 	return &Copier{conn: c, ctx: ctx, sql: sql, cfg: cfg}, nil
 }
@@ -262,7 +263,7 @@ func (cp *Copier) write(tuples []byte, rows int) error {
 	cp.total += int64(rows)
 	cp.rowsTx += rows
 
-	if len(cp.buf) == 0 && len(tuples) >= cp.cfg.MaxMessage {
+	if len(cp.buf) == 0 && len(tuples) >= cp.cfg.ChunkBytes {
 		// Nothing is waiting and this batch already exceeds the threshold, so
 		// copying it into cp.buf only to copy it straight back out is two
 		// passes over the same megabytes. Profiling a bulk COPY put **18% of
@@ -276,7 +277,7 @@ func (cp *Copier) write(tuples []byte, rows int) error {
 		}
 	} else {
 		cp.buf = append(cp.buf, tuples...)
-		if len(cp.buf) >= cp.cfg.MaxMessage {
+		if len(cp.buf) >= cp.cfg.ChunkBytes {
 			if err := cp.flushData(); err != nil {
 				return err
 			}

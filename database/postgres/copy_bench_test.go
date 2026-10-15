@@ -61,7 +61,7 @@ func BenchmarkCopyWriteTuples(b *testing.B) {
 	conn := NewConn(srv)
 
 	cp, err := conn.CopyFrom(b.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1 << 30, MaxMessage: 64 << 10})
+		CopyConfig{RowsPerTx: 1 << 30, ChunkBytes: 64 << 10})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -64,7 +64,7 @@ func FuzzRowsAppend(f *testing.F) {
 		if fields < 0 || fields > 64 {
 			t.Skip("a width outside what a fuzzer can usefully explore")
 		}
-		r := NewRows(fields, 4)
+		r := NewRows(fields, 4, 0)
 		if err := r.Append(body); err != nil {
 			if !errors.Is(err, ErrProtocol) && !errors.Is(err, ErrTooManyRows) {
 				t.Fatalf("unclassified error %v", err)

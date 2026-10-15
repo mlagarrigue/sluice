@@ -189,6 +189,10 @@ type Conn struct {
 	// aliasing-sensitive, and two hand-rolled copies of it would drift.
 	rowsScratch  Rows
 	itemsScratch []Row
+	// cutLogged records that the current result's byte-bound cut has been
+	// logged, so a wide result warns once rather than once per batch. Reset
+	// by [Conn.beginResult].
+	cutLogged bool
 }
 
 // beginBusy claims the connection for one result's lifetime, refusing a
@@ -239,8 +243,8 @@ func (c *Conn) execBusy(sql string) error {
 // per query, against the accumulator's buffers — the expensive part — which
 // are reused.
 func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Row) {
-	c.rowsScratch.Init(desc, batchRows)
-	c.rowsScratch.SetMaxBytes(batchBytes)
+	c.rowsScratch.Init(desc, batchRows, batchBytes)
+	c.cutLogged = false
 	return &c.rowsScratch, c.itemsScratch[:0]
 }
 
@@ -249,9 +253,23 @@ func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Ro
 // scratch so the next result starts from the grown capacity — and whether the
 // consumer wants more. A nil or empty accumulator delivers nothing and
 // reports true.
-func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
+//
+// The first batch of a result that the byte bound cut is logged, once: a
+// result whose rows are so wide that BatchBytes closes batches before
+// BatchRows is a result the caller sized for something else. ctx is the
+// statement's, and serves the log alone.
+func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
 	if rows == nil || rows.Len() == 0 {
 		return items, true
+	}
+	if !c.cutLogged && rows.fullOnBytes() {
+		c.cutLogged = true
+		c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: batch cut by its byte bound before its row limit",
+			slog.Int("rows", rows.Len()),
+			slog.Int("bytes", len(rows.buf)),
+			slog.Int("largest_row_bytes", rows.largestRow()),
+			slog.Int("batch_rows", rows.maxRows),
+			slog.Int("batch_bytes", rows.maxBytes))
 	}
 	items = items[:0]
 	for i := range rows.Len() {
@@ -407,6 +425,13 @@ const (
 // bound memory by one number.
 const defaultBatchBytes = 64 << 20
 
+// maxBatchBytes is the largest byte bound a batch is given. A batch closes
+// with the row that crossed its bound in it, and that row is at most
+// [maxMaxMessage], so a bound of 1 GiB keeps the batch under the 2 GiB its
+// int32 offsets allow: past it, [Rows.Append] would refuse a row the bound
+// was meant to cut, not fail on.
+const maxBatchBytes = 1 << 30
+
 // batchBounds resolves a QueryConfig's row and byte bounds to their defaults.
 func batchBounds(cfg QueryConfig) (rows, size int) {
 	rows, size = cfg.BatchRows, cfg.BatchBytes
@@ -416,7 +441,7 @@ func batchBounds(cfg QueryConfig) (rows, size int) {
 	if size <= 0 {
 		size = defaultBatchBytes
 	}
-	return rows, size
+	return rows, min(size, maxBatchBytes)
 }
 
 // QueryConfig states the bounds a query runs under. They are the caller's,
@@ -461,15 +486,18 @@ type QueryConfig struct {
 	// a batch in rows, which says nothing about its size: a thousand rows of
 	// a megabyte each are a gigabyte, held until the batch is delivered — and
 	// a server, pooler or man in the middle can make every row that wide. A
-	// batch that would grow past BatchBytes is delivered as it is and the
-	// row that did not fit opens the next; nothing fails, the consumer sees
-	// more and smaller batches. A single row wider than the bound travels in
-	// a batch of its own — it is bounded by [Config.MaxMessage] — so
-	// memory per batch is at most BatchBytes plus one row.
+	// batch whose values reach BatchBytes is delivered with the row that
+	// crossed the bound in it, and the next row opens the next batch; nothing
+	// fails, the consumer sees more and smaller batches, and [Config.Logger]
+	// receives one warning per result. A single row wider than the bound
+	// travels in a batch of its own — it is bounded by [Config.MaxMessage] —
+	// so memory per batch is at most BatchBytes plus one row.
 	//
 	// A value of zero or less means 64 MiB, the same default as a message
-	// from the server. The cut is on this side of the wire: the server
-	// still sends BatchRows rows per round trip.
+	// from the server; anything above 1 GiB means 1 GiB, which keeps a batch
+	// and its last row within the 2 GiB a batch can address. The cut is on
+	// this side of the wire: the server still sends BatchRows rows per round
+	// trip.
 	BatchBytes int
 
 	// Fetch says whether the rows are asked for in batches of BatchRows or
@@ -956,40 +984,27 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				return false, c.breakConn(fmt.Errorf("%w: DataRow before any RowDescription", ErrProtocol))
 			}
 			if err := q.rows.Append(m.Body); err != nil {
-				// Cold path. Fetched whole, the backend was given no row limit,
-				// so nothing pauses it at BatchRows — the pause that used to
-				// do that was the PortalSuspended a limit produces — and the
-				// batch fills mid-result. Emitting here rather than testing
-				// Full() before every Append is not a style choice: this is
-				// the per-row loop the regression gate watches, and a test in
-				// front of the Append measured +2.4% in a paired A/B. The
-				// Append already had to be checked, so the check is free.
-				//
-				// The byte bound cuts the same way on either fetch: the batch
-				// is handed on and the row opens the next. The row bound does
-				// so only when every row was asked for at once — in the
-				// batched fetch the server was told how many to send, and a
-				// batch that overflows is a server that did not listen.
-				if !errors.Is(err, errBatchBytes) && (!q.allRows || !q.rows.Full()) {
-					// A DataRow the reader framed whole but this package
-					// could not read: a column wider than its description
-					// said, a field count that disagrees. The connection is
-					// still at a known position — the message was consumed in
-					// full — so the query fails and the resync recovers it.
-					// Breaking the connection here throws away a working
-					// socket over one unreadable row.
-					return false, err
-				}
+				// A DataRow the reader framed whole but this package could
+				// not read — a column wider than its description said, a
+				// field count that disagrees — or, in the batched fetch, a
+				// row past the BatchRows the Execute asked for: a server that
+				// did not listen. The connection is still at a known position
+				// — the message was consumed in full — so the query fails and
+				// the resync recovers it. Breaking the connection here throws
+				// away a working socket over one unreadable row.
+				return false, err
+			}
+			// Full, the batch is handed on and the next row opens the next
+			// one. The batched fetch waits for the PortalSuspended when the
+			// row limit is what filled it — the server was told how many to
+			// send, and a row past them must reach Append to be refused — but
+			// the byte bound cuts on either fetch: it is this side's, and the
+			// server knows nothing of it. Polling here, on the per-row loop
+			// the regression gate watches, measured within noise of the
+			// error path it replaced in a paired A/B of BenchmarkPGReadRows.
+			if q.rows.Full() && (q.allRows || q.rows.fullOnBytes()) {
 				if !q.emit(yield) {
 					return true, nil // the consumer stopped; the deferred resync tidies up
-				}
-				if err := q.rows.Append(m.Body); err != nil {
-					// The batch was just emptied, so this retry cannot fail for
-					// fullness: the row itself is unreadable. Same class as the
-					// direct path above — the message was consumed whole, the
-					// position is known, the statement fails and the connection
-					// stays.
-					return false, err
 				}
 			}
 
@@ -1131,7 +1146,7 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 	if q.rows != nil {
 		q.rowsRead += q.rows.Len()
 	}
-	items, ok := q.conn.emitRows(q.rows, q.items, yield)
+	items, ok := q.conn.emitRows(q.ctx, q.rows, q.items, yield)
 	q.items = items
 	return ok
 }

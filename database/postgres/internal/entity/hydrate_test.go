@@ -60,7 +60,7 @@ func TestGeneratedHydrator(t *testing.T) {
 
 	at := time.Date(2024, 5, 4, 10, 0, 0, 0, time.UTC)
 	note := "urgent"
-	rows := postgres.NewRows(6, 8)
+	rows := postgres.NewRows(6, 8, 0)
 	if err := rows.Append(orderRow(1, 12.5, at, &note, true, "first")); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestHydrateRejectsUnexpectedNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := postgres.NewRows(6, 4)
+	rows := postgres.NewRows(6, 4, 0)
 	// A NULL id, which Order declares as a plain int64.
 	body := dataRow(
 		postgres.AppendTimestampTZ(nil, time.Now()),
@@ -196,7 +196,7 @@ func TestHydrateKeepsTheCallersBufferWhenARowFails(t *testing.T) {
 	}
 
 	// One good batch, so the caller has a buffer worth keeping.
-	rows := postgres.NewRows(6, 4)
+	rows := postgres.NewRows(6, 4, 0)
 	if err := rows.Append(orderRow(1, 10, time.Now().UTC(), nil, true, "a")); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func BenchmarkGeneratedHydrate(b *testing.B) {
 	const n = 1024
 	at := time.Now().UTC()
 	note := "n"
-	rows := postgres.NewRows(6, n)
+	rows := postgres.NewRows(6, n, 0)
 	for i := range n {
 		if err := rows.Append(orderRow(int64(i), float64(i), at, &note, i%2 == 0, "label")); err != nil {
 			b.Fatal(err)
@@ -299,7 +299,7 @@ func TestGeneratedProductHydrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
-	rows := postgres.NewRows(7, 4)
+	rows := postgres.NewRows(7, 4, 0)
 	if err := rows.Append(dataRow(
 		[]byte("AB-1  "), []byte("postgres"), []byte{1, 2, 3}, nil,
 		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
@@ -370,7 +370,7 @@ func TestNullFieldDoesNotAllocate(t *testing.T) {
 	price, _ := postgres.ParseNumeric("1")
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
 	row := func(weight []byte) *postgres.Rows {
-		rows := postgres.NewRows(7, 4)
+		rows := postgres.NewRows(7, 4, 0)
 		if err := rows.Append(dataRow(
 			[]byte("A"), []byte("o"), []byte{1}, nil,
 			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), weight,

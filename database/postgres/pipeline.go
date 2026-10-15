@@ -213,7 +213,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	defer func() { _ = join() }()
 	w := c.watchCancel(ctx)
 	defer w.disarm()
-	err := c.readPipeline(parts, batchRows, batchBytes, fn)
+	err := c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
 		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
 		err = c.broken
@@ -228,12 +228,13 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 // they are two extended-query sequences back to back — so the reader counts
 // CommandCompletes rather than looking for a marker that does not exist.
 //
-// ctx is deliberately absent: it guarded the start, in [Tx.Pipeline], and its
-// end mid-read reaches the server through the cancellation watched there.
-// Stopping here would still owe the drain to ReadyForQuery — the whole
-// pipeline, since parts run with no row limit — so checking buys no earlier
-// stop. See the "ctx guards the start" section on [Tx.Pipeline].
-func (c *Conn) readPipeline(parts []Part, batchRows, batchBytes int, fn func(int, sluice.Batch[Row]) bool) error {
+// ctx is never checked here, only handed to the log: it guarded the start, in
+// [Tx.Pipeline], and its end mid-read reaches the server through the
+// cancellation watched there. Stopping here would still owe the drain to
+// ReadyForQuery — the whole pipeline, since parts run with no row limit — so
+// checking buys no earlier stop. See the "ctx guards the start" section on
+// [Tx.Pipeline].
+func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchBytes int, fn func(int, sluice.Batch[Row]) bool) error {
 	// A panic in fn would otherwise abandon the connection mid-pipeline with
 	// broken still nil — and the next query would read this pipeline's
 	// leftover rows as its own. The same rule as query.run's deferred resync
@@ -263,7 +264,7 @@ func (c *Conn) readPipeline(parts []Part, batchRows, batchBytes int, fn func(int
 	deliver := func(b sluice.Batch[Row]) bool { return fn(part, b) }
 	emit := func() bool {
 		var ok bool
-		items, ok = c.emitRows(rows, items, deliver)
+		items, ok = c.emitRows(ctx, rows, items, deliver)
 		return ok
 	}
 
@@ -301,19 +302,7 @@ func (c *Conn) readPipeline(parts []Part, batchRows, batchBytes int, fn func(int
 				continue
 			}
 			if err := rows.Append(m.Body); err != nil {
-				// The byte bound is a cut, as in readChunk: hand the batch
-				// on, and the row opens the next. Anything else is a row
-				// this package could not read.
-				if !errors.Is(err, errBatchBytes) {
-					return c.abortPipeline(err)
-				}
-				if !emit() {
-					stopped = true
-					continue
-				}
-				if err := rows.Append(m.Body); err != nil {
-					return c.abortPipeline(err)
-				}
+				return c.abortPipeline(err)
 			}
 			if rows.Full() && !emit() {
 				stopped = true

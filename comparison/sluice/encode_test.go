@@ -94,7 +94,7 @@ func BenchmarkListDecode(b *testing.B) {
 	for i, r := range rows {
 		bodies[i] = dataRow(postgres.AppendInt8(nil, r.ID), postgres.AppendInt8(nil, r.Total), []byte(r.Label))
 	}
-	acc := postgres.NewRows(3, listLimit)
+	acc := postgres.NewRows(3, listLimit, 0)
 	out := make([]orderRow, 0, listLimit)
 	fill := func(b *testing.B) {
 		b.Helper()

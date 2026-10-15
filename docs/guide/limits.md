@@ -121,10 +121,11 @@ Three reasons come up, and the difference matters:
   `Config.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
   itself allows per field; the handshake keeps its own 64 KiB bound.
 - **A batch is bounded at 64 MiB of values** as well as at `BatchRows` rows.
-  A batch that would grow past it is delivered as it is and the row opens
-  the next: nothing fails, the consumer sees more and smaller batches.
-  `QueryConfig.BatchBytes` sets it; a single row wider than the bound
-  travels alone, so memory per batch is the bound plus one row.
+  A batch whose values reach it is delivered with the row that crossed it,
+  and the next row opens the next batch: nothing fails, the consumer sees
+  more and smaller batches, and `Config.Logger` gets one warning per result.
+  `QueryConfig.BatchBytes` sets it, up to 1 GiB; a single row wider than the
+  bound travels alone, so memory per batch is the bound plus one row.
 - **`pushdown` pushes the limit and the key bound, not the column set**:
   the SQL is the caller's and its select list is not rewritten.
 

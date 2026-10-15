@@ -229,7 +229,7 @@ type Config struct {
 	//
 	// [Connect] refuses a value below 64 KiB — the handshake's own bound,
 	// which this does not change — or above 1 GiB, before anything is
-	// sent. This bounds what is read; [CopyConfig.MaxMessage] is how much
+	// sent. This bounds what is read; [CopyConfig.ChunkBytes] is how much
 	// is written in one CopyData chunk.
 	MaxMessage int
 

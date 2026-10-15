@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
@@ -674,6 +675,8 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 
 	srv := &fakeServer{responses: [][]byte{script, next}}
 	conn := NewConn(srv)
+	logs := &recordHandler{}
+	conn.logger = slog.New(logs)
 
 	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchBytes: 8 * rowBytes, Fetch: FetchAll})
 	var sizes []int
@@ -692,6 +695,14 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 	if want := []int{8, 8, 4}; !slices.Equal(sizes, want) {
 		t.Errorf("batches of %v rows, want %v", sizes, want)
 	}
+	// Two batches were cut, one warning says so: the first cut's shape, and
+	// nothing of the values themselves.
+	attrs := logs.warning(t, string(value[:16]))
+	for key, want := range map[string]int64{"rows": 8, "bytes": 8 * rowBytes, "largest_row_bytes": rowBytes, "batch_bytes": 8 * rowBytes} {
+		if got := attrs[key]; got.Kind() != slog.KindInt64 || got.Int64() != want {
+			t.Errorf("the warning's %s = %v, want %d", key, got, want)
+		}
+	}
 
 	seen := 0
 	src = conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})
@@ -701,6 +712,61 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 	}
 	if seen != 1 {
 		t.Errorf("the next query returned %d rows, want 1", seen)
+	}
+}
+
+// The byte bound cuts the batched fetch too, mid-Execute: the server was asked
+// for a hundred rows and sends five of a kilobyte, which a bound of two
+// kilobytes delivers as 2, 2 and 1.
+func TestBatchBytesCutsTheBatchedFetch(t *testing.T) {
+	const rowBytes = 1 << 10
+	value := bytes.Repeat([]byte("x"), rowBytes)
+	var head []byte
+	head = append(head, beSimple(pgwire.BackendParseComplete)...)
+	head = append(head, beSimple(pgwire.BackendBindComplete)...)
+	head = append(head, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	for range 5 {
+		head = append(head, beDataRow(value)...)
+	}
+	head = append(head, beCommandComplete("SELECT 5")...)
+
+	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
+	conn := NewConn(srv)
+	conn.logger = slog.New(&recordHandler{})
+	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchRows: 100, BatchBytes: 2 * rowBytes, Fetch: FetchBatches})
+	var sizes []int
+	src.Stream()(func(b sluice.Batch[Row]) bool { sizes = append(sizes, b.Len()); return true })
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if want := []int{2, 2, 1}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v rows, want %v", sizes, want)
+	}
+}
+
+// In the batched fetch the server is told how many rows to send, so a row past
+// them is a server that did not listen: the query fails with ErrTooManyRows
+// rather than opening a batch the Execute never asked for.
+func TestBatchedFetchRefusesARowPastTheExecute(t *testing.T) {
+	var head []byte
+	head = append(head, beSimple(pgwire.BackendParseComplete)...)
+	head = append(head, beSimple(pgwire.BackendBindComplete)...)
+	head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	for i := range 3 {
+		head = append(head, beDataRow(int8Val(int64(i)))...)
+	}
+	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
+
+	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
+	conn := NewConn(srv)
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, Fetch: FetchBatches})
+	delivered := 0
+	src.Stream()(func(b sluice.Batch[Row]) bool { delivered += b.Len(); return true })
+	if err := src.Err(); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("Err = %v, want ErrTooManyRows", err)
+	}
+	if delivered != 0 {
+		t.Errorf("%d rows delivered from an answer the server got wrong", delivered)
 	}
 }
 
