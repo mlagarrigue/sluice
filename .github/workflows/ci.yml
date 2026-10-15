@@ -212,6 +212,11 @@ jobs:
           docker exec -i ${{ job.services.postgres.id }} \
             psql -U postgres -v ON_ERROR_STOP=1 < .devcontainer/postgres/init.sql
 
+      # TLS on the same server, so SCRAM-SHA-256-PLUS meets a server that
+      # hashes its own certificate. Plain TCP keeps working beside it.
+      - name: Turn TLS on, RSA certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa "$RUNNER_TEMP/pg-rsa"
+
       # A skipped integration test reads exactly like a passing one, so the
       # skips that mean "no server" or "wrong role" fail the job, and so does
       # the protocol 3.2 test not passing on the server that is there to run it.
@@ -219,9 +224,11 @@ jobs:
         shell: bash
         env:
           PG_MAJOR: ${{ matrix.postgres }}
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa/server.crt
+          SLUICE_PG_TLS_SIGALG: SHA256-RSA
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
-          if grep -E 'SLUICE_PG is not set|is a superuser' test.log; then
+          if grep -E 'SLUICE_PG is not set|is a superuser|SLUICE_PG_TLS_CA is not set' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
             exit 1
           fi
@@ -229,6 +236,24 @@ jobs:
             echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
+          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log; then
+            echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over TLS" >&2
+            exit 1
+          fi
+
+      # The binding hash of an RSA-PSS certificate comes from inside its
+      # signature parameters: SHA-384 here, where a reading that defaulted to
+      # SHA-256 would make the server's proof and the client's disagree.
+      - name: Turn TLS on, RSA-PSS SHA-384 certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa-pss "$RUNNER_TEMP/pg-rsa-pss"
+      - name: Channel binding, RSA-PSS SHA-384 certificate
+        shell: bash
+        env:
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa-pss/server.crt
+          SLUICE_PG_TLS_SIGALG: SHA384-RSAPSS
+        run: |
+          go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log
 
   # net/httpstream against clients it did not write: curl over HTTP/1.1 and
   # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server

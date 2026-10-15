@@ -150,6 +150,10 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 // the hash of the server's certificate, with the hash its signature
 // algorithm uses — SHA-256 where that is MD5 or SHA-1. An algorithm with no
 // such hash (Ed25519) has no defined binding, and PostgreSQL refuses it too.
+// For RSASSA-PSS the hash is the one inside the signature parameters, as
+// PostgreSQL takes it from X509_get_signature_info; CI checks the two agree
+// against a real server on an RSA-PSS SHA-384 certificate
+// (TestIntegrationChannelBindingOverTLS).
 func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	var h hash.Hash
 	switch cert.SignatureAlgorithm {
