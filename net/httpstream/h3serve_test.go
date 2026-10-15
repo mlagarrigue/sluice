@@ -1,8 +1,10 @@
 package httpstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync/atomic"
 	"testing"
@@ -302,5 +304,81 @@ func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 		}
 	case <-time.After(2 * grace):
 		t.Fatal("ServeH3 did not return after the grace: it waits on a handler that has not returned")
+	}
+}
+
+// RFC 9114 §4.2.2 and §4.1: a request over one of the configured bounds is
+// answered on its own stream — 431 for its headers, 413 for its body — with a
+// clean FIN after STOP_SENDING H3_NO_ERROR, and the connection survives with
+// the request beside it. A client behind a proxy acts on a status; a bare
+// H3_EXCESSIVE_LOAD tells it nothing.
+func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		request []byte
+		status  string
+	}{
+		{"a field section over MaxHeaderBytes", Config{MaxHeaderBytes: 4096, MaxHeaders: 128}, func() []byte {
+			// A small section that decodes large: each indexed field line
+			// naming the static table's accept-encoding entry is one byte on
+			// the wire and 64 in the list, so the compressed bound is
+			// nowhere near — and the field count stays under its own bound.
+			block := appendQPACK(nil, []Header{
+				{Name: []byte(":method"), Value: []byte("GET")},
+				{Name: []byte(":path"), Value: []byte("/x")},
+				{Name: []byte(":scheme"), Value: []byte("https")},
+				{Name: []byte(":authority"), Value: []byte("h")},
+			})
+			for range 4096/64 + 1 {
+				block = append(block, 0xc0|31)
+			}
+			return appendH3Frame(nil, h3Headers, block)
+		}(), "431"},
+		{"more than MaxHeaders fields", Config{MaxHeaders: 8}, func() []byte {
+			extra := make([][2]string, 12)
+			for i := range extra {
+				extra[i] = [2]string{fmt.Sprintf("x-%d", i), "v"}
+			}
+			return h3Request("GET", "/x", extra...)
+		}(), "431"},
+		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func() []byte {
+			// Two DATA frames each within the bound, whose sum is not: the
+			// body bound, not the frame-length one.
+			req := h3Request("POST", "/x")
+			req = appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
+			return appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
+		}(), "413"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var served atomic.Int32
+			conn, _, _ := startH3With(t, tt.cfg, quic.DefaultParameters(), quic.DefaultParameters(),
+				func(b sluice.Batch[Request]) sluice.Batch[Response] {
+					served.Add(int32(b.Len())) //nolint:gosec // G115: a test's batch size
+					res := make([]Response, b.Len())
+					for i := range res {
+						res[i] = Response{Status: 200}
+					}
+					return sluice.Batch[Response]{Items: res}
+				})
+			refused := askH3(t, conn, tt.request)
+			healthy := askH3(t, conn, h3Request("GET", "/y"))
+
+			// readH3Fields reads to a clean EOF: a RESET_STREAM would end it
+			// with an error instead.
+			if got := readH3Fields(t, refused)[":status"]; len(got) != 1 || got[0] != tt.status {
+				t.Errorf("the oversized request got :status %q, want %s", got, tt.status)
+			}
+			if code, reset := refused.WasReset(); !reset || code != h3NoError {
+				t.Errorf("the oversized request's stream: stop-sending %v with %#x, want H3_NO_ERROR", reset, code)
+			}
+			if got := readH3Fields(t, healthy)[":status"]; len(got) != 1 || got[0] != "200" {
+				t.Errorf("the request beside it got :status %q, want 200", got)
+			}
+			if got := served.Load(); got != 1 {
+				t.Errorf("the handler saw %d requests, want the one healthy request", got)
+			}
+		})
 	}
 }

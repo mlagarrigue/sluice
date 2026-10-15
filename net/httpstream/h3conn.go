@@ -187,6 +187,11 @@ type h3StreamError struct {
 	StreamID uint64
 	Code     uint64
 	Err      error
+	// Status, when set, is answered on the stream before it is closed —
+	// for the bounds [Config] documents a status for, nothing else. Code is
+	// then H3_NO_ERROR: the response is complete and the stream ends with
+	// a FIN, and STOP_SENDING carries the code (RFC 9114 §4.1).
+	Status int
 }
 
 // Error returns the underlying error's message; the stream and code are
@@ -195,6 +200,24 @@ func (e h3StreamError) Error() string { return e.Err.Error() }
 
 // Unwrap exposes the underlying error to [errors.Is] and [errors.As].
 func (e h3StreamError) Unwrap() error { return e.Err }
+
+// h3StatusError is drain's refusal of a request over one of the bounds
+// [Config] documents a status for: Frames turns it into an [h3StreamError]
+// with that Status, answered on the stream rather than reset without a word
+// — RFC 9114 §4.2.2 permits the 431, §4.1 a complete response ahead of the
+// request's end. It wraps err so a caller keeps matching on [ErrTooLarge].
+type h3StatusError struct {
+	status int
+	err    error
+}
+
+func (e h3StatusError) Error() string { return e.err.Error() }
+func (e h3StatusError) Unwrap() error { return e.err }
+
+// h3StatusFail builds an h3StatusError, as statusFail builds the h2 kind.
+func h3StatusFail(status int, format string, args ...any) error {
+	return h3StatusError{status: status, err: fmt.Errorf(format, args...)}
+}
 
 // HTTP/3 error codes (RFC 9114 §8.1). Only the ones this server sends are
 // named.
@@ -374,6 +397,10 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// here + Δretained, every path, so the windows always balance.)
 		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body))
 		if err != nil {
+			if se, ok := errors.AsType[h3StatusError](err); ok {
+				a.answer(f.StreamID, se.status, err)
+				continue
+			}
 			code := uint64(h3MessageError)
 			switch {
 			case errors.Is(err, ErrTooLarge):
@@ -477,14 +504,33 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // and a tombstone is what keeps them from re-accumulating state for a
 // request nobody will answer.
 func (a *h3Assembler) fail(id, code uint64, err error) {
-	if st := a.streams[id]; st != nil {
+	if a.drop(id) {
+		a.retire()
+	}
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
+}
+
+// answer records a stream refused with a status: dropped and tombstoned as
+// fail does, but not retired — ServeH3 retires it once the status has left,
+// as it does a handler's response, so a draining connection waits for the
+// refusal to be written and acknowledged like any other answer.
+func (a *h3Assembler) answer(id uint64, status int, err error) {
+	a.drop(id)
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status})
+}
+
+// drop discards a stream's assembly state, releasing what it retained, and
+// leaves a tombstone. It reports whether the stream was being assembled —
+// admitted, so owed a retire.
+func (a *h3Assembler) drop(id uint64) bool {
+	st := a.streams[id]
+	if st != nil {
 		a.assembling -= len(st.buf) + len(st.req.Body)
 		a.release(id, len(st.buf)+len(st.req.Body))
 		delete(a.streams, id)
-		a.retire()
 	}
 	a.tombstone(id)
-	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
+	return st != nil
 }
 
 // tombstone remembers a stream as dead so later frames on it are dropped
@@ -509,13 +555,9 @@ func (a *h3Assembler) tombstone(id uint64) {
 // future frame can ever complete — each one a permanently burnt admission
 // slot.
 func (a *h3Assembler) Forget(id uint64) {
-	if st := a.streams[id]; st != nil {
-		a.assembling -= len(st.buf) + len(st.req.Body)
-		a.release(id, len(st.buf)+len(st.req.Body))
-		delete(a.streams, id)
+	if a.drop(id) {
 		a.retire()
 	}
-	a.tombstone(id)
 }
 
 // admit decides, under mu, whether a new request stream may be served: not
@@ -873,11 +915,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				// be re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3):
 				// decoded, validated, then dropped.
 				if a.trailers, err = a.qpack.Decode(a.trailers[:0], f.Payload); err != nil {
-					return err
+					return sectionRefused(err)
 				}
 				// Same field-count bound as the request block below.
 				if len(a.trailers) > a.cfg.MaxHeaders {
-					return fmt.Errorf("%w: over %d trailer fields",
+					return h3StatusFail(431, "%w: over %d trailer fields",
 						ErrTooLarge, a.cfg.MaxHeaders)
 				}
 				for _, h := range a.trailers {
@@ -898,7 +940,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				continue
 			}
 			if st.headers, err = a.qpack.Decode(st.headers[:0], f.Payload); err != nil {
-				return err
+				return sectionRefused(err)
 			}
 			// The field-count bound the h1 parser applies as it reads and h2
 			// applies after its HPACK decode, applied here at the first
@@ -906,7 +948,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// block of near-empty fields fits the bytes while making every
 			// [Request.Get] walk hundreds of entries.
 			if fieldCount(st.headers) > a.cfg.MaxHeaders {
-				return fmt.Errorf("%w: over %d header fields",
+				return h3StatusFail(431, "%w: over %d header fields",
 					ErrTooLarge, a.cfg.MaxHeaders)
 			}
 			req, declared, err := buildRequest(st.headers, ErrH3Protocol)
@@ -927,7 +969,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// DATA frames would grow the body without limit, bounded buffer
 			// notwithstanding.
 			if len(st.req.Body)+len(f.Payload) > a.cfg.MaxBodyBytes {
-				return fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 			st.req.Body = append(st.req.Body, f.Payload...)
 		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
@@ -949,6 +991,17 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	}
 	st.buf = append(st.buf[:0], rest...)
 	return nil
+}
+
+// sectionRefused turns the decoder's error for a field section into the
+// stream's: a section past the list bound is a 431 on the stream (RFC 9114
+// §4.2.2), as the h2 reader's blockRefused has it; anything else — a
+// dynamic reference, a truncated string — is the malformed request it was.
+func sectionRefused(err error) error {
+	if errors.Is(err, errHeadersTooLarge) {
+		return h3StatusError{status: 431, err: err}
+	}
+	return err
 }
 
 // appendH3StreamedBody writes one batch of a streamed response as DATA

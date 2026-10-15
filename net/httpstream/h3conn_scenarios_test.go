@@ -57,8 +57,8 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 			if !errors.Is(failed[0].Err, ErrTooLarge) {
 				t.Fatalf("the stream was refused with %v, want ErrTooLarge", failed[0].Err)
 			}
-			if failed[0].Code != h3ExcessiveLoad {
-				t.Errorf("refused with code %#x, want H3_EXCESSIVE_LOAD (%#x)", failed[0].Code, h3ExcessiveLoad)
+			if failed[0].Status != 413 || failed[0].Code != h3NoError {
+				t.Errorf("refused with status %d, code %#x; want 413 then H3_NO_ERROR", failed[0].Status, failed[0].Code)
 			}
 			return // refused, as it must be — the scenario is satisfied
 		}

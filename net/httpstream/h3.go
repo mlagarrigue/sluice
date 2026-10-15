@@ -268,7 +268,12 @@ func (d *qpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 
 		listSize += len(name) + len(value) + 32
 		if listSize > d.maxListSize {
-			return dst, fmt.Errorf("%w: a field section past %d bytes", ErrH3Protocol, d.maxListSize)
+			// The request's fault, not the connection's: RFC 9114 §4.2.2
+			// answers it 431 on the stream, which [errHeadersTooLarge] maps
+			// to. No dynamic table means nothing past this field has to be
+			// read for the next section to decode (the HPACK decoder's
+			// decodeOver has no twin here).
+			return dst, fmt.Errorf("%w: a field section past %d bytes", errHeadersTooLarge, d.maxListSize)
 		}
 		dst = append(dst, Header{Name: name, Value: value})
 	}
@@ -303,7 +308,7 @@ func qpackString(d *qpackDecoder, block []byte, n uint8, budget int, arena *[]by
 		floor = floor * 8 / 30
 	}
 	if floor > budget {
-		return nil, nil, fmt.Errorf("%w: a field section past %d bytes", ErrH3Protocol, d.maxListSize)
+		return nil, nil, fmt.Errorf("%w: a field section past %d bytes", errHeadersTooLarge, d.maxListSize)
 	}
 	raw, rest := rest[:length], rest[length:]
 	if s, err = appendFieldString(arena, raw, huff, len(block), budget); err != nil {

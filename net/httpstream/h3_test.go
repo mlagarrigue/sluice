@@ -593,7 +593,7 @@ func TestQPACKDecodesNeverIndexedLiterals(t *testing.T) {
 // but by then the peer had bought a full decode — ~50× the advertised header
 // budget per attempt. The literal is all 0xff, thirty ones of which are EOS:
 // decoding it at all fails with an HPACK Huffman error, so a refusal that is
-// ErrH3Protocol and not that is what proves the budget check came first.
+// errHeadersTooLarge and not that is what proves the budget check came first.
 func TestQPACKRefusesOversizedLiteralsBeforeDecoding(t *testing.T) {
 	const maxList = 1 << 10
 	d := newQPACKDecoder(nil, maxList)
@@ -606,8 +606,8 @@ func TestQPACKRefusesOversizedLiteralsBeforeDecoding(t *testing.T) {
 	block = append(block, huge...)
 
 	_, err := d.Decode(nil, block)
-	if !errors.Is(err, ErrH3Protocol) {
-		t.Fatalf("Decode returned %v, want a refusal", err)
+	if !errors.Is(err, errHeadersTooLarge) {
+		t.Fatalf("Decode returned %v, want the headers-bound refusal", err)
 	}
 	if errors.Is(err, ErrHPACK) {
 		t.Fatalf("Decode returned %v: the literal was Huffman-decoded before the budget check", err)
@@ -725,8 +725,8 @@ func TestH3RefusesABlockOfTooManyFields(t *testing.T) {
 	if len(failed) != 1 || !errors.Is(failed[0].Err, ErrTooLarge) {
 		t.Fatalf("Frames reported %v, want one stream error wrapping ErrTooLarge", failed)
 	}
-	if failed[0].Code != h3ExcessiveLoad {
-		t.Errorf("stream reset with code %#x, want H3_EXCESSIVE_LOAD (%#x)", failed[0].Code, h3ExcessiveLoad)
+	if failed[0].Status != 431 || failed[0].Code != h3NoError {
+		t.Errorf("stream refused with status %d, code %#x; want 431 then H3_NO_ERROR", failed[0].Status, failed[0].Code)
 	}
 }
 
@@ -1856,5 +1856,18 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	case <-serverDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeH3 did not return once the request was drained")
+	}
+}
+
+// A field section past the list bound is the request's fault, not the
+// connection's: the decoder reports it as the headers bound every protocol
+// maps to 431, not as a protocol error. There is no dynamic table to keep
+// consistent, so nothing past the crossing field is read.
+func TestQPACKListBoundIsAHeadersBound(t *testing.T) {
+	block := appendQPACK(nil, []Header{{Name: []byte("x-a"), Value: []byte("v")}})
+	block = append(block, 0xc0|31, 0xc0|31) // two static accept-encoding references, 64 bytes each
+	_, err := newQPACKDecoder(nil, 100).Decode(nil, block)
+	if !errors.Is(err, errHeadersTooLarge) || errors.Is(err, ErrH3Protocol) {
+		t.Fatalf("Decode returned %v, want errHeadersTooLarge and not ErrH3Protocol", err)
 	}
 }

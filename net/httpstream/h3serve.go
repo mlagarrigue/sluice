@@ -239,13 +239,32 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 			return err
 		}
 		for _, se := range failed {
-			// One stream's refusal, on that stream: RESET_STREAM abandons
-			// the answer and STOP_SENDING tells the peer to stop supplying
-			// the request (RFC 9114 §4.1.1 uses both). The connection and
+			// One stream's refusal, on that stream. The connection and
 			// every other request the datagram carried are untouched, which
 			// is the whole of what a multiplexed transport offers over a
 			// sequential one.
 			s := c.Stream(se.StreamID)
+			if se.Status != 0 {
+				// A request over a bound with a status: RFC 9114 §4.1 has
+				// the server stop reading with H3_NO_ERROR, send the
+				// complete response and close its side cleanly — a client
+				// behind a proxy acts on a 431 or 413 where a bare reset
+				// tells it nothing. STOP_SENDING leaves the read loop now;
+				// the head leaves on a writer goroutine like any response,
+				// since a Write waits on the peer's credit.
+				if err := s.StopSending(h3NoError); err != nil {
+					return err
+				}
+				writers.Add(1)
+				go func(id uint64, status int, fieldSection uint64) {
+					defer writers.Done()
+					defer a.retire()
+					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, cfg.WriteTimeout, dateFor(time.Now()), func() {})
+				}(se.StreamID, se.Status, a.peerMaxFieldSection())
+				continue
+			}
+			// RESET_STREAM abandons the answer and STOP_SENDING tells the
+			// peer to stop supplying the request (§4.1.1 uses both).
 			if err := s.Reset(se.Code); err != nil {
 				return err
 			}
