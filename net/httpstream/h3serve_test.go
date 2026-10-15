@@ -71,6 +71,39 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 	return conn, cancel, served
 }
 
+// RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender close the
+// control stream", and a control stream closed at any point is a connection
+// error of type H3_CLOSED_CRITICAL_STREAM. The transport answers the
+// STOP_SENDING by itself and hands no frame up, so the server reads the
+// refusal off its stream 3 at the next datagram — here, the request that
+// follows. It used to serve that request and keep the connection.
+func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
+	conn, _, _ := startH3(t, quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		res := make([]Response, b.Len())
+		for i := range res {
+			res[i] = Response{Status: 200}
+		}
+		return sluice.Batch[Response]{Items: res}
+	})
+	if err := conn.Stream(3).StopSending(h3NoError); err != nil {
+		t.Fatalf("STOP_SENDING on the server's control stream: %v", err)
+	}
+	askH3(t, conn, h3Request("GET", "/after"))
+
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection stayed open after STOP_SENDING on the control stream")
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application {
+		t.Fatalf("the connection ended with %v, want an application close", conn.Err())
+	}
+	if ce.Code != h3ClosedCriticalStream {
+		t.Fatalf("closed with %#x, want H3_CLOSED_CRITICAL_STREAM (%#x)", ce.Code, h3ClosedCriticalStream)
+	}
+}
+
 // askH3 sends one request on a fresh stream and returns the stream.
 func askH3(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
 	t.Helper()

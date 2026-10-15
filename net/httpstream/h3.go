@@ -417,13 +417,19 @@ func parseH3Settings(payload []byte) (map[uint64]uint64, error) {
 	return out, nil
 }
 
+// errH3FrameLayout marks a frame payload that ends inside one of its fields —
+// RFC 9114 §7.1's H3_FRAME_ERROR, distinct from what the fields say once they
+// are whole. walkH3Settings raises it so the control stream can tell a
+// truncated SETTINGS (a layout fault) from a reserved one (H3_SETTINGS_ERROR).
+var errH3FrameLayout = fmt.Errorf("%w: a frame payload that ends inside a field", ErrH3Protocol)
+
 // walkH3Settings calls each for every pair of a SETTINGS payload, refusing a
 // truncated pair and the reserved HTTP/2 identifiers on the way.
 func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 	for len(payload) > 0 {
 		id, rest, err := quic.Varint(payload)
 		if err != nil {
-			return fmt.Errorf("%w: a truncated setting", ErrH3Protocol)
+			return fmt.Errorf("%w: a truncated setting", errH3FrameLayout)
 		}
 		switch id {
 		case 0x00, 0x02, 0x03, 0x04, 0x05:
@@ -431,7 +437,7 @@ func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 		}
 		v, rest, err := quic.Varint(rest)
 		if err != nil {
-			return fmt.Errorf("%w: setting %#x has no value", ErrH3Protocol, id)
+			return fmt.Errorf("%w: setting %#x has no value", errH3FrameLayout, id)
 		}
 		if err := each(id, v); err != nil {
 			return err

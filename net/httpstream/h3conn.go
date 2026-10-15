@@ -249,10 +249,25 @@ const qpackEncoderStreamError = 0x0201
 const qpackDecoderStreamError = 0x0202
 
 // errH3FrameUnexpected marks a frame that is well-formed but arrived where
-// RFC 9114 §4.1 forbids it — DATA before HEADERS, or anything after the
-// trailers. Frames answers it with H3_FRAME_UNEXPECTED, the code §4.1
-// assigns, where other assembly refusals are H3_MESSAGE_ERROR.
+// RFC 9114 forbids it: DATA before HEADERS or anything after the trailers
+// (§4.1), a control-stream frame on a request stream (§7.2.3–§7.2.7), a
+// PUSH_PROMISE from a client (§7.2.5), an HTTP/2 frame type with no HTTP/3
+// meaning (§7.2.8). Every one of those sections makes it a *connection*
+// error of type H3_FRAME_UNEXPECTED, and Frames returns it as one — unlike a
+// malformed message, which is the stream's fault alone (H3_MESSAGE_ERROR).
+// It used to be answered on the stream; a peer that frames a stream wrongly
+// has a broken framer, not one bad request, and §4.1's MUST says so.
 var errH3FrameUnexpected = fmt.Errorf("%w: a frame out of sequence", ErrH3Protocol)
+
+// qpackDecompressionFailed is RFC 9204 §6's code for a field section the
+// decoder cannot interpret. §2.2.3, §3.1 and §4.5.1.1 make the shapes this
+// decoder can meet — a dynamic-table reference against a capacity of zero, a
+// static index past the table, a Required Insert Count no conformant encoder
+// produces — connection errors; §7.4 keeps one case on the stream, a value
+// wider than the decoder's limit. Before, every one of them was
+// H3_MESSAGE_ERROR on the stream, as if the request were malformed rather
+// than the compression state broken.
+const qpackDecompressionFailed = 0x0200
 
 // h3ConnectionError reports a violation of the connection's own critical
 // machinery — a duplicated or closed control or QPACK stream, a control
@@ -401,12 +416,21 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				a.answer(f.StreamID, se.status, err)
 				continue
 			}
+			// The connection's fault, not the stream's: an invalid frame
+			// sequence (§4.1), a frame that belongs on the control stream
+			// (§7.2.3–§7.2.7) or has no HTTP/3 meaning (§7.2.8), or a field
+			// section the QPACK state cannot decode (RFC 9204 §2.2.3, §3.1).
+			// Each of those is a MUST for a connection error, and a
+			// connection whose framer is wrong has nothing left to serve.
+			if errors.Is(err, errH3FrameUnexpected) {
+				err = h3ConnectionError{Code: h3FrameUnexpected, Err: err}
+			}
+			if ce, ok := errors.AsType[h3ConnectionError](err); ok {
+				return sluice.Batch[Request]{}, nil, a.failed, ce
+			}
 			code := uint64(h3MessageError)
-			switch {
-			case errors.Is(err, ErrTooLarge):
+			if errors.Is(err, ErrTooLarge) {
 				code = h3ExcessiveLoad
-			case errors.Is(err, errH3FrameUnexpected):
-				code = h3FrameUnexpected
 			}
 			a.fail(f.StreamID, code, err)
 			continue
@@ -737,7 +761,14 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 					"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
 			}
 			if err := a.settings(fr.Payload); err != nil {
-				return h3ConnectionError{Code: h3SettingsError, Err: err}
+				// A payload that ends inside a pair fails the frame's layout,
+				// which §7.1 makes H3_FRAME_ERROR; what the pairs say is
+				// §7.2.4's H3_SETTINGS_ERROR.
+				code := uint64(h3SettingsError)
+				if errors.Is(err, errH3FrameLayout) {
+					code = h3FrameError
+				}
+				return h3ConnectionError{Code: code, Err: err}
 			}
 			a.controlSettings = true
 			continue
@@ -973,9 +1004,13 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			}
 			st.req.Body = append(st.req.Body, f.Payload...)
 		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
-			return fmt.Errorf("%w: frame type %#x belongs on the control stream", ErrH3Protocol, f.Type)
+			// §7.2.3, §7.2.4, §7.2.6, §7.2.7: each names a connection error
+			// of type H3_FRAME_UNEXPECTED for its frame off the control stream.
+			return fmt.Errorf("%w: frame type %#x belongs on the control stream", errH3FrameUnexpected, f.Type)
 		case h3PushPromise:
-			return fmt.Errorf("%w: a client sent PUSH_PROMISE", ErrH3Protocol)
+			// §7.2.5: "A server MUST treat the receipt of a PUSH_PROMISE
+			// frame as a connection error of type H3_FRAME_UNEXPECTED."
+			return fmt.Errorf("%w: a client sent PUSH_PROMISE", errH3FrameUnexpected)
 		}
 	}
 	// What is left is the start of a frame that has not all arrived, kept at
@@ -994,14 +1029,19 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 }
 
 // sectionRefused turns the decoder's error for a field section into the
-// stream's: a section past the list bound is a 431 on the stream (RFC 9114
-// §4.2.2), as the h2 reader's blockRefused has it; anything else — a
-// dynamic reference, a truncated string — is the malformed request it was.
+// refusal it earns. A section past the list bound is a 431 on the stream
+// (RFC 9114 §4.2.2), as the h2 reader's blockRefused has it. Anything else —
+// a dynamic reference, an index past the static table, a truncated string —
+// is a connection error of type QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2.3,
+// §3.1): the decoder "is not able to continue decoding that field section",
+// and the section's stream is not the fault. It used to be served as a
+// malformed request on the stream, which left a client whose encoder is
+// broken retrying the same bytes on the next one.
 func sectionRefused(err error) error {
 	if errors.Is(err, errHeadersTooLarge) {
 		return h3StatusError{status: 431, err: err}
 	}
-	return err
+	return h3ConnectionError{Code: qpackDecompressionFailed, Err: err}
 }
 
 // appendH3StreamedBody writes one batch of a streamed response as DATA

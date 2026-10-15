@@ -328,19 +328,16 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 		t.Errorf("a trailer field reached the request as %q", got)
 	}
 
+	// Malformed trailers are the request's fault: a stream error, the
+	// connection goes on. A frame *after* them is a framing fault, tested
+	// with the other invalid sequences below.
 	for _, tt := range []struct {
 		name  string
 		bytes []byte
-		code  uint64
 	}{
-		{"a pseudo-header in the trailers", trailers(Header{Name: []byte(":status"), Value: []byte("200")}), h3MessageError},
-		{"a CR in a trailer value", trailers(Header{Name: []byte("x-sum"), Value: []byte("a\rb")}), h3MessageError},
-		{"a trailer name that is not a token", trailers(Header{Name: []byte("x sum"), Value: []byte("v")}), h3MessageError},
-		// A frame after the trailers is an invalid sequence, which RFC 9114
-		// §4.1 answers with H3_FRAME_UNEXPECTED — the same refusal the h2
-		// side makes for DATA after END_HEADERS trailers.
-		{"DATA after the trailers", append(trailers(Header{Name: []byte("x-sum"), Value: []byte("v")}), appendH3Frame(nil, h3Data, []byte("y"))...), h3FrameUnexpected},
-		{"HEADERS after the trailers", append(trailers(Header{Name: []byte("x-sum"), Value: []byte("v")}), trailers(Header{Name: []byte("x-more"), Value: []byte("v")})...), h3FrameUnexpected},
+		{"a pseudo-header in the trailers", trailers(Header{Name: []byte(":status"), Value: []byte("200")})},
+		{"a CR in a trailer value", trailers(Header{Name: []byte("x-sum"), Value: []byte("a\rb")})},
+		{"a trailer name that is not a token", trailers(Header{Name: []byte("x sum"), Value: []byte("v")})},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := newH3Assembler(Config{})
@@ -352,29 +349,63 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 			if batch.Len() != 0 {
 				t.Fatal("a malformed stream's request was served")
 			}
-			if len(failed) != 1 || failed[0].Code != tt.code {
-				t.Fatalf("failed = %v, want one refusal with code %#x", failed, tt.code)
+			if len(failed) != 1 || failed[0].Code != h3MessageError {
+				t.Fatalf("failed = %v, want one H3_MESSAGE_ERROR refusal", failed)
 			}
 		})
 	}
 }
 
-// RFC 9114 §4.1 again, from the other side of the request: DATA arriving
-// before any HEADERS is an invalid frame sequence, refused with
-// H3_FRAME_UNEXPECTED rather than treated as a malformed message.
-func TestH3DataBeforeHeadersIsFrameUnexpected(t *testing.T) {
-	a := newH3Assembler(Config{})
-	stream := appendH3Frame(nil, h3Data, []byte("early"))
-	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
-	if err != nil {
-		t.Fatalf("one malformed stream failed the connection: %v", err)
+// What RFC 9114 and RFC 9204 make the connection's fault on a request stream,
+// each a MUST for a connection error with the code named: an invalid frame
+// sequence (§4.1), a control-stream frame off the control stream (§7.2.3,
+// §7.2.4, §7.2.6, §7.2.7), a PUSH_PROMISE from a client (§7.2.5), a frame
+// type HTTP/2 used and HTTP/3 reserved (§7.2.8), and a field section the
+// QPACK state cannot decode (RFC 9204 §2.2.3, §3.1). Every one used to be
+// answered on the stream alone — RESET_STREAM, the connection kept — which
+// let a peer whose framer is broken keep sending, one stream after another.
+func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
+	head := h3Request("POST", "/t")
+	section := func(fields ...Header) []byte {
+		return appendH3Frame(nil, h3Headers, appendQPACK(nil, fields))
 	}
-	if batch.Len() != 0 {
-		t.Fatal("a stream with DATA before HEADERS was served")
+	trailer := section(Header{Name: []byte("x-sum"), Value: []byte("v")})
+	for _, tt := range []struct {
+		name   string
+		stream []byte
+		code   uint64
+	}{
+		{"DATA before HEADERS", appendH3Frame(nil, h3Data, []byte("early")), h3FrameUnexpected},
+		{"DATA after the trailers", append(append(append([]byte(nil), head...), trailer...), appendH3Frame(nil, h3Data, []byte("y"))...), h3FrameUnexpected},
+		{"HEADERS after the trailers", append(append(append([]byte(nil), head...), trailer...), trailer...), h3FrameUnexpected},
+		{"SETTINGS on a request stream", append(append([]byte(nil), head...), settingsFrame(h3SettingMaxFieldSection, 64)...), h3FrameUnexpected},
+		{"GOAWAY on a request stream", append(append([]byte(nil), head...), appendH3Frame(nil, h3GoAway, []byte{0x00})...), h3FrameUnexpected},
+		{"MAX_PUSH_ID on a request stream", append(append([]byte(nil), head...), appendH3Frame(nil, h3MaxPushID, []byte{0x00})...), h3FrameUnexpected},
+		{"CANCEL_PUSH on a request stream", append(append([]byte(nil), head...), appendH3Frame(nil, h3CancelPush, []byte{0x00})...), h3FrameUnexpected},
+		{"PUSH_PROMISE from the client", append(append([]byte(nil), head...), appendH3Frame(nil, h3PushPromise, []byte{0x00})...), h3FrameUnexpected},
+		{"a dynamic-table reference", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0x80}), qpackDecompressionFailed},
+		{"a static index past the table", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0xff, 0x7f}), qpackDecompressionFailed},
+		{"a required insert count of one", appendH3Frame(nil, h3Headers, []byte{0x01, 0x00}), qpackDecompressionFailed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newH3Assembler(Config{})
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tt.stream, true)})
+			if batch.Len() != 0 || len(failed) != 0 {
+				t.Fatalf("served or refused on the stream (batch=%d failed=%v); the connection is at fault", batch.Len(), failed)
+			}
+			connErr(t, err, tt.code)
+		})
 	}
-	if len(failed) != 1 || failed[0].Code != h3FrameUnexpected {
-		t.Fatalf("failed = %v, want one H3_FRAME_UNEXPECTED refusal", failed)
-	}
+
+	// RFC 9114 §7.1: a SETTINGS payload that ends inside a pair fails the
+	// frame's layout, H3_FRAME_ERROR — not H3_SETTINGS_ERROR, which is for
+	// what whole pairs say. It used to be the latter.
+	t.Run("a SETTINGS payload truncated inside a pair", func(t *testing.T) {
+		a := newH3Assembler(Config{})
+		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, quic.AppendVarint(nil, h3SettingMaxFieldSection))...)
+		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
+		connErr(t, err, h3FrameError)
+	})
 }
 
 // uniOpen builds the bytes a client unidirectional stream opens with: its
