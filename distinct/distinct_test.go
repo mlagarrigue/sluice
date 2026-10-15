@@ -1,7 +1,9 @@
 package distinct
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
@@ -9,6 +11,19 @@ import (
 )
 
 func identityKey(v int) int { return v }
+
+// A negative window is a mistake, not a request for "remember nothing": zero
+// is the one way to ask for that. By panics where the pipeline is built, not
+// when the stream is first drained.
+func TestNegativeWindowPanics(t *testing.T) {
+	defer func() {
+		msg := fmt.Sprint(recover())
+		if !strings.Contains(msg, "By") || !strings.Contains(msg, "-1") {
+			t.Errorf("panic = %q, want one naming By and -1", msg)
+		}
+	}()
+	By(sluice.Of([]int{1}, 0), -1, identityKey, sluice.DropOldest)
+}
 
 func TestDistinct(t *testing.T) {
 	tests := []struct {
@@ -54,12 +69,6 @@ func TestDistinct(t *testing.T) {
 			[]int{1, 1, 1},
 			2, 0,
 			[]int{1, 1, 1},
-		},
-		{
-			"negative window passes everything",
-			[]int{1, 1},
-			2, -1,
-			[]int{1, 1},
 		},
 	}
 	for _, tc := range tests {
