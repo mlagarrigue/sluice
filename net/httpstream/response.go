@@ -39,10 +39,15 @@ type Response struct {
 	// Setting both Stream and Body is a programming error and is refused: the
 	// two say different things about what the payload is.
 	//
-	// A streamed response cannot carry a Content-Length, because its length
-	// is not known when the headers go out. Each protocol says that its own
-	// way — HTTP/1.1 in chunks, HTTP/2 and HTTP/3 in DATA frames ended by a
-	// flag — and none of them needs the total in advance.
+	// A streamed response has no Content-Length, and there is no field to
+	// declare one: its length is not known when the headers go out, and a
+	// declared length the producer then misses by a byte is the framing
+	// desynchronisation this package refuses everywhere else. Each protocol
+	// ends the body its own way — HTTP/1.1 in chunks, HTTP/2 and HTTP/3 in
+	// DATA frames ended by a flag — and none of them needs the total in
+	// advance, nor do the proxies in front: a chunked answer crosses nginx
+	// and Envoy as it is. A handler that already holds the whole payload
+	// puts it in Body and gets its Content-Length from the writer.
 	//
 	// A yield that returns false means the stream or the connection is gone;
 	// the package documentation states what each protocol does then.
