@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`)
 - **Theme:** httpstream
 
 ## Problem
@@ -70,8 +70,15 @@ before the gateway, its last batches fail.
      Past the grace the connection is closed under its handler. What this
      slice leaves: `ServeH3` still waits for a handler that has not
      returned after the grace, where `Serve` does not (§2).
-   - `web.Shutdown` (slice 3) stops every `Serve(ctx)` in this order, not
-     only a `*http.Server`.
+   - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
+     `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
+     `Shutdown(context.Context) error`, which `*http.Server` already has;
+     `web.Start(ctx, serve)` runs a `Serve(ctx)` on its own goroutine and
+     returns the handle whose `Shutdown` cancels that context and waits for
+     the return; `web.Servers(...)` drains several at once, the front being
+     one layer whatever the number of listeners. The handle lives in `web`,
+     not in `httpstream`, so that `web` does not import the transport and so
+     that a server keeps one signal.
 
 ## Rationale
 
