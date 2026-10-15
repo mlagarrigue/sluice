@@ -576,3 +576,18 @@ func TestNewHMACVerifierRefusesAShortPreviousSecret(t *testing.T) {
 		t.Fatal("a 31-byte previous secret was accepted")
 	}
 }
+
+// A negative bound is a mistake, not a request for the default: zero is the
+// one way to ask for 8 KiB.
+func TestNewHMACVerifierRefusesANegativeMaxTokenBytes(t *testing.T) {
+	_, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, MaxTokenBytes: -1})
+	if err == nil {
+		t.Fatal("a negative MaxTokenBytes was accepted")
+	}
+	if !strings.Contains(err.Error(), "MaxTokenBytes -1") || !strings.Contains(err.Error(), "zero means 8 KiB") {
+		t.Errorf("err = %q, want the field, the value and what zero means", err)
+	}
+	if _, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret}); err != nil {
+		t.Errorf("a zero MaxTokenBytes was refused: %v", err)
+	}
+}

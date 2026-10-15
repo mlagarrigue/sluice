@@ -165,9 +165,9 @@ type HMACConfig struct {
 	// no longer an expiry.
 	Leeway time.Duration
 
-	// MaxTokenBytes bounds what will be parsed at all. Zero means 8 KiB. A
-	// token is presented by whoever dialled the socket, so its size is theirs
-	// to choose until something says otherwise.
+	// MaxTokenBytes bounds what will be parsed at all. Zero means 8 KiB; a
+	// negative value is an error. A token is presented by whoever dialled the
+	// socket, so its size is theirs to choose until something says otherwise.
 	MaxTokenBytes int
 
 	// Now is the clock, for tests. Nil means [time.Now].
@@ -201,7 +201,10 @@ func NewHMACVerifier(cfg HMACConfig) (*HMACVerifier, error) {
 			return nil, fmt.Errorf("web: previous HMAC secret %d is %d bytes; HS256 needs at least 32 for a retired key as much as for the current one", i, len(old))
 		}
 	}
-	if cfg.MaxTokenBytes <= 0 {
+	if cfg.MaxTokenBytes < 0 {
+		return nil, fmt.Errorf("web: HMACConfig.MaxTokenBytes %d is negative — zero means 8 KiB", cfg.MaxTokenBytes)
+	}
+	if cfg.MaxTokenBytes == 0 {
 		cfg.MaxTokenBytes = 8 << 10
 	}
 	if cfg.Now == nil {
