@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -291,6 +292,27 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 				t.Errorf("status = %q, want %s", status, tt.want)
 			}
 		})
+	}
+}
+
+// A client refused mid-upload reads its 413 rather than a reset. A server
+// that closes with unread bytes in its socket makes its TCP stack answer the
+// client's next segment with a reset, which fails the client's writes and can
+// erase the response before its parser reads it (RFC 9112 §9.6). This server
+// half-closes, reads the rest of the upload away, then closes: the client's
+// whole upload is accepted by the socket and its answer is readable after.
+func TestRefusedUploadReadsItsStatusInFull(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 1 << 10}, echoTarget)
+	c := dial(t, addr)
+
+	body := bytes.Repeat([]byte("u"), 8<<20)
+	fmt.Fprintf(c, "POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: %d\r\n\r\n", len(body))
+	if _, err := c.Write(body); err != nil {
+		t.Fatalf("upload: %v; the server closed with the upload unread and the stack reset the client", err)
+	}
+	status, _ := readResponse(t, bufio.NewReader(c))
+	if !strings.Contains(status, "413") {
+		t.Errorf("status = %q, want 413", status)
 	}
 }
 

@@ -362,15 +362,46 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 		return true
 	})
 
-	if stopped {
+	if !stopped {
+		// The read side ended. A clean close needs no answer; a refused
+		// request gets the status its refusal maps to, on the connection
+		// that is about to close anyway.
+		if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
+			if status := statusFor(err); status != 0 {
+				_ = writeStatus(c, cfg, nil, status)
+			}
+		}
+	}
+	tearDown(c, cfg)
+}
+
+// tearDown ends the connection in the two stages RFC 9112 §9.6 asks for,
+// so that the last response reaches the client.
+//
+// Closing a socket with unread bytes in it makes the TCP stack answer the
+// client's next segment with a reset, and a reset can erase what the client
+// had received and not yet read — the 413 an upload was refused with, the
+// last response before a pipelined request the shutdown will not serve. So
+// the write side is closed first, which is the client's EOF, and whatever
+// it still sends is read and dropped until it closes in turn or a short
+// deadline passes; the caller's Close then finds the socket empty. The
+// deadline is bounded to a second whatever ReadTimeout says: this is not a
+// request being waited for, it is a tail being drained, and a client that
+// neither closes nor stops is not owed more than that. A connection that
+// cannot half-close (a pipe, a wrapper without CloseWrite) is closed in one
+// stage as before.
+func tearDown(c *prefixConn, cfg Config) {
+	cw, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok || cw.CloseWrite() != nil {
 		return
 	}
-	// The read side ended. A clean close needs no answer; a refused request
-	// gets the status its refusal maps to, on the connection that is about to
-	// close anyway.
-	if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
-		if status := statusFor(err); status != 0 {
-			_ = writeStatus(c, cfg, nil, status)
+	if err := c.SetReadDeadline(time.Now().Add(min(cfg.ReadTimeout, time.Second))); err != nil {
+		return
+	}
+	var sink [4 << 10]byte
+	for {
+		if _, err := c.Read(sink[:]); err != nil {
+			return
 		}
 	}
 }
