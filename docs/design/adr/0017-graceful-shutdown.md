@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; `ServeH3` returns at the grace)
 - **Theme:** httpstream
 
 ## Problem
@@ -67,9 +67,8 @@ before the gateway, its last batches fail.
      `H3_NO_ERROR` (or §8.1's grease) once the last answer is
      acknowledged, which `quic.Conn.ShutdownWithError` waits for: an
      application close sent at once can overtake the response it follows.
-     Past the grace the connection is closed under its handler. What this
-     slice leaves: `ServeH3` still waits for a handler that has not
-     returned after the grace, where `Serve` does not (§2).
+     Past the grace the connection is closed under its handler and
+     `ServeH3` returns without waiting for it, as `Serve` does (§2).
    - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
      `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
      `Shutdown(context.Context) error`, which `*http.Server` already has;
