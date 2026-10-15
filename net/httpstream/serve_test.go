@@ -893,7 +893,7 @@ func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 func TestWriteBatchRefusesConnectionSpecificFields(t *testing.T) {
 	for _, field := range []string{"Connection", "keep-alive", "Proxy-Connection", "Upgrade", "Trailer"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(field), Value: []byte("x")}}}
-		if _, err := WriteBatch(nil, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: got %v, want ErrMalformed", field, err)
 		}
 	}
@@ -975,7 +975,7 @@ func TestHandlerConnectionCloseIsHonoured(t *testing.T) {
 func TestHandlerConnectionOtherThanCloseIsRefused(t *testing.T) {
 	for _, v := range []string{"keep-alive", "close, upgrade", "x"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte("Connection"), Value: []byte(v)}}}
-		if _, err := WriteBatch(nil, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("Connection: %s: got %v, want ErrMalformed", v, err)
 		}
 	}
@@ -1203,13 +1203,41 @@ func TestKeepAliveAnnouncesIdleTimeout(t *testing.T) {
 	if _, err := br.ReadByte(); err != io.EOF {
 		t.Errorf("after Connection: close, read %v, want EOF", err)
 	}
+}
 
-	out, err := WriteBatch(nil, []Request{{Method: []byte("GET"), KeepAlive: true}}, []Response{{Status: 200}})
+// A caller serving the connection itself answers as Serve would: WriteBatch
+// announces the configured idle timeout on every response that does not
+// close, and nothing but Connection: close on the one that does.
+func TestWriteBatchAnnouncesKeepAliveAsServe(t *testing.T) {
+	requests := []Request{
+		{Method: []byte("GET"), KeepAlive: true},
+		{Method: []byte("GET"), KeepAlive: false, http10: true}, // an HTTP/1.0 request that did not ask to stay
+	}
+	responses := []Response{{Status: 200}, {Status: 200}}
+	out, err := WriteBatch(nil, Config{IdleTimeout: 7 * time.Second}, requests, responses)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(out), "Keep-Alive") || strings.Contains(string(out), "Connection:") {
-		t.Errorf("WriteBatch alone described a connection it does not have: %q", out)
+	first, last, ok := strings.Cut(string(out), "\r\n\r\n")
+	if !ok {
+		t.Fatalf("no end of header in %q", out)
+	}
+	head, tail := strings.Split(first, "\r\n"), strings.Split(last, "\r\n")
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+	wantLine(t, tail, "Connection: close", true)
+	wantLine(t, tail, "Keep-Alive: timeout=7", false)
+
+	// The zero Config is Serve's: the default idle timeout is announced.
+	out, err = WriteBatch(nil, Config{}, requests[:1], responses[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine(t, strings.Split(string(out), "\r\n"), "Keep-Alive: timeout=30", true)
+
+	// A negative field is refused as Serve refuses it, naming the field.
+	if _, err := WriteBatch(nil, Config{IdleTimeout: -time.Second}, requests, responses); err == nil || !strings.Contains(err.Error(), "Config.IdleTimeout") {
+		t.Errorf("negative IdleTimeout: err = %v, want a refusal naming the field", err)
 	}
 }
 

@@ -90,23 +90,16 @@ func BenchmarkWriteBatch(b *testing.B) {
 			{Name: []byte("Content-Type"), Value: []byte("application/json")},
 		}}
 	}
-	for _, c := range []struct {
-		name      string
-		keepAlive []byte
-	}{
-		{"plain", nil},
-		{"keep-alive", keepAliveField(Config{}.mustResolve())},
-	} {
-		b.Run(c.name, func(b *testing.B) {
-			b.ReportAllocs()
-			var out []byte
-			for b.Loop() {
-				var err error
-				if out, err = writeBatch(out[:0], requests, responses, c.keepAlive); err != nil {
-					b.Fatal(err)
-				}
+	cfg := Config{}
+	b.Run("keep-alive", func(b *testing.B) {
+		b.ReportAllocs()
+		var out []byte
+		for b.Loop() {
+			var err error
+			if out, err = WriteBatch(out[:0], cfg, requests, responses); err != nil {
+				b.Fatal(err)
 			}
-			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(responses)), "ns/response")
-		})
-	}
+		}
+		b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*len(responses)), "ns/response")
+	})
 }

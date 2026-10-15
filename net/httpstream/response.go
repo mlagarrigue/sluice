@@ -112,18 +112,21 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 // responses past its end are written as if a body were always allowed and
 // the connection always continued.
 //
-// WriteBatch announces no Keep-Alive: it does not know how long the caller
-// keeps an idle connection. [Serve] does, and writes Connection: keep-alive
-// and Keep-Alive: timeout=<seconds> on every HTTP/1.1 response that does not
-// close (see [Config.IdleTimeout]).
-func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, error) {
-	return writeBatch(dst, requests, responses, nil)
-}
-
-// writeBatch is [WriteBatch] with the connection's Keep-Alive announcement,
-// [keepAliveField]'s bytes or nil, written on each response that is not the
-// connection's last.
-func writeBatch(dst []byte, requests []Request, responses []Response, keepAlive []byte) ([]byte, error) {
+// Every response that does not close says Connection: keep-alive and
+// Keep-Alive: timeout=<seconds>, from cfg's IdleTimeout, as [Serve] writes
+// them: a caller serving the connection itself answers the way Serve would
+// (see appendKeepAlive). IdleTimeout is the one field of cfg it reads, and it
+// is resolved as Serve resolves it: zero is the default, and a negative value
+// is refused with the same error. The other fields are not checked here —
+// resolving them all on every batch would cost more than writing one.
+func WriteBatch(dst []byte, cfg Config, requests []Request, responses []Response) ([]byte, error) {
+	idle := cfg.IdleTimeout
+	if err := orDefault("Config.IdleTimeout", &idle, defaultIdleTimeout); err != nil {
+		return nil, err
+	}
+	// Formatted once per call, on the stack, rather than once per response.
+	var field [keepAliveFieldMax]byte
+	keepAlive := appendKeepAlive(field[:0], idle)
 	closeAfter := asksToClose(responses)
 	date := dateFor(time.Now())
 	for i, res := range responses {
@@ -140,10 +143,14 @@ func writeBatch(dst []byte, requests []Request, responses []Response, keepAlive 
 	return dst, nil
 }
 
-// keepAliveField is what an HTTP/1.1 response that does not close says about
-// the connection: Connection: keep-alive, then Keep-Alive: timeout=<seconds>
-// with cfg's IdleTimeout rounded down to whole seconds, built once per
-// connection and appended as is.
+// keepAliveFieldMax holds appendKeepAlive's longest output: the fixed text
+// and the 10 digits of the largest whole-second time.Duration.
+const keepAliveFieldMax = len("Connection: keep-alive\r\nKeep-Alive: timeout=\r\n") + 10
+
+// appendKeepAlive writes what an HTTP/1.1 response that does not close says
+// about the connection: Connection: keep-alive, then Keep-Alive:
+// timeout=<seconds> with idle, the connection's IdleTimeout, rounded down to
+// whole seconds.
 //
 // The timeout is for the proxy in front: nginx keeps an upstream connection
 // 60s by default and Envoy an hour, and one that outlives this server's idle
@@ -161,15 +168,15 @@ func writeBatch(dst []byte, requests []Request, responses []Response, keepAlive 
 // Rounded down, never up: a timeout the server does not honour is the reset
 // again. Zero seconds is written as such — the socket closes within the
 // second, and the field says so.
-func keepAliveField(cfg Config) []byte {
-	dst := []byte("Connection: keep-alive\r\nKeep-Alive: timeout=")
-	dst = strconv.AppendInt(dst, int64(cfg.IdleTimeout/time.Second), 10)
+func appendKeepAlive(dst []byte, idle time.Duration) []byte {
+	dst = append(dst, "Connection: keep-alive\r\nKeep-Alive: timeout="...)
+	dst = strconv.AppendInt(dst, int64(idle/time.Second), 10)
 	return append(dst, '\r', '\n')
 }
 
 // appendConnection writes what the response says about the connection: the
 // writer's own Connection: close on the batch's last response when nothing
-// follows, else the connection's Keep-Alive announcement when it has one.
+// follows, else keepAlive, appendKeepAlive's announcement.
 func appendConnection(dst []byte, closing bool, keepAlive []byte) []byte {
 	if closing {
 		return append(dst, "Connection: close\r\n"...)

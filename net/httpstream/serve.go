@@ -326,7 +326,6 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 	// reused buffer against a per-batch allocation, paid once per connection
 	// rather than once per batch.
 	out := make([]byte, 0, 4<<10)
-	keepAlive := keepAliveField(cfg)
 
 	stopped := false
 	src.Stream()(func(b sluice.Batch[Request]) bool {
@@ -352,7 +351,7 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 		if streamedIn(res) {
 			var closed bool
 			var werr error
-			if out, closed, werr = writeStreamedBatch(c, cfg, keepAlive, b.Items, res, out); werr != nil || closed || asksToClose(res) {
+			if out, closed, werr = writeStreamedBatch(c, cfg, b.Items, res, out); werr != nil || closed || asksToClose(res) {
 				// closed without error is a close-delimited body: EOF is its
 				// end marker, so the close *is* the last byte of the answer.
 				stopped = true
@@ -361,7 +360,7 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 			return true
 		}
 		var werr error
-		if out, werr = writeBatch(out[:0], b.Items, res, keepAlive); werr != nil {
+		if out, werr = WriteBatch(out[:0], cfg, b.Items, res); werr != nil {
 			// A response this package refuses to put on the wire — an
 			// injected header, a framing header the caller set. The caller's
 			// bug, answered as one rather than written out.
@@ -744,7 +743,9 @@ func streamedIn(res []Response) bool {
 // no such repair: a 500 appended to a half-written body would be read as
 // body bytes, so a mid-stream write failure closes the connection with
 // nothing more said.
-func writeStreamedBatch(c *prefixConn, cfg Config, keepAlive []byte, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
+func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
+	var field [keepAliveFieldMax]byte
+	keepAlive := appendKeepAlive(field[:0], cfg.IdleTimeout)
 	buf = buf[:0]
 	// fail answers response i's refusal with a 500, after flushing the
 	// responses coalesced ahead of it — they were owed whatever happened to
@@ -776,7 +777,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, keepAlive []byte, requests []
 			// Appended behind whatever is already pending, not written on its
 			// own: WriteBatch returns nil on refusal and buf keeps the
 			// responses gathered so far, which is what lets fail flush them.
-			out, err := writeBatch(buf, oneReq, []Response{r}, keepAlive)
+			out, err := WriteBatch(buf, cfg, oneReq, []Response{r})
 			if err != nil {
 				return fail(i, err)
 			}
