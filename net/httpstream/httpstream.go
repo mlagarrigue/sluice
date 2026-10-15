@@ -326,15 +326,16 @@ type Config struct {
 	// no use for it.
 	MaxConcurrentStreams int
 
-	// MaxRequestsPerConn bounds how many requests one connection may make
-	// before it is closed. Zero means 1024, which is keep-alive with an end.
-	// The end costs a client that does not pipeline a TCP and a TLS
-	// handshake every 1024 requests: +3.7% per request over loopback against
-	// no end at all, the handshake and nothing else (docs/benchmarks.md,
-	// "The connection budget and the batch bound"). Over a real network it
-	// is two extra round trips on one request in 1024 — the tail, which
-	// loopback does not see. There is no unbounded setting; math.MaxInt is
-	// one.
+	// MaxRequestsPerConn bounds how many requests one HTTP/1.1 connection
+	// may make before it is closed. Zero means 1024, which is keep-alive
+	// with an end. HTTP/1.1 only: an HTTP/2 connection is bounded by
+	// [H2Config] and [Config.IdleTimeout], not by a request count. The end
+	// costs a client that does not pipeline a TCP and a TLS handshake every
+	// 1024 requests: +3.7% per request over loopback against no end at all,
+	// the handshake and nothing else (docs/benchmarks.md, "The connection
+	// budget and the batch bound"). Over a real network it is two extra
+	// round trips on one request in 1024 — the tail, which loopback does
+	// not see. There is no unbounded setting; math.MaxInt is one.
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
