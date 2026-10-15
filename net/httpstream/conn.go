@@ -31,15 +31,19 @@ import (
 // reached, when a request says Connection: close, or when a deadline expires.
 // A parse failure ends it too and is reported by [sluice.Source.Err]; the
 // caller answers with a status and closes, since a stream whose framing is in
-// doubt cannot be resynchronised.
+// doubt cannot be resynchronised. A configuration [Config] refuses is
+// reported the same way, by a stream that yields nothing.
 func Requests(c net.Conn, cfg Config) sluice.Source[Request] {
+	cfg, err := cfg.resolve()
+	if err != nil {
+		return sluice.NewSource(func(func(sluice.Batch[Request]) bool) {}, func() error { return err })
+	}
 	return newRequestReader(c, nil, cfg)
 }
 
 // newRequestReader is Requests with the shutdown's view of the connection attached,
-// which [Serve] has and a caller of Requests does not.
+// which [Serve] has and a caller of Requests does not. cfg is resolved.
 func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Request] {
-	cfg = cfg.withDefaults()
 	r := &reader{conn: c, cfg: cfg, state: st}
 	r.held, _ = c.(interface{ buffered() bool })
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })

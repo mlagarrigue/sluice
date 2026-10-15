@@ -328,7 +328,14 @@ const maxWindow = 1<<31 - 1
 // parked on ctx.Done() for the life of every connection. A connection
 // [Serve] hands over is not cut that way: Serve drains it (ADR 0017), and
 // serveH2Conn says how.
+//
+// A configuration [H2Config] refuses is returned as an error before a byte
+// is read, and the connection is left to the caller.
 func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) error {
+	cfg, err := cfg.resolve()
+	if err != nil {
+		return err
+	}
 	return serveH2Conn(ctx, c, nil, cfg, handler)
 }
 
@@ -359,7 +366,6 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 // safe side. A peer that never acknowledges the PING holds the connection
 // until Serve's grace closes it, which is the bound every drain has.
 func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg H2Config, handler Handler) error {
-	cfg = cfg.withDefaults()
 	s := &h2Server{
 		cfg:      cfg,
 		handler:  handler,
@@ -1270,7 +1276,7 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 			}
 			window, haveWindow = v, true
 		case settingMaxFrameSize:
-			if v < defaultMaxFrameSize || v > 1<<24-1 {
+			if v < defaultMaxFrameSize || v > maxFrameSize {
 				return 0, false, fmt.Errorf("%w: a maximum frame size of %d", ErrH2Protocol, v)
 			}
 			frame, haveFrame = v, true

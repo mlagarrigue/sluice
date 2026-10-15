@@ -94,7 +94,7 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 			}
 		})
 		t.Run("h3/"+tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			stream := appendH3Frame(nil, h3Headers, appendQPACK(nil, fieldsOf(tt)))
 			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 			if err != nil {

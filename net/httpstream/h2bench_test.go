@@ -14,7 +14,7 @@ import (
 // updates — never touches s.w, so a writer that is never run is enough to
 // benchmark the frame-to-request path in isolation from the socket.
 func newBenchH2Server(cfg H2Config) *h2Server {
-	cfg = cfg.withDefaults()
+	cfg = cfg.mustResolve()
 	return &h2Server{
 		cfg:      cfg,
 		handler:  func(b sluice.Batch[Request]) sluice.Batch[Response] { return sluice.Batch[Response]{} },
@@ -71,7 +71,7 @@ func BenchmarkH2Consume(b *testing.B) {
 			for i := range depth {
 				id := uint32(2*i + 1)
 				raw := h2HeadersFrame(id, fmt.Sprintf("/orders/%d", i))
-				parsed, _, err := parseFrame(raw, H2Config{}.withDefaults())
+				parsed, _, err := parseFrame(raw, H2Config{}.mustResolve())
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -136,7 +136,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			// One connection, writer and server for the whole loop, so the
 			// alloc signal is streamBody's own and not the setup's.
 			conn := &countingConn{}
-			cfg := H2Config{}.withDefaults()
+			cfg := H2Config{}.mustResolve()
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()

@@ -24,8 +24,8 @@ func resetFrame(id uint64) quic.Frame {
 // add up.
 func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 	const maxBody = 64
-	cfg := Config{MaxBodyBytes: maxBody}.withDefaults()
-	a := newH3Assembler(cfg)
+	cfg := Config{MaxBodyBytes: maxBody}.mustResolve()
+	a := testAssembler(cfg)
 
 	// HEADERS alone first, stream left open.
 	batch, _, failed, err := a.Frames([]quic.Frame{
@@ -81,7 +81,7 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 // documented sweet spot of 8 here: a batching knob, it must not influence
 // admission, and before the two were separated it silently did.
 func TestH3TheStreamOverTheLimitIsRefused(t *testing.T) {
-	a := newH3Assembler(Config{MaxRequestsPerBatch: 8})
+	a := testAssembler(Config{MaxRequestsPerBatch: 8})
 	if a.cfg.MaxConcurrentStreams != defaultMaxConcurrency {
 		t.Fatalf("MaxConcurrentStreams defaults to %d, not the %d HTTP/2 advertises", a.cfg.MaxConcurrentStreams, defaultMaxConcurrency)
 	}
@@ -136,7 +136,7 @@ func TestH3The257thRefusalEvictsTheOldestTombstone(t *testing.T) {
 		{Name: []byte(":scheme"), Value: []byte("https")},
 	}))
 
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	for i := range maxRefusedRemembered + 1 {
 		id := uint64(4 * i)
 		_, _, failed, err := a.Frames([]quic.Frame{streamFrame(id, badRequest, true)})
@@ -169,7 +169,7 @@ func TestH3The257thRefusalEvictsTheOldestTombstone(t *testing.T) {
 // admission slot burnt per occurrence. MaxConcurrentStreams such datagrams
 // wedged all new requests for the connection's lifetime.
 func TestH3ResetInPacketOrderFreesTheAdmissionSlot(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	partial := h3Request("POST", "/cancelled")[:8] // mid-frame, never completable
 
 	for i := range a.cfg.MaxConcurrentStreams {
@@ -207,7 +207,7 @@ func TestH3ResetInPacketOrderFreesTheAdmissionSlot(t *testing.T) {
 // not resurrect the stream either: Forget leaves a tombstone now, exactly as
 // a refusal does.
 func TestH3DeltasAfterAResetLandOnATombstone(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	req := h3Request("GET", "/ghost")
 
 	batch, _, failed, err := a.Frames([]quic.Frame{
@@ -236,7 +236,7 @@ func TestH3ContentLengthMustMatchTheBody(t *testing.T) {
 	}
 
 	// Agreement is served.
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, build("3", []byte("abc")), true)})
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestH3ContentLengthMustMatchTheBody(t *testing.T) {
 		{"length on an empty body", "10", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, build(tt.cl, tt.body), true)})
 			if err != nil {
 				t.Fatalf("one malformed request failed the connection: %v", err)
@@ -269,7 +269,7 @@ func TestH3ContentLengthMustMatchTheBody(t *testing.T) {
 
 	// Two lengths on one request is the smuggling family's opening move.
 	t.Run("a repeated content-length", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		stream := h3Request("POST", "/u", [2]string{"content-length", "3"}, [2]string{"content-length", "3"})
 		stream = appendH3Frame(stream, h3Data, []byte("abc"))
 		_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
@@ -290,7 +290,7 @@ func TestH3FinMidFrameIsAFrameError(t *testing.T) {
 	stream = quic.AppendVarint(stream, 10)
 	stream = append(stream, []byte("abc")...) // 3 of the 10 declared bytes
 
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
 		t.Fatal(err)
@@ -315,7 +315,7 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 	}
 
 	// Clean trailers: the request completes, the trailers do not reach it.
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	stream := append(append([]byte(nil), head...), trailers(Header{Name: []byte("x-sum"), Value: []byte("ok")})...)
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
@@ -340,7 +340,7 @@ func TestH3TrailersAreValidatedThenDropped(t *testing.T) {
 		{"a trailer name that is not a token", trailers(Header{Name: []byte("x sum"), Value: []byte("v")})},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			stream := append(append([]byte(nil), head...), tt.bytes...)
 			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 			if err != nil {
@@ -388,7 +388,7 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 		{"a required insert count of one", appendH3Frame(nil, h3Headers, []byte{0x01, 0x00}), qpackDecompressionFailed},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tt.stream, true)})
 			if batch.Len() != 0 || len(failed) != 0 {
 				t.Fatalf("served or refused on the stream (batch=%d failed=%v); the connection is at fault", batch.Len(), failed)
@@ -401,7 +401,7 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 	// frame's layout, H3_FRAME_ERROR — not H3_SETTINGS_ERROR, which is for
 	// what whole pairs say. It used to be the latter.
 	t.Run("a SETTINGS payload truncated inside a pair", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, quic.AppendVarint(nil, h3SettingMaxFieldSection))...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
 		connErr(t, err, h3FrameError)
@@ -413,7 +413,7 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 // on a request stream, where the other decoding failures are the
 // connection's. A string length of 2^62 here; the connection goes on.
 func TestH3QPACKIntegerPastSixtyTwoBitsIsAStreamError(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	// Prefix, then a literal with a literal name whose 3-bit-prefix name
 	// length is 2^62: 0x27 then nine continuation octets.
 	section := []byte{0x00, 0x00, 0x27, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}
@@ -459,7 +459,7 @@ func connErr(t *testing.T, err error, code uint64) {
 // unidirectional stream was skipped unread.
 func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	t.Run("SETTINGS on the control stream are parsed", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 4096)...)
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)}); err != nil {
 			t.Fatalf("a conformant control stream was refused: %v", err)
@@ -470,7 +470,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a control stream split across datagrams", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 512)...)
 		cut := 2
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open[:cut], false)}); err != nil {
@@ -485,7 +485,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("first control frame not SETTINGS", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3GoAway, []byte{0x00})...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
 		connErr(t, err, h3MissingSettings)
@@ -495,7 +495,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 		// RFC 9114 §6.2.1: SETTINGS must be the very first frame. A reserved
 		// frame type is skippable everywhere else (§7.2.8), but not where
 		// SETTINGS has to stand.
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, 0x21, []byte{0xde, 0xad})...)
 		open = append(open, settingsFrame(h3SettingMaxFieldSection, 64)...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
@@ -506,7 +506,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 		// §7.2.4.1: HTTP/2's settings with no HTTP/3 meaning are reserved,
 		// and receiving one is H3_SETTINGS_ERROR rather than a skip.
 		for _, id := range []uint64{0x00, 0x02, 0x03, 0x04, 0x05} {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			open := append(uniOpen(h3StreamControl), settingsFrame(id, 1)...)
 			_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
 			connErr(t, err, h3SettingsError)
@@ -518,7 +518,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 		// must not send instructions that use the dynamic table. An Insert
 		// With Name Reference (leading bit 1) is refused as
 		// QPACK_ENCODER_STREAM_ERROR.
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKEncode, 0xc1, 0x00), false)})
 		connErr(t, err, qpackEncoderStreamError)
 	})
@@ -526,7 +526,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	t.Run("a non-zero capacity on the QPACK encoder stream", func(t *testing.T) {
 		// Set Dynamic Table Capacity (001xxxxx) above the advertised zero is
 		// the error RFC 9204 §4.3.1 names.
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKEncode, 0x21), false)})
 		connErr(t, err, qpackEncoderStreamError)
 	})
@@ -534,7 +534,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	t.Run("a capacity of zero on the QPACK encoder stream is tolerated", func(t *testing.T) {
 		// Setting the capacity to the advertised zero changes nothing, and
 		// §4.3.1 only refuses a value that exceeds the limit.
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKEncode, 0x20), false)}); err != nil {
 			t.Fatalf("a capacity of zero was refused: %v", err)
 		}
@@ -544,7 +544,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a second SETTINGS on the control stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		open = append(open, settingsFrame(h3SettingMaxFieldSection, 64)...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
@@ -552,7 +552,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a request frame on the control stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		open = append(open, appendH3Frame(nil, h3Data, []byte("x"))...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
@@ -560,7 +560,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a second control stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)}); err != nil {
 			t.Fatal(err)
@@ -570,7 +570,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a second QPACK encoder stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKEncode), false)}); err != nil {
 			t.Fatal(err)
 		}
@@ -579,7 +579,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a second QPACK decoder stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKDecode), false)}); err != nil {
 			t.Fatal(err)
 		}
@@ -588,20 +588,20 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a client-opened push stream", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamPush), false)})
 		connErr(t, err, h3StreamCreationError)
 	})
 
 	t.Run("the control stream closed by FIN", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, true)})
 		connErr(t, err, h3ClosedCriticalStream)
 	})
 
 	t.Run("the control stream reset", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)}); err != nil {
 			t.Fatal(err)
@@ -611,13 +611,13 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a QPACK stream closed by FIN", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(h3StreamQPACKEncode), true)})
 		connErr(t, err, h3ClosedCriticalStream)
 	})
 
 	t.Run("an unknown stream type is discarded without error", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, uniOpen(0x21, 0xde, 0xad), false)}); err != nil {
 			t.Fatalf("a reserved unidirectional stream type was refused: %v", err)
 		}
@@ -628,7 +628,7 @@ func TestH3ClientUnidirectionalStreams(t *testing.T) {
 	})
 
 	t.Run("a stream reset before its type byte is tolerated", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		if _, _, _, err := a.Frames([]quic.Frame{resetFrame(2)}); err != nil {
 			t.Fatalf("a uni stream reset before its type was refused: %v", err)
 		}
@@ -643,8 +643,8 @@ func TestH3AggregateAssemblyBytesAreBounded(t *testing.T) {
 	// Sized so no single stream ever trips its own per-stream bound: each
 	// parks well under MaxBodyBytes, and only their sum crosses the line.
 	const maxBody = 256
-	cfg := Config{MaxBodyBytes: maxBody}.withDefaults()
-	a := newH3Assembler(cfg)
+	cfg := Config{MaxBodyBytes: maxBody}.mustResolve()
+	a := testAssembler(cfg)
 
 	head := h3Request("POST", "/park")
 	body := appendH3Frame(nil, h3Data, bytes.Repeat([]byte("x"), 150))
@@ -678,8 +678,8 @@ func TestH3AggregateAssemblyBytesAreBounded(t *testing.T) {
 // trickling a byte now and then parks its buffers for as long as it keeps
 // the connection's idle timer alive.
 func TestH3StalledAssemblyExpires(t *testing.T) {
-	cfg := Config{ReadTimeout: time.Minute}.withDefaults()
-	a := newH3Assembler(cfg)
+	cfg := Config{ReadTimeout: time.Minute}.mustResolve()
+	a := testAssembler(cfg)
 
 	// A request that never finishes.
 	before := time.Now()
@@ -725,11 +725,11 @@ func TestH3StalledAssemblyExpires(t *testing.T) {
 // a body-sized buffer and buys a QPACK decode 32× the advertised
 // MAX_FIELD_SECTION_SIZE.
 func TestH3HeadersFramesAreBoundedByMaxHeaderBytes(t *testing.T) {
-	cfg := Config{MaxHeaderBytes: 128, MaxBodyBytes: 4096}.withDefaults()
+	cfg := Config{MaxHeaderBytes: 128, MaxBodyBytes: 4096}.mustResolve()
 
 	// A complete HEADERS frame between the two bounds.
 	big := h3Request("GET", "/big", [2]string{"x-pad", string(bytes.Repeat([]byte("p"), 200))})
-	a := newH3Assembler(cfg)
+	a := testAssembler(cfg)
 	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, big, true)})
 	if err != nil {
 		t.Fatal(err)
@@ -746,7 +746,7 @@ func TestH3HeadersFramesAreBoundedByMaxHeaderBytes(t *testing.T) {
 	declared := quic.AppendVarint(nil, h3Headers)
 	declared = quic.AppendVarint(declared, 2000)
 	declared = append(declared, bytes.Repeat([]byte("h"), 10)...)
-	a = newH3Assembler(cfg)
+	a = testAssembler(cfg)
 	_, _, failed, err = a.Frames([]quic.Frame{streamFrame(0, declared, false)})
 	if err != nil {
 		t.Fatal(err)
@@ -770,7 +770,7 @@ func TestH3BodyOfExactlyMaxBodyBytesInOneDelivery(t *testing.T) {
 		size int
 		ok   bool
 	}{{maxBody, true}, {maxBody + 1, false}} {
-		a := newH3Assembler(Config{MaxBodyBytes: maxBody}.withDefaults())
+		a := testAssembler(Config{MaxBodyBytes: maxBody}.mustResolve())
 		body := bytes.Repeat([]byte("b"), tc.size)
 		stream := appendH3Frame(h3Request("POST", "/upload"), h3Data, body)
 		batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
@@ -806,7 +806,7 @@ func TestH3AssemblerKeepsOnlyTheSettingItUses(t *testing.T) {
 	}
 	cost := func(stream []byte) float64 {
 		return testing.AllocsPerRun(20, func() {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, stream, false)}); err != nil {
 				t.Fatal(err)
 			}
@@ -821,7 +821,7 @@ func TestH3AssemblerKeepsOnlyTheSettingItUses(t *testing.T) {
 	}
 
 	t.Run("a repeated known identifier is refused", func(t *testing.T) {
-		a := newH3Assembler(Config{})
+		a := testAssembler(Config{})
 		payload := quic.AppendVarint(nil, h3SettingMaxFieldSection)
 		payload = quic.AppendVarint(payload, 1)
 		payload = quic.AppendVarint(payload, h3SettingMaxFieldSection)
@@ -859,7 +859,7 @@ func TestH3QPACKDecoderStreamIsRead(t *testing.T) {
 		{"after a cancellation", [][]byte{{0x44, 0x84}}, qpackDecoderStreamError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			if _, _, _, err := a.Frames([]quic.Frame{streamFrame(6, uniOpen(h3StreamQPACKDecode), false)}); err != nil {
 				t.Fatalf("opening the decoder stream: %v", err)
 			}

@@ -61,6 +61,10 @@ const frameHeaderSize = 9
 // a frame declaring more is refused before a byte of it is read.
 const defaultMaxFrameSize = 1 << 14 // 16384
 
+// maxFrameSize is the largest SETTINGS_MAX_FRAME_SIZE RFC 9113 §6.5.2 allows,
+// and the most the frame header's 24-bit length can express.
+const maxFrameSize = 1<<24 - 1
+
 // h2Frame is one HTTP/2 frame. Payload borrows the connection's read buffer,
 // like every other batch element in this library.
 type h2Frame struct {
@@ -86,15 +90,17 @@ func (f h2Frame) EndsHeaders() bool {
 }
 
 // H2Config bounds an HTTP/2 connection. As everywhere here, a zero value takes
-// the modest defaults rather than the generous ones.
+// the modest defaults rather than the generous ones, and a negative one is
+// refused by [ServeH2] with an error naming the field.
 type H2Config struct {
 	// MaxFrameSize is the largest frame payload accepted. Zero means 16384,
-	// the protocol's own initial value. It is capped at 1<<24-1, which is
-	// what the length field can express — and floored at 16384, because the
-	// value is advertised as SETTINGS_MAX_FRAME_SIZE and RFC 9113 §6.5.2
-	// bounds that to [2^14, 2^24-1]: a smaller value on the wire is an
-	// illegal setting a conformant client must treat as a connection error,
-	// and §4.2 obliges this end to receive 16384-byte frames regardless.
+	// the protocol's own initial value. Any other value outside
+	// [16384, 1<<24-1] is refused: the value is advertised as
+	// SETTINGS_MAX_FRAME_SIZE and RFC 9113 §6.5.2 bounds that to
+	// [2^14, 2^24-1] — a smaller value on the wire is an illegal setting a
+	// conformant client must treat as a connection error, §4.2 obliges this
+	// end to receive 16384-byte frames regardless, and 1<<24-1 is what the
+	// length field can express.
 	//
 	// It also caps the frames this end sends: a peer may advertise up to
 	// 16 MiB, and a frame that large is a buffer that large on this side.
@@ -144,8 +150,8 @@ type H2Config struct {
 	// request stream, advertised as SETTINGS_INITIAL_WINDOW_SIZE and topped
 	// back up as the body is consumed. Zero means 65535, the protocol's own
 	// initial value; a value over 2^31-1 — the largest a window can be (RFC
-	// 9113 §6.5.2) — is lowered to it rather than advertised as a setting the
-	// peer must refuse.
+	// 9113 §6.5.2) — is refused rather than advertised as a setting the peer
+	// must refuse.
 	//
 	// The window is what a client may have in flight on one stream before it
 	// hears back, so on a link with latency it is the ceiling on an upload's
@@ -191,8 +197,10 @@ type H2Config struct {
 	MaxPendingControlBytes int
 
 	// MaxWriteBufferBytes is how much response payload the writer gathers
-	// before one write to the socket. Zero means 64 KiB, and it is raised to
-	// MaxFrameSize if that is larger.
+	// before one write to the socket. Zero means 64 KiB. A round always
+	// holds at least one whole frame, so below the frame size in use a round
+	// is one frame: the value is honoured as a bound on gathering, not as a
+	// reason to split a frame.
 	//
 	// It is the round of the writer's round-robin: one stream on its own gets
 	// the whole of it and pays a single syscall for it, and several streams
@@ -232,61 +240,46 @@ type H2Config struct {
 	WriteTimeout time.Duration
 }
 
-func (c H2Config) withDefaults() H2Config {
-	if c.MaxFrameSize < defaultMaxFrameSize {
-		// The floor, not only the zero default: see the field's comment. A
-		// configured value below 16384 would be advertised as an illegal
-		// SETTINGS_MAX_FRAME_SIZE, so it is raised rather than honoured.
-		c.MaxFrameSize = defaultMaxFrameSize
-	}
-	if c.MaxFrameSize > 1<<24-1 {
-		c.MaxFrameSize = 1<<24 - 1
-	}
-	if c.MaxFramesPerBatch <= 0 {
-		c.MaxFramesPerBatch = 64
-	}
-	if c.MaxContinuationFrames <= 0 {
-		c.MaxContinuationFrames = 16
-	}
+// resolve is [Config.resolve] for HTTP/2: every zero bound becomes its
+// default, and a negative one — or a MaxFrameSize or InitialWindowSize the
+// protocol cannot advertise — is refused with an error naming the field.
+func (c H2Config) resolve() (H2Config, error) {
 	// The bounds shared with [Config] take Config's defaults, chosen once in
 	// httpstream.go; only what HTTP/2 alone has is chosen here.
-	if c.MaxHeaderBlockBytes <= 0 {
-		c.MaxHeaderBlockBytes = defaultMaxHeaderBytes
+	err := errors.Join(
+		orDefault("H2Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
+		orDefault("H2Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),
+		orDefault("H2Config.MaxHeaderBlockBytes", &c.MaxHeaderBlockBytes, defaultMaxHeaderBytes),
+		orDefault("H2Config.MaxHeaders", &c.MaxHeaders, defaultMaxHeaders),
+		orDefault("H2Config.IdleTimeout", &c.IdleTimeout, defaultIdleTimeout),
+		orDefault("H2Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
+		orDefault("H2Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
+		orDefault("H2Config.MaxBodyBytes", &c.MaxBodyBytes, defaultMaxBodyBytes),
+		orDefault("H2Config.MaxConcurrentStreams", &c.MaxConcurrentStreams, defaultMaxConcurrency),
+		orDefault("H2Config.MaxPendingControlBytes", &c.MaxPendingControlBytes, 16<<10),
+		orDefault("H2Config.MaxWriteBufferBytes", &c.MaxWriteBufferBytes, 64<<10),
+	)
+	// RFC 9113 §6.5.2 bounds both settings; a value outside would be
+	// advertised as a setting a conformant peer must answer with a connection
+	// error, so every connection would end at its first SETTINGS.
+	switch {
+	case c.MaxFrameSize == 0:
+		c.MaxFrameSize = defaultMaxFrameSize
+	case c.MaxFrameSize < defaultMaxFrameSize || c.MaxFrameSize > maxFrameSize:
+		err = errors.Join(err, fmt.Errorf("httpstream: H2Config.MaxFrameSize %d is outside %d..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.MaxFrameSize, defaultMaxFrameSize, maxFrameSize, defaultMaxFrameSize))
 	}
-	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = defaultMaxHeaders
-	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = defaultIdleTimeout
-	}
-	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = defaultReadTimeout
-	}
-	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = defaultWriteTimeout
-	}
-	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = defaultMaxBodyBytes
-	}
-	if c.MaxConcurrentStreams <= 0 {
-		c.MaxConcurrentStreams = defaultMaxConcurrency
-	}
-	if c.InitialWindowSize <= 0 {
+	switch {
+	case c.InitialWindowSize == 0:
 		c.InitialWindowSize = defaultInitialWindow
+	case c.InitialWindowSize < 0 || c.InitialWindowSize > maxWindow:
+		err = errors.Join(err, fmt.Errorf("httpstream: H2Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
-	if c.InitialWindowSize > maxWindow {
-		// Lowered, as MaxFrameSize is: §6.5.2 makes a larger value a
-		// FLOW_CONTROL_ERROR, so honouring it would be ending every
-		// connection at its first SETTINGS.
-		c.InitialWindowSize = maxWindow
+	if err != nil {
+		return H2Config{}, err
 	}
-	if c.MaxPendingControlBytes <= 0 {
-		c.MaxPendingControlBytes = 16 << 10
-	}
-	if c.MaxWriteBufferBytes <= 0 {
-		c.MaxWriteBufferBytes = 64 << 10
-	}
-	return c
+	return c, nil
 }
 
 // defaultMaxConcurrency is SETTINGS_MAX_CONCURRENT_STREAMS' default here, and
@@ -321,8 +314,9 @@ func h2Frames(c net.Conn, cfg H2Config) sluice.Source[h2Frame] {
 // silent round does not end the connection — see [H2Config.IdleTimeout]. A nil busy is a
 // connection with nothing above it, which is what [h2Frames] gives a caller
 // composing operators directly, and it is idle whenever it is silent.
+//
+// cfg is resolved: every caller has been through [H2Config.resolve].
 func framesWith(c net.Conn, cfg H2Config, busy func() bool) sluice.Source[h2Frame] {
-	cfg = cfg.withDefaults()
 	r := &frameReader{conn: c, cfg: cfg, busy: busy}
 	return sluice.NewSource(sluice.Stream[h2Frame](r.stream), func() error { return r.err })
 }

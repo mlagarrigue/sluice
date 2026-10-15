@@ -361,7 +361,7 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 		manual bool
 	}{
 		{"delivery", quic.DefaultParameters(), false},
-		{"manual", Config{}.TransportParameters(), true},
+		{"manual", mustTransportParameters(Config{}), true},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			released.Store(0)
@@ -515,10 +515,10 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 // is. Before this, the field was read by HTTP/1.1 and HTTP/2 and silently
 // ignored by HTTP/3, which kept the transport's own 30s whatever Config said.
 func TestTransportParametersCarryIdleTimeout(t *testing.T) {
-	if got := (Config{}).TransportParameters().MaxIdleTimeout; got != defaultIdleTimeout {
+	if got := mustTransportParameters(Config{}).MaxIdleTimeout; got != defaultIdleTimeout {
 		t.Errorf("zero IdleTimeout → max_idle_timeout %v, want %v", got, defaultIdleTimeout)
 	}
-	if got := (Config{IdleTimeout: 7 * time.Second}).TransportParameters().MaxIdleTimeout; got != 7*time.Second {
+	if got := mustTransportParameters(Config{IdleTimeout: 7 * time.Second}).MaxIdleTimeout; got != 7*time.Second {
 		t.Errorf("IdleTimeout 7s → max_idle_timeout %v, want 7s", got)
 	}
 }

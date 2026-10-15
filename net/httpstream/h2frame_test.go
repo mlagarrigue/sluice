@@ -47,7 +47,7 @@ func (c *memConn) SetWriteDeadline(time.Time) error { return nil }
 func readFrames(t *testing.T, script []byte, cfg H2Config) ([][]h2Frame, error) {
 	t.Helper()
 	c := &memConn{in: script}
-	src := h2Frames(c, cfg)
+	src := h2Frames(c, cfg.mustResolve())
 	var batches [][]h2Frame
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {
 		batch := make([]h2Frame, 0, b.Len())
@@ -207,7 +207,7 @@ func TestFrameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, n, err := parseFrame(raw, H2Config{}.withDefaults())
+	out, n, err := parseFrame(raw, H2Config{}.mustResolve())
 	if err != nil {
 		t.Fatalf("parseFrame returned %v", err)
 	}
@@ -225,7 +225,7 @@ func TestFrameRoundTrip(t *testing.T) {
 // Framing hands out views into the read buffer, like the HTTP/1.1 side.
 func TestFrameParsingAllocatesNothing(t *testing.T) {
 	raw := frame(frameData, flagEndStream, 1, []byte("payload"))
-	cfg := H2Config{}.withDefaults()
+	cfg := H2Config{}.mustResolve()
 	var sink h2Frame
 	allocs := testing.AllocsPerRun(200, func() {
 		sink, _, _ = parseFrame(raw, cfg)

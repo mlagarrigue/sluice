@@ -2745,13 +2745,13 @@ func TestH2ConfigFollowsConfig(t *testing.T) {
 // from the other changes nothing. The test that would catch a default edited
 // on one side only.
 func TestH2ConfigDefaultsFollowConfig(t *testing.T) {
-	cfg := Config{}.withDefaults()
+	cfg := Config{}.mustResolve()
 	for _, h2 := range []struct {
 		name string
 		cfg  H2Config
 	}{
-		{"empty H2Config", H2Config{}.withDefaults()},
-		{"derived from Config", h2ConfigOf(cfg).withDefaults()},
+		{"empty H2Config", H2Config{}.mustResolve()},
+		{"derived from Config", h2ConfigOf(cfg).mustResolve()},
 	} {
 		want := H2Config{
 			MaxHeaderBlockBytes:  cfg.MaxHeaderBytes,

@@ -206,7 +206,7 @@
 // takes a batch of complete requests, and an element that is not complete is
 // not an element. Every limit is a number the caller sets in [Config]; none
 // of them has a value that suits every deployment, so none has a default
-// that pretends otherwise beyond the modest ones [Config.withDefaults] fills
+// that pretends otherwise beyond the modest ones [Config.resolve] fills
 // in.
 package httpstream
 
@@ -278,7 +278,9 @@ var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w
 // Every bound is mandatory and none is a required parameter: the zero value
 // of each field is the default named in its comment, chosen modest rather
 // than generous, so that an empty Config is a bounded server and a
-// deployment that needs more says so. A field that one protocol has no use
+// deployment that needs more says so. Zero is the only value that means
+// something else: a negative bound is refused, with an error naming the
+// field, by every function that takes a Config. A field that one protocol has no use
 // for says which protocols read it; the bounds HTTP/2 alone has live in
 // [H2Config], and [Serve] derives that from this one so that a bound the two
 // share is set once. See docs/design/adr/0018.
@@ -414,6 +416,15 @@ type Config struct {
 	// closed at once and do not spend it. See docs/design/adr/0017.
 	ShutdownGrace time.Duration
 
+	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side
+	// already shut, reads and drops what the client still sends before the
+	// socket is closed — so that the close does not turn the response still
+	// in flight into a reset. Zero means a second, or ReadTimeout if that is
+	// shorter: this is a tail being drained, not a request being waited for,
+	// and a client that neither closes nor stops is not owed more. HTTP/1.1
+	// only.
+	LingerTimeout time.Duration
+
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
 	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
@@ -427,7 +438,7 @@ type Config struct {
 }
 
 // The defaults a bound takes when its field is zero. Each is chosen here and
-// nowhere else: [Config.withDefaults] and [H2Config.withDefaults] both read
+// nowhere else: [Config.resolve] and [H2Config.resolve] both read
 // these for the bounds the two configurations share, so that a server run
 // through [Serve] and one run through [ServeH2] on an empty configuration
 // are bounded alike (docs/design/adr/0018).
@@ -440,39 +451,47 @@ const (
 	defaultWriteTimeout   = 10 * time.Second
 )
 
-func (c Config) withDefaults() Config {
-	if c.MaxRequestLineBytes <= 0 {
-		c.MaxRequestLineBytes = 8 << 10
+// resolve returns c with every zero bound replaced by its default, or an
+// error naming each field whose value is out of range. Zero is the one value
+// that stands for another: a negative bound is the caller's mistake, said at
+// start rather than quietly turned into the default (docs/design/adr/0018).
+func (c Config) resolve() (Config, error) {
+	err := errors.Join(
+		orDefault("Config.MaxRequestLineBytes", &c.MaxRequestLineBytes, 8<<10),
+		orDefault("Config.MaxHeaderBytes", &c.MaxHeaderBytes, defaultMaxHeaderBytes),
+		orDefault("Config.MaxHeaders", &c.MaxHeaders, defaultMaxHeaders),
+		orDefault("Config.MaxBodyBytes", &c.MaxBodyBytes, defaultMaxBodyBytes),
+		orDefault("Config.MaxRequestsPerBatch", &c.MaxRequestsPerBatch, 64),
+		orDefault("Config.MaxConcurrentStreams", &c.MaxConcurrentStreams, defaultMaxConcurrency),
+		orDefault("Config.MaxRequestsPerConn", &c.MaxRequestsPerConn, 1024),
+		orDefault("Config.IdleTimeout", &c.IdleTimeout, defaultIdleTimeout),
+		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
+		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
+		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
+	)
+	if c.MaxConns < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
 	}
-	if c.MaxHeaderBytes <= 0 {
-		c.MaxHeaderBytes = defaultMaxHeaderBytes
+	if c.LingerTimeout < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.LingerTimeout %v is negative — zero means a second, or ReadTimeout if shorter", c.LingerTimeout))
 	}
-	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = defaultMaxHeaders
+	if err != nil {
+		return Config{}, err
 	}
-	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = defaultMaxBodyBytes
+	if c.LingerTimeout == 0 {
+		c.LingerTimeout = min(c.ReadTimeout, time.Second)
 	}
-	if c.MaxRequestsPerBatch <= 0 {
-		c.MaxRequestsPerBatch = 64
+	return c, nil
+}
+
+// orDefault sets *v to def when it is zero and refuses it when it is
+// negative, naming the field, its value and what zero would have meant.
+func orDefault[T int | time.Duration](field string, v *T, def T) error {
+	switch {
+	case *v < 0:
+		return fmt.Errorf("httpstream: %s %v is negative — zero means the default, %v", field, *v, def)
+	case *v == 0:
+		*v = def
 	}
-	if c.MaxConcurrentStreams <= 0 {
-		c.MaxConcurrentStreams = defaultMaxConcurrency
-	}
-	if c.MaxRequestsPerConn <= 0 {
-		c.MaxRequestsPerConn = 1024
-	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = defaultIdleTimeout
-	}
-	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = defaultReadTimeout
-	}
-	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = defaultWriteTimeout
-	}
-	if c.ShutdownGrace <= 0 {
-		c.ShutdownGrace = 5 * time.Second
-	}
-	return c
+	return nil
 }

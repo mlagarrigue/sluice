@@ -162,9 +162,8 @@ const uniKindUnknown = -2
 // the assembler driven without one.
 const maxUniStreams = 32
 
-// newH3Assembler returns an assembler bounded by cfg.
+// newH3Assembler returns an assembler bounded by cfg, which is resolved.
 func newH3Assembler(cfg Config) *h3Assembler {
-	cfg = cfg.withDefaults()
 	return &h3Assembler{
 		cfg:     cfg,
 		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),

@@ -95,7 +95,7 @@ func BenchmarkWriteBatch(b *testing.B) {
 		keepAlive []byte
 	}{
 		{"plain", nil},
-		{"keep-alive", keepAliveField(Config{}.withDefaults())},
+		{"keep-alive", keepAliveField(Config{}.mustResolve())},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			b.ReportAllocs()

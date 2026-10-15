@@ -78,7 +78,7 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 // before this layer sees them. No pipelining to ask for, no multiplexing to
 // design around — the datagram was always a batch.
 func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	var frames []quic.Frame
 	for i := range 4 {
 		id := uint64(4 * i) // client-initiated bidirectional
@@ -115,7 +115,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 // A QUIC stream is a byte stream, so a frame split across datagrams is
 // ordinary. The assembler must hold the remainder rather than refuse it.
 func TestH3FrameSplitAcrossDatagrams(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	whole := h3Request("POST", "/split")
 	cut := len(whole) / 2
 
@@ -141,7 +141,7 @@ func TestH3FrameSplitAcrossDatagrams(t *testing.T) {
 
 // A request with a body: HEADERS then DATA, ended by the stream's FIN.
 func TestH3AssemblesABody(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	stream := h3Request("POST", "/orders")
 	stream = appendH3Frame(stream, h3Data, []byte(`{"qty":2}`))
 
@@ -160,7 +160,7 @@ func TestH3AssemblesABody(t *testing.T) {
 // Unidirectional streams carry control, QPACK and push — never requests — so
 // they are skipped rather than misread.
 func TestH3IgnoresUnidirectionalStreams(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{
 		streamFrame(2, []byte{0x00}, false), // client-initiated unidirectional
 		streamFrame(3, []byte{0x00}, false), // server-initiated unidirectional
@@ -292,7 +292,7 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			stream := appendH3Frame(nil, h3Headers, appendQPACK(nil, tt.fields))
 			// A malformed request is one stream's failure, not the
 			// connection's: the peer is told on the stream it used, and
@@ -355,7 +355,7 @@ func TestH3IgnoresReservedFrameTypes(t *testing.T) {
 	stream := appendH3Frame(nil, 0x21, []byte("greasing"))
 	stream = append(stream, h3Request("GET", "/x")...)
 
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
 		t.Fatalf("a reserved frame type was refused: %v", err)
@@ -728,7 +728,7 @@ func TestH3RefusesABlockOfTooManyFields(t *testing.T) {
 	for i := range 70 {
 		fields = append(fields, Header{fmt.Appendf(nil, "x-f%d", i), []byte("v")})
 	}
-	a := newH3Assembler(Config{}) // default MaxHeaders: 64
+	a := testAssembler(Config{}) // default MaxHeaders: 64
 	stream := appendH3Frame(nil, h3Headers, appendQPACK(nil, fields))
 	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
@@ -788,7 +788,7 @@ func TestParseH3SettingsRefusesARepeatedIdentifier(t *testing.T) {
 
 // And over HTTP/3, closing the set: the same Response, streamed, on all three.
 func TestH3StreamedResponse(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	frames := []quic.Frame{streamFrame(0, h3Request("GET", "/export"), true)}
 
 	heads, bodies, _, err := serveH3Datagram(a, frames, func(b sluice.Batch[Request]) sluice.Batch[Response] {
@@ -861,7 +861,7 @@ func TestH3StreamedResponse(t *testing.T) {
 // regular list, so a handler had to know which transport it was talking to in
 // order to find the host — which is what taking a batch of requests was for.
 func TestH3DeliversTheAuthorityAsHost(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{
 		streamFrame(0, h3Request("GET", "/a"), true),
 	})
@@ -882,7 +882,7 @@ func TestH3DeliversTheAuthorityAsHost(t *testing.T) {
 // Two hops reading a different host out of one request is how a request is
 // routed somewhere it was not addressed (RFC 9114 §4.3.1).
 func TestH3RefusesHostDisagreeingWithAuthority(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	_, _, failed, err := a.Frames([]quic.Frame{
 		streamFrame(0, h3Request("GET", "/a", [2]string{"host", "other.test"}), true),
 	})
@@ -1085,7 +1085,7 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 // bytes plus what the assembler still retains, and a completed request's
 // body stays unreleased for the responder to settle.
 func TestH3AssemblerManualCreditBalances(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	released := make(map[uint64]uint64)
 	var releasedTotal uint64
 	a.Credit = func(id, n uint64) {
@@ -1305,7 +1305,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), Config{}.TransportParameters())
+		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), mustTransportParameters(Config{}))
 		if err != nil {
 			serverUp <- err
 			return
@@ -1561,7 +1561,7 @@ func TestQPACKMarksCredentialsNeverIndexed(t *testing.T) {
 // malformed message, whatever its type: a reserved GREASE type the assembler
 // would otherwise skip is refused with the same code as an oversized DATA.
 func TestH3OversizedGREASEFrameIsExcessiveLoad(t *testing.T) {
-	a := newH3Assembler(Config{MaxBodyBytes: 1 << 10})
+	a := testAssembler(Config{MaxBodyBytes: 1 << 10})
 	stream := quic.AppendVarint(nil, 0x21+0x1f) // a reserved frame type
 	stream = quic.AppendVarint(stream, 1<<20)
 	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, false)})

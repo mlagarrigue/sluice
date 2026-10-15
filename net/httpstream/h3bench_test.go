@@ -27,7 +27,7 @@ func BenchmarkH3Assemble(b *testing.B) {
 			// measured (29 allocs/op against 20 hoisted, at depth 1). A
 			// completed stream leaves no state behind, so feeding the same
 			// identifiers again assembles exactly as fresh ones would.
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			b.ReportAllocs()
 			for b.Loop() {
 				batch, _, failed, err := a.Frames(frames)

@@ -19,7 +19,7 @@ func req(lines ...string) []byte {
 
 func parse(t *testing.T, raw []byte) (Request, int, error) {
 	t.Helper()
-	req, n, _, err := parseRequest(raw, Config{}.withDefaults(), nil, nil)
+	req, n, _, err := parseRequest(raw, Config{}.mustResolve(), nil, nil)
 	return req, n, err
 }
 
@@ -194,7 +194,7 @@ func TestKeepAliveDefaultsPerVersion(t *testing.T) {
 func TestParseAllocatesNothing(t *testing.T) {
 	raw := req("POST /x HTTP/1.1", "Host: h", "Content-Length: 2")
 	raw = append(raw, "{}"...)
-	cfg := Config{}.withDefaults()
+	cfg := Config{}.mustResolve()
 
 	var sink Request
 	arena := make([]Header, 0, 16) // the reader's, reused across batches
@@ -348,7 +348,7 @@ func TestParseKeepsAnHTABInsideAHeaderValue(t *testing.T) {
 // endings and the blank line closing it.
 func TestRequestLineAndHeaderBoundsAreExact(t *testing.T) {
 	line := "GET /" + strings.Repeat("a", 20) + " HTTP/1.1"
-	cfg := Config{MaxRequestLineBytes: len(line)}.withDefaults()
+	cfg := Config{MaxRequestLineBytes: len(line)}.mustResolve()
 	raw := req(line, "Host: h")
 	if _, _, _, err := parseRequest(raw, cfg, nil, nil); err != nil {
 		t.Errorf("a request line of exactly MaxRequestLineBytes: %v", err)
@@ -365,7 +365,7 @@ func TestRequestLineAndHeaderBoundsAreExact(t *testing.T) {
 
 	headers := "Host: h\r\nX-A: " + strings.Repeat("b", 30) + "\r\n\r\n"
 	raw = append([]byte("GET / HTTP/1.1\r\n"), headers...)
-	cfg = Config{MaxHeaderBytes: len(headers)}.withDefaults()
+	cfg = Config{MaxHeaderBytes: len(headers)}.mustResolve()
 	if _, _, _, err := parseRequest(raw, cfg, nil, nil); err != nil {
 		t.Errorf("headers of exactly MaxHeaderBytes: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestRequestLineAndHeaderBoundsAreExact(t *testing.T) {
 // Trailers are bounded in count as headers are: a thousand one-byte trailer
 // fields fit any byte bound and still cost a parse each.
 func TestTrailerFieldsAreBoundedInCount(t *testing.T) {
-	cfg := Config{MaxHeaders: 4}.withDefaults()
+	cfg := Config{MaxHeaders: 4}.mustResolve()
 	trailers := func(n int) []byte {
 		return chunkedReq("0\r\n" + strings.Repeat("T: v\r\n", n) + "\r\n")
 	}
@@ -426,7 +426,7 @@ func (c *timeoutConn) Close() error                     { return nil }
 // prefix to the HTTP/1.1 reader waited a second IdleTimeout on it.
 func TestSilentConnectionIsWaitedOnOnce(t *testing.T) {
 	c := &timeoutConn{}
-	cfg := Config{}.withDefaults()
+	cfg := Config{}.mustResolve()
 	serveAny(t.Context(), c, nil, cfg, h2ConfigOf(cfg), func(b sluice.Batch[Request]) sluice.Batch[Response] {
 		t.Error("the handler ran for a connection that sent nothing")
 		return sluice.Batch[Response]{}

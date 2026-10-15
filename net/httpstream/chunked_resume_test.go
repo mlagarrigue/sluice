@@ -18,7 +18,7 @@ import (
 // is cheapest to see.
 func TestChunkedWalkResumesWhereItStopped(t *testing.T) {
 	raw := chunkedReq("5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n")
-	cfg := Config{}.withDefaults()
+	cfg := Config{}.mustResolve()
 	var progress chunkProgress
 	last := progress
 	for n := 1; n < len(raw); n++ {

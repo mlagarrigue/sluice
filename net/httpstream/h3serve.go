@@ -66,12 +66,17 @@ import (
 //
 // The connection must have negotiated "h3" (RFC 9114 §3.1): the server's
 // [crypto/tls.Config] announces it in NextProtos, and a connection that
-// settled on any other protocol is refused and closed rather than served.
+// settled on any other protocol is refused and closed rather than served,
+// as is any connection when [Config] refuses the configuration.
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
 	}
-	cfg = cfg.withDefaults()
+	cfg, err := cfg.resolve()
+	if err != nil {
+		_ = c.CloseWithError(h3InternalError)
+		return err
+	}
 
 	// The hand-off to the responder below is provably non-blocking only while
 	// the transport admits no more request streams than the channel can hold,
@@ -413,14 +418,26 @@ type h3Batch struct {
 // bound the layer offers. Any other parameters work too; below these
 // windows ServeH3 falls back to delivery-time crediting, bounded by the
 // assembler's caps, and the idle timeout is whatever those parameters say.
-func (c Config) TransportParameters() quic.TransportParameters {
-	c = c.withDefaults()
+//
+// It returns an error for a configuration [Config] refuses, and for a
+// MaxConcurrentStreams over the 4096 streams ServeH3 serves on one
+// connection: announced, that limit would have ServeH3 refuse every
+// connection built on these parameters.
+func (c Config) TransportParameters() (quic.TransportParameters, error) {
+	c, err := c.resolve()
+	if err != nil {
+		return quic.TransportParameters{}, err
+	}
+	if c.MaxConcurrentStreams > h3MaxServeStreams {
+		return quic.TransportParameters{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3 serves on one connection",
+			c.MaxConcurrentStreams, h3MaxServeStreams)
+	}
 	p := quic.DefaultParameters()
 	p.MaxIdleTimeout = c.IdleTimeout
 	p.InitialMaxStreamDataBidiRemote = uint64(c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
 	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack               //nolint:gosec // G115: positive config
-	p.InitialMaxStreamsBidi = min(uint64(c.MaxConcurrentStreams), h3MaxServeStreams)          //nolint:gosec // G115: positive config
-	return p
+	p.InitialMaxStreamsBidi = uint64(c.MaxConcurrentStreams)                                  //nolint:gosec // G115: positive config
+	return p, nil
 }
 
 // h3MaxServeStreams caps the stream limit ServeH3 will serve: the responder

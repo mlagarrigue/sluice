@@ -60,7 +60,11 @@ func httpstreamConfig(o options) httpstream.Config {
 // over the certificate its client trusts; run passes tlsConfig(o).
 func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *tls.Config) error {
 	cfg := httpstreamConfig(o)
-	ln, err := quic.NewListener(pc, tlsCfg, cfg.TransportParameters(), quic.ListenerConfig{})
+	params, err := cfg.TransportParameters()
+	if err != nil {
+		return err
+	}
+	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{})
 	if err != nil {
 		return err
 	}

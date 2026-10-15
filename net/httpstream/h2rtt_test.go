@@ -34,18 +34,11 @@ func TestH2UploadThroughputAtRTT(t *testing.T) {
 	}
 }
 
-// TestH2InitialWindowSizeIsBounded: a window the protocol cannot express is
-// lowered to the largest it can, before it reaches the wire, and a negative
-// one is the default.
+// TestH2InitialWindowSizeIsBounded: the largest window the protocol can
+// express reaches the wire as given; one larger is refused at start
+// (TestH2ConfigRefusesAnOutOfRangeValue).
 func TestH2InitialWindowSizeIsBounded(t *testing.T) {
-	if got := (H2Config{InitialWindowSize: 1 << 31}).withDefaults().InitialWindowSize; got != maxWindow {
-		t.Fatalf("1<<31 became %d, want %d", got, maxWindow)
-	}
-	if got := (H2Config{InitialWindowSize: -1}).withDefaults().InitialWindowSize; got != defaultInitialWindow {
-		t.Fatalf("-1 became %d, want %d", got, defaultInitialWindow)
-	}
-
-	addr, _ := serveH2(t, H2Config{InitialWindowSize: 1 << 31}, echoTarget)
+	addr, _ := serveH2(t, H2Config{InitialWindowSize: maxWindow}, echoTarget)
 	c := dialH2(t, addr)
 	c.pump(func() bool { return len(c.settings) > 0 })
 	if got := c.settings[settingInitialWindowSize]; got != maxWindow {
@@ -66,7 +59,7 @@ func TestH2ConnWindowFollowsStreams(t *testing.T) {
 		{100, 1 << 20, 100 << 20},
 		{100, 1 << 30, maxWindow},
 	} {
-		cfg := H2Config{MaxConcurrentStreams: tc.streams, InitialWindowSize: tc.window}.withDefaults()
+		cfg := H2Config{MaxConcurrentStreams: tc.streams, InitialWindowSize: tc.window}.mustResolve()
 		if got := connWindow(cfg); got != tc.want {
 			t.Errorf("streams=%d window=%d: connection window %d, want %d", tc.streams, tc.window, got, tc.want)
 		}

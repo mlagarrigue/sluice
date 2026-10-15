@@ -85,7 +85,7 @@ func TestH2CookieCrumbsAreJoined(t *testing.T) {
 // byte: two cookie field lines in the QPACK block, one field out.
 func TestH3CookieCrumbsAreJoined(t *testing.T) {
 	echo := &cookieEcho{}
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	seventy, joined := crumbs(70)
 	frames := []quic.Frame{
 		streamFrame(0, h3Request("GET", "/", [2]string{"cookie", "theme=dark"}, [2]string{"cookie", "session=SECRET"}), true),

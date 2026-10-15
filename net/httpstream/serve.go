@@ -101,12 +101,23 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // listener the same preface sniff still picks the protocol — Serve does not
 // read the negotiated ALPN — so a client that negotiated h2 and sends the
 // preface is served HTTP/2, and one that did not is served HTTP/1.1.
+//
+// A configuration [Config] refuses is returned as an error before the
+// listener is read.
 func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: Serve requires a handler")
 	}
-	cfg = cfg.withDefaults()
-	h2cfg := h2ConfigOf(cfg)
+	cfg, err := cfg.resolve()
+	if err != nil {
+		return err
+	}
+	// Every field h2ConfigOf copies has just been resolved, so this cannot
+	// fail; it fills in what HTTP/2 alone has.
+	h2cfg, err := h2ConfigOf(cfg).resolve()
+	if err != nil {
+		return err
+	}
 
 	var wg sync.WaitGroup
 	live := newConnSet(cfg.MaxConns)
@@ -390,9 +401,7 @@ func serveConn(c *prefixConn, st *connState, cfg Config, handle Handler) {
 // the write side is closed first, which is the client's EOF, and whatever
 // it still sends is read and dropped until it closes in turn or a short
 // deadline passes; the caller's Close then finds the socket empty. The
-// deadline is bounded to a second whatever ReadTimeout says: this is not a
-// request being waited for, it is a tail being drained, and a client that
-// neither closes nor stops is not owed more than that. A connection that
+// deadline is [Config.LingerTimeout]. A connection that
 // cannot half-close (a pipe, a wrapper without CloseWrite) is closed in one
 // stage as before.
 func tearDown(c *prefixConn, cfg Config) {
@@ -400,7 +409,7 @@ func tearDown(c *prefixConn, cfg Config) {
 	if !ok || cw.CloseWrite() != nil {
 		return
 	}
-	if err := c.SetReadDeadline(time.Now().Add(min(cfg.ReadTimeout, time.Second))); err != nil {
+	if err := c.SetReadDeadline(time.Now().Add(cfg.LingerTimeout)); err != nil {
 		return
 	}
 	var sink [4 << 10]byte

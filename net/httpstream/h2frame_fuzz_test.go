@@ -14,7 +14,7 @@ func FuzzParseFrame(f *testing.F) {
 	f.Add([]byte{0xff, 0xff, 0xff, 0x00, 0x00, 0, 0, 0, 1})
 	f.Add([]byte{})
 
-	cfg := H2Config{}.withDefaults()
+	cfg := H2Config{}.mustResolve()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fr, n, err := parseFrame(data, cfg)
 		if err != nil {
