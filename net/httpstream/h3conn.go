@@ -932,7 +932,12 @@ func (a *h3Assembler) rawStreamBound() int {
 // datagrams is ordinary rather than an error.
 func (a *h3Assembler) drain(st *h3Stream) error {
 	frames, rest, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
-	if err != nil {
+	// A frame over the bound leaves rest at its start. A DATA frame there is
+	// judged below, after the frames ahead of it, as a body over
+	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
+	// says so before any of the payload is buffered. Any other type keeps the
+	// refusal parseH3Frames gave it.
+	if typ, _, e := quic.Varint(rest); err != nil && (e != nil || typ != h3Data) {
 		return err
 	}
 	a.frames = frames
@@ -1032,15 +1037,28 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		}
 	}
 	// What is left is the start of a frame that has not all arrived, kept at
-	// the front for the next datagram — unless it is a HEADERS frame already
-	// declared over the header bound, refused on the declaration rather than
-	// after a near-MaxBodyBytes buffer has been parked waiting for it.
+	// the front for the next datagram — unless its declaration already
+	// refuses it: a HEADERS frame over the header bound, or a DATA frame that
+	// would take the body past MaxBodyBytes, refused before a buffer near
+	// that size has been parked waiting for the payload. RFC 9114 §4.1 lets
+	// the server answer before the request has all arrived.
 	if typ, after, e := quic.Varint(rest); e == nil {
-		if length, _, e2 := quic.Varint(after); e2 == nil &&
-			typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes) { //nolint:gosec // G115: positive config, set by withDefaults
-			return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
-				ErrTooLarge, length, a.cfg.MaxHeaderBytes)
+		if length, _, e2 := quic.Varint(after); e2 == nil {
+			switch {
+			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
+				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
+					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
+			case typ == h3Data && !st.gotHead:
+				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
+			case typ == h3Data && st.gotTrailers:
+				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
+			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by withDefaults
+				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+			}
 		}
+	}
+	if err != nil {
+		return err // unreachable: a DATA frame over the bound is refused above
 	}
 	st.buf = append(st.buf[:0], rest...)
 	return nil

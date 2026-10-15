@@ -57,6 +57,11 @@ type h3Frame struct {
 // the remainder comes back rather than being an error, and the caller keeps
 // it for the next arrival. That is the difference from the HTTP/2 layer,
 // where a frame is whole or the connection is lost.
+//
+// A frame declared over maxFrame is refused on its declaration, with the
+// frames ahead of it returned and rest starting at it: a request stream
+// answers an oversized DATA frame with a 413 once the frames before it — its
+// HEADERS — are read, rather than with the protocol error.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, err error) {
 	for len(buf) > 0 {
 		typ, after, err := quic.Varint(buf)
@@ -83,7 +88,7 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			// peer asking for more than it may, whatever its type — a GREASE
 			// frame included — which a request stream answers with
 			// H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.
-			return dst, nil, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
+			return dst, buf, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
 		}
 		if length > uint64(len(after)) {
 			return dst, buf, nil // the payload has not all arrived

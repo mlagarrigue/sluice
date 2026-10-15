@@ -475,6 +475,15 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			req = appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
 			return appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
 		}(), "413"},
+		{"one DATA frame declared over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func() []byte {
+			// The frame's declared length is the whole refusal: a few bytes
+			// of its payload follow, the rest never does. This used to end
+			// the stream with H3_EXCESSIVE_LOAD, where h1 and h2 answer 413.
+			req := h3Request("POST", "/x")
+			req = quic.AppendVarint(req, h3Data)
+			req = quic.AppendVarint(req, 1<<20)
+			return append(req, "bbbb"...)
+		}(), "413"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
