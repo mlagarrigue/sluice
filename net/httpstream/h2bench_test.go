@@ -20,7 +20,8 @@ func newBenchH2Server(cfg H2Config) *h2Server {
 		handler:  func(b sluice.Batch[Request]) sluice.Batch[Response] { return sluice.Batch[Response]{} },
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
 		streams:  make(map[uint32]*h2Stream),
-		recvWind: connRecvWindow,
+		connWind: connWindow(cfg),
+		recvWind: connWindow(cfg),
 		w:        newH2Writer(&memConn{}, cfg),
 	}
 }
@@ -36,7 +37,7 @@ func resetBenchH2Server(s *h2Server) {
 	s.inFlight.Store(0)
 	s.lastID = 0
 	s.closedRing = s.closedRing[:0]
-	s.recvWind = connRecvWindow
+	s.recvWind = s.connWind
 	s.assembling = 0
 	s.resets = 0
 	s.served = 0

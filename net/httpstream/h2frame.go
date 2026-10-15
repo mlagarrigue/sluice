@@ -138,6 +138,32 @@ type H2Config struct {
 	// the same order as one window's worth of honest traffic.
 	MaxBodyBytes int
 
+	// InitialWindowSize is the flow-control window this server grants each
+	// request stream, advertised as SETTINGS_INITIAL_WINDOW_SIZE and topped
+	// back up as the body is consumed. Zero means 65535, the protocol's own
+	// initial value; a value over 2^31-1 — the largest a window can be (RFC
+	// 9113 §6.5.2) — is lowered to it rather than advertised as a setting the
+	// peer must refuse.
+	//
+	// The window is what a client may have in flight on one stream before it
+	// hears back, so on a link with latency it is the ceiling on an upload's
+	// throughput: 65535 bytes per round trip is about 0.65 MB/s at 100 ms of
+	// RTT, whatever the link carries. The test behind this field moves a
+	// 4 MiB body over a proxy that adds 100 ms of round trip; a window of
+	// 1 MiB carried it eleven times faster than the default on that bench
+	// (0.48 MB/s against 5.5 MB/s, h2rtt_test.go).
+	//
+	// What it costs: a client may send the whole window before this end has
+	// read any of it, so the window is memory the peer can make this side
+	// hold, per stream. It is bounded above by MaxBodyBytes — a body over
+	// that bound is refused whatever the window granted — and across the
+	// connection by the aggregate 4×MaxBodyBytes bound, so a window larger
+	// than MaxBodyBytes only lets the peer hit the 413 sooner. The
+	// connection-level window follows this one: it is raised to
+	// MaxConcurrentStreams times the stream window, capped at 2^31-1, so that
+	// the connection never queues what the streams alone would admit.
+	InitialWindowSize int
+
 	// MaxConcurrentStreams bounds how many requests one connection may have
 	// open or unanswered at once, and is what this server advertises as
 	// SETTINGS_MAX_CONCURRENT_STREAMS. Zero means 100.
@@ -240,6 +266,15 @@ func (c H2Config) withDefaults() H2Config {
 	}
 	if c.MaxConcurrentStreams <= 0 {
 		c.MaxConcurrentStreams = defaultMaxConcurrency
+	}
+	if c.InitialWindowSize <= 0 {
+		c.InitialWindowSize = defaultInitialWindow
+	}
+	if c.InitialWindowSize > maxWindow {
+		// Lowered, as MaxFrameSize is: §6.5.2 makes a larger value a
+		// FLOW_CONTROL_ERROR, so honouring it would be ending every
+		// connection at its first SETTINGS.
+		c.InitialWindowSize = maxWindow
 	}
 	if c.MaxPendingControlBytes <= 0 {
 		c.MaxPendingControlBytes = 16 << 10

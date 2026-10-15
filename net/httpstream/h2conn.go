@@ -72,7 +72,8 @@ const (
 	defaultInitialWindow = 65535
 )
 
-// connRecvWindow is the connection-level receive window this server grants.
+// connRecvWindow is the floor of the connection-level receive window this
+// server grants; connWindow computes the window itself.
 //
 // The protocol starts it at 65535, which is also where every stream starts —
 // so a connection with two uploads on it runs out of connection credit before
@@ -81,6 +82,15 @@ const (
 // of the connection, puts the pacing back where it belongs: a stream's own
 // window bounds that stream, and the connection's bounds the sum.
 const connRecvWindow = 1 << 20
+
+// connWindow is the connection-level receive window for cfg: enough for every
+// admitted stream to spend its whole window at once, so that the connection's
+// credit never binds before the streams' own does, and never below the floor
+// the default configuration always granted.
+func connWindow(cfg H2Config) int32 {
+	sum := min(int64(cfg.MaxConcurrentStreams)*int64(cfg.InitialWindowSize), maxWindow)
+	return int32(max(sum, connRecvWindow)) //nolint:gosec // G115: capped at maxWindow
+}
 
 // streamError is a failure RFC 9113 §5.4.2 ends one stream for rather than the
 // connection.
@@ -234,7 +244,10 @@ type h2Server struct {
 	// first. See closeStream.
 	closedRing []uint32
 
-	recvWind int32 // the connection window we have granted and not topped up
+	// connWind is the connection window this end grants, connWindow(cfg);
+	// recvWind is how much of it the peer has not yet spent.
+	connWind int32
+	recvWind int32
 	// assembling is the sum of the bodies still being assembled across all
 	// open streams — what the aggregate 4×MaxBodyBytes bound (see
 	// [H2Config.MaxBodyBytes]) is measured against. Windows are replenished
@@ -352,7 +365,8 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg H2Config, h
 		handler:  handler,
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
 		streams:  make(map[uint32]*h2Stream),
-		recvWind: connRecvWindow,
+		connWind: connWindow(cfg),
+		recvWind: connWindow(cfg),
 		w:        newH2Writer(c, cfg),
 	}
 	if st == nil {
@@ -520,6 +534,7 @@ func (s *h2Server) hello() error {
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
 		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},    //nolint:gosec // G115: bounded by withDefaults
+		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)},   //nolint:gosec // G115: same
 		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},             //nolint:gosec // G115: same
 		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBlockBytes)}, //nolint:gosec // G115: same
 	}
@@ -533,7 +548,7 @@ func (s *h2Server) hello() error {
 	// And the connection window this end grants, which SETTINGS cannot carry:
 	// SETTINGS_INITIAL_WINDOW_SIZE is per stream, and the connection's is only
 	// ever moved by WINDOW_UPDATE.
-	return s.w.control32(frameWindowUpdate, 0, connRecvWindow-defaultInitialWindow)
+	return s.w.control32(frameWindowUpdate, 0, uint32(s.connWind-defaultInitialWindow)) //nolint:gosec // G115: connWind is at least connRecvWindow
 }
 
 // consume folds a batch of frames into stream state and returns the requests
@@ -1057,9 +1072,10 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	last := f.Flags&flagEndStream != 0
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
-	if !last && st.recvWind < defaultInitialWindow/2 {
-		inc := defaultInitialWindow - st.recvWind
-		st.recvWind = defaultInitialWindow
+	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by withDefaults
+	if !last && st.recvWind < initial/2 {
+		inc := initial - st.recvWind
+		st.recvWind = initial
 		if err := s.w.control32(frameWindowUpdate, st.id, uint32(inc)); err != nil { //nolint:gosec // G115: positive by construction
 			return nil, err
 		}
@@ -1084,11 +1100,11 @@ func (s *h2Server) consumeConnWindow(f h2Frame) error {
 			ErrH2Protocol, errFlowControl, used, s.recvWind)
 	}
 	s.recvWind -= used
-	if s.recvWind >= connRecvWindow/2 {
+	if s.recvWind >= s.connWind/2 {
 		return nil
 	}
-	inc := connRecvWindow - s.recvWind
-	s.recvWind = connRecvWindow
+	inc := s.connWind - s.recvWind
+	s.recvWind = s.connWind
 	return s.w.control32(frameWindowUpdate, 0, uint32(inc)) //nolint:gosec // G115: positive by construction
 }
 
@@ -1161,7 +1177,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 			return nil, err
 		}
 		s.lastID = id
-		st := &h2Stream{id: id, state: stateClosed, declared: -1, recvWind: defaultInitialWindow}
+		st := &h2Stream{id: id, state: stateClosed, declared: -1, recvWind: int32(s.cfg.InitialWindowSize)} //nolint:gosec // G115: capped by withDefaults
 		s.streams[id] = st
 		s.closedRing = append(s.closedRing, id)
 		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
@@ -1175,7 +1191,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 	}
 	s.lastID = id
 	st := &h2Stream{
-		id: id, declared: -1, recvWind: defaultInitialWindow,
+		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by withDefaults
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
 	s.streams[id] = st
