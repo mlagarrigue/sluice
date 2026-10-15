@@ -482,7 +482,7 @@ func (s *Stream) StopSending(code uint64) error {
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	frame := appendFrame(nil, frameStopSending, s.id, code)
+	frame := appendFrame(nil, FrameStopSending, s.id, code)
 	return c.sendPacketLocked(spaceApplication, frame, sendOpts{})
 }
 
@@ -530,18 +530,20 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 
 // onStopSending records the peer's refusal to keep reading: this end's
 // sending direction is abandoned and answered with RESET_STREAM, as §3.5
-// requires. Runs on the read loop, under conn.mu.
-func (s *Stream) onStopSendingLocked(code uint64) error {
+// requires. stopped reports that this STOP_SENDING is what abandoned it — not
+// a retransmission, nor one crossing this end's own reset — the one the
+// application is told of. Runs on the read loop, under conn.mu.
+func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	if s.writeReset {
-		return nil
+		return false, nil
 	}
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
-	err := s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	s.conn.maybeRemoveLocked(s)
 	s.conn.cond.Broadcast()
-	return err
+	return true, err
 }
 
 // WasReset reports whether the stream was abandoned — by either end, in
@@ -863,7 +865,12 @@ func (c *Conn) returnStreamSlotLocked(uni bool) {
 // the stream exactly where the previous delivery ended, and Fin marks the
 // delta that completes the stream. Frames with Type FrameResetStream report
 // a peer that abandoned the stream; whatever was assembled from it should be
-// forgotten. Everything borrows the connection's buffers and is valid only
+// forgotten. A frame with Type FrameStopSending reports a peer that stopped
+// reading a stream this end sends on: the transport has already abandoned
+// the sending side and answered RESET_STREAM (RFC 9000 §3.5), so further
+// writes fail, and [Stream.WasReset] has the peer's code. It comes once per
+// stream, in the packet's order, even in a packet that carries nothing else.
+// Everything borrows the connection's buffers and is valid only
 // for the call — the batch contract.
 //
 // # Registering switches the connection to batch mode
@@ -875,7 +882,8 @@ func (c *Conn) returnStreamSlotLocked(uni bool) {
 // The switch is one-way, and mixing the modes is not supported: register
 // before consuming anything, which is what ServeH3 does. A caller that
 // Reads first and registers after gets what no Read took, per stream, as
-// one delta each — arrival order across streams and resets are lost then.
+// one delta each — arrival order across streams, resets and STOP_SENDING
+// are lost then.
 //
 // # What arrived first is not lost
 //

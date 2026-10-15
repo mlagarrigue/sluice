@@ -235,15 +235,18 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	c.OnStreamFrames(func(frames []quic.Frame) error {
 		// RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender
 		// close the control stream", and a closed one is a connection error
-		// of type H3_CLOSED_CRITICAL_STREAM. The transport answers a
-		// STOP_SENDING on stream 3 by itself (RESET_STREAM, RFC 9000 §3.5)
-		// and hands no frame up for it, so the refusal is read off the
-		// stream here, at the next datagram that carries stream frames —
-		// a client that sends only the STOP_SENDING is caught when it next
-		// speaks, which for a client is its next request.
-		if code, reset := control.WasReset(); reset {
-			_ = c.CloseWithError(h3ClosedCriticalStream)
-			return controlStopped(code)
+		// of type H3_CLOSED_CRITICAL_STREAM. The transport has answered the
+		// STOP_SENDING already (RESET_STREAM, RFC 9000 §3.5) and hands it up
+		// in the datagram that carried it; the connection ends before any
+		// request beside it is admitted. A STOP_SENDING on a request stream
+		// needs nothing here: the transport abandoned the response, whose
+		// writer fails on its next write.
+		for _, f := range frames {
+			if f.Type == quic.FrameStopSending && f.StreamID == control.ID() {
+				code, _ := control.WasReset()
+				_ = c.CloseWithError(h3ClosedCriticalStream)
+				return controlStopped(code)
+			}
 		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own
 		// loop: a separate pass here used to run every Forget before the

@@ -9,7 +9,7 @@ const (
 	framePing               = 0x01
 	frameACK                = 0x02 // 0x02..0x03, the high bit adding ECN counts
 	FrameResetStream        = 0x04
-	frameStopSending        = 0x05
+	FrameStopSending        = 0x05
 	frameCrypto             = 0x06
 	frameNewToken           = 0x07
 	FrameStream             = 0x08 // 0x08..0x0f, the low bits being OFF/LEN/FIN
@@ -40,8 +40,8 @@ const (
 //
 // A caller meets frames through [Conn.OnStreamFrames], which delivers the
 // stream frames of a packet together: Type is then [FrameStream] (test it
-// with [Frame.IsStream]) or [FrameResetStream], and StreamID, Data and Fin
-// are what it carries. The transport's own frames are parsed into the same
+// with [Frame.IsStream]), [FrameResetStream] or [FrameStopSending], and
+// StreamID, Data and Fin are what it carries. The transport's own frames are parsed into the same
 // type but never leave it, and their fields are not exported.
 type Frame struct {
 	Type byte
@@ -141,7 +141,7 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		rest, err = takeVarints(rest, &f.StreamID, &f.value, &f.offset)
 		return f, rest, err
 
-	case f.Type == frameStopSending:
+	case f.Type == FrameStopSending:
 		rest, err = takeVarints(rest, &f.StreamID, &f.value)
 		return f, rest, err
 

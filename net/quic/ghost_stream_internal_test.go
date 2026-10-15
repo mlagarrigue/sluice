@@ -26,7 +26,7 @@ func lateFrames(id uint64) map[string][]byte {
 	return map[string][]byte{
 		"STREAM":          streamFrame(nil, id, 0, "req", true),
 		"MAX_STREAM_DATA": appendFrame(nil, frameMaxStreamData, id, 1<<20),
-		"STOP_SENDING":    appendFrame(nil, frameStopSending, id, 0),
+		"STOP_SENDING":    appendFrame(nil, FrameStopSending, id, 0),
 		"RESET_STREAM":    appendFrame(nil, FrameResetStream, id, 0, 3),
 	}
 }
@@ -55,7 +55,7 @@ func TestGhostStream(t *testing.T) {
 		// The peer's request with its FIN, then its STOP_SENDING: both
 		// directions end in one packet and the stream leaves the table.
 		payload := streamFrame(nil, id, 0, "req", true)
-		payload = appendFrame(payload, frameStopSending, id, 0)
+		payload = appendFrame(payload, FrameStopSending, id, 0)
 		if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}

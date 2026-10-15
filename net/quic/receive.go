@@ -829,7 +829,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
 			ended = append(ended, s)
 
-		case f.Type == frameStopSending:
+		case f.Type == FrameStopSending:
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
 				return eliciting, err
@@ -838,10 +838,18 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 				continue
 			}
 			c.mu.Lock()
-			sendErr := s.onStopSendingLocked(f.value)
+			stopped, sendErr := s.onStopSendingLocked(f.value)
 			c.mu.Unlock()
 			if sendErr != nil && !errors.Is(sendErr, errClosed) {
 				return eliciting, sendErr
+			}
+			// Handed up even when it is all the packet carries: an
+			// application whose stream the peer refuses to read — HTTP/3's
+			// control stream, which RFC 9114 §6.2.1 makes a connection
+			// error — used to learn of it only at the next datagram that
+			// carried stream data.
+			if stopped {
+				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
 			}
 
 		case f.Type == frameMaxData:

@@ -73,10 +73,15 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 
 // RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender close the
 // control stream", and a control stream closed at any point is a connection
-// error of type H3_CLOSED_CRITICAL_STREAM. The transport answers the
-// STOP_SENDING by itself and hands no frame up, so the server reads the
-// refusal off its stream 3 at the next datagram — here, the request that
-// follows. It used to serve that request and keep the connection.
+// error of type H3_CLOSED_CRITICAL_STREAM. The STOP_SENDING is the last
+// thing the client sends: the server used to learn of it only at the next
+// datagram carrying stream frames, so the connection stayed open until the
+// client spoke again.
+//
+// The client stops the stream once it has seen it, as a client reading the
+// server's SETTINGS does: RFC 9000 §19.5 makes a STOP_SENDING that reaches
+// the server before ServeH3 opened stream 3 a STREAM_STATE_ERROR, which is
+// what this test used to race into one run in thirty.
 func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
 	conn, _, _ := startH3(t, quic.DefaultParameters(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
@@ -85,14 +90,22 @@ func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
 		}
 		return sluice.Batch[Response]{Items: res}
 	})
-	if err := conn.Stream(3).StopSending(h3NoError); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	control, err := conn.AcceptStream(ctx)
+	if err != nil {
+		t.Fatalf("waiting for the server's control stream: %v", err)
+	}
+	if control.ID() != 3 {
+		t.Fatalf("the server opened stream %d first, want its control stream 3", control.ID())
+	}
+	if err := control.StopSending(h3NoError); err != nil {
 		t.Fatalf("STOP_SENDING on the server's control stream: %v", err)
 	}
-	askH3(t, conn, h3Request("GET", "/after"))
 
 	select {
 	case <-conn.Done():
-	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("the connection stayed open after STOP_SENDING on the control stream")
 	}
 	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())

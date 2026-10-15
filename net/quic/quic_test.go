@@ -365,7 +365,7 @@ func TestFramesCarryTheirVarintFields(t *testing.T) {
 	reset = AppendVarint(reset, 0x10e) // application error code
 	reset = AppendVarint(reset, 4096)  // final size
 
-	stop := AppendVarint(nil, frameStopSending)
+	stop := AppendVarint(nil, FrameStopSending)
 	stop = AppendVarint(stop, 8)
 	stop = AppendVarint(stop, 0x10c)
 
@@ -385,7 +385,7 @@ func TestFramesCarryTheirVarintFields(t *testing.T) {
 	}
 	want := []Frame{
 		{Type: FrameResetStream, StreamID: 12, value: 0x10e, offset: 4096},
-		{Type: frameStopSending, StreamID: 8, value: 0x10c},
+		{Type: FrameStopSending, StreamID: 8, value: 0x10c},
 		{Type: frameMaxStreamData, StreamID: 16, value: 1 << 20},
 		{Type: frameMaxData, value: 1 << 22},
 	}

@@ -238,7 +238,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 
 	// Stream 3 is, from this client's side, the peer's unidirectional
 	// stream: this end never sends on it, so STOP_SENDING cannot name it.
-	payload := appendFrame(nil, frameStopSending, 3, 0)
+	payload := appendFrame(nil, FrameStopSending, 3, 0)
 	_, err = c.frames(spaceApplication, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportStreamState {
