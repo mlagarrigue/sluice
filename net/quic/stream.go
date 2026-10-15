@@ -355,6 +355,16 @@ func (s *Stream) CloseWrite() error {
 	return err
 }
 
+// WriteClose writes p and then the FIN, as Write followed by CloseWrite
+// does, in one call: the FIN rides the last STREAM frame of p, so a p that
+// fits one packet leaves as one datagram where the two calls send two. It
+// waits for credit as Write does and returns what Write returns; the FIN
+// goes only once all of p has, so an error leaves the stream open for
+// writing, as a failed Write does.
+func (s *Stream) WriteClose(p []byte) (int, error) {
+	return s.write(p, true)
+}
+
 func (s *Stream) write(p []byte, fin bool) (int, error) {
 	c := s.conn
 	c.mu.Lock()
