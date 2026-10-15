@@ -741,7 +741,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	if !a.controlSettings && len(u.buf) > 0 {
 		// §6.2.1: SETTINGS must be the control stream's very first frame.
-		// ParseH3Frames below skips reserved frame types, as §7.2.8 wants
+		// ParseH3Frames below skips GREASE frame types, as §7.2.8 wants
 		// everywhere else — so the first frame's type is read here, before
 		// the skip can hide a GREASE frame standing where SETTINGS has to be.
 		if typ, _, err := quic.Varint(u.buf); err == nil && typ != h3Settings {
@@ -752,7 +752,13 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	frames, rest, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
 	a.frames = frames
 	if err != nil {
-		return h3ConnectionError{Code: h3FrameError, Err: err}
+		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
+		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
+		code := uint64(h3FrameError)
+		if errors.Is(err, errH3FrameUnexpected) {
+			code = h3FrameUnexpected
+		}
+		return h3ConnectionError{Code: code, Err: err}
 	}
 	for _, fr := range frames {
 		if !a.controlSettings {

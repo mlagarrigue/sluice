@@ -67,6 +67,17 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 		if err != nil {
 			return dst, buf, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
+		if h3ReservedH2(typ) {
+			// RFC 9114 §7.2.8: the HTTP/2 frame types with no HTTP/3
+			// counterpart — PRIORITY, PING, WINDOW_UPDATE, CONTINUATION —
+			// "MUST NOT be sent, and their receipt MUST be treated as a
+			// connection error of type H3_FRAME_UNEXPECTED". Refused on the
+			// type alone, before the payload is waited for: there is nothing
+			// in it this layer would read. They used to be skipped with the
+			// GREASE types, which the same section wants ignored.
+			return dst, nil, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
+				errH3FrameUnexpected, typ)
+		}
 		if maxFrame > 0 && length > uint64(maxFrame) {
 			// ErrTooLarge as well as ErrH3Protocol: a frame too long to read is the
 			// peer asking for more than it may, whatever its type — a GREASE
@@ -77,9 +88,11 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 		if length > uint64(len(after)) {
 			return dst, buf, nil // the payload has not all arrived
 		}
-		// Reserved types exist to be ignored: RFC 9114 §7.2.8 has peers send
-		// them precisely so that a receiver which refuses the unknown is
-		// found out early. Refusing them is how a protocol ossifies.
+		// Unknown types exist to be ignored: RFC 9114 §7.2.8 has peers send
+		// GREASE types precisely so that a receiver which refuses the
+		// unknown is found out early. Refusing them is how a protocol
+		// ossifies. The one exception is the four above, which §7.2.8
+		// reserves by name.
 		if !h3Known(typ) {
 			buf = after[length:]
 			continue
@@ -95,6 +108,19 @@ func h3Known(typ uint64) bool {
 	case h3Data, h3Headers, h3CancelPush, h3Settings, h3GoAway, h3MaxPushID:
 		return true
 	case h3PushPromise:
+		return true
+	}
+	return false
+}
+
+// h3ReservedH2 reports a frame type RFC 9114 §11.2.1 registers as "Reserved"
+// because HTTP/2 used it for a frame HTTP/3 has no equivalent of: 0x02
+// PRIORITY, 0x06 PING, 0x08 WINDOW_UPDATE, 0x09 CONTINUATION. §7.2.8 makes
+// their receipt H3_FRAME_UNEXPECTED, as §7.2.4.1 does for the matching
+// setting identifiers walkH3Settings refuses.
+func h3ReservedH2(typ uint64) bool {
+	switch typ {
+	case 0x02, 0x06, 0x08, 0x09:
 		return true
 	}
 	return false
