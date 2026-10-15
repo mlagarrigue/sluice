@@ -133,10 +133,13 @@ func Scan[T, A any](s Stream[T], init A, f func(A, T) A) Stream[A] {
 //
 // Take stops the source as soon as it has n elements, so it terminates on an
 // infinite stream and is the bound to put in front of [Collect]. An n of zero
-// or less consumes nothing at all: the source is never touched.
+// consumes nothing at all: the source is never touched. A negative n panics.
 func Take[T any](s Stream[T], n int) Stream[T] {
+	if n < 0 {
+		panic(negativeArg{"Take n", n, "nothing"})
+	}
 	return func(yield func(Batch[T]) bool) {
-		if n <= 0 {
+		if n == 0 {
 			return
 		}
 		left := n
@@ -160,8 +163,8 @@ func Take[T any](s Stream[T], n int) Stream[T] {
 // Drop skips the first n elements and emits the rest.
 //
 // Like [Take] it counts elements, so it can start mid-batch; the first emitted
-// batch is then a slice of the upstream one. An n of zero or less passes
-// everything through.
+// batch is then a slice of the upstream one. An n of zero passes everything
+// through; a negative n panics.
 //
 // The skipped elements are still produced by the source — dropping is not
 // pushdown: the source produces them and this operator discards them. Where
@@ -170,6 +173,9 @@ func Take[T any](s Stream[T], n int) Stream[T] {
 // §3.4's sideways information passing and measured at ×6.9 on a scan that can
 // act on it.
 func Drop[T any](s Stream[T], n int) Stream[T] {
+	if n < 0 {
+		panic(negativeArg{"Drop n", n, "nothing dropped"})
+	}
 	return func(yield func(Batch[T]) bool) {
 		left := n
 		s(func(b Batch[T]) bool {

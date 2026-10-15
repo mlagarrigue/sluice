@@ -37,6 +37,7 @@ package sluice
 
 import (
 	"iter"
+	"strconv"
 
 	"github.com/mlagarrigue/sluice/internal/batch"
 )
@@ -83,12 +84,30 @@ func (b Batch[T]) Len() int { return len(b.Items) }
 // [Split].
 type Stream[T any] iter.Seq[Batch[T]]
 
+// negativeArg is the panic value of an operator handed a negative size or
+// count. It is a value rather than a formatted string so that the check costs
+// the operator nothing to inline: building the message would push the small
+// constructors over the inlining budget, and their closures would then escape
+// to the heap on every pipeline built.
+type negativeArg struct {
+	what string // the operator and its argument, as in "Coalesce size"
+	n    int
+	zero string // what zero means instead
+}
+
+func (e negativeArg) Error() string {
+	return "sluice: " + e.what + " " + strconv.Itoa(e.n) + " is negative — zero means " + e.zero
+}
+
 // Of builds a Stream from a slice, cut into batches of size elements.
 //
 // Batches share src's memory: they stay valid as long as src does. A size of
-// zero or less means [DefaultBatchSize].
+// zero means [DefaultBatchSize]; a negative size panics.
 func Of[T any](src []T, size int) Stream[T] {
-	if size <= 0 {
+	if size < 0 {
+		panic(negativeArg{"Of size", size, "DefaultBatchSize"})
+	}
+	if size == 0 {
 		size = DefaultBatchSize
 	}
 	return func(yield func(Batch[T]) bool) {

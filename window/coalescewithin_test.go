@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -400,3 +401,14 @@ func BenchmarkCoalesceWithinEmptyStream(b *testing.B) {
 // front keeps the goroutine baselines in this package from blaming a leak
 // on the runtime when that first cycle happens to land inside a test.
 func init() { runtime.GC() }
+
+// A negative size is a mistake, as in sluice.Coalesce: zero is the one way to
+// ask for the default.
+func TestCoalesceWithinNegativeSizePanics(t *testing.T) {
+	defer func() {
+		if msg := fmt.Sprint(recover()); !strings.Contains(msg, "CoalesceWithin") || !strings.Contains(msg, "-1") {
+			t.Errorf("panic = %q, want one naming CoalesceWithin and -1", msg)
+		}
+	}()
+	CoalesceWithin(sluice.Of([]int{1}, 0), -1, time.Second)
+}

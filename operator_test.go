@@ -126,7 +126,6 @@ func TestTake(t *testing.T) {
 		{"on a batch boundary", 4, []int{1, 2, 3, 4}},
 		{"more than the stream holds", 99, []int{1, 2, 3, 4, 5, 6}},
 		{"zero", 0, nil},
-		{"negative", -1, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,7 +217,6 @@ func TestDrop(t *testing.T) {
 		{"on a batch boundary", 4, []int{5, 6}},
 		{"more than the stream holds", 99, nil},
 		{"zero passes everything", 0, []int{1, 2, 3, 4, 5, 6}},
-		{"negative passes everything", -1, []int{1, 2, 3, 4, 5, 6}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

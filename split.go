@@ -126,9 +126,12 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 // chose, drains or releases the source and costs at most one pass; walking
 // away costs a goroutine.
 //
-// Split panics if route is nil.
+// Split panics if route is nil or n is negative; an n of zero returns nil.
 func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
-	if n <= 0 {
+	if n < 0 {
+		panic(negativeArg{"Split n", n, "no branches"})
+	}
+	if n == 0 {
 		return nil
 	}
 	if route == nil {
