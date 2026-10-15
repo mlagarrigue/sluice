@@ -126,6 +126,150 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 	return append(regular, Header{Name: hostFieldName, Value: authority}), nil
 }
 
+// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
+// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
+// — one function for both, because the two sections are the same rules and
+// the two protocols once held their own copies, which had drifted: a request
+// one refused and the other delivered to the handler. The rules exist because
+// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
+// is written.
+//
+// Errors wrap protocolErr; the caller maps them to its own stream error. The
+// regular fields are returned in fields' own storage, the pseudo-headers
+// dropped; declared is the content-length the head stated, or -1.
+func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
+	var method, path, scheme, authority []byte
+	regular := fields[:0]
+	declared = -1
+	seenRegular := false
+	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
+	for _, h := range fields {
+		// h.Name stays []byte throughout: binding string(h.Name) to a
+		// variable allocates per field (verified with -gcflags=-m), while a
+		// conversion feeding only a switch or comparison does not.
+		if len(h.Name) == 0 {
+			return req, 0, fmt.Errorf("%w: an empty field name", protocolErr)
+		}
+		if h.Name[0] == ':' {
+			if seenRegular {
+				return req, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, h.Name)
+			}
+			var dst *[]byte
+			switch string(h.Name) {
+			case ":method":
+				dst = &method
+			case ":path":
+				dst = &path
+			case ":scheme":
+				dst = &scheme
+			case ":authority":
+				dst = &authority
+			default:
+				return req, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, h.Name)
+			}
+			if *dst != nil {
+				return req, 0, fmt.Errorf("%w: %s appears twice", protocolErr, h.Name)
+			}
+			*dst = h.Value
+			continue
+		}
+		seenRegular = true
+		if !lowerASCII(h.Name) {
+			return req, 0, fmt.Errorf("%w: %q is not lowercase", protocolErr, h.Name)
+		}
+		// The h1 parser's octet rules, applied to what HPACK or QPACK decoded
+		// (RFC 9113 §8.2.1, RFC 9114 §4.1.2). Either can carry any byte, so
+		// without these a name with an embedded colon or a value with CR LF
+		// reaches the handler — and the first hop that re-serialises the
+		// request toward HTTP/1.1 turns that value into a second request.
+		if !isToken(h.Name) {
+			return req, 0, fmt.Errorf("%w: %q is not a header name", protocolErr, h.Name)
+		}
+		if !validFieldValue(h.Value) {
+			return req, 0, fmt.Errorf("%w: the value of %q holds a control character", protocolErr, h.Name)
+		}
+		switch string(h.Name) {
+		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+			// Connection-specific fields have no meaning here and are how
+			// one request becomes two HTTP/1.1 requests at the next hop.
+			return req, 0, fmt.Errorf("%w: the connection-specific field %q", protocolErr, h.Name)
+		case "host":
+			// The same refusal as an empty :authority below: a host that
+			// names nothing is malformed, not a request with an empty host.
+			if len(h.Value) == 0 {
+				return req, 0, fmt.Errorf("%w: an empty host", protocolErr)
+			}
+		case "te":
+			if string(h.Value) != "trailers" {
+				return req, 0, fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
+			}
+		case "content-length":
+			// Remembered for the end of the stream, where the DATA sum is
+			// known. A repeat is refused as the h1 parser refuses it: two
+			// lengths on one request is the smuggling family's opening move.
+			if declared >= 0 {
+				return req, 0, fmt.Errorf("%w: content-length appears twice", protocolErr)
+			}
+			n, err := parseContentLength(h.Value)
+			if err != nil {
+				return req, 0, fmt.Errorf("%w: content-length %q is not a length", protocolErr, h.Value)
+			}
+			declared = n
+		case "cookie":
+			// RFC 9113 §8.2.3, RFC 9114 §4.2.1: a client may split its
+			// cookie into crumbs, one field per pair, and they MUST be
+			// joined by "; " before a generic server application sees them
+			// — the handler here. Left apart, [Request.Get] returned the
+			// first pair alone and every session cookie behind it went
+			// missing on HTTP/2 and HTTP/3 only.
+			if cookie >= 0 {
+				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
+				cookieOwned = true
+				continue
+			}
+			cookie = len(regular)
+		}
+		regular = append(regular, h)
+	}
+	if method == nil || path == nil || scheme == nil {
+		return req, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
+	}
+	// Pseudo-header values compose the request line of any downstream
+	// HTTP/1.1 hop, which is why RFC 9113 §10.3 and RFC 9114 §10.3 ask for
+	// octet-level checks on them specifically: these are the same refusals
+	// the h1 request line makes.
+	if !isToken(method) {
+		return req, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
+	}
+	if !isToken(scheme) {
+		return req, 0, fmt.Errorf("%w: :scheme is not a token", protocolErr)
+	}
+	if len(path) == 0 || path[0] != '/' {
+		return req, 0, fmt.Errorf("%w: :path is not origin-form", protocolErr)
+	}
+	for _, c := range path {
+		if c <= 0x20 || c == 0x7f {
+			return req, 0, fmt.Errorf("%w: :path holds a control character", protocolErr)
+		}
+	}
+	for _, c := range authority {
+		if c <= 0x20 || c == 0x7f {
+			return req, 0, fmt.Errorf("%w: :authority holds a control character", protocolErr)
+		}
+	}
+	if authority != nil && len(authority) == 0 {
+		// RFC 9114 §4.3.1: an :authority present but empty names no host at
+		// all, and a handler routing on an empty host is a request that
+		// should have been refused as malformed.
+		return req, 0, fmt.Errorf("%w: an empty :authority", protocolErr)
+	}
+	regular, err = withAuthority(regular, authority, protocolErr)
+	if err != nil {
+		return req, 0, err
+	}
+	return Request{Method: method, Target: path, Headers: regular, KeepAlive: true}, declared, nil
+}
+
 // tchar is RFC 9110's token character set, which both a method and a header
 // name must be made of. Anything outside it is refused rather than
 // normalised: normalising is how two hops come to disagree.

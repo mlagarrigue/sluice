@@ -924,14 +924,15 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		return s.finish(st)
 	}
 
-	st.headers = fields
 	st.gotHead = true
-	if err := s.buildRequest(st); err != nil {
+	req, declared, err := buildRequest(fields, ErrH2Protocol)
+	if err != nil {
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
 		// costs that one.
 		return nil, streamError{id: st.id, code: errProtocolError, err: err}
 	}
+	st.headers, st.declared, st.req = req.Headers, declared, req
 	if st.endStream {
 		return s.finish(st)
 	}
@@ -1058,129 +1059,6 @@ func (s *h2Server) consumeConnWindow(f h2Frame) error {
 	inc := connRecvWindow - s.recvWind
 	s.recvWind = connRecvWindow
 	return s.w.control32(frameWindowUpdate, 0, uint32(inc)) //nolint:gosec // G115: positive by construction
-}
-
-// buildRequest turns decoded fields into a [Request], applying the rules
-// RFC 9113 §8.3 states — which exist because an HTTP/2 request that reaches an
-// HTTP/1.1 hop unchecked is how a smuggled request is written.
-func (s *h2Server) buildRequest(st *h2Stream) error {
-	var method, path, scheme, authority []byte
-	regular := st.headers[:0]
-	seenRegular := false
-	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
-	for _, h := range st.headers {
-		// h.Name stays []byte throughout: binding string(h.Name) to a
-		// variable allocates per field (verified with -gcflags=-m), while a
-		// conversion feeding only a switch or comparison does not.
-		if len(h.Name) == 0 {
-			return fmt.Errorf("%w: an empty header name", ErrH2Protocol)
-		}
-		if h.Name[0] == ':' {
-			if seenRegular {
-				return fmt.Errorf("%w: pseudo-header %s after a regular field", ErrH2Protocol, h.Name)
-			}
-			var dst *[]byte
-			switch string(h.Name) {
-			case ":method":
-				dst = &method
-			case ":path":
-				dst = &path
-			case ":scheme":
-				dst = &scheme
-			case ":authority":
-				dst = &authority
-			default:
-				return fmt.Errorf("%w: unknown pseudo-header %s", ErrH2Protocol, h.Name)
-			}
-			if *dst != nil {
-				return fmt.Errorf("%w: %s appears twice", ErrH2Protocol, h.Name)
-			}
-			*dst = h.Value
-			continue
-		}
-		seenRegular = true
-		if !lowerASCII(h.Name) {
-			return fmt.Errorf("%w: %q is not lowercase", ErrH2Protocol, h.Name)
-		}
-		// The h1 parser's octet rules, applied to what HPACK decoded
-		// (§8.2.1). HPACK can carry any byte, so without these a name with
-		// an embedded colon or a value with CR LF reaches the handler — and
-		// the first hop that re-serialises the request toward HTTP/1.1 turns
-		// that value into a second request.
-		if !isToken(h.Name) {
-			return fmt.Errorf("%w: %q is not a header name", ErrH2Protocol, h.Name)
-		}
-		if !validFieldValue(h.Value) {
-			return fmt.Errorf("%w: the value of %q holds a control character", ErrH2Protocol, h.Name)
-		}
-		// Connection-specific fields have no meaning here and are how an
-		// HTTP/2 request becomes two HTTP/1.1 requests at the next hop.
-		switch string(h.Name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
-			return fmt.Errorf("%w: the connection-specific field %q", ErrH2Protocol, h.Name)
-		case "te":
-			if string(h.Value) != "trailers" {
-				return fmt.Errorf("%w: TE may only be \"trailers\"", ErrH2Protocol)
-			}
-		case "content-length":
-			// Remembered for finish, where the DATA sum is known. A repeat
-			// is refused as the h1 parser refuses it: two lengths on one
-			// request is the smuggling family's opening move.
-			if st.declared >= 0 {
-				return fmt.Errorf("%w: content-length appears twice", ErrH2Protocol)
-			}
-			n, err := parseContentLength(h.Value)
-			if err != nil {
-				return err
-			}
-			st.declared = n
-		case "cookie":
-			// §8.2.3: a client may split its cookie into crumbs, one field
-			// per pair, and they MUST be joined by "; " before a generic
-			// server application sees them — the handler here. Left apart,
-			// [Request.Get] returned the first pair alone and every session
-			// cookie behind it went missing on HTTP/2 and HTTP/3 only.
-			if cookie >= 0 {
-				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
-				cookieOwned = true
-				continue
-			}
-			cookie = len(regular)
-		}
-		regular = append(regular, h)
-	}
-	if method == nil || path == nil || scheme == nil {
-		return fmt.Errorf("%w: a request without :method, :path and :scheme", ErrH2Protocol)
-	}
-	// Pseudo-header values compose the request line of any downstream
-	// HTTP/1.1 hop, which is why §10.3 asks for octet-level checks on them
-	// specifically: these are the same refusals the h1 request line makes.
-	if !isToken(method) {
-		return fmt.Errorf("%w: :method is not a token", ErrH2Protocol)
-	}
-	if !isToken(scheme) {
-		return fmt.Errorf("%w: :scheme is not a token", ErrH2Protocol)
-	}
-	if len(path) == 0 || path[0] != '/' {
-		return fmt.Errorf("%w: :path is not origin-form", ErrH2Protocol)
-	}
-	for _, c := range path {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :path holds a control character", ErrH2Protocol)
-		}
-	}
-	for _, c := range authority {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :authority holds a control character", ErrH2Protocol)
-		}
-	}
-	regular, err := withAuthority(regular, authority, ErrH2Protocol)
-	if err != nil {
-		return err
-	}
-	st.headers = regular
-	st.req = Request{Method: method, Target: path, Headers: regular, KeepAlive: true}
-	return nil
 }
 
 // finish completes a request and hands its stream over to the responder.
