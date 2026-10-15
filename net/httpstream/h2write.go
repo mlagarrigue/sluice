@@ -82,7 +82,12 @@ type h2Job struct {
 
 	data []byte
 	off  int
-	end  bool // END_STREAM rides on the last DATA frame
+	end  bool // END_STREAM rides on the last DATA frame, or on tail
+
+	// tail, when set, is the trailer section, framed: HEADERS and
+	// CONTINUATION frames carrying END_STREAM, written once data is. Like
+	// head it needs no credit.
+	tail []byte
 
 	// closes says the stream is over once this job is written, whether the
 	// flag went out on a DATA frame or on the head. It is what releases the
@@ -384,7 +389,7 @@ func (w *h2Writer) fill() []*h2Job {
 func (w *h2Writer) emit(j *h2Job) (int, error) {
 	if !j.headSent {
 		if w.tableUpdate {
-			head, err := w.prefixTableUpdate(j)
+			head, err := w.prefixTableUpdate(j.id, j.head)
 			if err != nil {
 				return 0, err
 			}
@@ -398,6 +403,21 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	}
 	left := len(j.data) - j.off
 	if left == 0 {
+		if j.end && !j.endSent && j.tail != nil {
+			if w.tableUpdate {
+				// A trailer section is a header block like any other, and
+				// the first to leave after the setting changed owes the
+				// update just as a head would.
+				tail, err := w.prefixTableUpdate(j.id, j.tail)
+				if err != nil {
+					return 0, err
+				}
+				j.tail = tail
+				w.tableUpdate = false
+			}
+			w.out, j.endSent = append(w.out, j.tail...), true
+			return len(j.tail), nil
+		}
 		if j.end && !j.endSent {
 			out, err := appendH2Frame(w.out, h2Frame{Type: frameData, Flags: flagEndStream, StreamID: j.id})
 			if err != nil {
@@ -412,7 +432,7 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 		return 0, nil
 	}
 	var flags byte
-	if j.end && j.off+n == len(j.data) {
+	if j.end && j.tail == nil && j.off+n == len(j.data) {
 		flags = flagEndStream
 	}
 	out, err := appendH2Frame(w.out, h2Frame{
@@ -564,23 +584,24 @@ func (w *h2Writer) claim(id uint32, cur, spare *h2Job) (*h2Job, error) {
 	return j, nil
 }
 
-// finish ends a streamed body: END_STREAM rides on the last DATA frame of the
-// job still queued when there is one, and on an empty DATA frame of its own
-// otherwise. It returns once the stream's last job has been written — or
-// dropped, which is not this connection's failure.
-func (w *h2Writer) finish(id uint32, cur, spare *h2Job) error {
+// finish ends a streamed body: END_STREAM rides on tail, the framed trailer
+// section, when there is one, else on the last DATA frame of the job still
+// queued when there is one, and on an empty DATA frame of its own otherwise.
+// It returns once the stream's last job has been written — or dropped, which
+// is not this connection's failure — so tail is free to reuse then.
+func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	j := cur
 	if j != nil && j.queued {
-		j.end, j.closes = true, true
+		j.end, j.closes, j.tail = true, true, tail
 		w.cond.Broadcast()
 	} else {
 		var err error
 		if j, err = w.claim(id, cur, spare); err != nil || j.err != nil {
 			return err
 		}
-		j.end, j.closes = true, true
+		j.end, j.closes, j.tail = true, true, tail
 		w.jobs = append(w.jobs, j)
 		w.cond.Broadcast()
 	}
@@ -643,13 +664,14 @@ func (w *h2Writer) ackSettings(table uint32, haveTable bool) error {
 	return nil
 }
 
-// prefixTableUpdate reframes j's head with the dynamic table size updates
-// the peer is owed at the front of its block. It runs once per change of the
-// setting, so it allocates rather than disturb the borrowed head in place.
-func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
-	block := w.appendTableUpdate(make([]byte, 0, len(j.head)+10))
+// prefixTableUpdate reframes head, a framed header block on stream id —
+// a job's head or its tail — with the dynamic table size updates the peer
+// is owed at the front of its block. It runs once per change of the
+// setting, so it allocates rather than disturb the borrowed block in place.
+func (w *h2Writer) prefixTableUpdate(id uint32, head []byte) ([]byte, error) {
+	block := w.appendTableUpdate(make([]byte, 0, len(head)+10))
 	var flags byte
-	for rest := j.head; len(rest) >= frameHeaderSize; {
+	for rest := head; len(rest) >= frameHeaderSize; {
 		n := int(rest[0])<<16 | int(rest[1])<<8 | int(rest[2])
 		if rest[3] == frameHeaders {
 			flags = rest[4] &^ flagEndHeaders
@@ -659,7 +681,7 @@ func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
 		block = append(block, rest[frameHeaderSize:frameHeaderSize+n]...)
 		rest = rest[frameHeaderSize+n:]
 	}
-	return appendHeaderFrames(nil, j.id, flags, block, w.maxFrame)
+	return appendHeaderFrames(nil, id, flags, block, w.maxFrame)
 }
 
 // appendTableUpdate writes the dynamic table size updates the peer is owed:

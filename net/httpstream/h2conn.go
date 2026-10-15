@@ -204,11 +204,16 @@ type h2Batch struct {
 // h2Answer is one response on its way out: where its framed head sits in the
 // responder's buffer, and what body follows.
 type h2Answer struct {
-	id     uint32
-	from   int
+	id   uint32
+	from int
+	// mid ends the head in s.out and starts the trailer section, which runs
+	// to to; they meet when there is none.
+	mid    int
 	to     int
 	body   []byte
 	stream sluice.Stream[[]byte]
+	// trailers is a streamed response's, called once the stream is.
+	trailers func() []Header
 	// skip marks a response nothing could be framed for; its stream was reset
 	// instead. job is its index in the jobs built from these answers, or -1.
 	skip bool
@@ -306,6 +311,9 @@ type h2Server struct {
 	streamJobs [2]h2Job
 	streamCur  *h2Job
 	streamBuf  []byte
+	// streamTail is the streamed response's framed trailer section, held
+	// until finish has seen it written.
+	streamTail []byte
 }
 
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
@@ -1364,7 +1372,16 @@ func (s *h2Server) answer(b h2Batch) {
 			body, stream = nil, nil
 		}
 		a := h2Answer{id: b.ids[i], from: len(s.out), body: body, stream: stream, job: -1}
+		if stream != nil {
+			a.trailers = r.Trailers
+		}
 		out, err := s.appendHead(s.out, a.id, method, r, maxFrame)
+		mid := len(out)
+		if err == nil && r.Trailers != nil && !noBody && !r.streamed() {
+			// A body in hand has its trailers framed now, behind its head:
+			// a refusal is still a 500 rather than a reset.
+			out, err = s.appendTrailers(out, a.id, r, maxFrame)
+		}
 		if err != nil {
 			// A response this package will not put on the wire — an injected
 			// header, a status no version of HTTP carries, a body and a
@@ -1372,6 +1389,7 @@ func (s *h2Server) answer(b h2Batch) {
 			// stream and nobody else's.
 			s.out = s.out[:a.from]
 			a.body, a.stream = nil, nil
+			a.trailers = nil
 			if out, err = s.appendHead(s.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
 				_ = s.w.control32(frameRSTStream, a.id, errInternalError)
 				s.w.forget(a.id)
@@ -1379,9 +1397,10 @@ func (s *h2Server) answer(b h2Batch) {
 				s.answers = append(s.answers, a)
 				continue
 			}
+			mid = len(out)
 		}
 		s.out = out
-		a.to = len(s.out)
+		a.mid, a.to = mid, len(s.out)
 		s.answers = append(s.answers, a)
 	}
 
@@ -1394,11 +1413,16 @@ func (s *h2Server) answer(b h2Batch) {
 			continue
 		}
 		a.job = len(s.jobs)
+		var tail []byte
+		if a.mid < a.to {
+			tail = s.out[a.mid:a.to]
+		}
 		s.jobs = append(s.jobs, h2Job{
 			id:   a.id,
-			head: s.out[a.from:a.to],
+			head: s.out[a.from:a.mid],
 			data: a.body,
-			end:  len(a.body) > 0,
+			tail: tail,
+			end:  len(a.body) > 0 || tail != nil,
 			// A response with neither a body nor a stream carries END_STREAM
 			// on its head, so it closes the stream without a DATA frame.
 			closes: a.stream == nil,
@@ -1421,7 +1445,7 @@ func (s *h2Server) answer(b h2Batch) {
 		if a.stream == nil || a.job < 0 || s.jobs[a.job].err != nil {
 			continue
 		}
-		s.streamBody(a.id, a.stream)
+		s.streamBody(a.id, a.stream, a.trailers)
 	}
 }
 
@@ -1516,10 +1540,35 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// last piece and nothing else may be interleaved between them — the same
 	// rule this server enforces on the way in.
 	flags := byte(0)
-	if noBody || (len(r.Body) == 0 && !r.streamed()) {
+	if noBody || (len(r.Body) == 0 && !r.streamed() && r.Trailers == nil) {
 		flags |= flagEndStream
 	}
 	return appendHeaderFrames(dst, id, flags, block, maxFrame)
+}
+
+// appendTrailers frames a response's trailer section as a header block
+// carrying END_STREAM (RFC 9113 §8.1), held to [checkTrailer] and to the
+// peer's SETTINGS_MAX_HEADER_LIST_SIZE as the head is. Its fields go on the
+// wire lowercase, from copies, as the head's do.
+func (s *h2Server) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
+	fields, err := r.trailers()
+	if err != nil {
+		return nil, err
+	}
+	block := s.block[:0]
+	var listSize uint64
+	s.names = s.names[:0]
+	for _, h := range fields {
+		name := lowerName(h.Name, &s.names)
+		block = appendHPACK(block, name, h.Value)
+		listSize += uint64(len(name)+len(h.Value)) + 32
+	}
+	s.block = block
+	if limit := s.peerMaxHeaderList.Load(); limit > 0 && listSize > uint64(limit) {
+		return nil, fmt.Errorf("%w: a trailer list of %d bytes, over the peer's %d limit",
+			ErrH2Protocol, listSize, limit)
+	}
+	return appendHeaderFrames(dst, id, flagEndStream, block, maxFrame)
 }
 
 // appendHeaderFrames frames one header block as HEADERS and as many
@@ -1576,7 +1625,7 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // Every batch, empty or not, is also checked against the stream's and the
 // connection's state first, since an empty one is never handed to the writer
 // and so could not be refused by it.
-func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
+func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], trailers func() []Header) {
 	// Both jobs start free: done is what marks a job as reusable.
 	s.streamJobs[0].done, s.streamJobs[1].done = true, true
 	s.streamCur = nil
@@ -1629,9 +1678,23 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
 		s.w.forget(id)
 		return
 	}
-	// The end: END_STREAM on the last DATA frame still queued, or on an empty
-	// one of its own, which costs no credit and therefore always goes out.
-	_ = s.w.finish(id, s.streamCur, s.streamSpare())
+	var tail []byte
+	if trailers != nil {
+		var err error
+		if tail, err = s.appendTrailers(s.streamTail[:0], id, Response{Trailers: trailers}, defaultMaxFrameSize); err != nil {
+			// The body is out: a refused trailer resets the stream, as a
+			// producer that panicked does, so the client never reads the
+			// answer as whole.
+			_ = s.w.control32(frameRSTStream, id, errInternalError)
+			s.w.forget(id)
+			return
+		}
+		s.streamTail = tail
+	}
+	// The end: END_STREAM on the trailers, on the last DATA frame still
+	// queued, or on an empty one of its own — none costs credit, so the end
+	// always goes out.
+	_ = s.w.finish(id, s.streamCur, s.streamSpare(), tail)
 }
 
 // streamSpare is the streamed-body job the last batch did not go to.

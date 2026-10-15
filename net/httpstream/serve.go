@@ -496,7 +496,7 @@ func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 	// closing is always true here: every caller is about to end the
 	// connection, so appendResponse writes the Connection: close itself
 	// rather than have it duplicated as a caller-supplied header.
-	buf, err := appendResponse(nil, method, true, nil, Response{Status: status}, dateFor(time.Now()))
+	buf, err := appendResponse(nil, method, true, false, nil, Response{Status: status}, dateFor(time.Now()))
 	if err != nil {
 		return err
 	}
@@ -859,7 +859,18 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		if closeDelimited {
 			return buf, true, nil
 		}
-		buf = appendLastChunk(buf[:0])
+		if r.Trailers == nil {
+			buf = appendLastChunk(buf[:0])
+		} else {
+			// The body is out and a refusal can no longer become a 500:
+			// the chunked body is left unterminated and the connection
+			// closes, as for a producer that panicked.
+			fields, err := r.trailers()
+			if err != nil {
+				return buf, false, err
+			}
+			buf = appendLastChunkTrailers(buf[:0], fields)
+		}
 		if err := writeAll(c, cfg, buf); err != nil {
 			return buf, false, err
 		}

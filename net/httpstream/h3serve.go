@@ -573,7 +573,22 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	if !streamH3Body(c, s, r.Stream, writeTimeout) {
 		return
 	}
-	_ = s.CloseWrite()
+	if r.Trailers == nil {
+		_ = s.CloseWrite()
+		return
+	}
+	tail, err := appendH3Trailers(sc.head[:0], r, fieldSection, sc)
+	if err != nil {
+		// The body is out: a refused trailer resets the stream, as a
+		// producer that panicked does, so the client never reads the
+		// answer as whole.
+		_ = s.Reset(h3InternalError)
+		return
+	}
+	sc.head = tail
+	// The trailer section and the FIN leave in one write, as a buffered
+	// response's last frame and its FIN do.
+	_ = writeH3Bounded(s, tail, true, writeTimeout)
 }
 
 // writeH3Bounded writes p on s with writeTimeout to finish, and the FIN with

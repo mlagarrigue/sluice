@@ -1168,16 +1168,8 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		// stream's FIN says instead. A 204/304 never states one either.
 		fields = append(fields, Header{Name: h3ContentLengthName, Value: appendDigits(sc.clen[:0], len(r.Body))})
 	}
-	if peerFieldSection > 0 {
-		// §4.2.2's size: the uncompressed name and value, plus 32 per field.
-		var size uint64
-		for _, h := range fields {
-			size += uint64(len(h.Name)+len(h.Value)) + 32
-		}
-		if size > peerFieldSection {
-			return nil, fmt.Errorf("%w: a field section of %d bytes, over the peer's %d limit",
-				ErrH3Protocol, size, peerFieldSection)
-		}
+	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
+		return nil, err
 	}
 
 	sc.fields = fields
@@ -1186,7 +1178,52 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	if !noBody && len(r.Body) > 0 {
 		dst = appendH3Frame(dst, h3Data, r.Body)
 	}
+	if !noBody && !r.streamed() && r.Trailers != nil {
+		// A body in hand has its trailers in the same write, so a refusal
+		// is still answered with a 500.
+		return appendH3Trailers(dst, r, peerFieldSection, sc)
+	}
 	return dst, nil
+}
+
+// checkH3FieldSection refuses a field section over the peer's
+// SETTINGS_MAX_FIELD_SECTION_SIZE, zero for unbounded, measured as §4.2.2
+// does: the uncompressed name and value, plus 32 per field.
+func checkH3FieldSection(fields []Header, peerFieldSection uint64) error {
+	if peerFieldSection == 0 {
+		return nil
+	}
+	var size uint64
+	for _, h := range fields {
+		size += uint64(len(h.Name)+len(h.Value)) + 32
+	}
+	if size > peerFieldSection {
+		return fmt.Errorf("%w: a field section of %d bytes, over the peer's %d limit",
+			ErrH3Protocol, size, peerFieldSection)
+	}
+	return nil
+}
+
+// appendH3Trailers writes a response's trailer section as the HEADERS frame
+// that follows its DATA (RFC 9114 §4.1), held to [checkTrailer] and to the
+// peer's field section limit as the head is. Its names go on the wire
+// lowercase, from copies, as the head's do.
+func appendH3Trailers(dst []byte, r Response, peerFieldSection uint64, sc *h3Scratch) ([]byte, error) {
+	trailers, err := r.trailers()
+	if err != nil {
+		return nil, err
+	}
+	fields := sc.fields[:0]
+	sc.names = sc.names[:0]
+	for _, h := range trailers {
+		fields = append(fields, Header{Name: lowerName(h.Name, &sc.names), Value: h.Value})
+	}
+	sc.fields = fields
+	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
+		return nil, err
+	}
+	sc.qpack = appendQPACK(sc.qpack[:0], fields)
+	return appendH3Frame(dst, h3Headers, sc.qpack), nil
 }
 
 // h3StatusName, h3ContentLengthName and h3DateName are the three field names

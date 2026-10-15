@@ -52,10 +52,88 @@ type Response struct {
 	// A yield that returns false means the stream or the connection is gone;
 	// the package documentation states what each protocol does then.
 	Stream sluice.Stream[[]byte]
+
+	// Trailers, when set, gives the fields sent after the payload: a
+	// checksum computed as the body went out, or gRPC's grpc-status, which
+	// a streamed answer only knows once its producer is done. It is a
+	// function rather than a list for that reason: it is called once the
+	// payload is complete — after Stream has returned, or straight away
+	// for a Body — so a producer can leave in a variable what the trailers
+	// then report.
+	//
+	// HTTP/1.1 sends them after the last chunk, which makes a Body response
+	// with trailers chunked rather than Content-Length framed; HTTP/2 and
+	// HTTP/3 in a HEADERS frame that ends the stream. They are held to the
+	// header rules, and refused when they name a field that frames the
+	// message or describes the connection (RFC 9110 §6.5.1): those were
+	// settled by the time the trailers arrive. Any other field is the
+	// handler's to know it may be sent there. A Trailer header naming
+	// them, which RFC 9110 §6.6.2 says a sender SHOULD send, is the
+	// handler's to set; HTTP/1.1 refuses it on a response without
+	// Trailers, as the promise of fields that never come.
+	//
+	// The function is not called for a response that carries no body —
+	// a HEAD answer, a 204 or 304 — nor for an HTTP/1.0 client, whose
+	// response has no chunked framing to put them in: those fields would
+	// have nowhere to go. A function that panics, or returns a field the
+	// rules refuse, fails the response as a refused header does when
+	// nothing is written yet (a 500), and otherwise ends it unterminated —
+	// the connection closed on HTTP/1.1, the stream reset on HTTP/2 and
+	// HTTP/3 — so the client never reads a truncated answer as whole.
+	Trailers func() []Header
 }
 
 // streamed reports whether the response produces its payload as it goes.
 func (r Response) streamed() bool { return r.Stream != nil }
+
+// trailers calls the response's Trailers function and checks what it
+// returns, turning a panic in it into an error, as pull does for the
+// producer: it runs on the writing goroutine too.
+func (r Response) trailers() (fields []Header, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("httpstream: the response trailers panicked: %v", p)
+		}
+	}()
+	fields = r.Trailers()
+	for _, h := range fields {
+		if err := checkTrailer(h); err != nil {
+			return nil, err
+		}
+	}
+	return fields, nil
+}
+
+// checkTrailer holds one response trailer to the octet rules every response
+// header is held to, and refuses the fields RFC 9110 §6.5.1 says cannot be
+// processed after the body: the framing, which was settled before it, and
+// the connection-specific fields, which no protocol carries end to end.
+// Trailer itself is among them — a trailer cannot announce more trailers.
+// The names are compared case-insensitively, so the one rule serves the
+// HTTP/1.1 spelling and the lowercase HTTP/2 and HTTP/3 put on the wire.
+func checkTrailer(h Header) error {
+	if !isToken(h.Name) {
+		return fmt.Errorf("%w: %q is not a trailer name", ErrMalformed, h.Name)
+	}
+	if hasCRLF(h.Value) {
+		return ErrHeaderInjection
+	}
+	if hasFieldControl(h.Value) {
+		return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrMalformed, h.Name)
+	}
+	for _, name := range refusedTrailers {
+		if equalFold(h.Name, name) {
+			return fmt.Errorf("%w: %s cannot be sent as a trailer", ErrMalformed, h.Name)
+		}
+	}
+	return nil
+}
+
+// refusedTrailers are the fields checkTrailer refuses.
+var refusedTrailers = [...]string{
+	"content-length", "transfer-encoding", "trailer", "te",
+	"connection", "keep-alive", "proxy-connection", "upgrade",
+}
 
 // pull runs a streamed response's producer, turning a panic in it into an
 // error the transport answers on that one response. The handler's own panics
@@ -131,12 +209,13 @@ func WriteBatch(dst []byte, cfg Config, requests []Request, responses []Response
 	date := dateFor(time.Now())
 	for i, res := range responses {
 		var method []byte
+		http10 := false
 		if i < len(requests) {
-			method = requests[i].Method
+			method, http10 = requests[i].Method, requests[i].http10
 		}
 		closing := i == len(responses)-1 && (closeAfter || i < len(requests) && !requests[i].KeepAlive)
 		var err error
-		if dst, err = appendResponse(dst, method, closing, keepAlive, res, date); err != nil {
+		if dst, err = appendResponse(dst, method, closing, http10, keepAlive, res, date); err != nil {
 			return nil, err
 		}
 	}
@@ -204,6 +283,20 @@ func appendChunk(dst, chunk []byte) []byte {
 // Content-Length beside it.
 func appendLastChunk(dst []byte) []byte {
 	return append(dst, '0', '\r', '\n', '\r', '\n')
+}
+
+// appendLastChunkTrailers closes a chunked body with a trailer section
+// (RFC 9112 §7.1.2): the last chunk, the fields as spelled, the empty line.
+// fields have passed checkTrailer.
+func appendLastChunkTrailers(dst []byte, fields []Header) []byte {
+	dst = append(dst, '0', '\r', '\n')
+	for _, h := range fields {
+		dst = append(dst, h.Name...)
+		dst = append(dst, ':', ' ')
+		dst = append(dst, h.Value...)
+		dst = append(dst, '\r', '\n')
+	}
+	return append(dst, '\r', '\n')
 }
 
 // appendStreamedHeader writes the status and headers of a response whose
@@ -278,11 +371,12 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 		}
 		if equalFold(h.Name, "connection") || equalFold(h.Name, "keep-alive") ||
 			equalFold(h.Name, "proxy-connection") || equalFold(h.Name, "upgrade") ||
-			equalFold(h.Name, "trailer") {
+			equalFold(h.Name, "trailer") && res.Trailers == nil {
 			// So is the connection: a handler's Connection: keep-alive on a
-			// response the writer is closing after, or an Upgrade or Trailer
-			// promising what this server never does, is a client misled about
-			// the bytes that follow. HTTP/2 and HTTP/3 refuse the same fields.
+			// response the writer is closing after, or an Upgrade promising
+			// what this server never does, is a client misled about the
+			// bytes that follow. HTTP/2 and HTTP/3 refuse the same fields. A
+			// Trailer is the same promise on a response without Trailers.
 			return nil, fmt.Errorf("%w: %s is connection-specific, not the caller's", ErrMalformed, h.Name)
 		}
 		hasDate = hasDate || equalFold(h.Name, "date")
@@ -337,10 +431,27 @@ var headMethod = []byte("HEAD")
 // only to decide whether a body may follow — never to change the status or
 // headers a handler chose. closing marks the last response of a batch whose
 // last request will not be followed by another; keepAlive is what every
-// other response says instead, see [appendConnection].
-func appendResponse(dst, method []byte, closing bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
+// other response says instead, see [appendConnection]. http10 marks a
+// request that never said it reads chunked, whose response therefore
+// carries no trailers.
+func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
 	if err := res.check(); err != nil {
 		return nil, err
+	}
+	status := res.Status
+	if status == 0 {
+		status = 200
+	}
+	noLength, noBody := noLengthAndBody(status, method)
+	var trailers []Header
+	chunked := res.Trailers != nil && !noBody && !http10
+	if chunked {
+		// Called before a byte is appended, so a refusal leaves dst as the
+		// caller had it and the response can still be answered with a 500.
+		var err error
+		if trailers, err = res.trailers(); err != nil {
+			return nil, err
+		}
 	}
 	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
@@ -348,12 +459,14 @@ func appendResponse(dst, method []byte, closing bool, keepAlive []byte, res Resp
 	}
 	dst = appendConnection(dst, closing, keepAlive)
 
-	status := res.Status
-	if status == 0 {
-		status = 200
+	if chunked {
+		// Trailers only travel after a chunked body (RFC 9112 §7.1.2), so
+		// the payload in hand goes out as one chunk rather than with a
+		// Content-Length.
+		dst = append(dst, "Transfer-Encoding: chunked\r\n\r\n"...)
+		dst = appendChunk(dst, res.Body)
+		return appendLastChunkTrailers(dst, trailers), nil
 	}
-	noLength, noBody := noLengthAndBody(status, method)
-
 	if !noLength {
 		dst = append(dst, "Content-Length: "...)
 		dst = strconv.AppendInt(dst, int64(len(res.Body)), 10)
