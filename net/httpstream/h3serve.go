@@ -570,7 +570,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	// producer is never pulled, the same way the HTTP/1.1 and HTTP/2 paths
 	// never do for these.
 	detach()
-	if !streamH3Body(c, s, r.Stream, writeTimeout) {
+	if !streamH3Body(c, s, r.Stream, r.ContentLength, writeTimeout) {
 		return
 	}
 	if r.Trailers == nil {
@@ -617,8 +617,14 @@ func writeH3Bounded(s *quic.Stream, p []byte, fin bool, writeTimeout time.Durati
 // ran to the end. A stream the peer reset stops the pull, which is a cancelled
 // request reaching the handler that is still working for it; so does a
 // connection that ended, even on an empty batch that would write nothing.
-func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], writeTimeout time.Duration) bool {
-	ok := true
+//
+// length is the response's ContentLength, zero for none. A producer that
+// yields more — the batch that would cross it is not written — or ends short
+// of it has its stream reset, never ended: RFC 9114 §4.1.2 makes the
+// mismatch a malformed response.
+func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], length int64, writeTimeout time.Duration) bool {
+	ok, wrong := true, false
+	var sent int64
 	var out []byte // reused across batches; Stream.Write copies before returning
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
 		select {
@@ -631,6 +637,10 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], wr
 			ok = false
 			return false
 		}
+		if overLength(&sent, length, b.Items) {
+			wrong = true
+			return false
+		}
 		out = appendH3StreamedBody(out[:0], b.Items)
 		if len(out) == 0 {
 			return true // an empty batch is cadence, not an end
@@ -641,9 +651,10 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], wr
 		}
 		return true
 	})
-	if perr != nil {
-		// The producer panicked: its stream is reset, the same answer a
-		// response that cannot be framed gets, and nothing else is touched.
+	if perr != nil || wrong || ok && sent < length {
+		// The producer panicked or missed its length: its stream is reset,
+		// the same answer a response that cannot be framed gets, and nothing
+		// else is touched.
 		_ = s.Reset(h3InternalError)
 		return false
 	}

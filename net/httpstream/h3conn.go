@@ -3,6 +3,7 @@ package httpstream
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1163,10 +1164,17 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		// batch's, formatted once and never written after.
 		fields = append(fields, Header{Name: h3DateName, Value: date})
 	}
-	if !r.streamed() && !noLength {
-		// A streamed response has no length to state, which is what the
-		// stream's FIN says instead. A 204/304 never states one either.
-		fields = append(fields, Header{Name: h3ContentLengthName, Value: appendDigits(sc.clen[:0], len(r.Body))})
+	if !noLength && (!r.streamed() || r.ContentLength > 0) {
+		// A streamed response states the length it declared, or none, which
+		// is what the stream's FIN says instead. A 204/304 never states one
+		// either.
+		var v []byte
+		if r.streamed() {
+			v = strconv.AppendInt(sc.clen[:0], r.ContentLength, 10)
+		} else {
+			v = appendDigits(sc.clen[:0], len(r.Body))
+		}
+		fields = append(fields, Header{Name: h3ContentLengthName, Value: v})
 	}
 	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
 		return nil, err

@@ -19,7 +19,8 @@ type Response struct {
 	// §5.1): HTTP/1.1 writes them as spelled, HTTP/2 and HTTP/3 put them
 	// on the wire in lowercase, as those protocols require, without
 	// touching the handler's bytes. Content-Length is written by
-	// [WriteBatch] from the body and must not be set here. Date is added
+	// [WriteBatch] from the body, or from ContentLength for a Stream, and
+	// must not be set here. Date is added
 	// by the writer when the handler did not set one (RFC 9110 §6.6.1),
 	// on every final response, 5xx included.
 	Headers []Header
@@ -39,19 +40,44 @@ type Response struct {
 	// Setting both Stream and Body is a programming error and is refused: the
 	// two say different things about what the payload is.
 	//
-	// A streamed response has no Content-Length, and there is no field to
-	// declare one: its length is not known when the headers go out, and a
-	// declared length the producer then misses by a byte is the framing
-	// desynchronisation this package refuses everywhere else. Each protocol
-	// ends the body its own way — HTTP/1.1 in chunks, HTTP/2 and HTTP/3 in
-	// DATA frames ended by a flag — and none of them needs the total in
-	// advance, nor do the proxies in front: a chunked answer crosses nginx
-	// and Envoy as it is. A handler that already holds the whole payload
-	// puts it in Body and gets its Content-Length from the writer.
+	// A streamed response has no Content-Length unless ContentLength
+	// declares one. Each protocol ends the body its own way — HTTP/1.1 in
+	// chunks, HTTP/2 and HTTP/3 in DATA frames ended by a flag — and none of
+	// them needs the total in advance, nor do the proxies in front: a
+	// chunked answer crosses nginx and Envoy as it is. A handler that
+	// already holds the whole payload puts it in Body and gets its
+	// Content-Length from the writer.
 	//
 	// A yield that returns false means the stream or the connection is gone;
 	// the package documentation states what each protocol does then.
 	Stream sluice.Stream[[]byte]
+
+	// ContentLength, when positive, is the number of bytes Stream will
+	// produce, sent as the response's Content-Length: HTTP/1.1 then frames
+	// the body by it rather than in chunks, and the client can show how far
+	// along it is. Zero means the length is not known, which is how a
+	// streamed response goes out otherwise; an empty payload is a nil Body.
+	// It is refused beside a Body, whose length is its own, without a
+	// Stream, and when negative.
+	//
+	// The declared length is held to what the producer then yields, since a
+	// length the producer misses by a byte is the framing desynchronisation
+	// this package refuses everywhere else. A batch that would take the body
+	// past it is not written, and the pull stops there; a producer that
+	// ends short of it, or goes past it, ends the response unterminated —
+	// the connection closed on HTTP/1.1, the stream reset on HTTP/2 and
+	// HTTP/3 — so the client never reads a truncated answer as whole. On
+	// HTTP/1.1 a producer that yields more after the declared length went
+	// out whole only closes the connection: its client already holds the
+	// bytes it was promised, and the surplus never reaches it.
+	//
+	// HTTP/1.1 carries trailers only after a chunked body, so a response
+	// with Trailers is chunked there and its Content-Length not written —
+	// the two framings cannot be sent together (RFC 9112 §6.2) — though the
+	// length is still checked; HTTP/2 and HTTP/3 send both. A HEAD response
+	// states the length without pulling the producer, and a 204 or 304
+	// never states one, as for a Body.
+	ContentLength int64
 
 	// Trailers, when set, gives the fields sent after the payload: a
 	// checksum computed as the body went out, or gRPC's grpc-status, which
@@ -150,12 +176,41 @@ func pull(stream sluice.Stream[[]byte], yield func(sluice.Batch[[]byte]) bool) (
 	return nil
 }
 
-// check refuses a response that says two things about its payload.
+// check refuses a response that says two things about its payload, or a
+// length that describes none.
 func (r Response) check() error {
 	if r.Stream != nil && len(r.Body) > 0 {
 		return fmt.Errorf("%w: a response with both a Body and a Stream", ErrMalformed)
 	}
+	if r.ContentLength < 0 {
+		return fmt.Errorf("%w: a negative ContentLength", ErrMalformed)
+	}
+	if r.ContentLength > 0 && r.Stream == nil {
+		return fmt.Errorf("%w: a ContentLength without a Stream", ErrMalformed)
+	}
 	return nil
+}
+
+// errLengthMismatch reports a streamed body that did not produce the
+// ContentLength it declared.
+var errLengthMismatch = fmt.Errorf("%w: the response producer did not yield its ContentLength", ErrMalformed)
+
+// overLength reports whether a batch of chunks would take a body past its
+// declared length want, zero for none, counting from sent, the bytes
+// already out; a batch that would not is added to sent.
+func overLength(sent *int64, want int64, chunks [][]byte) bool {
+	if want == 0 {
+		return false
+	}
+	n := *sent
+	for _, c := range chunks {
+		n += int64(len(c))
+	}
+	if n > want {
+		return true
+	}
+	*sent = n
+	return false
 }
 
 // ErrHeaderInjection reports a response header this package will not write.
@@ -299,33 +354,55 @@ func appendLastChunkTrailers(dst []byte, fields []Header) []byte {
 	return append(dst, '\r', '\n')
 }
 
-// appendStreamedHeader writes the status and headers of a response whose
-// length is not yet known. noBody is [noLengthAndBody]'s verdict on the
-// request it answers, which the caller already needs to skip the producer: a
-// HEAD or 204/304 response here must not announce a chunked body it will
-// never send, or a pipelined client reads the next response's bytes as this
-// one's body.
+// appendStreamedHeader writes the status and headers of a produced response,
+// framed as [streamedFraming] decided: chunked, by a length of size bytes, or
+// neither. A HEAD or 204/304 response here must not announce a chunked body
+// it will never send, or a pipelined client reads the next response's bytes
+// as this one's body; a HEAD response still states the length its GET twin
+// would.
 //
-// http10 marks a request whose client never said it understands chunked:
-// RFC 9112 §6.1 forbids Transfer-Encoding in the response then, because a
-// 1.0 client reads the chunk sizes as body bytes. The body is close-delimited
-// instead — no framing header at all, the empty line to EOF — and the caller
-// has already marked the response closing, since EOF is the only end such a
-// body has.
+// A response framed neither way is close-delimited — no framing header at
+// all, the empty line to EOF — and the caller has already marked it closing,
+// since EOF is the only end such a body has.
 //
 // keepAlive is the connection's announcement for a response that is not
 // closing, see [appendConnection].
-func appendStreamedHeader(dst []byte, closing, http10, noBody bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
+func appendStreamedHeader(dst []byte, closing, chunked bool, size int64, keepAlive []byte, res Response, date []byte) ([]byte, error) {
 	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
 		return nil, err
 	}
 	dst = appendConnection(dst, closing, keepAlive)
-	if !noBody && !http10 {
+	switch {
+	case chunked:
 		dst = append(dst, "Transfer-Encoding: chunked\r\n"...)
+	case size > 0:
+		dst = append(dst, "Content-Length: "...)
+		dst = strconv.AppendInt(dst, size, 10)
+		dst = append(dst, '\r', '\n')
 	}
 	dst = append(dst, '\r', '\n')
 	return dst, nil
+}
+
+// streamedFraming decides how HTTP/1.1 frames a produced response. noLength
+// and noBody are [noLengthAndBody]'s verdict on the request it answers.
+//
+// chunked is the default for a body that has one, and the only framing that
+// carries trailers. size is the Content-Length to state, zero for none: the
+// response's ContentLength unless the body is chunked (RFC 9112 §6.2 forbids
+// both) or the status never states one. closeDelimited is the body with
+// neither, for an http10 request whose client never said it understands
+// chunked: RFC 9112 §6.1 forbids Transfer-Encoding in the response then,
+// because a 1.0 client reads the chunk sizes as body bytes — which is also
+// why a declared length is worth most there, keeping the connection open.
+func streamedFraming(res Response, http10, noLength, noBody bool) (chunked bool, size int64, closeDelimited bool) {
+	chunked = !noBody && !http10 && (res.ContentLength == 0 || res.Trailers != nil)
+	if !chunked && !noLength {
+		size = res.ContentLength
+	}
+	closeDelimited = !noBody && !chunked && size == 0
+	return chunked, size, closeDelimited
 }
 
 // appendStatusAndHeaders writes the status line and the caller's fields, and

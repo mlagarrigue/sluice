@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -212,7 +213,9 @@ type h2Answer struct {
 	to     int
 	body   []byte
 	stream sluice.Stream[[]byte]
-	// trailers is a streamed response's, called once the stream is.
+	// length and trailers are a streamed response's: the ContentLength its
+	// producer is held to, and the function called once the stream is.
+	length   int64
 	trailers func() []Header
 	// skip marks a response nothing could be framed for; its stream was reset
 	// instead. job is its index in the jobs built from these answers, or -1.
@@ -1373,7 +1376,7 @@ func (s *h2Server) answer(b h2Batch) {
 		}
 		a := h2Answer{id: b.ids[i], from: len(s.out), body: body, stream: stream, job: -1}
 		if stream != nil {
-			a.trailers = r.Trailers
+			a.length, a.trailers = r.ContentLength, r.Trailers
 		}
 		out, err := s.appendHead(s.out, a.id, method, r, maxFrame)
 		mid := len(out)
@@ -1445,7 +1448,7 @@ func (s *h2Server) answer(b h2Batch) {
 		if a.stream == nil || a.job < 0 || s.jobs[a.job].err != nil {
 			continue
 		}
-		s.streamBody(a.id, a.stream, a.trailers)
+		s.streamBody(a.id, a.stream, a.length, a.trailers)
 	}
 }
 
@@ -1516,13 +1519,20 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		block = appendHPACKString(block, s.date)
 		listSize += uint64(len("date")+len(s.date)) + 32
 	}
-	if !r.streamed() && !noLength {
-		// A streamed response has no length to state, which is what the
-		// DATA frame's END_STREAM says instead. A 204/304 never states one
-		// either (RFC 9110 §8.6).
-		n := itoa(len(r.Body))
-		block = appendHPACK(block, "content-length", n)
-		listSize += uint64(len("content-length")+len(n)) + 32
+	if !noLength && (!r.streamed() || r.ContentLength > 0) {
+		// A streamed response states the length it declared, or none, which
+		// is what the DATA frame's END_STREAM says instead. A 204/304 never
+		// states one either (RFC 9110 §8.6).
+		if r.streamed() {
+			var digits [20]byte
+			v := strconv.AppendInt(digits[:0], r.ContentLength, 10)
+			block = appendHPACK(block, "content-length", v)
+			listSize += uint64(len("content-length")+len(v)) + 32
+		} else {
+			v := itoa(len(r.Body))
+			block = appendHPACK(block, "content-length", v)
+			listSize += uint64(len("content-length")+len(v)) + 32
+		}
 	}
 	s.block = block
 	// The peer's SETTINGS_MAX_HEADER_LIST_SIZE is advisory (§6.5.2), but a
@@ -1625,17 +1635,25 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // Every batch, empty or not, is also checked against the stream's and the
 // connection's state first, since an empty one is never handed to the writer
 // and so could not be refused by it.
-func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], trailers func() []Header) {
+func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header) {
 	// Both jobs start free: done is what marks a job as reusable.
 	s.streamJobs[0].done, s.streamJobs[1].done = true, true
 	s.streamCur = nil
-	stopped := false
+	stopped, wrong := false, false
+	var sent int64
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
 		// Asked on every batch, empty ones included: an empty batch is never
 		// handed to the writer, so neither a reset stream nor a dead
 		// connection would otherwise reach a producer of cadence ticks.
 		if s.readEnded.Load() || !s.w.alive(id) {
 			stopped = true // cut short: no END_STREAM may claim the body whole
+			return false
+		}
+		if overLength(&sent, length, b.Items) {
+			// Past the declared length: the batch is not handed over, and
+			// the stream is reset below rather than ended (RFC 9113 §8.1.1
+			// makes the mismatch a malformed response).
+			wrong = true
 			return false
 		}
 		// A single chunk is handed over as it is; several are flattened
@@ -1670,10 +1688,11 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], trailers 
 	if stopped {
 		return
 	}
-	if perr != nil {
-		// The producer panicked partway through its answer. Only its own
-		// stream pays: it is reset, as the response that cannot be framed
-		// is, and the connection carries on serving the others.
+	if perr != nil || wrong || sent < length {
+		// The producer panicked partway through its answer, or did not
+		// yield the length it declared. Only its own stream pays: it is
+		// reset, as the response that cannot be framed is, and the
+		// connection carries on serving the others.
 		_ = s.w.control32(frameRSTStream, id, errInternalError)
 		s.w.forget(id)
 		return

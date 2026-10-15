@@ -726,7 +726,8 @@ func streamedIn(res []Response) bool {
 //
 // closed reports that a close-delimited body was written: a streamed body
 // for an HTTP/1.0 client has no chunk framing (RFC 9112 §6.1 forbids
-// Transfer-Encoding there) and therefore no end but EOF, so the caller must
+// Transfer-Encoding there) and, without a ContentLength, no end but EOF, so
+// the caller must
 // close the connection now — a response written after it would be read as
 // more of the body.
 //
@@ -795,14 +796,14 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		if status == 0 {
 			status = 200
 		}
-		_, noBody := noLengthAndBody(status, method)
-		closeDelimited := http10 && !noBody
+		noLength, noBody := noLengthAndBody(status, method)
+		chunked, size, closeDelimited := streamedFraming(r, http10, noLength, noBody)
 		if closeDelimited {
 			// The 1.0 client gets the body to EOF, so this response is the
 			// connection's last whatever the request's Connection field said.
 			closing = true
 		}
-		out, err := appendStreamedHeader(buf, closing, http10, noBody, keepAlive, r, dateFor(time.Now()))
+		out, err := appendStreamedHeader(buf, closing, chunked, size, keepAlive, r, dateFor(time.Now()))
 		if err != nil {
 			return fail(i, err)
 		}
@@ -820,6 +821,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		// The transport pulls: the producer runs at the socket's pace, and
 		// what it holds is one batch rather than the whole answer.
 		var werr error
+		var sent int64
 		watch := watchPeer(c, cfg.maxBuffer())
 		// A producer that panics has already had its header and perhaps
 		// some chunks sent: there is no status left to change, so the
@@ -833,12 +835,19 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 				werr = errPeerGone
 				return false
 			}
+			if overLength(&sent, r.ContentLength, b.Items) {
+				// The batch that would take the body past its declared
+				// length is not written: the connection closes short of it,
+				// or, if the length is already out, with no surplus behind.
+				werr = errLengthMismatch
+				return false
+			}
 			buf = buf[:0]
 			for _, chunk := range b.Items {
-				if closeDelimited {
-					buf = append(buf, chunk...)
-				} else {
+				if chunked {
 					buf = appendChunk(buf, chunk)
+				} else {
+					buf = append(buf, chunk...)
 				}
 			}
 			if len(buf) == 0 {
@@ -853,11 +862,21 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		if werr == nil {
 			werr = perr
 		}
+		if werr == nil && sent < r.ContentLength {
+			// Short of the declared length: no end may be written, so the
+			// connection closes and the client reads the body as incomplete
+			// (RFC 9112 §6.3), the chunked one left unterminated.
+			werr = errLengthMismatch
+		}
 		if werr != nil {
 			return buf, false, werr
 		}
 		if closeDelimited {
 			return buf, true, nil
+		}
+		if !chunked {
+			buf = buf[:0] // the declared length was the end
+			continue
 		}
 		if r.Trailers == nil {
 			buf = appendLastChunk(buf[:0])

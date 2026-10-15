@@ -151,7 +151,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 				w.mu.Lock()
 				w.windows[1] = 1 << 30
 				w.mu.Unlock()
-				s.streamBody(1, chunkStream(chunks), nil)
+				s.streamBody(1, chunkStream(chunks), 0, nil)
 				if err := w.creditConn(spent); err != nil {
 					b.Fatal(err)
 				}
