@@ -86,7 +86,27 @@ Three reasons come up, and the difference matters:
   addition needs vectors taken from a real server.
 - **TLS is yours.** The connector dials nothing and negotiates no TLS: you
   hand it an already open connection, encrypted or not. On purpose: which
-  host, which certificate, which timeout are deployment decisions.
+  host, which certificate, which timeout are deployment decisions. The
+  negotiation peculiar to PostgreSQL (SSLRequest, or ALPN for direct TLS
+  since 17) is shown in the
+  [PostgreSQL guide](postgres.md#encrypting-the-connection).
+- **An RSA-PSS certificate whose salt is not the hash length is refused**
+  by `crypto/x509`, Go's standard library, before `Startup` is even
+  reached; libpq accepts it. It is OpenSSL's default when signing with
+  PSS: re-sign with `-sigopt rsa_pss_saltlen:digest`.
+- **No LISTEN/NOTIFY, no notices.** A `LISTEN` goes through `Exec`, but
+  the notifications that arrive afterwards are discarded, for want of an
+  API to receive them; the server's notices (`RAISE NOTICE`, warnings) are
+  too.
+- **No COPY TO STDOUT.** Only loading (`COPY ... FROM STDIN`) has an API;
+  a `COPY ... TO STDOUT` fails with an error that says so. To read in bulk,
+  `Query` on a `SELECT` already delivers batches.
+- **Everything is read in binary, with no per-column text fallback.** A
+  type with no binary send function (some extension types) fails the whole
+  query; the workaround is in SQL: `column::text`.
+- **No replication connection.** `Params["replication"]` is refused before
+  anything is sent: a server in replication mode speaks only the simple
+  query protocol, and what it sends next (`CopyBoth`) nothing here reads.
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.

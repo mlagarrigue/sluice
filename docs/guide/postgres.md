@@ -66,7 +66,8 @@ By default, authentication uses SCRAM-SHA-256: the password never travels
 as is. Sending it in cleartext is possible but must be asked for explicitly
 (`AllowCleartextPassword`), because only you know whether the network you
 opened may carry a secret. To encrypt the connection, pass an already
-verified `*tls.Conn` instead of the raw socket.
+verified `*tls.Conn` instead of the raw socket:
+[Encrypting the connection](#encrypting-the-connection) shows how to get one.
 
 Two options make the client demand what the server only offers by default.
 `RequireAuth` refuses a server that declares the connection authenticated
@@ -98,6 +99,68 @@ A wrong password arrives as a server error with code `28P01`; an
 authentication method the package refuses (`md5`, deprecated) arrives as
 `ErrAuthUnsupported`. Two different errors because they are fixed
 differently.
+
+### Encrypting the connection
+
+A PostgreSQL server does not begin with a TLS handshake the way an HTTPS
+server does. The client opens a plain socket and sends an **SSLRequest** —
+eight bytes, a code in place of a protocol version — and the server answers
+with a single byte, `S` to accept or `N` to refuse. Only then does the TLS
+handshake start. A `tls.Dial` aimed straight at port 5432 therefore fails,
+with an error that looks like a certificate problem rather than a protocol
+mismatch. The negotiation is one write and one read:
+
+```go
+raw, err := net.DialTimeout("tcp", "db.internal:5432", 5*time.Second)
+if err != nil { return err }
+
+req := make([]byte, 8)
+binary.BigEndian.PutUint32(req[0:], 8)        // length
+binary.BigEndian.PutUint32(req[4:], 80877103) // the SSLRequest code
+if _, err := raw.Write(req); err != nil { return err }
+
+answer := make([]byte, 1) // exactly one byte: what follows belongs to TLS
+if _, err := io.ReadFull(raw, answer); err != nil { return err }
+if answer[0] != 'S' {
+    raw.Close()
+    return errors.New("the server refused TLS") // no plaintext fallback
+}
+
+enc := tls.Client(raw, &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12})
+conn, err := postgres.Startup(enc, postgres.StartupConfig{ /* … */ })
+```
+
+Three things matter in those lines. Read **exactly one byte**, on the
+socket itself and not through a `bufio.Reader`: bytes read ahead would have
+been slipped in by a third party before encryption, and would be treated as
+coming from the server. On `N`, **close**: carrying on in plaintext is
+exactly what an attacker able to strip one byte is hoping for. And checking
+the certificate (`ServerName`, `RootCAs`) is yours, never
+`InsecureSkipVerify`: an encrypted connection to anyone at all protects
+against nothing. The complete, commented example is in
+[`example_tls_test.go`](../../database/postgres/example_tls_test.go).
+
+Since PostgreSQL 17, the client may also skip the SSLRequest and open TLS
+directly (`sslnegotiation=direct` in libpq): one round trip fewer. The
+protocol then requires the client to announce **ALPN** `postgresql`, and
+the server refuses the handshake without it:
+
+```go
+enc, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", "db.internal:5432",
+    &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12, NextProtos: []string{"postgresql"}})
+```
+
+A server at 16 or older does not understand this form: it only fits when
+you know which server is on the other side.
+
+> **In plain terms: ALPN.** A label the client slips into the TLS handshake
+> to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
+> here). Without it, a server that accepts TLS directly could be fooled by a
+> client that believes it is talking to something else; the label closes
+> that confusion.
+
+The connection `CancelDial` opens goes through the same negotiation: it
+carries the session's secret.
 
 ## Reading
 
@@ -345,7 +408,8 @@ outside the transaction under nobody's identity.
 
 ## What is not there
 
-No connection pool, no automatic resumption of an interrupted load, `md5`
+No connection pool, no automatic resumption of an interrupted load, no
+LISTEN/NOTIFY and no `COPY ... TO STDOUT`, `md5`
 refused, no `money` or `tsvector` types, arrays and column scanners for
 thirteen types only (the table above), and passwords with characters
 outside printable ASCII may fail cleanly (SASLprep normalisation is not
