@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 )
 
 // Header is one field of a request or a response.
@@ -279,7 +280,7 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	if authority != nil && !validAuthority(authority) {
 		return req, 0, fmt.Errorf("%w: :authority %q is not an authority", protocolErr, authority)
 	}
-	// RFC 9113 §8.3.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
+	// RFC 9110 §4.2.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
 	// component needs :authority or host, as HTTP/1.1 needs Host (400).
 	// Without this a handler routing on host saw it missing on two of the
 	// three protocols only. Other schemes, which may have no authority at
@@ -323,13 +324,13 @@ func checkTarget(method, target []byte, protocolErr error) error {
 	return nil
 }
 
-// authorityChar is RFC 3986 §3.2.2's reg-name alphabet — unreserved,
-// sub-delims and the '%' of a percent-encoding — plus the ':' an IP literal
-// needs inside its brackets. A userinfo's '@', a path's '/', a space and
+// authorityChar is RFC 3986 §3.2.2's reg-name alphabet: unreserved and
+// sub-delims. The '%' of a percent-encoding is checked apart, with the two hex
+// digits that must follow it. A userinfo's '@', a path's '/', a space and
 // every control character are outside it, which is what makes the rule below
 // a grammar check and not a list of things to refuse.
 var authorityChar = func() (t [256]bool) {
-	const allowed = "-._~!$&'()*+,;=%:"
+	const allowed = "-._~!$&'()*+,;="
 	for i := range 26 {
 		t['a'+i], t['A'+i] = true, true
 	}
@@ -355,8 +356,14 @@ var authorityChar = func() (t [256]bool) {
 // allows is refused too (RFC 9113 §8.3.1 and RFC 9114 §4.3.1 forbid it, and
 // RFC 9110's Host never had it): "u@h" delivered as a host is how a routing
 // layer reads the host that follows the '@' while the one before it was
-// looked at. Nothing beyond the grammar is checked — an IPv6 literal is not
-// parsed — because the contract leaves the bytes to the handler.
+// looked at.
+//
+// The grammar is RFC 3986 §3.2.2's, whole: a reg-name's '%' starts two hex
+// digits, and an IP literal is an IPv6 address or an IPvFuture. An IPv6
+// address with a zone (RFC 6874's "[fe80::1%25eth0]") is refused: RFC 6874 §4
+// has every client and intermediary remove the zone from an outgoing URI,
+// since it means something only on the host that wrote it, so one that
+// arrives names a link this server cannot know.
 func validAuthority(b []byte) bool {
 	if len(b) == 0 {
 		return false
@@ -364,13 +371,8 @@ func validAuthority(b []byte) bool {
 	host := b
 	if b[0] == '[' {
 		end := indexByte(b, ']')
-		if end < 2 {
+		if end < 0 || !validIPLiteral(b[1:end]) {
 			return false
-		}
-		for _, c := range b[1:end] {
-			if !authorityChar[c] {
-				return false
-			}
 		}
 		host = b[end+1:]
 		if len(host) == 0 {
@@ -380,20 +382,57 @@ func validAuthority(b []byte) bool {
 			return false
 		}
 	}
-	for i, c := range host {
-		if c == ':' {
+	for i := 0; i < len(host); i++ {
+		switch c := host[i]; {
+		case c == ':':
 			for _, d := range host[i+1:] {
 				if d < '0' || d > '9' {
 					return false
 				}
 			}
 			return true
-		}
-		if !authorityChar[c] {
+		case c == '%':
+			if i+2 >= len(host) || !isHex(host[i+1]) || !isHex(host[i+2]) {
+				return false
+			}
+			i += 2
+		case !authorityChar[c]:
 			return false
 		}
 	}
 	return true
+}
+
+// validIPLiteral says whether b, the inside of an authority's brackets, is
+// RFC 3986 §3.2.2's IPv6address or IPvFuture: "v", hex digits, ".", then
+// unreserved, sub-delims and ':'. The IPv6 address is parsed rather than
+// matched character by character; a zone is refused (see validAuthority) and
+// so is a bare IPv4 address, which needs no brackets.
+func validIPLiteral(b []byte) bool {
+	if len(b) > 0 && (b[0] == 'v' || b[0] == 'V') {
+		dot := indexByte(b, '.')
+		if dot < 2 || dot == len(b)-1 {
+			return false
+		}
+		for _, c := range b[1:dot] {
+			if !isHex(c) {
+				return false
+			}
+		}
+		for _, c := range b[dot+1:] {
+			if !authorityChar[c] && c != ':' {
+				return false
+			}
+		}
+		return true
+	}
+	addr, err := netip.ParseAddr(string(b))
+	return err == nil && addr.Is6() && addr.Zone() == ""
+}
+
+// isHex says whether c is one of RFC 3986's HEXDIG, in either case.
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // tchar is RFC 9110's token character set, which both a method and a header

@@ -1150,6 +1150,9 @@ func TestHostIsAnAuthorityOnHTTP1(t *testing.T) {
 		{"a port that is not digits", "GET /x HTTP/1.1\r\nHost: h:8a\r\n\r\n", "400"},
 		{"an unclosed IPv6 literal", "GET /x HTTP/1.1\r\nHost: [::1\r\n\r\n", "400"},
 		{"an IPv6 literal with a port", "GET /x HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n", "200"},
+		{"brackets holding no address", "GET /x HTTP/1.1\r\nHost: [zz]\r\n\r\n", "400"},
+		{"a percent not followed by hex", "GET /x HTTP/1.1\r\nHost: h%zz\r\n\r\n", "400"},
+		{"an IPvFuture", "GET /x HTTP/1.1\r\nHost: [v1.x]\r\n\r\n", "200"},
 		{"OPTIONS *", "OPTIONS * HTTP/1.1\r\nHost: h\r\n\r\n", "200"},
 		{"GET *", "GET * HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 	}

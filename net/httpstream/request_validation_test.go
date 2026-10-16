@@ -35,11 +35,29 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 		{"a port that is not digits", "GET", "/x", ptr("h:8a"), nil, false, ""},
 		{"an IPv6 literal with a port", "GET", "/x", ptr("[::1]:8443"), nil, true, ""},
 		{"an unclosed IPv6 literal", "GET", "/x", ptr("[::1"), nil, false, ""},
+		// RFC 3986 §3.2.2 whole: '%' starts two hex digits, brackets hold an
+		// IPv6 address or an IPvFuture, and an RFC 6874 zone is refused.
+		{"a percent-encoded reg-name", "GET", "/x", ptr("h%41"), nil, true, ""},
+		{"a percent not followed by hex", "GET", "/x", ptr("h%zz"), nil, false, ""},
+		{"a truncated percent-encoding", "GET", "/x", ptr("h%"), nil, false, ""},
+		{"a percent-encoding cut by the port", "GET", "/x", ptr("h%4:80"), nil, false, ""},
+		{"an IPv6 literal", "GET", "/x", ptr("[::1]"), nil, true, ""},
+		{"brackets holding no address", "GET", "/x", ptr("[zz]"), nil, false, ""},
+		{"empty brackets", "GET", "/x", ptr("[]"), nil, false, ""},
+		{"an IPv4 address in brackets", "GET", "/x", ptr("[1.2.3.4]"), nil, false, ""},
+		{"an IPv6 literal with a zone", "GET", "/x", ptr("[fe80::1%25eth0]"), nil, false, ""},
+		{"an IPv6 literal with a raw zone", "GET", "/x", ptr("[fe80::1%eth0]"), nil, false, ""},
+		{"an IPvFuture", "GET", "/x", ptr("[v1.x]"), nil, true, ""},
+		{"an IPvFuture with a port", "GET", "/x", ptr("[v1F.a:b]:80"), nil, true, ""},
+		{"an IPvFuture without a version", "GET", "/x", ptr("[v.x]"), nil, false, ""},
+		{"an IPvFuture without an address", "GET", "/x", ptr("[v1.]"), nil, false, ""},
+		{"an IPvFuture with a slash", "GET", "/x", ptr("[v1.a/b]"), nil, false, ""},
+		{"a colon in a reg-name", "GET", "/x", ptr("a:b:80"), nil, false, ""},
 		{"host agreeing with :authority", "GET", "/x", ptr("h"), ptr("h"), true, ""},
 		{"host disagreeing with :authority", "GET", "/x", ptr("a"), ptr("b"), false, ""},
 		{"OPTIONS *", "OPTIONS", "*", ptr("h"), nil, true, ""},
 		{"GET *", "GET", "*", ptr("h"), nil, false, ""},
-		// RFC 9113 §8.3.1, RFC 9114 §4.3.1: http and https have a mandatory
+		// RFC 9110 §4.2.1, RFC 9114 §4.3.1: http and https have a mandatory
 		// authority component, so a request naming none is malformed, as
 		// HTTP/1.1 answers 400 to a missing Host; a scheme without one is
 		// delivered as it came.
