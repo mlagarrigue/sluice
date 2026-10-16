@@ -126,6 +126,10 @@ type Conn struct {
 	// query is running. Zero for a Conn built by NewConn.
 	cancelKey CancelKey
 
+	// protocol is the version the server settled on during startup, written
+	// once there, like cancelKey. Zero for a Conn built by NewConn.
+	protocol ProtocolVersion
+
 	// cancelDial is the recipe [Connect] was given, kept so a context that
 	// ends mid-statement can reach the server through a second connection.
 	// Nil for a Conn built by NewConn.
@@ -356,6 +360,13 @@ func (c *Conn) Err() error { return c.broken }
 // decoded against: a client that assumes UTF-8 and microsecond timestamps can
 // check here rather than assume. A Conn from [NewConn] has none of them.
 func (c *Conn) Parameter(name string) string { return c.params[name] }
+
+// Protocol returns the protocol version the server settled on during
+// startup: [Config.MaxProtocol], or the older version a
+// NegotiateProtocolVersion named in its place — [Protocol30] from any
+// PostgreSQL before 18 asked for 3.2. A Conn from [NewConn] reports zero, it
+// never saw a startup.
+func (c *Conn) Protocol() ProtocolVersion { return c.protocol }
 
 // Fetch says how a query asks the server for its rows: in batches, or all at
 // once. The zero value, FetchAuto, decides per statement.

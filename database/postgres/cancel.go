@@ -27,7 +27,7 @@ const cancelRequestCode = 1234<<16 | 5678
 // the connection.
 //
 // Secret holds the key's bytes as the server sent them. Under protocol 3.0
-// they are always four; under 3.2 ([Config.ProtocolMinor]) they are 4
+// they are always four; under 3.2 ([Protocol32]) they are 4
 // to 256 — PostgreSQL 18 sends 32, and a pooler in between may send more. A
 // string rather than a []byte so that a CancelKey copied to another
 // goroutine shares nothing it could change under the connection, and stays
@@ -154,16 +154,16 @@ func writeCancel(rw io.Writer, key CancelKey) error {
 }
 
 // parseBackendKeyData reads the pid and secret the server sends once, during
-// startup. minor is the protocol version in force: before 3.2 the secret is
-// exactly four bytes, from 3.2 on it runs to the end of the message, 4 to 256
-// bytes.
-func parseBackendKeyData(body []byte, minor uint32) (CancelKey, error) {
+// startup. version is the protocol version in force: before 3.2 the secret
+// is exactly four bytes, from 3.2 on it runs to the end of the message, 4 to
+// 256 bytes.
+func parseBackendKeyData(body []byte, version ProtocolVersion) (CancelKey, error) {
 	lo, hi := 4+minCancelSecret, 4+maxCancelSecret
-	if minor < 2 {
+	if version < Protocol32 {
 		hi = lo
 	}
 	if len(body) < lo || len(body) > hi {
-		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes under protocol 3.%d, want %d to %d", ErrProtocol, len(body), minor, lo, hi)
+		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes under protocol %v, want %d to %d", ErrProtocol, len(body), version, lo, hi)
 	}
 	return CancelKey{
 		PID:    binary.BigEndian.Uint32(body[0:4]),

@@ -128,8 +128,8 @@ func TestStartupTrust(t *testing.T) {
 	if len(types) != 0 {
 		t.Errorf("client sent %q after the startup packet, want nothing", types)
 	}
-	if v := binary.BigEndian.Uint32(startup[:4]); v != 3<<16 {
-		t.Errorf("protocol version = %#x, want %#x", v, 3<<16)
+	if v := ProtocolVersion(binary.BigEndian.Uint32(startup[:4])); v != Protocol32 {
+		t.Errorf("protocol version = %v, want %v, the default", v, Protocol32)
 	}
 	want := "user\x00orders\x00database\x00shop\x00client_encoding\x00UTF8\x00\x00"
 	if got := string(startup[4:]); got != want {
@@ -957,12 +957,71 @@ func TestStartupFollowsANegotiatedDowngrade(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
 	}}
-	conn, err := startup(srv, Config{User: "u", ProtocolMinor: 2})
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32})
 	if err != nil {
 		t.Fatalf("Startup returned %v", err)
 	}
 	if got := conn.CancelKey().Secret; got != testSecret {
 		t.Errorf("CancelKey().Secret = %x, want %x", got, testSecret)
+	}
+	if got := conn.Protocol(); got != Protocol30 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol30)
+	}
+}
+
+// Without MaxProtocol the startup packet asks for 3.2 (TestStartupTrust),
+// and a server that does not negotiate leaves the connection under it.
+func TestStartupKeepsProtocol32WithoutANegotiation(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{append(beAuth(0, ""), beReady()...)}}
+	conn, err := startup(srv, Config{User: "u"})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.Protocol(); got != Protocol32 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol32)
+	}
+}
+
+// MaxProtocol 3.0 is what the startup packet carries, for a pooler that
+// refuses a newer version instead of negotiating.
+func TestStartupAsksForTheMaxProtocol(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{append(beAuth(0, ""), beReady()...)}}
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol30})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.Protocol(); got != Protocol30 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol30)
+	}
+	startup, _, _ := clientTraffic(t, srv.sent.Bytes())
+	if v := ProtocolVersion(binary.BigEndian.Uint32(startup[:4])); v != Protocol30 {
+		t.Errorf("startup packet asks for %v, want %v", v, Protocol30)
+	}
+}
+
+// A server that negotiates below MinProtocol is closed on before it
+// authenticates anything, with the named error.
+func TestStartupRefusesANegotiationBelowMinProtocol(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
+	}}
+	_, err := startup(srv, Config{User: "u", MinProtocol: Protocol32})
+	if !errors.Is(err, ErrProtocolVersion) || !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("Startup returned %v, want ErrProtocolVersion and ErrConnBroken", err)
+	}
+	if !strings.Contains(err.Error(), "3.0") || !strings.Contains(err.Error(), "3.2") {
+		t.Errorf("error %q does not name both versions", err)
+	}
+	if !srv.closed {
+		t.Error("connection left open after the refusal")
+	}
+}
+
+func TestProtocolVersionString(t *testing.T) {
+	for v, want := range map[ProtocolVersion]string{Protocol30: "3.0", Protocol32: "3.2", 0: "0.0", 4<<16 | 17: "4.17"} {
+		if got := v.String(); got != want {
+			t.Errorf("ProtocolVersion(%#x).String() = %q, want %q", uint32(v), got, want)
+		}
 	}
 }
 
@@ -983,27 +1042,27 @@ func TestStartupToleratesADeclinedProtocolOption(t *testing.T) {
 func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		minor  int
+		max    ProtocolVersion
 		params map[string]string
 		msgs   []byte
 	}{
-		{"above the version asked", 0, nil, beNegotiate(2)},
-		{"to 3.1", 2, nil, beNegotiate(1)},
-		{"the minor alone, without the major", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x00\x00\x00\x00\x00\x00\x00")},
-		{"another major", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x02\x00\x00\x00\x00\x00\x00")},
-		{"declining nothing", 2, nil, beNegotiate(2)},
-		{"an option never sent", 2, nil, beNegotiate(0, "_pq_.other")},
-		{"an option without the prefix", 2, map[string]string{"search_path": "x"}, beNegotiate(0, "search_path")},
-		{"a count the body cannot hold", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\xff\xff\xff\xff")},
-		{"a name without its terminator", 2, map[string]string{"_pq_.a": "1"}, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x01_pq_.a")},
-		{"bytes after the last option", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x00x")},
-		{"a truncated body", 2, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00")},
-		{"sent twice", 2, nil, append(beNegotiate(0), beNegotiate(0)...)},
-		{"after authentication began", 2, nil, append(beAuth(0, ""), beNegotiate(0)...)},
+		{"above the version asked", Protocol30, nil, beNegotiate(2)},
+		{"to 3.1", Protocol32, nil, beNegotiate(1)},
+		{"the minor alone, without the major", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x00\x00\x00\x00\x00\x00\x00")},
+		{"another major", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x02\x00\x00\x00\x00\x00\x00")},
+		{"declining nothing", Protocol32, nil, beNegotiate(2)},
+		{"an option never sent", Protocol32, nil, beNegotiate(0, "_pq_.other")},
+		{"an option without the prefix", Protocol32, map[string]string{"search_path": "x"}, beNegotiate(0, "search_path")},
+		{"a count the body cannot hold", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\xff\xff\xff\xff")},
+		{"a name without its terminator", Protocol32, map[string]string{"_pq_.a": "1"}, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x01_pq_.a")},
+		{"bytes after the last option", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x00x")},
+		{"a truncated body", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00")},
+		{"sent twice", Protocol32, nil, append(beNegotiate(0), beNegotiate(0)...)},
+		{"after authentication began", Protocol32, nil, append(beAuth(0, ""), beNegotiate(0)...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{append(tc.msgs, append(beAuth(0, ""), beReady()...)...)}}
-			_, err := startup(srv, Config{User: "u", ProtocolMinor: tc.minor, Params: tc.params})
+			_, err := startup(srv, Config{User: "u", MaxProtocol: tc.max, Params: tc.params})
 			if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrConnBroken) {
 				t.Fatalf("Startup returned %v, want ErrProtocol and ErrConnBroken", err)
 			}
@@ -1011,16 +1070,27 @@ func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
 	}
 }
 
-// Only the minor versions this package speaks may be asked for, and a wrong
-// one is refused before the server hears anything.
-func TestStartupRefusesAnUnknownProtocolMinor(t *testing.T) {
-	for _, minor := range []int{-1, 1, 3} {
+// Only the versions this package speaks may be asked for or required, a
+// minimum above the maximum satisfies nothing, and each is refused before
+// the server hears anything.
+func TestStartupRefusesAnUnspokenProtocolVersion(t *testing.T) {
+	for _, cfg := range []Config{
+		{MaxProtocol: 3<<16 | 1},
+		{MaxProtocol: 3<<16 | 3},
+		{MaxProtocol: 2 << 16},
+		{MaxProtocol: 4<<16 | 2},
+		{MaxProtocol: 2},
+		{MinProtocol: 3<<16 | 1},
+		{MinProtocol: 3<<16 | 3},
+		{MinProtocol: Protocol32, MaxProtocol: Protocol30},
+	} {
+		cfg.User = "u"
 		srv := &fakeServer{}
-		if _, err := startup(srv, Config{User: "u", ProtocolMinor: minor}); err == nil {
-			t.Errorf("Startup accepted ProtocolMinor %d", minor)
+		if _, err := startup(srv, cfg); err == nil {
+			t.Errorf("Startup accepted MinProtocol %v, MaxProtocol %v", cfg.MinProtocol, cfg.MaxProtocol)
 		}
 		if srv.sent.Len() != 0 {
-			t.Errorf("ProtocolMinor %d: % x went to the server", minor, srv.sent.Bytes())
+			t.Errorf("MinProtocol %v, MaxProtocol %v: % x went to the server", cfg.MinProtocol, cfg.MaxProtocol, srv.sent.Bytes())
 		}
 	}
 }

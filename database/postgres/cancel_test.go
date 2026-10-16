@@ -303,28 +303,28 @@ func TestCancelKeyStringHidesTheSecret(t *testing.T) {
 // Before 3.2 the secret is exactly four bytes; from 3.2 on it is 4 to 256.
 func TestParseBackendKeyDataBounds(t *testing.T) {
 	for _, tc := range []struct {
-		minor uint32
-		n     int
-		ok    bool
+		version ProtocolVersion
+		n       int
+		ok      bool
 	}{
-		{0, 0, false},
-		{0, 4, false},
-		{0, 7, false},
-		{0, 8, true},
-		{0, 9, false},
-		{0, 36, false},
-		{2, 7, false},
-		{2, 8, true},
-		{2, 36, true},
-		{2, 260, true},
-		{2, 261, false},
+		{Protocol30, 0, false},
+		{Protocol30, 4, false},
+		{Protocol30, 7, false},
+		{Protocol30, 8, true},
+		{Protocol30, 9, false},
+		{Protocol30, 36, false},
+		{Protocol32, 7, false},
+		{Protocol32, 8, true},
+		{Protocol32, 36, true},
+		{Protocol32, 260, true},
+		{Protocol32, 261, false},
 	} {
-		_, err := parseBackendKeyData(make([]byte, tc.n), tc.minor)
+		_, err := parseBackendKeyData(make([]byte, tc.n), tc.version)
 		if tc.ok && err != nil {
-			t.Errorf("parseBackendKeyData(%d bytes, 3.%d) = %v, want nil", tc.n, tc.minor, err)
+			t.Errorf("parseBackendKeyData(%d bytes, %v) = %v, want nil", tc.n, tc.version, err)
 		}
 		if !tc.ok && !errors.Is(err, ErrProtocol) {
-			t.Errorf("parseBackendKeyData(%d bytes, 3.%d) = %v, want ErrProtocol", tc.n, tc.minor, err)
+			t.Errorf("parseBackendKeyData(%d bytes, %v) = %v, want ErrProtocol", tc.n, tc.version, err)
 		}
 	}
 }
@@ -337,7 +337,7 @@ func TestProtocol32LongCancelKeyRoundTrips(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		append(beAuth(0, ""), append(beBackendKeyDataSecret(secret), beReadyForQuery()...)...),
 	}}
-	conn, err := startup(srv, Config{User: "u", ProtocolMinor: 2})
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32})
 	if err != nil {
 		t.Fatalf("Startup returned %v", err)
 	}

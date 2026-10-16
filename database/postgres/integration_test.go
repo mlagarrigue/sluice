@@ -1330,7 +1330,7 @@ func TestIntegrationConnectLeavesNoDeadline(t *testing.T) {
 // query. Only a real server can prove this one — it is the server's
 // cancellation handling that the scripted tests cannot disagree with.
 func TestIntegrationCancelInterruptsTheRunningStatement(t *testing.T) {
-	cancelInterrupts(t, dialCancellable(t, 0))
+	cancelInterrupts(t, dialCancellable(t, postgres.Protocol30))
 }
 
 // Protocol 3.2 against the server in front of it. Before 18 the server
@@ -1338,7 +1338,7 @@ func TestIntegrationCancelInterruptsTheRunningStatement(t *testing.T) {
 // skipped by name. From 18 on the secret is longer, and the CancelRequest
 // that carries it whole is the one that interrupts pg_sleep.
 func TestIntegrationProtocol32LongCancelKey(t *testing.T) {
-	conn := dialCancellable(t, 2)
+	conn := dialCancellable(t, postgres.Protocol32)
 	secret := len(conn.CancelKey().Secret)
 	version := conn.Parameter("server_version")
 	major, _, _ := strings.Cut(version, ".")
@@ -1355,6 +1355,66 @@ func TestIntegrationProtocol32LongCancelKey(t *testing.T) {
 	cancelInterrupts(t, conn)
 }
 
+// The default asks for 3.2 and Protocol reports what the server settled on:
+// 3.0 from a server before 18, which negotiates down, 3.2 from 18 on. CI runs
+// both majors; the container here has one of them.
+func TestIntegrationProtocolNegotiated(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	conn := dialWith(t, addr, cfg)
+	version := conn.Parameter("server_version")
+	want := postgres.Protocol32
+	if serverMajor(t, version) < 18 {
+		want = postgres.Protocol30
+	}
+	if got := conn.Protocol(); got != want {
+		t.Fatalf("PostgreSQL %s: Protocol() = %v, want %v", version, got, want)
+	}
+	cfg.MaxProtocol = postgres.Protocol30
+	if got := dialWith(t, addr, cfg).Protocol(); got != postgres.Protocol30 {
+		t.Errorf("PostgreSQL %s, MaxProtocol 3.0: Protocol() = %v, want 3.0", version, got)
+	}
+}
+
+// MinProtocol 3.2 refuses a server before 18 with the named error, and is
+// satisfied from 18 on.
+func TestIntegrationMinProtocolRefusesAnOlderServer(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	version := dialWith(t, addr, cfg).Parameter("server_version")
+	cfg.MinProtocol = postgres.Protocol32
+	if serverMajor(t, version) >= 18 {
+		if got := dialWith(t, addr, cfg).Protocol(); got != postgres.Protocol32 {
+			t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Protocol() = %v, want 3.2", version, got)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Connect succeeded under %v", version, conn.Protocol())
+	}
+	if !errors.Is(err, postgres.ErrProtocolVersion) {
+		t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Connect returned %v, want ErrProtocolVersion", version, err)
+	}
+	t.Logf("PostgreSQL %s refused: %v", version, err)
+}
+
+// serverMajor reads the major version out of server_version, "17.2" or
+// "18beta1".
+func serverMajor(t *testing.T, version string) int {
+	t.Helper()
+	end := 0
+	for end < len(version) && version[end] >= '0' && version[end] <= '9' {
+		end++
+	}
+	n, err := strconv.Atoi(version[:end])
+	if err != nil {
+		t.Fatalf("server_version %q has no major version", version)
+	}
+	return n
+}
+
 // A protocol option the server does not know comes back in
 // NegotiateProtocolVersion, and the connection goes on without it.
 func TestIntegrationDeclinedProtocolOption(t *testing.T) {
@@ -1363,12 +1423,12 @@ func TestIntegrationDeclinedProtocolOption(t *testing.T) {
 	_ = dialWith(t, addr, cfg)
 }
 
-// dialCancellable opens a connection asking for protocol 3.minor; the
+// dialCancellable opens a connection asking for protocol version; the
 // recipe it was opened with is the one each cancellation dials.
-func dialCancellable(t *testing.T, minor int) *postgres.Conn {
+func dialCancellable(t *testing.T, version postgres.ProtocolVersion) *postgres.Conn {
 	t.Helper()
 	addr, cfg := pgTarget(t)
-	cfg.ProtocolMinor = minor
+	cfg.MaxProtocol = version
 	conn := dialWith(t, addr, cfg)
 	if !conn.CancelKey().Known() {
 		t.Fatal("the server sent no cancellation key")
@@ -1419,7 +1479,7 @@ func cancelInterrupts(t *testing.T, conn *postgres.Conn) {
 // Exec waits on the server the way Query does, and the same deadline reaches
 // it through the same recipe.
 func TestIntegrationCancelInterruptsExec(t *testing.T) {
-	conn := dialCancellable(t, 0)
+	conn := dialCancellable(t, postgres.Protocol30)
 	cancelEnds(t, conn, func(ctx context.Context) error {
 		return conn.Exec(ctx, "SELECT pg_sleep(5)")
 	})
@@ -1429,7 +1489,7 @@ func TestIntegrationCancelInterruptsExec(t *testing.T) {
 // trigger sleeping five seconds per row. The deadline reaches it, the
 // transaction is rolled back, and the connection serves the next query.
 func TestIntegrationCancelInterruptsCopy(t *testing.T) {
-	conn := dialCancellable(t, 0)
+	conn := dialCancellable(t, postgres.Protocol30)
 	for _, sql := range []string{
 		"CREATE TEMP TABLE sluice_cancel_copy (id bigint)",
 		"CREATE FUNCTION pg_temp.sluice_slow_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$",
@@ -1453,7 +1513,7 @@ func TestIntegrationCancelInterruptsCopy(t *testing.T) {
 // A pipeline runs its parts without a pause the client could stop at, so
 // the cancellation is what ends a part that sleeps.
 func TestIntegrationCancelInterruptsPipeline(t *testing.T) {
-	conn := dialCancellable(t, 0)
+	conn := dialCancellable(t, postgres.Protocol30)
 	cancelEnds(t, conn, func(ctx context.Context) error {
 		tx, err := conn.Begin(t.Context(), postgres.TxConfig{})
 		if err != nil {

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,12 @@ var ErrAuth = errors.New("postgres: the authentication exchange failed")
 // implement. The error names the method, because "authentication failed" with
 // no method named is the least actionable message a connector can produce.
 var ErrAuthUnsupported = errors.New("postgres: unsupported authentication method")
+
+// ErrProtocolVersion reports a server that settled on a protocol version
+// below [Config.MinProtocol]. The protocol asks a client that cannot work
+// with the older version to close the connection at once, and this one does:
+// nothing has been authenticated yet, and the error names both versions.
+var ErrProtocolVersion = errors.New("postgres: the server does not speak the protocol version required")
 
 // startupRefusal is the server refusing the connection during startup — a
 // wrong password, pg_hba, a database that does not exist.
@@ -110,8 +117,36 @@ type tlsStater interface {
 	ConnectionState() tls.ConnectionState
 }
 
-// protocolMajor is the major version this package speaks, packed in the high
-// half of the startup packet's version word; the minor goes in the low half.
+// ProtocolVersion is a version of the frontend/backend protocol, written the
+// way the startup packet carries it: the major version in the high 16 bits,
+// the minor in the low 16. This package speaks two, [Protocol30] and
+// [Protocol32]. [Config.MaxProtocol] and [Config.MinProtocol] bound the one a
+// connection asks for and the one it accepts; [Conn.Protocol] reports the one
+// the server settled on.
+type ProtocolVersion uint32
+
+const (
+	// Protocol30 is protocol 3.0, which every server since PostgreSQL 7.4
+	// speaks.
+	Protocol30 ProtocolVersion = 3 << 16
+
+	// Protocol32 is protocol 3.2, which PostgreSQL 18 introduced. What it
+	// changes here is the cancellation key: its secret grows from four bytes
+	// to as many as 256 ([CancelKey]), which a server can no longer have
+	// guessed. There is no 3.1: it was reserved and never released.
+	Protocol32 ProtocolVersion = 3<<16 | 2
+)
+
+// String returns the version the way PostgreSQL writes it: "3.2".
+func (v ProtocolVersion) String() string {
+	return strconv.FormatUint(uint64(v>>16), 10) + "." + strconv.FormatUint(uint64(v&0xffff), 10)
+}
+
+// spoken reports whether v is a version this package speaks.
+func (v ProtocolVersion) spoken() bool { return v == Protocol30 || v == Protocol32 }
+
+// protocolMajor is the major version this package speaks, the high half of
+// every [ProtocolVersion] it accepts.
 const protocolMajor = 3 << 16
 
 // maxStartupMessage bounds what a server may send before it has proved
@@ -233,18 +268,25 @@ type Config struct {
 	// is written in one CopyData chunk.
 	MaxMessage int
 
-	// ProtocolMinor is the minor protocol version asked for: 0, the default,
-	// asks for 3.0, which every server since 7.4 speaks; 2 asks for 3.2,
-	// which PostgreSQL 18 introduced. [Connect] refuses any other value
-	// before anything is sent — there is no 3.1, and nothing past 3.2 exists
-	// yet.
+	// MaxProtocol is the protocol version the startup packet asks for. Zero,
+	// the default, asks for [Protocol32]. A server that speaks only an older
+	// one — every PostgreSQL before 18 — answers with
+	// NegotiateProtocolVersion and the connection continues under the version
+	// it names, 3.0; nothing breaks, and the cancellation key is the
+	// four-byte one. Setting [Protocol30] asks for 3.0 outright, for a pooler
+	// or proxy in between that refuses a newer version instead of
+	// negotiating it.
+	MaxProtocol ProtocolVersion
+
+	// MinProtocol is the oldest protocol version the connection accepts.
+	// Zero, the default, accepts any version this package speaks. A server
+	// that settles below it is closed on before authentication, and [Connect]
+	// returns [ErrProtocolVersion]: [Protocol32] here refuses a server that
+	// could only hand out the guessable four-byte cancellation key.
 	//
-	// What 3.2 changes here is the cancellation key: its secret grows from
-	// four bytes to as many as 256 ([CancelKey]), which a server can no
-	// longer have guessed. A server older than 18 answers 3.2 with
-	// NegotiateProtocolVersion and the connection continues under 3.0;
-	// nothing breaks, and the key is the four-byte one.
-	ProtocolMinor int
+	// [Connect] refuses, before anything is sent, a version this package
+	// does not speak in either field, and a MinProtocol above MaxProtocol.
+	MinProtocol ProtocolVersion
 
 	// CancelTimeout bounds each cancellation the connection sends on its
 	// own when a context ends mid-statement: opening the second
@@ -264,6 +306,14 @@ type Config struct {
 	// completed. Nil means [slog.Default]. The cancellation key's secret is
 	// never logged.
 	Logger *slog.Logger
+}
+
+// maxProtocol is [Config.MaxProtocol] with its default applied.
+func (cfg Config) maxProtocol() ProtocolVersion {
+	if cfg.MaxProtocol == 0 {
+		return Protocol32
+	}
+	return cfg.MaxProtocol
 }
 
 // defaultCancelTimeout is [Config.CancelTimeout] when it is zero.
@@ -341,8 +391,14 @@ func startupBody(cfg Config) ([]byte, error) {
 	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
 		return nil, fmt.Errorf("postgres: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
 	}
-	if v := cfg.ProtocolMinor; v != 0 && v != 2 {
-		return nil, fmt.Errorf("postgres: Config.ProtocolMinor %d asks for protocol 3.%d — this package speaks 3.0 (0) and 3.2 (2)", v, v)
+	if v := cfg.MaxProtocol; v != 0 && !v.spoken() {
+		return nil, fmt.Errorf("postgres: Config.MaxProtocol asks for protocol %v — this package speaks %v and %v", v, Protocol30, Protocol32)
+	}
+	if v := cfg.MinProtocol; v != 0 && !v.spoken() {
+		return nil, fmt.Errorf("postgres: Config.MinProtocol requires protocol %v — this package speaks %v and %v", v, Protocol30, Protocol32)
+	}
+	if lo, hi := cfg.MinProtocol, cfg.maxProtocol(); lo > hi {
+		return nil, fmt.Errorf("postgres: Config.MinProtocol %v is above Config.MaxProtocol %v — no version satisfies both", lo, hi)
 	}
 	if cfg.CancelTimeout < 0 {
 		return nil, fmt.Errorf("postgres: Config.CancelTimeout %v is negative — zero means the default, %v", cfg.CancelTimeout, defaultCancelTimeout)
@@ -376,7 +432,7 @@ func startupBody(cfg Config) ([]byte, error) {
 		}
 	}
 
-	b := binary.BigEndian.AppendUint32(nil, protocolMajor|uint32(cfg.ProtocolMinor)) //nolint:gosec // G115: 0 or 2, checked above
+	b := binary.BigEndian.AppendUint32(nil, uint32(cfg.maxProtocol()))
 	b = appendParam(b, "user", cfg.User)
 	if cfg.Database != "" {
 		// An empty Database means the server's default, which is a database
@@ -444,10 +500,10 @@ type startupState struct {
 	// what Config.RequireChannelBinding requires.
 	bound bool
 
-	// minor is the minor protocol version in force: the one asked for, until
-	// a NegotiateProtocolVersion lowers it. It decides how long a
+	// version is the protocol version in force: the one asked for, until a
+	// NegotiateProtocolVersion lowers it. It decides how long a
 	// BackendKeyData may be.
-	minor uint32
+	version ProtocolVersion
 
 	// negotiated is set once a NegotiateProtocolVersion has been read, and
 	// authenticating once any Authentication message has: the server settles
@@ -458,7 +514,7 @@ type startupState struct {
 
 // authenticate drives the exchange from the startup packet to ReadyForQuery.
 func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
-	st := startupState{minor: uint32(cfg.ProtocolMinor)} //nolint:gosec // G115: 0 or 2, checked by startupBody
+	st := startupState{version: cfg.maxProtocol()}
 	for {
 		m, err := c.r.Next()
 		if err != nil {
@@ -477,11 +533,14 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 				return c.breakConn(fmt.Errorf("%w: NegotiateProtocolVersion after the server had already settled the version", ErrProtocol))
 			}
 			st.negotiated = true
-			minor, err := negotiateProtocol(m.Body, st.minor, cfg.Params)
+			version, err := negotiateProtocol(m.Body, st.version, cfg.Params)
 			if err != nil {
 				return c.breakConn(err)
 			}
-			st.minor = minor
+			if version < cfg.MinProtocol {
+				return c.breakConn(fmt.Errorf("%w: the server settled on protocol %v and Config.MinProtocol is %v", ErrProtocolVersion, version, cfg.MinProtocol))
+			}
+			st.version = version
 
 		case pgwire.BackendAuthentication:
 			st.authenticating = true
@@ -502,7 +561,7 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			// The cancellation key, kept for [CancelRequest]. It is a secret
 			// and it stays one: [Conn.CancelKey] is the only way out of here,
 			// and [CancelKey.String] refuses to print it.
-			key, err := parseBackendKeyData(m.Body, st.minor)
+			key, err := parseBackendKeyData(m.Body, st.version)
 			if err != nil {
 				return c.breakConn(err)
 			}
@@ -530,6 +589,7 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 				return c.breakConn(fmt.Errorf("%w: ReadyForQuery with a %d-byte body %q during startup, want one status byte", ErrProtocol, len(m.Body), m.Body))
 			}
 			c.noteTxStatus(m.Body)
+			c.protocol = st.version
 			// The single exit, and therefore the single place the mutual half
 			// of the exchange is enforced. A server that ran a SCRAM exchange
 			// and then skipped its final message would otherwise have proved
@@ -557,7 +617,7 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 	}
 }
 
-// negotiateProtocol reads a NegotiateProtocolVersion and returns the minor
+// negotiateProtocol reads a NegotiateProtocolVersion and returns the
 // version the connection continues under.
 //
 // The server sends it when it speaks an older minor version than the one
@@ -567,28 +627,29 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 // [Config.Params] asked for it knowing that. What is refused is a
 // message no server sends: a version above the one asked for, one this
 // package does not speak, an option nobody asked for, or a message that
-// declines nothing at all.
-func negotiateProtocol(body []byte, asked uint32, params map[string]string) (uint32, error) {
+// declines nothing at all. Whether the version is one the caller accepts is
+// [Config.MinProtocol]'s business, judged by the caller of this function.
+func negotiateProtocol(body []byte, asked ProtocolVersion, params map[string]string) (ProtocolVersion, error) {
 	if len(body) < 8 {
 		return 0, fmt.Errorf("%w: NegotiateProtocolVersion is %d bytes, want at least 8", ErrProtocol, len(body))
 	}
 	// The documentation calls this field the newest minor version, but the
 	// server writes the whole version word, major in the high half, as the
-	// startup packet carries it: PostgreSQL 17 answers 3.2 with 0x00030000.
-	version := binary.BigEndian.Uint32(body[0:4])
+	// startup packet carries it: PostgreSQL 17 answers 3.2 with 0x00030000
+	// (backend_startup.c sends FrontendProtocol, Min(asked, latest)).
+	version := ProtocolVersion(binary.BigEndian.Uint32(body[0:4]))
 	count := binary.BigEndian.Uint32(body[4:8])
 	rest := body[8:]
 	if version&^0xffff != protocolMajor {
-		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol %d.%d, under a request for 3.%d", ErrProtocol, version>>16, version&0xffff, asked)
+		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol %v, under a request for %v", ErrProtocol, version, asked)
 	}
-	minor := version & 0xffff
-	if minor > asked {
-		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol 3.%d, above the 3.%d asked for", ErrProtocol, minor, asked)
+	if version > asked {
+		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol %v, above the %v asked for", ErrProtocol, version, asked)
 	}
-	if minor != 0 && minor != 2 {
+	if !version.spoken() {
 		// 3.1 was reserved and never released: a server naming it is not
 		// one this package can follow, and the protocol says to close.
-		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol 3.%d, which this package does not speak", ErrProtocol, minor)
+		return 0, fmt.Errorf("%w: NegotiateProtocolVersion offers protocol %v, which this package does not speak", ErrProtocol, version)
 	}
 	// Each name is at least its "_pq_." prefix and a NUL: a count the body
 	// cannot hold is refused before the loop trusts it.
@@ -609,10 +670,10 @@ func negotiateProtocol(body []byte, asked uint32, params map[string]string) (uin
 	if len(rest) != 0 {
 		return 0, fmt.Errorf("%w: NegotiateProtocolVersion has %d bytes after its last option", ErrProtocol, len(rest))
 	}
-	if minor == asked && count == 0 {
+	if version == asked && count == 0 {
 		return 0, fmt.Errorf("%w: NegotiateProtocolVersion declines neither the version nor any option", ErrProtocol)
 	}
-	return minor, nil
+	return version, nil
 }
 
 // authStep answers one AuthenticationRequest.
