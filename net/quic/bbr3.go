@@ -335,12 +335,13 @@ func (b *bbr3) bdpMultiple(bw, gain float64) int {
 	return int(gain * bw * b.minRTT.Seconds())
 }
 
-// quantizationBudget is BBRQuantizationBudget (§5.6.4.2): three send
-// quanta — datagrams here — and four datagrams at least, two more in UP.
-// Three quanta is the TCP offload budget; -06 gives QUIC one (§5.5.8.2),
-// which the four-datagram floor makes the same volume.
+// quantizationBudget is BBRQuantizationBudget (§5.6.4.2): the offload
+// budget, which for QUIC is one send quantum (§5.5.8.2) — a datagram here —
+// and four datagrams at least, two more in UP. The segmentation offload
+// writes what the pacer already let out, it schedules nothing ahead, so
+// the budget has no pacing offload to add.
 func (b *bbr3) quantizationBudget(volume int) int {
-	volume = max(volume, 3*b.maxDatagram, b.minPipeCwnd())
+	volume = max(volume, b.maxDatagram, b.minPipeCwnd())
 	if b.state == bbr3ProbeBWUp {
 		volume += 2 * b.maxDatagram
 	}
@@ -989,7 +990,7 @@ func (b *bbr3) onLost(ev lossEvent) {
 		b.recoveryStart = ev.now
 	}
 	if b.bwProbeSamples && ev.crossing.size > 0 {
-		b.handleInflightTooHigh(ev.now, inflightAtLoss(ev.crossing))
+		b.handleInflightTooHigh(ev.now, inflightAtLoss(ev.crossing), ev.crossing.appLimited)
 	}
 }
 
@@ -1011,13 +1012,16 @@ func (b *bbr3) noteCongestion() {
 // 2% that bounds inflight_longterm at the current flight — the volume the
 // network marked at — and sends ProbeBW_UP DOWN. No recovery period: BBR
 // cuts nothing on entering one, and the marked packets were delivered.
+// The bound is set even application-limited: a mark is a count without
+// packets (markEvent), so no P.is_app_limited to read, and the flight it
+// names is the one the network marked now.
 func (b *bbr3) onMarked(ev markEvent) {
 	b.noteCongestion()
 	b.markedInRound += ev.packets * b.maxDatagram
 	if !b.bwProbeSamples || !b.roundTooHigh(b.inFlight) {
 		return
 	}
-	b.handleInflightTooHigh(ev.now, b.inFlight)
+	b.handleInflightTooHigh(ev.now, b.inFlight, false)
 }
 
 // inflightAtLoss is InflightAtLoss (§5.5.10.2): the prefix of the packet
@@ -1033,12 +1037,19 @@ func inflightAtLoss(p lostPacket) int {
 // handleInflightTooHigh is BBRHandleInflightTooHigh: once per probe, the
 // bound drops to the volume the losses name, never under 0.7 of the
 // target (CUBIC's decrease), a probe in UP goes DOWN, and the next probe
-// takes precaution (§5.3.3.6). The draft also records undo_state there,
-// left out with the undo (bbr3).
-func (b *bbr3) handleInflightTooHigh(now time.Time, txInFlight int) {
+// takes precaution (§5.3.3.6). The bound stays where it is when the
+// losses were sent application-limited (l.3879): a flight the application
+// did not fill measures nothing of the path. UP still goes DOWN — the
+// "regardless of the application-limited state" of test case A.6
+// (l.5226-5228), which reads as the transition, the pseudocode keeping
+// the guard on the bound. The draft also records undo_state there, left
+// out with the undo (bbr3).
+func (b *bbr3) handleInflightTooHigh(now time.Time, txInFlight int, appLimited bool) {
 	b.prevProbeTooHigh = true
 	b.bwProbeSamples = false // only react once per bw probe
-	b.inflightLongterm = max(txInFlight, int(bbr3Beta*float64(b.targetInflight())))
+	if !appLimited {
+		b.inflightLongterm = max(txInFlight, int(bbr3Beta*float64(b.targetInflight())))
+	}
 	if b.state == bbr3ProbeBWUp {
 		b.startProbeBWDown(now)
 	}

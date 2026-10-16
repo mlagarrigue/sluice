@@ -684,6 +684,9 @@ func TestLossesCountTheirRangesAndCrossing(t *testing.T) {
 	var rtt rttEstimator
 	now := time.Now()
 	for pn := range uint64(10) {
+		if pn == 6 {
+			est.markAppLimited(10600) // the application ran dry: 6 on leaves application-limited
+		}
 		p := sentPacket{pn: pn, sentAt: now.Add(-time.Duration(10-pn) * time.Millisecond), size: 100, ackEliciting: true}
 		est.onSent(&p, 10000+int(pn)*100)
 		s.record(p)
@@ -711,7 +714,7 @@ func TestLossesCountTheirRangesAndCrossing(t *testing.T) {
 	}
 	// 9: 6 is lost after 5 was acknowledged, a second range.
 	out = ack(9)
-	if want := (lostPacket{size: 100, txInFlight: 10700, lost: 400}); out.lostRanges != 1 || out.crossing != want {
+	if want := (lostPacket{size: 100, txInFlight: 10700, lost: 400, appLimited: true}); out.lostRanges != 1 || out.crossing != want {
 		t.Fatalf("third batch: %d ranges, crossing %+v, want 1 and %+v", out.lostRanges, out.crossing, want)
 	}
 	if est.lost != 400 {

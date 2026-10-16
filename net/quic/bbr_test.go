@@ -109,7 +109,7 @@ func (p *bbrPath) lose(n int) {
 	for _, s := range p.queue[:n] {
 		p.lost += 1200
 		if lost := p.lost - s.lost; ev.crossing.size == 0 && lossTooHigh(lost, s.txInFlight) {
-			ev.crossing = lostPacket{size: 1200, txInFlight: s.txInFlight, lost: lost}
+			ev.crossing = lostPacket{size: 1200, txInFlight: s.txInFlight, lost: lost, appLimited: s.appLimited}
 		}
 	}
 	p.queue = p.queue[n:]

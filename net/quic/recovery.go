@@ -531,7 +531,7 @@ func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryE
 		// C.lost as it stands after this packet: the scan adds the batch
 		// to it when done.
 		if lost := est.lost + out.lostBytes - p.lost; lossTooHigh(lost, p.txInFlight) {
-			out.crossing = lostPacket{size: p.size, txInFlight: p.txInFlight, lost: lost}
+			out.crossing = lostPacket{size: p.size, txInFlight: p.txInFlight, lost: lost, appLimited: p.appLimited}
 		}
 	}
 	if !extends {
@@ -888,11 +888,13 @@ func (out *ackOutcome) lossEvent(now time.Time) lossEvent {
 // lostPacket is a lost packet as BBR's loss response reads it: its size,
 // the flight it joined, itself included (P.tx_in_flight), and the bytes
 // declared lost between its send and its own loss, itself included
-// (RS.lost = C.lost - P.lost).
+// (RS.lost = C.lost - P.lost), and whether it left application-limited
+// (RS.is_app_limited = P.is_app_limited).
 type lostPacket struct {
 	size       int
 	txInFlight int
 	lost       int
+	appLimited bool
 }
 
 // newController builds the controller a connection's parameters name, at

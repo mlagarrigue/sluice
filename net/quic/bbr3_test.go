@@ -537,6 +537,30 @@ func TestBBR3InflightLongtermFromTheLostPackets(t *testing.T) {
 	}
 }
 
+// Losses sent application-limited send UP to DOWN but leave the bound
+// (§5.5.10.2, l.3879; A.6): a flight the application did not fill is no
+// measure of the volume the path holds.
+func TestBBR3AppLimitedLossLeavesTheBound(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(80) // REFILL
+	p.round(80) // UP
+	if b.state != bbr3ProbeBWUp || !b.bwProbeSamples {
+		t.Fatalf("state %d probe samples %v, want UP with the samples counting", b.state, b.bwProbeSamples)
+	}
+	p.est.markAppLimited(b.inFlight)
+	p.send(60)
+	p.now = p.now.Add(p.rtt)
+	p.ack(50)
+	p.lose(5)
+	if b.state != bbr3ProbeBWDown || b.bwProbeSamples {
+		t.Fatalf("state %d probe samples %v after losses over 2%%, want DOWN with the samples ended", b.state, b.bwProbeSamples)
+	}
+	if b.inflightLongterm != bbr3Unbounded {
+		t.Fatalf("inflight_longterm = %d after application-limited losses, want it left unbounded", b.inflightLongterm)
+	}
+}
+
 // A loss between probes cuts the short-term model (§5.5.10.3): at the end
 // of the round that lost, bw_shortterm and inflight_shortterm drop to 0.7
 // of what they were, never under what the round delivered, and the window
