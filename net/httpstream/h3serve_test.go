@@ -208,10 +208,14 @@ func askH3(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(request); err != nil {
-		t.Fatal(err)
+	_, err = s.Write(request)
+	if err == nil {
+		err = s.CloseWrite()
 	}
-	if err := s.CloseWrite(); err != nil {
+	// A server may refuse a request before reading all of it, with
+	// STOP_SENDING H3_NO_ERROR (RFC 9114 §4.1.1): when it lands before the
+	// last byte or the FIN leaves, the write fails and the answer stands.
+	if code, reset := s.WasReset(); err != nil && (!reset || code != h3NoError) {
 		t.Fatal(err)
 	}
 	return s
