@@ -59,6 +59,7 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		{"IdleTimeout", Config{IdleTimeout: -time.Second}, "-1s"},
 		{"ReadTimeout", Config{ReadTimeout: -time.Second}, "-1s"},
 		{"WriteTimeout", Config{WriteTimeout: -time.Second}, "-1s"},
+		{"WriteProgressBytes", Config{WriteProgressBytes: -1}, "-1"},
 		{"MaxConns", Config{MaxConns: -1}, "-1"},
 		{"ShutdownGrace", Config{ShutdownGrace: -time.Second}, "-1s"},
 		{"LingerTimeout", Config{LingerTimeout: -time.Second}, "-1s"},

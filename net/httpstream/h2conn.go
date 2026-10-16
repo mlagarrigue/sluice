@@ -238,11 +238,18 @@ type h2Server struct {
 	// grace period. Written by the reader; the responder reads it to know
 	// whether a drained connection is finished, hence the atomic.
 	open atomic.Int32
-	// inFlight counts requests handed to the responder and not yet answered.
-	// open + inFlight is what SETTINGS_MAX_CONCURRENT_STREAMS bounds, and the
-	// sum is invariant across the hand-off — which is what makes the batch
-	// queue provably big enough for the reader never to block on it.
+	// inFlight counts requests handed to the responder whose answer has not
+	// yet left the writer's hands — written, dropped or given up on. open +
+	// inFlight is what SETTINGS_MAX_CONCURRENT_STREAMS bounds, and the sum is
+	// invariant across the hand-off — which is what makes the batch queue
+	// provably big enough for the reader never to block on it, and what
+	// bounds the answers the writer holds once deliver no longer waits for
+	// them. Decremented by answered, on the responder or the writer.
 	inFlight atomic.Int32
+	// settled wakes the responder when the writer has finished an answer, so
+	// that a drained connection whose last answer the writer, not the
+	// responder, finished is still closed.
+	settled chan struct{}
 	// lastID is the highest stream the client has opened. Stream identifiers
 	// must increase, and one that goes backwards is a client reusing a
 	// closed stream rather than opening a new one.
@@ -298,7 +305,8 @@ type h2Server struct {
 
 	// The responder's own scratch, reused across batches. Nothing here is
 	// touched by the reader: the responder is the only goroutine in answer.
-	out     []byte
+	// The framed heads are not among it: they go out after answer returns,
+	// so each batch frames into an h2Sent the writer hands back when done.
 	block   []byte
 	names   []byte // lowercased copies of the response field names a handler spelled in HTTP/1.1 case
 	answers []h2Answer
@@ -306,14 +314,15 @@ type h2Server struct {
 	// (time.Now is 35 ns here, a fifth of a head) and from here by
 	// appendHead, whose signature the tests and the benchmark call.
 	date []byte
-	jobs []h2Job
-	ptrs []*h2Job
 	// streamBody's state, kept here rather than in locals its pull closure
 	// would move to the heap on every call: two jobs, alternating — one may
 	// be queued or in flight while the other, done, is ready to be reused
 	// with its buffer (see h2Writer.extend for why two and never more) — the
 	// one the last batch went to, and the scratch a multi-chunk batch is
 	// flattened into.
+	// heads is the head job of each streamed answer of the batch answer is
+	// on, read once deliver has taken the batch.
+	heads      []*h2Job
 	streamJobs [2]h2Job
 	streamCur  *h2Job
 	streamBuf  []byte
@@ -427,7 +436,9 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		connWind: connWindow(cfg),
 		recvWind: connWindow(cfg),
 		w:        newH2Writer(c, cfg),
+		settled:  make(chan struct{}, 1),
 	}
+	s.w.answered = s.answered
 	if st != nil {
 		stop := context.AfterFunc(st.drain, s.beginDrain)
 		defer stop()
@@ -446,16 +457,24 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	answered := make(chan struct{})
 	go func() {
 		defer close(answered)
-		for b := range in {
-			s.answer(b)
-			// The last answer of a drained connection closes it. open is read
-			// before inFlight because finish moves a stream the other way
-			// round, inFlight up then open down: read in this order, a
-			// stream mid-hand-off is counted at least once. Nothing opens
-			// after the second GOAWAY, so both at zero is final. The writer
-			// goes first so the answer is on the wire before the socket
-			// closes under the reader.
-			if s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 {
+		for {
+			select {
+			case b, ok := <-in:
+				if !ok {
+					return
+				}
+				s.answer(b)
+			case <-s.settled:
+			}
+			// The last answer of a drained connection closes it, whether the
+			// responder or the writer finished it. open is read before
+			// inFlight because finish moves a stream the other way round,
+			// inFlight up then open down: read in this order, a stream
+			// mid-hand-off is counted at least once. Nothing opens after the
+			// second GOAWAY, so both at zero is final. The writer goes first
+			// so the answer is on the wire before the socket closes under the
+			// reader.
+			if !s.drained.Load() && s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 {
 				s.drained.Store(true)
 				s.w.stop()
 				<-s.w.done
@@ -1366,12 +1385,15 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 //
 // The heads of a batch are framed into one buffer and queued together, so the
 // writer can interleave their bodies rather than serve them in order — a
-// large response no longer holds a small one behind it. The buffer is reused
-// across batches, which is safe because deliver does not return until the
-// writer has finished with every byte of it.
+// large response no longer holds a small one behind it. The buffer is the
+// batch's own, an h2Sent: deliver returns once it is queued, so the next
+// batch is answered while this one waits for credit, and the writer hands
+// the buffer back once it has finished with every byte of it.
+//
+// Every request of b is answered once: by the writer, for a buffered answer,
+// when its job leaves its hands; here for the others — a stream reset
+// because nothing could be framed, a streamed body once it has ended.
 func (s *h2Server) answer(b h2Batch) {
-	defer s.inFlight.Add(-int32(len(b.reqs))) //nolint:gosec // G115: a batch is bounded by MaxConcurrentStreams
-
 	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
@@ -1395,7 +1417,8 @@ func (s *h2Server) answer(b h2Batch) {
 	// 16384 bytes is rare, and costs one CONTINUATION more when it happens.
 	const maxFrame = defaultMaxFrameSize
 	s.date = dateFor(time.Now())
-	s.out, s.answers = s.out[:0], s.answers[:0]
+	sent := s.w.sent()
+	s.answers = s.answers[:0]
 	for i, r := range res {
 		method := b.reqs[i].Method
 		status := r.Status
@@ -1411,11 +1434,11 @@ func (s *h2Server) answer(b h2Batch) {
 			// for these.
 			body, stream = nil, nil
 		}
-		a := h2Answer{id: b.ids[i], from: len(s.out), body: body, stream: stream, job: -1}
+		a := h2Answer{id: b.ids[i], from: len(sent.out), body: body, stream: stream, job: -1}
 		if stream != nil {
 			a.length, a.trailers = r.ContentLength, r.Trailers
 		}
-		out, err := s.appendHead(s.out, a.id, method, r, maxFrame)
+		out, err := s.appendHead(sent.out, a.id, method, r, maxFrame)
 		mid := len(out)
 		if err == nil && r.Trailers != nil && !noBody && !r.streamed() {
 			// A body in hand has its trailers framed now, behind its head:
@@ -1427,10 +1450,10 @@ func (s *h2Server) answer(b h2Batch) {
 			// header, a status no version of HTTP carries, a body and a
 			// stream at once. The caller's bug, answered as one, on its own
 			// stream and nobody else's.
-			s.out = s.out[:a.from]
+			sent.out = sent.out[:a.from]
 			a.body, a.stream = nil, nil
 			a.trailers = nil
-			if out, err = s.appendHead(s.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
+			if out, err = s.appendHead(sent.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
 				_ = s.w.control32(frameRSTStream, a.id, errInternalError)
 				s.w.forget(a.id)
 				a.skip = true
@@ -1439,27 +1462,26 @@ func (s *h2Server) answer(b h2Batch) {
 			}
 			mid = len(out)
 		}
-		s.out = out
-		a.mid, a.to = mid, len(s.out)
+		sent.out = out
+		a.mid, a.to = mid, len(sent.out)
 		s.answers = append(s.answers, a)
 	}
 
-	// Two passes, because appending to s.out may move it: the heads are
+	// Two passes, because appending to sent.out may move it: the heads are
 	// sliced only once the buffer has stopped growing.
-	s.jobs, s.ptrs = s.jobs[:0], s.ptrs[:0]
 	for i := range s.answers {
 		a := &s.answers[i]
 		if a.skip {
 			continue
 		}
-		a.job = len(s.jobs)
+		a.job = len(sent.jobs)
 		var tail []byte
 		if a.mid < a.to {
-			tail = s.out[a.mid:a.to]
+			tail = sent.out[a.mid:a.to]
 		}
-		s.jobs = append(s.jobs, h2Job{
+		sent.jobs = append(sent.jobs, h2Job{
 			id:   a.id,
-			head: s.out[a.from:a.mid],
+			head: sent.out[a.from:a.mid],
 			data: a.body,
 			tail: tail,
 			end:  len(a.body) > 0 || tail != nil,
@@ -1468,24 +1490,48 @@ func (s *h2Server) answer(b h2Batch) {
 			closes: a.stream == nil,
 		})
 	}
-	for i := range s.jobs {
-		s.ptrs = append(s.ptrs, &s.jobs[i])
+	// The jobs are read through sent only until deliver: from there the
+	// writer may finish them all and hand sent to the next batch. What a
+	// streamed answer needs of its head job is kept aside first.
+	heads := s.heads[:0]
+	for i := range s.answers {
+		if a := &s.answers[i]; a.stream != nil && a.job >= 0 {
+			heads = append(heads, &sent.jobs[a.job])
+		}
 	}
-	if err := s.w.deliver(s.ptrs); err != nil {
-		return // the write side is gone; the reader will see it too
-	}
+	s.heads = heads
+	failed := s.w.deliver(sent) != nil
 
-	// The streamed ones follow, one at a time. Each is pulled here, on this
+	// The streamed ones follow, one at a time, each once its head is out —
+	// its DATA may not overtake its HEADERS. Each is pulled here, on this
 	// goroutine, so a producer never runs ahead of the socket and what is
 	// held is one batch rather than the whole answer — and, since the writer
 	// waits for credit instead of refusing, a streamed response may be any
 	// size the peer is willing to receive.
+	k := 0
 	for i := range s.answers {
 		a := &s.answers[i]
-		if a.stream == nil || a.job < 0 || s.jobs[a.job].err != nil {
-			continue
+		switch {
+		case a.skip:
+			s.answered()
+		case a.stream != nil:
+			if !failed && s.w.await(heads[k]) == nil {
+				s.streamBody(a.id, a.stream, a.length, a.trailers)
+			}
+			k++
+			s.answered()
 		}
-		s.streamBody(a.id, a.stream, a.length, a.trailers)
+	}
+}
+
+// answered counts one request as answered: its stream no longer counts
+// against [Config.MaxConcurrentStreams] on this end's side, and the
+// responder rechecks whether a drained connection is done.
+func (s *h2Server) answered() {
+	s.inFlight.Add(-1)
+	select {
+	case s.settled <- struct{}{}:
+	default:
 	}
 }
 

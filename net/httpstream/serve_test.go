@@ -602,6 +602,99 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 	}
 }
 
+// slowPipeClient asks one request over the server end of a pipe and reads the
+// answer step bytes at a time, one step every pace, until the connection
+// ends, the answer is whole or bound passes. It returns what arrived, how
+// long it took and whether the server closed the connection. net.Pipe is what
+// makes the pace the server's whole write budget: a write returns only as
+// fast as the client reads, and a write that times out reports the bytes the
+// client took.
+func slowPipeClient(t *testing.T, cfg Config, bodyLen, step int, pace, bound time.Duration) (got []byte, took time.Duration, closed bool) {
+	t.Helper()
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	body := bytes.Repeat([]byte{'p'}, bodyLen)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = server.Close() }()
+		serveConn(t.Context(), &prefixConn{Conn: server}, nil, cfg.mustResolve(),
+			func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				out := make([]Response, b.Len())
+				for i := range out {
+					out[i] = Response{Status: 200, Body: body}
+				}
+				return sluice.Batch[Response]{Items: out}
+			})
+	}()
+	t.Cleanup(func() { _ = client.Close(); <-done })
+
+	if err := client.SetDeadline(time.Now().Add(bound + 5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(client, "GET /slow HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	buf := make([]byte, step)
+	for time.Since(start) < bound {
+		n, err := client.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			return got, time.Since(start), true
+		}
+		if i := bytes.Index(got, []byte("\r\n\r\n")); i >= 0 && len(got)-(i+4) >= bodyLen {
+			return got, time.Since(start), false
+		}
+		time.Sleep(pace)
+	}
+	return got, time.Since(start), false
+}
+
+// A client that reads slowly but steadily is served to the end over
+// HTTP/1.1: WriteTimeout is a time without progress, so a write that times
+// out having put the default 4 KiB on the wire gets the timeout again from
+// where it stopped. The client takes 6 KiB every 100ms, so the 64 KiB answer
+// takes four timeouts and no single deadline from the start of the write
+// would let it finish.
+func TestH1SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		bodyLen = 64 << 10
+	)
+	got, took, closed := slowPipeClient(t, Config{WriteTimeout: timeout}, bodyLen, 6<<10, 100*time.Millisecond, 20*timeout)
+	i := bytes.Index(got, []byte("\r\n\r\n"))
+	if closed || i < 0 || len(got)-(i+4) != bodyLen {
+		t.Fatalf("after %v the client had %d bytes of a %d-byte answer, closed by the server=%v: "+
+			"a client reading 6 KiB per 100ms was cut by a %v write timeout", took.Round(time.Millisecond), len(got), bodyLen, closed, timeout)
+	}
+	if took < 3*timeout {
+		t.Errorf("the answer took %v, under the three timeouts that make it a slow one", took.Round(time.Millisecond))
+	}
+}
+
+// A client that reads less than the progress floor per timeout is cut at
+// about the timeout over HTTP/1.1, the connection closed with the answer
+// incomplete: 64 bytes every two thirds of a timeout never moves the
+// deadline, however long the client keeps at it.
+func TestH1DribbleReaderIsCutWithinTheTimeout(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		bodyLen = 64 << 10
+	)
+	got, took, closed := slowPipeClient(t, Config{WriteTimeout: timeout}, bodyLen, 64, 2*timeout/3, 10*timeout)
+	if !closed {
+		t.Fatalf("after %v of 64-byte reads the connection was still open with %d bytes taken: "+
+			"every read moved the write deadline", took.Round(time.Millisecond), len(got))
+	}
+	if i := bytes.Index(got, []byte("\r\n\r\n")); i >= 0 && len(got)-(i+4) >= bodyLen {
+		t.Errorf("the whole %d-byte answer was served to a client under the progress floor", bodyLen)
+	}
+	if took > 3*timeout {
+		t.Errorf("the cut took %v, want under %v", took.Round(time.Millisecond), 3*timeout)
+	}
+}
+
 // A streamed response to an HTTP/1.0 client cannot be chunked: RFC 9112 §6.1
 // forbids Transfer-Encoding in a response unless the request was HTTP/1.1,
 // and a 1.0 client reads the chunk sizes as body bytes. The body is

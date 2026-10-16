@@ -393,19 +393,34 @@ type Config struct {
 	// connection.
 	ReadTimeout time.Duration
 
-	// WriteTimeout is how long one batch of responses has to be written.
-	// Over HTTP/3 it bounds each write of a response — its head, then each
-	// batch of a streamed body — on the stream's flow control: a client that
-	// keeps the connection alive but never grants credit sees its stream
-	// reset with H3_REQUEST_CANCELLED when it passes, instead of holding the
-	// response's goroutine and body for as long as the idle timeout allows.
-	// Over HTTP/2 it bounds one write to the socket and the wait for the
-	// flow-control credit one stream needs, and that wait restarts only once
-	// 4 KiB of the response have gone out since it last did: a peer that
-	// drips one byte of credit per timeout is reset at the second timeout
-	// rather than kept (data dribble, CVE-2019-9511).
-	// Zero means 10s. Every protocol.
+	// WriteTimeout is how long a response may go without progress: a write
+	// that has not put [Config.WriteProgressBytes] on the wire by the time it
+	// passes is given up on, and one that has gets the same time again, so a
+	// slow client that keeps reading is served to the end and one that stops
+	// is not waited on. Over HTTP/1.1 the progress is the socket's and giving
+	// up ends the connection. Over HTTP/2 it is the stream's: the wait for the
+	// flow-control credit one stream needs, after which that stream alone is
+	// reset with CANCEL while the others carry on, and each write to the
+	// socket, which ends the connection. Over HTTP/3 it is each write of a
+	// response — its head, then each batch of a streamed body — on the
+	// stream's flow control, and the stream is reset with
+	// H3_REQUEST_CANCELLED. A peer that drips one byte of credit per timeout
+	// is therefore cut at the second timeout rather than kept (data dribble,
+	// CVE-2019-9511). Zero means 10s. Every protocol.
+	//
+	// Over HTTP/1.1 on TLS the first timeout ends the connection whatever
+	// the progress: crypto/tls makes a write that timed out fatal to the
+	// connection, so there is no second wait to grant.
 	WriteTimeout time.Duration
+
+	// WriteProgressBytes is the progress that moves [Config.WriteTimeout]:
+	// how much of a response must go out for the wait to start again. Zero
+	// means 4 KiB — a quarter of the smallest frame an HTTP/2 peer may ask
+	// for, 400 bytes a second at the default timeout, which no client that is
+	// reading falls under. It is a number of bytes rather than a share of
+	// anything the peer announces, so that the peer cannot move it. Every
+	// protocol.
+	WriteProgressBytes int
 
 	// MaxConns bounds how many connections [Serve] holds open at once,
 	// HTTP/1.1 and HTTP/2 together. Zero means no bound. The connection
@@ -591,6 +606,7 @@ func (c Config) resolve() (Config, error) {
 		orDefault("Config.IdleTimeout", &c.IdleTimeout, defaultIdleTimeout),
 		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
 		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
+		orDefault("Config.WriteProgressBytes", &c.WriteProgressBytes, defaultMaxFrameSize/4),
 		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
 		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
 		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),

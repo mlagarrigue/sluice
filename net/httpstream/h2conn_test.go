@@ -2517,6 +2517,113 @@ func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
 	}
 }
 
+// A stream waiting for its window holds no other stream behind it: the answer
+// to a later batch, which needs no credit, leaves while the first is still
+// parked. The batch queue used to be a call that waited for the wire, so the
+// second request was not even handed to the handler until the first stream
+// had been reset at WriteTimeout. The timeout is far past the bound the test
+// holds the second answer to, which is what makes the head-of-line block, and
+// nothing else, the reason for a late one.
+func TestH2StalledStreamDoesNotDelayTheNext(t *testing.T) {
+	const timeout = 5 * time.Second
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i, r := range b.Items {
+				res[i] = Response{Status: 200}
+				if string(r.Target) == "/stalled" {
+					res[i].Body = []byte("a payload the window never admits")
+				}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+	c.request(1, "GET", "/stalled")
+	c.flush()
+	// The head needs no credit: once it is out the stream is parked on its
+	// window, and the next request is a batch of its own.
+	c.pump(func() bool { _, seen := c.heads[1]; return seen || c.sawGoAway })
+	if _, seen := c.heads[1]; !seen {
+		t.Fatal("the head of the stalled stream never arrived")
+	}
+
+	start := time.Now()
+	c.request(3, "GET", "/after")
+	c.flush()
+	c.pump(func() bool { return c.ended[3] || c.sawGoAway || time.Since(start) > time.Second })
+	if !c.ended[3] {
+		t.Fatal("stream 3 was not answered within 1s of being asked, with stream 1 waiting for its window: " +
+			"the stalled stream holds the next batch")
+	}
+	if code, reset := c.resets[1]; reset {
+		t.Errorf("stream 1 was reset with %#x before its %v timeout", code, timeout)
+	}
+}
+
+// A peer that is reading, however slowly, is served to the end: WriteTimeout
+// is a time without progress, and a stream that has written
+// Config.WriteProgressBytes since its deadline last moved gets the whole
+// timeout again. The client grants 1500 bytes a stream every two thirds of the
+// timeout — over the 1024-byte floor, under the 4 KiB default, which is what
+// makes the field, and not the default, the reason the body arrives whole —
+// so the 8 KiB answer takes four timeouts.
+func TestH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		grant   = 1500
+	)
+	body := bytes.Repeat([]byte{'s'}, 8192)
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i := range res {
+				res[i] = Response{Status: 200, Body: body}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+	c.request(1, "GET", "/slow")
+	c.flush()
+
+	// pump is not used: its read deadline is longer than the pace.
+	start := time.Now()
+	tmp := make([]byte, 4096)
+	for time.Since(start) < 20*timeout {
+		c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: windowUpdatePayload(grant)})
+		c.flush()
+		if err := c.conn.SetReadDeadline(time.Now().Add(2 * timeout / 3)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			n, err := c.conn.Read(tmp)
+			c.in = append(c.in, tmp[:n]...)
+			c.parse()
+			if err != nil {
+				break
+			}
+		}
+		if _, reset := c.resets[1]; reset || c.ended[1] || c.sawGoAway {
+			break
+		}
+	}
+	if code, reset := c.resets[1]; reset {
+		t.Fatalf("a client granting %d bytes per %v was reset with %#x after %d of %d bytes: "+
+			"the progress floor does not follow Config.WriteProgressBytes", grant, 2*timeout/3, code, len(c.got[1]), len(body))
+	}
+	if !c.ended[1] || c.got[1] != string(body) {
+		t.Errorf("the answer ended=%v with %d of %d bytes, want it whole", c.ended[1], len(c.got[1]), len(body))
+	}
+	if elapsed := time.Since(start); elapsed < 3*timeout {
+		t.Errorf("the answer took %v, under the three timeouts that make it a slow one", elapsed.Round(time.Millisecond))
+	}
+}
+
 // A producer of cadence ticks on a stream the peer resets learns it on its
 // next batch: an empty batch is never handed to the writer, so the writer's
 // refusal of a reset stream could not reach it.

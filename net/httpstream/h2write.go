@@ -42,9 +42,10 @@ import (
 // scheme and RFC 9218's replacement is not implemented here, which is a choice
 // rather than an omission — see the ADR.
 //
-// Within one batch the buffered bodies are all queued at once and interleave.
-// A streamed body does not interleave with another streamed body of the same
-// batch: its producer is pulled by the handler goroutine, one at a time, and
+// The buffered bodies of every batch the writer holds interleave: a batch is
+// queued whole and the responder moves on to the next without waiting for
+// the wire, so a stream waiting for its window holds nobody else behind it.
+// A streamed body does not interleave with another streamed body: its producer is pulled by the handler goroutine, one at a time, and
 // a batch's buffers may not be retained past the call that received them (S14).
 // The ADR records that trade and what would reverse it.
 
@@ -61,14 +62,19 @@ var errWriteStalled = errors.New("httpstream: the peer granted no window before 
 // h2Job is one stream's contribution to the write queue: a framed head that
 // needs no credit, and a payload that does.
 //
-// For a job [h2Writer.deliver] queues, data is borrowed from whoever queued
-// it and must stay valid until the job reports done — which is what makes
-// deliver a blocking call. For a streamed body's job ([h2Writer.extend]) data
+// For a job [h2Writer.deliver] queues, head and data are borrowed from the
+// batch that queued it, an [h2Sent], and stay valid until every job of the
+// batch reports done — which is when the writer hands the batch back for
+// reuse. For a streamed body's job ([h2Writer.extend]) data
 // is the job's own buffer, grown under the lock while the job is still queued,
 // so that the producer runs ahead of the socket by at most one round's budget
 // and the batches that arrive during a write leave together in the next one.
 type h2Job struct {
 	id uint32
+
+	// batch is the deliver call's batch this job belongs to, nil for a
+	// streamed body's job.
+	batch *h2Sent
 
 	// queued is true while the job sits in h2Writer.jobs: the one state in
 	// which more data may be appended to it. It is cleared wherever a job
@@ -101,7 +107,7 @@ type h2Job struct {
 
 	// deadline bounds the wait for credit, not the response. It is refreshed
 	// when the head goes out and then each time the job has written
-	// h2ProgressFloor bytes since the last refresh — progress counts in
+	// [Config.WriteProgressBytes] since the last refresh — progress counts in
 	// bytes, not in writes, since a peer that grants one byte per timeout
 	// would otherwise hold the stream open forever (data dribble,
 	// CVE-2019-9511). written is that count.
@@ -112,14 +118,19 @@ type h2Job struct {
 	err  error
 }
 
-// h2ProgressFloor is what one job must write, between two refreshes of its
-// deadline, for the deadline to move: a quarter of the smallest frame a peer
-// may ask for, 4 KiB per WriteTimeout — 400 bytes a second at the 10s
-// default, which no client that is reading falls under. It is a constant
-// rather than a share of the peer's SETTINGS_MAX_FRAME_SIZE so that the peer
-// cannot move it; a writer that advances slower is reset by the same
-// expiry as one that was granted nothing, with the same CANCEL.
-const h2ProgressFloor = defaultMaxFrameSize / 4
+// h2Sent is one batch of buffered answers on its way out: the heads framed
+// into out, and the jobs that point into it and into the bodies. It is the
+// writer's from deliver until every job has left its hands, then goes back on
+// the writer's free list for the responder to frame its next batch into.
+//
+// What the free list holds is bounded by what can be unanswered at once: a
+// batch is out as long as one of its streams is, and the streams are bounded
+// by [Config.MaxConcurrentStreams].
+type h2Sent struct {
+	out  []byte
+	jobs []h2Job
+	left int // jobs not yet done
+}
 
 func (j *h2Job) complete() bool {
 	return j.headSent && j.off == len(j.data) && (!j.end || j.endSent)
@@ -147,6 +158,12 @@ type h2Writer struct {
 	// expiry is park's stall deadline, one timer re-armed per wakeup rather
 	// than one AfterFunc allocated per wakeup — see park for the numbers.
 	expiry *time.Timer
+	// free holds the batches every job of which is done, for sent to reuse.
+	free []*h2Sent
+	// answered, when set, is told each time a buffered answer leaves the
+	// writer's hands — written, dropped or given up on: that stream is no
+	// longer owed anything. Called with the lock held.
+	answered func()
 
 	// connWind and windows are the peer's grants, and they live here rather
 	// than on the read side because this is the goroutine that spends them.
@@ -236,7 +253,7 @@ func (w *h2Writer) run() {
 			w.setErr(err)
 		} else {
 			for _, j := range w.inflight {
-				j.done = true
+				w.settle(j, nil)
 			}
 			w.inflight = nil
 		}
@@ -297,8 +314,7 @@ func (w *h2Writer) expire() {
 			kept = append(kept, j)
 			continue
 		}
-		j.err = fmt.Errorf("%w: stream %d", errWriteStalled, j.id)
-		j.done, j.queued = true, false
+		w.settle(j, fmt.Errorf("%w: stream %d", errWriteStalled, j.id))
 		delete(w.windows, j.id)
 		// CANCEL rather than a code that blames the peer: it granted less
 		// than we wanted, which it is entitled to do, and we are the side
@@ -347,7 +363,7 @@ func (w *h2Writer) fill() []*h2Job {
 			}
 			n, err := w.emit(j)
 			if err != nil {
-				j.err, j.done = err, true
+				w.settle(j, err)
 				continue
 			}
 			if n > 0 {
@@ -361,8 +377,7 @@ func (w *h2Writer) fill() []*h2Job {
 	kept := w.jobs[:0]
 	for _, j := range w.jobs {
 		switch {
-		case j.done: // failed inside emit; already answered
-			j.queued = false
+		case j.done: // failed inside emit; already settled
 		case j.complete():
 			if j.closes {
 				// The stream is over on this side; its window is nobody's to
@@ -447,39 +462,52 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	j.endSent = j.endSent || flags&flagEndStream != 0
 	w.connWind -= spent
 	w.windows[j.id] -= spent
-	if j.written += n; j.written >= h2ProgressFloor {
+	if j.written += n; j.written >= w.cfg.WriteProgressBytes {
 		j.written = 0
 		j.deadline = time.Now().Add(w.cfg.WriteTimeout)
 	}
 	return n, nil
 }
 
-// deliver queues jobs and returns when every one of them has been written, has
-// been dropped because its stream is gone, or has run out of time.
+// deliver queues a batch of buffered answers and returns, without waiting
+// for the wire.
 //
-// That it waits for the wire, rather than returning once the jobs are queued,
-// is the connection's backpressure: the responder that called it reads no
-// further batch until this one is on the socket, so what a connection holds
-// is one batch of answers, not every answer a handler could produce while the
-// peer withholds credit. It is the same frontier the HTTP/1.1 responder has
-// in its blocking socket write, bounded by the same WriteTimeout. Returning
-// early under a byte budget would let the handler run one batch ahead of a
-// peer that reads; against one that does not, it would only buy memory.
+// It used to wait, and that was the connection's backpressure; it was also a
+// head-of-line block: one stream waiting for its window held every later
+// batch behind it for up to WriteTimeout, the streams with credit to spare
+// included. What bounds a connection now is what bounds HTTP/3: one
+// unfinished answer per stream the reader admitted,
+// [Config.MaxConcurrentStreams] of them at most, since a stream counts
+// against that bound until its answer has left the writer's hands (see
+// answered). The memory is the same order: MaxConcurrentStreams answers,
+// against one batch of up to as many.
 //
 // It returns an error only when the write side itself failed, which ends the
-// connection. A per-stream outcome is left on the job, where the caller reads
-// it and decides — that is the whole difference between one bad stream and a
-// dead connection.
-func (w *h2Writer) deliver(jobs []*h2Job) error {
+// connection; every job of b is then settled with it. A per-stream outcome
+// is left on the job, where [h2Writer.await] reads it — that is the whole
+// difference between one bad stream and a dead connection.
+func (w *h2Writer) deliver(b *h2Sent) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	b.left = len(b.jobs)
+	if b.left == 0 {
+		w.free = append(w.free, b)
+		return w.err
+	}
+	for i := range b.jobs {
+		b.jobs[i].batch = b
+	}
 	if w.err != nil {
+		for i := range b.jobs {
+			w.settle(&b.jobs[i], w.err)
+		}
 		return w.err
 	}
 	deadline := time.Now().Add(w.cfg.WriteTimeout)
-	for _, j := range jobs {
+	for i := range b.jobs {
+		j := &b.jobs[i]
 		if _, alive := w.windows[j.id]; !alive || w.stopping {
-			j.err, j.done = errStreamGone, true
+			w.settle(j, errStreamGone)
 			continue
 		}
 		j.deadline = deadline
@@ -487,21 +515,63 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 		w.jobs = append(w.jobs, j)
 	}
 	w.cond.Broadcast()
-	for {
+	return nil
+}
+
+// await returns once j has left the writer's hands, with what became of it:
+// nil when it was written whole.
+func (w *h2Writer) await(j *h2Job) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for !j.done {
 		if w.err != nil {
 			return w.err
 		}
-		pending := false
-		for _, j := range jobs {
-			if !j.done {
-				pending = true
-				break
-			}
-		}
-		if !pending {
-			return nil
-		}
 		w.cond.Wait()
+	}
+	return j.err
+}
+
+// sent hands the responder a batch to frame its answers into: one the writer
+// has finished with, emptied, or a new one.
+func (w *h2Writer) sent() *h2Sent {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(w.free)
+	if n == 0 {
+		return &h2Sent{}
+	}
+	b := w.free[n-1]
+	w.free = w.free[:n-1]
+	b.out, b.jobs = b.out[:0], b.jobs[:0]
+	return b
+}
+
+// settle takes j out of the writer's hands with err as its outcome, nil for
+// written whole, once. A buffered answer that closes its stream tells
+// answered, and the last job of a batch hands the batch back. Called with
+// the lock held.
+func (w *h2Writer) settle(j *h2Job, err error) {
+	if j.done {
+		return
+	}
+	// err is written only when there is one: a job starts with none, and a
+	// streamed body's producer reads cur.err without the lock between two
+	// extends, which a nil written here would race with.
+	if err != nil {
+		j.err = err
+	}
+	j.done, j.queued = true, false
+	b := j.batch
+	if b == nil {
+		return
+	}
+	if j.closes && w.answered != nil {
+		w.answered()
+	}
+	b.left--
+	if b.left == 0 {
+		w.free = append(w.free, b)
 	}
 }
 
@@ -521,9 +591,9 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 // of unframed bytes ([Config.MaxWriteBufferBytes]) is a peer that reads
 // slower than the producer yields, and the producer then runs at the window's
 // pace, bounded by the same deadline every stalled job has. This is the whole
-// difference between a batch on HTTP/2 and on HTTP/3 before it: deliver
-// returned once the bytes were on the wire, so three batches of eight bytes
-// cost three writes, six goroutine hand-offs and three TCP segments the
+// difference between a batch on HTTP/2 and on HTTP/3 before it: the streamed
+// path returned once the bytes were on the wire, so three batches of eight
+// bytes cost three writes, six goroutine hand-offs and three TCP segments the
 // client woke on one at a time — about 70 µs each against a loopback —
 // where quic-go's Stream.Write copies, returns, and lets the send loop pack
 // what has accumulated into one packet.
@@ -577,7 +647,7 @@ func (w *h2Writer) claim(id uint32, cur, spare *h2Job) (*h2Job, error) {
 	data := j.data[:0]
 	*j = h2Job{id: id, headSent: true, data: data, deadline: time.Now().Add(w.cfg.WriteTimeout)}
 	if _, alive := w.windows[id]; !alive || w.stopping {
-		j.err, j.done = errStreamGone, true
+		w.settle(j, errStreamGone)
 		return j, nil
 	}
 	j.queued = true
@@ -780,7 +850,7 @@ func (w *h2Writer) forget(id uint32) {
 			kept = append(kept, j)
 			continue
 		}
-		j.err, j.done, j.queued = errStreamGone, true, false
+		w.settle(j, errStreamGone)
 	}
 	w.jobs = kept
 	w.turn = 0
@@ -893,13 +963,10 @@ func (w *h2Writer) setErr(err error) {
 		_ = w.conn.Close()
 	}
 	for _, j := range w.jobs {
-		if !j.done {
-			j.err, j.done = w.err, true
-		}
-		j.queued = false
+		w.settle(j, w.err)
 	}
 	for _, j := range w.inflight {
-		j.err, j.done = w.err, true
+		w.settle(j, w.err)
 	}
 	w.jobs, w.inflight = nil, nil
 }

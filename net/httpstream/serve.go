@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -463,11 +464,44 @@ func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 }
 
 func writeAll(c net.Conn, cfg Config, buf []byte) error {
-	if err := c.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout)); err != nil {
-		return err
+	return writeBoundOf(cfg).write(c.SetWriteDeadline, c.Write, buf)
+}
+
+// writeBound is [Config.WriteTimeout] read as a time without progress: a
+// write that times out having put progress bytes or more on the wire is
+// given the timeout again, from where it stopped, and one that times out
+// short of them fails. HTTP/1.1 and HTTP/3 write through it; the HTTP/2
+// writer applies the same rule to a stream's credit itself.
+type writeBound struct {
+	timeout  time.Duration
+	progress int
+}
+
+func writeBoundOf(cfg Config) writeBound {
+	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.WriteProgressBytes}
+}
+
+// write puts p on the wire with write, under deadlines it sets through
+// setDeadline.
+//
+// The bytes are handed over whole rather than in progress-sized pieces: a
+// client that is reading takes them in one write, one syscall, and only one
+// that is not costs a second. That relies on a timed-out write reporting
+// what it wrote and taking a later deadline, which net.Conn and quic.Stream
+// both do. crypto/tls does not — it makes the timeout fatal — so over TLS
+// the second write fails at once and the first timeout is the last, as it
+// was before progress counted.
+func (b writeBound) write(setDeadline func(time.Time) error, write func([]byte) (int, error), p []byte) error {
+	for {
+		if err := setDeadline(time.Now().Add(b.timeout)); err != nil {
+			return err
+		}
+		n, err := write(p)
+		if err == nil || n < b.progress || !errors.Is(err, os.ErrDeadlineExceeded) {
+			return err
+		}
+		p = p[n:]
 	}
-	_, err := c.Write(buf)
-	return err
 }
 
 // serveAny picks the protocol from what the client says first.

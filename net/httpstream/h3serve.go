@@ -249,7 +249,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		for {
 			select {
 			case b := <-in:
-				answerH3(forced, c, b, handle, cfg.WriteTimeout, &writers)
+				answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers)
 			case <-c.Done():
 				return
 			}
@@ -308,7 +308,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 				go func(id uint64, status int, fieldSection uint64) {
 					defer writers.Done()
 					defer a.retire()
-					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, cfg.WriteTimeout, dateFor(time.Now()), func() {})
+					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
 				}(se.StreamID, se.Status, a.peerMaxFieldSection())
 				continue
 			}
@@ -487,7 +487,7 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, writeTimeout time.Duration, writers *sync.WaitGroup) {
+func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
@@ -528,7 +528,7 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, writ
 					b.retire()
 				}
 			}()
-			writeH3Response(c, id, r, method, b.fieldSection, writeTimeout, date, func() {
+			writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
 				detached = true
 				writers.Done()
 			})
@@ -544,16 +544,17 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // lift of the old single-writer design's head-of-line block. A write stalled
 // on this stream's flow control stalls this goroutine alone; packets keep
 // arriving on the read loop and every other response keeps leaving. Each
-// write has writeTimeout to complete — [Config.WriteTimeout], the bound the
-// HTTP/2 writer puts on a job — so a client that keeps the connection alive
-// but never grants credit holds the goroutine, and a streamed producer's
-// body, for that long and no longer: the stream is then reset and the
-// goroutine returned.
+// write is bounded by wb — [Config.WriteTimeout] without progress, the bound
+// the HTTP/2 writer puts on a job — so a client that keeps the connection
+// alive but never grants credit holds the goroutine, and a streamed
+// producer's body, for that long and no longer: the stream is then reset and
+// the goroutine returned. One that keeps granting holds it as long as it
+// reads.
 //
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, writeTimeout time.Duration, date []byte, detach func()) {
+func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) {
 	s := c.Stream(id)
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
@@ -581,10 +582,10 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		// one datagram for a response that fits one, where a write and then
 		// CloseWrite sent the FIN in a datagram of its own — one more per
 		// request, measured at 1.0 per request over 20,000 small responses.
-		_ = writeH3Bounded(s, head, true, writeTimeout)
+		_ = writeH3Bounded(s, head, true, wb)
 		return
 	}
-	if !writeH3Bounded(s, head, false, writeTimeout) {
+	if !writeH3Bounded(s, head, false, wb) {
 		return // the stream is gone or given up on; its neighbours are not
 	}
 	// The payload follows as DATA frames on the same stream, at the pace the
@@ -594,7 +595,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	// producer is never pulled, the same way the HTTP/1.1 and HTTP/2 paths
 	// never do for these.
 	detach()
-	if !streamH3Body(c, s, r.Stream, r.ContentLength, writeTimeout) {
+	if !streamH3Body(c, s, r.Stream, r.ContentLength, wb) {
 		return
 	}
 	if r.Trailers == nil {
@@ -612,24 +613,24 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	sc.head = tail
 	// The trailer section and the FIN leave in one write, as a buffered
 	// response's last frame and its FIN do.
-	_ = writeH3Bounded(s, tail, true, writeTimeout)
+	_ = writeH3Bounded(s, tail, true, wb)
 }
 
-// writeH3Bounded writes p on s with writeTimeout to finish, and the FIN with
-// it when fin is set, reporting whether it all went out. A write the peer
-// starves of credit past the timeout is given up on and its stream reset
-// with H3_REQUEST_CANCELLED, the code RFC 9114 §4.1.1 says a server SHOULD
-// abort with when it "abandons a response after partial processing": the
-// peer granted less than the response needs, which it is entitled to do,
-// and this end is the one that stopped waiting — the same reading as the
-// HTTP/2 writer's CANCEL after its write timeout. Any other failure means the stream is already gone.
-func writeH3Bounded(s *quic.Stream, p []byte, fin bool, writeTimeout time.Duration) bool {
-	_ = s.SetWriteDeadline(time.Now().Add(writeTimeout))
+// writeH3Bounded writes p on s under [Config.WriteTimeout], read as a time
+// without progress (see writeBound), and the FIN with it when fin is set,
+// reporting whether it all went out. A write the peer starves of credit is
+// given up on and its stream reset with H3_REQUEST_CANCELLED, the code
+// RFC 9114 §4.1.1 says a server SHOULD abort with when it "abandons a
+// response after partial processing": the peer granted less than the
+// response needs, which it is entitled to do, and this end is the one that
+// stopped waiting — the same reading as the HTTP/2 writer's CANCEL after its
+// write timeout. Any other failure means the stream is already gone.
+func writeH3Bounded(s *quic.Stream, p []byte, fin bool, wb writeBound) bool {
 	write := s.Write
 	if fin {
 		write = s.WriteClose
 	}
-	if _, err := write(p); err != nil {
+	if err := wb.write(s.SetWriteDeadline, write, p); err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			_ = s.Reset(h3RequestCancelled)
 		}
@@ -647,7 +648,7 @@ func writeH3Bounded(s *quic.Stream, p []byte, fin bool, writeTimeout time.Durati
 // yields more — the batch that would cross it is not written — or ends short
 // of it has its stream reset, never ended: RFC 9114 §4.1.2 makes the
 // mismatch a malformed response.
-func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], length int64, writeTimeout time.Duration) bool {
+func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], length int64, wb writeBound) bool {
 	ok, wrong := true, false
 	var sent int64
 	var out []byte // reused across batches; Stream.Write copies before returning
@@ -670,7 +671,7 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], le
 		if len(out) == 0 {
 			return true // an empty batch is cadence, not an end
 		}
-		if !writeH3Bounded(s, out, false, writeTimeout) {
+		if !writeH3Bounded(s, out, false, wb) {
 			ok = false
 			return false
 		}
