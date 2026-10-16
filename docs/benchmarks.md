@@ -302,6 +302,7 @@ controller keeps the queue empty, six when it keeps 200 ms of buffer full.
 | `BenchmarkTransferBurstLoss` | 20 ms RTT, 1% loss in bursts of 4 | 4 MiB | 755 ms | 5.55 MB/s | ±1%, one round at +42% |
 | `BenchmarkTransferReorder` | 20 ms RTT, 2% of datagrams up to 2 ms late | 4 MiB | 4.89 s | 0.86 MB/s | ±12%, not gated |
 | `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 865 ms | 4.86 MB/s | ±2%, one round at +23% |
+| `BenchmarkTransferBottleneck16MiB` | the `Bottleneck` link | 16 MiB | 3.33 s | 5.04 MB/s | −1% to +3%, not gated |
 | `BenchmarkTransferDeepBuffer` | 20 ms RTT, 50 Mbit/s, 200 ms of buffer | 4 MiB | 788 ms | 5.33 MB/s, `rtt_x` 5.9 | ±0.2% |
 | `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
 | `BenchmarkTransferTwoFlowsVsReno` | the `TwoFlows` link, the second flow on Reno | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.42–0.54 | ±5%, not gated |
@@ -431,11 +432,14 @@ acknowledgement timing of the emulated path inflates by 5 to 7% above
 the line, so the cruise paces above the link and only the window's gain
 of two bounds the queue — one bandwidth-delay product of it on a buffer
 that never drops, the 5 ms buffer's worth of loss on one that does.
-The ceiling of any controller on this transfer is about 0.88 of the
-line (671 ms of line time, the handshake and a slow start from 12 kB);
-the rest of the gap is BBR version 1, and the draft's later revisions
-(a Startup that exits on loss, an in-flight bound from the loss rate)
-are the next step of the palette, not a tuning of this one.
+The ceiling of any controller on this transfer is 0.83 to 0.84 of the
+line (671 ms of line time, 80 to 90 ms of fixed cost and about 50 ms of
+ramp from 12 kB, worked out under the draft's table below), so the 85%
+the plan set is out of the measurement's reach, not the version's; what
+is version 1's is one or two hundredths under that ceiling (the Startup
+overshoot just described) and the spread, and the draft's later
+revisions (a Startup that exits on loss, an in-flight bound from the
+loss rate) are the next step of the palette, not a tuning of this one.
 
 Against a Reno flow on the same bottleneck (the `TwoFlows` link, one
 flow each, started together, four rounds, not a benchmark of the suite)
@@ -489,8 +493,10 @@ there — 671 ms of line time, 80 to 90 ms of fixed cost (a 64 kB transfer
 takes 91 to 104 ms on this profile, 25 ms of handshake included) and
 about 50 ms of ramp (four rounds under the line rate: 12, 24, 48, 96 kB
 against 125 kB a round) make 800 to 810 ms, 0.83 to 0.84. On a 16 MiB
-transfer, out of that ceiling, BBR delivers 0.94 of the line against
-Reno's 0.80 (one run each, a throwaway test). A smoothed round trip
+transfer (`BenchmarkTransferBottleneck16MiB`, eight rounds on
+2026-10-16 interleaved with Reno), out of that ceiling, BBR delivers
+0.93 of the line (2.88 s median, 2.870 to 2.886 s) against Reno's 0.81
+(3.33 s, 3.29 to 3.43 s). A smoothed round trip
 within 1.5× of the path's on `DeepBuffer`: 1.77 here, and 2.25 as the
 median over a 16 MiB transfer. With no loss and no ECN the draft bounds
 the queue by the window's gain alone (§5.3.1.1: (gain − 1) × the
