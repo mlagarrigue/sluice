@@ -88,9 +88,13 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	start := len(dst)
 	// Long header, fixed bit set, type 11 (Retry). The four low bits are
-	// unused: RFC 9000 §17.2.5 lets the server set them to an arbitrary
-	// value and has the client ignore them, so zero is as valid as any.
-	dst = append(dst, 0xf0, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
+	// unused: RFC 9000 §17.2.5 has the server set them "to an arbitrary
+	// value" and the client "MUST ignore these bits". Drawn rather than
+	// zero, as appendVersionNegotiation draws its own, so no client comes
+	// to depend on one value.
+	var unused [1]byte
+	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
+	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
 	dst = append(dst, dcid...)
 	dst = append(dst, byte(len(newSCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, newSCID...)

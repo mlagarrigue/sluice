@@ -163,3 +163,25 @@ func TestVersionNegotiationDrawsItsUnusedBits(t *testing.T) {
 		t.Errorf("32 Version Negotiation packets all share one first byte: %v", seen)
 	}
 }
+
+// RFC 9000 §17.2.5 gives a Retry's four unused bits the same status as the
+// Version Negotiation's: arbitrary, ignored by the client. Drawn the same
+// way, under a header that still reads as a long-header Retry whose tag
+// verifies, since the tag covers the first byte too.
+func TestRetryDrawsItsUnusedBits(t *testing.T) {
+	odcid := []byte{9, 9, 9, 9, 9, 9, 9, 9}
+	seen := map[byte]bool{}
+	for range 32 {
+		pkt := appendRetryPacket(nil, []byte{1}, []byte{2}, odcid, []byte("token"))
+		if pkt[0]&0xf0 != 0xf0 {
+			t.Fatalf("first byte %#x: not a long-header Retry with the fixed bit", pkt[0])
+		}
+		if !verifyRetryTag(odcid, pkt) {
+			t.Fatalf("first byte %#x: the integrity tag does not verify", pkt[0])
+		}
+		seen[pkt[0]&0x0f] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("32 Retry packets all share one first byte: %v", seen)
+	}
+}
