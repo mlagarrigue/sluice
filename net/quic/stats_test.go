@@ -108,6 +108,12 @@ func TestStatsCountsLostPackets(t *testing.T) {
 	if stats.BytesRetransmitted < stats.LostPackets {
 		t.Fatalf("%d packets lost, %d bytes requeued: %+v", stats.LostPackets, stats.BytesRetransmitted, stats)
 	}
+	// And no lost packet puts back more than it carried: 1452 bytes, the
+	// largest datagram DPLPMTUD ever proves. A payload counted twice, on
+	// both detection paths or once per detection pass, lands above.
+	if limit := stats.LostPackets * 1452; stats.BytesRetransmitted > limit {
+		t.Fatalf("%d packets lost, %d bytes requeued, above %d: %+v", stats.LostPackets, stats.BytesRetransmitted, limit, stats)
+	}
 	if stats.LatestRTT <= 0 || stats.LatestRTT < stats.MinRTT {
 		t.Fatalf("latest round trip %v, min %v: %+v", stats.LatestRTT, stats.MinRTT, stats)
 	}

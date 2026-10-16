@@ -115,6 +115,9 @@ func TestIntegerParameterMustBeExactlyOneVarint(t *testing.T) {
 	_, err = parseParameters([]byte{0x80})
 	wantCode(t, err, transportParameterError, "an identifier cut short")
 
+	_, err = parseParameters([]byte{byte(paramInitialMaxData), 0x40}) // a 2-byte length, 1 byte given
+	wantCode(t, err, transportParameterError, "a length cut short")
+
 	if _, err := parseParameters(appendParam(nil, paramInitialMaxData, AppendVarint(nil, 1))); err != nil {
 		t.Errorf("one exact varint was refused: %v", err)
 	}
