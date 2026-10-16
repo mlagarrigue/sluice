@@ -1811,7 +1811,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	// The server's control stream: its type, SETTINGS, then the GOAWAY
 	// pair — 2^62−4 first, then the stream after the request once the
 	// client's acknowledgement has measured the round trip.
-	control := conn.Stream(3)
+	control := h3StreamOf(t, conn, 3)
 	if ids := readH3GoAways(t, control, 2); ids[0] != h3MaxServerGoAway || ids[1] != 4 {
 		t.Fatalf("GOAWAY pair %v, want [%d 4]: the maximum, then the one after the request stream", ids, uint64(h3MaxServerGoAway))
 	}
@@ -1994,7 +1994,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancel()
-	if ids := readH3GoAways(t, conn.Stream(3), 1); ids[0] != h3MaxServerGoAway {
+	if ids := readH3GoAways(t, h3StreamOf(t, conn, 3), 1); ids[0] != h3MaxServerGoAway {
 		t.Fatalf("first GOAWAY names %d, want %d: no stream is named before the round trip", ids[0], uint64(h3MaxServerGoAway))
 	}
 	if err := held.release(); err != nil {
@@ -2040,4 +2040,15 @@ func TestQPACKListBoundIsAHeadersBound(t *testing.T) {
 	if !errors.Is(err, errHeadersTooLarge) || errors.Is(err, ErrH3Protocol) {
 		t.Fatalf("Decode returned %v, want errHeadersTooLarge and not ErrH3Protocol", err)
 	}
+}
+
+// h3StreamOf returns the stream with this identifier on c, failing the test
+// when the stream limits refuse it.
+func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
+	t.Helper()
+	s, err := c.Stream(id)
+	if err != nil {
+		t.Fatalf("stream %d: %v", id, err)
+	}
+	return s
 }

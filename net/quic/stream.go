@@ -3,6 +3,7 @@ package quic
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -735,6 +736,12 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 	return nil
 }
 
+// ErrStreamLimit is what [Conn.Stream] returns for an identifier past the
+// stream limit of its kind: for a stream this end would open, past the
+// MAX_STREAMS the peer granted; for a stream the peer would open, past the
+// limit this end announced. Nothing is registered for it.
+var ErrStreamLimit = errors.New("quic: stream identifier past the stream limit")
+
 // Stream returns the stream with this identifier, opening the bookkeeping
 // for it if nobody has yet. It is how a server answers on the stream a
 // request arrived on, and how it opens its own unidirectional streams (the
@@ -742,45 +749,48 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 // but refuses writes — answering on a stream the peer is done with is not
 // an error worth a connection.
 //
-// Unlike [Conn.OpenStream], Stream deliberately does not check the peer's
-// MAX_STREAMS grant. Picking a stream by identifier is for streams whose
-// numbers the application protocol already fixed — HTTP/3's control stream
-// is stream 3, and its transport parameters mandate a grant that covers it —
-// and for answering on streams the peer itself opened, where the limit being
-// spent is the peer's, not this end's. The caller therefore owns conformance
-// to the grant; to open a stream of this end's choosing under flow control,
-// use OpenStream or OpenUniStream.
-func (c *Conn) Stream(id uint64) *Stream {
+// Picking a stream by identifier is for streams whose numbers the
+// application protocol already fixed — HTTP/3's control stream is stream 3
+// — and for answering on streams the peer itself opened. Unlike
+// [Conn.OpenStream], Stream does not wait for credit: an identifier this
+// end would open past the peer's MAX_STREAMS grant, or one the peer would
+// open past the limit this end announced, is refused with [ErrStreamLimit]
+// and allocates nothing. Within the grant, a local identifier used out of
+// order opens every lower-numbered stream of its kind (RFC 9000 §2.1).
+func (c *Conn) Stream(id uint64) (*Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s := c.streams[id]; s != nil {
-		return s
+		return s, nil
 	}
 	// Within what has been opened and absent from the table means closed
 	// (see Conn.streams): a tombstone, deliberately not re-registered.
 	count := id/4 + 1
 	uni := id&0x02 != 0
 	localInitiated := (id&1 == 0) == c.isClient
-	opened := c.seenPeerBidi
+	opened, limit := c.seenPeerBidi, c.localMaxStreamsBidi
 	switch {
 	case localInitiated && uni:
-		opened = c.openedUni
+		opened, limit = c.openedUni, c.peerMaxStreamsUni
 	case localInitiated:
-		opened = c.openedBidi
+		opened, limit = c.openedBidi, c.peerMaxStreamsBidi
 	case uni:
-		opened = c.seenPeerUni
+		opened, limit = c.seenPeerUni, c.localMaxStreamsUni
 	}
 	if count <= opened {
 		s := newStream(c, id)
 		s.writeReset = true
 		s.sendClosed = true
 		s.recvDone = true
-		return s
+		return s, nil
+	}
+	if count > limit {
+		return nil, ErrStreamLimit
 	}
 	if !localInitiated {
 		s := newStream(c, id)
 		c.streams[id] = s
-		return s
+		return s, nil
 	}
 	// Using a local identifier out of order opens every lower-numbered
 	// stream of its kind (RFC 9000 §2.1): they are registered so a frame the
@@ -798,7 +808,7 @@ func (c *Conn) Stream(id uint64) *Stream {
 		nid := (n-1)*4 + id&0x03
 		c.streams[nid] = newStream(c, nid)
 	}
-	return c.streams[id]
+	return c.streams[id], nil
 }
 
 // maybeRemoveLocked retires a stream once both directions are done: the

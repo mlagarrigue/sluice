@@ -158,8 +158,15 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// RFC 9114 §6.2.1: each endpoint opens a control stream and sends
 	// SETTINGS as its first frame. A peer is entitled to wait for it, so a
 	// server that never sends one is a server a conformant client hangs on.
-	// Stream 3 is the first server-initiated unidirectional identifier.
-	control := c.Stream(3)
+	// Stream 3 is the first server-initiated unidirectional identifier. A
+	// client that grants no unidirectional stream breaks §6.2's "MUST permit
+	// at least three": no control stream can open, and the connection is
+	// closed with the generic protocol error, §6.2 naming no specific one.
+	control, err := c.Stream(3)
+	if err != nil {
+		_ = c.CloseWithError(h3GeneralProtocolError)
+		return fmt.Errorf("httpstream: the client grants no unidirectional stream for the control stream: %w", err)
+	}
 	if _, err := control.Write(appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
 		// Closed on the way out, like the two refusals above. The one
 		// failure a live connection produces here is the client's
@@ -308,7 +315,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			// every other request the datagram carried are untouched, which
 			// is the whole of what a multiplexed transport offers over a
 			// sequential one.
-			s := c.Stream(se.StreamID)
+			s, err := c.Stream(se.StreamID)
+			if err != nil {
+				continue // unreachable: the peer opened it, within the limit
+			}
 			if se.Status != 0 {
 				// A request over a bound with a status: RFC 9114 §4.1 has
 				// the server stop reading with H3_NO_ERROR, send the
@@ -571,7 +581,10 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
 func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) {
-	s := c.Stream(id)
+	s, err := c.Stream(id)
+	if err != nil {
+		return // unreachable: the request arrived on it, within the limit
+	}
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
 	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)

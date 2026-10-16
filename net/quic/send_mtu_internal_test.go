@@ -38,9 +38,13 @@ func TestLongAckBesideFullChunkStaysUnderMaxDatagram(t *testing.T) {
 			}
 			chunk := c.maxStreamChunk()
 			limit := c.maxDatagram
+			c.peerMaxStreamsBidi = 1 // the grant the handshake would have brought
 			c.mu.Unlock()
 
-			s := c.Stream(0)
+			s, err := c.Stream(0)
+			if err != nil {
+				t.Fatal(err)
+			}
 			c.mu.Lock()
 			s.sendQ.max = 1 << 20
 			c.mu.Unlock()

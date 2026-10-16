@@ -28,6 +28,7 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 	}
 	c.mu.Lock()
 	c.spaces[spaceApplication].sealer = sealer
+	c.peerMaxStreamsBidi = 1 // the grant the handshake would have brought
 	c.mu.Unlock()
 
 	var got [][]Frame
@@ -35,7 +36,10 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 		got = append(got, cloneFrames(frames))
 		return nil
 	})
-	s := c.Stream(0) // this client's first bidirectional stream
+	s, err := c.Stream(0) // this client's first bidirectional stream
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	payload := appendFrame(nil, FrameStopSending, 0, 0x10c)
 	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {

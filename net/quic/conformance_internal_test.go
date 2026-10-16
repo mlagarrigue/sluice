@@ -234,6 +234,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	}
 	c.mu.Lock()
 	c.spaces[spaceApplication].sealer = sealer
+	c.peerMaxStreamsUni = 1 // the grant the handshake would have brought
 	c.mu.Unlock()
 
 	// Stream 3 is, from this client's side, the peer's unidirectional
@@ -248,7 +249,9 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	// Stream 2 is this client's own unidirectional stream: the peer never
 	// sends on it, so STREAM frames cannot name it either — even once the
 	// bookkeeping for it exists.
-	_ = c.Stream(2)
+	if _, err := c.Stream(2); err != nil {
+		t.Fatal(err)
+	}
 	frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
 	frame = AppendVarint(frame, 2)
 	frame = AppendVarint(frame, 0)

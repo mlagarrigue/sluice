@@ -150,7 +150,11 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 		// Opened before ServeH3 runs, so the client's STOP_SENDING finds
 		// the stream — a STOP_SENDING for a stream this end never opened
 		// would be a transport error instead (RFC 9000 §19.5).
-		control := conn.Stream(3)
+		control, err := conn.Stream(3)
+		if err != nil {
+			serverUp <- err
+			return
+		}
 		serverUp <- nil
 		<-stopped
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
@@ -175,7 +179,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 	if err := <-serverUp; err != nil {
 		t.Fatalf("the server: %v", err)
 	}
-	if err := conn.Stream(3).StopSending(h3NoError); err != nil {
+	if err := h3StreamOf(t, conn, 3).StopSending(h3NoError); err != nil {
 		t.Fatalf("STOP_SENDING on the server's control stream: %v", err)
 	}
 	close(stopped)
