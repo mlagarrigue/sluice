@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,6 +54,14 @@ type netemProfile struct {
 	// a datagram past dozens of its successors. Zero disables it.
 	reorder      float64
 	reorderDelay time.Duration
+	// reorderDepth, when non-zero, makes a reordered datagram wait for the
+	// next reorderDepth datagrams instead and arrive heldGap behind them —
+	// overtaken by a count, not a delay, so the depth does not move with
+	// the sending rate; reorderDelay then bounds the wait, for a datagram
+	// that ends a flight. One datagram waits at a time. Below the packet
+	// threshold this is the reordering §6.1.1 exists to tolerate: what it
+	// measures is that it costs nothing.
+	reorderDepth int
 	// rate, in bytes per second, serializes packets through a bottleneck;
 	// zero means no bottleneck. queue is how long a packet may wait for
 	// the bottleneck before it is dropped instead — depth expressed in
@@ -171,6 +180,11 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 		<-delivered
 	}()
 
+	// held is the datagram reorderDepth makes wait, behind the count of
+	// datagrams that passed it; released, by the count or by its timer,
+	// once, which the flag decides.
+	var held *heldPacket
+	behind := 0
 	bad := false
 	buf := make([]byte, 2048)
 	oob := make([]byte, udp.PacketInfoLen)
@@ -212,12 +226,51 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 			arriveAt: txEnd.Add(prof.owd),
 		}
 		if prof.reorder > 0 && rng.Float64() < prof.reorder {
-			late := pkt.arriveAt.Add(time.Duration(rng.Float64() * float64(prof.reorderDelay)))
-			time.AfterFunc(time.Until(late), func() { writeMarked(dst, pkt.data, to, pkt.ecn, nil) })
-			continue
+			if prof.reorderDepth == 0 {
+				late := pkt.arriveAt.Add(time.Duration(rng.Float64() * float64(prof.reorderDelay)))
+				time.AfterFunc(time.Until(late), func() { writeMarked(dst, pkt.data, to, pkt.ecn, nil) })
+				continue
+			}
+			if held == nil {
+				h := &heldPacket{pkt: pkt}
+				h.timer = time.AfterFunc(time.Until(pkt.arriveAt.Add(prof.reorderDelay)), func() {
+					if h.released.CompareAndSwap(false, true) {
+						writeMarked(dst, h.pkt.data, to, h.pkt.ecn, nil)
+					}
+				})
+				held, behind = h, 0
+				continue
+			}
 		}
 		ch <- pkt
+		if held != nil {
+			behind++
+			if behind == prof.reorderDepth {
+				if held.released.CompareAndSwap(false, true) {
+					held.timer.Stop()
+					held.pkt.arriveAt = pkt.arriveAt.Add(heldGap)
+					ch <- held.pkt
+				}
+				held = nil
+			}
+		}
 	}
+}
+
+// heldGap is how far behind the datagrams that overtook it a held one
+// arrives: long enough for the receiver to acknowledge them first, which is
+// what makes the overtaking visible to the sender. Delivered together, the
+// three are acknowledged together, and the gap never existed. The datagrams
+// after it wait behind it in the deliverer's queue, so they still do not
+// overtake it.
+const heldGap = 100 * time.Microsecond
+
+// heldPacket is a datagram reorderDepth holds back, and the timer that
+// bounds its wait.
+type heldPacket struct {
+	pkt      timedPacket
+	timer    *time.Timer
+	released atomic.Bool
 }
 
 // netemLink is one emulated link: a profile and the two bottlenecks, one a
@@ -374,6 +427,13 @@ type transfer struct {
 	elapsed time.Duration
 	stats   quic.Stats
 	marks   int // the sender's application-limited marks
+
+	// Set when small messages came first (transferAfterSmall): the bulk
+	// phase's own wall clock, the sender's counters as it began, and the
+	// largest flight the messages kept.
+	bulk      time.Duration
+	atBulk    quic.Stats
+	maxFlight int
 }
 
 // transferOnce runs one connection over the link and moves total bytes
@@ -390,6 +450,16 @@ func transferOnce(tb testing.TB, link *netemLink, total int) (transfer, error) {
 // transferWith is transferOnce with the controller named rather than the
 // link's: what lets two flows on one link run two controllers.
 func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionAlgorithm) (transfer, error) {
+	tb.Helper()
+	return transferAfterSmall(tb, link, cc, 0, total)
+}
+
+// transferAfterSmall is transferWith preceded, on the same stream, by small
+// bytes of messages of 1 to 4 kB written one a millisecond — 2.5 MB/s, half
+// of what the Bottleneck line carries, so the window, not the path, is
+// what they leave behind: RFC 9002 §7.8 has a sender that did not fill
+// its window not grow it.
+func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgorithm, small, total int) (transfer, error) {
 	tb.Helper()
 	start := time.Now()
 	clientPC, serverPC, dialTo, stop, err := link.path()
@@ -436,6 +506,24 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 		return transfer{}, err
 	}
 	chunk := make([]byte, 64<<10)
+	var t transfer
+	if small > 0 {
+		sizes := rand.New(rand.NewPCG(1, 2)) //nolint:gosec // G404: message sizes, reproducible on purpose
+		tick := time.NewTicker(time.Millisecond)
+		for sent := 0; sent < small; {
+			n := min(1<<10+sizes.IntN(3<<10+1), small-sent)
+			if _, err := s.Write(chunk[:n]); err != nil {
+				tick.Stop()
+				return transfer{}, fmt.Errorf("message after %d bytes: %w", sent, err)
+			}
+			sent += n
+			t.maxFlight = max(t.maxFlight, conn.Stats().BytesInFlight)
+			<-tick.C
+		}
+		tick.Stop()
+		t.atBulk = conn.Stats()
+	}
+	bulk := time.Now()
 	for sent := 0; sent < total; sent += len(chunk) {
 		if _, err := s.Write(chunk); err != nil {
 			return transfer{}, fmt.Errorf("after %d bytes: %w (conn: %v)", sent, err, conn.Err()) //nolint:errorlint // as above
@@ -450,13 +538,15 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 		if r.err != nil {
 			return transfer{}, fmt.Errorf("the server: %w", r.err)
 		}
-		if r.n != int64(total) {
-			return transfer{}, fmt.Errorf("the server read %d of %d bytes", r.n, total)
+		if r.n != int64(small+total) {
+			return transfer{}, fmt.Errorf("the server read %d of %d bytes", r.n, small+total)
 		}
 	case <-time.After(120 * time.Second):
 		return transfer{}, errors.New("the transfer did not finish")
 	}
-	return transfer{elapsed: time.Since(start), stats: conn.Stats(), marks: quic.AppLimitedMarks(conn)}, nil
+	t.elapsed, t.bulk = time.Since(start), time.Since(bulk)
+	t.stats, t.marks = conn.Stats(), quic.AppLimitedMarks(conn)
+	return t, nil
 }
 
 // acceptOne completes one server handshake on pc: by reading the first
@@ -494,7 +584,11 @@ func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters
 // benchTransfer moves total bytes on one flow and reports its goodput, and
 // the sender's final smoothed RTT as a multiple of the smallest it sampled:
 // on a deep buffer that ratio is the queue the controller let build, the
-// figure BBR's "RTT within 1.5× min_rtt" criterion reads.
+// figure BBR's "RTT within 1.5× min_rtt" criterion reads. retx_B is the
+// bytes the sender's declared losses put back on the queue, and lost the
+// packets behind them: on a path that reorders and loses nothing, both
+// count spurious losses alone, a figure the scheduler moves far less than
+// the transfer's wall clock.
 func benchTransfer(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(total))
@@ -505,6 +599,8 @@ func benchTransfer(b *testing.B, prof netemProfile, total int) {
 		}
 		b.ReportMetric(float64(total)/1e6/t.elapsed.Seconds(), "MB/s")
 		b.ReportMetric(float64(t.stats.SmoothedRTT)/float64(t.stats.MinRTT), "rtt_x")
+		b.ReportMetric(float64(t.stats.BytesRetransmitted), "retx_B")
+		b.ReportMetric(float64(t.stats.LostPackets), "lost")
 	}
 }
 
@@ -612,6 +708,34 @@ func BenchmarkTransferBottleneck16MiB(b *testing.B) {
 		rate:  50_000_000 / 8,
 		queue: 5 * time.Millisecond,
 	}, 16<<20)
+}
+
+// BenchmarkTransferBottleneckAfterSmall is Bottleneck's 4 MiB written after
+// 5 MiB of small messages on the same connection (transferAfterSmall): a
+// connection that served requests, then a download. The messages never fill
+// the window, so it must leave them no larger than they needed — cwnd_x is
+// the window as the transfer starts over the largest flight they kept,
+// at most two (one doubling of a slow start not yet ended) — and the
+// transfer must then lose no more than Bottleneck's alone: lost counts its
+// own losses. Not gated: the question is the slow start's, measured with
+// SLUICE_QUIC_SS, and the figure sits two seconds of messages behind.
+func BenchmarkTransferBottleneckAfterSmall(b *testing.B) {
+	const small, total = 5 << 20, 4 << 20
+	b.SetBytes(total)
+	for b.Loop() {
+		link := &netemLink{prof: netemProfile{
+			owd:   10 * time.Millisecond,
+			rate:  50_000_000 / 8,
+			queue: 5 * time.Millisecond,
+		}, cc: benchAlgorithm}
+		t, err := transferAfterSmall(b, link, benchAlgorithm, small, total)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportMetric(float64(total)/1e6/t.bulk.Seconds(), "MB/s")
+		b.ReportMetric(float64(t.stats.LostPackets-t.atBulk.LostPackets), "lost")
+		b.ReportMetric(float64(t.atBulk.CongestionWindow)/float64(max(t.maxFlight, 1)), "cwnd_x")
+	}
 }
 
 // BenchmarkTransferDeepBuffer is the same bottleneck behind ten round trips
