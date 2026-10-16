@@ -53,7 +53,7 @@ func TestHandshakeAndStream(t *testing.T) {
 			done <- result{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -135,7 +135,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			done <- err
 			return
@@ -222,7 +222,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 			up <- server{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		up <- server{conn: conn, err: err}
 	}()
 
@@ -283,7 +283,7 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	if _, err := quic.Dial(pc, peer.LocalAddr(), noALPN, quic.DefaultParameters()); err == nil {
 		t.Error("Dial accepted a config with no ALPN")
 	}
-	if _, err := quic.Accept(pc, peer.LocalAddr(), []byte{0}, noALPN, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Accept(pc, quic.Datagram{Peer: peer.LocalAddr(), Payload: []byte{0}}, noALPN, quic.DefaultParameters()); err == nil {
 		t.Error("Accept accepted a config with no ALPN")
 	}
 	if _, err := quic.NewListener(pc, noALPN, quic.DefaultParameters(), quic.ListenerConfig{}); err == nil {
@@ -309,7 +309,7 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 			close(accepted)
 			return
 		}
-		c, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		c, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			close(accepted)
 			return

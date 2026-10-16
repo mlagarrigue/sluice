@@ -521,9 +521,8 @@ a datagram CE once it waits more than 5 ms for the line — the depth of
 `Bottleneck`'s buffer — and still drops at 200 ms. It runs over four UDP
 sockets on the loopback interface rather than in-memory pairs, the only
 transport here that carries the ECN field, and its server is a
-`Listener`: a connection accepted with `Accept` never uses ECN, the first
-datagram's mark being read by the caller and lost (`Accept` documents
-it). Eight rounds per controller on 2026-10-14, one binary,
+`Listener`, which reads each datagram's ECN field with its bytes. Eight
+rounds per controller on 2026-10-14, one binary,
 `SLUICE_QUIC_CC` the variable; `rtt_x` is the figure to read, the times
 are not `DeepBuffer`'s to the millisecond:
 

@@ -115,7 +115,7 @@ func startEchoServerTLS(t *testing.T, pc net.PacketConn, cfg *tls.Config) (<-cha
 			errCh <- err
 			return
 		}
-		conn, err := quic.Accept(pc, peer, buf[:n], cfg, quic.DefaultParameters())
+		conn, err := quic.Accept(pc, quic.Datagram{Peer: peer, Payload: buf[:n]}, cfg, quic.DefaultParameters())
 		if err != nil {
 			errCh <- err
 			return
@@ -245,7 +245,7 @@ func TestInitialPaddingWithASmallClientHello(t *testing.T) {
 			return
 		}
 		firstLen <- n
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			done <- err
 			return
@@ -497,7 +497,7 @@ func TestStopSendingAbandonsTheWriter(t *testing.T) {
 			stopped <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			stopped <- err
 			return
@@ -665,7 +665,7 @@ func TestBatchModeReplenishesConnectionCredit(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), small)
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), small)
 		if err != nil {
 			serverUp <- err
 			return
@@ -748,7 +748,7 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), small)
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), small)
 		if err != nil {
 			done <- err
 			return

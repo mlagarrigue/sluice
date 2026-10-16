@@ -610,8 +610,19 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	return c, nil
 }
 
-// Accept completes a server handshake for a connection whose first datagram
-// has already been read.
+// Datagram is one UDP datagram as read from a socket: who sent it, its
+// bytes, and the ECN field of the IP header it arrived in — 0b00 Not-ECT,
+// 0b01 ECT(1), 0b10 ECT(0), 0b11 CE, the codepoints [udp.PacketECN]
+// reports (RFC 3168 §5). Zero is Not-ECT, the value to leave where the
+// socket does not report the field.
+type Datagram struct {
+	Peer    net.Addr
+	Payload []byte
+	ECN     uint8
+}
+
+// Accept completes a server handshake for a connection whose first
+// datagram, first, has already been read.
 //
 // It serves exactly one connection per [net.PacketConn] — for a shared
 // socket serving many connections at once, see [Listener] instead, which
@@ -624,22 +635,21 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 // limit of three times the bytes received — the same accounting
 // Listener-managed connections pay, with the same implicit release.
 //
-// A connection accepted this way never uses ECN. The caller read the first
-// datagram, and this signature carries its bytes but not the ECN field of
-// its IP header, so the connection counts that packet as Not-ECT (RFC 9000
-// §13.4.1). A client that tests the path marks it ECT(0), finds no ECN
-// counts in the acknowledgement that covers it, and fails validation as
-// §13.4.2.1 requires; it sends unmarked from then on. Behind a [Listener]
-// the mark is read with the datagram and the path validates. A form of
-// Accept that takes the mark with the datagram would lift this.
-func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+// first.ECN is the mark the first datagram arrived with. A client tests the
+// path by marking its first packets ECT(0), and fails ECN validation when
+// the acknowledgement covering them does not count the marks (RFC 9000
+// §13.4.2.1). A caller that wants ECN therefore reads the datagram from a
+// socket [udp.EnableECN] was applied to and passes what [udp.PacketECN]
+// finds in its out-of-band bytes. Left at zero, the packet counts as
+// Not-ECT and the client sends unmarked from then on.
+func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
 	if err := requireALPN(cfg); err != nil {
 		return nil, err
 	}
-	h, _, err := parseLongHeader(first)
+	h, _, err := parseLongHeader(first.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +662,7 @@ func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, par
 	if len(h.DCID) < 8 {
 		return nil, fmt.Errorf("%w: a client Initial with a %d-byte destination identifier; §7.2 requires 8", ErrQUIC, len(h.DCID))
 	}
-	c, err := newServerConn(pc, peer, h, cfg, params, nil, nil, nil)
+	c, err := newServerConn(pc, first.Peer, h, cfg, params, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +673,7 @@ func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, par
 	c.mu.Lock()
 	c.amplActive = true
 	c.mu.Unlock()
-	if err := c.receiveGathered(rawDatagram{data: first, from: peer}); err != nil {
+	if err := c.receiveGathered(rawDatagram{data: first.Payload, from: first.Peer, ecn: first.ECN}); err != nil {
 		return nil, err // receive only fails through abort, which closed
 	}
 	if err := c.handshake(context.Background()); err != nil {

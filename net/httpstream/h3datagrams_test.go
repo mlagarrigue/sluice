@@ -44,7 +44,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			t.Error(err)
 			return

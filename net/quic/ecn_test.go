@@ -1,8 +1,12 @@
 package quic
 
 import (
+	"errors"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // An ACK whose space saw marked packets is type 0x03 and carries the three
@@ -178,5 +182,62 @@ func TestECNValidationOutcomes(t *testing.T) {
 	c.validateECNLocked(spaceApplication, ack([3]uint64{}, false), ackOutcome{raisedLargest: true})
 	if c.ecn.phase != ecnTesting {
 		t.Fatalf("a plain ACK of unmarked packets changed the phase to %d", c.ecn.phase)
+	}
+}
+
+// A connection accepted by Accept validates ECN as one behind a Listener
+// does: the server reads the first datagram's mark through udp and hands
+// it in with the bytes, the client's ECT(0) Initial is counted as such, and
+// the acknowledgement covering it validates the client's path (RFC 9000
+// §13.4.2.1). Counted Not-ECT, as before Accept took the mark, it fails.
+func TestECNValidatesBehindAccept(t *testing.T) {
+	serverPC, clientPC := newLoopbackPair(t)
+	server := serverPC.(*net.UDPConn)
+	if err := udp.EnableECN(server); err != nil {
+		if errors.Is(err, errors.ErrUnsupported) {
+			t.Skip("ECN is read on Linux, Darwin and Windows only")
+		}
+		t.Fatal(err)
+	}
+	serverCfg := ServerTLSForTest(t)
+
+	type result struct {
+		conn *Conn
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		oob := make([]byte, udp.PacketInfoLen)
+		n, oobn, _, from, err := server.ReadMsgUDP(buf, oob)
+		if err != nil {
+			done <- result{nil, err}
+			return
+		}
+		ecn, ok := udp.PacketECN(oob[:oobn])
+		if !ok {
+			done <- result{nil, errors.New("the first datagram arrived without its ECN field")}
+			return
+		}
+		c, err := Accept(server, Datagram{Peer: from, Payload: buf[:n], ECN: ecn}, serverCfg, DefaultParameters())
+		done <- result{c, err}
+	}()
+
+	client, err := Dial(clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	r := <-done
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	defer r.conn.Close()
+
+	client.mu.Lock()
+	phase := client.ecn.phase
+	client.mu.Unlock()
+	if phase != ecnCapable {
+		t.Fatalf("client ECN phase %d after the handshake, want %d (capable)", phase, ecnCapable)
 	}
 }

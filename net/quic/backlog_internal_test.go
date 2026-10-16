@@ -367,7 +367,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 	t.Run("standalone Accept", func(t *testing.T) {
 		pcA, pcB := newLoopbackPair(t)
 		_ = pcB
-		_, err := Accept(pcA, pcB.LocalAddr(), syntheticInitial(t, short, scid), ServerTLSForTest(t), DefaultParameters())
+		_, err := Accept(pcA, Datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultParameters())
 		if err == nil {
 			t.Fatal("Accept took an Initial with a 4-byte destination identifier")
 		}
@@ -694,7 +694,7 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 			done <- result{nil, err}
 			return
 		}
-		c, err := Accept(serverPC, from, append([]byte(nil), buf[:n]...), serverCfg, DefaultParameters())
+		c, err := Accept(serverPC, Datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultParameters())
 		done <- result{c, err}
 	}()
 

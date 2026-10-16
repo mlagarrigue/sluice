@@ -400,7 +400,7 @@ func TestH3OverARealConnection(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -941,7 +941,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1044,7 +1044,7 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 			served <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), params)
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), params)
 		if err != nil {
 			served <- err
 			return
@@ -1182,7 +1182,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1306,7 +1306,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), mustTransportParameters(Config{}))
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), mustTransportParameters(Config{}))
 		if err != nil {
 			serverUp <- err
 			return
@@ -1397,7 +1397,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1665,7 +1665,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 			served <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverCfg, quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverCfg, quic.DefaultParameters())
 		if err != nil {
 			served <- err
 			return
@@ -1765,7 +1765,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1957,7 +1957,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return

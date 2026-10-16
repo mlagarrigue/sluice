@@ -93,7 +93,7 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := Accept(serverTap, peer, buf[:n], ServerTLSForTest(t), DefaultParameters())
+		conn, err := Accept(serverTap, Datagram{Peer: peer, Payload: buf[:n]}, ServerTLSForTest(t), DefaultParameters())
 		if err != nil {
 			done <- err
 			return

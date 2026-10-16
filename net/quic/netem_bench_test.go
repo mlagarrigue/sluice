@@ -394,9 +394,9 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 
 // acceptOne completes one server handshake on pc: by reading the first
 // datagram and handing it to quic.Accept, or, when the path marks, behind a
-// Listener — the only server shape that reads the ECN field of the first
-// datagram, without which the client's ECN validation fails (quic.Accept
-// documents it) and nothing on the path is ever marked.
+// Listener, which reads every datagram's ECN field with its bytes. The
+// marking figures in docs/benchmarks.md were measured behind a Listener;
+// the shape stays so they remain comparable.
 func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters, marks bool) (*quic.Conn, error) {
 	tb.Helper()
 	if marks {
@@ -421,7 +421,7 @@ func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters
 	if err != nil {
 		return nil, err
 	}
-	return quic.Accept(pc, peer, buf[:n], serverTLS(tb), params)
+	return quic.Accept(pc, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(tb), params)
 }
 
 // benchTransfer moves total bytes on one flow and reports its goodput, and

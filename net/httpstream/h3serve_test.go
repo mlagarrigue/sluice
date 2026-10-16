@@ -51,7 +51,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), params)
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), params)
 		if err != nil {
 			serverUp <- err
 			return
@@ -142,7 +142,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
