@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -113,7 +114,10 @@ func TestATryOpenWithoutCreditSendsStreamsBlocked(t *testing.T) {
 	for _, uni := range []bool{false, true} {
 		c := newConn(&fuzzSink{addr: "open:self"}, fakeFuzzAddr("open:peer"),
 			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+		// Under the lock: the timer loop already runs and reads it.
+		c.mu.Lock()
 		c.hasPeerParams = true // limits of zero: no credit of either kind
+		c.mu.Unlock()
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		if _, err := c.open(ctx, uni); !errors.Is(err, context.Canceled) {
@@ -123,8 +127,11 @@ func TestATryOpenWithoutCreditSendsStreamsBlocked(t *testing.T) {
 		if uni {
 			want = appendFrame(nil, frameStreamsBlocked|1, 0)
 		}
-		if !bytes.Equal(c.control, want) {
-			t.Errorf("uni=%v: control queue %x; want STREAMS_BLOCKED %x", uni, c.control, want)
+		c.mu.Lock()
+		control := slices.Clone(c.control)
+		c.mu.Unlock()
+		if !bytes.Equal(control, want) {
+			t.Errorf("uni=%v: control queue %x; want STREAMS_BLOCKED %x", uni, control, want)
 		}
 		c.Close()
 	}
