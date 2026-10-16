@@ -41,24 +41,17 @@ import (
 // inflight_longterm and goes DOWN. Not the DCTCP-style response Linux
 // gives L4S marks, which this end never asks for (it marks ECT(0)).
 //
-// Three readings differ from the draft's pseudocode. The volume in
-// flight when a lost packet was sent (RS.tx_in_flight) is read as the
-// flight when the loss is declared, not stamped on every packet sent: the
-// losses that matter are declared one round after a ProbeBW_UP step of a
-// few datagrams, and the sent record stays as it is. The loss rate of a
-// round is the round's lost bytes over its lost plus delivered bytes, the
-// loss round being the draft's (first loss to the acknowledgement of a
-// packet sent after it). The bandwidth plateau reads the max filter, as
-// version 1 does, and checks on the first sample of a round that measures
-// the path rather than the application (bbr.checkFullPipe), where the
-// draft reads the rate sample itself (§5.3.1.2).
+// One reading differs from the draft's pseudocode: Startup's loss rate
+// over a round (§5.3.1.3) is the round's lost bytes over its lost plus
+// delivered bytes, the loss round being the draft's (first loss to the
+// acknowledgement of a packet sent after it). Every other loss test is the
+// draft's, per packet: RS.lost and RS.tx_in_flight from the stamps each
+// packet took when it left (lostPacket, ackEvent).
 //
 // Not yet followed from draft -06, which revised -03: ProbeBW's
-// precautionary probing (§5.3.3.6, §5.3.3.7) and the
-// undo of a spurious loss recovery (§5.5.11) are absent — the transport
-// detects no spurious loss; and Startup's six lost ranges are counted as
-// six loss declarations, a loss exit leaving full_bw_now unset (§5.3.1.3,
-// A.2).
+// precautionary probing (§5.3.3.6, §5.3.3.7) and the undo of a spurious
+// loss recovery (§5.5.11) are absent — the transport detects no spurious
+// loss.
 type bbr3 struct {
 	maxDatagram int
 	initialCwnd int
@@ -94,7 +87,8 @@ type bbr3 struct {
 	// and the latest delivery signals they adapt to — the best rate and
 	// volume of the current loss round. A loss round runs from the first
 	// loss or CE mark to the acknowledgement of a packet sent after it;
-	// lostInRound and lossEventsInRound count its losses, markedInRound its
+	// lostInRound counts its lost bytes, lostRangesInRound the discontiguous
+	// ranges they form (§5.3.1.3), markedInRound its
 	// marks in bytes (the peer counts packets: one datagram each),
 	// roundDelivered holds what the round that just ended delivered.
 	bwShortterm        float64
@@ -107,7 +101,7 @@ type bbr3 struct {
 	roundDelivered     int
 	lostInRound        int
 	markedInRound      int
-	lossEventsInRound  int
+	lostRangesInRound  int
 
 	// Round counting (§5.5.1): delivered is the controller's own count of
 	// acknowledged bytes, and a round ends when a packet sent after the
@@ -133,8 +127,8 @@ type bbr3 struct {
 	cwndGain   float64
 	rate       float64
 	// The full-pipe estimator (§5.3.1.2): reached is for the lifetime of
-	// the connection, now for the current probe. fullBwPending defers a
-	// round's check to its first sample that measures the path.
+	// the connection, now for the current probe. fullBwPending carries a
+	// round's check to the frame's own sample (checkFullBwReached).
 	fullBwReached bool
 	fullBwNow     bool
 	fullBw        float64
@@ -225,8 +219,8 @@ const (
 	bbr3MinRTTFilterLen  = 10 * time.Second
 	bbr3ProbeRTTInterval = 5 * time.Second
 	bbr3ProbeRTTDuration = 200 * time.Millisecond
-	// bbr3StartupFullLossCnt is how many loss events a round needs for
-	// Startup to end on loss (§5.3.1.3).
+	// bbr3StartupFullLossCnt is how many discontiguous lost ranges a round
+	// needs for Startup to end on loss (§5.3.1.3).
 	bbr3StartupFullLossCnt = 6
 	// bbr3FullBwThresh is the growth a round must show in the estimate to
 	// count as still probing, bbr3FullBwRounds how many rounds without it
@@ -361,12 +355,11 @@ func (b *bbr3) inflightWithHeadroom() int {
 // onAcked is BBRUpdateOnACK (§5.2.3), run per packet in the draft's order:
 // the packet leaves the flight, its sample feeds the model, the state
 // machine reads the model, the recovery period ends if the packet was sent
-// after the loss, and the control parameters follow. The max filter alone
-// reads the frame's sample and nothing else, as the draft's once-per-ACK
-// run does (§5.5.5): an older packet of the frame passes it an empty one.
-// priorInFlight stands in for the draft's RS.tx_in_flight.
+// after the loss, and the control parameters follow. The max filter and
+// the plateau's check read the frame's sample and nothing else, as the
+// draft's once-per-ACK run does (§5.5.5, §5.3.1.2): an older packet of
+// the frame passes them an empty one.
 func (b *bbr3) onAcked(ev ackEvent) {
-	priorInFlight := b.inFlight
 	b.inFlight = max(b.inFlight-ev.size, 0)
 	b.delivered += ev.size
 	priorDelivered := b.delivered - ev.delivered // the draft's P.delivered
@@ -390,10 +383,10 @@ func (b *bbr3) onAcked(ev ackEvent) {
 	b.updateLatestDeliverySignals(rs, priorDelivered)
 	b.updateCongestionSignals(frame, priorDelivered)
 	b.updateACKAggregation(ev.now, ev.size)
-	b.checkFullBwReached(rs)
+	b.checkFullBwReached(frame, ev.rated)
 	b.checkStartupDone()
 	b.checkDrainDone(ev.now)
-	b.updateProbeBWCyclePhase(ev.now, rs, priorInFlight, ev.size)
+	b.updateProbeBWCyclePhase(rs, ev)
 	b.updateMinRTT(ev.now, rtt)
 	b.checkProbeRTT(ev.now)
 	b.advanceLatestDeliverySignals(rs)
@@ -436,7 +429,7 @@ func (b *bbr3) updateCongestionSignals(rs rateSample, priorDelivered int) {
 	b.adaptLowerBoundsFromCongestion()
 	b.checkStartupHighLoss()
 	b.lossInRound = false
-	b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
+	b.lostInRound, b.markedInRound, b.lostRangesInRound = 0, 0, 0
 }
 
 // updateMaxBw is BBRUpdateMaxBw (§5.5.5): no sample, or one that measured
@@ -496,24 +489,34 @@ func (b *bbr3) inProbeBW() bool {
 	return b.state >= bbr3ProbeBWDown && b.state <= bbr3ProbeBWUp
 }
 
-// inflightTooHigh is IsInflightTooHigh (§5.5.10.2): the loss round's losses
-// and CE marks against a volume in flight exceed the 2% a probe may cause.
-func (b *bbr3) inflightTooHigh(volume int) bool {
+// lossTooHigh is IsInflightTooHigh (§5.5.10.2) on one packet: what was
+// declared lost between its send and its acknowledgement or loss (RS.lost)
+// exceeds the 2% a probe may cause of the flight it was sent into
+// (RS.tx_in_flight).
+func lossTooHigh(lost, txInFlight int) bool {
+	return float64(lost) > bbr3LossThresh*float64(txInFlight)
+}
+
+// roundTooHigh is the same 2% at the loss round's scale: its losses and CE
+// marks against a volume. The marks have no packet to stamp (markEvent),
+// and Startup's exit reads a round's loss rate (§5.3.1.3).
+func (b *bbr3) roundTooHigh(volume int) bool {
 	return b.lossInRound && float64(b.lostInRound+b.markedInRound) > bbr3LossThresh*float64(volume)
 }
 
 // checkStartupHighLoss is BBRCheckStartupHighLoss (§5.3.1.3), read when a
-// loss round ends: in recovery, six loss events in the round and a loss
-// rate over 2% of what the round carried mean the pipe is full, and the
-// bound is the product or the round's volume, whichever is larger.
+// loss round ends: in recovery, six discontiguous ranges lost in the round
+// and a loss rate over 2% of what the round carried mean the pipe is full
+// — full_bw_now as well as full_bw_reached (test A.2) — and the bound is
+// the product or the round's volume, whichever is larger.
 func (b *bbr3) checkStartupHighLoss() {
-	if b.state != bbr3Startup || !b.inRecovery || b.lossEventsInRound < bbr3StartupFullLossCnt {
+	if b.state != bbr3Startup || !b.inRecovery || b.lostRangesInRound < bbr3StartupFullLossCnt {
 		return
 	}
-	if !b.inflightTooHigh(b.lostInRound + b.roundDelivered) {
+	if !b.roundTooHigh(b.lostInRound + b.roundDelivered) {
 		return
 	}
-	b.fullBwReached = true
+	b.fullBwNow, b.fullBwReached = true, true
 	b.inflightLongterm = max(b.bdpMultiple(b.bw, 1), b.inflightLatest)
 }
 
@@ -537,20 +540,26 @@ func (b *bbr3) updateACKAggregation(now time.Time, acked int) {
 }
 
 // checkFullBwReached is BBRCheckFullBWReached (§5.3.1.2): once per round,
-// on a sample that measures the path and not the application, the probe is
-// over when three rounds in a row have raised the estimate by less than a
-// quarter. The estimate read is the max filter's (bbr.checkFullPipe).
-func (b *bbr3) checkFullBwReached(rs rateSample) {
+// on the sample of the frame that started it, the probe is over when three
+// rounds in a row have raised the delivery rate by less than a quarter. A
+// round whose sample measures the application rather than the path is not
+// counted. The round may start on an older packet of the frame, whose
+// sample is the frame's newest (rated): fullBwPending carries the check
+// there, or to the next frame whose sample is reliable.
+func (b *bbr3) checkFullBwReached(frame rateSample, rated bool) {
 	if b.roundStart {
 		b.fullBwPending = true
 	}
-	if b.fullBwNow || !b.fullBwPending || rs.appLimited {
+	if b.fullBwNow || !b.fullBwPending || !rated {
 		return
 	}
 	b.fullBwPending = false
-	if b.maxBw >= b.fullBw*bbr3FullBwThresh {
+	if frame.appLimited {
+		return
+	}
+	if rate := frame.deliveryRate(); rate >= b.fullBw*bbr3FullBwThresh {
 		b.resetFullBw()
-		b.fullBw = b.maxBw
+		b.fullBw = rate
 		return
 	}
 	b.fullBwCount++
@@ -635,7 +644,7 @@ func (b *bbr3) startProbeBWUp() {
 
 func (b *bbr3) resetCongestionSignals() {
 	b.lossInRound = false
-	b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
+	b.lostInRound, b.markedInRound, b.lostRangesInRound = 0, 0, 0
 	b.bwLatest, b.inflightLatest = 0, 0
 }
 
@@ -653,11 +662,12 @@ func (b *bbr3) pickProbeWait() {
 }
 
 // updateProbeBWCyclePhase is BBRUpdateProbeBWCyclePhase (§5.3.3.9).
-func (b *bbr3) updateProbeBWCyclePhase(now time.Time, rs rateSample, priorInFlight, acked int) {
+func (b *bbr3) updateProbeBWCyclePhase(rs rateSample, ev ackEvent) {
 	if !b.fullBwReached {
 		return // only handling steady-state behaviour here
 	}
-	b.adaptLongTermModel(rs, priorInFlight, acked)
+	now := ev.now
+	b.adaptLongTermModel(rs, ev)
 	if !b.inProbeBW() {
 		return
 	}
@@ -727,8 +737,9 @@ func (b *bbr3) isTimeToGoDown() bool {
 // acknowledgement phases advance on round starts — the probe's samples
 // end one round after DOWN started, which also advances the max filter's
 // clock — and, when the loss rate is safe, the long-term bound rises to
-// the flight that got through, and in UP along its slope.
-func (b *bbr3) adaptLongTermModel(rs rateSample, priorInFlight, acked int) {
+// the flight the packet was sent into, and in UP along its slope. CE marks
+// count against the rate too, at the loss round's scale (onMarked).
+func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) {
 	if b.ackPhase == bbr3AcksProbeStarting && b.roundStart {
 		b.ackPhase = bbr3AcksProbeFeedback
 	}
@@ -739,14 +750,14 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, priorInFlight, acked int) {
 			b.cycleCount++ // BBRAdvanceMaxBwFilter (§5.5.6)
 		}
 	}
-	if b.inflightTooHigh(priorInFlight) || b.inflightLongterm == bbr3Unbounded {
+	if lossTooHigh(ev.lost, ev.txInFlight) || b.markedInRound > 0 && b.roundTooHigh(ev.txInFlight) || b.inflightLongterm == bbr3Unbounded {
 		return
 	}
-	if priorInFlight > b.inflightLongterm {
-		b.inflightLongterm = priorInFlight
+	if ev.txInFlight > b.inflightLongterm {
+		b.inflightLongterm = ev.txInFlight
 	}
 	if b.state == bbr3ProbeBWUp {
-		b.probeInflightLongtermUpward(acked)
+		b.probeInflightLongtermUpward(ev.size)
 	}
 }
 
@@ -930,24 +941,25 @@ func (b *bbr3) boundCwndForModel() {
 // onLost is BBRHandleLostPacket (§5.5.10.2) for a batch. The batch counts
 // toward the loss round — opening one if none is running (BBRNoteLoss) —
 // and toward the recovery period (RFC 9002 §7.3.2), whose entry saves the
-// window (§5.6.4.4). If the batch's packets were sent while probing for
-// bandwidth and the round's losses now exceed 2% of the flight, the
-// long-term bound takes the volume at which they crossed it.
+// window (§5.6.4.4). Then, while the samples belong to a bandwidth probe,
+// the first packet whose losses since it left exceed 2% of the flight it
+// was sent into (lossEvent.crossing) sets the long-term bound to the
+// volume at which they crossed it. That packet's own stamps, not the
+// flight at the declaration: losses declared a round after an UP step, in
+// DOWN, were sent into the larger flight (l.3891-3898).
 func (b *bbr3) onLost(ev lossEvent) {
-	inflightAtLoss := b.inFlight
 	b.inFlight = max(b.inFlight-ev.bytes, 0)
 	b.noteCongestion()
 	b.lostInRound += ev.bytes
-	b.lossEventsInRound++
+	b.lostRangesInRound += ev.ranges
 	if !ev.latestSent.Before(b.recoveryStart) {
 		b.priorCwnd = b.saveCwnd()
 		b.inRecovery = true
 		b.recoveryStart = ev.now
 	}
-	if !b.bwProbeSamples || !b.inflightTooHigh(inflightAtLoss) {
-		return
+	if b.bwProbeSamples && ev.crossing.size > 0 {
+		b.handleInflightTooHigh(ev.now, inflightAtLoss(ev.crossing))
 	}
-	b.handleInflightTooHigh(ev.now, b.inflightLongtermFromLostPacket(inflightAtLoss, ev.bytes))
 }
 
 // noteCongestion is BBRNoteLoss: a loss or a mark opens a loss round if
@@ -955,7 +967,7 @@ func (b *bbr3) onLost(ev lossEvent) {
 func (b *bbr3) noteCongestion() {
 	if !b.lossInRound {
 		b.lossRoundDelivered = b.delivered
-		b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
+		b.lostInRound, b.markedInRound, b.lostRangesInRound = 0, 0, 0
 	}
 	b.lossInRound = true
 }
@@ -970,18 +982,18 @@ func (b *bbr3) noteCongestion() {
 func (b *bbr3) onMarked(ev markEvent) {
 	b.noteCongestion()
 	b.markedInRound += ev.packets * b.maxDatagram
-	if !b.bwProbeSamples || !b.inflightTooHigh(b.inFlight) {
+	if !b.bwProbeSamples || !b.roundTooHigh(b.inFlight) {
 		return
 	}
 	b.handleInflightTooHigh(ev.now, b.inFlight)
 }
 
-// inflightLongtermFromLostPacket is BBRInflightLongtermFromLostPacket: the
-// prefix of the batch at which the round's losses crossed the threshold,
-// solved from lost / inflight = LossThresh.
-func (b *bbr3) inflightLongtermFromLostPacket(txInFlight, size int) int {
-	inflightPrev := txInFlight - size
-	lostPrev := b.lostInRound - size
+// inflightAtLoss is InflightAtLoss (§5.5.10.2): the prefix of the packet
+// at which the losses crossed the threshold, solved from lost / inflight =
+// LossThresh — for a datagram, within a few bytes of the flight before it.
+func inflightAtLoss(p lostPacket) int {
+	inflightPrev := p.txInFlight - p.size
+	lostPrev := p.lost - p.size
 	lostPrefix := (bbr3LossThresh*float64(inflightPrev) - float64(lostPrev)) / (1 - bbr3LossThresh)
 	return inflightPrev + int(lostPrefix)
 }

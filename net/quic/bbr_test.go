@@ -20,12 +20,24 @@ type bbrPath struct {
 	rtt       time.Duration
 	link      float64 // bytes per second
 	delivered int
+	lost      int  // C.lost
+	afterLoss bool // the last datagram off the queue was lost: a loss extends its range
 	queue     []bbrSent
+	// acks holds the delivered count after each acknowledgement since the
+	// last send: the path is ACK-clocked, its k-th datagram sent as the k-th
+	// of them arrived, so its sample spans what was delivered since — a
+	// round-start sample reads the previous round's flight, as it does on
+	// a paced path, not the one datagram a burst sent after a drained pipe
+	// would. A loss or a mark clears it: what is sent next was sent after
+	// the congestion signal.
+	acks []int
 }
 
 type bbrSent struct {
-	sentAt time.Time
-	prior  int
+	sentAt     time.Time
+	prior      int
+	txInFlight int
+	lost       int
 }
 
 func newBBRPath(rtt time.Duration, link float64) *bbrPath {
@@ -35,10 +47,15 @@ func newBBRPath(rtt time.Duration, link float64) *bbrPath {
 
 // send puts n datagrams on the path now.
 func (p *bbrPath) send(n int) {
-	for range n {
+	for i := range n {
+		prior := p.delivered
+		if i < len(p.acks) {
+			prior = p.acks[i]
+		}
 		p.cc.onSent(p.now, 1200)
-		p.queue = append(p.queue, bbrSent{sentAt: p.now, prior: p.delivered})
+		p.queue = append(p.queue, bbrSent{sentAt: p.now, prior: prior, txInFlight: p.cc.bytesInFlight(), lost: p.lost})
 	}
+	p.acks = p.acks[:0]
 }
 
 // ack acknowledges the oldest n datagrams now, in order, each by a frame
@@ -55,20 +72,37 @@ func (p *bbrPath) acked(rated bool) ackEvent {
 	s := p.queue[0]
 	p.queue = p.queue[1:]
 	p.delivered += 1200
+	p.acks = append(p.acks, p.delivered)
+	p.afterLoss = false
 	ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior, rated: rated}
+	ev.txInFlight, ev.lost = s.txInFlight, p.lost-s.lost
 	ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
 	return ev
 }
 
-// lose declares the oldest n datagrams lost now, as one batch.
+// lose declares the oldest n datagrams lost now, as one batch: one lost
+// range, or none if the datagram before them was lost too, and the
+// crossing as declareLost finds it.
 func (p *bbrPath) lose(n int) {
-	latest := p.queue[n-1].sentAt
+	ev := lossEvent{now: p.now, latestSent: p.queue[n-1].sentAt, bytes: n * 1200}
+	if !p.afterLoss {
+		ev.ranges = 1
+	}
+	for _, s := range p.queue[:n] {
+		p.lost += 1200
+		if lost := p.lost - s.lost; ev.crossing.size == 0 && lossTooHigh(lost, s.txInFlight) {
+			ev.crossing = lostPacket{size: 1200, txInFlight: s.txInFlight, lost: lost}
+		}
+	}
 	p.queue = p.queue[n:]
-	p.cc.onLost(lossEvent{now: p.now, latestSent: latest, bytes: n * 1200})
+	p.afterLoss = true
+	p.acks = p.acks[:0]
+	p.cc.onLost(ev)
 }
 
 // mark reports n CE-marked datagrams now, as one validated ACK frame does.
 func (p *bbrPath) mark(n int) {
+	p.acks = p.acks[:0]
 	p.cc.onMarked(markEvent{now: p.now, packets: n})
 }
 

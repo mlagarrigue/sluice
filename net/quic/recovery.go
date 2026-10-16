@@ -103,15 +103,29 @@ func (r *rttEstimator) pto(maxAckDelay time.Duration) time.Duration {
 // sentPacket is one packet in flight: what to resend if it is lost, and what
 // its acknowledgement releases.
 type sentPacket struct {
-	pn           uint64
-	sentAt       time.Time
-	size         int
-	ackEliciting bool
+	pn     uint64
+	sentAt time.Time
+	size   int
 	// payload holds the packet's retransmittable frames, encoded. ACK and
 	// PADDING are excluded when the packet is built: acknowledgements are
 	// regenerated from current state, never replayed, and padding is a
 	// property of the datagram that carried it.
 	payload []byte
+	// The delivery estimator's snapshot of the connection when this packet
+	// left (draft-ietf-ccwg-bbr-06 §4.1.2.2): bytes delivered so far, how
+	// long before this send the count last moved and the flight's first
+	// send happened — offsets from sentAt rather than the two instants,
+	// which keeps the record 32 bytes smaller and the acknowledgement path
+	// to one subtraction — the flight this packet joined, itself included
+	// (P.tx_in_flight), and the bytes declared lost so far (P.lost). Read
+	// once, when the packet is acknowledged (deliveryEstimator.update) or
+	// declared lost (declareLost).
+	delivered      int
+	sendElapsed    time.Duration // P.sent_time - P.first_sent_time
+	sinceDelivered time.Duration // P.sent_time - P.delivered_time
+	txInFlight     int
+	lost           int
+	ackEliciting   bool
 	// acked is processAck's working mark. It never survives a call: a marked
 	// packet is removed by the same call that marked it.
 	acked bool
@@ -122,17 +136,15 @@ type sentPacket struct {
 	// ect0 marks a packet whose datagram left with the ECT(0) codepoint,
 	// which the peer's ECN counts must then account for (§13.4.2.1).
 	ect0 bool
-	// The delivery estimator's snapshot of the connection when this packet
-	// left (draft-ietf-ccwg-bbr-06 §4.1.2.2): bytes delivered so far, how
-	// long before this send the count last moved and the flight's first
-	// send happened — offsets from sentAt rather than the two instants,
-	// which keeps the record 32 bytes smaller and the acknowledgement path
-	// to one subtraction — and whether the sender was application-limited. Read once, when the packet is acknowledged
-	// (deliveryEstimator.update).
-	delivered      int
-	sendElapsed    time.Duration // P.sent_time - P.first_sent_time
-	sinceDelivered time.Duration // P.sent_time - P.delivered_time
-	appLimited     bool
+	// appLimited is the snapshot's last field: whether the sender was
+	// application-limited when the packet left.
+	appLimited bool
+	// afterLoss says the packet tracked just before this one was declared
+	// lost by an earlier scan: if this one is lost too, it extends that lost
+	// range rather than opening one (declareLost). Set on the copy a scan
+	// keeps, never on a record the scan has yet to read: a byte stored
+	// just ahead of the record's copy stalls the copy.
+	afterLoss bool
 }
 
 // sentTracker is one packet-number space's in-flight bookkeeping. Packets are
@@ -220,11 +232,16 @@ type ackOutcome struct {
 	largestEliciting bool // …ack-eliciting and sent on this path: what a sample needs
 	largestSentAt    time.Time
 	lostBytes        int
-	lostCount        uint64   // packets behind lostBytes, for Stats.LostPackets
-	lost             [][]byte // payloads to queue for retransmission
-	sawAckEliciting  bool     // any newly acked packet was ack-eliciting
-	newlyAckedECT0   int      // newly acked packets that left marked ECT(0), for ECN validation
-	raisedLargest    bool     // the frame increased the largest acknowledged: validation may fail on it (§13.4.2.1)
+	lostCount        uint64 // packets behind lostBytes, for Stats.LostPackets
+	// lostRanges is how many lost ranges the batch opens
+	// (sentPacket.afterLoss), crossing the first lost packet whose losses
+	// crossed BBR's threshold (lossEvent).
+	lostRanges      int
+	crossing        lostPacket
+	lost            [][]byte // payloads to queue for retransmission
+	sawAckEliciting bool     // any newly acked packet was ack-eliciting
+	newlyAckedECT0  int      // newly acked packets that left marked ECT(0), for ECN validation
+	raisedLargest   bool     // the frame increased the largest acknowledged: validation may fail on it (§13.4.2.1)
 	// latestLossSent is when the *newest* lost packet in this batch was
 	// sent, which is what gates a congestion event (RFC 9002 B.8): one
 	// pre-recovery straggler in a batch must not shield a genuinely new
@@ -340,10 +357,12 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	}
 	var runStart time.Time
 	var runStartPN uint64
+	prevLost := false // the packet before this one was lost, by this scan or (afterLoss) an earlier one
 	kept := s.packets[:0]
 	for i := range s.packets {
 		p := &s.packets[i]
 		if p.acked {
+			prevLost = false
 			runStart = time.Time{}
 			out.newlyAckedCount++
 			if p.ect0 {
@@ -359,6 +378,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 					ev := ackEvent{now: now, sentAt: p.sentAt, size: p.size, srtt: rtt.current()}
 					if est != nil {
 						ev.delivered = est.delivered - p.delivered
+						ev.txInFlight, ev.lost = p.txInFlight, est.lost-p.lost
 						ev.sendElapsed, ev.sinceDelivered, ev.appLimited = p.sendElapsed, p.sinceDelivered, p.appLimited
 						// Sent times rise with numbers: the highest newly
 						// marked is the frame's newest, on this path if any
@@ -385,7 +405,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			lostByCount := p.pn+packetThreshold <= s.largestAcked
 			lostByTime := p.pn < s.largestAcked && p.sentAt.Before(lostBefore)
 			if lostByCount || lostByTime {
-				if s.declareLost(&out, p) {
+				extends := prevLost || p.afterLoss
+				prevLost = true
+				if s.declareLost(&out, p, est, extends) {
 					if hadPrev && runStartPN < prevLargest && prevLargest < p.pn {
 						runStart = time.Time{}
 					}
@@ -404,9 +426,14 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			}
 		}
 		kept = append(kept, *p)
+		if prevLost {
+			kept[len(kept)-1].afterLoss = true
+			prevLost = false
+		}
 	}
 	s.packets = kept
 	if est != nil {
+		est.lost += out.lostBytes
 		est.finish(now, rtt.min)
 	}
 	return out, nil
@@ -427,31 +454,38 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 //
 // A DPLPMTUD probe that matured is reported apart (probeLost and the
 // probe's bytes), never in lostBytes: its loss is no congestion event.
-func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out ackOutcome) {
+func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *deliveryEstimator) (out ackOutcome) {
 	if s.lossTime.IsZero() || now.Before(s.lossTime) {
 		return out
 	}
 	threshold := max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
 	lostBefore := now.Add(-threshold)
 	s.lossTime = time.Time{}
+	prevLost := false // as in processAck
 	kept := s.packets[:0]
-	for _, p := range s.packets {
-		if p.pn > s.largestAcked {
-			// Not a candidate, and not a reason to re-arm the timer: the
-			// next ACK that covers something newer scans it (processAck).
-			kept = append(kept, p)
+	for i := range s.packets {
+		p := &s.packets[i]
+		if p.pn <= s.largestAcked && p.sentAt.Before(lostBefore) {
+			s.declareLost(&out, p, est, prevLost || p.afterLoss)
+			prevLost = true
 			continue
 		}
-		if p.sentAt.Before(lostBefore) {
-			s.declareLost(&out, &p)
-			continue
-		}
-		if s.lossTime.IsZero() {
+		// Past the largest acknowledged, not a candidate and not a reason
+		// to re-arm the timer: the next ACK that covers something newer
+		// scans it (processAck).
+		if p.pn <= s.largestAcked && s.lossTime.IsZero() {
 			s.lossTime = p.sentAt.Add(threshold)
 		}
-		kept = append(kept, p)
+		kept = append(kept, *p)
+		if prevLost {
+			kept[len(kept)-1].afterLoss = true
+			prevLost = false
+		}
 	}
 	s.packets = kept
+	if est != nil {
+		est.lost += out.lostBytes
+	}
 	return out
 }
 
@@ -463,7 +497,17 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator) (out a
 // (RFC 9002 B.8) — because a previous path's loss says nothing about this
 // one (RFC 9000 §9.4, pathStart). It reports whether the loss counts for
 // persistent congestion: ack-eliciting (§7.6.2) and on this path.
-func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket) bool {
+//
+// A congestion loss also counts toward est's C.lost, packet by packet in
+// number order as BBRHandleLostPacket runs (draft-ietf-ccwg-bbr-06
+// §5.5.10.2), the first packet whose losses since it left exceed BBR's
+// threshold kept as the batch's crossing; and it opens a lost range unless
+// it extends one — the packet tracked before it was lost, in this batch or
+// an earlier one (afterLoss): the packet threshold declares a hole's last
+// packets an ACK or two after its first, and Startup counts discontiguous
+// ranges (§5.3.1.3). A lost probe or a previous path's packet sits in its
+// range without ever opening one.
+func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryEstimator, extends bool) bool {
 	onPath := s.onPath(p)
 	if p.pmtuProbe {
 		out.probeLost, out.probeLostPN = true, p.pn
@@ -482,6 +526,16 @@ func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket) bool {
 	out.lostBytes += p.size
 	if p.sentAt.After(out.latestLossSent) {
 		out.latestLossSent = p.sentAt
+	}
+	if est != nil && out.crossing.size == 0 {
+		// C.lost as it stands after this packet: the scan adds the batch
+		// to it when done.
+		if lost := est.lost + out.lostBytes - p.lost; lossTooHigh(lost, p.txInFlight) {
+			out.crossing = lostPacket{size: p.size, txInFlight: p.txInFlight, lost: lost}
+		}
+	}
+	if !extends {
+		out.lostRanges++
 	}
 	return p.ackEliciting
 }
@@ -605,6 +659,12 @@ type ackEvent struct {
 	sendElapsed    time.Duration
 	sinceDelivered time.Duration
 	appLimited     bool
+	// txInFlight is the flight the packet joined, itself included
+	// (RS.tx_in_flight, §2.3), and lost the bytes declared lost since it
+	// left (RS.lost = C.lost - P.lost): what IsInflightTooHigh weighs
+	// (§5.5.10.2).
+	txInFlight int
+	lost       int
 	// rated marks the newest packet the frame delivered when the frame's
 	// sample is reliable (rateSample.reliable): the one sample per
 	// acknowledgement the draft defines (§4.1.2.3), and the only one BBR's
@@ -678,6 +738,7 @@ func (ev ackEvent) rateSample() rateSample {
 // sentTracker.pathStart).
 type deliveryEstimator struct {
 	delivered     int       // C.delivered: bytes acknowledged so far, pure ACKs excluded
+	lost          int       // C.lost: bytes declared lost so far, on the current path
 	deliveredTime time.Time // C.delivered_time: when delivered last moved
 	firstSentTime time.Time // C.first_sent_time: the newest delivered packet's send, or the first send after idle
 	// appLimited is C.app_limited: the delivered count the connection must
@@ -701,16 +762,18 @@ type deliveryEstimator struct {
 }
 
 // onSent snapshots the connection's delivery state into a packet about to
-// leave (§4.1.2.2, OnPacketSent). idle says nothing is in flight: the flight
-// starting now is measured from now, not from the last acknowledgement,
-// which may be long gone.
-func (e *deliveryEstimator) onSent(p *sentPacket, idle bool) {
-	if idle {
+// leave (§4.1.2.2, OnPacketSent); inFlight is the flight before it. An
+// empty flight is idle: the flight starting now is measured from now, not
+// from the last acknowledgement, which may be long gone.
+func (e *deliveryEstimator) onSent(p *sentPacket, inFlight int) {
+	if inFlight == 0 {
 		e.firstSentTime, e.deliveredTime = p.sentAt, p.sentAt
 	}
 	p.delivered = e.delivered
 	p.sendElapsed = p.sentAt.Sub(e.firstSentTime)
 	p.sinceDelivered = p.sentAt.Sub(e.deliveredTime)
+	p.txInFlight = inFlight + p.size
+	p.lost = e.lost
 	p.appLimited = e.appLimited != 0
 }
 
@@ -799,10 +862,37 @@ func (c *Conn) flowEmptyLocked(bytes int) {
 // send time of the newest packet in the batch: B.8's gate for whether the
 // batch is a new congestion event or belongs to a recovery period already
 // paid for.
+//
+// ranges is how many discontiguous lost ranges the batch opens
+// (draft-ietf-ccwg-bbr-06 §5.3.1.3). crossing is, of the packets BBR's
+// loss response handles one by one in number order (§5.5.10.2,
+// BBRHandleLostPacket), the first whose losses since it left exceed the
+// 2% a probe may cause of the flight it was sent into (lossTooHigh); zero
+// size if none did. The response reacts to that one packet, once per
+// probe, and to none after it: the batch's other packets leave it nothing
+// to read.
 type lossEvent struct {
 	now        time.Time
 	latestSent time.Time
 	bytes      int
+	ranges     int
+	crossing   lostPacket
+}
+
+// lossEvent is the congestion event of a batch of losses on the current
+// path.
+func (out *ackOutcome) lossEvent(now time.Time) lossEvent {
+	return lossEvent{now: now, latestSent: out.latestLossSent, bytes: out.lostBytes, ranges: out.lostRanges, crossing: out.crossing}
+}
+
+// lostPacket is a lost packet as BBR's loss response reads it: its size,
+// the flight it joined, itself included (P.tx_in_flight), and the bytes
+// declared lost between its send and its own loss, itself included
+// (RS.lost = C.lost - P.lost).
+type lostPacket struct {
+	size       int
+	txInFlight int
+	lost       int
 }
 
 // newController builds the controller a connection's parameters name, at

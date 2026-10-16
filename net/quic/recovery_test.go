@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func ackFrameFor(t *testing.T, tracker *ackTracker) Frame {
@@ -160,7 +161,7 @@ func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
 	s.record(sentPacket{pn: 2, sentAt: now, size: 50, ackEliciting: true, payload: []byte{2}})
 
 	// Long after the timer matured, both 0 and 2 are older than the threshold.
-	out = s.collectTimeLosses(s.lossTime.Add(time.Second), &rtt)
+	out = s.collectTimeLosses(s.lossTime.Add(time.Second), &rtt, nil)
 	if len(out.lost) != 1 || out.lost[0][0] != 0 {
 		t.Fatalf("lost = %v, want packet 0 alone: packet 2 was sent after the largest acknowledged", out.lost)
 	}
@@ -670,6 +671,66 @@ func ackCovering(t *testing.T, now time.Time, pns ...uint64) Frame {
 	return f
 }
 
+// Lost packets count into C.lost in number order, and the first whose
+// losses since it left — RS.lost = C.lost - P.lost, itself included —
+// exceed 2% of the flight it joined (P.tx_in_flight) is the batch's
+// crossing for BBR (draft-ietf-ccwg-bbr-06 §5.5.10.2), the count running
+// across batches. A range lost across two batches counts once toward
+// Startup's discontiguous ranges (§5.3.1.3); an acknowledged packet
+// between two losses splits them.
+func TestLossesCountTheirRangesAndCrossing(t *testing.T) {
+	var est deliveryEstimator
+	var s sentTracker
+	var rtt rttEstimator
+	now := time.Now()
+	for pn := range uint64(10) {
+		p := sentPacket{pn: pn, sentAt: now.Add(-time.Duration(10-pn) * time.Millisecond), size: 100, ackEliciting: true}
+		est.onSent(&p, 10000+int(pn)*100)
+		s.record(p)
+	}
+	ack := func(pns ...uint64) ackOutcome {
+		t.Helper()
+		f := ackCovering(t, now, pns...)
+		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, &est)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// 4 acknowledged: 0 and 1 are three below it, one range; 200 bytes
+	// lost of a flight of 10 200 is under 2%.
+	out := ack(3, 4)
+	if out.lostRanges != 1 || out.crossing != (lostPacket{}) {
+		t.Fatalf("first batch: %d ranges, crossing %+v, want 1 and none", out.lostRanges, out.crossing)
+	}
+	// 5: 2 is lost, the range extended; 300 bytes lost since it joined a
+	// flight of 10 300 cross 2%.
+	out = ack(5)
+	if want := (lostPacket{size: 100, txInFlight: 10300, lost: 300}); out.lostRanges != 0 || out.crossing != want {
+		t.Fatalf("second batch: %d ranges, crossing %+v, want 0 and %+v", out.lostRanges, out.crossing, want)
+	}
+	// 9: 6 is lost after 5 was acknowledged, a second range.
+	out = ack(9)
+	if want := (lostPacket{size: 100, txInFlight: 10700, lost: 400}); out.lostRanges != 1 || out.crossing != want {
+		t.Fatalf("third batch: %d ranges, crossing %+v, want 1 and %+v", out.lostRanges, out.crossing, want)
+	}
+	if est.lost != 400 {
+		t.Fatalf("C.lost = %d, want 400", est.lost)
+	}
+}
+
+// sentPacket's size is pinned: the tracker copies every record on each
+// compaction, and the BBR stamps (txInFlight, lost) took the padding the
+// booleans left, the record staying at 112 bytes on a 64-bit platform.
+func TestSentPacketSize(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("the size is pinned for 64-bit platforms")
+	}
+	if got := unsafe.Sizeof(sentPacket{}); got != 112 {
+		t.Fatalf("sentPacket is %d bytes, want 112", got)
+	}
+}
+
 // The delivery-rate sample, by hand (draft-ietf-ccwg-bbr-06 §4.1.2.3).
 // Three packets of 1000 bytes leave an idle connection 10 ms apart and
 // are acknowledged together 120 ms after the first: the sample is re-based on
@@ -691,7 +752,11 @@ func TestDeliveryRateSampleByHand(t *testing.T) {
 	t0 := time.Now()
 	send := func(pn uint64, at time.Duration, idle bool) {
 		p := sentPacket{pn: pn, sentAt: t0.Add(at), size: 1000, ackEliciting: true}
-		est.onSent(&p, idle)
+		inFlight := 0
+		if !idle {
+			inFlight = 1000 // the rate sample reads only whether it is zero
+		}
+		est.onSent(&p, inFlight)
 		s.record(p)
 	}
 	ack := func(at time.Duration, pns ...uint64) rateSample {

@@ -707,7 +707,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		return out, nil
 	}
 	record := sentPacket{pn: p.pn, sentAt: p.now, size: size, ackEliciting: true, pmtuProbe: p.opts.pmtuProbe, ect0: p.ecn == ecnECT0}
-	c.delivery.onSent(&record, c.cc.bytesInFlight() == 0)
+	c.delivery.onSent(&record, c.cc.bytesInFlight())
 	if p.opts.pmtuProbe {
 		// Counted here, not where the probe was decided: a packet refused
 		// before sealing (number space or key exhausted) was never a try.

@@ -170,9 +170,11 @@ func TestBBR3InflightLongtermSlopeFloor(t *testing.T) {
 	}
 }
 
-// Startup ends on loss (§5.3.1.3): a round in recovery with six loss events
-// and more than 2% lost sets inflight_longterm to the product or the
-// round's volume, and Drain follows. Fewer events, or a lower rate, do not.
+// Startup ends on loss (§5.3.1.3): a round in recovery with six
+// discontiguous lost ranges and more than 2% lost sets inflight_longterm
+// to the product or the round's volume, sets full_bw_now as well as
+// full_bw_reached (test A.2), and Drain follows. Fewer ranges — six losses
+// in one range — or a lower rate, do not.
 func TestBBR3StartupExitsOnLoss(t *testing.T) {
 	p, b := bbr3AtLink(t)
 	// Rounds at the link's rate, with losses of one datagram among the
@@ -195,6 +197,12 @@ func TestBBR3StartupExitsOnLoss(t *testing.T) {
 	if b.state != bbr3Startup || b.fullBwReached {
 		t.Fatalf("five loss events ended Startup (state %d)", b.state)
 	}
+	// Six losses at 3.5%, one after the other: a single range, declared in
+	// six batches.
+	lossRound(200, 6, 0)
+	if b.state != bbr3Startup || b.fullBwReached {
+		t.Fatalf("six losses in one range ended Startup (state %d)", b.state)
+	}
 	// Six events at 1.2%: too few bytes.
 	lossRound(600, 6, 99)
 	if b.state != bbr3Startup {
@@ -204,11 +212,47 @@ func TestBBR3StartupExitsOnLoss(t *testing.T) {
 	// The acknowledgement that closes the round also drains: one datagram
 	// in flight is under the product, so ProbeBW is entered at once.
 	lossRound(200, 6, 32)
-	if !b.fullBwReached || b.state == bbr3Startup {
-		t.Fatalf("six loss events at 3%%: full %v, state %d, want Startup over", b.fullBwReached, b.state)
+	if !b.fullBwReached || !b.fullBwNow || b.state == bbr3Startup {
+		t.Fatalf("six loss events at 3%%: full %v now %v, state %d, want Startup over", b.fullBwReached, b.fullBwNow, b.state)
 	}
 	if b.inflightLongterm == bbr3Unbounded || b.inflightLongterm < b.bdpMultiple(b.bw, 1) {
 		t.Fatalf("inflight_longterm = %d after the exit, want at least the product %d", b.inflightLongterm, b.bdpMultiple(b.bw, 1))
+	}
+}
+
+// The plateau reads the sample of the frame that starts a round, not the
+// max filter (§5.3.1.2): a filter raised mid-round by a quarter and more
+// does not restart the count when the round-start sample is flat, and a
+// round whose start sample is application-limited is not counted.
+func TestBBR3PlateauReadsTheFrameSample(t *testing.T) {
+	p, b := bbr3AtLink(t)
+	p.round(200) // the first round at the link's full flight: the baseline
+	p.round(200)
+	if b.fullBwCount != 1 {
+		t.Fatalf("full_bw_count = %d after a flat round, want 1", b.fullBwCount)
+	}
+	// A flat round start, then a sample of the round read over the round
+	// trip alone, as ACK compression would give: 2.5 times the link.
+	p.send(200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	spike := p.acked(true)
+	spike.sendElapsed = 0
+	p.cc.onAcked(spike)
+	p.ack(198)
+	if b.fullBwCount != 2 || b.maxBw < 1.25*4.8e6 {
+		t.Fatalf("full_bw_count = %d, max_bw %v after a flat round start and a spike, want 2 under a filter raised by a quarter", b.fullBwCount, b.maxBw)
+	}
+	b.appLimitedUntil = b.delivered + 1200
+	p.round(200)
+	if b.fullBwCount != 2 || b.state != bbr3Startup {
+		t.Fatalf("an application-limited round start counted: full_bw_count %d, state %d", b.fullBwCount, b.state)
+	}
+	p.send(200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if !b.fullBwNow || b.state == bbr3Startup {
+		t.Fatalf("third flat round: full_bw_now %v, state %d, want Startup over", b.fullBwNow, b.state)
 	}
 }
 
@@ -267,10 +311,11 @@ func TestBBR3ProbeBWPhases(t *testing.T) {
 	}
 }
 
-// A loss while probing bounds the volume in flight (§5.5.10.2): the round's
-// losses over 2% of the flight set inflight_longterm, the probe goes DOWN,
-// CRUISE caps the window at 85% of the bound (§5.6.4.7), and the next UP
-// raises the bound by a datagram a round, then two (§5.3.3.4).
+// A loss while probing bounds the volume in flight (§5.5.10.2): losses
+// over 2% of the flight a lost packet was sent into set inflight_longterm,
+// the probe goes DOWN, CRUISE caps the window at 85% of the bound
+// (§5.6.4.7), and the next UP raises the bound by a datagram a round, then
+// two (§5.3.3.4).
 func TestBBR3InflightLongterm(t *testing.T) {
 	p, b := bbr3Cruising(t)
 	p.now = p.now.Add(3 * time.Second)
@@ -286,9 +331,9 @@ func TestBBR3InflightLongterm(t *testing.T) {
 	if b.state != bbr3ProbeBWDown {
 		t.Fatalf("state %d after a 10%% loss in UP, want DOWN", b.state)
 	}
-	// The prefix of the flight at which the losses crossed 2% is 46
-	// datagrams, under the floor of 0.7 × the product of 80: the floor
-	// holds (§5.5.10.2).
+	// The losses cross 2% at the second lost datagram, sent into a flight
+	// of 52: the prefix, 51 datagrams, is under the floor of 0.7 × the
+	// product of 80, which holds (§5.5.10.2).
 	bound := b.inflightLongterm
 	if want := int(bbr3Beta * 80 * 1200); bound != want {
 		t.Fatalf("inflight_longterm = %d after the loss, want 0.7 × the product, %d", bound, want)
@@ -332,6 +377,39 @@ func TestBBR3InflightLongterm(t *testing.T) {
 	cappedRound(true)
 	if got := (b.inflightLongterm - bound) / 1200; got < 2 || got > 4 {
 		t.Fatalf("two limited rounds of UP raised the bound by %d datagrams, want two to four", got)
+	}
+}
+
+// A probe's losses declared after it ended bound the flight by the volume
+// the lost packets were sent into, not by the flight at the declaration
+// (§5.5.10.2, l.3891-3898): UP ends on its plateau with no loss, DOWN
+// drains the flight to 39 datagrams, and only then are datagrams sent into
+// a flight of 62 to 66 declared lost — the probe's samples still count, its
+// round not over. The losses cross 2% at the second, sent into 63
+// datagrams: the bound is just under that, above the 0.7 × product floor
+// of 56 that the 39 in flight would have given.
+func TestBBR3InflightLongtermFromTheLostPackets(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(80) // REFILL
+	p.round(80) // UP
+	for range 2 {
+		p.round(100)
+	}
+	p.send(100)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1) // the third flat round: DOWN
+	if b.state != bbr3ProbeBWDown || b.inflightLongterm != bbr3Unbounded || !b.bwProbeSamples {
+		t.Fatalf("state %d bound %d probe samples %v, want DOWN after a loss-free UP, the samples still counting", b.state, b.inflightLongterm, b.bwProbeSamples)
+	}
+	p.ack(60)
+	p.lose(5)
+	if b.bwProbeSamples {
+		t.Fatal("the losses did not end the probe's samples")
+	}
+	floor := int(bbr3Beta * 80 * 1200)
+	if b.inflightLongterm <= floor || b.inflightLongterm > 63*1200 {
+		t.Fatalf("inflight_longterm = %d, want between the 0.7 × product floor %d and the 63 datagrams the crossing loss was sent into", b.inflightLongterm, floor)
 	}
 }
 

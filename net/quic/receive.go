@@ -1193,7 +1193,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// nothing to release, and no event for a window they never
 		// counted against.
 		if out.lostBytes > 0 {
-			c.cc.onLost(lossEvent{now: now, latestSent: out.latestLossSent, bytes: out.lostBytes})
+			c.cc.onLost(out.lossEvent(now))
 			// RFC 9002 §7.6: two ack-eliciting losses further apart than
 			// the persistent-congestion duration — three probe intervals,
 			// max_ack_delay included whatever the space (§7.6.1) — with
