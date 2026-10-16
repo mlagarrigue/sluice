@@ -23,6 +23,10 @@ import (
 // depend on the connection's RTT estimator, which samples once per
 // acknowledgement frame, from its largest packet only.
 //
+// Both loss-based controllers run it, through newReno.slowStart: RFC 9406
+// modifies RFC 5681's slow start, which is Reno's, and RFC 9438 §4.10 keeps
+// that slow start for CUBIC. CongestionConfig.SlowStart turns it off.
+//
 // Only the initial slow start is armed (§4.3: later slow starts have a
 // threshold the path taught them). The constants are §4.3's, and L is
 // infinity because the sender is paced: every acknowledged byte counts.

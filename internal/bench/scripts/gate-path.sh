@@ -36,8 +36,8 @@ BASE="${1:?usage: gate-path.sh <base-ref> [rounds]}"
 ROUNDS="${2:-8}"
 PKG="./net/quic"
 
-# The benchmarks read any value they do not know as Reno, so a misspelt
-# controller would gate Reno under another name: refuse it here.
+# A misspelt controller would gate Reno under another name. The test binary
+# refuses it too (benchAlgorithmNamed); refusing here fails before two builds.
 CC="${SLUICE_QUIC_CC:-reno}"
 case "$CC" in
   reno | cubic | bbr1 | bbr) ;;

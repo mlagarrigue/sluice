@@ -268,6 +268,29 @@ func TestNewRenoWindow(t *testing.T) {
 	}
 }
 
+// TestNewRenoAvoidanceGrowsADatagramPerWindow: §7.3.3's ceiling is one
+// datagram per window acknowledged, and a large window reaches it exactly
+// — B.5's per-packet maxDatagram·size/cwnd divides by a window that grows
+// within the window, and falls a byte short of it at 2 MB.
+func TestNewRenoAvoidanceGrowsADatagramPerWindow(t *testing.T) {
+	const datagram = 1200
+	cc := newNewReno(datagram)
+	cc.cwnd = 1748 * datagram // 2 MiB and a little
+	cc.ssthresh = cc.cwnd
+	now := time.Now()
+	for w := range 3 {
+		start := cc.cwnd
+		for range start / datagram {
+			cc.onSent(now, datagram)
+			cc.canSend(cc.cwnd)
+			cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
+		}
+		if got := cc.cwnd - start; got != datagram {
+			t.Fatalf("window %d: avoidance grew %d bytes over a window of %d acknowledged, want %d", w, got, start, datagram)
+		}
+	}
+}
+
 // A window the sender never fills must not grow (RFC 9002 §7.8): a thousand
 // acknowledgements of a flight far below the window leave it where it was,
 // while the same acknowledgements after the window refused a send grow it
@@ -332,9 +355,9 @@ func TestNewRenoUnderutilizedWindow(t *testing.T) {
 		if cc.canSend(datagram) {
 			t.Fatal("a datagram on top of a full window was not refused")
 		}
-		cc.onAcked(ackEvent{now: now, sentAt: now, size: datagram})
-		if want := start + datagram*datagram/start; cc.cwnd != want {
-			t.Fatalf("cwnd = %d after a window-limited ACK in avoidance, want %d", cc.cwnd, want)
+		cc.onAcked(ackEvent{now: now, sentAt: now, size: start})
+		if want := start + datagram; cc.cwnd != want {
+			t.Fatalf("cwnd = %d after a window-limited window acknowledged in avoidance, want %d", cc.cwnd, want)
 		}
 	})
 	t.Run("a refusal is spent with its round", func(t *testing.T) {

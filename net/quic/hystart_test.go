@@ -150,6 +150,67 @@ func TestCubicHystartSetsTheThreshold(t *testing.T) {
 	}
 }
 
+// TestSlowStartByAlgorithm: CongestionConfig.SlowStart picks the slow start
+// of both loss-based controllers, the default HyStart++ for CUBIC and the
+// standard one for Reno, and Reno armed ends its slow start on a
+// persisting rise the way CUBIC does. An unknown value runs the default.
+func TestSlowStartByAlgorithm(t *testing.T) {
+	armed := func(cfg CongestionConfig) bool {
+		switch cc := newController(cfg, 1200, &deliveryEstimator{}).(type) {
+		case *newReno:
+			return cc.hs.armed
+		case *cubic:
+			return cc.hs.armed
+		}
+		t.Fatalf("%v built no loss-based controller", cfg)
+		return false
+	}
+	for alg, byDefault := range map[CongestionAlgorithm]bool{CongestionNewReno: false, CongestionCubic: true} {
+		for ss, want := range map[SlowStart]bool{SlowStartDefault: byDefault, SlowStartHyStart: true, SlowStartStandard: false} {
+			if got := armed(CongestionConfig{Algorithm: alg, SlowStart: ss}); got != want {
+				t.Errorf("%v with slow start %d: HyStart++ armed %v, want %v", alg, ss, got, want)
+			}
+		}
+	}
+
+	cc := newController(CongestionConfig{SlowStart: SlowStartHyStart}, 1200, &deliveryEstimator{}).(*newReno)
+	now := time.Unix(0, 0)
+	rtt := 20 * time.Millisecond
+	round := func(sample time.Duration) {
+		cc.onSent(now, 1200)
+		cc.limited = true
+		sentAt := now
+		now = now.Add(sample)
+		for range 10 {
+			cc.onAcked(ackEvent{now: now, sentAt: sentAt, size: 1200, srtt: rtt})
+		}
+	}
+	round(rtt)
+	round(rtt)
+	round(rtt + 10*time.Millisecond)
+	if !cc.hs.css {
+		t.Fatal("Reno with HyStart++: a 10 ms rise on a 20 ms path did not enter CSS")
+	}
+	if got, want := cc.pacingRate(rtt), 1.25*float64(cc.cwnd)/rtt.Seconds(); got != want {
+		t.Errorf("Reno in CSS paces at %v, want five quarters of the window, %v", got, want)
+	}
+	for range hystartCSSRounds {
+		round(rtt + 10*time.Millisecond)
+	}
+	if cc.hs.armed || cc.ssthresh == 1<<30 || cc.cwnd < cc.ssthresh {
+		t.Fatalf("Reno after %d rounds of rise: armed %v, cwnd %d, ssthresh %d; want disarmed and avoidance", hystartCSSRounds+1, cc.hs.armed, cc.cwnd, cc.ssthresh)
+	}
+
+	pcA, pcB := newLoopbackPair(t)
+	params := DefaultParameters()
+	params.Congestion.SlowStart = SlowStart(200)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
+	defer c.Close()
+	if c.params.Congestion.SlowStart != SlowStartDefault || c.reno().hs.armed {
+		t.Errorf("an unknown slow start read back as %d, HyStart++ armed %v; want the default", c.params.Congestion.SlowStart, c.reno().hs.armed)
+	}
+}
+
 // TestCubicPacesCSSAtFiveQuarters: in CSS the window grows a quarter per
 // round trip and the pacing rate is avoidance's five quarters, not slow
 // start's two windows.

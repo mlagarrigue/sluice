@@ -152,12 +152,49 @@ type TransportParameters struct {
 }
 
 // CongestionConfig is the congestion-control choice a connection is built
-// with ([TransportParameters.Congestion]). Only the algorithm is chosen
-// today; its parameters are the RFC's. Experimental.
+// with ([TransportParameters.Congestion]): the algorithm, and the two
+// choices its RFCs leave to the sender. Every zero value is the
+// algorithm's default; the other parameters are the RFC's. Experimental.
 type CongestionConfig struct {
 	// Algorithm names the controller. Unknown values run the default.
 	Algorithm CongestionAlgorithm
+
+	// SlowStart chooses how a loss-based controller (NewReno, CUBIC) ends
+	// its initial slow start. The zero value is the algorithm's default:
+	// HyStart++ for CUBIC, the standard slow start for NewReno. BBR's
+	// Startup has its own exit and ignores it.
+	// Unknown values run the default.
+	SlowStart SlowStart
+
+	// DisableFastConvergence turns off CUBIC's fast convergence (RFC 9438
+	// §4.7): after a loss below the previous one, the flow remembers the
+	// window it lost at instead of less, and climbs back to it sooner. The
+	// RFC wants it on where flows share the path, the zero value, and off
+	// for a flow alone on it. Other algorithms ignore it.
+	DisableFastConvergence bool
 }
+
+// SlowStart names how the initial slow start ends ([CongestionConfig]).
+// Slow start doubles the window each round trip until something says the
+// path is full; the choice is what that something is.
+type SlowStart uint8
+
+const (
+	// SlowStartDefault is the algorithm's own choice.
+	SlowStartDefault SlowStart = iota
+
+	// SlowStartStandard ends the slow start on the first loss or
+	// congestion mark (RFC 9002 §7.3.1): the window overshoots the path by
+	// up to the bottleneck's buffer before it learns.
+	SlowStartStandard
+
+	// SlowStartHyStart is RFC 9406's HyStart++: the slow start ends when
+	// the round trip rises by a few milliseconds over the previous round's
+	// — the bottleneck's buffer starting to fill — after a few rounds of
+	// growth at a quarter of the rate to confirm the rise. A loss that
+	// comes first still ends it.
+	SlowStartHyStart
+)
 
 // CongestionAlgorithm names a congestion controller this package
 // implements. Each one answers the same questions from the sender (when a

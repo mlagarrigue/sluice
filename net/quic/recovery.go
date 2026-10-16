@@ -1002,16 +1002,38 @@ type lostPacket struct {
 // algorithms by name. est is the connection's delivery estimator: BBR
 // marks it application-limited during ProbeRTT, as the draft's
 // MarkConnectionAppLimited does (C.app_limited has one owner).
+//
+// The default case is NewReno, and it is also what an unknown algorithm
+// runs: newConn has already folded one into CongestionNewReno so that
+// Stats.Algorithm names the controller built here.
+//
+// The default slow start is HyStart++ for CUBIC (RFC 9438 §4.10) and the
+// standard one for NewReno. Reno with HyStart++ was measured against Reno
+// alone on the eight gated path benchmarks (gate-path.sh, eight rounds,
+// 2026-10-16): seven within 1.6%, BenchmarkTransferBottleneck 13% slower
+// (868 to 985 ms), so NewReno keeps the standard one. The cost is not
+// traced; the likely reading, unverified, is an exit below the window the
+// loss would have reached, which Reno climbs back a datagram per round
+// trip and CUBIC's curve in a few.
 func newController(cfg CongestionConfig, maxDatagram int, est *deliveryEstimator) congestionController {
 	switch cfg.Algorithm {
 	case CongestionCubic:
-		return newCubic(maxDatagram)
+		c := newCubic(maxDatagram)
+		if cfg.SlowStart == SlowStartStandard {
+			c.hs.disarm()
+		}
+		c.noFastConvergence = cfg.DisableFastConvergence
+		return c
 	case CongestionBBRv1:
 		return newBBR(maxDatagram, est)
 	case CongestionBBR:
 		return newBBR3(maxDatagram, est)
 	default:
-		return newNewReno(maxDatagram)
+		c := newNewReno(maxDatagram)
+		if cfg.SlowStart == SlowStartHyStart {
+			c.hs = newHystart()
+		}
+		return c
 	}
 }
 
@@ -1023,12 +1045,18 @@ type newReno struct {
 	inFlight      int
 	recoveryStart time.Time // packets sent before this do not shrink the window again
 	maxDatagram   int
-	// credit is the avoidance growth earned and not yet spent, in bytes
-	// times maxDatagram: each acknowledged byte earns maxDatagram/cwnd
-	// bytes of window (§7.3.3), and carrying the remainder keeps that
-	// exact whatever the window's size — an integer share per packet
-	// would round to nothing once cwnd exceeds maxDatagram².
+	// credit counts the bytes acknowledged in avoidance since the window
+	// last grew: a window's worth grows it by one datagram (§7.3.3's
+	// ceiling, met exactly — RFC 3465's byte counting). B.5's per-packet
+	// maxDatagram·size/cwnd falls short of it: the window grows within the
+	// window it is divided by, a byte lost per window at 2 MB. The price is
+	// the datagram arriving at the window's end rather than spread over it:
+	// measured 2026-10-16 against B.5 (gate-path.sh, three runs of eight
+	// rounds), BurstLoss 0.8–1% and Loss1pct 1.6–4.7% slower, the rest flat.
 	credit int
+	// hs is the initial slow start's HyStart++ state (hystart.go); the zero
+	// value is disarmed, the standard slow start (see newController).
+	hs hystart
 	// Window utilisation, judged per round trip the way Linux's
 	// tcp_is_cwnd_limited does (RFC 9002 §7.8 leaves the detection to the
 	// implementation): limited records that a send was refused for lack of
@@ -1122,9 +1150,13 @@ func (c *newReno) onMarked(ev markEvent) {
 // path's goodput; §7.7 permits a higher slow-start rate). The round trip
 // is floored at the timer's granularity: below it the rate is meaningless
 // and the division is unsafe.
+//
+// Conservative Slow Start is the exception: HyStart++ grows the window a
+// quarter per round trip there, and five quarters cover it — pacing at
+// twice the window would burst into the buffer it just saw filling.
 func (c *newReno) pacingRate(srtt time.Duration) float64 {
 	w := c.cwnd
-	if c.cwnd < c.ssthresh {
+	if c.cwnd < c.ssthresh && (!c.hs.armed || !c.hs.css) {
 		w = 2 * c.cwnd
 	}
 	return 1.25 * float64(w) / max(srtt, granularity).Seconds()
@@ -1146,8 +1178,9 @@ func (c *newReno) absorb(ev ackEvent) bool {
 	return useful && !ev.sentAt.Before(c.recoveryStart)
 }
 
-// onAcked grows the window: by the packet's bytes in slow start, by one
-// datagram per window's worth in avoidance (§7.3.1, §7.3.3). A packet sent
+// onAcked grows the window: by the packet's bytes in slow start, or what
+// HyStart++ grants while the initial one is armed, by one datagram per
+// window's worth in avoidance (§7.3.1, §7.3.3). A packet sent
 // before recovery began releases flight but earns nothing (B.5 applies that
 // test per packet, which is why this is called per packet: one
 // pre-recovery straggler in an ACK must not silence the growth of
@@ -1164,17 +1197,39 @@ func (c *newReno) absorb(ev ackEvent) bool {
 // application-limited one sits far below. A packet sent at or after the
 // round's mark closes the round, and the next send opens the next one.
 func (c *newReno) onAcked(ev ackEvent) {
-	if !c.absorb(ev) {
-		return
-	}
+	inRound := !c.roundMark.IsZero()
+	earns := c.absorb(ev)
 	if c.cwnd < c.ssthresh {
-		c.cwnd += ev.size
+		c.slowStart(ev, earns, inRound && c.roundMark.IsZero())
 		return
 	}
-	c.credit += c.maxDatagram * ev.size
-	if grow := c.credit / c.cwnd; grow > 0 {
-		c.credit -= grow * c.cwnd
-		c.cwnd += grow
+	if !earns {
+		return
+	}
+	c.credit += ev.size
+	if c.credit >= c.cwnd {
+		c.credit -= c.cwnd
+		c.cwnd += c.maxDatagram
+	}
+}
+
+// slowStart is one acknowledgement in slow start, shared with CUBIC
+// (RFC 9438 §4.10 keeps Reno's): the window grows by the packet's bytes,
+// or by what HyStart++ grants while the initial slow start is armed — it
+// reads every acknowledgement's round trip, earning or not; closed says
+// this one ended a round (see absorb). When HyStart++ ends the slow start
+// the threshold is the window, and nothing grows on this acknowledgement.
+func (c *newReno) slowStart(ev ackEvent, earns, closed bool) {
+	gain := ev.size
+	if c.hs.armed {
+		var exit bool
+		if gain, exit = c.hs.grow(ev.size, ev.now.Sub(ev.sentAt), closed); exit {
+			c.ssthresh = c.cwnd
+			return
+		}
+	}
+	if earns {
+		c.cwnd += gain
 	}
 }
 
@@ -1193,6 +1248,7 @@ func (c *newReno) onLost(ev lossEvent) {
 	c.cwnd = max(c.cwnd/2, 2*c.maxDatagram)
 	c.ssthresh = c.cwnd
 	c.credit = 0
+	c.hs.disarm()
 }
 
 // onPersistentCongestion collapses the window to its minimum (§7.6.2, B.8):
@@ -1207,6 +1263,7 @@ func (c *newReno) onPersistentCongestion() {
 	c.cwnd = 2 * c.maxDatagram
 	c.recoveryStart = time.Time{}
 	c.credit = 0
+	c.hs.disarm()
 }
 
 // pacer spreads sends over time at the rate the congestion controller

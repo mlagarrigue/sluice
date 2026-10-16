@@ -234,22 +234,70 @@ type netemLink struct {
 	cc quic.CongestionAlgorithm
 }
 
-// benchAlgorithm is the controller the path benchmarks run:
-// SLUICE_QUIC_CC=cubic for CUBIC, bbr1 for BBR version 1, bbr for the IETF
-// draft, anything else for the default, so one test binary measures both
-// sides of a controller A/B when the rounds alternate the variable
-// (docs/benchmarks.md).
-var benchAlgorithm = func() quic.CongestionAlgorithm {
-	switch os.Getenv("SLUICE_QUIC_CC") {
+// benchAlgorithm is the controller the path benchmarks run, and
+// benchSlowStart its slow start: SLUICE_QUIC_CC and SLUICE_QUIC_SS name
+// them (see benchAlgorithmNamed, benchSlowStartNamed), so one test binary
+// measures both sides of an A/B when the rounds alternate the variable
+// (docs/benchmarks.md). A name neither knows stops the binary.
+var (
+	benchAlgorithm = mustBench(benchAlgorithmNamed(os.Getenv("SLUICE_QUIC_CC")))
+	benchSlowStart = mustBench(benchSlowStartNamed(os.Getenv("SLUICE_QUIC_SS")))
+)
+
+// benchAlgorithmNamed reads SLUICE_QUIC_CC: unset or reno for the default,
+// cubic for CUBIC, bbr1 for BBR version 1, bbr for the IETF draft. Any
+// other value is an error rather than the default, which would measure
+// Reno under the misspelt name.
+func benchAlgorithmNamed(name string) (quic.CongestionAlgorithm, error) {
+	switch name {
+	case "", "reno":
+		return quic.CongestionNewReno, nil
 	case "cubic":
-		return quic.CongestionCubic
+		return quic.CongestionCubic, nil
 	case "bbr1":
-		return quic.CongestionBBRv1
+		return quic.CongestionBBRv1, nil
 	case "bbr":
-		return quic.CongestionBBR
+		return quic.CongestionBBR, nil
 	}
-	return quic.CongestionNewReno
-}()
+	return 0, fmt.Errorf("SLUICE_QUIC_CC=%s names no controller (reno, cubic, bbr1, bbr)", name)
+}
+
+// benchSlowStartNamed reads SLUICE_QUIC_SS: unset for the algorithm's
+// default, standard or hystart for the one named, an error otherwise.
+func benchSlowStartNamed(name string) (quic.SlowStart, error) {
+	switch name {
+	case "":
+		return quic.SlowStartDefault, nil
+	case "standard":
+		return quic.SlowStartStandard, nil
+	case "hystart":
+		return quic.SlowStartHyStart, nil
+	}
+	return 0, fmt.Errorf("SLUICE_QUIC_SS=%s names no slow start (standard, hystart)", name)
+}
+
+func TestBenchNamesRefuseTheUnknown(t *testing.T) {
+	for name, want := range map[string]quic.CongestionAlgorithm{"": quic.CongestionNewReno, "reno": quic.CongestionNewReno, "cubic": quic.CongestionCubic, "bbr1": quic.CongestionBBRv1, "bbr": quic.CongestionBBR} {
+		if got, err := benchAlgorithmNamed(name); err != nil || got != want {
+			t.Errorf("SLUICE_QUIC_CC=%q: %v, %v; want %v", name, got, err, want)
+		}
+	}
+	for _, name := range []string{"newreno", "Cubic", "bbr2", "cubic "} {
+		if _, err := benchAlgorithmNamed(name); err == nil {
+			t.Errorf("SLUICE_QUIC_CC=%q accepted", name)
+		}
+	}
+	if _, err := benchSlowStartNamed("hystart++"); err == nil {
+		t.Error("SLUICE_QUIC_SS=hystart++ accepted")
+	}
+}
+
+func mustBench[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
 
 // path wires a client and a server packet connection through two
 // forwarders on this link. dialTo is where the client addresses its
@@ -351,6 +399,7 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 	defer stop()
 	params := wideParameters()
 	params.Congestion.Algorithm = cc
+	params.Congestion.SlowStart = benchSlowStart
 
 	type result struct {
 		n   int64

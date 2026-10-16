@@ -784,6 +784,9 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 	if params.Congestion.Algorithm > CongestionBBR {
 		params.Congestion.Algorithm = CongestionNewReno
 	}
+	if params.Congestion.SlowStart > SlowStartHyStart {
+		params.Congestion.SlowStart = SlowStartDefault
+	}
 	c := &Conn{
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,

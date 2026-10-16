@@ -17,10 +17,10 @@ import (
 // So cubic embeds newReno and overrides the three methods that read loss
 // and growth. The flight, the §7.8 utilisation test, the B.8 recovery gate
 // and the pacing rate are Reno's, unchanged. The slow start is Reno's too
-// (§4.10), with HyStart++ (RFC 9406, hystart.go) ending the initial one on
-// the round trip rising where the path's buffer lets it rise: §4.10
-// recommends it, and a slow start that ends on loss overshoots the path by
-// up to a window. Windows are bytes, as RFC 9438 §4.1
+// (§4.10), HyStart++ included (RFC 9406, hystart.go): it ends the initial
+// one on the round trip rising where the path's buffer lets it rise —
+// §4.10 recommends it, and a slow start that ends on loss overshoots the
+// path by up to a window. Windows are bytes, as RFC 9438 §4.1
 // allows, with the datagram size as the segment wherever the RFC counts
 // segments; the curve is computed in floating point and the window held
 // as an integer, the fraction carried between acknowledgements.
@@ -33,10 +33,12 @@ type cubic struct {
 	inEpoch bool
 	// wMax is the window the last loss happened at, or less when fast
 	// convergence (§4.7) decided the saturation point is falling; the
-	// curve's plateau. cwndEpoch is the window the stage started with,
+	// curve's plateau. noFastConvergence is
+	// CongestionConfig.DisableFastConvergence. cwndEpoch is the window the stage started with,
 	// and k the time in seconds the curve takes from one to the other
 	// (Figure 2).
 	wMax, cwndEpoch, k float64
+	noFastConvergence  bool
 	// wEst is what a Reno window would be by now (§4.3, Figure 4): the
 	// window follows it when the curve is below it. cwndPrior is the
 	// window when ssthresh was last set; wEst grows at α_cubic until it
@@ -52,8 +54,6 @@ type cubic struct {
 	// frac is the growth below one byte, carried: each acknowledgement
 	// earns (target − cwnd) · acked / cwnd bytes, usually a fraction.
 	frac float64
-	// hs is the initial slow start's HyStart++ state (hystart.go).
-	hs hystart
 }
 
 const (
@@ -70,19 +70,9 @@ const (
 var _ congestionController = (*cubic)(nil)
 
 func newCubic(maxDatagram int) *cubic {
-	return &cubic{newReno: *newNewReno(maxDatagram), hs: newHystart()}
-}
-
-// pacingRate is Reno's — twice the window per round trip in slow start,
-// five quarters in avoidance — except in Conservative Slow Start, where
-// the window grows a quarter per round trip and five quarters cover it:
-// pacing at twice the window there would burst into the buffer HyStart++
-// just saw filling.
-func (c *cubic) pacingRate(srtt time.Duration) float64 {
-	if c.hs.css {
-		return 1.25 * float64(c.cwnd) / max(srtt, granularity).Seconds()
-	}
-	return c.newReno.pacingRate(srtt)
+	c := &cubic{newReno: *newNewReno(maxDatagram)}
+	c.hs = newHystart()
+	return c
 }
 
 // wCubic is Figure 1: the window the curve names t seconds into the stage.
@@ -110,9 +100,9 @@ func (c *cubic) startEpoch(now time.Time) {
 	c.frac = 0
 }
 
-// onAcked grows the window: Reno's way in slow start, HyStart++'s while the
-// initial slow start is armed (the round it reads is Reno's §7.8 round,
-// closed by absorb), and in avoidance by what the curve or the Reno
+// onAcked grows the window: Reno's way in slow start, HyStart++ included
+// (newReno.slowStart; the round it reads is Reno's §7.8 round, closed by
+// absorb), and in avoidance by what the curve or the Reno
 // estimate says, whichever is higher (§4.2). When HyStart++ ends the slow
 // start the threshold is the window and the stage opens at the next
 // acknowledgement with wMax there and K = 0 (§4.10 of RFC 9438).
@@ -127,18 +117,7 @@ func (c *cubic) onAcked(ev ackEvent) {
 	inRound := !c.roundMark.IsZero()
 	earns := c.absorb(ev)
 	if c.cwnd < c.ssthresh {
-		gain := ev.size
-		if c.hs.armed {
-			var exit bool
-			gain, exit = c.hs.grow(ev.size, ev.now.Sub(ev.sentAt), inRound && c.roundMark.IsZero())
-			if exit {
-				c.ssthresh = c.cwnd
-				return
-			}
-		}
-		if earns {
-			c.cwnd += gain
-		}
+		c.slowStart(ev, earns, inRound && c.roundMark.IsZero())
 		return
 	}
 	if !c.inEpoch {
@@ -189,8 +168,10 @@ func (c *cubic) onAcked(ev ackEvent) {
 // section requires of a sender that does so). Before that, wMax remembers
 // the window the loss happened at — or less, when the loss came below the
 // previous wMax: the path's saturation point is falling, and giving back
-// more leaves room for whoever is taking it (§4.7, fast convergence). The
-// new stage starts at the reduced window.
+// more leaves room for whoever is taking it (§4.7, fast convergence). A
+// flow alone on its path has no one to leave room for, and §4.7 wants the
+// heuristic off there: DisableFastConvergence keeps wMax at the window.
+// The new stage starts at the reduced window.
 func (c *cubic) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
 	if ev.latestSent.Before(c.recoveryStart) {
@@ -198,7 +179,7 @@ func (c *cubic) onLost(ev lossEvent) {
 	}
 	c.recoveryStart = ev.now
 	cwnd := float64(c.cwnd)
-	if cwnd < c.wMax {
+	if cwnd < c.wMax && !c.noFastConvergence {
 		c.wMax = cwnd * (1 + cubicBeta) / 2
 	} else {
 		c.wMax = cwnd

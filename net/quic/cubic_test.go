@@ -123,6 +123,33 @@ func TestCubicDecrease(t *testing.T) {
 	}
 }
 
+// TestCubicFastConvergenceCanBeDisabled: §4.7 wants fast convergence off
+// for a flow alone on its path; DisableFastConvergence keeps wMax at the
+// window of each loss, the one below the previous wMax included.
+func TestCubicFastConvergenceCanBeDisabled(t *testing.T) {
+	cc, ok := newController(CongestionConfig{Algorithm: CongestionCubic, DisableFastConvergence: true}, 1200, &deliveryEstimator{}).(*cubic)
+	if !ok {
+		t.Fatal("CongestionCubic did not build a cubic controller")
+	}
+	now := time.Unix(1000, 0)
+	cc.cwnd = 120000
+	cc.ssthresh = cc.cwnd
+	for i, at := range []float64{120000, 84000, 58800} {
+		if float64(cc.cwnd) != at {
+			t.Fatalf("loss %d: cwnd %d, want %v", i, cc.cwnd, at)
+		}
+		now = now.Add(time.Second)
+		cc.onSent(now, 1200)
+		cc.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
+		if cc.wMax != at {
+			t.Errorf("loss %d at %v: wMax = %v, want the window", i, at, cc.wMax)
+		}
+	}
+	if def := newController(CongestionConfig{Algorithm: CongestionCubic}, 1200, &deliveryEstimator{}).(*cubic); def.noFastConvergence {
+		t.Error("the zero configuration disables fast convergence")
+	}
+}
+
 // The curve's clock runs only while the window is what limits the sender
 // (§4.2, §5.8): a round the sender did not fill, and the gap of an idle
 // period, do not count.
