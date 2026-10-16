@@ -72,22 +72,27 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 				t.Skipf("kernel already answers from %v; nothing to distinguish", second)
 			}
 
-			src := udp.AppendPacketSource(nil, dst, 0)
-			if _, _, err := srv.WriteMsgUDP(buf[:n], src, from); err != nil {
-				t.Fatalf("WriteMsgUDP: %v", err)
-			}
-			if got := readSource(t, cli); got != second {
-				t.Fatalf("reply came from %v, want %v", got, second)
+			// With the interface the datagram came in on, as the quic
+			// Listener passes it, and with none, as the documentation allows.
+			for _, ix := range []int{ifindex, 0} {
+				src := udp.AppendPacketSource(nil, dst, ix)
+				if _, _, err := srv.WriteMsgUDP(buf[:n], src, from); err != nil {
+					t.Fatalf("WriteMsgUDP, ifindex %d: %v", ix, err)
+				}
+				if got := readSource(t, cli); got != second {
+					t.Fatalf("ifindex %d: reply came from %v, want %v", ix, got, second)
+				}
 			}
 		})
 	}
 }
 
 // requireLocal skips unless addr is one of this host's addresses. Linux
-// and Windows answer for the whole of 127/8 on the loopback; macOS has
-// only 127.0.0.1, and none has fd00::2. The macOS and Windows jobs of the
-// CI workflow add what their loopback lacks, so there an absence is a
-// failure, not a skip.
+// has the whole of 127/8 on lo; macOS has only 127.0.0.1, and none has
+// fd00::2. Windows binds any of 127/8 but sends from 127.0.0.1 alone, so
+// this check passes there and the reply fails without the address. The
+// macOS and Windows jobs of the CI workflow add what their loopback
+// lacks, so there an absence is a failure, not a skip.
 func requireLocal(t *testing.T, addr netip.Addr) {
 	t.Helper()
 	c, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))
