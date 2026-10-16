@@ -766,6 +766,50 @@ func (s *rateSpy) onAcked(ev ackEvent) {
 	s.congestionController.onAcked(ev)
 }
 
+// An ACK frame hands the controller its packets in order, the newest last
+// and alone rated: its sample is the frame's (§4.1.2.3), and the max filter
+// reads no other. A sample shorter than the minimum round trip is no
+// sample (§4.1.2.3): the newest still arrives, unrated.
+func TestProcessAckRatesTheNewestPacket(t *testing.T) {
+	for _, tc := range []struct {
+		minRTT time.Duration
+		rated  bool
+	}{{20 * time.Millisecond, true}, {40 * time.Millisecond, false}} {
+		var s sentTracker
+		rtt := rttEstimator{min: tc.minRTT}
+		now := time.Now()
+		var peer ackTracker
+		for pn := range uint64(3) {
+			s.record(sentPacket{pn: pn, sentAt: now.Add(-30 * time.Millisecond), size: 1200, ackEliciting: true})
+			peer.record(pn, now)
+		}
+		spy := &eventSpy{congestionController: newNewReno(1200)}
+		f := ackFrameFor(t, &peer)
+		if _, err := s.processAck(now, f.largest, f.Data, &rtt, spy, &deliveryEstimator{}); err != nil {
+			t.Fatal(err)
+		}
+		if len(spy.events) != 3 {
+			t.Fatalf("%d events for a frame of three packets", len(spy.events))
+		}
+		for i, ev := range spy.events {
+			if want := tc.rated && i == 2; ev.rated != want || ev.delivered != (i+1)*1200 {
+				t.Fatalf("min_rtt %v, event %d: rated %v delivered %d, want %v and %d", tc.minRTT, i, ev.rated, ev.delivered, want, (i+1)*1200)
+			}
+		}
+	}
+}
+
+// eventSpy records the acknowledgements a controller is handed.
+type eventSpy struct {
+	congestionController
+	events []ackEvent
+}
+
+func (s *eventSpy) onAcked(ev ackEvent) {
+	s.events = append(s.events, ev)
+	s.congestionController.onAcked(ev)
+}
+
 // A short write on a connection with nothing in flight is the
 // application-limited case the estimator exists to tell apart (draft §2.3):
 // the window had room, the writer ran dry, and the sample its acknowledgement

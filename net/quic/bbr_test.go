@@ -41,16 +41,23 @@ func (p *bbrPath) send(n int) {
 	}
 }
 
-// ack acknowledges the oldest n datagrams now, in order.
+// ack acknowledges the oldest n datagrams now, in order, each by a frame
+// of its own: each carries its frame's sample.
 func (p *bbrPath) ack(n int) {
 	for range n {
-		s := p.queue[0]
-		p.queue = p.queue[1:]
-		p.delivered += 1200
-		ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior}
-		ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
-		p.cc.onAcked(ev)
+		p.cc.onAcked(p.acked(true))
 	}
+}
+
+// acked takes the oldest datagram off the queue as delivered now: its
+// sample reads the link's rate. rated says it is its frame's newest.
+func (p *bbrPath) acked(rated bool) ackEvent {
+	s := p.queue[0]
+	p.queue = p.queue[1:]
+	p.delivered += 1200
+	ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior, rated: rated}
+	ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
+	return ev
 }
 
 // lose declares the oldest n datagrams lost now, as one batch.

@@ -114,6 +114,62 @@ func TestBBR3DrainExitsAfterThreeRounds(t *testing.T) {
 	}
 }
 
+// The max filter reads one sample per acknowledgement, the frame's newest
+// packet's (§5.5.5, §4.1.2.3): an older packet of the frame whose own
+// sample reads twice the link — its send interval compressed — neither
+// raises max_bw nor restarts Startup's plateau count.
+func TestBBR3MaxFilterReadsTheFrameSample(t *testing.T) {
+	p, b := bbr3AtLink(t)
+	p.send(200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(198)
+	older := p.acked(false)
+	older.sendElapsed /= 2
+	if rate := older.rateSample().deliveryRate(); rate < 1.9*p.link {
+		t.Fatalf("the older packet's sample reads %v, want twice the link", rate)
+	}
+	b.onAcked(older)
+	b.onAcked(p.acked(true))
+	if math.Abs(b.maxBw-p.link) > 1 {
+		t.Fatalf("max_bw = %v after a frame whose newest packet read the link, want %v", b.maxBw, p.link)
+	}
+	for range 2 {
+		p.round(200)
+	}
+	p.send(200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if !b.fullBwReached || b.state != bbr3Drain {
+		t.Fatalf("after three flat rounds: full %v, state %d, want Drain", b.fullBwReached, b.state)
+	}
+}
+
+// A sample that measured nothing leaves the max filter alone (§5.5.5): as
+// a new cycle opens, a zero would otherwise be all the filter holds.
+func TestBBR3MaxFilterSkipsAnEmptySample(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	b.cycleCount += bbr3MaxBwFilterLen
+	p.send(1)
+	p.now = p.now.Add(p.rtt)
+	b.onAcked(ackEvent{now: p.now, sentAt: p.now.Add(-p.rtt), size: 1200, srtt: p.rtt, rated: true})
+	if math.Abs(b.maxBw-p.link) > 1 {
+		t.Fatalf("max_bw = %v after an empty sample opened a cycle, want %v kept", b.maxBw, p.link)
+	}
+}
+
+// The long-term bound's slope adds one datagram per probeUpCnt bytes
+// acknowledged, probeUpCnt being a datagram at least (§5.3.3.9): rounds
+// past log2 of the window do not turn every byte into a datagram.
+func TestBBR3InflightLongtermSlopeFloor(t *testing.T) {
+	b := newBBR3(1200)
+	b.cwnd = 100 * 1200
+	b.bwProbeUpRounds = 20
+	b.raiseInflightLongtermSlope()
+	if b.probeUpCnt != 1200 {
+		t.Fatalf("probeUpCnt = %d with a window of 100 datagrams after 20 rounds, want one datagram", b.probeUpCnt)
+	}
+}
+
 // Startup ends on loss (§5.3.1.3): a round in recovery with six loss events
 // and more than 2% lost sets inflight_longterm to the product or the
 // round's volume, and Drain follows. Fewer events, or a lower rate, do not.

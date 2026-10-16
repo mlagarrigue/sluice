@@ -56,8 +56,7 @@ import (
 // Not yet followed from draft -06, which revised -03: ProbeBW's
 // precautionary probing (§5.3.3.6, §5.3.3.7) and the
 // undo of a spurious loss recovery (§5.5.11) are absent — the transport
-// detects no spurious loss; a sample that delivered nothing still reaches
-// the max filter (§5.5.5); and Startup's six lost ranges are counted as
+// detects no spurious loss; and Startup's six lost ranges are counted as
 // six loss declarations, a loss exit leaving full_bw_now unset (§5.3.1.3,
 // A.2).
 type bbr3 struct {
@@ -362,8 +361,10 @@ func (b *bbr3) inflightWithHeadroom() int {
 // onAcked is BBRUpdateOnACK (§5.2.3), run per packet in the draft's order:
 // the packet leaves the flight, its sample feeds the model, the state
 // machine reads the model, the recovery period ends if the packet was sent
-// after the loss, and the control parameters follow. priorInFlight stands
-// in for the draft's RS.tx_in_flight.
+// after the loss, and the control parameters follow. The max filter alone
+// reads the frame's sample and nothing else, as the draft's once-per-ACK
+// run does (§5.5.5): an older packet of the frame passes it an empty one.
+// priorInFlight stands in for the draft's RS.tx_in_flight.
 func (b *bbr3) onAcked(ev ackEvent) {
 	priorInFlight := b.inFlight
 	b.inFlight = max(b.inFlight-ev.size, 0)
@@ -382,8 +383,12 @@ func (b *bbr3) onAcked(ev ackEvent) {
 		b.rate = bbr3StartupPacingGain * float64(b.initialCwnd) / max(rtt, granularity).Seconds()
 	}
 
+	var frame rateSample
+	if ev.rated {
+		frame = rs
+	}
 	b.updateLatestDeliverySignals(rs, priorDelivered)
-	b.updateCongestionSignals(rs, priorDelivered)
+	b.updateCongestionSignals(frame, priorDelivered)
 	b.updateACKAggregation(ev.now, ev.size)
 	b.checkFullBwReached(rs)
 	b.checkStartupDone()
@@ -420,7 +425,7 @@ func (b *bbr3) updateLatestDeliverySignals(rs rateSample, priorDelivered int) {
 }
 
 // updateCongestionSignals is BBRUpdateCongestionSignals (§5.5.10.3): the
-// max filter on every packet, and once per loss round the short-term
+// max filter on the frame's sample, and once per loss round the short-term
 // bounds adapt to the losses, Startup reads them (§5.3.1.3), and the
 // round's counts are cleared.
 func (b *bbr3) updateCongestionSignals(rs rateSample, priorDelivered int) {
@@ -434,12 +439,13 @@ func (b *bbr3) updateCongestionSignals(rs rateSample, priorDelivered int) {
 	b.lostInRound, b.markedInRound, b.lossEventsInRound = 0, 0, 0
 }
 
-// updateMaxBw is BBRUpdateMaxBw (§5.5.5): an application-limited sample is
-// kept only when it beats the estimate (§5.5.4). -06 also skips a sample
-// that delivered nothing (§5.5.5); not yet followed.
+// updateMaxBw is BBRUpdateMaxBw (§5.5.5): no sample, or one that measured
+// nothing, leaves the filter alone — a zero inserted as a new cycle opens
+// would empty it; an application-limited sample is kept only when it beats
+// the estimate (§5.5.4).
 func (b *bbr3) updateMaxBw(rs rateSample, priorDelivered int) {
 	b.updateRound(priorDelivered)
-	if bw := rs.deliveryRate(); bw >= b.maxBw || !rs.appLimited {
+	if bw := rs.deliveryRate(); bw > 0 && (bw >= b.maxBw || !rs.appLimited) {
 		b.maxBw = b.maxBwFilter.update(b.cycleCount, bw, bbr3MaxBwFilterLen)
 	}
 }
@@ -747,12 +753,12 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, priorInFlight, acked int) {
 // raiseInflightLongtermSlope is BBRRaiseInflightLongtermSlope: the bound
 // grows by one datagram this round, two the next, four, eight, spread over
 // the round's acknowledgements — probeUpCnt bytes acknowledged per
-// datagram added. -06 floors probeUpCnt at one datagram, not one byte
-// (§5.3.3.9); not yet followed.
+// datagram added, a datagram at least (§5.3.3.9): past log2 of the window
+// in rounds, a one-byte floor would add a datagram per byte acknowledged.
 func (b *bbr3) raiseInflightLongtermSlope() {
 	growth := b.maxDatagram << b.bwProbeUpRounds
 	b.bwProbeUpRounds = min(b.bwProbeUpRounds+1, 30)
-	b.probeUpCnt = max(b.cwnd*b.maxDatagram/growth, 1)
+	b.probeUpCnt = max(b.cwnd*b.maxDatagram/growth, b.maxDatagram)
 }
 
 // probeInflightLongtermUpward is BBRProbeInflightLongtermUpward: only

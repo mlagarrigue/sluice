@@ -360,6 +360,10 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 					if est != nil {
 						ev.delivered = est.delivered - p.delivered
 						ev.sendElapsed, ev.sinceDelivered, ev.appLimited = p.sendElapsed, p.sinceDelivered, p.appLimited
+						// Sent times rise with numbers: the highest newly
+						// marked is the frame's newest, on this path if any
+						// is, and its sample is the frame's (ackEvent.rated).
+						ev.rated = p.pn == largestMarked && ev.rateSample().reliable(rtt.min)
 					}
 					cc.onAcked(ev)
 				}
@@ -556,7 +560,8 @@ type congestionController interface {
 	windowLimited() bool
 	// onAcked is called once per newly acknowledged packet sent on the
 	// current path, in packet-number order (RFC 9002 B.5 runs the growth
-	// test per packet).
+	// test per packet); the frame's newest, last, carries the frame's
+	// sample (ackEvent.rated).
 	onAcked(ev ackEvent)
 	// onLost is called once per batch of losses declared together — one
 	// ACK frame or one loss-timer expiry (§7.3.2: one congestion event).
@@ -600,6 +605,13 @@ type ackEvent struct {
 	sendElapsed    time.Duration
 	sinceDelivered time.Duration
 	appLimited     bool
+	// rated marks the newest packet the frame delivered when the frame's
+	// sample is reliable (rateSample.reliable): the one sample per
+	// acknowledgement the draft defines (§4.1.2.3), and the only one BBR's
+	// max filter reads (§5.5.5). The frame's older packets yield samples of
+	// their own, noisier and more of them; the filter would keep their
+	// highest.
+	rated bool
 }
 
 // markEvent is one ACK frame's newly reported CE marks, as onMarked sees
@@ -626,6 +638,13 @@ type rateSample struct {
 	appLimited bool // the newest delivered packet was sent application-limited (§4.1.1.3)
 }
 
+// reliable says the sample measures the path (§4.1.2.3): an interval
+// shorter than the minimum round trip is a spuriously retransmitted
+// packet's acknowledgement, and would read as a rate the path never had.
+func (rs rateSample) reliable(minRTT time.Duration) bool {
+	return rs.interval > 0 && rs.interval >= minRTT
+}
+
 // deliveryRate is the sample in bytes per second, zero when there is none.
 func (rs rateSample) deliveryRate() float64 {
 	if rs.interval <= 0 {
@@ -635,11 +654,11 @@ func (rs rateSample) deliveryRate() float64 {
 }
 
 // rateSample is the sample this packet yields (§4.1.2.3) — the frame's own
-// sample when the packet is the newest the frame delivered, which the
-// controller knows because the frame's packets arrive in order. Computed
-// here and not on the ACK path: a subtraction of instants per acknowledged
-// packet was measured at a fifth of that path's cost, for a figure Reno
-// and CUBIC never read.
+// sample when the packet is the newest the frame delivered (rated). Computed
+// here and not on the ACK path, which computes it once per frame to rate
+// the newest: a subtraction of instants per acknowledged packet was
+// measured at a fifth of that path's cost, for a figure Reno and CUBIC
+// never read.
 func (ev ackEvent) rateSample() rateSample {
 	return rateSample{
 		delivered:  ev.delivered,
@@ -724,10 +743,8 @@ func (e *deliveryEstimator) update(p *sentPacket) {
 
 // finish closes the acknowledgement's sample from its newest packet, lifts
 // the application-limited mark once the bubble has been delivered, and
-// keeps the sample for Stats when it is reliable — an interval shorter than
-// the minimum round trip is a spuriously retransmitted packet's
-// acknowledgement, and would read as a rate the path never had
-// (§4.1.2.3) — and not application-limited.
+// keeps the sample for Stats when it is reliable and not
+// application-limited.
 func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 	if !e.sampled {
 		return
@@ -742,7 +759,7 @@ func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 	if e.appLimited != 0 && e.delivered > e.appLimited {
 		e.appLimited = 0
 	}
-	if e.cur.appLimited || e.cur.interval <= 0 || e.cur.interval < minRTT {
+	if e.cur.appLimited || !e.cur.reliable(minRTT) {
 		return
 	}
 	e.rate = e.cur.deliveryRate()
