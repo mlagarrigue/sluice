@@ -300,6 +300,10 @@ line rate is 6.25 MB/s), how much of a deep one the controller fills
 round trip (`RTT40`, `RTT80`). Each benchmark also prints `rtt_x`, the
 sender's final smoothed RTT over the smallest it sampled: one when the
 controller keeps the queue empty, six when it keeps 200 ms of buffer full.
+Each benchmark also prints `retx_B` and `lost`: the bytes the sender put
+back in its queue for the losses it declared, and the packets it declared
+lost. On a path that loses nothing, they count only spurious losses: a
+datagram that arrives late and that the sender took for lost.
 
 | Benchmark | Path | Transfer | Median | Goodput | Spread |
 |---|---|---|---|---|---|
@@ -337,6 +341,17 @@ buffer leaves a halved window at 0.78 of the path), while 32 MiB behind
 per round trip from full. It is not gated: its figure moves with where the
 slow start's exit loss lands (CUBIC's eight rounds spread ±25%).
 
+`BenchmarkTransferBottleneckAfterSmall` is the 4 MiB of `Bottleneck`
+written after 5 MiB of small messages on the same connection: a connection
+that has served requests, then a download. It asks two questions. Did the
+messages leave the window larger than they needed? `cwnd_x`, the window at
+the start of the transfer over the largest flight the messages reached,
+is 2.00 to 2.02: one doubling of a slow start not yet ended, the
+bound the benchmark sets. Does the transfer then lose more than
+`Bottleneck` alone? No: 47 to 58 packets lost, against 51 to 61. HyStart++
+(`SLUICE_QUIC_SS`) changes neither figure. Not gated: the figure comes
+behind two seconds of messages.
+
 The six profiles below `Loss1pct`, plus `RTT80Shallow`, are the ones the
 congestion-control palette has to prove itself on, and the Reno rows are
 the starting ceiling, not a target. Reno fills a 200 ms buffer to the
@@ -354,20 +369,23 @@ real client):
 | `BenchmarkTransferBurstLoss` | 766 ms | 483 ms | 1.59 | 8.68 MB/s | ±21% |
 | `BenchmarkTransferReorder` | 4.42 s | 3.72 s | 1.19 | 1.13 MB/s | ±31%, not gated |
 | `BenchmarkTransferBottleneck` | 883 ms | 905 ms | 0.98 | 4.63 MB/s | ±3% |
-| `BenchmarkTransferDeepBuffer` | 788 ms | 789 ms | 1.00 | 5.32 MB/s, `rtt_x` 9.3 (6.0 before HyStart++) | ±1% |
+| `BenchmarkTransferDeepBuffer` | 788 ms | 789 ms | 1.00 | 5.32 MB/s, `rtt_x` 8.1 (6.0 before HyStart++) | ±1% |
 | `BenchmarkTransferTwoFlows` | 1.51 s | 1.50 s | 1.01 | 5.59 MB/s, `share` 0.46–0.56 | ±13% |
 | `BenchmarkTransferRTT40` | 980 ms | 964 ms | 1.02 | 8.70 MB/s | ±22% |
 | `BenchmarkTransferRTT80` | 1.38 s | 1.33 s | 1.04 | 6.30 MB/s | ±1% |
-| `BenchmarkTransferRTT80Shallow` | 8.80 s | 5.04 s | 1.75 | 6.66 MB/s | ±25%, not gated |
+| `BenchmarkTransferRTT80Shallow` | 8.80 s | 5.04 s | 1.7 or 2.3 (two modes) | 6.66 MB/s | ±25%, not gated |
 
 Eight rounds on 2026-10-14, interleaved — one Reno transfer, one CUBIC
 transfer, eight times, the same test binary with `SLUICE_QUIC_CC=cubic`
 set on the CUBIC side — medians, go1.26.9, the same laptop (`rtt_x` and
-`share` for CUBIC: three rounds). The Reno column is that pass's own Reno,
+`share` for CUBIC: three rounds). The `rtt_x` of `DeepBuffer` comes from a
+pass on 2026-10-16, after the loss-detection fixes: median 8.1 (7.6–9.2),
+9.3 on 2026-10-14. The Reno column is the interleaved pass's own Reno,
 which is what CUBIC is compared with; the rows above are the ceilings the
 gate watches, and the two agree within their spread except `Clean`, which
 is the one profile the machine's load moves (its 284 ms here against
-256 ms above). What CUBIC proved: the 1.75× on the shallow 80 ms path is
+256 ms above). What CUBIC proved: the 1.7× to 2.3× on the shallow 80 ms path
+(two modes, depending on where the loss that ends the slow start lands) is
 its window curve — a loss costs it three tenths of the window instead of
 half, and the curve refills in seconds what Reno refills a datagram per
 round trip; the 1.24× on `Loss1pct` and 1.59× on `BurstLoss` are the same
@@ -388,7 +406,8 @@ batches and HyStart++ loses nothing; on `TwoFlows` half as much (181 kB
 against 366 kB). The price is on `DeepBuffer` too: the five rounds of
 Conservative Slow Start at a quarter growth triple the window after the
 exit, and the queue ends fuller than β would have left it (`rtt_x` 9.3
-against 6.0). On the 20 ms and 5 ms buffers of the other profiles it
+against 6.0 that day; 8.1 since the loss fixes of 2026-10-16, from 7.6 to
+9.2). On the 20 ms and 5 ms buffers of the other profiles it
 never fires: the detector compares one round's minimum with the previous
 round's, so it reads a queue one round after it starts, and a doubling
 slow start overflows a buffer no deeper than the bandwidth-delay product
@@ -542,7 +561,7 @@ are not `DeepBuffer`'s to the millisecond:
 |---|---|---|---|---|---|
 | BBR | 791 ms, 5.3 MB/s | 789–795 ms | 1.09 | 1.07–1.21 | 784 ms, `rtt_x` 1.71 (1.64–2.00) |
 | Reno | 1.18 s, 3.5 MB/s | 0.86–1.36 s | 1.09 | 1.06–1.18 | 790 ms, `rtt_x` 5.9 |
-| CUBIC | 883 ms, 4.7 MB/s | 0.84–1.09 s | 1.09 | 1.08–1.10 | `rtt_x` 9.3 (HyStart++ row above) |
+| CUBIC | 883 ms, 4.7 MB/s | 0.84–1.09 s | 1.09 | 1.08–1.10 | `rtt_x` 8.1 (HyStart++ row above) |
 
 The queue BBR lets build falls from 1.7× the path's round trip to 1.1×
 at the same goodput: the marked rounds cut `inflight_shortterm` to 0.7
@@ -595,8 +614,10 @@ above. One transfer per round (`-benchtime=1x`): the figure is a
 transfer's wall clock, not a rate the harness scales. `Reorder` stays out of the gate:
 on an identical tree its median moved 7% between the two sides (the eight
 gated profiles, under 2.1%), because a spurious loss is declared or not by
-a few microseconds of scheduling. To run the gate by hand against the tree
-before a change:
+a few microseconds of scheduling. Its `lost` is no steadier: 21 to 55
+spurious losses over 24 transfers, a spread of more than a factor of two,
+so a gate on that count would fire on noise as well. To run the gate by
+hand against the tree before a change:
 
 ```
 internal/bench/scripts/gate-path.sh main
