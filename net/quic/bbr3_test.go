@@ -9,8 +9,9 @@ import (
 // newBBR3Path is bbrPath over the draft's controller: a 4.8 MB/s link over
 // 20 ms, a bandwidth-delay product of 80 datagrams.
 func newBBR3Path() (*bbrPath, *bbr3) {
-	b := newBBR3(1200)
-	return &bbrPath{cc: b, b: nil, now: time.Unix(1000, 0), rtt: 20 * time.Millisecond, link: 4.8e6}, b
+	est := &deliveryEstimator{}
+	b := newBBR3(1200, est)
+	return &bbrPath{cc: b, b: nil, now: time.Unix(1000, 0), rtt: 20 * time.Millisecond, link: 4.8e6, est: est}, b
 }
 
 // bbr3AtLink is a controller four doubling rounds in, the last at the
@@ -161,7 +162,7 @@ func TestBBR3MaxFilterSkipsAnEmptySample(t *testing.T) {
 // acknowledged, probeUpCnt being a datagram at least (§5.3.3.9): rounds
 // past log2 of the window do not turn every byte into a datagram.
 func TestBBR3InflightLongtermSlopeFloor(t *testing.T) {
-	b := newBBR3(1200)
+	b := newBBR3(1200, &deliveryEstimator{})
 	b.cwnd = 100 * 1200
 	b.bwProbeUpRounds = 20
 	b.raiseInflightLongtermSlope()
@@ -243,7 +244,7 @@ func TestBBR3PlateauReadsTheFrameSample(t *testing.T) {
 	if b.fullBwCount != 2 || b.maxBw < 1.25*4.8e6 {
 		t.Fatalf("full_bw_count = %d, max_bw %v after a flat round start and a spike, want 2 under a filter raised by a quarter", b.fullBwCount, b.maxBw)
 	}
-	b.appLimitedUntil = b.delivered + 1200
+	p.est.markAppLimited(b.inFlight) // the application ran dry: the round's sends are marked
 	p.round(200)
 	if b.fullBwCount != 2 || b.state != bbr3Startup {
 		t.Fatalf("an application-limited round start counted: full_bw_count %d, state %d", b.fullBwCount, b.state)
@@ -479,7 +480,12 @@ func TestBBR3ProbeRTT(t *testing.T) {
 		t.Fatalf("the 200 ms started at %v, want when the flight was down", b.probeRTTDoneStamp.Sub(entered))
 	}
 	for p.now.Before(entered.Add(bbr3ProbeRTTDuration)) {
-		p.round(40)
+		p.send(40)
+		if !p.queue[len(p.queue)-1].appLimited {
+			t.Fatal("a datagram sent in ProbeRTT is not application-limited: the connection was not marked")
+		}
+		p.now = p.now.Add(p.rtt)
+		p.ack(40)
 		if b.state != bbr3ProbeRTT {
 			t.Fatalf("left ProbeRTT after %v", p.now.Sub(entered))
 		}
@@ -496,6 +502,92 @@ func TestBBR3ProbeRTT(t *testing.T) {
 	// ProbeRTT) or at its acknowledgement: either way the stamp moved.
 	if !b.probeRTTMinStamp.After(entered) {
 		t.Fatal("leaving ProbeRTT did not restamp probe_rtt_min_delay")
+	}
+}
+
+// ProbeRTT sends half a product a round (four datagrams in version 1), and
+// the draft marks the connection application-limited meanwhile
+// (§5.3.4.3, MarkConnectionAppLimited): its samples measure ProbeRTT, not
+// the path, so Stats.DeliveryRate — the estimator's last sample that was
+// not application-limited — holds the path's rate through it. Driven
+// through processAck and the connection's estimator, every half round
+// trip: one frame acknowledges what was sent a round trip ago, then the
+// window's room is sent, half a product at most — the flight never runs
+// dry, so no send is a restart from idle.
+func TestBBRProbeRTTKeepsTheDeliveryRate(t *testing.T) {
+	const rtt, link = 20 * time.Millisecond, 4.8e6 // a product of 80 datagrams
+	for _, tc := range []struct {
+		name   string
+		build  func(*deliveryEstimator) congestionController
+		expire func(congestionController, time.Time)
+		probe  func(congestionController) bool
+	}{
+		{
+			"BBR",
+			func(est *deliveryEstimator) congestionController { return newBBR3(1200, est) },
+			func(cc congestionController, now time.Time) {
+				cc.(*bbr3).probeRTTMinStamp = now.Add(-bbr3ProbeRTTInterval - time.Second)
+			},
+			func(cc congestionController) bool { return cc.(*bbr3).state == bbr3ProbeRTT },
+		},
+		{
+			"BBRv1",
+			func(est *deliveryEstimator) congestionController { return newBBR(1200, est) },
+			func(cc congestionController, now time.Time) {
+				cc.(*bbr).rtpropStamp = now.Add(-bbrRTpropFilterLen - time.Second)
+			},
+			func(cc congestionController) bool { return cc.(*bbr).state == bbrProbeRTT },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			est := &deliveryEstimator{}
+			cc := tc.build(est)
+			var sent sentTracker
+			var peer ackTracker
+			var rttEst rttEstimator
+			now := time.Unix(1000, 0)
+			var pn, acked uint64
+			var sentAt []time.Time
+			tick := func() {
+				now = now.Add(rtt / 2)
+				for ; acked < pn && !sentAt[acked].After(now.Add(-rtt)); acked++ {
+					peer.record(acked, now)
+				}
+				if acked > 0 {
+					f := ackFrameFor(t, &peer)
+					if _, err := sent.processAck(now, f.largest, f.Data, &rttEst, cc, est); err != nil {
+						t.Fatal(err)
+					}
+					rttEst.sample(rtt, 0)
+				}
+				for range min(40, max(cc.window()-cc.bytesInFlight(), 0)/1200) {
+					p := sentPacket{pn: pn, sentAt: now, size: 1200, ackEliciting: true}
+					est.onSent(&p, cc.bytesInFlight())
+					cc.onSent(now, 1200)
+					sent.record(p)
+					sentAt = append(sentAt, now)
+					pn++
+				}
+			}
+			for range 40 {
+				tick()
+			}
+			if math.Abs(est.rate-link) > 1 {
+				t.Fatalf("Stats.DeliveryRate %v before ProbeRTT, want the link's %v", est.rate, link)
+			}
+			tc.expire(cc, now)
+			probed := false
+			for range 60 {
+				tick()
+				probed = probed || tc.probe(cc)
+				if math.Abs(est.rate-link) > 1 {
+					t.Fatalf("Stats.DeliveryRate %v (ProbeRTT %v), want the link's %v held", est.rate, tc.probe(cc), link)
+				}
+			}
+			if !probed || tc.probe(cc) {
+				t.Fatalf("ProbeRTT entered %v, still on %v: the drive did not cross it", probed, tc.probe(cc))
+			}
+		})
 	}
 }
 

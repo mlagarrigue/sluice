@@ -33,6 +33,9 @@ import (
 // application-limited marking of ProbeRTT (§4.3.5) is kept inside the
 // controller rather than pushed to the estimator the connection owns.
 type bbr struct {
+	// est is the connection's delivery estimator, which ProbeRTT marks
+	// application-limited (handleProbeRTT).
+	est         *deliveryEstimator
 	maxDatagram int
 	initialCwnd int
 	inFlight    int
@@ -81,12 +84,10 @@ type bbr struct {
 	// ProbeBW's gain cycle (§4.3.4.3).
 	cycleIndex int
 	cycleStamp time.Time
-	// ProbeRTT (§4.3.5): when the 200 ms are over, whether a round has
-	// passed since, and the delivered count the samples sent during it are
-	// discounted up to (the draft's C.app_limited, kept here).
+	// ProbeRTT (§4.3.5): when the 200 ms are over and whether a round has
+	// passed since.
 	probeRTTDoneStamp time.Time
 	probeRTTRoundDone bool
-	appLimitedUntil   int
 	idleRestart       bool
 
 	// Loss recovery (§4.2.3.4): one period from a loss to the
@@ -136,8 +137,8 @@ var bbrGainCycle = [bbrGainCycleLen]float64{1.25, 0.75, 1, 1, 1, 1, 1, 1}
 
 var _ congestionController = (*bbr)(nil)
 
-func newBBR(maxDatagram int) *bbr {
-	b := &bbr{maxDatagram: maxDatagram}
+func newBBR(maxDatagram int, est *deliveryEstimator) *bbr {
+	b := &bbr{est: est, maxDatagram: maxDatagram}
 	// §4.2.3.1: the transport's initial window, RFC 9002 §7.2's.
 	b.initialCwnd = newNewReno(maxDatagram).cwnd
 	b.cwnd = b.initialCwnd
@@ -177,12 +178,6 @@ func (b *bbr) onSent(now time.Time, bytes int) {
 		b.rtpropStamp = now
 	}
 	b.inFlight += bytes
-	if b.state == bbrProbeRTT {
-		// Sent at four datagrams a round trip: its sample measures ProbeRTT,
-		// not the path (§4.3.5's marking, applied at the send as the
-		// estimator would).
-		b.appLimitedUntil = max(b.delivered+b.inFlight, 1)
-	}
 }
 
 func (b *bbr) onLifted(bytes int) { b.inFlight = max(b.inFlight-bytes, 0) }
@@ -222,13 +217,6 @@ func (b *bbr) onAcked(ev ackEvent) {
 	b.inFlight = max(b.inFlight-ev.size, 0)
 	b.delivered += ev.size
 	rs := ev.rateSample()
-	if b.appLimitedUntil != 0 {
-		if b.delivered > b.appLimitedUntil {
-			b.appLimitedUntil = 0
-		} else {
-			rs.appLimited = true
-		}
-	}
 	if b.inRecovery && !ev.sentAt.Before(b.recoveryStart) {
 		// A packet sent in the recovery period is acknowledged: the period
 		// ends (RFC 9002 §7.3.2) and the window the loss interrupted comes
@@ -397,9 +385,9 @@ func (b *bbr) checkCyclePhase(now time.Time, priorInFlight int, lost bool) {
 // after an idle period, whose age is the application's — and ProbeRTT
 // ends after 200 ms and one round with the flight at four datagrams or
 // fewer, to ProbeBW if the pipe was ever filled and to Startup otherwise.
-// The samples of what is sent meanwhile are discounted (the draft marks
-// the estimator application-limited; appLimitedUntil does the same here):
-// four datagrams per round trip is not the path's rate.
+// The connection is marked application-limited meanwhile, as the draft
+// does: four datagrams per round trip is not the path's rate, for this
+// model or for Stats.DeliveryRate.
 func (b *bbr) checkProbeRTT(now time.Time) {
 	if b.state != bbrProbeRTT && b.rtpropExpired && !b.idleRestart {
 		b.state = bbrProbeRTT
@@ -408,7 +396,7 @@ func (b *bbr) checkProbeRTT(now time.Time) {
 		b.probeRTTDoneStamp = time.Time{}
 	}
 	if b.state == bbrProbeRTT {
-		b.appLimitedUntil = max(b.delivered+b.inFlight, 1)
+		b.est.markAppLimited(b.inFlight)
 		switch {
 		case b.probeRTTDoneStamp.IsZero() && b.inFlight <= b.minPipeCwnd():
 			b.probeRTTDoneStamp = now.Add(bbrProbeRTTDuration)

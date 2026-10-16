@@ -175,10 +175,10 @@ func TestCubicPersistentCongestion(t *testing.T) {
 }
 
 func TestNewControllerByAlgorithm(t *testing.T) {
-	if _, ok := newController(CongestionConfig{}, 1200).(*newReno); !ok {
+	if _, ok := newController(CongestionConfig{}, 1200, &deliveryEstimator{}).(*newReno); !ok {
 		t.Error("the zero configuration is not NewReno")
 	}
-	cc, ok := newController(CongestionConfig{Algorithm: CongestionCubic}, 1200).(*cubic)
+	cc, ok := newController(CongestionConfig{Algorithm: CongestionCubic}, 1200, &deliveryEstimator{}).(*cubic)
 	if !ok {
 		t.Fatal("CongestionCubic did not build a cubic controller")
 	}
@@ -188,7 +188,7 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if !cc.hs.armed {
 		t.Error("CUBIC's initial slow start has HyStart++ disarmed (RFC 9438 §4.10)")
 	}
-	b, ok := newController(CongestionConfig{Algorithm: CongestionBBRv1}, 1200).(*bbr)
+	b, ok := newController(CongestionConfig{Algorithm: CongestionBBRv1}, 1200, &deliveryEstimator{}).(*bbr)
 	if !ok {
 		t.Fatal("CongestionBBRv1 did not build a BBR controller")
 	}
@@ -198,7 +198,7 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if CongestionBBRv1.String() != "bbr1" {
 		t.Errorf("CongestionBBRv1 prints as %q", CongestionBBRv1)
 	}
-	b3, ok := newController(CongestionConfig{Algorithm: CongestionBBR}, 1200).(*bbr3)
+	b3, ok := newController(CongestionConfig{Algorithm: CongestionBBR}, 1200, &deliveryEstimator{}).(*bbr3)
 	if !ok {
 		t.Fatal("CongestionBBR did not build a draft-ietf-ccwg-bbr controller")
 	}

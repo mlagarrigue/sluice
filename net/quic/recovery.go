@@ -898,15 +898,17 @@ type lostPacket struct {
 // newController builds the controller a connection's parameters name, at
 // its initial window for the current datagram size. Two sites build one —
 // newConn and a migration's resetPathStateLocked — and neither knows the
-// algorithms by name.
-func newController(cfg CongestionConfig, maxDatagram int) congestionController {
+// algorithms by name. est is the connection's delivery estimator: BBR
+// marks it application-limited during ProbeRTT, as the draft's
+// MarkConnectionAppLimited does (C.app_limited has one owner).
+func newController(cfg CongestionConfig, maxDatagram int, est *deliveryEstimator) congestionController {
 	switch cfg.Algorithm {
 	case CongestionCubic:
 		return newCubic(maxDatagram)
 	case CongestionBBRv1:
-		return newBBR(maxDatagram)
+		return newBBR(maxDatagram, est)
 	case CongestionBBR:
-		return newBBR3(maxDatagram)
+		return newBBR3(maxDatagram, est)
 	default:
 		return newNewReno(maxDatagram)
 	}

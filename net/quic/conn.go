@@ -808,7 +808,7 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		// authenticated packet and seeds the pool in adoptPeerCID.
 		c.peerCIDs = []peerCID{{seq: 0, cid: dcid, used: true}}
 	}
-	c.cc = newController(c.params.Congestion, c.maxDatagram)
+	c.cc = newController(c.params.Congestion, c.maxDatagram, &c.delivery)
 	// §7.7: the pacer's bucket is the initial window, which is also the
 	// freshly-built controller's cwnd.
 	c.pacer.burst = int64(c.cc.window())
@@ -1599,9 +1599,9 @@ type Stats struct {
 	// (draft-ietf-ccwg-bbr-06 §4.1): the bytes an
 	// acknowledgement proved delivered, over the longer of the time they
 	// took to send and the time they took to be acknowledged. Samples taken
-	// while the application had nothing to send are skipped — they measure
-	// the application, not the path — and so are intervals shorter than
-	// MinRTT. Zero until the first such sample. It is what the path carried,
+	// while the application had nothing to send, or while BBR's ProbeRTT
+	// held the flight down on purpose, are skipped — they measure the
+	// sender, not the path — and so are intervals shorter than MinRTT. Zero until the first such sample. It is what the path carried,
 	// not what CongestionWindow allowed: over a bottleneck it reads the line
 	// rate while the window covers the bandwidth-delay product, and the
 	// window per round trip once a loss has cut the window below it.

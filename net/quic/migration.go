@@ -512,7 +512,7 @@ func (c *Conn) resetPathStateLocked(now time.Time) {
 	// ECN is validated per path (§13.4.2): the new one starts its test.
 	c.ecnRecv = ecnSocket(c.pc)
 	c.ecn.reset(c.ecnRecv)
-	c.cc = newController(c.params.Congestion, c.maxDatagram)
+	c.cc = newController(c.params.Congestion, c.maxDatagram, &c.delivery)
 	c.ptoCount = 0
 	for i := range c.spaces {
 		c.spaces[i].sent.pathStart = now

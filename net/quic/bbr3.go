@@ -53,6 +53,9 @@ import (
 // loss recovery (§5.5.11) are absent — the transport detects no spurious
 // loss.
 type bbr3 struct {
+	// est is the connection's delivery estimator, which ProbeRTT marks
+	// application-limited (handleProbeRTT).
+	est         *deliveryEstimator
 	maxDatagram int
 	initialCwnd int
 	inFlight    int
@@ -145,12 +148,10 @@ type bbr3 struct {
 	bwProbeUpRounds int
 	bwProbeUpAcks   int
 	probeUpCnt      int
-	// ProbeRTT (§5.3.4.3): when the 200 ms are over, whether a round has
-	// passed since, and the delivered count the samples sent during it are
-	// discounted up to (the draft's C.app_limited, kept here).
+	// ProbeRTT (§5.3.4.3): when the 200 ms are over and whether a round
+	// has passed since.
 	probeRTTDoneStamp time.Time
 	probeRTTRoundDone bool
-	appLimitedUntil   int
 	idleRestart       bool
 
 	// Loss recovery (§5.6.4.4): one period from a loss to the
@@ -239,8 +240,9 @@ const (
 
 var _ congestionController = (*bbr3)(nil)
 
-func newBBR3(maxDatagram int) *bbr3 {
+func newBBR3(maxDatagram int, est *deliveryEstimator) *bbr3 {
 	b := &bbr3{
+		est:              est,
 		maxDatagram:      maxDatagram,
 		inflightLongterm: bbr3Unbounded,
 	}
@@ -287,9 +289,6 @@ func (b *bbr3) onSent(now time.Time, bytes int) {
 		b.minRTTStamp, b.probeRTTMinStamp = now, now
 	}
 	b.inFlight += bytes
-	if b.state == bbr3ProbeRTT {
-		b.appLimitedUntil = max(b.delivered+b.inFlight, 1)
-	}
 }
 
 func (b *bbr3) onLifted(bytes int) { b.inFlight = max(b.inFlight-bytes, 0) }
@@ -364,13 +363,6 @@ func (b *bbr3) onAcked(ev ackEvent) {
 	b.delivered += ev.size
 	priorDelivered := b.delivered - ev.delivered // the draft's P.delivered
 	rs := ev.rateSample()
-	if b.appLimitedUntil != 0 {
-		if b.delivered > b.appLimitedUntil {
-			b.appLimitedUntil = 0
-		} else {
-			rs.appLimited = true
-		}
-	}
 	rtt := ev.now.Sub(ev.sentAt)
 	if b.rate == 0 {
 		b.rate = bbr3StartupPacingGain * float64(b.initialCwnd) / max(rtt, granularity).Seconds()
@@ -824,13 +816,13 @@ func (b *bbr3) checkProbeRTT(now time.Time) {
 	b.idleRestart = false
 }
 
-// handleProbeRTT is BBRHandleProbeRTT: the samples of what is sent
-// meanwhile are discounted (the draft marks the estimator
-// application-limited; appLimitedUntil does the same here), the 200 ms
-// start once the flight is down to half a product, and ProbeRTT ends after
-// them and a round.
+// handleProbeRTT is BBRHandleProbeRTT: the connection is marked
+// application-limited (MarkConnectionAppLimited), so the samples of what is
+// sent meanwhile are discounted by this model and by Stats.DeliveryRate
+// alike, the 200 ms start once the flight is down to half a product, and
+// ProbeRTT ends after them and a round.
 func (b *bbr3) handleProbeRTT(now time.Time) {
-	b.appLimitedUntil = max(b.delivered+b.inFlight, 1)
+	b.est.markAppLimited(b.inFlight)
 	switch {
 	case b.probeRTTDoneStamp.IsZero() && b.inFlight <= b.probeRTTCwnd():
 		b.probeRTTDoneStamp = now.Add(bbr3ProbeRTTDuration)

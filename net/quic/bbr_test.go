@@ -31,6 +31,10 @@ type bbrPath struct {
 	// would. A loss or a mark clears it: what is sent next was sent after
 	// the congestion signal.
 	acks []int
+	// est is the controller's estimator, for its application-limited mark
+	// alone: delivered is kept equal to the path's, the mark is snapshot
+	// into each datagram sent, and settle lifts it as finish does.
+	est *deliveryEstimator
 }
 
 type bbrSent struct {
@@ -38,22 +42,34 @@ type bbrSent struct {
 	prior      int
 	txInFlight int
 	lost       int
+	appLimited bool
 }
 
 func newBBRPath(rtt time.Duration, link float64) *bbrPath {
-	b := newBBR(1200)
-	return &bbrPath{cc: b, b: b, now: time.Unix(1000, 0), rtt: rtt, link: link}
+	est := &deliveryEstimator{}
+	b := newBBR(1200, est)
+	return &bbrPath{cc: b, b: b, now: time.Unix(1000, 0), rtt: rtt, link: link, est: est}
+}
+
+// settle is the previous frame's finish, for the application-limited mark:
+// lifted once the bubble has been delivered. Every frame here is one
+// datagram, so it runs before the next acknowledgement or send.
+func (p *bbrPath) settle() {
+	if p.est.appLimited != 0 && p.est.delivered > p.est.appLimited {
+		p.est.appLimited = 0
+	}
 }
 
 // send puts n datagrams on the path now.
 func (p *bbrPath) send(n int) {
+	p.settle()
 	for i := range n {
 		prior := p.delivered
 		if i < len(p.acks) {
 			prior = p.acks[i]
 		}
 		p.cc.onSent(p.now, 1200)
-		p.queue = append(p.queue, bbrSent{sentAt: p.now, prior: prior, txInFlight: p.cc.bytesInFlight(), lost: p.lost})
+		p.queue = append(p.queue, bbrSent{sentAt: p.now, prior: prior, txInFlight: p.cc.bytesInFlight(), lost: p.lost, appLimited: p.est.appLimited != 0})
 	}
 	p.acks = p.acks[:0]
 }
@@ -69,12 +85,14 @@ func (p *bbrPath) ack(n int) {
 // acked takes the oldest datagram off the queue as delivered now: its
 // sample reads the link's rate. rated says it is its frame's newest.
 func (p *bbrPath) acked(rated bool) ackEvent {
+	p.settle()
 	s := p.queue[0]
 	p.queue = p.queue[1:]
 	p.delivered += 1200
+	p.est.delivered = p.delivered
 	p.acks = append(p.acks, p.delivered)
 	p.afterLoss = false
-	ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior, rated: rated}
+	ev := ackEvent{now: p.now, sentAt: s.sentAt, size: 1200, srtt: p.rtt, delivered: p.delivered - s.prior, appLimited: s.appLimited, rated: rated}
 	ev.txInFlight, ev.lost = s.txInFlight, p.lost-s.lost
 	ev.sendElapsed = time.Duration(float64(ev.delivered) / p.link * float64(time.Second))
 	return ev
