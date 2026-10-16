@@ -15,9 +15,9 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"runtime"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/dgram"
@@ -549,55 +549,36 @@ func TestStopSendingAbandonsTheWriter(t *testing.T) {
 }
 
 // A connection's goroutines — the read loop and the timer loop, for both
-// ends — are gone once it closes. Two per connection is the design; any more
-// after teardown is a leak this test exists to catch.
+// ends — are gone once it closes. The bubble is the check: dgram.Pair is
+// channels and timers, so every goroutine a connection starts belongs to it,
+// and synctest.Test fails the test when one is still blocked once the
+// function returns. The bubble's clock stops when the function returns, so a
+// loop waiting on a timer counts as blocked too: teardown must be done when
+// Close returns.
 func TestConnectionsLeaveNoGoroutines(t *testing.T) {
-	// Let stragglers from earlier tests finish first, so the baseline is not
-	// inflated — an inflated baseline would let `after <= before` pass while
-	// this test's own goroutines leaked. Even settled, this stays a smoke
-	// check: it counts goroutines, it cannot attribute them.
-	before := runtime.NumGoroutine()
-	for settle, steady := time.Now().Add(time.Second), 0; steady < 3 && time.Now().Before(settle); {
-		time.Sleep(10 * time.Millisecond)
-		if n := runtime.NumGoroutine(); n < before {
-			before, steady = n, 0
-		} else {
-			steady++
+	synctest.Test(t, func(t *testing.T) {
+		for range 3 {
+			serverPC, clientPC := dgram.Pair()
+			connCh, errCh := startEchoServer(t, serverPC)
+			conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+			if err != nil {
+				t.Fatalf("Dial: %v", err)
+			}
+			var sc *quic.Conn
+			select {
+			case sc = <-connCh:
+			case err := <-errCh:
+				t.Fatalf("the server: %v", err)
+			}
+			if err := echoOnce(t, conn, "hello"); err != nil {
+				t.Fatal(err)
+			}
+			conn.Close()
+			sc.Close()
+			serverPC.Close()
+			clientPC.Close()
 		}
-	}
-	for range 3 {
-		serverPC, clientPC := dgram.Pair()
-		connCh, errCh := startEchoServer(t, serverPC)
-		conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
-		if err != nil {
-			t.Fatalf("Dial: %v", err)
-		}
-		var sc *quic.Conn
-		select {
-		case sc = <-connCh:
-		case err := <-errCh:
-			t.Fatalf("the server: %v", err)
-		}
-		if err := echoOnce(t, conn, "hello"); err != nil {
-			t.Fatal(err)
-		}
-		conn.Close()
-		sc.Close()
-		serverPC.Close()
-		clientPC.Close()
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if n := runtime.NumGoroutine(); n <= before {
-			return
-		}
-		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("goroutines: %d before, %d after\n%s",
-				before, runtime.NumGoroutine(), buf[:runtime.Stack(buf, true)])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	})
 }
 
 // Err stays callable from any goroutine while the connection tears down —
