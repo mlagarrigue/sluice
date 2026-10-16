@@ -173,6 +173,40 @@ func TestLossTimerSparesPacketsPastLargestAcked(t *testing.T) {
 	}
 }
 
+// A.10 declares a packet lost once time_sent <= now - loss_delay, the
+// instant the timer it armed matures. A strict comparison spared the packet
+// at that instant and re-armed the timer on the same instant, and the timer
+// loop then turned with a zero wait until the clock moved: a busy loop on a
+// real clock, a hang on a synctest one, which never moves while a goroutine
+// runs.
+func TestLossTimerDeclaresAtTheInstantItMatures(t *testing.T) {
+	var s sentTracker
+	var rtt rttEstimator
+	rtt.sample(10*time.Millisecond, 0)
+	now := time.Now()
+	s.record(sentPacket{pn: 0, sentAt: now.Add(-time.Millisecond), size: 50, ackEliciting: true, payload: []byte{0}})
+	s.record(sentPacket{pn: 1, sentAt: now, size: 50, ackEliciting: true, payload: []byte{1}})
+
+	var peer ackTracker
+	peer.record(1, now)
+	f := ackFrameFor(t, &peer)
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	matured := s.lossTime
+	if !matured.After(now) {
+		t.Fatalf("the ACK armed the timer at %v, not after the ACK's own instant %v", matured, now)
+	}
+
+	out := s.collectTimeLosses(matured, &rtt, nil)
+	if len(out.lost) != 1 || out.lost[0][0] != 0 {
+		t.Fatalf("at the matured instant: lost = %v, want packet 0", out.lost)
+	}
+	if !s.lossTime.IsZero() {
+		t.Errorf("lossTime = %v at the matured instant %v, want the timer disarmed", s.lossTime, matured)
+	}
+}
+
 // reno is the connection's controller as the concrete NewReno, for tests
 // that read or set its fields.
 func (c *Conn) reno() *newReno { return c.cc.(*newReno) }

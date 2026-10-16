@@ -403,7 +403,7 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 		}
 		if s.hasLargestAcked {
 			lostByCount := p.pn+packetThreshold <= s.largestAcked
-			lostByTime := p.pn < s.largestAcked && p.sentAt.Before(lostBefore)
+			lostByTime := p.pn < s.largestAcked && !p.sentAt.After(lostBefore)
 			if lostByCount || lostByTime {
 				extends := prevLost || p.afterLoss
 				prevLost = true
@@ -459,13 +459,18 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *d
 		return out
 	}
 	threshold := max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
+	// Lost once sent at or before this instant: A.10's time_sent <=
+	// lost_send_time. Strictly before spared a packet at the instant its
+	// timer matured and re-armed the timer on that same instant, which the
+	// timer loop then waited out with a zero wait until the clock moved
+	// (TestLossTimerDeclaresAtTheInstantItMatures).
 	lostBefore := now.Add(-threshold)
 	s.lossTime = time.Time{}
 	prevLost := false // as in processAck
 	kept := s.packets[:0]
 	for i := range s.packets {
 		p := &s.packets[i]
-		if p.pn <= s.largestAcked && p.sentAt.Before(lostBefore) {
+		if p.pn <= s.largestAcked && !p.sentAt.After(lostBefore) {
 			s.declareLost(&out, p, est, prevLost || p.afterLoss)
 			prevLost = true
 			continue
