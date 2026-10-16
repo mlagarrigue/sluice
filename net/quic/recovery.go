@@ -22,7 +22,8 @@ import (
 // Timing constants, RFC 9002 §6 and Appendix A.
 const (
 	// packetThreshold declares a packet lost once a packet sent three or
-	// more numbers after it has been acknowledged (§6.1.1).
+	// more packets after it has been acknowledged (§6.1.1) — packets, not
+	// numbers: see sentTracker.skippedAbove.
 	packetThreshold = 3
 	// timeThresholdNum/Den scale the round trip by 9/8 for time-based loss
 	// (§6.1.2).
@@ -173,18 +174,23 @@ type sentTracker struct {
 	// news must still be able to mature a pending loss.
 	largestAcked    uint64
 	hasLargestAcked bool
-	// skipped is a packet number this end deliberately never used (RFC
-	// 9000 §21.4): a peer that acknowledges it acknowledged something it
-	// cannot have received, and is closed with PROTOCOL_VIOLATION before
-	// its invented ACKs open the congestion window. One number is kept —
-	// the latest gap — which is enough: an attacker acknowledging every
-	// number up to the largest it sees hits the current gap within a
-	// window. nextSkip is where the next gap goes; skipArmed says whether
-	// it has been drawn yet.
-	skipped    uint64
-	hasSkipped bool
-	nextSkip   uint64
-	skipArmed  bool
+	// skips are the packet numbers this end deliberately never used (RFC
+	// 9000 §21.4), the latest at skips[0], nSkips of them: a peer that
+	// acknowledges one acknowledged something it cannot have received, and
+	// is closed with PROTOCOL_VIOLATION before its invented ACKs open the
+	// congestion window — caught is the number it named. The latest gap is
+	// enough for that: an attacker acknowledging every number up to the
+	// largest it sees hits it within a window. The packet threshold needs
+	// the older ones (skippedAbove): the latest is usually still in flight,
+	// and the gap a reordered packet straddles is a window below it. Gaps
+	// land at least a quarter of a flight apart while the window doubles,
+	// so four reach back past the largest acknowledged. nextSkip is where
+	// the next gap goes; skipArmed says whether it has been drawn yet.
+	skips     [4]uint64
+	nSkips    int
+	caught    uint64
+	nextSkip  uint64
+	skipArmed bool
 	// pathStart is when the current path began (RFC 9000 §9.4). A packet
 	// sent before it was sent on a previous path: its acknowledgement or
 	// loss still leaves the record — and a lost payload is still queued
@@ -226,9 +232,29 @@ func (s *sentTracker) skipNumber(pn, window uint64) bool {
 	if pn < s.nextSkip {
 		return false
 	}
-	s.skipped, s.hasSkipped = pn, true
+	copy(s.skips[1:], s.skips[:])
+	s.skips[0], s.nSkips = pn, min(s.nSkips+1, len(s.skips))
 	s.nextSkip = pn + 1 + skipGap(window)
 	return true
+}
+
+// skippedAbove is how many numbers between pn and the largest acknowledged
+// were never sent. The packet threshold counts packets sent after pn
+// (§6.1.1, "similar to TCP", whose threshold counts segments), and a
+// skipped number is not one: counted, a datagram that two successors
+// overtook across a gap was declared lost at a threshold of two, below the
+// SHOULD NOT of §6.1.1 — a spurious congestion event about once per window
+// of reordering under the threshold. A gap older than the four kept lies
+// more than a flight below the largest, past any packet the count could
+// still spare.
+func (s *sentTracker) skippedAbove(pn uint64) uint64 {
+	var n uint64
+	for _, k := range s.skips[:s.nSkips] {
+		if pn < k && k < s.largestAcked {
+			n++
+		}
+	}
+	return n
 }
 
 func skipGap(window uint64) uint64 {
@@ -311,11 +337,13 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 	i := len(s.packets) - 1
 	optimistic := false
 	err := decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
-		if s.hasSkipped && lo <= s.skipped && s.skipped <= hi {
-			// The range names the number that was never sent (§21.4). The
-			// marks already set stay set: the verdict closes the
-			// connection, and this tracker with it.
-			optimistic = true
+		for _, k := range s.skips[:s.nSkips] {
+			if lo <= k && k <= hi && !optimistic {
+				// The range names a number that was never sent (§21.4).
+				// The marks already set stay set: the verdict closes the
+				// connection, and this tracker with it.
+				optimistic, s.caught = true, k
+			}
 		}
 		if optimistic {
 			return
@@ -422,7 +450,7 @@ func (s *sentTracker) detectLost(now time.Time, rtt *rttEstimator, est *delivery
 			runStart = time.Time{}
 			continue
 		}
-		lostByCount := p.pn+packetThreshold <= s.largestAcked
+		lostByCount := p.pn+packetThreshold+s.skippedAbove(p.pn) <= s.largestAcked
 		lostByTime := p.pn < s.largestAcked && !p.sentAt.After(lostBefore)
 		if lostByCount || lostByTime {
 			extends := prevLost || p.afterLoss

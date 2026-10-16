@@ -1132,7 +1132,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// purpose — an acknowledgement of a packet that never existed.
 		return &transportError{
 			code: transportProtocolViolation,
-			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, sp.sent.skipped),
+			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, sp.sent.caught),
 		}
 	}
 	if err != nil {

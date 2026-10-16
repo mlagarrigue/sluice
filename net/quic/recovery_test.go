@@ -511,8 +511,8 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 		}
 		s.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{byte(pn)}})
 	}
-	if skipped != 3 || !s.hasSkipped || s.skipped != 3 {
-		t.Fatalf("skipped %d, tracker says %d (%v)", skipped, s.skipped, s.hasSkipped)
+	if skipped != 3 || s.nSkips != 1 || s.skips[0] != 3 {
+		t.Fatalf("skipped %d, tracker says %v (%d)", skipped, s.skips, s.nSkips)
 	}
 
 	var peer ackTracker
@@ -532,6 +532,56 @@ func TestSkippedPacketNumberCatchesOptimisticAck(t *testing.T) {
 	f = ackFrameFor(t, &peer)
 	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil); !errors.Is(err, errOptimisticAck) {
 		t.Fatalf("an ACK covering the gap: err = %v, want errOptimisticAck", err)
+	}
+}
+
+// The packet threshold counts packets sent after a lost candidate, not
+// numbers (RFC 9002 §6.1.1): a skipped number between the candidate and the
+// largest acknowledged is no packet. Two successors across a gap must not
+// reach the threshold of three, and the gap that matters can be older than
+// the latest one — the latest is usually still in flight above the largest
+// acknowledged, and must not count yet.
+func TestPacketThresholdCountsPacketsNotNumbers(t *testing.T) {
+	var s sentTracker
+	var rtt rttEstimator
+	now := time.Now() // acknowledged at once: the time threshold never fires
+	s.skipArmed, s.nextSkip = true, 3
+	for pn := range uint64(12) {
+		if s.skipNumber(pn, 10) {
+			if pn == 3 {
+				s.nextSkip = 9 // the second draw, pinned
+			}
+			continue
+		}
+		s.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{byte(pn)}})
+	}
+	if s.nSkips != 2 || s.skips[0] != 9 || s.skips[1] != 3 {
+		t.Fatalf("skips = %v (%d), want 9 then 3", s.skips, s.nSkips)
+	}
+
+	var peer ackTracker
+	ack := func(pns ...uint64) ackOutcome {
+		t.Helper()
+		for _, pn := range pns {
+			peer.record(pn, now)
+		}
+		f := ackFrameFor(t, &peer)
+		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// Packet 2 is overtaken by 4 and 5 only: two packets, across the gap at
+	// 3. The gap at 9 lies above the largest acknowledged and counts for
+	// nothing.
+	if out := ack(0, 1, 4, 5); out.declared != 0 || out.lostCount != 0 {
+		t.Fatalf("overtaken by two packets across a gap: declared %d, lost %d, want 0", out.declared, out.lostCount)
+	}
+	// Packet 6 is the third packet sent after packet 2: now it is lost.
+	if out := ack(6); out.declared != 1 || out.lostCount != 1 {
+		t.Fatalf("overtaken by three packets across a gap: declared %d, lost %d, want 1", out.declared, out.lostCount)
 	}
 }
 
