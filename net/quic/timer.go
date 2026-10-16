@@ -171,7 +171,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		c.ptoCount++
 		c.ptoFired++
 		// The window is not touched: a timeout proves nothing about the
-		// path (RFC 9002 §6.2.4), and persistent congestion is a span of
+		// path (RFC 9002 §6.2), and persistent congestion is a span of
 		// losses an ACK establishes (§7.6, handleAck), not a count of
 		// probes — three unanswered probes used to collapse it here, and
 		// a sender pausing between small writes restarts this timer at

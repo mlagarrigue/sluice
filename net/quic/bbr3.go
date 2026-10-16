@@ -7,7 +7,7 @@ import (
 )
 
 // bbr3 is BBR as the IETF congestion control working group drafts it
-// (draft-ietf-ccwg-bbr-03, the algorithm Linux ships as BBR version 3),
+// (draft-ietf-ccwg-bbr-06, the algorithm Linux ships as BBR version 3),
 // chosen with CongestionBBR. It keeps version 1's model of the path — the
 // highest delivery rate and the lowest round trip seen recently — and its
 // states, and adds what version 1 lacked: loss as evidence about the
@@ -28,7 +28,7 @@ import (
 // bandwidth plateau or on a round with six loss events and 2% of loss
 // (§5.3.1.3), Drain paces at 0.35 of the estimate, ProbeBW cycles through
 // DOWN, CRUISE, REFILL and UP (§5.3.3) — probing every two to three
-// seconds, or as often as a Reno flow of the same window would (§5.3.3.5)
+// seconds, or as often as a Reno flow of the same window would (§5.3.3.8)
 // — and ProbeRTT halves the window for 200 ms every five seconds
 // (§5.3.4). extra_acked (§5.5.9) adds the aggregation the path shows to
 // the window. The send quantum is one datagram, the unit the pacer
@@ -40,7 +40,7 @@ import (
 // inflight_longterm and goes DOWN. Not the DCTCP-style response Linux
 // gives L4S marks, which this end never asks for (it marks ECT(0)).
 //
-// Four readings this draft leaves to the implementation. The volume in
+// Three readings differ from the draft's pseudocode. The volume in
 // flight when a lost packet was sent (RS.tx_in_flight) is read as the
 // flight when the loss is declared, not stamped on every packet sent: the
 // losses that matter are declared one round after a ProbeBW_UP step of a
@@ -49,10 +49,17 @@ import (
 // loss round being the draft's (first loss to the acknowledgement of a
 // packet sent after it). The bandwidth plateau reads the max filter, as
 // version 1 does, and checks on the first sample of a round that measures
-// the path rather than the application (bbr.checkFullPipe). And a
-// bandwidth-probing phase ends its samples the way Linux does — ack_phase
-// back to its initial value one round after ProbeBW_DOWN starts — where
-// the draft's pseudocode would advance the max filter every round.
+// the path rather than the application (bbr.checkFullPipe), where the
+// draft reads the rate sample itself (§5.3.1.2).
+//
+// Not yet followed from draft -06, which revised -03: Drain's pacing gain
+// is 0.5, not -03's 0.35, and Drain also ends three rounds after it starts
+// (§5.3.2); ProbeBW's precautionary probing (§5.3.3.6, §5.3.3.7) and the
+// undo of a spurious loss recovery (§5.5.11) are absent — the transport
+// detects no spurious loss; a sample that delivered nothing still reaches
+// the max filter (§5.5.5); and Startup's six lost ranges are counted as
+// six loss declarations, a loss exit leaving full_bw_now unset (§5.3.1.3,
+// A.2).
 type bbr3 struct {
 	maxDatagram int
 	initialCwnd int
@@ -133,7 +140,7 @@ type bbr3 struct {
 	fullBw        float64
 	fullBwCount   int
 	fullBwPending bool
-	// ProbeBW (§5.3.3.6): when DOWN started and how long to wait before
+	// ProbeBW (§5.3.3.9): when DOWN started and how long to wait before
 	// REFILL, which samples the acknowledgements carry, whether a loss may
 	// still speak for the last probe, and the slope inflight_longterm is
 	// raised at in UP.
@@ -174,7 +181,7 @@ const (
 )
 
 // bbr3AckPhase says what the acknowledgements being processed are
-// feedback about (§5.3.3.6): nothing in particular, the REFILL phase, the
+// feedback about (§5.3.3.9): nothing in particular, the REFILL phase, the
 // start of a probe, the probe itself, or its end.
 type bbr3AckPhase uint8
 
@@ -189,7 +196,8 @@ const (
 const (
 	// bbr3StartupPacingGain is 4 ln 2, the smallest gain that doubles the
 	// sending rate each round (§5.3.1.1); bbr3DrainPacingGain drains the
-	// queue Startup built in under a round (§5.3.2).
+	// queue Startup built in under a round (§5.3.2) — -03's value; -06
+	// raised it to 0.5 (§2.5), not yet followed.
 	bbr3StartupPacingGain = 2.77
 	bbr3DrainPacingGain   = 0.35
 	bbr3DefaultCwndGain   = 2.0
@@ -227,7 +235,7 @@ const (
 	bbr3FullBwThresh = 1.25
 	bbr3FullBwRounds = 3
 	// bbr3RenoRoundsBound caps the rounds a Reno flow's window is read as
-	// taking between probes (§5.3.3.5.2).
+	// taking between probes (§5.3.3.8.3).
 	bbr3RenoRoundsBound = 63
 	// bbr3MinPipeCwnd is the window's floor, in datagrams (§5.6.4.3).
 	bbr3MinPipeCwnd = 4
@@ -315,6 +323,8 @@ func (b *bbr3) bdpMultiple(bw, gain float64) int {
 
 // quantizationBudget is BBRQuantizationBudget (§5.6.4.2): three send
 // quanta — datagrams here — and four datagrams at least, two more in UP.
+// Three quanta is the TCP offload budget; -06 gives QUIC one (§5.5.8.2),
+// which the four-datagram floor makes the same volume.
 func (b *bbr3) quantizationBudget(volume int) int {
 	volume = max(volume, 3*b.maxDatagram, b.minPipeCwnd())
 	if b.state == bbr3ProbeBWUp {
@@ -333,13 +343,13 @@ func (b *bbr3) maxInflight() int {
 	return b.quantizationBudget(b.bdpMultiple(b.bw, b.cwndGain) + b.extraAcked)
 }
 
-// targetInflight is BBRTargetInflight (§5.3.3.5.2): the product, unless
+// targetInflight is BBRTargetInflight (§5.3.3.8.3): the product, unless
 // congestion cut the window under it.
 func (b *bbr3) targetInflight() int {
 	return min(b.bdpMultiple(b.bw, 1), b.cwnd)
 }
 
-// inflightWithHeadroom is BBRInflightWithHeadroom (§5.3.3.6): the
+// inflightWithHeadroom is BBRInflightWithHeadroom (§5.3.3.9): the
 // long-term bound less 15% of it, a datagram at least, for other flows.
 func (b *bbr3) inflightWithHeadroom() int {
 	if b.inflightLongterm == bbr3Unbounded {
@@ -425,7 +435,8 @@ func (b *bbr3) updateCongestionSignals(rs rateSample, priorDelivered int) {
 }
 
 // updateMaxBw is BBRUpdateMaxBw (§5.5.5): an application-limited sample is
-// kept only when it beats the estimate (§5.5.4).
+// kept only when it beats the estimate (§5.5.4). -06 also skips a sample
+// that delivered nothing (§5.5.5); not yet followed.
 func (b *bbr3) updateMaxBw(rs rateSample, priorDelivered int) {
 	b.updateRound(priorDelivered)
 	if bw := rs.deliveryRate(); bw >= b.maxBw || !rs.appLimited {
@@ -556,7 +567,8 @@ func (b *bbr3) checkStartupDone() {
 }
 
 // checkDrainDone is BBRCheckDrainDone (§5.3.2): Drain ends when the flight
-// is down to one bandwidth-delay product.
+// is down to one bandwidth-delay product. Not yet -06's second exit, three
+// rounds after Drain starts.
 func (b *bbr3) checkDrainDone(now time.Time) {
 	if b.state == bbr3Drain && b.inFlight <= b.inflight(b.bw, 1) {
 		b.enterProbeBW(now)
@@ -573,7 +585,7 @@ func (b *bbr3) enterDrain() {
 	b.pacingGain, b.cwndGain = bbr3DrainPacingGain, bbr3DefaultCwndGain
 }
 
-// enterProbeBW is BBREnterProbeBW (§5.3.3.6): the cycle starts at DOWN.
+// enterProbeBW is BBREnterProbeBW (§5.3.3.9): the cycle starts at DOWN.
 func (b *bbr3) enterProbeBW(now time.Time) {
 	b.cwndGain = bbr3DefaultCwndGain
 	b.startProbeBWDown(now)
@@ -625,7 +637,7 @@ func (b *bbr3) resetShortTermModel() {
 	b.inflightShortterm = bbr3Unbounded
 }
 
-// pickProbeWait is BBRPickProbeWait (§5.3.3.5.2): two to three seconds of
+// pickProbeWait is BBRPickProbeWait (§5.3.3.8.3): two to three seconds of
 // wall clock, and a round count that starts at zero or one, both drawn so
 // that flows do not probe in step.
 func (b *bbr3) pickProbeWait() {
@@ -633,7 +645,7 @@ func (b *bbr3) pickProbeWait() {
 	b.bwProbeWait = 2*time.Second + time.Duration(rand.Float64()*float64(time.Second)) //nolint:gosec // G404: same
 }
 
-// updateProbeBWCyclePhase is BBRUpdateProbeBWCyclePhase (§5.3.3.6).
+// updateProbeBWCyclePhase is BBRUpdateProbeBWCyclePhase (§5.3.3.9).
 func (b *bbr3) updateProbeBWCyclePhase(now time.Time, rs rateSample, priorInFlight, acked int) {
 	if !b.fullBwReached {
 		return // only handling steady-state behaviour here
@@ -675,7 +687,7 @@ func (b *bbr3) isTimeToCruise() bool {
 	return b.inFlight <= b.inflight(b.maxBw, 1)
 }
 
-// isTimeToProbeBW is BBRIsTimeToProbeBW (§5.3.3.5.2): the wall clock or
+// isTimeToProbeBW is BBRIsTimeToProbeBW (§5.3.3.8.3): the wall clock or
 // the Reno-coexistence round count says so, and REFILL starts.
 func (b *bbr3) isTimeToProbeBW(now time.Time) bool {
 	if now.Sub(b.cycleStamp) > b.bwProbeWait || b.renoCoexistenceProbeTime() {
@@ -704,7 +716,7 @@ func (b *bbr3) isTimeToGoDown() bool {
 	return b.fullBwNow
 }
 
-// adaptLongTermModel is BBRAdaptLongTermModel (§5.3.3.6): the
+// adaptLongTermModel is BBRAdaptLongTermModel (§5.3.3.9): the
 // acknowledgement phases advance on round starts — the probe's samples
 // end one round after DOWN started, which also advances the max filter's
 // clock — and, when the loss rate is safe, the long-term bound rises to
@@ -734,7 +746,8 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, priorInFlight, acked int) {
 // raiseInflightLongtermSlope is BBRRaiseInflightLongtermSlope: the bound
 // grows by one datagram this round, two the next, four, eight, spread over
 // the round's acknowledgements — probeUpCnt bytes acknowledged per
-// datagram added.
+// datagram added. -06 floors probeUpCnt at one datagram, not one byte
+// (§5.3.3.9); not yet followed.
 func (b *bbr3) raiseInflightLongtermSlope() {
 	growth := b.maxDatagram << b.bwProbeUpRounds
 	b.bwProbeUpRounds = min(b.bwProbeUpRounds+1, 30)

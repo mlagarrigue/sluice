@@ -98,7 +98,7 @@ type Conn struct {
 	spaces   [3]space
 	rtt      rttEstimator
 	cc       congestionController
-	delivery deliveryEstimator // draft-cheng delivery-rate state, fed by send.go and processAck
+	delivery deliveryEstimator // delivery-rate state (BBR draft §4.1), fed by send.go and processAck
 	pacer    pacer
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
@@ -236,7 +236,7 @@ type Conn struct {
 	// ack-eliciting packet after a receive — so an endpoint transmitting into
 	// silence does not keep extending its own idle clock forever.
 	elicitingSinceRecv bool
-	// peerAddrValidated is the client-side answer to RFC 9002's
+	// peerAddrValidated is the client-side answer to RFC 9002 A.8's
 	// PeerCompletedAddressValidation: the server acknowledged a Handshake
 	// packet, or confirmed the handshake. Until then the server may be
 	// amplification-blocked, which changes what a stalled probe means —
@@ -1545,7 +1545,7 @@ type Stats struct {
 
 	// CongestionWindow is how many bytes the congestion controller lets
 	// this end have in flight (RFC 9002 §7): it grows on every ACK, halves
-	// on a loss epoch and collapses after three unanswered probe timeouts.
+	// on a loss epoch and collapses on persistent congestion (§7.6).
 	// A window that stays near 2 × 1200 on a connection that keeps writing
 	// is a path losing packets faster than it recovers.
 	CongestionWindow int
@@ -1596,7 +1596,7 @@ type Stats struct {
 
 	// DeliveryRate is how fast the network delivered this end's packets, in
 	// bytes per second, as the last reliable sample measured it
-	// (draft-cheng-iccrg-delivery-rate-estimation): the bytes an
+	// (draft-ietf-ccwg-bbr-06 §4.1): the bytes an
 	// acknowledgement proved delivered, over the longer of the time they
 	// took to send and the time they took to be acknowledged. Samples taken
 	// while the application had nothing to send are skipped — they measure

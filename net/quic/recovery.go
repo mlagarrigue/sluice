@@ -123,12 +123,11 @@ type sentPacket struct {
 	// which the peer's ECN counts must then account for (§13.4.2.1).
 	ect0 bool
 	// The delivery estimator's snapshot of the connection when this packet
-	// left (draft-cheng-iccrg-delivery-rate-estimation §3.2): bytes
-	// delivered so far, how long before this send the count last moved and
-	// the flight's first send happened — offsets from sentAt rather than
-	// the two instants, which keeps the record 32 bytes smaller and the
-	// acknowledgement path to one subtraction — and whether the sender was
-	// application-limited. Read once, when the packet is acknowledged
+	// left (draft-ietf-ccwg-bbr-06 §4.1.2.2): bytes delivered so far, how
+	// long before this send the count last moved and the flight's first
+	// send happened — offsets from sentAt rather than the two instants,
+	// which keeps the record 32 bytes smaller and the acknowledgement path
+	// to one subtraction — and whether the sender was application-limited. Read once, when the packet is acknowledged
 	// (deliveryEstimator.update).
 	delivered      int
 	sendElapsed    time.Duration // P.sent_time - P.first_sent_time
@@ -505,7 +504,7 @@ func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 // second, and the client, holding half a ServerHello, waits out the
 // handshake. RFC 9002 §6.2.4 permits either resending or marking in flight
 // as lost on a timeout; this does the first with the bookkeeping of the
-// second — minus the congestion event, which a timeout is not (§6.2.4,
+// second — minus the congestion event, which a timeout is not (§6.2,
 // §7.6: only a later acknowledgement proves what was lost).
 //
 // An acknowledgement of the original that arrives after it was lifted
@@ -607,7 +606,7 @@ type ackEvent struct {
 // them: the peer counts marked packets, not bytes, and names no packet
 // (RFC 9000 §19.3.2), so the event is a count at a time, not a packet.
 // latestSent is when the frame's largest acknowledged packet left — what
-// RFC 9002 B.12 dates the congestion event with.
+// RFC 9002 B.7 dates the congestion event with.
 type markEvent struct {
 	now        time.Time
 	latestSent time.Time
@@ -615,16 +614,16 @@ type markEvent struct {
 }
 
 // rateSample is one acknowledgement's delivery-rate sample
-// (draft-cheng-iccrg-delivery-rate-estimation §3.1.3): delivered bytes over
-// interval, the longer of the flight's send interval and its
-// acknowledgement interval (§2.2.4) — the longer one filters the implausible
-// rates that ACK compression and aggregation produce. The rate itself is a
+// (draft-ietf-ccwg-bbr-06 §4.1.2.1.3): delivered bytes over interval, the
+// longer of the flight's send interval and its acknowledgement interval
+// (§4.1.1.2.4) — the longer one filters the implausible rates that ACK
+// compression and aggregation produce. The rate itself is a
 // division the consumer does (deliveryRate). Zero interval means nothing
 // was delivered.
 type rateSample struct {
 	delivered  int
 	interval   time.Duration
-	appLimited bool // the newest delivered packet was sent application-limited (§2.3)
+	appLimited bool // the newest delivered packet was sent application-limited (§4.1.1.3)
 }
 
 // deliveryRate is the sample in bytes per second, zero when there is none.
@@ -635,7 +634,7 @@ func (rs rateSample) deliveryRate() float64 {
 	return float64(rs.delivered) / rs.interval.Seconds()
 }
 
-// rateSample is the sample this packet yields (§3.3) — the frame's own
+// rateSample is the sample this packet yields (§4.1.2.3) — the frame's own
 // sample when the packet is the newest the frame delivered, which the
 // controller knows because the frame's packets arrive in order. Computed
 // here and not on the ACK path: a subtraction of instants per acknowledged
@@ -649,15 +648,13 @@ func (ev ackEvent) rateSample() rateSample {
 	}
 }
 
-// deliveryEstimator is the draft's per-connection state (§3.1.1): how much
-// the network has delivered over the connection's lifetime, when that count
-// last moved, and the send time the current flight is measured from. Every
-// acknowledgement yields one rateSample, readable from each ackEvent the
-// controller is handed and kept for Stats.DeliveryRate when it is reliable.
-// No controller reads it yet — Reno and CUBIC grow on acknowledgements
-// alone; BBR lives on it — and it is posted first so its cost per packet
-// and its accuracy on the emulated paths are measured before a controller
-// depends on it. Only packets of the current path count: a previous path's
+// deliveryEstimator is the draft's per-connection state (§4.1.2.1.1): how
+// much the network has delivered over the connection's lifetime, when that
+// count last moved, and the send time the current flight is measured from.
+// Every acknowledgement yields one rateSample, readable from each ackEvent
+// the controller is handed and kept for Stats.DeliveryRate when it is
+// reliable. Reno and CUBIC grow on acknowledgements alone; BBR lives on
+// it. Only packets of the current path count: a previous path's
 // deliveries are not evidence about this one (RFC 9000 §9.4, see
 // sentTracker.pathStart).
 type deliveryEstimator struct {
@@ -666,10 +663,10 @@ type deliveryEstimator struct {
 	firstSentTime time.Time // C.first_sent_time: the newest delivered packet's send, or the first send after idle
 	// appLimited is C.app_limited: the delivered count the connection must
 	// pass before the bubble of idle time has left the pipeline, zero when
-	// the sender is not application-limited (§2.3, §3.4).
+	// the sender is not application-limited (§4.1.1.3, §4.1.2.4).
 	appLimited int
 	// The newest packet the acknowledgement in progress delivered (rs.prior_*
-	// in §3.1.3), copied field by field — the record it came from is
+	// in §4.1.2.1.3), copied field by field — the record it came from is
 	// compacted under it — and sampled says whether there is one yet.
 	// finish turns them into cur, the frame's sample.
 	sampled        bool
@@ -685,7 +682,7 @@ type deliveryEstimator struct {
 }
 
 // onSent snapshots the connection's delivery state into a packet about to
-// leave (§3.2, SendPacket). idle says nothing is in flight: the flight
+// leave (§4.1.2.2, OnPacketSent). idle says nothing is in flight: the flight
 // starting now is measured from now, not from the last acknowledgement,
 // which may be long gone.
 func (e *deliveryEstimator) onSent(p *sentPacket, idle bool) {
@@ -699,24 +696,23 @@ func (e *deliveryEstimator) onSent(p *sentPacket, idle bool) {
 }
 
 // markAppLimited records that the sender ran out of data while the window
-// had room (§3.4): every sample until the bytes now in flight are delivered
-// is application-limited — the bubble of idle time this leaves in the
-// pipeline takes a round trip to drain. Never zero, which means unmarked.
+// had room (§4.1.2.4): every sample until the bytes now in flight are
+// delivered is application-limited — the bubble of idle time this leaves in
+// the pipeline takes a round trip to drain. Never zero, which means unmarked.
 func (e *deliveryEstimator) markAppLimited(inFlight int) {
 	e.appLimited = max(e.delivered+inFlight, 1)
 }
 
-// begin opens an acknowledgement's sample (§3.3, GenerateRateSample).
+// begin opens an acknowledgement's sample (§4.1.2.3, GenerateRateSample).
 func (e *deliveryEstimator) begin() {
 	e.cur, e.sampled = rateSample{}, false
 }
 
 // update counts one newly acknowledged packet of the current path as
-// delivered and remembers it as the newest (§3.3, UpdateRateSample).
+// delivered and remembers it as the newest (§4.1.2.3, UpdateRateSample).
 // Packets come in number order, which is send order, so each one is the
-// most recently sent so far — the draft's "most recently sent packet", by
-// send time as Linux reads it rather than by the draft's per-packet
-// delivered count, which a burst sent between two ACKs shares.
+// most recently sent so far — the draft's IsNewestPacket, which orders by
+// send time and then by packet number.
 func (e *deliveryEstimator) update(p *sentPacket) {
 	e.delivered += p.size
 	e.sampled = true
@@ -730,8 +726,8 @@ func (e *deliveryEstimator) update(p *sentPacket) {
 // the application-limited mark once the bubble has been delivered, and
 // keeps the sample for Stats when it is reliable — an interval shorter than
 // the minimum round trip is a spuriously retransmitted packet's
-// acknowledgement, and would read as a rate the path never had (§3.3) — and
-// not application-limited.
+// acknowledgement, and would read as a rate the path never had
+// (§4.1.2.3) — and not application-limited.
 func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 	if !e.sampled {
 		return
@@ -754,8 +750,8 @@ func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 
 // flowEmptyLocked is told by a writer that the packet it is about to send
 // carries the last of its data: the moment the application runs out, which
-// is where the draft checks for an application-limited phase (§3.4). If the
-// window still has room for that packet, was not what limited the sender
+// is where the draft checks for an application-limited phase (§4.1.2.4). If
+// the window still has room for that packet, was not what limited the sender
 // this round (§7.8's signal, read the other way), the pacer is not what is
 // holding the sender back either, and no lost payload waits to be resent,
 // the samples of the next round trip measure the application, not the
@@ -895,13 +891,13 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 // onLifted releases the bytes of a packet the probe timeout lifted from the
 // flight record to resend: its copy re-enters through onSent, so the flight
 // stays the same size, and the window does not move — a probe timeout is
-// not a congestion event (RFC 9002 §6.2.4). A lost DPLPMTUD probe leaves
+// not a congestion event (RFC 9002 §6.2). A lost DPLPMTUD probe leaves
 // the same way (RFC 9000 §14.4). Floored as a guard only: a previous path's
 // packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 
 // onMarked is a congestion event dated by the frame's largest acknowledged
-// packet (RFC 9002 §7.3.2, B.12 ProcessECN): the window halves and the
+// packet (RFC 9002 §7.3.2, B.7 ProcessECN): the window halves and the
 // recovery period opens, as on a loss, unless one is already running. The
 // marked packets were delivered, so the flight does not move.
 func (c *newReno) onMarked(ev markEvent) {

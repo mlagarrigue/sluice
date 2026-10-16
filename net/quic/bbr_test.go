@@ -12,7 +12,7 @@ import (
 // and its acknowledgement carries what was delivered since, over the longer
 // of the round trip and the link's serialisation of those bytes — so a
 // round's last acknowledgement samples the round's rate, capped at the
-// link's (draft-cheng-iccrg-delivery-rate-estimation §2.2.4).
+// link's (draft-ietf-ccwg-bbr-06 §4.1.1.2.4).
 type bbrPath struct {
 	cc        congestionController // the controller driven: b, or bbr3_test.go's
 	b         *bbr

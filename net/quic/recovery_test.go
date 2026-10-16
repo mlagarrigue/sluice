@@ -670,8 +670,8 @@ func ackCovering(t *testing.T, now time.Time, pns ...uint64) Frame {
 	return f
 }
 
-// The delivery-rate sample, by hand (draft-cheng-iccrg-delivery-rate-estimation
-// §3.3). Three packets of 1000 bytes leave an idle connection 10 ms apart and
+// The delivery-rate sample, by hand (draft-ietf-ccwg-bbr-06 §4.1.2.3).
+// Three packets of 1000 bytes leave an idle connection 10 ms apart and
 // are acknowledged together 120 ms after the first: the sample is re-based on
 // the newest, whose send interval is 20 ms and whose acknowledgement
 // interval is 120 ms, so 3000 bytes over 120 ms. A fourth packet sent 5 ms
@@ -840,7 +840,7 @@ func plainPair(t *testing.T) (client, server *Conn) {
 }
 
 // A CE increase is a congestion event for Reno and CUBIC (RFC 9002 §7.3.2,
-// B.12; RFC 9438 §3.1): the window takes its loss decrease and the recovery
+// B.7; RFC 9438 §3.1): the window takes its loss decrease and the recovery
 // period opens, once — a second report dated before the period's start is
 // the same event — and the flight does not move, the marked packets having
 // arrived.

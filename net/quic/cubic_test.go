@@ -98,7 +98,7 @@ func TestCubicRegions(t *testing.T) {
 	}
 }
 
-// β applies once per recovery period (RFC 9002 B.8's gate, as Reno); a
+// β applies once per recovery period (RFC 9002 B.6's gate, as Reno); a
 // loss below the previous wMax lowers wMax further (§4.7, fast
 // convergence) before the reduction.
 func TestCubicDecrease(t *testing.T) {

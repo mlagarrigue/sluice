@@ -1174,7 +1174,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	}
 	if out.newlyAckedCount > 0 && space == spaceHandshake {
 		// An acknowledged Handshake packet is the client's proof the server
-		// finished validating its address (RFC 9002 §6.2.1) — the gate for
+		// finished validating its address (RFC 9002 §6.2.1, A.8) — the gate for
 		// the backoff reset below and for the anti-deadlock probe.
 		c.peerAddrValidated = true
 	}

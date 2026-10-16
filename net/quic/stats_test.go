@@ -122,12 +122,13 @@ func TestStatsCountsLostPackets(t *testing.T) {
 }
 
 // Over a 50 Mbit/s bottleneck behind a 20 ms round trip, the delivery
-// estimator reads the line rate whatever the controller's window does: a
-// loss-based sender keeps the bottleneck's queue busy, so every
-// acknowledgement proves delivery at the rate the line serializes. The
-// tolerance below the line is the share of a sample interval the queue can
-// stand empty after a loss; above it is only measurement noise, since
-// nothing is delivered faster than the line (draft-cheng §2.2.4).
+// estimator reads what the sender let the path carry: the line while the
+// window holds at least the bandwidth-delay product and keeps the
+// bottleneck's queue busy, the window per round trip once a late loss has
+// halved a Reno window below it. The floor is 0.8 of the lesser of the two,
+// the share of a sample interval the queue can stand empty after a loss;
+// the line bounds it above with only measurement noise, since nothing is
+// delivered faster than the line (draft-ietf-ccwg-bbr-06 §4.1.1.2.4).
 func TestDeliveryRateOnBottleneck(t *testing.T) {
 	if testing.Short() {
 		t.Skip("a 4 MiB transfer over an emulated 50 Mbit/s bottleneck")
