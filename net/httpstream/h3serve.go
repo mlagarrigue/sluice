@@ -174,11 +174,17 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		return err
 	}
 
-	// A cancelled server drains (ADR 0017), the way RFC 9114 §5.2 has it:
-	// GOAWAY on the control stream naming the first request stream this
+	// A cancelled server drains (ADR 0017), the way RFC 9114 §5.2 has it
+	// "without losing requests": a first GOAWAY at 2^62−4, the highest
+	// identifier a server may send, which tells the client to open nothing
+	// more while every request it already sent is still admitted; a PING
+	// whose acknowledgement measures the round trip in which those requests
+	// arrive; then a second GOAWAY naming the first request stream this
 	// connection rejects — the one after the highest it admitted, decided
-	// under the assembler's lock so no stream is both admitted and named —
-	// then every admitted request is answered, then the connection closes
+	// under the assembler's lock so no stream is both admitted and named.
+	// A request the client sent before it read the first GOAWAY is thereby
+	// served, not rejected, as on HTTP/2. Then every admitted request is
+	// answered, then the connection closes
 	// H3_NO_ERROR (or §8.1's grease) once the last answer is acknowledged,
 	// which is what [quic.Conn.ShutdownWithError] waits for: a close sent at
 	// once could reach the client before the response it follows. A request
@@ -192,6 +198,16 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
 	stop := context.AfterFunc(drain, func() {
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, h3MaxServerGoAway))); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
+		// The forced stop bounds the round trip, as it bounds the rest: a
+		// client that never acknowledges is closed at the grace.
+		if err := c.Ping(forced); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
 		from := a.beginDrain()
 		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())

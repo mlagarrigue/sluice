@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1696,9 +1697,47 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 	}
 }
 
+// readH3GoAways reads the server's control stream until it has carried n
+// GOAWAY frames, and returns their identifiers in order.
+func readH3GoAways(t *testing.T, control *quic.Stream, n int) []uint64 {
+	t.Helper()
+	if err := control.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	tmp := make([]byte, 1024)
+	for {
+		m, err := control.Read(tmp)
+		raw = append(raw, tmp[:m]...)
+		if _, body, verr := quic.Varint(raw); verr == nil {
+			frames, _, perr := parseH3Frames(nil, body, 1<<20)
+			if perr != nil {
+				t.Fatalf("the control stream did not parse: %v", perr)
+			}
+			var ids []uint64
+			for i := range frames {
+				if frames[i].Type == h3GoAway {
+					id, _, err := quic.Varint(frames[i].Payload)
+					if err != nil {
+						t.Fatalf("GOAWAY payload: %v", err)
+					}
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) >= n {
+				return ids
+			}
+		}
+		if err != nil {
+			t.Fatalf("fewer than %d GOAWAY frames on the control stream before: %v", n, err)
+		}
+	}
+}
+
 // TestServeH3ShutdownDrainsRequest: the context is cancelled while a handler
-// is still working. The client reads GOAWAY on the control stream naming the
-// stream after the one it opened; a request opened from there on is rejected
+// is still working. The client reads two GOAWAY frames on the control
+// stream, 2^62−4 and then the one naming the stream after the one it opened;
+// a request opened from there on is rejected
 // REQUEST_REJECTED; the first response then arrives whole, and the connection
 // closes with an application code — H3_NO_ERROR or its grease — well before
 // the grace (RFC 9114 §5.2, ADR 0017 §5).
@@ -1769,35 +1808,14 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	}
 	cancel()
 
-	// The server's control stream: its type, SETTINGS, then the GOAWAY.
+	// The server's control stream: its type, SETTINGS, then the GOAWAY
+	// pair — 2^62−4 first, then the stream after the request once the
+	// client's acknowledgement has measured the round trip.
 	control := conn.Stream(3)
-	if err := control.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
+	if ids := readH3GoAways(t, control, 2); ids[0] != h3MaxServerGoAway || ids[1] != 4 {
+		t.Fatalf("GOAWAY pair %v, want [%d 4]: the maximum, then the one after the request stream", ids, uint64(h3MaxServerGoAway))
 	}
-	var raw []byte
-	var goAway *h3Frame
 	tmp := make([]byte, 1024)
-	for goAway == nil {
-		n, err := control.Read(tmp)
-		raw = append(raw, tmp[:n]...)
-		if _, body, verr := quic.Varint(raw); verr == nil {
-			frames, _, perr := parseH3Frames(nil, body, 1<<20)
-			if perr != nil {
-				t.Fatalf("the control stream did not parse: %v", perr)
-			}
-			for i := range frames {
-				if frames[i].Type == h3GoAway {
-					goAway = &frames[i]
-				}
-			}
-		}
-		if err != nil && goAway == nil {
-			t.Fatalf("no GOAWAY on the control stream before: %v", err)
-		}
-	}
-	if id, _, err := quic.Varint(goAway.Payload); err != nil || id != 4 {
-		t.Fatalf("GOAWAY names stream %d (%v), want 4: the one after the request stream", id, err)
-	}
 
 	// A request from the named stream on is rejected, and the connection
 	// survives the rejection: the first answer is still owed.
@@ -1868,6 +1886,146 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	case <-serverDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeH3 did not return once the request was drained")
+	}
+}
+
+// heldPC holds every datagram written while hold is set and sends them, in
+// order, at release: a client whose packets are still on their way.
+type heldPC struct {
+	net.PacketConn
+	mu   sync.Mutex
+	hold bool
+	held [][]byte
+	to   net.Addr
+}
+
+func (p *heldPC) WriteTo(b []byte, to net.Addr) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hold {
+		p.held, p.to = append(p.held, bytes.Clone(b)), to
+		return len(b), nil
+	}
+	return p.PacketConn.WriteTo(b, to)
+}
+
+func (p *heldPC) setHold() {
+	p.mu.Lock()
+	p.hold = true
+	p.mu.Unlock()
+}
+
+func (p *heldPC) release() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hold = false
+	for _, b := range p.held {
+		if _, err := p.PacketConn.WriteTo(b, p.to); err != nil {
+			return err
+		}
+	}
+	p.held = nil
+	return nil
+}
+
+// A request the client sent before it read the server's first GOAWAY is
+// served, not rejected (RFC 9114 §5.2, "without losing requests"): the
+// request's packets are held on the way while the server is cancelled and
+// sends its first GOAWAY, at 2^62−4, which the client reads; released, the
+// request arrives before the acknowledgement that lets the server name the
+// last stream it takes, and is answered. A single GOAWAY decided at the
+// cancellation named stream 0 and rejected it REQUEST_REJECTED.
+func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { <-serverDone })
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			serverUp <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		serverUp <- nil
+		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, 0, b.Len())
+			for _, r := range b.Items {
+				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	}()
+
+	held := &heldPC{PacketConn: clientPC}
+	conn, err := quic.Dial(held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := <-serverUp; err != nil {
+		t.Fatalf("the server: %v", err)
+	}
+
+	held.setHold()
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(h3Request("GET", "/early")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if ids := readH3GoAways(t, conn.Stream(3), 1); ids[0] != h3MaxServerGoAway {
+		t.Fatalf("first GOAWAY names %d, want %d: no stream is named before the round trip", ids[0], uint64(h3MaxServerGoAway))
+	}
+	if err := held.release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := io.ReadAll(s)
+	if err != nil {
+		code, reset := s.WasReset()
+		t.Fatalf("the early request: %v (reset %v, code %#x), want its answer", err, reset, code)
+	}
+	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	if err != nil {
+		t.Fatalf("the answer did not parse: %v", err)
+	}
+	var body string
+	for _, f := range frames {
+		if f.Type == h3Data {
+			body = string(f.Payload)
+		}
+	}
+	if body != "answering /early" {
+		t.Fatalf("the answer carried %q, want \"answering /early\"", body)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH3 did not return once the request was answered")
 	}
 }
 

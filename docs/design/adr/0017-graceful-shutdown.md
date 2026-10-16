@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair)
 - **Theme:** httpstream
 
 ## Problem
@@ -77,12 +77,18 @@ cancellation.
      by the grace. Under `Serve`, a connection with no stream open closes
      at once, like an idle HTTP/1.1 one; a `ServeH2` called directly closes
      it at the PING's acknowledgement, one round trip later.
-   - HTTP/3: a GOAWAY frame on the control stream naming the first request
-     stream the connection rejects — the one after the highest it admitted,
-     decided under the same lock as the admission so no stream is both
-     admitted and named (RFC 9114 §5.2: "requests with the indicated
-     identifier or greater are rejected") — a request from there on reset
-     `H3_REQUEST_REJECTED`, the admitted requests answered, then
+   - HTTP/3: as on HTTP/2, a pair of GOAWAY frames on the control stream.
+     The first names 2^62−4, the highest identifier a server may send: the
+     client opens nothing more, and everything it already sent is still
+     admitted. Then a QUIC PING (`quic.Conn.Ping`), whose acknowledgement
+     measures the round trip in which those requests arrive (RFC 9114
+     §5.2: "without losing requests"). Then a second GOAWAY naming the
+     first request stream the connection rejects — the one after the
+     highest it admitted, decided under the same lock as the admission so
+     no stream is both admitted and named (§5.2: "requests with the
+     indicated identifier or greater are rejected") — a request from there
+     on reset `H3_REQUEST_REJECTED`. A client that never acknowledges is
+     closed by the grace. The admitted requests are answered, then
      `H3_NO_ERROR` (or §8.1's grease) once the last answer is
      acknowledged, which `quic.Conn.ShutdownWithError` waits for: an
      application close sent at once can overtake the response it follows.

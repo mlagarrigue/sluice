@@ -40,6 +40,12 @@ const (
 	h3MaxPushID   = 0x0d
 )
 
+// h3MaxServerGoAway is the identifier of a server's first GOAWAY in a
+// graceful shutdown (RFC 9114 §5.2): the highest client-initiated
+// bidirectional stream identifier QUIC has, 2^62−4, which stops new
+// requests without yet naming the last one taken.
+const h3MaxServerGoAway = 1<<62 - 4
+
 // ErrH3Protocol reports an HTTP/3 frame or request this package will not
 // accept. Named as [ErrHPACK] explains.
 var ErrH3Protocol = errors.New("httpstream: HTTP/3 protocol error")
