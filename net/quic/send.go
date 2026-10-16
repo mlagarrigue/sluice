@@ -84,6 +84,12 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 
 	if opts.waitCwnd {
+		// The first packet of a write is where it asks whether the sender
+		// had run out of data (writeBeginLocked): on this clock reading, and
+		// only if the window has room at once — a write that waits for the
+		// window found it full.
+		check := c.limitCheck
+		c.limitCheck = false
 		for {
 			ready := c.cc.canSend(len(payload) + 64)
 			if ready {
@@ -92,18 +98,22 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				// an ACK arriving sooner broadcasts too, and the loop simply
 				// re-prices the wait.
 				now := time.Now()
+				if check {
+					c.checkAppLimitedLocked(now)
+				}
 				rate := c.cc.pacingRate(c.rtt.current())
 				c.pacer.refill(now, rate)
 				d := c.pacer.delay(rate)
 				if d == 0 {
+					c.writeSent = now
 					break
 				}
-				c.paceWaited = true
 				if until := now.Add(d); c.paceDeadline.IsZero() || until.Before(c.paceDeadline) {
 					c.paceDeadline = until
 					c.kickTimer()
 				}
 			}
+			check = false
 			if err := c.waitForCreditLocked(opts.deadline); err != nil {
 				return err
 			}

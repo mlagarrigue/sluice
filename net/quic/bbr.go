@@ -40,10 +40,6 @@ type bbr struct {
 	initialCwnd int
 	inFlight    int
 	cwnd        int
-	// limited says canSend refused a send this round (windowLimited): the
-	// delivery estimator reads it the other way, as Reno's. Cleared when a
-	// round starts.
-	limited bool
 
 	// The path model (§4.1). bwRing holds the best sample of each of the
 	// last bbrBtlBwFilterLen rounds, indexed by round; btlBw is their
@@ -149,15 +145,10 @@ func newBBR(maxDatagram int, est *deliveryEstimator) *bbr {
 func (b *bbr) window() int              { return b.cwnd }
 func (b *bbr) bytesInFlight() int       { return b.inFlight }
 func (b *bbr) setMaxDatagram(bytes int) { b.maxDatagram = bytes }
-func (b *bbr) windowLimited() bool      { return b.limited }
 func (b *bbr) minPipeCwnd() int         { return bbrMinPipeCwnd * b.maxDatagram }
 
 func (b *bbr) canSend(bytes int) bool {
-	if b.inFlight+bytes > b.cwnd {
-		b.limited = true
-		return false
-	}
-	return true
+	return b.inFlight+bytes <= b.cwnd
 }
 
 // onSent adds to the flight and notices a restart from idle (§4.3.4.4):
@@ -246,14 +237,12 @@ func (b *bbr) onAcked(ev ackEvent) {
 // updateRound is BBRUpdateRound (§4.1.1.3): the packet's own delivered
 // count at its send — the controller's count now less what the estimator
 // says was delivered since — reaching the mark means a packet sent after
-// the round's first delivery came back, so a round trip has passed. A
-// round's start is also where the utilisation flag of §7.8 is cleared.
+// the round's first delivery came back, so a round trip has passed.
 func (b *bbr) updateRound(ev ackEvent) {
 	if b.delivered-ev.delivered >= b.nextRoundDelivered {
 		b.nextRoundDelivered = b.delivered
 		b.roundCount++
 		b.roundStart = true
-		b.limited = false
 		return
 	}
 	b.roundStart = false

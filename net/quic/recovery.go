@@ -612,11 +612,6 @@ type congestionController interface {
 	canSend(bytes int) bool
 	// onSent adds a packet's bytes to the flight.
 	onSent(now time.Time, bytes int)
-	// windowLimited reports whether the window was what stopped the sender
-	// this round (§7.8): what onAcked grows on, and what the delivery
-	// estimator reads the other way — a writer that runs dry while the
-	// window has room is application-limited (Conn.flowEmptyLocked).
-	windowLimited() bool
 	// onAcked is called once per newly acknowledged packet sent on the
 	// current path, in packet-number order (RFC 9002 B.5 runs the growth
 	// test per packet); the frame's newest, last, carries the frame's
@@ -833,33 +828,55 @@ func (e *deliveryEstimator) finish(now time.Time, minRTT time.Duration) {
 	e.rate = e.cur.deliveryRate()
 }
 
-// flowEmptyLocked is told by a writer that the packet it is about to send
-// carries the last of its data: the moment the application runs out, which
-// is where the draft checks for an application-limited phase (§4.1.2.4). If
-// the window still has room for that packet, was not what limited the sender
-// this round (§7.8's signal, read the other way), the pacer is not what is
-// holding the sender back either, and no lost payload waits to be resent,
-// the samples of the next round trip measure the application, not the
-// path. bytes is what the packet will occupy, the gate's own unit.
-// Writers here are synchronous — unsent data lives in a blocked Write's own
-// stack, not in a buffer the draft's first condition could inspect — so the
-// end of a write is the only place the transport can see the flow run dry.
-// A write that waited on the pacer is Linux's "packets still queued below
-// the socket" (tcp_rate_check_app_limited): a writer that ends every 64 KiB
-// chunk after waiting for its pace is paced, not idle — and a model-based
-// controller is paced most of the time, so without this test it would
-// discount nearly every sample of a bulk transfer.
-func (c *Conn) flowEmptyLocked(bytes int) {
-	paced := c.paceWaited
-	c.paceWaited = false
-	if paced || c.cc.windowLimited() || !c.cc.canSend(bytes) {
-		return
+// writeBeginLocked opens a Stream write. The draft checks for an
+// application-limited phase upon each write from the application, before
+// its data is sent (§4.1.2.4, CheckIfApplicationLimited); here that check
+// rides the write's first packet (sendPacketLocked), on the clock reading
+// the pacer takes anyway, and only for a write that starts alone: writers
+// here are synchronous, so unsent data lives in a blocked Write's own
+// stack, and a second write in progress means the sender has data.
+func (c *Conn) writeBeginLocked() {
+	c.writers++
+	c.limitCheck = c.writers == 1
+}
+
+// writeEndLocked closes what writeBeginLocked opened.
+func (c *Conn) writeEndLocked() {
+	c.writers--
+	c.limitCheck = false
+}
+
+// checkAppLimitedLocked is the check of a write that starts alone, at now,
+// its first packet cleared by the window. The sender had run out of data if
+// a write last sent more than a pacing slot ago: a write that starts as the
+// previous one ends finds the sender out of data for an instant no packet
+// could have used, which is a bulk transfer's shape at every chunk, and
+// marking it would discount nearly every sample of the transfer. The slot
+// is one datagram at the pacing rate, floored at the timer granularity:
+// the pacer releases shorter deficits at once (pacer.delay), so a gap
+// shorter than that is one it would have closed with a burst. Without the
+// floor, a bulk transfer was marked two and three times; with it, the flush
+// of the previous write's batch, which follows its last pacing decision,
+// stays inside the gap the floor forgives. The first write follows no
+// other. With the window not full (RFC 9002 §7.8's underused window) and no
+// lost payload waiting to be resent, the samples of the next round trip
+// measure the application, not the path.
+func (c *Conn) checkAppLimitedLocked(now time.Time) {
+	if !c.writeSent.IsZero() {
+		gap := now.Sub(c.writeSent)
+		if gap <= granularity {
+			return
+		}
+		if rate := c.cc.pacingRate(c.rtt.current()); rate > 0 && gap <= time.Duration(float64(c.maxDatagram)/rate*float64(time.Second)) {
+			return
+		}
 	}
 	for i := range c.spaces {
 		if len(c.spaces[i].retrans) > 0 {
 			return
 		}
 	}
+	c.appLimitedMarks++
 	c.delivery.markAppLimited(c.cc.bytesInFlight())
 }
 

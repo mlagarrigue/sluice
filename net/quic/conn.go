@@ -103,9 +103,16 @@ type Conn struct {
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
-	// paceWaited says a writer has waited on the pacer since the last
-	// write ran dry: the sender is paced, not idle (flowEmptyLocked).
-	paceWaited bool
+	// writers is how many Stream writes are in progress, writeSent when a
+	// write last cleared the pacer to send: whether the sender has data, and
+	// since when it has sent none. limitCheck says the next paced packet is
+	// the first of a write that started alone (writeBeginLocked).
+	// appLimitedMarks counts the writes that found the sender
+	// application-limited, for tests.
+	writers         int
+	writeSent       time.Time
+	limitCheck      bool
+	appLimitedMarks int
 	// streamDeadline is the earliest read or write deadline a stream has
 	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
 	// what it holds when it matures and recomputes the next from the stream

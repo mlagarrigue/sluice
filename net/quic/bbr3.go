@@ -78,7 +78,7 @@ type bbr3 struct {
 	initialCwnd int
 	inFlight    int
 	cwnd        int
-	// limited says canSend refused a send this round (windowLimited);
+	// limited says canSend refused a send this round;
 	// limitedPrev is what it said over the previous round. The draft's
 	// C.is_cwnd_limited, Linux's reading — whether the last send was
 	// stopped by the window — is read as either (cwndLimited): the flag
@@ -279,7 +279,6 @@ func newBBR3(maxDatagram int, est *deliveryEstimator) *bbr3 {
 func (b *bbr3) window() int              { return b.cwnd }
 func (b *bbr3) bytesInFlight() int       { return b.inFlight }
 func (b *bbr3) setMaxDatagram(bytes int) { b.maxDatagram = bytes }
-func (b *bbr3) windowLimited() bool      { return b.limited }
 func (b *bbr3) minPipeCwnd() int         { return bbr3MinPipeCwnd * b.maxDatagram }
 
 func (b *bbr3) canSend(bytes int) bool {

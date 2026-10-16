@@ -956,6 +956,40 @@ func TestShortWriteIsApplicationLimited(t *testing.T) {
 	}
 }
 
+// A writer that pauses longer than a pacing slot between writes leaves the
+// window unused for that long, and each write after a pause opens a new
+// application-limited phase (§4.1.2.4); writes that follow each other at
+// once open none after the first.
+func TestSpacedWritesAreApplicationLimited(t *testing.T) {
+	client, _ := plainPair(t)
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks := func() int {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return client.appLimitedMarks
+	}
+	for range 3 {
+		if _, err := s.Write(make([]byte, 100)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := marks(); got != 1 {
+		t.Fatalf("%d marks over three writes in a row, want 1", got)
+	}
+	for i := range 3 {
+		time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
+		if _, err := s.Write(make([]byte, 100)); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := marks(), i+2; got != want {
+			t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
+		}
+	}
+}
+
 // plainPair is a client and a server connection over loopback, handshake
 // done, nothing else said yet.
 func plainPair(t *testing.T) (client, server *Conn) {

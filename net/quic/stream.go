@@ -399,12 +399,14 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.writeBeginLocked()
 	// The packets one call builds leave together (batchLocked): a 4 KiB
 	// write is four datagrams, and one system call carries the four.
 	c.batching, c.batchErr = true, nil
 	written, err := s.writeLocked(p, fin)
 	c.batching = false
 	c.flushBatchLocked()
+	c.writeEndLocked()
 	if err == nil {
 		err = c.batchErr
 	}
@@ -453,11 +455,6 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		frame = AppendVarint(frame, s.writeOff)
 		frame = AppendVarint(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
-		if last {
-			// The last of this write: the application is running dry, which
-			// the delivery estimator wants to know (flowEmptyLocked).
-			c.flowEmptyLocked(len(frame) + 64)
-		}
 		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			return written, err

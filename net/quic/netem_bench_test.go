@@ -325,6 +325,7 @@ func wideParameters() quic.TransportParameters {
 type transfer struct {
 	elapsed time.Duration
 	stats   quic.Stats
+	marks   int // the sender's application-limited marks
 }
 
 // transferOnce runs one connection over the link and moves total bytes
@@ -406,7 +407,7 @@ func transferWith(tb testing.TB, link *netemLink, total int, cc quic.CongestionA
 	case <-time.After(120 * time.Second):
 		return transfer{}, errors.New("the transfer did not finish")
 	}
-	return transfer{elapsed: time.Since(start), stats: conn.Stats()}, nil
+	return transfer{elapsed: time.Since(start), stats: conn.Stats(), marks: quic.AppLimitedMarks(conn)}, nil
 }
 
 // acceptOne completes one server handshake on pc: by reading the first
