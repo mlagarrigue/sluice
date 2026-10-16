@@ -1470,7 +1470,9 @@ func (c *Conn) SetManualCredit(on bool) {
 // it, a connection nobody uses for longer than the negotiated idle timeout
 // ends quietly: that is the right outcome for a connection that is done, and
 // the wrong one for a connection kept between two requests or parked in a
-// pool. A period of zero or less turns the keepalive off, the default.
+// pool. A period of zero turns the keepalive off, the default; a negative
+// one is refused with an error and changes nothing, since it is a mistake
+// rather than a setting.
 //
 // What it costs: one small packet and its acknowledgement per period of
 // silence, nothing while the connection is busy. A period longer than half
@@ -1479,13 +1481,30 @@ func (c *Conn) SetManualCredit(on bool) {
 // arriving after the peer has already given up (§10.1); a keepalive that
 // holds nothing in silence would be a trap. When neither end announced an
 // idle timeout the keepalive is harmless and pointless: there is no silence
-// to break. Safe from any goroutine, before or after the first stream.
-func (c *Conn) SetKeepAlive(period time.Duration) {
+// to break. [Conn.KeepAlive] reads the period in force. Safe from any
+// goroutine, before or after the first stream.
+func (c *Conn) SetKeepAlive(period time.Duration) error {
+	if period < 0 {
+		return fmt.Errorf("quic: keepalive period %v is negative — zero turns it off", period)
+	}
 	c.mu.Lock()
-	c.keepAlive = max(period, 0)
+	c.keepAlive = period
 	c.armKeepAliveLocked(time.Now())
 	c.mu.Unlock()
 	c.kickTimer()
+	return nil
+}
+
+// KeepAlive reports the period a PING waits for in silence: zero when the
+// keepalive is off, otherwise the period [Conn.SetKeepAlive] asked for,
+// brought down to half the negotiated idle timeout when it was longer.
+// The cap follows the effective idle timeout: this end's own until the
+// peer's transport parameters arrive, the smaller of the two after. Safe
+// from any goroutine.
+func (c *Conn) KeepAlive() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.keepAlivePeriodLocked()
 }
 
 // keepAlivePeriodLocked is the period a PING actually waits for: the one
@@ -1564,9 +1583,8 @@ type settledStream struct {
 func (c *Conn) handlePeerClose(f Frame) {
 	c.mu.Lock()
 	c.draining = true
-	c.peerClose = peerClose{code: f.value, app: f.Type == frameConnectionClose|1, reason: string(f.Data), seen: true}
 	if c.closeErr == nil {
-		c.closeErr = &ConnectionError{Code: f.value, Application: c.peerClose.app, Reason: c.peerClose.reason}
+		c.closeErr = &ConnectionError{Code: f.value, Application: f.Type == frameConnectionClose|1, Reason: string(f.Data)}
 	}
 	c.mu.Unlock()
 	_ = c.Close()

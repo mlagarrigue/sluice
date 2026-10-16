@@ -294,10 +294,10 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	}
 }
 
-// PeerClosed is how a layer above learns the application code a peer closed
-// with — HTTP/3's H3_NO_ERROR — and distinguishes it from a transport close,
-// which it does not report.
-func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
+// Err is how a layer above learns the application code a peer closed with
+// — HTTP/3's H3_NO_ERROR — as a ConnectionError with Application set: the
+// transport reports it, the layer above decides what the code means.
+func TestErrReportsThePeersApplicationClose(t *testing.T) {
 	serverPC, clientPC := dgram.Pair()
 	defer serverPC.Close()
 	defer clientPC.Close()
@@ -325,8 +325,8 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 	if !ok {
 		t.Fatal("Accept failed")
 	}
-	if _, _, ok := client.PeerClosed(); ok {
-		t.Fatal("PeerClosed reports a close before any happened")
+	if err := client.Err(); err != nil {
+		t.Fatalf("Err = %v before any close happened", err)
 	}
 	if err := server.CloseWithError(0x100); err != nil {
 		t.Fatal(err)
@@ -336,12 +336,6 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the client never saw the peer's close")
 	}
-	code, _, ok := client.PeerClosed()
-	if !ok || code != 0x100 {
-		t.Fatalf("PeerClosed = (%#x, %v), want (0x100, true)", code, ok)
-	}
-	// The same close as Err's typed value: the transport reports it, the
-	// layer above decides what 0x100 means.
 	ce, ok := errors.AsType[*quic.ConnectionError](client.Err())
 	if !ok || !ce.Application || ce.Code != 0x100 {
 		t.Fatalf("client Err = %v, want a ConnectionError with application code 0x100", client.Err())

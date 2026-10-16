@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -184,7 +185,7 @@ func TestSluiceClientAgainstQuicGoServer(t *testing.T) {
 // TestQuicGoClientAgainstSluiceServer is the mirror: sluice listens on a
 // shared socket, quic-go dials, opens a stream, sends payload, closes it,
 // reads the echo until EOF, closes the connection with an application
-// error sluice must surface through PeerClosed.
+// error sluice must surface through Err.
 func TestQuicGoClientAgainstSluiceServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -215,9 +216,8 @@ func TestQuicGoClientAgainstSluiceServer(t *testing.T) {
 				return err
 			}
 			<-c.Done()
-			code, _, ok := c.PeerClosed()
-			if !ok || code != closeCode {
-				return errors.New("sluice did not see quic-go's CONNECTION_CLOSE: " + c.Err().Error())
+			if ce, ok := errors.AsType[*quic.ConnectionError](c.Err()); !ok || !ce.Application || ce.Code != closeCode {
+				return fmt.Errorf("sluice did not see quic-go's CONNECTION_CLOSE: %v", c.Err())
 			}
 			return nil
 		}()

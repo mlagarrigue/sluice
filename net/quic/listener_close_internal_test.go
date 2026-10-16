@@ -129,7 +129,7 @@ func TestListenerCloseEndsAcceptedConnections(t *testing.T) {
 		t.Fatal("the client never learned its accepted connection was closed")
 	}
 	// A transport NO_ERROR close, reported as the ConnectionError with code
-	// 0 — not the application close PeerClosed reports. That error is what
+	// 0, Application unset — not an application close. That error is what
 	// proves the client heard the frame: an idle timeout or a local close
 	// ends the connection with another.
 	if ce, ok := errors.AsType[*ConnectionError](client.Err()); !ok || ce.Application || ce.Code != transportNoError {

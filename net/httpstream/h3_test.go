@@ -1071,8 +1071,8 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 	// The refusal reaches the client as a close, not as a server gone quiet.
 	select {
 	case <-conn.Done():
-		if code, _, ok := conn.PeerClosed(); !ok || code != h3InternalError {
-			t.Errorf("the client saw close code %#x (application close %v), want H3_INTERNAL_ERROR", code, ok)
+		if ce, ok := errors.AsType[*quic.ConnectionError](conn.Err()); !ok || !ce.Application || ce.Code != h3InternalError {
+			t.Errorf("the client saw %v, want the application close H3_INTERNAL_ERROR", conn.Err())
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("the refused connection was left open")

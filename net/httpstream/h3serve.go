@@ -134,7 +134,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		return fmt.Errorf("httpstream: ServeH3 on a connection that negotiated %q, not h3", proto)
 	}
 	if cfg.KeepAlive > 0 {
-		c.SetKeepAlive(cfg.KeepAlive)
+		_ = c.SetKeepAlive(cfg.KeepAlive) // positive: SetKeepAlive refuses only a negative period
 	}
 	a := newH3Assembler(cfg)
 	// Manual flow-control credit closes the security report's M-3 residue:

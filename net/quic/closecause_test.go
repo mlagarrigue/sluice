@@ -51,8 +51,7 @@ func TestDialReportsTheRefusedHandshakeByItsCode(t *testing.T) {
 // The peer's plain Close — CONNECTION_CLOSE with NO_ERROR, transport
 // flavour — is reported too, as a ConnectionError with code 0 and
 // Application unset: the transport does not decide that an end was clean,
-// the caller does. PeerClosed, which reads application closes only, sees
-// nothing.
+// the caller does.
 func TestErrReportsThePeersTransportClose(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 	if err := server.Close(); err != nil {
@@ -66,9 +65,6 @@ func TestErrReportsThePeersTransportClose(t *testing.T) {
 	ce, ok := errors.AsType[*quic.ConnectionError](client.Err())
 	if !ok || ce.Application || ce.Code != 0 || ce.Reason != "" {
 		t.Fatalf("client Err = %v, want a ConnectionError with transport code 0", client.Err())
-	}
-	if _, _, ok := client.PeerClosed(); ok {
-		t.Error("PeerClosed reports a transport close as an application one")
 	}
 	if err := server.Err(); err != nil {
 		t.Errorf("server Err = %v after its own Close, want nil", err)

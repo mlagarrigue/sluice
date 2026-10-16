@@ -26,7 +26,9 @@ func idlePair(t *testing.T) (client, server *quic.Conn) {
 // the silence reaches the peer, and neither end saw an error.
 func TestKeepAliveHoldsAnIdleConnection(t *testing.T) {
 	client, server := idlePair(t)
-	client.SetKeepAlive(100 * time.Millisecond)
+	if err := client.SetKeepAlive(100 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
 
 	time.Sleep(time.Second)
 
@@ -72,5 +74,45 @@ func TestIdleTimeoutEndsASilentConnection(t *testing.T) {
 	}
 	if err := server.Err(); !errors.Is(err, quic.ErrIdleTimeout) {
 		t.Fatalf("server Err after idle = %v, want ErrIdleTimeout", err)
+	}
+}
+
+// KeepAlive reads the period in force: zero while off, the period asked
+// for, half the negotiated idle timeout when the period asked for is
+// longer. A negative period is refused and leaves the keepalive as it was.
+func TestKeepAliveReportsTheEffectivePeriod(t *testing.T) {
+	client, _ := idlePair(t)
+	if got := client.KeepAlive(); got != 0 {
+		t.Fatalf("KeepAlive before any SetKeepAlive = %v, want 0", got)
+	}
+	if err := client.SetKeepAlive(-time.Second); err == nil {
+		t.Fatal("SetKeepAlive accepted a negative period")
+	}
+	if got := client.KeepAlive(); got != 0 {
+		t.Fatalf("KeepAlive after a refused negative period = %v, want 0", got)
+	}
+	steps := []struct {
+		period, want time.Duration
+	}{
+		{100 * time.Millisecond, 100 * time.Millisecond},
+		{time.Second, 150 * time.Millisecond}, // half the 300 ms idle timeout
+		{0, 0},
+	}
+	for _, s := range steps {
+		if err := client.SetKeepAlive(s.period); err != nil {
+			t.Fatalf("SetKeepAlive(%v): %v", s.period, err)
+		}
+		if got := client.KeepAlive(); got != s.want {
+			t.Fatalf("KeepAlive after SetKeepAlive(%v) = %v, want %v", s.period, got, s.want)
+		}
+	}
+	if err := client.SetKeepAlive(100 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetKeepAlive(-1); err == nil {
+		t.Fatal("SetKeepAlive accepted a negative period")
+	}
+	if got := client.KeepAlive(); got != 100*time.Millisecond {
+		t.Fatalf("KeepAlive after a refused negative period = %v, want the 100ms in force", got)
 	}
 }

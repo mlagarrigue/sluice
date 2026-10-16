@@ -296,7 +296,6 @@ type Conn struct {
 	closeErr    error
 	closeSent   bool
 	draining    bool
-	peerClose   peerClose
 	once        sync.Once
 	timerKick   chan struct{}
 	// closing is what a [Listener]-managed connection keeps after its own
@@ -434,14 +433,6 @@ type deferredPacket struct {
 	raw []byte
 	at  time.Time
 	ecn uint8 // its datagram's ECN codepoint, counted when it is finally processed
-}
-
-// peerClose is what a peer's CONNECTION_CLOSE carried.
-type peerClose struct {
-	code   uint64
-	app    bool
-	reason string
-	seen   bool
 }
 
 // keyUpdateState is what a sender must know to rotate 1-RTT keys and to
@@ -1459,23 +1450,16 @@ var errClosed = errors.New("quic: the connection is closed")
 // that made this end abort. The peer's clean goodbye is a ConnectionError
 // too — NO_ERROR, or HTTP/3's H3_NO_ERROR — because the transport cannot
 // tell a clean code from a failure; the layer that knows the codes does.
+// HTTP/3 reads the peer's clean goodbye this way:
+//
+//	ce, ok := errors.AsType[*quic.ConnectionError](c.Err())
+//	clean := ok && ce.Application && ce.Code == 0x0100 // H3_NO_ERROR
 //
 // It is safe to call from any goroutine at any time.
 func (c *Conn) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closeErr
-}
-
-// PeerClosed reports the application close the peer sent, if any: HTTP/3's
-// H3_NO_ERROR arrives here, and what it means belongs to the layer that
-// knows the codes. The same close is [Conn.Err]'s [*ConnectionError] with
-// Application set; PeerClosed is the older reading of it, kept for callers
-// that do not want to inspect an error chain.
-func (c *Conn) PeerClosed() (code uint64, reason string, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.peerClose.code, c.peerClose.reason, c.peerClose.seen && c.peerClose.app
 }
 
 // fail records why the connection is ending, keeping the first reason: what
