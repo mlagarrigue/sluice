@@ -234,6 +234,58 @@ func (c *Conn) drain(ctx context.Context) error {
 	}
 }
 
+// Ping sends a PING frame (RFC 9000 §19.2) in a packet of its own and
+// waits until the peer acknowledges that packet or a later one: one round
+// trip, measured on the path rather than estimated from it. What this end
+// wrote before the call left in earlier packets, so the acknowledgement
+// says the peer has had a round trip to see it — which is how an HTTP/3
+// server gives the requests already on their way time to arrive between
+// its two GOAWAY frames (RFC 9114 §5.2), as an HTTP/2 server does with its
+// own PING. Any packet sent after the PING counts, so a lost PING ends the
+// wait at the acknowledgement of whatever follows it, a probe included.
+//
+// Ping returns nil at the acknowledgement and the context's error when the
+// context ends first. On a connection that is closed, closing, or without
+// 1-RTT keys yet, it returns an error at once or as soon as the close is
+// known. Safe from any goroutine.
+func (c *Conn) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() {
+		c.mu.Lock()
+		c.cond.Broadcast()
+		c.mu.Unlock()
+	})
+	defer stop()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceApplication]
+	// Every packet from here on is numbered from first up, skipped numbers
+	// included, so an acknowledgement at or past it is one of them.
+	first := sp.nextPN
+	if err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{}); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-c.closed:
+			return errClosed
+		default:
+		}
+		if c.draining {
+			return errClosed
+		}
+		if sp.sent.hasLargestAcked && sp.sent.largestAcked >= first {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.cond.Wait()
+	}
+}
+
 // flightEmptyLocked reports whether every live space has nothing left to
 // deliver: no ack-eliciting packet awaiting acknowledgement and no payload
 // waiting to go again. ACK-only packets do not count — the peer never
