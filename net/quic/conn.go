@@ -761,6 +761,15 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 }
 
 func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
+	c := assembleConn(pc, peer, dcid, scid, isClient, params)
+	go c.timerLoop()
+	return c
+}
+
+// assembleConn is newConn without the timer loop. Tests that call
+// actOnDeadlines themselves build on it: with the loop running, the scheduler
+// decides whether a deadline fires between two of their steps.
+func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
 	// This end always keeps at least one spare identifier slot for the peer
 	// to rotate into; below the protocol minimum of 2 the announcement would
 	// be refused by any conformant peer (§18.2), so the zero value and any
@@ -815,7 +824,6 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	if c.idleTimeout != 0 {
 		c.idleDeadline = time.Now().Add(c.idleTimeout)
 	}
-	go c.timerLoop()
 	return c
 }
 

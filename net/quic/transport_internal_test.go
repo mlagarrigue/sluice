@@ -22,7 +22,7 @@ import (
 func newIdleServerConn(t *testing.T) *Conn {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ func isRefusedClose(err error) bool {
 func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	pc := newScriptedPC()
-	c := newConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)

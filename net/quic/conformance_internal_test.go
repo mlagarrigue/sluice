@@ -267,7 +267,7 @@ func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	params := DefaultParameters()
 	params.MaxIdleTimeout = 100
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()
 
 	c.mu.Lock()
@@ -460,7 +460,7 @@ func TestClientAntiDeadlockPTOStaysArmed(t *testing.T) {
 // already about to answer, sooner.
 func TestPTOIsSuppressedWhileALossTimerIsArmed(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -765,7 +765,7 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 // three unanswered probes used to collapse the window on their own.
 func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -800,7 +800,7 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 // past fires at once.
 func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
