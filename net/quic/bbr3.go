@@ -26,7 +26,8 @@ import (
 //
 // The state machine (§5.1): Startup at a pacing gain of 2.77 leaves on a
 // bandwidth plateau or on a round with six loss events and 2% of loss
-// (§5.3.1.3), Drain paces at 0.35 of the estimate, ProbeBW cycles through
+// (§5.3.1.3), Drain paces at half the estimate until the flight is down
+// to the product, three rounds at most (§5.3.2), ProbeBW cycles through
 // DOWN, CRUISE, REFILL and UP (§5.3.3) — probing every two to three
 // seconds, or as often as a Reno flow of the same window would (§5.3.3.8)
 // — and ProbeRTT halves the window for 200 ms every five seconds
@@ -52,9 +53,8 @@ import (
 // the path rather than the application (bbr.checkFullPipe), where the
 // draft reads the rate sample itself (§5.3.1.2).
 //
-// Not yet followed from draft -06, which revised -03: Drain's pacing gain
-// is 0.5, not -03's 0.35, and Drain also ends three rounds after it starts
-// (§5.3.2); ProbeBW's precautionary probing (§5.3.3.6, §5.3.3.7) and the
+// Not yet followed from draft -06, which revised -03: ProbeBW's
+// precautionary probing (§5.3.3.6, §5.3.3.7) and the
 // undo of a spurious loss recovery (§5.5.11) are absent — the transport
 // detects no spurious loss; a sample that delivered nothing still reaches
 // the max filter (§5.5.5); and Startup's six lost ranges are counted as
@@ -117,6 +117,7 @@ type bbr3 struct {
 	nextRoundDelivered int
 	roundStart         bool
 	roundCount         uint64
+	drainStartRound    uint64
 	roundsSinceBwProbe int
 
 	// Aggregation (§5.5.9): extra_acked is the max over ten rounds of what
@@ -196,10 +197,9 @@ const (
 const (
 	// bbr3StartupPacingGain is 4 ln 2, the smallest gain that doubles the
 	// sending rate each round (§5.3.1.1); bbr3DrainPacingGain drains the
-	// queue Startup built in under a round (§5.3.2) — -03's value; -06
-	// raised it to 0.5 (§2.5), not yet followed.
+	// queue Startup built in under a round (§2.5, §5.3.2).
 	bbr3StartupPacingGain = 2.77
-	bbr3DrainPacingGain   = 0.35
+	bbr3DrainPacingGain   = 0.5
 	bbr3DefaultCwndGain   = 2.0
 	// ProbeBW's gains (§5.3.3): DOWN sends at 0.9 of the estimate, UP at
 	// 1.25 with the window at 2.25 so that the window never caps the probe.
@@ -567,10 +567,10 @@ func (b *bbr3) checkStartupDone() {
 }
 
 // checkDrainDone is BBRCheckDrainDone (§5.3.2): Drain ends when the flight
-// is down to one bandwidth-delay product. Not yet -06's second exit, three
-// rounds after Drain starts.
+// is down to one bandwidth-delay product, or three rounds after it started
+// if Startup overestimated the path and the flight stays above.
 func (b *bbr3) checkDrainDone(now time.Time) {
-	if b.state == bbr3Drain && b.inFlight <= b.inflight(b.bw, 1) {
+	if b.state == bbr3Drain && (b.inFlight <= b.inflight(b.bw, 1) || b.roundCount > b.drainStartRound+3) {
 		b.enterProbeBW(now)
 	}
 }
@@ -583,6 +583,7 @@ func (b *bbr3) enterStartup() {
 func (b *bbr3) enterDrain() {
 	b.state = bbr3Drain
 	b.pacingGain, b.cwndGain = bbr3DrainPacingGain, bbr3DefaultCwndGain
+	b.drainStartRound = b.roundCount
 }
 
 // enterProbeBW is BBREnterProbeBW (§5.3.3.9): the cycle starts at DOWN.

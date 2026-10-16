@@ -30,9 +30,10 @@ func bbr3AtLink(t *testing.T) (*bbrPath, *bbr3) {
 	return p, b
 }
 
-// bbr3Cruising is a controller past Startup (on the plateau) and Drain,
-// in ProbeBW_CRUISE with no loss ever seen.
-func bbr3Cruising(t *testing.T) (*bbrPath, *bbr3) {
+// bbr3Draining is a controller that has just left Startup on the plateau,
+// 199 datagrams in flight: Drain, entered on the first acknowledgement of
+// a round.
+func bbr3Draining(t *testing.T) (*bbrPath, *bbr3) {
 	t.Helper()
 	p, b := bbr3AtLink(t)
 	for range 3 {
@@ -45,9 +46,17 @@ func bbr3Cruising(t *testing.T) (*bbrPath, *bbr3) {
 	if !b.fullBwReached || b.state != bbr3Drain {
 		t.Fatalf("after three flat rounds: full %v, state %d, want Drain", b.fullBwReached, b.state)
 	}
-	if b.pacingGain != bbr3DrainPacingGain || b.cwndGain != 2 {
-		t.Fatalf("Drain paces at gain %v with window gain %v, want 0.35 and 2", b.pacingGain, b.cwndGain)
+	if b.pacingGain != 0.5 || b.cwndGain != 2 {
+		t.Fatalf("Drain paces at gain %v with window gain %v, want 0.5 and 2", b.pacingGain, b.cwndGain)
 	}
+	return p, b
+}
+
+// bbr3Cruising is a controller past Startup (on the plateau) and Drain,
+// in ProbeBW_CRUISE with no loss ever seen.
+func bbr3Cruising(t *testing.T) (*bbrPath, *bbr3) {
+	t.Helper()
+	p, b := bbr3Draining(t)
 	// The flight drains under one product; DOWN then CRUISE at once, the
 	// flight being under the product already.
 	p.ack(199)
@@ -55,6 +64,54 @@ func bbr3Cruising(t *testing.T) (*bbrPath, *bbr3) {
 		t.Fatalf("after the flight drained: state %d, gains %v/%v, want CRUISE at 1 and 2", b.state, b.pacingGain, b.cwndGain)
 	}
 	return p, b
+}
+
+// Drain ends when the flight is down to one bandwidth-delay product
+// (§5.3.2, test A.3): not one acknowledgement before, at once after.
+func TestBBR3DrainExitsOnFlight(t *testing.T) {
+	p, b := bbr3Draining(t)
+	for b.state == bbr3Drain {
+		if b.inFlight <= b.inflight(b.bw, 1) {
+			t.Fatalf("still in Drain with %d bytes in flight, the product being %d", b.inFlight, b.inflight(b.bw, 1))
+		}
+		p.ack(1)
+	}
+	if b.inFlight > b.inflight(b.bw, 1) {
+		t.Fatalf("left Drain with %d bytes in flight, above the product %d", b.inFlight, b.inflight(b.bw, 1))
+	}
+	if b.state != bbr3ProbeBWDown && b.state != bbr3ProbeBWCruise {
+		t.Fatalf("after Drain: state %d, want ProbeBW", b.state)
+	}
+}
+
+// Drain also ends three rounds after it starts (§5.3.2, test A.4), when
+// Startup overestimated the path and the flight never gets down to the
+// product: here the link loses 10% as Drain starts and every round keeps
+// 200 datagrams in flight.
+func TestBBR3DrainExitsAfterThreeRounds(t *testing.T) {
+	p, b := bbr3Draining(t)
+	start := b.roundCount
+	p.link *= 0.9
+	// Each step sends a round of 200, then acknowledges what was in flight
+	// before it: the first of these acknowledgements opens the next round.
+	step := func() {
+		p.send(200)
+		p.now = p.now.Add(p.rtt)
+		p.ack(len(p.queue) - 200)
+		if b.inFlight <= b.inflight(b.bw, 1) {
+			t.Fatalf("flight %d down to the product %d: the time exit is not what is read", b.inFlight, b.inflight(b.bw, 1))
+		}
+	}
+	step()
+	for b.roundCount <= start+3 {
+		if b.state != bbr3Drain {
+			t.Fatalf("left Drain in round %d, %d rounds after it started, want more than 3", b.roundCount, b.roundCount-start)
+		}
+		step()
+	}
+	if b.roundCount != start+4 || b.state != bbr3ProbeBWDown {
+		t.Fatalf("round %d after Drain started: state %d, want ProbeBW_DOWN in round 4", b.roundCount-start, b.state)
+	}
 }
 
 // Startup ends on loss (§5.3.1.3): a round in recovery with six loss events
