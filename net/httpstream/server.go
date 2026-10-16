@@ -65,7 +65,7 @@ type Server struct {
 func (s *Server) init() error {
 	s.once.Do(func() {
 		s.cfg, s.err = s.Config.resolve()
-		s.live = newConnSet(max(s.cfg.MaxConns, 0))
+		s.live = newConnSet(max(s.cfg.MaxConns, 0), max(s.cfg.MaxConnsPerIP, 0))
 		s.forced, s.force = context.WithCancel(context.Background())
 		s.listeners = map[net.Listener]struct{}{}
 		s.h3Conns = map[*quic.Conn]struct{}{}
@@ -133,11 +133,12 @@ func (s *Server) Serve(ln net.Listener) error {
 		setTCPKeepAlive(c, s.cfg.KeepAlive)
 		st := s.live.add(c)
 		if st == nil {
-			// Over MaxConns, or the shutdown ran between Accept and here and
-			// this connection would never be closed by it. Either way it is
-			// closed with nothing read and nothing written: a response would
-			// cost the request's read, which is what the bound refuses to
-			// spend on a peer in excess (see Config.MaxConns).
+			// Over MaxConns or MaxConnsPerIP, or the shutdown ran between
+			// Accept and here and this connection would never be closed by
+			// it. Either way it is closed with nothing read and nothing
+			// written: a response would cost the request's read, which is
+			// what the bound refuses to spend on a peer in excess (see
+			// Config.MaxConns).
 			_ = c.Close()
 			continue
 		}

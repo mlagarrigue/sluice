@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1122,6 +1123,71 @@ func TestServeRefusesConnectionsOverMaxConns(t *testing.T) {
 			t.Fatalf("after one connection closed the next was still refused: status %q, err %v", status, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Config.MaxConnsPerIP caps what one remote IP holds open through Serve: the
+// third connection from the same address is closed as it is accepted, with
+// nothing written, while MaxConns alone would have admitted it.
+func TestServeRefusesConnectionsOverMaxConnsPerIP(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxConns: 10, MaxConnsPerIP: 2}, echoTarget)
+	for i := range 2 {
+		c := dial(t, addr)
+		if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := readResponse(t, bufio.NewReader(c)); !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("connection %d under the per-IP cap: status %q", i+1, status)
+		}
+	}
+	third := dial(t, addr)
+	if _, err := third.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err == nil {
+		n, err := third.Read(make([]byte, 1))
+		if n != 0 || err == nil {
+			t.Fatalf("the third connection read %d bytes, err %v: it was served over MaxConnsPerIP 2", n, err)
+		}
+	}
+}
+
+// addrConn is a net.Conn that only answers RemoteAddr, for the admission
+// arithmetic of connSet.
+type addrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *addrConn) RemoteAddr() net.Addr { return c.remote }
+
+// connSet counts MaxConnsPerIP by IP address: the port does not separate two
+// connections, an IPv4-mapped IPv6 address counts with its IPv4 form,
+// another address is admitted while one is at the cap, a removal frees its
+// slot, and a remote address that is not IP is bound by the total alone.
+func TestConnSetBoundsEachIP(t *testing.T) {
+	tcp := func(ip string, port int) net.Conn {
+		return &addrConn{remote: &net.TCPAddr{IP: net.ParseIP(ip), Port: port}}
+	}
+	s := newConnSet(0, 2)
+	a1, a2 := tcp("192.0.2.1", 1000), tcp("::ffff:192.0.2.1", 1001)
+	if s.add(a1) == nil || s.add(a2) == nil {
+		t.Fatal("the first two connections from 192.0.2.1 were refused")
+	}
+	if s.add(tcp("192.0.2.1", 1002)) != nil {
+		t.Fatal("a third connection from 192.0.2.1 was admitted over MaxConnsPerIP 2")
+	}
+	if s.add(tcp("192.0.2.2", 1000)) == nil {
+		t.Fatal("a connection from 192.0.2.2 was refused while only 192.0.2.1 is at the cap")
+	}
+	s.remove(a2)
+	if s.add(tcp("192.0.2.1", 1003)) == nil {
+		t.Fatal("192.0.2.1 was refused after one of its connections was removed")
+	}
+	for i := range 3 {
+		if s.add(&addrConn{remote: &net.UnixAddr{Net: "unix"}}) == nil {
+			t.Fatalf("Unix connection %d was refused: no per-IP bound applies to it", i+1)
+		}
+	}
+	if got := s.byIP[netip.MustParseAddr("192.0.2.1")]; got != 2 {
+		t.Fatalf("192.0.2.1 counts %d connections, want 2", got)
 	}
 }
 

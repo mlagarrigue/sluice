@@ -61,6 +61,7 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		{"WriteTimeout", Config{WriteTimeout: -time.Second}, "-1s"},
 		{"WriteProgressBytes", Config{WriteProgressBytes: -1}, "-1"},
 		{"MaxConns", Config{MaxConns: -1}, "-1"},
+		{"MaxConnsPerIP", Config{MaxConnsPerIP: -1}, "-1"},
 		{"ShutdownGrace", Config{ShutdownGrace: -time.Second}, "-1s"},
 		{"LingerTimeout", Config{LingerTimeout: -time.Second}, "-1s"},
 		{"KeepAlive", Config{KeepAlive: -time.Second}, "-1s"},

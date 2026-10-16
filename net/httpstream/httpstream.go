@@ -439,6 +439,18 @@ type Config struct {
 	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
 
+	// MaxConnsPerIP is the same bound applied per remote IP address — the
+	// port ignored, an IPv4-mapped IPv6 address counted with its IPv4 form —
+	// so that one peer cannot hold the whole MaxConns on its own; the
+	// connection over it is closed as it is accepted, the same way. A
+	// connection whose remote address is not IP, a Unix socket's, is bound
+	// by MaxConns alone: its peers share one empty address, and a per-peer
+	// bound would be a second total. Zero means no bound: a figure that is
+	// fair to a home connection starves a carrier-grade NAT, so the operator
+	// chooses. [ServeH3] is not bound by it: the QUIC listener has its own,
+	// [github.com/mlagarrigue/sluice/net/quic.ListenerConfig].MaxConnsPerIP.
+	MaxConnsPerIP int
+
 	// ShutdownGrace is how long [Serve], [ServeH2] or [ServeH3], once its
 	// context is cancelled, waits for the requests already in flight to be
 	// answered before it closes the connections still open, cancels their
@@ -632,6 +644,9 @@ func (c Config) resolve() (Config, error) {
 	}
 	if c.MaxConns < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
+	}
+	if c.MaxConnsPerIP < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
 	if c.KeepAlive < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.KeepAlive %v is negative — zero means none", c.KeepAlive))

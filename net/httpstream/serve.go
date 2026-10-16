@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -145,14 +146,18 @@ func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) err
 // connSet is the connections a [Server] has accepted and not yet finished with,
 // each with where it stands between two requests. It exists for the
 // shutdown: close the ones that owe nothing, then, when the grace has
-// passed, the rest. It is also where Config.MaxConns binds, since it already
-// counts every live connection: the one that would take it past max is not
-// admitted.
+// passed, the rest. It is also where Config.MaxConns and Config.MaxConnsPerIP
+// bind, since it already counts every live connection: the one that would
+// take either past its bound is not admitted.
 type connSet struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]*connState
 	closed bool
 	max    int // Config.MaxConns; zero is unbounded
+	// maxPerIP is Config.MaxConnsPerIP, zero unbounded; byIP counts the
+	// connections in conns by remote IP, the ones with an IP address only.
+	maxPerIP int
+	byIP     map[netip.Addr]int
 	// wg counts the connections admitted and not yet removed. It is added to
 	// under mu while the set is open, so a Wait begun after drain races no
 	// Add.
@@ -166,9 +171,25 @@ type connSet struct {
 	beginDrain context.CancelFunc
 }
 
-func newConnSet(maxConns int) *connSet {
+func newConnSet(maxConns, maxPerIP int) *connSet {
 	draining, begin := context.WithCancel(context.Background())
-	return &connSet{conns: map[net.Conn]*connState{}, max: maxConns, draining: draining, beginDrain: begin}
+	return &connSet{
+		conns: map[net.Conn]*connState{}, max: maxConns,
+		maxPerIP: maxPerIP, byIP: map[netip.Addr]int{},
+		draining: draining, beginDrain: begin,
+	}
+}
+
+// remoteIP is the key Config.MaxConnsPerIP counts c under: its remote IP
+// address without the port, an IPv4-mapped IPv6 address reduced to its IPv4
+// form; false when the address is not IP, which no per-IP bound applies to.
+func remoteIP(c net.Conn) (netip.Addr, bool) {
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		if ip, ok := netip.AddrFromSlice(a.IP); ok {
+			return ip.Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 // connState is what the shutdown needs to know about one connection: whether
@@ -177,6 +198,7 @@ func newConnSet(maxConns int) *connSet {
 type connState struct {
 	phase atomic.Int32
 	drain context.Context
+	ip    netip.Addr // the connection's key in connSet.byIP; invalid when it has none
 }
 
 // The phases a connection moves through, as the shutdown sees them.
@@ -205,17 +227,24 @@ func (st *connState) drainingNow() bool {
 }
 
 // add registers a connection, returning nil if it is not admitted — the set
-// has already been closed, or it is at max — and this one therefore has to
-// be closed by its caller. A slot frees in remove, which the connection's
-// goroutine runs when it is done with the socket, so a client that hung up
-// counts until the server has read its close.
+// has already been closed, it is at max, or its remote IP is at maxPerIP —
+// and this one therefore has to be closed by its caller. A slot frees in
+// remove, which the connection's goroutine runs when it is done with the
+// socket, so a client that hung up counts until the server has read its
+// close.
 func (s *connSet) add(c net.Conn) *connState {
+	ip, hasIP := remoteIP(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || (s.max > 0 && len(s.conns) >= s.max) {
+	if s.closed || (s.max > 0 && len(s.conns) >= s.max) ||
+		(hasIP && s.maxPerIP > 0 && s.byIP[ip] >= s.maxPerIP) {
 		return nil
 	}
 	st := &connState{drain: s.draining}
+	if hasIP {
+		st.ip = ip
+		s.byIP[ip]++
+	}
 	s.conns[c] = st
 	s.wg.Add(1)
 	return st
@@ -224,8 +253,14 @@ func (s *connSet) add(c net.Conn) *connState {
 func (s *connSet) remove(c net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.conns[c]; ok {
+	if st, ok := s.conns[c]; ok {
 		delete(s.conns, c)
+		if st.ip.IsValid() {
+			s.byIP[st.ip]--
+			if s.byIP[st.ip] <= 0 {
+				delete(s.byIP, st.ip)
+			}
+		}
 		s.wg.Done()
 	}
 }
