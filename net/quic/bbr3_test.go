@@ -312,12 +312,10 @@ func TestBBR3ProbeBWPhases(t *testing.T) {
 	}
 }
 
-// A loss while probing bounds the volume in flight (§5.5.10.2): losses
-// over 2% of the flight a lost packet was sent into set inflight_longterm,
-// the probe goes DOWN, CRUISE caps the window at 85% of the bound
-// (§5.6.4.7), and the next UP raises the bound by a datagram a round, then
-// two (§5.3.3.4).
-func TestBBR3InflightLongterm(t *testing.T) {
+// bbr3AfterLossyProbe is a controller back in ProbeBW_CRUISE after a probe
+// that lost 10% of its flight, and the inflight_longterm that probe set.
+func bbr3AfterLossyProbe(t *testing.T) (*bbrPath, *bbr3, int) {
+	t.Helper()
 	p, b := bbr3Cruising(t)
 	p.now = p.now.Add(3 * time.Second)
 	p.round(80) // REFILL
@@ -325,6 +323,56 @@ func TestBBR3InflightLongterm(t *testing.T) {
 	if b.state != bbr3ProbeBWUp || b.inflightLongterm != bbr3Unbounded {
 		t.Fatalf("state %d bound %d before the loss", b.state, b.inflightLongterm)
 	}
+	p.send(100)
+	p.now = p.now.Add(p.rtt)
+	p.ack(50)
+	p.lose(5) // 5 of 50 in flight: 10%, over 2%
+	if b.state != bbr3ProbeBWDown || !b.prevProbeTooHigh {
+		t.Fatalf("state %d, too high %v after a 10%% loss in UP, want DOWN and the probe too high", b.state, b.prevProbeTooHigh)
+	}
+	p.ack(45)
+	for range 3 {
+		p.round(40)
+	}
+	if b.state != bbr3ProbeBWCruise {
+		t.Fatalf("state %d after the loss and three short rounds, want CRUISE", b.state)
+	}
+	return p, b, b.inflightLongterm
+}
+
+// bbr3PrecautionaryStop is bbr3AfterLossyProbe's next probe stopped on its
+// precautionary exit (§5.3.3.7, exit 3): UP is capped at the bound, and
+// the first acknowledgement after the flight reached it sends the probe
+// DOWN, a round of feedback still to come and 55 datagrams in flight.
+func bbr3PrecautionaryStop(t *testing.T) (*bbrPath, *bbr3, int) {
+	t.Helper()
+	p, b, bound := bbr3AfterLossyProbe(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(40) // REFILL
+	p.round(40) // UP
+	if b.state != bbr3ProbeBWUp || b.window() != bound || b.prevProbePrecautionary {
+		t.Fatalf("state %d window %d precautionary %v, want UP capped at the bound %d", b.state, b.window(), b.prevProbePrecautionary, bound)
+	}
+	p.send(bound / 1200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if b.state != bbr3ProbeBWDown || !b.prevProbePrecautionary || b.prevProbeTooHigh {
+		t.Fatalf("state %d precautionary %v too high %v once the flight reached the bound, want DOWN, precautionary, not too high (yet)", b.state, b.prevProbePrecautionary, b.prevProbeTooHigh)
+	}
+	return p, b, bound
+}
+
+// A loss while probing bounds the volume in flight (§5.5.10.2): losses
+// over 2% of the flight a lost packet was sent into set inflight_longterm,
+// the probe goes DOWN, CRUISE caps the window at 85% of the bound
+// (§5.6.4.7), and the next UP that may hold the bound — past the
+// precautionary one (§5.3.3.6) — raises it by a datagram a round, then two
+// (§5.3.3.4).
+func TestBBR3InflightLongterm(t *testing.T) {
+	p, b := bbr3Cruising(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(80) // REFILL
+	p.round(80) // UP
 	p.send(100)
 	p.now = p.now.Add(p.rtt)
 	p.ack(50)
@@ -353,12 +401,22 @@ func TestBBR3InflightLongterm(t *testing.T) {
 	if want := bound - int(0.15*float64(bound)); b.window() > want || b.inflightShortterm != bbr3Unbounded {
 		t.Fatalf("CRUISE window %d, want at most the bound less headroom %d (short-term bound %d)", b.window(), want, b.inflightShortterm)
 	}
-	// The next probe: a window capped at the bound raises it only while
-	// the window is what stops the sender — a datagram over the first
-	// round, two over the second (§5.3.3.4). A round's start clears the
-	// flag, so it is raised after the first acknowledgement of a round.
+	// The precautionary probe stops at the bound, its feedback round
+	// loses nothing, and REFILL starts again at once.
 	p.now = p.now.Add(3 * time.Second)
 	p.round(40) // REFILL
+	p.round(40) // UP
+	p.round(bound / 1200)
+	p.send(40)
+	p.now = p.now.Add(p.rtt)
+	p.ack(40)
+	if b.state != bbr3ProbeBWRefill {
+		t.Fatalf("state %d after a precautionary probe that lost nothing, want REFILL", b.state)
+	}
+	// This probe holds the bound: a window capped there raises it only
+	// while the window is what stops the sender — a datagram over the
+	// first round, two over the second (§5.3.3.4). A round's start clears
+	// the flag, so it is raised after the first acknowledgement of a round.
 	p.round(40) // UP
 	if b.state != bbr3ProbeBWUp || b.window() != bound {
 		t.Fatalf("state %d window %d, want UP capped at the bound %d", b.state, b.window(), bound)
@@ -371,13 +429,78 @@ func TestBBR3InflightLongterm(t *testing.T) {
 		p.ack(len(p.queue))
 	}
 	cappedRound(false)
-	if b.inflightLongterm != bound {
-		t.Fatalf("a round that the window did not limit raised the bound to %d", b.inflightLongterm)
+	if b.state != bbr3ProbeBWUp || b.inflightLongterm != bound {
+		t.Fatalf("state %d bound %d after a round that the window did not limit, want UP and the bound unchanged", b.state, b.inflightLongterm)
 	}
 	cappedRound(true)
 	cappedRound(true)
 	if got := (b.inflightLongterm - bound) / 1200; got < 2 || got > 4 {
 		t.Fatalf("two limited rounds of UP raised the bound by %d datagrams, want two to four", got)
+	}
+}
+
+// After a probe that lost too much, the next stops as soon as the flight
+// reaches the bound that probe set (§5.3.3.6, §5.3.3.7 exit 3): not one
+// acknowledgement under it, at the first at it.
+func TestBBR3PrecautionaryProbeStopsAtTheBound(t *testing.T) {
+	p, b, bound := bbr3AfterLossyProbe(t)
+	p.now = p.now.Add(3 * time.Second)
+	p.round(40) // REFILL
+	p.round(40) // UP
+	p.send(bound/1200 - 1)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if b.state != bbr3ProbeBWUp {
+		t.Fatalf("state %d with the flight a datagram under the bound, want UP", b.state)
+	}
+	p.ack(len(p.queue))
+	p.send(bound / 1200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if b.state != bbr3ProbeBWDown || !b.prevProbePrecautionary {
+		t.Fatalf("state %d precautionary %v with the flight at the bound, want DOWN on precaution", b.state, b.prevProbePrecautionary)
+	}
+}
+
+// A precautionary probe whose feedback round loses nothing goes straight
+// back to REFILL (§5.3.3.6, Acceleration), bypassing CRUISE and the probe
+// wait, and the probe after it holds the bound.
+func TestBBR3PrecautionaryProbeRefillsAtOnce(t *testing.T) {
+	p, b, bound := bbr3PrecautionaryStop(t)
+	p.ack(len(p.queue))
+	if b.state == bbr3ProbeBWRefill {
+		t.Fatal("REFILL before the probe's feedback round ended")
+	}
+	p.send(40)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if b.state != bbr3ProbeBWRefill || b.prevProbePrecautionary {
+		t.Fatalf("state %d precautionary %v after a loss-free feedback round, want REFILL, the precaution cleared", b.state, b.prevProbePrecautionary)
+	}
+	p.ack(39)
+	p.round(40) // UP
+	p.send(bound / 1200)
+	p.now = p.now.Add(p.rtt)
+	p.ack(1)
+	if b.state != bbr3ProbeBWUp {
+		t.Fatalf("state %d with the flight at the bound after a safe precautionary probe, want UP", b.state)
+	}
+}
+
+// A precautionary probe whose feedback round loses too much is too high
+// in turn: no REFILL at the round's end, the next probe waits its turn and
+// takes precaution again.
+func TestBBR3PrecautionaryProbeThatLosesWaits(t *testing.T) {
+	p, b, _ := bbr3PrecautionaryStop(t)
+	p.ack(30)
+	p.lose(5)
+	if !b.prevProbeTooHigh {
+		t.Fatal("losses over 2% in the precautionary probe's feedback did not mark it too high")
+	}
+	p.ack(len(p.queue))
+	p.round(40)
+	if b.state == bbr3ProbeBWRefill || b.state == bbr3ProbeBWUp {
+		t.Fatalf("state %d after a precautionary probe that lost too much, want DOWN or CRUISE until the probe wait", b.state)
 	}
 }
 

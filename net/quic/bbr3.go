@@ -48,10 +48,15 @@ import (
 // draft's, per packet: RS.lost and RS.tx_in_flight from the stamps each
 // packet took when it left (lostPacket, ackEvent).
 //
-// Not yet followed from draft -06, which revised -03: ProbeBW's
-// precautionary probing (§5.3.3.6, §5.3.3.7) and the undo of a spurious
-// loss recovery (§5.5.11) are absent — the transport detects no spurious
-// loss.
+// A second: the precautionary exit from ProbeBW_UP (§5.3.3.7) compares
+// inflight_longterm with the flight before the acknowledged packet left
+// it, Linux's prior_in_flight. The window is capped at inflight_longterm
+// in UP, so the flight after an acknowledgement is always under it and the
+// draft's C.inflight read there would never stop a probe.
+//
+// Not yet followed from draft -06, which revised -03: the undo of a
+// spurious loss recovery (§5.5.11) is absent — the transport detects no
+// spurious loss.
 type bbr3 struct {
 	// est is the connection's delivery estimator, which ProbeRTT marks
 	// application-limited (handleProbeRTT).
@@ -140,14 +145,18 @@ type bbr3 struct {
 	// ProbeBW (§5.3.3.9): when DOWN started and how long to wait before
 	// REFILL, which samples the acknowledgements carry, whether a loss may
 	// still speak for the last probe, and the slope inflight_longterm is
-	// raised at in UP.
-	cycleStamp      time.Time
-	bwProbeWait     time.Duration
-	ackPhase        bbr3AckPhase
-	bwProbeSamples  bool
-	bwProbeUpRounds int
-	bwProbeUpAcks   int
-	probeUpCnt      int
+	// raised at in UP. prevProbeTooHigh says the last probe lost too much,
+	// prevProbePrecautionary that the last UP stopped at inflight_longterm
+	// for that reason (§2.14, §5.3.3.6); both start false.
+	cycleStamp             time.Time
+	bwProbeWait            time.Duration
+	ackPhase               bbr3AckPhase
+	bwProbeSamples         bool
+	bwProbeUpRounds        int
+	bwProbeUpAcks          int
+	probeUpCnt             int
+	prevProbeTooHigh       bool
+	prevProbePrecautionary bool
 	// ProbeRTT (§5.3.4.3): when the 200 ms are over and whether a round
 	// has passed since.
 	probeRTTDoneStamp time.Time
@@ -618,6 +627,7 @@ func (b *bbr3) startProbeBWCruise() {
 func (b *bbr3) startProbeBWRefill() {
 	b.resetShortTermModel()
 	b.bwProbeUpRounds, b.bwProbeUpAcks = 0, 0
+	b.prevProbePrecautionary = false
 	b.ackPhase = bbr3AcksRefilling
 	b.startRound()
 	b.state = bbr3ProbeBWRefill
@@ -659,7 +669,9 @@ func (b *bbr3) updateProbeBWCyclePhase(rs rateSample, ev ackEvent) {
 		return // only handling steady-state behaviour here
 	}
 	now := ev.now
-	b.adaptLongTermModel(rs, ev)
+	if b.adaptLongTermModel(rs, ev) {
+		return // already decided a state transition
+	}
 	if !b.inProbeBW() {
 		return
 	}
@@ -680,7 +692,8 @@ func (b *bbr3) updateProbeBWCyclePhase(rs rateSample, ev ackEvent) {
 			b.startProbeBWUp()
 		}
 	case bbr3ProbeBWUp:
-		if b.isTimeToGoDown() {
+		if b.isTimeToGoDown(b.inFlight + ev.size) {
+			b.prevProbeTooHigh = false // no high loss (yet)
 			b.startProbeBWDown(now)
 		}
 	default:
@@ -713,10 +726,16 @@ func (b *bbr3) renoCoexistenceProbeTime() bool {
 	return b.roundsSinceBwProbe >= rounds
 }
 
-// isTimeToGoDown is BBRIsTimeToGoDown: a probe capped by the long-term
-// bound cannot find a plateau, so its estimator restarts; otherwise the
-// plateau ends it.
-func (b *bbr3) isTimeToGoDown() bool {
+// isTimeToGoDown is BBRIsTimeToGoDown: after a probe that lost too much,
+// the next stops as soon as the flight reaches the bound that probe set
+// (§5.3.3.6); a probe capped by the long-term bound cannot find a
+// plateau, so its estimator restarts; otherwise the plateau ends it.
+// priorInFlight is the flight before the acknowledged packet left it.
+func (b *bbr3) isTimeToGoDown(priorInFlight int) bool {
+	if b.prevProbeTooHigh && priorInFlight >= b.inflightLongterm {
+		b.prevProbePrecautionary = true
+		return true
+	}
 	if b.cwndLimited() && b.cwnd >= b.inflightLongterm {
 		b.resetFullBw()
 		b.fullBw = b.maxBw
@@ -728,10 +747,12 @@ func (b *bbr3) isTimeToGoDown() bool {
 // adaptLongTermModel is BBRAdaptLongTermModel (§5.3.3.9): the
 // acknowledgement phases advance on round starts — the probe's samples
 // end one round after DOWN started, which also advances the max filter's
-// clock — and, when the loss rate is safe, the long-term bound rises to
-// the flight the packet was sent into, and in UP along its slope. CE marks
-// count against the rate too, at the loss round's scale (onMarked).
-func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) {
+// clock, and a precautionary probe that lost nothing goes straight back
+// to REFILL (§5.3.3.6) — and, when the loss rate is safe, the long-term
+// bound rises to the flight the packet was sent into, and in UP along its
+// slope. CE marks count against the rate too, at the loss round's scale
+// (onMarked). It reports whether it changed the state.
+func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) bool {
 	if b.ackPhase == bbr3AcksProbeStarting && b.roundStart {
 		b.ackPhase = bbr3AcksProbeFeedback
 	}
@@ -741,9 +762,13 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) {
 		if b.inProbeBW() && !rs.appLimited {
 			b.cycleCount++ // BBRAdvanceMaxBwFilter (§5.5.6)
 		}
+		if b.inProbeBW() && b.prevProbePrecautionary && !b.prevProbeTooHigh {
+			b.startProbeBWRefill()
+			return true
+		}
 	}
 	if lossTooHigh(ev.lost, ev.txInFlight) || b.markedInRound > 0 && b.roundTooHigh(ev.txInFlight) || b.inflightLongterm == bbr3Unbounded {
-		return
+		return false
 	}
 	if ev.txInFlight > b.inflightLongterm {
 		b.inflightLongterm = ev.txInFlight
@@ -751,6 +776,7 @@ func (b *bbr3) adaptLongTermModel(rs rateSample, ev ackEvent) {
 	if b.state == bbr3ProbeBWUp {
 		b.probeInflightLongtermUpward(ev.size)
 	}
+	return false
 }
 
 // raiseInflightLongtermSlope is BBRRaiseInflightLongtermSlope: the bound
@@ -992,8 +1018,10 @@ func inflightAtLoss(p lostPacket) int {
 
 // handleInflightTooHigh is BBRHandleInflightTooHigh: once per probe, the
 // bound drops to the volume the losses name, never under 0.7 of the
-// target (CUBIC's decrease), and a probe in UP goes DOWN.
+// target (CUBIC's decrease), a probe in UP goes DOWN, and the next probe
+// takes precaution (§5.3.3.6).
 func (b *bbr3) handleInflightTooHigh(now time.Time, txInFlight int) {
+	b.prevProbeTooHigh = true
 	b.bwProbeSamples = false // only react once per bw probe
 	b.inflightLongterm = max(txInFlight, int(bbr3Beta*float64(b.targetInflight())))
 	if b.state == bbr3ProbeBWUp {
