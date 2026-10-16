@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix)
 - **Theme:** quic
 
 ## Problem
@@ -40,7 +40,16 @@ with a stateless `CONNECTION_REFUSED` beyond) and by `HandshakeTimeout`
 (how long one may hold its slot; the client's default when unset); what the
 listener carries in total, accepted connections included, is bounded by
 `MaxConns` and per source address by `MaxConnsPerIP`, both unset by default
-and refused the same way. The amplification limit is
+and refused the same way. `MaxConnsPerIP` counts an address by its prefix —
+/32 for IPv4 and /64 for IPv6 by default, set by `IPv4PrefixBits` and
+`IPv6PrefixBits` — because an IPv6 host is handed a whole /64 (RFC 6177)
+and a bound on the full 128 bits is one it steps around by changing
+address; `httpstream.Config` counts the same way, through the same
+function. The stateless reset budget stays per whole address: it bounds
+what a forged source reflects to one victim, and a victim is an address.
+In plain words: two machines on one home IPv6 network share a count — the
+price of a bound one host cannot multiply; an operator serving many
+clients behind one /64 lengthens `IPv6PrefixBits`. The amplification limit is
 always on — sends past three times receipts are dropped until a
 Handshake-level packet decrypts; `AlwaysRetry` adds stateless Retry with an
 HMAC token for deployments under attack. `Close` ends pending and parked

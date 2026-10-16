@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 )
 
 // Handler answers a batch of requests with a batch of responses, positionally:
@@ -155,9 +156,11 @@ type connSet struct {
 	closed bool
 	max    int // Config.MaxConns; zero is unbounded
 	// maxPerIP is Config.MaxConnsPerIP, zero unbounded; byIP counts the
-	// connections in conns by remote IP, the ones with an IP address only.
-	maxPerIP int
-	byIP     map[netip.Addr]int
+	// connections in conns by remote prefix (ipkey.Of, v4Bits or v6Bits
+	// long), the ones with an IP address only.
+	maxPerIP       int
+	v4Bits, v6Bits int
+	byIP           map[netip.Prefix]int
 	// wg counts the connections admitted and not yet removed. It is added to
 	// under mu while the set is open, so a Wait begun after drain races no
 	// Add.
@@ -171,25 +174,28 @@ type connSet struct {
 	beginDrain context.CancelFunc
 }
 
-func newConnSet(maxConns, maxPerIP int) *connSet {
+// newConnSet takes the resolved Config: its two bounds, zero unbounded, and
+// the prefix lengths MaxConnsPerIP counts by.
+func newConnSet(c Config) *connSet {
 	draining, begin := context.WithCancel(context.Background())
 	return &connSet{
-		conns: map[net.Conn]*connState{}, max: maxConns,
-		maxPerIP: maxPerIP, byIP: map[netip.Addr]int{},
+		conns: map[net.Conn]*connState{}, max: max(c.MaxConns, 0),
+		maxPerIP: max(c.MaxConnsPerIP, 0), byIP: map[netip.Prefix]int{},
+		v4Bits: c.IPv4PrefixBits, v6Bits: c.IPv6PrefixBits,
 		draining: draining, beginDrain: begin,
 	}
 }
 
-// remoteIP is the key Config.MaxConnsPerIP counts c under: its remote IP
-// address without the port, an IPv4-mapped IPv6 address reduced to its IPv4
-// form; false when the address is not IP, which no per-IP bound applies to.
-func remoteIP(c net.Conn) (netip.Addr, bool) {
+// remoteIP is the key Config.MaxConnsPerIP counts c under: its remote
+// address's prefix (ipkey.Of), the port ignored; false when the address is
+// not IP, which no per-IP bound applies to.
+func (s *connSet) remoteIP(c net.Conn) (netip.Prefix, bool) {
 	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
 		if ip, ok := netip.AddrFromSlice(a.IP); ok {
-			return ip.Unmap(), true
+			return ipkey.Of(ip, s.v4Bits, s.v6Bits), true
 		}
 	}
-	return netip.Addr{}, false
+	return netip.Prefix{}, false
 }
 
 // connState is what the shutdown needs to know about one connection: whether
@@ -198,7 +204,7 @@ func remoteIP(c net.Conn) (netip.Addr, bool) {
 type connState struct {
 	phase atomic.Int32
 	drain context.Context
-	ip    netip.Addr // the connection's key in connSet.byIP; invalid when it has none
+	ip    netip.Prefix // the connection's key in connSet.byIP; invalid when it has none
 }
 
 // The phases a connection moves through, as the shutdown sees them.
@@ -233,7 +239,7 @@ func (st *connState) drainingNow() bool {
 // socket, so a client that hung up counts until the server has read its
 // close.
 func (s *connSet) add(c net.Conn) *connState {
-	ip, hasIP := remoteIP(c)
+	ip, hasIP := s.remoteIP(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || (s.max > 0 && len(s.conns) >= s.max) ||

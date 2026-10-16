@@ -65,7 +65,7 @@ type Server struct {
 func (s *Server) init() error {
 	s.once.Do(func() {
 		s.cfg, s.err = s.Config.resolve()
-		s.live = newConnSet(max(s.cfg.MaxConns, 0), max(s.cfg.MaxConnsPerIP, 0))
+		s.live = newConnSet(s.cfg)
 		s.forced, s.force = context.WithCancel(context.Background())
 		s.listeners = map[net.Listener]struct{}{}
 		s.h3Conns = map[*quic.Conn]struct{}{}

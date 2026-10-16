@@ -216,6 +216,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 )
 
 // ErrMalformed reports a request this package will not parse. The connection
@@ -439,10 +441,11 @@ type Config struct {
 	// it; a server without it is bounded by the peers' goodwill.
 	MaxConns int
 
-	// MaxConnsPerIP is the same bound applied per remote IP address — the
-	// port ignored, an IPv4-mapped IPv6 address counted with its IPv4 form —
-	// so that one peer cannot hold the whole MaxConns on its own; the
-	// connection over it is closed as it is accepted, the same way. A
+	// MaxConnsPerIP is the same bound applied per remote address, so that
+	// one peer cannot hold the whole MaxConns on its own; the connection
+	// over it is closed as it is accepted, the same way. The port is ignored
+	// and an address is counted by its prefix, IPv4PrefixBits or
+	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. A
 	// connection whose remote address is not IP, a Unix socket's, is bound
 	// by MaxConns alone: its peers share one empty address, and a per-peer
 	// bound would be a second total. Zero means no bound: a figure that is
@@ -450,6 +453,16 @@ type Config struct {
 	// chooses. [ServeH3] is not bound by it: the QUIC listener has its own,
 	// [github.com/mlagarrigue/sluice/net/quic.ListenerConfig].MaxConnsPerIP.
 	MaxConnsPerIP int
+
+	// IPv4PrefixBits and IPv6PrefixBits are how much of a remote address
+	// MaxConnsPerIP counts by: two addresses that share that many leading
+	// bits share one count. Zero means 32 and 64. An IPv6 host is handed a
+	// whole /64 (RFC 6177), so a count by the full 128 bits is one it steps
+	// around by changing address; an IPv4 host rarely holds more than one.
+	// A value outside 1..32 or 1..128 is a configuration error. The QUIC
+	// listener's fields of the same names count the same way.
+	IPv4PrefixBits int
+	IPv6PrefixBits int
 
 	// ShutdownGrace is how long [Serve], [ServeH2] or [ServeH3], once its
 	// context is cancelled, waits for the requests already in flight to be
@@ -648,6 +661,7 @@ func (c Config) resolve() (Config, error) {
 	if c.MaxConnsPerIP < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
+	err = errors.Join(err, ipkey.Check("httpstream: Config.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
 	if c.KeepAlive < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.KeepAlive %v is negative — zero means none", c.KeepAlive))
 	}

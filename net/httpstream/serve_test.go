@@ -1158,15 +1158,30 @@ type addrConn struct {
 
 func (c *addrConn) RemoteAddr() net.Addr { return c.remote }
 
-// connSet counts MaxConnsPerIP by IP address: the port does not separate two
+// connSet counts MaxConnsPerIP by prefix: the port does not separate two
 // connections, an IPv4-mapped IPv6 address counts with its IPv4 form,
 // another address is admitted while one is at the cap, a removal frees its
-// slot, and a remote address that is not IP is bound by the total alone.
+// slot, and a remote address that is not IP is bound by the total alone. At
+// the default lengths two IPv6 addresses of one /64 share a count and the
+// next /64 has its own.
 func TestConnSetBoundsEachIP(t *testing.T) {
 	tcp := func(ip string, port int) net.Conn {
 		return &addrConn{remote: &net.TCPAddr{IP: net.ParseIP(ip), Port: port}}
 	}
-	s := newConnSet(0, 2)
+	cfg, err := Config{MaxConnsPerIP: 2}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newConnSet(cfg)
+	if s.add(tcp("2001:db8:0:1::1", 1000)) == nil || s.add(tcp("2001:db8:0:1::2", 1000)) == nil {
+		t.Fatal("the first two connections from 2001:db8:0:1::/64 were refused")
+	}
+	if s.add(tcp("2001:db8:0:1:ffff::1", 1000)) != nil {
+		t.Fatal("a third connection from 2001:db8:0:1::/64 was admitted over MaxConnsPerIP 2")
+	}
+	if s.add(tcp("2001:db8:0:2::1", 1000)) == nil {
+		t.Fatal("a connection from 2001:db8:0:2::/64 was refused while only its neighbour is at the cap")
+	}
 	a1, a2 := tcp("192.0.2.1", 1000), tcp("::ffff:192.0.2.1", 1001)
 	if s.add(a1) == nil || s.add(a2) == nil {
 		t.Fatal("the first two connections from 192.0.2.1 were refused")
@@ -1186,7 +1201,7 @@ func TestConnSetBoundsEachIP(t *testing.T) {
 			t.Fatalf("Unix connection %d was refused: no per-IP bound applies to it", i+1)
 		}
 	}
-	if got := s.byIP[netip.MustParseAddr("192.0.2.1")]; got != 2 {
+	if got := s.byIP[netip.MustParsePrefix("192.0.2.1/32")]; got != 2 {
 		t.Fatalf("192.0.2.1 counts %d connections, want 2", got)
 	}
 }

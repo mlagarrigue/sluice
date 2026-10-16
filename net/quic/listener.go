@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
@@ -86,15 +87,25 @@ type ListenerConfig struct {
 	// [NewListener].
 	MaxConns int
 
-	// MaxConnsPerIP is the same bound applied per source IP address — the
-	// port ignored, an IPv4-mapped IPv6 address counted with its IPv4
-	// form — so that one peer cannot hold the whole MaxConns on its own.
-	// The address is the one the first Initial came from: a peer that later
+	// MaxConnsPerIP is the same bound applied per source address, so that
+	// one peer cannot hold the whole MaxConns on its own. The port is
+	// ignored and an address is counted by its prefix, IPv4PrefixBits or
+	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. The
+	// address is the one the first Initial came from: a peer that later
 	// migrates to another address keeps its count on the first, since the
 	// bound is on admission. Zero means no bound: a figure that is fair
 	// to a home connection starves a carrier-grade NAT, so the operator
 	// chooses. Negative is refused by [NewListener].
 	MaxConnsPerIP int
+
+	// IPv4PrefixBits and IPv6PrefixBits are how much of a source address
+	// MaxConnsPerIP counts by: two addresses that share that many leading
+	// bits share one count. Zero means 32 and 64. An IPv6 host is handed a
+	// whole /64 (RFC 6177), so a count by the full 128 bits is one it steps
+	// around by changing address; an IPv4 host rarely holds more than one.
+	// A value outside 1..32 or 1..128 is refused by [NewListener].
+	IPv4PrefixBits int
+	IPv6PrefixBits int
 
 	// PreferredAddress is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
@@ -182,7 +193,7 @@ type Listener struct {
 	// is accepted.
 	pendingConns map[*Conn]struct{}
 	// connsByIP counts the connections in keysOf by the source address
-	// their first Initial came from (sourceIP), what MaxConnsPerIP bounds;
+	// their first Initial came from (connKey), what MaxConnsPerIP bounds;
 	// ipOf remembers each connection's key so forget can give the count
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
@@ -207,7 +218,7 @@ type Listener struct {
 }
 
 // resolve applies the defaults zero stands for and returns an error naming
-// every field whose value is negative: a negative bound is the caller's
+// every field whose value is negative or out of range: a negative bound is the caller's
 // mistake, said at start rather than quietly turned into the default
 // (docs/design/adr/0018).
 func (c ListenerConfig) resolve() (ListenerConfig, error) {
@@ -224,6 +235,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxConnsPerIP < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
+	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
 	if err != nil {
 		return ListenerConfig{}, err
 	}
@@ -719,7 +731,7 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
-	total, fromIP := len(l.keysOf), l.connsByIP[sourceIP(from)]
+	total, fromIP := len(l.keysOf), l.connsByIP[l.connKey(from)]
 	l.mu.Unlock()
 	// The three bounds refuse the same way; only the pending table's
 	// high-water mark below turns the Retry flow on, since Retry defends
@@ -947,7 +959,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	l.routeLocked(string(c.scid), c)
 	l.routeLocked(firstKey, c)
 	l.pendingConns[c] = struct{}{}
-	ip := sourceIP(from)
+	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
 	l.mu.Unlock()
@@ -1249,14 +1261,28 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	_, _ = via.WriteTo(pkt, from)
 }
 
-// sourceIP is the per-source key of the stateless reset budget and of
-// MaxConnsPerIP: the IP address without its port, an IPv4-mapped IPv6
-// address reduced to its IPv4 form, or the whole address where it is not
-// IP.
+// sourceIP is the per-source key of the stateless reset budget: the IP
+// address without its port, an IPv4-mapped IPv6 address reduced to its IPv4
+// form, or the whole address where it is not IP. The budget keys on the
+// whole address, not on MaxConnsPerIP's prefix: it bounds what a forged
+// source reflects to one victim, and a victim is an address.
 func sourceIP(from net.Addr) string {
 	if ua, ok := from.(*net.UDPAddr); ok {
 		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
 			return string(ip.Unmap().AsSlice())
+		}
+	}
+	return from.String()
+}
+
+// connKey is the key MaxConnsPerIP counts from under: its address's prefix
+// (ipkey.Of), or the whole address where it is not IP. Every IP key of one
+// listener has the same length per family, so the masked address alone —
+// 4 or 16 bytes — tells two prefixes apart.
+func (l *Listener) connKey(from net.Addr) string {
+	if ua, ok := from.(*net.UDPAddr); ok {
+		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
+			return string(ipkey.Of(ip, l.lcfg.IPv4PrefixBits, l.lcfg.IPv6PrefixBits).Addr().AsSlice())
 		}
 	}
 	return from.String()

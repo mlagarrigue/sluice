@@ -1262,21 +1262,25 @@ func TestMaxConnsRefusesBeyondTheCap(t *testing.T) {
 	}
 }
 
-// MaxConnsPerIP applies the same bound per source address, keyed on the IP
-// alone: ports differ between the two dials, and an IPv4-mapped IPv6
-// address counts with its IPv4 form. Two addresses stay apart. (Proving the
-// second IP is admitted would need a second loopback address, which macOS
-// and Windows do not route by default; the key is what decides it.)
-func TestMaxConnsPerIPCountsBySourceAddress(t *testing.T) {
+// MaxConnsPerIP applies the same bound per source prefix: ports differ
+// between the two dials, and an IPv4-mapped IPv6 address counts with its
+// IPv4 form. Two IPv4 addresses stay apart, two IPv6 addresses of one /64
+// share a key, and the next /64 has its own. (Proving the second address is
+// admitted end to end is TestMaxConnsPerIPCountsEachFamilyApart's.)
+func TestMaxConnsPerIPCountsBySourcePrefix(t *testing.T) {
 	capRefusesTheSecondDial(t, ListenerConfig{MaxConnsPerIP: 1})
 	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: -1}); err == nil {
 		t.Error("NewListener accepted a negative MaxConnsPerIP")
 	}
 
-	v4a := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1000})
-	v4b := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2000})
-	mapped := sourceIP(&net.UDPAddr{IP: net.ParseIP("::ffff:127.0.0.1"), Port: 3000})
-	other := sourceIP(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 2), Port: 1000})
+	lcfg, err := ListenerConfig{}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &Listener{lcfg: lcfg}
+	key := func(ip string, port int) string { return l.connKey(&net.UDPAddr{IP: net.ParseIP(ip), Port: port}) }
+	v4a, v4b := key("127.0.0.1", 1000), key("127.0.0.1", 2000)
+	mapped, other := key("::ffff:127.0.0.1", 3000), key("127.0.0.2", 1000)
 	if v4a != v4b {
 		t.Errorf("two ports of one address key apart: %q vs %q", v4a, v4b)
 	}
@@ -1286,17 +1290,76 @@ func TestMaxConnsPerIPCountsBySourceAddress(t *testing.T) {
 	if v4a == other {
 		t.Errorf("two addresses share the key %q", v4a)
 	}
+	if a, b := key("2001:db8:0:1::1", 1000), key("2001:db8:0:1:ffff::1", 1000); a != b {
+		t.Errorf("two addresses of one /64 key apart: %q vs %q", a, b)
+	}
+	if a, b := key("2001:db8:0:1::1", 1000), key("2001:db8:0:2::1", 1000); a == b {
+		t.Errorf("two neighbouring /64 share the key %q", a)
+	}
 }
 
-// A negative bound is refused rather than turned into the default, and every
-// faulty field is named in the one error, with its value and what zero means
-// (docs/design/adr/0018).
-func TestListenerConfigRefusesNegativeValues(t *testing.T) {
+// On a dual-stack socket 127.0.0.1 arrives IPv4-mapped and ::1 as IPv6: the
+// two are different peers and each gets its own MaxConnsPerIP, while a
+// second connection from 127.0.0.1 is still refused.
+func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
+	if pc, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback}); err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	} else {
+		_ = pc.Close()
+	}
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	port := spc.LocalAddr().(*net.UDPAddr).Port
+	dial := func(ip net.IP) (*Conn, error) {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Dial(pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultParameters())
+	}
+	v4, err := dial(net.IPv4(127, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("the first Dial from 127.0.0.1: %v", err)
+	}
+	defer v4.Close()
+	v6, err := dial(net.IPv6loopback)
+	if err != nil {
+		t.Fatalf("the Dial from ::1 while 127.0.0.1 is at the cap: %v", err)
+	}
+	defer v6.Close()
+	if again, err := dial(net.IPv4(127, 0, 0, 1)); err == nil {
+		_ = again.Close()
+		t.Fatal("a second Dial from 127.0.0.1 was admitted over MaxConnsPerIP 1")
+	}
+}
+
+// A negative bound, or a prefix longer than its address, is refused rather
+// than turned into the default, and every faulty field is named in the one
+// error, with its value and what zero means (docs/design/adr/0018).
+func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
 	_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
 		MaxPendingConns:  -1,
 		HandshakeTimeout: -time.Second,
 		MaxConns:         -2,
 		MaxConnsPerIP:    -3,
+		IPv4PrefixBits:   33,
+		IPv6PrefixBits:   -1,
 	})
 	if err == nil {
 		t.Fatal("NewListener accepted negative ListenerConfig values")
@@ -1306,6 +1369,8 @@ func TestListenerConfigRefusesNegativeValues(t *testing.T) {
 		"ListenerConfig.HandshakeTimeout -1s is negative — zero means " + DefaultHandshakeTimeout.String(),
 		"ListenerConfig.MaxConns -2 is negative — zero means no bound",
 		"ListenerConfig.MaxConnsPerIP -3 is negative — zero means no bound",
+		"ListenerConfig.IPv4PrefixBits 33 is outside 1..32 — zero means 32",
+		"ListenerConfig.IPv6PrefixBits -1 is outside 1..128 — zero means 64",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not say %q", err, want)
