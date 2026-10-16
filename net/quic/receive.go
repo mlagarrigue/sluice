@@ -1286,7 +1286,7 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 		}
 	}
 	c.mu.Lock()
-	if s := c.streams[id]; s != nil {
+	if s := c.streams[id]; s != nil && !c.pickedAheadLocked(id) {
 		c.mu.Unlock()
 		return s, false, nil
 	}
@@ -1338,32 +1338,51 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 	// arrives later — reordered, or simply sent second — finds its stream
 	// rather than the closed-stream tolerance above. newStream closes the
 	// direction a unidirectional stream lacks.
-	opened := make([]*Stream, 0, count-*seen)
+	//
+	// A stream the application already picked by identifier (Conn.Stream)
+	// is the one opened, not replaced: replacing it left the caller holding
+	// a stream no frame would ever reach.
+	//
+	// Outside batch mode each goes to the accept queue, which never blocks
+	// this loop: MAX_STREAMS bounds it (see AcceptStream). A bounded channel
+	// used to stand here, 64 deep under a default limit of 100: the 65th
+	// stream stopped the read loop, and with it the acknowledgements every
+	// other stream's writer was waiting on.
+	var last *Stream
 	for n := *seen + 1; n <= count; n++ {
 		nid := (n-1)*4 + id&0x03
-		s := newStream(c, nid)
-		c.streams[nid] = s
-		opened = append(opened, s)
+		s := c.streams[nid]
+		if s == nil {
+			s = newStream(c, nid)
+			c.streams[nid] = s
+		}
+		if !c.batchMode {
+			s.queued = true
+			c.acceptQ = append(c.acceptQ, s)
+		}
+		last = s
 	}
 	*seen = count
-	batchMode := c.batchMode
-	c.mu.Unlock()
-
-	if !batchMode {
-		// The accept queue applies back-pressure by blocking the read loop:
-		// a server that stops calling AcceptStream stops reading, and the
-		// peer feels it through this connection's flow control — nothing is
-		// dropped and nothing torn down (the 65th stream used to be fatal
-		// here).
-		for _, s := range opened {
-			select {
-			case c.accepted <- s:
-			case <-c.closed:
-				return nil, false, errClosed
-			}
-		}
+	if !c.batchMode {
+		c.signalAccept()
 	}
-	return opened[len(opened)-1], false, nil
+	c.mu.Unlock()
+	return last, false, nil
+}
+
+// pickedAheadLocked reports a stream of the peer's that Conn.Stream
+// registered before the peer opened it: its first frame from the peer still
+// opens it — and the lower-numbered streams with it — as any other. Callers
+// hold c.mu.
+func (c *Conn) pickedAheadLocked(id uint64) bool {
+	if (id&1 == 0) == c.isClient {
+		return false
+	}
+	seen := c.seenPeerBidi
+	if id&0x02 != 0 {
+		seen = c.seenPeerUni
+	}
+	return id/4 >= seen // its count, id/4+1, past what the peer opened
 }
 
 // settleBatchConsumption credits flow control — per stream and per

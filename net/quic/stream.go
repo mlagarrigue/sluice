@@ -28,7 +28,7 @@ import (
 // lives under the stream's own lock; the send side (offsets, credit, this
 // end's reset) lives under the connection's, which serialises every packet
 // written. The lock order is c.mu → s.mu: [Conn.maybeRemoveLocked] takes s.mu
-// (via [Stream.recvFinished]) while holding c.mu, so s.mu must never be held
+// (via [Stream.recvState]) while holding c.mu, so s.mu must never be held
 // while taking c.mu.
 type Stream struct {
 	id   uint64
@@ -57,6 +57,12 @@ type Stream struct {
 	// still in flight. quic-go's client found that: one echo in twenty came
 	// back a frame short (interop/quicgo_test.go).
 	readEnded bool
+	// endTaken says the application is done with the receive side: a Read
+	// took the last byte or returned the end — EOF or the reset — or it
+	// called StopSending. It is
+	// RFC 9000 §3.2's "Data Read" (or "Reset Read"), and what a stream the
+	// peer opened waits for before its MAX_STREAMS slot is granted back.
+	endTaken bool
 	// readDeadline is when a parked Read gives up (SetReadDeadline); zero
 	// means never. The connection's timer loop wakes the stream when it
 	// matures (Conn.streamDeadline).
@@ -68,6 +74,7 @@ type Stream struct {
 	writeReset bool // this end sent RESET_STREAM, or the peer sent STOP_SENDING
 	writeCode  uint64
 	sendClosed bool // FIN or RESET_STREAM sent: the peer knows this side's size
+	queued     bool // waiting in the accept queue (Conn.acceptQ), under conn.mu
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.
 	writeDeadline time.Time
@@ -211,6 +218,11 @@ func (s *Stream) endForRead() {
 // [Conn.Stream] with a local unidirectional identifier) has no receive side:
 // Read refuses it with an error at once rather than waiting for bytes the
 // peer may never send.
+//
+// A stream the peer opened gives its MAX_STREAMS slot back only once Read has
+// taken its last byte or its reset, or [Stream.StopSending] said the rest
+// will not be read (RFC 9000 §3.2): a stream accepted and left unread holds
+// its slot, and the peer opens no stream in its place.
 func (s *Stream) Read(p []byte) (int, error) {
 	if s.sendOnly() {
 		return 0, fmt.Errorf("%w: stream %d is unidirectional and this end opened it: nothing to read", ErrQUIC, s.id)
@@ -228,14 +240,31 @@ func (s *Stream) Read(p []byte) (int, error) {
 			if grant {
 				nextMax = s.recvQ.nextMax()
 			}
+			// The last byte of a finished stream is its end taken: a
+			// reader that knows where its message ends need not come back
+			// for the EOF before the stream may retire.
+			last := len(s.buf) == 0 && s.readEnded && !s.endTaken
+			if last {
+				s.endTaken = true
+			}
 			s.mu.Unlock()
 			s.conn.creditConsumed(s.id, uint64(n), grant, nextMax) //nolint:gosec // G115: a byte count, positive
+			if last {
+				s.conn.retireTaken(s)
+			}
 			return n, nil
 		}
 		ended := s.readEnded
 		abandoned, code := s.readReset, s.readCode
 		deadline := s.readDeadline
+		first := ended && !s.endTaken
+		if first {
+			s.endTaken = true
+		}
 		s.mu.Unlock()
+		if first {
+			s.conn.retireTaken(s)
+		}
 		if ended {
 			if abandoned {
 				return 0, fmt.Errorf("%w: stream %d was reset with code %#x", ErrQUIC, s.id, code)
@@ -484,7 +513,16 @@ func (s *Stream) StopSending(code uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	frame := appendFrame(nil, FrameStopSending, s.id, code)
-	return c.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	// Stopping is how an application says it will not read the rest: the
+	// peer's RESET_STREAM, when it comes, ends the receive side with
+	// nothing left for the application to take (§3.2).
+	s.mu.Lock()
+	s.endTaken = true
+	s.mu.Unlock()
+	c.maybeRemoveLocked(s)
+	c.flushControlLocked()
+	return err
 }
 
 // abandon records a RESET_STREAM that arrived, releasing whoever is reading.
@@ -562,11 +600,12 @@ func (s *Stream) WasReset() (uint64, bool) {
 	return s.writeCode, s.writeReset
 }
 
-// recvFinished reports whether nothing more will arrive, under s.mu.
-func (s *Stream) recvFinished() bool {
+// recvState reports, under s.mu, whether nothing more will arrive and
+// whether the application has taken the end (endTaken).
+func (s *Stream) recvState() (finished, taken bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.recvDone
+	return s.recvDone, s.endTaken
 }
 
 // deliveredSoFar is the offset the ordered prefix has reached, which is what
@@ -591,9 +630,12 @@ func boolBit(b bool, bit uint64) uint64 {
 // connection; and an error once the connection ends. A stream already
 // queued when ctx is already done may come out either way.
 //
-// When the queue is full the connection's read loop blocks rather than
-// dropping or failing — a server that stops accepting stops reading, and the
-// peer feels it as back-pressure through flow control.
+// The queue never blocks the connection's read loop. What bounds it is
+// MAX_STREAMS: a stream the peer opened gives its slot back only once it has
+// come out of here and been read to its end (see [Stream.Read]), so the
+// queue holds at most the InitialMaxStreamsBidi plus InitialMaxStreamsUni
+// streams this end announced, and a server that stops accepting leaves the
+// peer waiting for credit while every stream already accepted carries on.
 //
 // [Listener.Accept] takes no context: it has the shape of net.Listener's
 // Accept, and [Listener.Close] unblocks it without touching the connections
@@ -607,18 +649,46 @@ func boolBit(b bool, bit uint64) uint64 {
 // select that picked at random between the queue and the closed signal
 // handed the error one time in a hundred, and lost the stream.
 func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
-	select {
-	case s := <-c.accepted:
-		return s, nil
-	default:
+	for {
+		c.mu.Lock()
+		if len(c.acceptQ) > 0 {
+			s := c.acceptQ[0]
+			c.acceptQ[0] = nil
+			c.acceptQ = c.acceptQ[1:]
+			if len(c.acceptQ) > 0 {
+				c.signalAccept() // another acceptor may be waiting
+			}
+			s.queued = false
+			// Read through Conn.Stream before it was accepted, the stream
+			// waited for this to retire.
+			c.maybeRemoveLocked(s)
+			if len(c.grants) > 0 {
+				c.flushControlLocked()
+			}
+			c.mu.Unlock()
+			return s, nil
+		}
+		c.mu.Unlock()
+		select {
+		case <-c.acceptReady:
+		case <-c.closed:
+			c.mu.Lock()
+			empty := len(c.acceptQ) == 0
+			c.mu.Unlock()
+			if empty {
+				return nil, errClosed
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
+}
+
+// signalAccept wakes one waiting AcceptStream without ever blocking.
+func (c *Conn) signalAccept() {
 	select {
-	case s := <-c.accepted:
-		return s, nil
-	case <-c.closed:
-		return nil, errClosed
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case c.acceptReady <- struct{}{}:
+	default:
 	}
 }
 
@@ -818,6 +888,15 @@ func (c *Conn) Stream(id uint64) (*Stream, error) {
 // tolerated rather than reopening it, for as long as the connection lives.
 // For peer-initiated streams the slot is granted back with MAX_STREAMS,
 // which is what stops a long-lived connection dying of stream arithmetic.
+//
+// A stream the peer opened retires later than that: once it has left the
+// accept queue and the application has taken its end (endTaken) — RFC 9000
+// §3.2's "Data Read", not "Data Recvd". Retiring on the FIN alone granted
+// the slot back while the stream still sat unaccepted, its bytes unread, so
+// a peer opening unidirectional streams with a FIN faster than the
+// application accepted them was bounded by nothing MAX_STREAMS counts. In
+// batch mode the callback is the consumer and has already returned when this
+// runs, so the FIN is the end taken.
 // Callers hold c.mu.
 func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if !s.sendClosed {
@@ -826,12 +905,29 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if _, present := c.streams[s.id]; !present {
 		return // already retired
 	}
-	if !s.recvFinished() {
+	finished, taken := s.recvState()
+	if !finished {
+		return
+	}
+	peerInitiated := (s.id&1 == 0) != c.isClient
+	if peerInitiated && !c.batchMode && (s.queued || !taken) {
 		return
 	}
 	delete(c.streams, s.id)
-	if (s.id&1 == 0) != c.isClient { // peer-initiated: grant the slot back
+	if peerInitiated { // grant the slot back
 		c.returnStreamSlotLocked(s.id&0x02 != 0)
+	}
+}
+
+// retireTaken retires a stream whose end the application has just taken,
+// and sends the MAX_STREAMS grant that may have earned. Called by
+// Stream.Read with no locks held.
+func (c *Conn) retireTaken(s *Stream) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maybeRemoveLocked(s)
+	if len(c.grants) > 0 {
+		c.flushControlLocked()
 	}
 }
 

@@ -837,7 +837,10 @@ func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := <-c.accepted
+	s, err := c.AcceptStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n, err := s.Read(make([]byte, 250)); err != nil || n != 250 {
 		t.Fatalf("Read = %d, %v", n, err)
 	}

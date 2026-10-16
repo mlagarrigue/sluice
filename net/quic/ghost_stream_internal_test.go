@@ -2,6 +2,7 @@ package quic
 
 import (
 	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -59,8 +60,13 @@ func TestGhostStream(t *testing.T) {
 		if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}
-		if s, err := c.AcceptStream(t.Context()); err != nil || s.id != id {
+		s, err := c.AcceptStream(t.Context())
+		if err != nil || s.id != id {
 			t.Fatalf("AcceptStream after stream %d: %v, %v", id, s, err)
+		}
+		// Read to the end: the slot comes back at "Data Read" (§3.2).
+		if _, err := io.ReadAll(s); err != nil {
+			t.Fatalf("stream %d: %v", id, err)
 		}
 	}
 	live, credit := tableSize(c)
@@ -75,10 +81,11 @@ func TestGhostStream(t *testing.T) {
 			}
 		}
 	}
-	select {
-	case s := <-c.accepted:
-		t.Fatalf("stream %d was revived and queued for AcceptStream", s.id)
-	default:
+	c.mu.Lock()
+	queued := len(c.acceptQ)
+	c.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("%d streams were revived and queued for AcceptStream", queued)
 	}
 	if live, after := tableSize(c); live != 0 || after != credit {
 		t.Fatalf("after the late frames: %d streams in the table, MAX_STREAMS credit %d (was %d)", live, after, credit)

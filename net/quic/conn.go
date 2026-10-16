@@ -286,15 +286,19 @@ type Conn struct {
 	// closure forget the first, so a late or forged frame on that stream
 	// reopened it, delivered an HTTP/3 request twice and credited
 	// MAX_STREAMS twice (see streamFor).
-	streams   map[uint64]*Stream
-	accepted  chan *Stream
-	closed    chan struct{}
-	closeErr  error
-	closeSent bool
-	draining  bool
-	peerClose peerClose
-	once      sync.Once
-	timerKick chan struct{}
+	streams map[uint64]*Stream
+	// acceptQ holds the streams the peer opened that AcceptStream has not
+	// handed out yet, in identifier order per kind; acceptReady wakes a
+	// waiting AcceptStream. MAX_STREAMS bounds it, not a capacity.
+	acceptQ     []*Stream
+	acceptReady chan struct{}
+	closed      chan struct{}
+	closeErr    error
+	closeSent   bool
+	draining    bool
+	peerClose   peerClose
+	once        sync.Once
+	timerKick   chan struct{}
 	// closing is what a [Listener]-managed connection keeps after its own
 	// CONNECTION_CLOSE left, for the closing state of RFC 9000 §10.2.1;
 	// gone is closed when that state ends — at once when there is none —
@@ -786,7 +790,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,
 		streams:             make(map[uint64]*Stream),
-		accepted:            make(chan *Stream, 64),
+		acceptReady:         make(chan struct{}, 1),
 		closed:              make(chan struct{}),
 		gone:                make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),

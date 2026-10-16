@@ -108,13 +108,12 @@ func oneUniStreamParams() quic.TransportParameters {
 }
 
 // With the peer's unidirectional grant spent, OpenUniStream parks until the
-// first stream's FIN reaches the peer — which retires it there, a received
-// unidirectional stream having no send side to wait for — and the peer
-// raises MAX_STREAMS; the next stream then comes out with the next
-// identifier of its kind. The FIN goes out only once the second call is
-// parked: the peer retires the stream on the FIN itself, before anyone
-// accepts or reads it, so a FIN sent earlier would have granted the slot
-// back before the wait began.
+// peer raises MAX_STREAMS; the next stream then comes out with the next
+// identifier of its kind. The peer raises it only once the first stream is
+// over at its end — FIN received, stream accepted and read to the end, RFC
+// 9000 §3.2's "Data Read": a FIN alone, with the stream still waiting to be
+// accepted, grants nothing back, or a peer could open streams faster than
+// the application takes them with nothing to bound the pile.
 func TestOpenUniStreamWaitsForMaxStreams(t *testing.T) {
 	client, server, _, _ := handshakePairParams(t, serverTLS(t), clientTLS(), oneUniStreamParams())
 
@@ -125,7 +124,7 @@ func TestOpenUniStreamWaitsForMaxStreams(t *testing.T) {
 	if id := first.ID(); id&0x03 != 0x02 {
 		t.Fatalf("first unidirectional stream is %d; want a client-initiated unidirectional identifier (2, 6, …)", id)
 	}
-	if _, err := first.Write([]byte("one")); err != nil {
+	if _, err := first.WriteClose([]byte("one")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,13 +139,21 @@ func TestOpenUniStreamWaitsForMaxStreams(t *testing.T) {
 	}()
 	select {
 	case got := <-second:
-		t.Fatalf("second OpenUniStream came back at once with %v, %v; the grant is spent", got.s, got.err)
-	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("second OpenUniStream came back with %v, %v before the server read the first", got.s, got.err)
+	case <-time.After(200 * time.Millisecond):
 	}
 
-	// The FIN retires the stream on the server and grants the slot back.
-	if err := first.CloseWrite(); err != nil {
+	// Accepting and reading to the end retires the stream on the server and
+	// grants the slot back.
+	ss, err := server.AcceptStream(t.Context())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if ss.ID() != first.ID() {
+		t.Fatalf("the server accepted stream %d, want %d", ss.ID(), first.ID())
+	}
+	if got, err := io.ReadAll(ss); err != nil || string(got) != "one" {
+		t.Fatalf("the server read %q, %v; want \"one\", nil", got, err)
 	}
 	select {
 	case got := <-second:
@@ -157,20 +164,7 @@ func TestOpenUniStreamWaitsForMaxStreams(t *testing.T) {
 			t.Fatalf("second stream is %d, want %d", got.s.ID(), first.ID()+4)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("second OpenUniStream still parked 2 s after the peer granted a stream")
-	}
-
-	// Retired for the grant's accounting, the first stream still delivers
-	// its bytes to whoever accepts it.
-	ss, err := server.AcceptStream(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ss.ID() != first.ID() {
-		t.Fatalf("the server accepted stream %d, want %d", ss.ID(), first.ID())
-	}
-	if got, err := io.ReadAll(ss); err != nil || string(got) != "one" {
-		t.Fatalf("the server read %q, %v; want \"one\", nil", got, err)
+		t.Fatal("second OpenUniStream still parked 2 s after the server read the first stream")
 	}
 }
 

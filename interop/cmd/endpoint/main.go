@@ -244,9 +244,17 @@ func serveHQ(c *quic.Conn) {
 // A path it cannot serve is answered with an empty body: HTTP/0.9 has no
 // status line, and a reset would read as a transport failure.
 func serveHQStream(s *quic.Stream) error {
-	line, err := bufio.NewReaderSize(s, 4096).ReadString('\n')
+	r := bufio.NewReaderSize(s, 4096)
+	line, err := r.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
+	}
+	// The request is the whole stream: reading it to its end is what grants
+	// the client its stream slot back (RFC 9000 §3.2, "Data Read").
+	if err == nil {
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return err
+		}
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 2 || fields[0] != "GET" {
