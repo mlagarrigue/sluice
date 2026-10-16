@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -67,6 +68,42 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 	if n, _ := picked.Read(buf); string(buf[:n]) != "req" {
 		t.Fatalf("the picked stream read %q, want \"req\"", buf[:n])
 	}
+}
+
+// A stream queued while the connection closes is still handed out, ahead of
+// the error: the acceptor parked in its select wakes on the closed signal
+// alone — the queue's own signal went to nobody — and used to return the
+// error with the stream still in the queue.
+func TestAcceptStreamHandsOutWhatTheCloseLeftQueued(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newConn(&fuzzSink{addr: "accept:self"}, fakeFuzzAddr("accept:peer"),
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		type accepted struct {
+			s   *Stream
+			err error
+		}
+		got := make(chan accepted, 1)
+		go func() {
+			s, err := c.AcceptStream(context.Background())
+			got <- accepted{s, err}
+		}()
+		synctest.Wait() // parked in its select, the queue empty
+
+		c.mu.Lock()
+		s := newStream(c, 0)
+		c.streams[0] = s
+		s.queued = true
+		c.acceptQ = append(c.acceptQ, s)
+		c.mu.Unlock()
+		c.Close()
+
+		if a := <-got; a.err != nil || a.s != s {
+			t.Fatalf("AcceptStream = %v, %v; want the queued stream 0", a.s, a.err)
+		}
+		if s, err := c.AcceptStream(context.Background()); !errors.Is(err, errClosed) {
+			t.Fatalf("AcceptStream on the emptied queue = %v, %v; want errClosed", s, err)
+		}
+	})
 }
 
 // A context already done that finds no credit still tells the peer it is
