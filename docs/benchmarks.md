@@ -615,8 +615,9 @@ transfer's wall clock, not a rate the harness scales. `Reorder` stays out of the
 on an identical tree its median moved 7% between the two sides (the eight
 gated profiles, under 2.1%), because a spurious loss is declared or not by
 a few microseconds of scheduling. Its `lost` is no steadier: 21 to 55
-spurious losses over 24 transfers, a spread of more than a factor of two,
-so a gate on that count would fire on noise as well. To run the gate by
+spurious losses over 24 transfers: a packet threshold lowered from three
+to two moves its median from 34 to 40.5, inside that spread, so a gate on
+the count would not see it either. To run the gate by
 hand against the tree before a change:
 
 ```
