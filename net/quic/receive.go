@@ -498,16 +498,12 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	}
 	c.mu.Unlock()
 
-	eliciting, err := c.frames(space, payload, now)
-	if err != nil {
+	if err := c.frames(space, payload, now); err != nil {
 		c.abort(err)
 		return err
 	}
 
 	c.mu.Lock()
-	if eliciting {
-		c.spaces[space].ack.onAckEliciting(space, now)
-	}
 	c.flushAcksLocked(now)
 	c.retransmitLocked()
 	// Control frames queued while processing — grants, mostly — usually ride
@@ -687,15 +683,16 @@ func (c *Conn) handleRetry(h longHeader) {
 	c.mu.Unlock()
 }
 
-// frames acts on one authenticated packet's frames. It reports whether any
-// of them elicit an acknowledgement. A non-nil error is a protocol violation
-// for the caller to abort with. now is the packet's arrival time.
-func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool, err error) {
+// frames acts on one authenticated packet's frames, and owes the packet's
+// acknowledgement when any of them elicits one. A non-nil error is a
+// protocol violation for the caller to abort with. now is the packet's
+// arrival time.
+func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// RFC 9000 §12.4: a packet with no frames at all is PROTOCOL_VIOLATION.
 	// A payload of nothing but PADDING contains frames and stays legal; only
 	// the empty payload is refused here.
 	if len(payload) == 0 {
-		return true, &transportError{
+		return &transportError{
 			code: transportProtocolViolation,
 			err:  fmt.Errorf("%w: a packet containing no frames", ErrQUIC),
 		}
@@ -716,7 +713,22 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	frames, err := parseFrames(parseScratch[:0], payload)
 	defer func() { c.parseScratch = frames[:0] }()
 	if err != nil {
-		return true, &transportError{code: transportFrameEncoding, err: err}
+		return &transportError{code: transportFrameEncoding, err: err}
+	}
+	// The acknowledgement is owed from the parse, before any frame is acted
+	// on: delivery wakes readers, and one that answers at once — a response
+	// to a request — sends while this goroutine is still in the loop below.
+	// Owed after the loop, the ACK was not yet pending when that answer
+	// left, so the answer went without it (sendPacketLocked carries only a
+	// pending one) and the delayed ACK followed in a datagram of its own
+	// localMaxAckDelay later.
+	for _, f := range frames {
+		if f.Type != frameACK && f.Type != frameACK|1 {
+			c.mu.Lock()
+			c.spaces[space].ack.onAckEliciting(space, now)
+			c.mu.Unlock()
+			break
+		}
 	}
 	if space == spaceApplication {
 		// The §9.3 decision point: a confirmed server whose client's
@@ -750,9 +762,6 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	scratch := c.takeScratch()
 
 	for _, f := range frames {
-		if f.Type != frameACK && f.Type != frameACK|1 {
-			eliciting = true
-		}
 		// RFC 9000 §12.4: Initial and Handshake packets may carry only
 		// PADDING, PING, ACK, CRYPTO and the transport CONNECTION_CLOSE.
 		// The table is not pedantry — Initial keys are public, so every
@@ -763,7 +772,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			switch f.Type {
 			case framePing, frameCrypto, frameACK, frameACK | 1, frameConnectionClose:
 			default:
-				return eliciting, &transportError{
+				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: frame type %#x at encryption level %d", ErrQUIC, f.Type, space),
 				}
@@ -772,18 +781,18 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		switch {
 		case f.Type == frameCrypto:
 			if err := c.handleCrypto(space, f); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.Type == frameACK || f.Type == frameACK|1:
 			if err := c.handleAck(space, f, now); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.IsStream():
 			s, tolerated, err := c.streamFor(f.StreamID, space, false)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
@@ -791,7 +800,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			deltaStart := s.deliveredSoFar()
 			grown, finished, growth, err := s.deliver(f, scratch)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			delta := grown[len(scratch):]
 			scratch = grown
@@ -809,14 +818,14 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		case f.Type == FrameResetStream:
 			s, tolerated, err := c.streamFor(f.StreamID, space, false)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
 			}
 			growth, neverConsumed, err := s.abandon(f.value, f.offset)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			connGrowth += growth
 			if neverConsumed > 0 {
@@ -832,7 +841,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		case f.Type == FrameStopSending:
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
@@ -841,7 +850,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			stopped, sendErr := s.onStopSendingLocked(f.value)
 			c.mu.Unlock()
 			if sendErr != nil && !errors.Is(sendErr, errClosed) {
-				return eliciting, sendErr
+				return sendErr
 			}
 			// Handed up even when it is all the packet carries: an
 			// application whose stream the peer refuses to read — HTTP/3's
@@ -868,7 +877,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			// where both used to be silently ignored.
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if !tolerated {
 				c.mu.Lock()
@@ -907,7 +916,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 
 		case f.Type == frameHandshakeDone:
 			if !c.isClient {
-				return eliciting, &transportError{
+				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: a client sent HANDSHAKE_DONE", ErrQUIC),
 				}
@@ -918,16 +927,16 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 
 		case f.Type == frameConnectionClose || f.Type == frameConnectionClose|1:
 			c.handlePeerClose(f)
-			return eliciting, nil
+			return nil
 
 		case f.Type == frameRetireConnectionID:
 			if err := c.handleRetireConnectionID(f.value); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.Type == frameNewConnectionID:
 			if err := c.handleNewConnectionID(f); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.Type == frameNewToken:
@@ -936,7 +945,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			// nothing — this package never spends a token — so the frame is
 			// legal and inert there.
 			if !c.isClient {
-				return eliciting, &transportError{
+				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: a client sent a NEW_TOKEN frame", ErrQUIC),
 				}
@@ -957,7 +966,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		c.mu.Lock()
 		if err := c.connRecv.receive(c.connRecv.highest + connGrowth); err != nil {
 			c.mu.Unlock()
-			return eliciting, err // FLOW_CONTROL_ERROR, attached by receive
+			return err // FLOW_CONTROL_ERROR, attached by receive
 		}
 		c.mu.Unlock()
 	}
@@ -971,7 +980,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	}
 	if len(batch) > 0 {
 		if err := c.dispatchDeltas(batch); err != nil {
-			return eliciting, err
+			return err
 		}
 	}
 	if len(ended) > 0 {
@@ -981,7 +990,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		}
 		c.mu.Unlock()
 	}
-	return eliciting, nil
+	return nil
 }
 
 // dispatchDeltas hands one packet's ordered deltas to whichever consumer the

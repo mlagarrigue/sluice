@@ -2,12 +2,15 @@ package quic
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/dgram"
 )
 
 // countingPC counts the datagrams written through it.
@@ -21,47 +24,52 @@ func (p *countingPC) WriteTo(b []byte, to net.Addr) (int, error) {
 	return p.PacketConn.WriteTo(b, to)
 }
 
-// countedPair is a client and a server over loopback, handshake done and
-// the path settled, with every datagram the server writes counted.
-func countedPair(t *testing.T) (client, server *Conn, sent *atomic.Int64) {
-	t.Helper()
-	serverPC := &countingPC{PacketConn: loopbackSocket(t)}
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = l.Close() })
-	accepted := make(chan *Conn, 1)
-	go func() {
-		c, err := l.Accept()
-		if err != nil {
-			t.Error(err)
-		}
-		accepted <- c
-	}()
-	client = dialInternal(t, loopbackSocket(t), serverPC.LocalAddr())
-	server = <-accepted
-	if server == nil {
-		t.Fatal("no server connection")
-	}
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+// delayedPC holds every datagram it writes for a fixed delay, in order: a
+// path with a round trip to measure, where dgram.Pair in a bubble has none —
+// every exchange there takes no time, and a zero sample is no sample, so the
+// RTT estimator would stay at its initial guess.
+type delayedPC struct {
+	net.PacketConn
+	delay time.Duration
+	queue chan delayedDatagram
+	done  chan struct{}
+	once  sync.Once
+}
 
-	// The handshake leaves a tail behind it — HANDSHAKE_DONE, connection IDs,
-	// the path MTU probe and their acknowledgements. Wait until the server
-	// has been silent for several delayed-ACK periods.
-	deadline := time.Now().Add(5 * time.Second)
-	for last := serverPC.writes.Load(); ; {
-		time.Sleep(4 * localMaxAckDelay)
-		now := serverPC.writes.Load()
-		if now == last {
-			break
+type delayedDatagram struct {
+	at time.Time
+	b  []byte
+	to net.Addr
+}
+
+func newDelayedPC(pc net.PacketConn, delay time.Duration) *delayedPC {
+	p := &delayedPC{PacketConn: pc, delay: delay, queue: make(chan delayedDatagram, 64), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case d := <-p.queue:
+				time.Sleep(time.Until(d.at))
+				_, _ = p.PacketConn.WriteTo(d.b, d.to)
+			case <-p.done:
+				return
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the server never went quiet after the handshake")
-		}
-		last = now
+	}()
+	return p
+}
+
+func (p *delayedPC) WriteTo(b []byte, to net.Addr) (int, error) {
+	select {
+	case p.queue <- delayedDatagram{time.Now().Add(p.delay), bytes.Clone(b), to}:
+		return len(b), nil
+	case <-p.done:
+		return 0, net.ErrClosed
 	}
-	return client, server, &serverPC.writes
+}
+
+func (p *delayedPC) Close() error {
+	p.once.Do(func() { close(p.done) })
+	return p.PacketConn.Close()
 }
 
 // A small request answered with a small response costs the server one
@@ -71,40 +79,107 @@ func countedPair(t *testing.T) (client, server *Conn, sent *atomic.Int64) {
 // other frames), and the stream's slot came back as a MAX_STREAMS of its
 // own the moment the stream retired.
 //
-// The client acknowledges the response localMaxAckDelay after it, and the
-// server's probe timeout fires barely past that (RFC 9002 §6.2.1: smoothed
-// RTT, four variances, the peer's max_ack_delay — a millisecond of margin
-// on loopback). A client timer that late, common under -race, draws probes
-// (§6.2.4) that are not this test's subject: an exchange that saw the
-// timeout fire proves nothing either way, and is run again.
+// The exchange runs in a bubble over dgram.Pair, so no datagram is lost and
+// time moves only when every goroutine waits, with the server's datagrams
+// held pathDelay on the way: every round trip is exactly that long. The
+// client acknowledges the response localMaxAckDelay after it arrives, so the
+// ACK reaches the server pathDelay + localMaxAckDelay after the response
+// left; the server's probe timeout is the smoothed RTT (pathDelay), four
+// variances and the client's max_ack_delay (RFC 9002 §6.2.1) — later, by the
+// variances, every run. A probe here is a timeout computed without the
+// peer's max_ack_delay, not a late timer.
 func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
-	client, server, sent := countedPair(t)
-	for range 5 {
-		timeouts := server.Stats().ProbeTimeouts
-		n := smallExchange(t, client, server, sent)
-		if server.Stats().ProbeTimeouts != timeouts {
-			t.Logf("the probe timeout fired during the exchange (%d datagrams): again", n)
-			continue
+	const pathDelay = 10 * time.Millisecond
+	synctest.Test(t, func(t *testing.T) {
+		left, right := dgram.Pair()
+		serverPC := &countingPC{PacketConn: newDelayedPC(left, pathDelay)}
+		l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+		if err != nil {
+			t.Fatal(err)
 		}
-		if n != 1 {
+		defer l.Close()
+		accepted := make(chan *Conn, 1)
+		go func() {
+			c, err := l.Accept()
+			if err != nil {
+				t.Error(err)
+			}
+			accepted <- c
+		}()
+		client, err := Dial(right, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := <-accepted
+		if server == nil {
+			t.Fatal("no server connection")
+		}
+
+		// The handshake leaves a tail behind it — HANDSHAKE_DONE, connection
+		// IDs, the path MTU probe and their acknowledgements. A second of
+		// bubble time lets every timer it armed play out.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		server.mu.Lock()
+		sampled := server.rtt.sampled
+		server.mu.Unlock()
+		if !sampled {
+			t.Fatal("the server has no RTT sample: its probe timeout is the initial guess, and this test would not see one computed wrong")
+		}
+
+		timeouts := server.Stats().ProbeTimeouts
+		before := serverPC.writes.Load()
+		smallExchange(t, client, server)
+		time.Sleep(4 * localMaxAckDelay) // whatever was delayed has left by now
+		synctest.Wait()
+		if n := serverPC.writes.Load() - before; n != 1 {
 			t.Errorf("the server wrote %d datagrams for one small exchange, want 1", n)
 		}
-		return
-	}
-	t.Fatal("the probe timeout fired during every exchange")
+		if got := server.Stats().ProbeTimeouts; got != timeouts {
+			t.Errorf("the server's probe timeout fired %d times during the exchange, want 0", got-timeouts)
+		}
+
+		// The closing period runs on the bubble's clock, which stops when
+		// this function returns: wait it out here.
+		_ = client.Close()
+		_ = server.Close()
+		<-server.gone
+	})
 }
 
-// smallExchange runs one request and response on a new stream and returns
-// how many datagrams the server wrote for it.
-func smallExchange(t *testing.T, client, server *Conn, sent *atomic.Int64) int64 {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+// A packet's acknowledgement is owed before its frames reach the
+// application, so an answer sent while they are being delivered carries it.
+// It used to be owed only once every frame had been acted on: a handler that
+// read the request and wrote the response in that window sent the response
+// without the ACK, and the delayed ACK followed alone localMaxAckDelay later
+// — two datagrams for the exchange above, a few runs in a thousand. The
+// batch callback runs inside delivery, so it sees the window every time.
+func TestAnAnswerSentDuringDeliveryCarriesTheACK(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "exchange:self"}, fakeFuzzAddr("exchange:peer"),
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	defer c.Close()
+	var pending bool
+	c.OnStreamFrames(func([]Frame) error {
+		c.mu.Lock()
+		pending = c.spaces[spaceApplication].ack.pending()
+		c.mu.Unlock()
+		return nil
+	})
+	c.spaces[spaceApplication].ack.record(0, time.Now())
+	if err := c.frames(spaceApplication, streamFrame(nil, 0, 0, "request", true), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Error("the request's ACK was not pending while the request was delivered")
+	}
+}
 
-	before := sent.Load()
+// smallExchange runs one request and response on a new stream.
+func smallExchange(t *testing.T, client, server *Conn) {
+	t.Helper()
 	served := make(chan error, 1)
 	go func() {
-		s, err := server.AcceptStream(ctx)
+		s, err := server.AcceptStream(t.Context())
 		if err != nil {
 			served <- err
 			return
@@ -116,7 +191,7 @@ func smallExchange(t *testing.T, client, server *Conn, sent *atomic.Int64) int64
 		_, err = s.WriteClose([]byte("response"))
 		served <- err
 	}()
-	s, err := client.OpenStream(ctx)
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,8 +205,6 @@ func smallExchange(t *testing.T, client, server *Conn, sent *atomic.Int64) int64
 	if err := <-served; err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(4 * localMaxAckDelay) // whatever was delayed has left by now
-	return sent.Load() - before
 }
 
 // A retired peer stream's slot comes back an eighth of the initial limit at

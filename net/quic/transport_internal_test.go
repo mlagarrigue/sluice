@@ -464,7 +464,7 @@ func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
 	chunk := make([]byte, 100)
 	var off uint64
 	send := func() error {
-		_, err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now())
+		err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now())
 		if err == nil {
 			off += uint64(len(chunk))
 		}

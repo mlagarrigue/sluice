@@ -56,7 +56,7 @@ func TestGhostStream(t *testing.T) {
 		// directions end in one packet and the stream leaves the table.
 		payload := streamFrame(nil, id, 0, "req", true)
 		payload = appendFrame(payload, FrameStopSending, id, 0)
-		if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+		if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("stream %d: %v", id, err)
 		}
 		if s, err := c.AcceptStream(t.Context()); err != nil || s.id != id {
@@ -70,7 +70,7 @@ func TestGhostStream(t *testing.T) {
 
 	for _, id := range []uint64{0, 4, 4 * (streams - 1)} {
 		for name, payload := range lateFrames(id) {
-			if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+			if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 				t.Fatalf("%s on closed stream %d: %v", name, id, err)
 			}
 		}
@@ -98,7 +98,7 @@ func TestOutOfOrderIDOpensTheLowerStreams(t *testing.T) {
 	c, _ := newBenchConn(t)
 	defer c.Close()
 
-	if _, err := c.frames(spaceApplication, streamFrame(nil, 8, 0, "third", false), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, streamFrame(nil, 8, 0, "third", false), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []uint64{0, 4, 8} {
@@ -110,7 +110,7 @@ func TestOutOfOrderIDOpensTheLowerStreams(t *testing.T) {
 			t.Fatalf("AcceptStream gave stream %d, want %d", s.id, want)
 		}
 	}
-	if _, err := c.frames(spaceApplication, streamFrame(nil, 0, 0, "first", false), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, streamFrame(nil, 0, 0, "first", false), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -145,7 +145,7 @@ func TestLateFrameOnOwnClosedStream(t *testing.T) {
 		if err := s.CloseWrite(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.frames(spaceApplication, streamFrame(nil, s.id, 0, "", true), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrame(nil, s.id, 0, "", true), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -154,7 +154,7 @@ func TestLateFrameOnOwnClosedStream(t *testing.T) {
 	}
 
 	for name, payload := range lateFrames(1) {
-		if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+		if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 			t.Fatalf("%s on this end's closed stream 1: %v", name, err)
 		}
 	}
@@ -163,7 +163,7 @@ func TestLateFrameOnOwnClosedStream(t *testing.T) {
 	}
 
 	never := uint64(4*streams + 1)
-	_, err := c.frames(spaceApplication, appendFrame(nil, frameMaxStreamData, never, 1<<20), time.Now())
+	err := c.frames(spaceApplication, appendFrame(nil, frameMaxStreamData, never, 1<<20), time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportStreamState {
 		t.Fatalf("MAX_STREAM_DATA on stream %d, never opened: %v, want STREAM_STATE_ERROR", never, err)

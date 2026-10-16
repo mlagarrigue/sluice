@@ -45,9 +45,9 @@ func boundsConn(t *testing.T, isClient bool) *Conn {
 func TestMaxStreamsOverTheVarintCeilingIsAFrameEncodingError(t *testing.T) {
 	for _, typ := range []byte{frameMaxStreams, frameMaxStreams | 1} {
 		c := boundsConn(t, false)
-		_, err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit+1), time.Now())
+		err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit+1), time.Now())
 		wantCode(t, err, transportFrameEncoding, "MAX_STREAMS 2^60+1")
-		if _, err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit), time.Now()); err != nil {
 			t.Errorf("MAX_STREAMS 2^60 was refused: %v", err)
 		}
 	}
@@ -70,9 +70,9 @@ func TestInitialMaxStreamsOverTheVarintCeilingIsAParameterError(t *testing.T) {
 // PROTOCOL_VIOLATION; a client reads the same frame without complaint.
 func TestNewTokenReceivedByAServerIsAProtocolViolation(t *testing.T) {
 	newToken := []byte{frameNewToken, 0x01, 0xaa}
-	_, err := boundsConn(t, false).frames(spaceApplication, newToken, time.Now())
+	err := boundsConn(t, false).frames(spaceApplication, newToken, time.Now())
 	wantCode(t, err, transportProtocolViolation, "NEW_TOKEN at a server")
-	if _, err := boundsConn(t, true).frames(spaceApplication, newToken, time.Now()); err != nil {
+	if err := boundsConn(t, true).frames(spaceApplication, newToken, time.Now()); err != nil {
 		t.Errorf("a client refused NEW_TOKEN: %v", err)
 	}
 }

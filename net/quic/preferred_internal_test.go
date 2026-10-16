@@ -152,7 +152,7 @@ func TestClientMovesToTheServersPreferredAddress(t *testing.T) {
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.rxFrom = pref
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -450,7 +450,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	c, main := newMigratableServer(t, "pref")
 	pref := &recordingPC{addr: fakeFuzzAddr("pref:preferred")}
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	peer := fakeFuzzAddr("pref:peerA")
@@ -462,7 +462,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	}
 	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	rxVia(pref)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -199,7 +199,7 @@ func TestHandshakeDoneInAnInitialIsRefused(t *testing.T) {
 	}
 
 	payload := AppendVarint(nil, frameHandshakeDone)
-	_, err := c.frames(spaceInitial, payload, time.Now())
+	err := c.frames(spaceInitial, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportProtocolViolation {
 		t.Fatalf("HANDSHAKE_DONE at the Initial level returned %v, want PROTOCOL_VIOLATION", err)
@@ -239,7 +239,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	// Stream 3 is, from this client's side, the peer's unidirectional
 	// stream: this end never sends on it, so STOP_SENDING cannot name it.
 	payload := appendFrame(nil, FrameStopSending, 3, 0)
-	_, err = c.frames(spaceApplication, payload, time.Now())
+	err = c.frames(spaceApplication, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportStreamState {
 		t.Errorf("STOP_SENDING on the peer's uni stream returned %v, want STREAM_STATE_ERROR", err)
@@ -254,7 +254,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	frame = AppendVarint(frame, 0)
 	frame = AppendVarint(frame, 3)
 	frame = append(frame, "abc"...)
-	_, err = c.frames(spaceApplication, frame, time.Now())
+	err = c.frames(spaceApplication, frame, time.Now())
 	if !errors.As(err, &te) || te.code != transportStreamState {
 		t.Errorf("STREAM on this end's own uni stream returned %v, want STREAM_STATE_ERROR", err)
 	}
@@ -330,7 +330,7 @@ func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 
 	payload := AppendVarint(nil, framePathChallenge)
 	payload = append(payload, 1, 2, 3, 4, 5, 6, 7, 8)
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -33,7 +33,7 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	payload = append(payload, data...)
 	payload = appendFrame(payload, FrameResetStream, 0, 7, uint64(len(data)))
 
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,13 +130,13 @@ func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 
-	_, err := c.frames(spaceApplication, nil, time.Now())
+	err := c.frames(spaceApplication, nil, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportProtocolViolation {
 		t.Errorf("an empty payload returned %v, want PROTOCOL_VIOLATION", err)
 	}
 
-	if _, err := c.frames(spaceApplication, make([]byte, 16), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, make([]byte, 16), time.Now()); err != nil {
 		t.Errorf("a payload of nothing but PADDING was refused: %v", err)
 	}
 }
@@ -414,10 +414,10 @@ func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 		return append(b, data...)
 	}
 
-	if _, err := c.frames(spaceApplication, stream(0, []byte("hello"), false), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, stream(0, []byte("hello"), false), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	_, err := c.frames(spaceApplication, stream(0, []byte("he"), true), time.Now())
+	err := c.frames(spaceApplication, stream(0, []byte("he"), true), time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportFinalSize {
 		t.Errorf("a FIN below bytes already received returned %v, want FINAL_SIZE_ERROR", err)
@@ -748,7 +748,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 		// Two streams interleaved, so the replay's order is tested too.
 		id := uint64(i%2) * 4
 		off := uint64(i/2) * size
-		if _, err := c.frames(spaceApplication, streamFrameBytes(id, off, data), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrameBytes(id, off, data), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		want = append(want, data...)
@@ -794,7 +794,7 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 	var off uint64
 	send := func(n int) error {
 		for range n {
-			if _, err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now()); err != nil {
+			if err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now()); err != nil {
 				return err
 			}
 			off += uint64(len(chunk))
@@ -833,7 +833,7 @@ func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	for i := range 30 {
-		if _, err := c.frames(spaceApplication, streamFrameBytes(0, uint64(i)*100, []byte(strings.Repeat("x", 100))), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrameBytes(0, uint64(i)*100, []byte(strings.Repeat("x", 100))), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -38,7 +38,7 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 	s := c.Stream(0) // this client's first bidirectional stream
 
 	payload := appendFrame(nil, FrameStopSending, 0, 0x10c)
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatalf("STOP_SENDING on a local stream: %v", err)
 	}
 	if len(got) != 1 || len(got[0]) != 1 {
@@ -52,7 +52,7 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 		t.Fatalf("WasReset = (%#x, %v), want (0x10c, true)", code, reset)
 	}
 
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatalf("the retransmitted STOP_SENDING: %v", err)
 	}
 	if len(got) != 1 {

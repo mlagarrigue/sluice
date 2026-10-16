@@ -208,19 +208,19 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	c.mu.Unlock()
 
 	// A sequence this end never issued.
-	_, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 9), time.Now())
+	err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 9), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring a never-issued sequence")
 
 	// The identifier the frame's own packet arrived under.
 	c.mu.Lock()
 	c.rxLocalCIDSeq = 2
 	c.mu.Unlock()
-	_, err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 2), time.Now())
+	err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 2), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring the arrival identifier")
 
 	// Legal: retire sequence 1 (the packet arrived under 2) — replaced,
 	// count kept, routing updated.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
 		t.Fatalf("a legal retirement failed: %v", err)
 	}
 	c.mu.Lock()
@@ -243,7 +243,7 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	}
 
 	// Legal too: retiring sequence 0 once alternatives exist.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now()); err != nil {
 		t.Fatalf("retiring sequence 0 with alternatives available failed: %v", err)
 	}
 	c.mu.Lock()
@@ -255,7 +255,7 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	c.mu.Unlock()
 
 	// A duplicate retirement is a retransmission, not a violation.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
 		t.Fatalf("a duplicate retirement failed: %v", err)
 	}
 }
@@ -266,9 +266,9 @@ func TestRetireOnAConnectionThatIssuedNothing(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "bare:self"}, fakeFuzzAddr("bare:peer"),
 		[]byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
 	defer c.Close()
-	_, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now())
+	err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring sequence 0 on a single-identifier connection")
-	_, err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 3), time.Now())
+	err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 3), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring a sequence never issued")
 }
 
@@ -284,7 +284,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	c.adoptPeerCID([]byte("srv-cid0"))
 
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -295,7 +295,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	}
 
 	// Sequence 2, Retire Prior To 2: sequences 0 and 1 go, and 0 is in use.
-	if _, err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -321,7 +321,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 
 	// An identifier arriving already below the threshold is retired at
 	// once, never pooled.
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -344,14 +344,14 @@ func TestNewConnectionIDViolations(t *testing.T) {
 
 	t.Run("same sequence, different content", func(t *testing.T) {
 		c := newClient("dup")
-		if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		// The identical repeat is a retransmission, tolerated.
-		if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 			t.Fatalf("an identical repeat was refused: %v", err)
 		}
-		_, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cidX"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cidX"), tok), time.Now())
 		wantViolation(t, err, transportProtocolViolation, "sequence 1 reissued with different content")
 	})
 
@@ -360,11 +360,11 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		for seq := uint64(1); seq <= 3; seq++ {
 			cid := []byte("srv-cid0")
 			cid[7] = byte('0' + seq)
-			if _, err := c.frames(spaceApplication, ncidFrame(seq, 0, cid, tok), time.Now()); err != nil {
+			if err := c.frames(spaceApplication, ncidFrame(seq, 0, cid, tok), time.Now()); err != nil {
 				t.Fatalf("sequence %d, within the limit of 4: %v", seq, err)
 			}
 		}
-		_, err := c.frames(spaceApplication, ncidFrame(4, 0, []byte("srv-cid4"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(4, 0, []byte("srv-cid4"), tok), time.Now())
 		wantViolation(t, err, transportConnectionIDLimit, "a fifth simultaneously-active identifier")
 	})
 
@@ -374,7 +374,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		c := newConn(&fuzzSink{addr: "zero:self"}, fakeFuzzAddr("zero:peer"),
 			nil, []byte("selfcid0"), false, DefaultParameters())
 		t.Cleanup(func() { _ = c.Close() })
-		_, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now())
 		wantViolation(t, err, transportProtocolViolation, "NEW_CONNECTION_ID under a zero-length peer identifier")
 	})
 }
@@ -421,7 +421,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 
 	challenge := AppendVarint(nil, framePathChallenge)
 	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -451,7 +451,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 	// an off-path address earns no expansion — the response must not be a
 	// 1200-byte reflection of a few bytes aimed at a spoofed source.
 	rxFromNewAddress(c, fakeFuzzAddr("probe:peerC"), 60, true)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	writes = pc.recorded()
@@ -471,7 +471,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	c, pc := newMigratableServer(t, "mig")
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -484,7 +484,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 
 	// A stale packet (not the highest-numbered) must not move the path.
 	rxFromNewAddress(c, fakeFuzzAddr("mig:peerB"), 1200, false)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -497,7 +497,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	// The highest-numbered one does.
 	newAddr := fakeFuzzAddr("mig:peerB")
 	rxFromNewAddress(c, newAddr, 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -545,7 +545,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	wrong := AppendVarint(nil, framePathResponse)
 	wrong = append(wrong, 9, 9, 9, 9, 9, 9, 9, 9)
 	rxFromNewAddress(c, newAddr, 100, true)
-	if _, err := c.frames(spaceApplication, wrong, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, wrong, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -559,7 +559,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	right := AppendVarint(nil, framePathResponse)
 	right = append(right, challengeData[:]...)
 	rxFromNewAddress(c, fakeFuzzAddr("mig:peerC"), 100, true)
-	if _, err := c.frames(spaceApplication, right, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, right, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1304,7 +1304,7 @@ func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
 	resp := AppendVarint(nil, framePathResponse)
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1346,7 +1346,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	c, pc := newMigratableServer(t, "small")
 	newAddr := fakeFuzzAddr("small:peerB")
 	rxFromNewAddress(c, newAddr, 40, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	probes := writesTo(pc.recorded(), newAddr)
@@ -1360,7 +1360,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	c.mu.Lock()
 	first := c.pathProbe.data
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, pathResponse(first), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, pathResponse(first), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1376,7 +1376,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	if last := probes[len(probes)-1]; len(last.data) < 1200 {
 		t.Fatalf("the second validation left in %d bytes, want ≥1200", len(last.data))
 	}
-	if _, err := c.frames(spaceApplication, pathResponse(second), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, pathResponse(second), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1410,12 +1410,12 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 func TestUnvalidatedMigrationRevertsToTheLastValidatedPath(t *testing.T) {
 	c, pc := newMigratableServer(t, "revert")
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	oldAddr, newAddr := fakeFuzzAddr("revert:peerA"), fakeFuzzAddr("revert:peerB")
 	rxFromNewAddress(c, newAddr, 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	old := writesTo(pc.recorded(), oldAddr)
@@ -1472,11 +1472,11 @@ func TestReturnToTheValidatedPathEndsAnUnprovenMigration(t *testing.T) {
 	c, _ := newMigratableServer(t, "spoof")
 	oldAddr := fakeFuzzAddr("spoof:peerA")
 	rxFromNewAddress(c, fakeFuzzAddr("spoof:attacker"), 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	rxFromNewAddress(c, oldAddr, 50, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1505,7 +1505,7 @@ func TestRetirementFloodIsBounded(t *testing.T) {
 	seq := uint64(1)
 	for ; seq <= 1000 && err == nil; seq++ {
 		cid := []byte{'f', 'l', 'o', 'o', 'd', byte(seq >> 16), byte(seq >> 8), byte(seq)}
-		_, err = c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now())
+		err = c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now())
 	}
 	wantViolation(t, err, transportConnectionIDLimit, "an unending retirement flood")
 	if retired := len(controlFrames(t, c)); retired > limit {
@@ -1527,7 +1527,7 @@ func TestRetirementsThatLeaveDoNotAccumulate(t *testing.T) {
 	tok := make([]byte, 16)
 	for seq := uint64(1); seq <= 100; seq++ {
 		cid := []byte{'d', 'r', 'a', 'i', 'n', byte(seq >> 16), byte(seq >> 8), byte(seq)}
-		if _, err := c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now()); err != nil {
 			t.Fatalf("sequence %d: %v", seq, err)
 		}
 		c.mu.Lock()
@@ -1596,7 +1596,7 @@ func TestRetirementChainIsBounded(t *testing.T) {
 	for seq := uint64(1); seq <= 400; seq++ {
 		flood = appendFrame(flood, frameRetireConnectionID, seq)
 	}
-	_, err := c.frames(spaceApplication, flood, time.Now())
+	err := c.frames(spaceApplication, flood, time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring past what was issued")
 
 	c.mu.Lock()
@@ -1650,7 +1650,7 @@ func TestRetirementDeficitIsMadeUpOnFlush(t *testing.T) {
 	for seq := uint64(1); seq <= 7; seq++ {
 		retire = appendFrame(retire, frameRetireConnectionID, seq)
 	}
-	if _, err := c.frames(spaceApplication, retire, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, retire, time.Now()); err != nil {
 		t.Fatalf("retiring what was issued: %v", err)
 	}
 	c.mu.Lock()
@@ -1881,7 +1881,7 @@ func TestOffPathChallengesShareOneDatagramWithinBudget(t *testing.T) {
 		challenges = append(challenges, bytes.Repeat([]byte{byte(i + 1)}, 8)...)
 	}
 	rxFromNewAddress(c, source, 1200, true)
-	if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	writes := pc.recorded()
@@ -1899,11 +1899,11 @@ func TestOffPathChallengesShareOneDatagramWithinBudget(t *testing.T) {
 	// (1200 each), and a fourth answer — nothing more received — is
 	// withheld rather than sent past the limit.
 	for range 2 {
-		if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+		if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	var total int
@@ -1959,7 +1959,7 @@ func countFrames(t *testing.T, c *Conn, datagram []byte, typ byte) int {
 func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 	c, _ := newMigratableServer(t, "flight")
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1975,7 +1975,7 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 	c.mu.Unlock()
 
 	rxFromNewAddress(c, fakeFuzzAddr("flight:peerB"), 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()

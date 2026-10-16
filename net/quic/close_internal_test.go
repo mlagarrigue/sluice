@@ -61,17 +61,17 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 			name: "a STREAM frame past the stream's window", section: "§4.1", want: transportFlowControl, wrapped: true,
 			provoke: func(c *Conn) error {
 				window := DefaultParameters().InitialMaxStreamDataBidiRemote
-				_, err := c.frames(spaceApplication, stream(window, []byte("x"), false), time.Now())
+				err := c.frames(spaceApplication, stream(window, []byte("x"), false), time.Now())
 				return err
 			},
 		},
 		{
 			name: "a RESET_STREAM that moves a known final size", section: "§4.5", want: transportFinalSize,
 			provoke: func(c *Conn) error {
-				if _, err := c.frames(spaceApplication, stream(0, []byte("hello"), true), time.Now()); err != nil {
+				if err := c.frames(spaceApplication, stream(0, []byte("hello"), true), time.Now()); err != nil {
 					return fmt.Errorf("the FIN itself was refused: %w", err)
 				}
-				_, err := c.frames(spaceApplication, resetStream(7), time.Now())
+				err := c.frames(spaceApplication, resetStream(7), time.Now())
 				return err
 			},
 		},
