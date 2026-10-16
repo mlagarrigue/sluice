@@ -483,11 +483,14 @@ type closingState struct {
 	recv      int64
 	// hold is [Conn.SetClosingPeriod]'s choice for a connection that owns
 	// its socket; end is when its read loop stops answering — zeroed by a
-	// [Conn.Wait] whose context ended — and left records that gone is
-	// closed, which only leaveClosing does.
+	// [Conn.Wait] whose context ended — and left records that the state is
+	// over and gone closed or about to be. loop says a socket-owning read
+	// loop runs: then the loop's exit, not the close, is what frees the
+	// socket, so it is the loop that closes gone (releaseSocket).
 	hold bool
 	end  time.Time
 	left bool
+	loop bool
 }
 
 // holdsClosingLocked reports whether a close keeps the closing or draining
@@ -515,13 +518,18 @@ func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Add
 // draining state, a connection that holds these states stays routable for
 // the period and answers (or absorbs); otherwise — a connection that gave
 // its socket back, or one that ended without a close on either side: idle
-// timeout — there is nothing to keep and gone closes now. A Listener's
+// timeout — there is nothing to keep and gone closes now, or, on a socket
+// a read loop still reads, as soon as that loop returns: until then the
+// loop may still arm a deadline on the socket or read from it, and Wait
+// would hand the caller a socket that is not yet free. A Listener's
 // connection leaves on a timer; one that owns its socket leaves when its
 // read loop, which keeps answering until end, returns (holdClosing).
 func (c *Conn) enterClosingLocked() {
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
-		close(c.gone)
+		if !c.closing.loop {
+			close(c.gone)
+		}
 		return
 	}
 	c.closing.nextReply = 1
@@ -560,6 +568,7 @@ func (c *Conn) leaveClosing() {
 // for three probe timeouts would answer nobody.
 func (c *Conn) holdClosing(buf []byte) {
 	if !c.closing.active.Load() {
+		c.releaseSocket()
 		return
 	}
 	defer c.leaveClosing()
@@ -590,6 +599,19 @@ func (c *Conn) holdClosing(buf []byte) {
 			return
 		}
 		c.answerClosing(buf[:n], from)
+	}
+}
+
+// releaseSocket is the exit of a socket-owning read loop that held no
+// closing state: the close already ran (enterClosingLocked) and left gone
+// for the loop to close, now that it has stopped touching the socket.
+func (c *Conn) releaseSocket() {
+	c.mu.Lock()
+	release := c.closing.loop && c.closing.left
+	c.closing.loop = false
+	c.mu.Unlock()
+	if release {
+		close(c.gone)
 	}
 }
 

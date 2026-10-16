@@ -175,7 +175,8 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 // nothing) and no stateless reset, which a listener that had already
 // forgotten the connection would send to its identifier.
 func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
-	l := delayedListener(t, 200*time.Millisecond)
+	const delay = 200 * time.Millisecond
+	l := delayedListener(t, delay)
 	addr := l.Addr()
 	own, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
@@ -218,6 +219,7 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 	replay := late
 	hooked.mu.Unlock()
 
+	closed := time.Now()
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +228,7 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the server never heard the client's close")
 	}
+	heard := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := client.Wait(ctx); err != nil {
@@ -233,18 +236,26 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 	}
 
 	// Whatever the server sent before it read the close (an
-	// acknowledgement, a credit update) may still be on its way or sit in
-	// the socket's buffer, unread since the client closed: drained until
-	// the path has been quiet longer than its delay, so that only an
-	// answer to the late packet can be read below.
+	// acknowledgement, a credit update) is held at most the path's delay
+	// on the way: drained up to that point past the moment the server
+	// heard the close, so that only an answer to the late packet can be
+	// read below.
 	buf := make([]byte, 2048)
+	if err := own.SetReadDeadline(heard.Add(delay + 20*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	for {
-		if err := own.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
-			t.Fatal(err)
-		}
 		if _, _, err := own.ReadFrom(buf); err != nil {
 			break
 		}
+	}
+	// The draining period is three probe timeouts, each at least the
+	// round trip, so it lasts past closed+3·delay. A replay sent later may
+	// meet a listener that has rightly forgotten the connection and
+	// resets it (§10.2): that run measured the machine's load, not the
+	// draining state.
+	if late := time.Since(closed); late >= 3*delay {
+		t.Skipf("the late packet would leave %v after the close, past the draining period's floor of %v", late, 3*delay)
 	}
 	if _, err := own.WriteTo(replay, addr); err != nil {
 		t.Fatal(err)
@@ -252,12 +263,19 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 	if err := own.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	n, _, err := own.ReadFrom(buf)
-	if err == nil {
-		t.Fatalf("a late packet after the peer's close earned a %d-byte reply, want silence", n)
-	}
-	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatal(err)
+	// Only the listener's datagrams count: own's ephemeral port may have
+	// served a connection of another test, whose peer still sends to it.
+	for {
+		n, from, err := own.ReadFrom(buf)
+		if err != nil {
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal(err)
+			}
+			return
+		}
+		if from.String() == addr.String() {
+			t.Fatalf("a late packet after the peer's close earned a %d-byte reply, want silence", n)
+		}
 	}
 }
 
@@ -301,6 +319,44 @@ func TestWaitEndsTheClosingPeriodWhenTheContextEnds(t *testing.T) {
 		}
 		if err := c.conn.Wait(ended); err != nil {
 			t.Fatalf("%s: second Wait = %v, want nil: the socket was not released", c.name, err)
+		}
+	}
+}
+
+// Wait on a connection that owns its socket and holds no closing period
+// returns once the read loop has let go of the socket: a deadline the
+// caller arms afterwards is the one that holds, never the loop's own
+// wakeup armed a moment later. The race between the close and the loop's
+// last arming is narrow, so it is run many times.
+func TestWaitLeavesTheSocketToTheCaller(t *testing.T) {
+	buf := make([]byte, 2048)
+	for range 40 {
+		client, _, _, own := handshakePair(t, serverTLS(t), clientTLS())
+		if err := client.Close(); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := client.Wait(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A read parked past its deadline is released by closing the
+		// socket, so a failure costs two seconds rather than the loop's
+		// idle wakeup.
+		watchdog := time.AfterFunc(2*time.Second, func() { _ = own.Close() })
+		start := time.Now()
+		if err := own.SetReadDeadline(start.Add(50 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if _, _, err = own.ReadFrom(buf); err != nil {
+				break
+			}
+		}
+		watchdog.Stop()
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("after Wait, a read with a 50ms deadline ended after %v with %v", time.Since(start), err)
 		}
 	}
 }

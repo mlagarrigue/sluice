@@ -972,6 +972,11 @@ func (c *Conn) handshake(ctx context.Context) error {
 				<-fired
 				return c.endedDuringHandshakeErr()
 			}
+			// From here the read loop, not the close, frees the socket
+			// (enterClosingLocked) — unless the close already ran.
+			c.mu.Lock()
+			c.closing.loop = c.incoming == nil && !c.closing.left
+			c.mu.Unlock()
 			go c.readLoop()
 			return nil
 		}
