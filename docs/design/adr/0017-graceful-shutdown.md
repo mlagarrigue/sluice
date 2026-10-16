@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay)
 - **Theme:** httpstream
 
 ## Problem
@@ -134,8 +134,13 @@ Closing idle connections at once rather than leaving them to the grace is
 what `net/http` does (`Shutdown` closes `StateIdle`), and it is what
 returns at the cancellation rather than at the next wake of a silent
 client. The unavoidable race — a request byte arriving while the close
-runs — is the one every HTTP/1.1 server has and that clients handle by
-replaying on a fresh connection.
+runs — is the one every HTTP/1.1 server has. A client recovers from it on
+its own only for an idempotent request (RFC 9112 §9.3.1, which defers to
+RFC 9110 §9.2.2: GET, HEAD, PUT, DELETE), replaying it on a fresh
+connection; it SHOULD NOT replay a POST without knowing it was never
+applied, and HTTP/1.1 has no GOAWAY to tell it so. A POST caught in the
+race can therefore be lost: the client sees a closed connection, not a
+response.
 
 What this decision does not do: the staged close against the TCP reset
 (RFC 9112 §9.6, last paragraphs: half-close, then read until the client
