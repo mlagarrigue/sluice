@@ -190,6 +190,92 @@ func TestDateHeaderOnH3(t *testing.T) {
 	}
 }
 
+// RFC 9110 §5.3 has Date sent first on a response, so a recipient can decide
+// early not to handle it: each writer puts its own right after the status, on
+// every protocol, and leaves a handler's Date where the handler put it,
+// without a second one.
+func TestDateFollowsTheStatus(t *testing.T) {
+	undated := Response{Headers: []Header{{Name: []byte("x-a"), Value: []byte("1")}}, Body: []byte("ok")}
+	dated := Response{Headers: []Header{
+		{Name: []byte("x-a"), Value: []byte("1")},
+		{Name: []byte("Date"), Value: []byte(handlerDate)},
+	}, Body: []byte("ok")}
+	method := []byte("GET")
+	for _, tt := range []struct {
+		name string
+		r    Response
+		want []string // field names, lowercased, the length's left out
+	}{
+		{"the writer's Date", undated, []string{"date", "x-a"}},
+		{"the handler's Date", dated, []string{"x-a", "date"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h1, err := WriteBatch(nil, Config{}, nil, []Response{tt.r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, _, _ := bytes.Cut(h1, []byte("\r\n\r\n"))
+			var names []string
+			for _, line := range bytes.Split(head, []byte("\r\n"))[1:] {
+				name, _, _ := bytes.Cut(line, []byte(":"))
+				names = append(names, string(bytes.ToLower(name)))
+			}
+			checkOrder(t, "h1", names, tt.want)
+
+			s := newBenchH2Server(Config{})
+			s.date = testDate
+			h2, err := s.appendHead(nil, 1, method, tt.r, s.cfg.MaxFrameSize)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields, err := newHPACKDecoder(4096, 0).Decode(nil, h2[9:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkOrder(t, "h2", fieldNames(fields), append([]string{":status"}, tt.want...))
+
+			h3, err := appendH3Response(nil, tt.r, method, 0, &h3Scratch{}, testDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			frames, _, err := parseH3Frames(nil, h3, 1<<24)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields, err = newQPACKDecoder(nil, 0).Decode(nil, frames[0].Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkOrder(t, "h3", fieldNames(fields), append([]string{":status"}, tt.want...))
+		})
+	}
+}
+
+// fieldNames lists the names of fields in order.
+func fieldNames(fields []Header) []string {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = string(f.Name)
+	}
+	return names
+}
+
+// checkOrder asserts that got starts with want and holds one date in all,
+// the fields after want being the writer's own framing (content-length,
+// connection).
+func checkOrder(t *testing.T, what string, got, want []string) {
+	t.Helper()
+	dates := 0
+	for _, n := range got {
+		if n == "date" {
+			dates++
+		}
+	}
+	if len(got) < len(want) || fmt.Sprint(got[:len(want)]) != fmt.Sprint(want) || dates != 1 {
+		t.Errorf("%s: fields %q, want %q first and one date", what, got, want)
+	}
+}
+
 // The index the h2 writer spells for date is the static table's.
 func TestHPACKDateIndex(t *testing.T) {
 	if got := staticNameIndex("date"); got != hpackDateIndex {

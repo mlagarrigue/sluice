@@ -1142,7 +1142,13 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	}
 	noLength, noBody := noLengthAndBody(status, method)
 	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
-	hasDate := false
+	if !datedBy(r.Headers) {
+		// RFC 9110 §6.6.1's Date, as the other two writers add it and
+		// where: on every final response the handler did not date itself,
+		// first after :status. The value is the batch's, formatted once and
+		// never written after.
+		fields = append(fields, Header{Name: h3DateName, Value: date})
+	}
 	sc.names = sc.names[:0]
 	for _, h := range r.Headers {
 		// A name the handler spelled in HTTP/1.1 case goes on the wire
@@ -1171,16 +1177,8 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
-		case "date":
-			hasDate = true
 		}
 		fields = append(fields, Header{Name: name, Value: h.Value})
-	}
-	if !hasDate {
-		// RFC 9110 §6.6.1's Date, as the other two writers add it: on every
-		// final response the handler did not date itself. The value is the
-		// batch's, formatted once and never written after.
-		fields = append(fields, Header{Name: h3DateName, Value: date})
 	}
 	if !noLength && (!r.streamed() || r.ContentLength > 0) {
 		// A streamed response states the length it declared, or none, which

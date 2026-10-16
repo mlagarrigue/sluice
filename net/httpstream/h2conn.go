@@ -1553,7 +1553,15 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// listSize is RFC 9113 §6.5.2's measure — names and values uncompressed,
 	// plus 32 per field — of what this block decodes to at the peer.
 	listSize := uint64(len(":status") + 3 + 32)
-	hasDate := false
+	if !datedBy(r.Headers) {
+		// RFC 9110 §6.6.1's Date, as the h1 writer adds it and where: on
+		// every final response the handler did not date itself, first after
+		// :status. The static table names the field (entry 33); the value
+		// is the batch's, formatted once.
+		block = appendHPACKInt(block, hpackDateIndex, 4, 0x00)
+		block = appendHPACKString(block, s.date)
+		listSize += uint64(len("date")+len(s.date)) + 32
+	}
 	s.names = s.names[:0]
 	for _, h := range r.Headers {
 		// h.Name and h.Value stay []byte into appendHPACK: a string binding
@@ -1588,19 +1596,9 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH2Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH2Protocol)
-		case "date":
-			hasDate = true
 		}
 		block = appendHPACK(block, name, h.Value)
 		listSize += uint64(len(name)+len(h.Value)) + 32
-	}
-	if !hasDate {
-		// RFC 9110 §6.6.1's Date, as the h1 writer adds it: on every final
-		// response the handler did not date itself. The static table names
-		// the field (entry 33); the value is the batch's, formatted once.
-		block = appendHPACKInt(block, hpackDateIndex, 4, 0x00)
-		block = appendHPACKString(block, s.date)
-		listSize += uint64(len("date")+len(s.date)) + 32
 	}
 	if !noLength && (!r.streamed() || r.ContentLength > 0) {
 		// A streamed response states the length it declared, or none, which

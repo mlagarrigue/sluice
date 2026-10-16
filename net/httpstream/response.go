@@ -20,9 +20,10 @@ type Response struct {
 	// on the wire in lowercase, as those protocols require, without
 	// touching the handler's bytes. Content-Length is written by
 	// [WriteBatch] from the body, or from ContentLength for a Stream, and
-	// must not be set here. Date is added
-	// by the writer when the handler did not set one (RFC 9110 §6.6.1),
-	// on every final response, 5xx included.
+	// must not be set here. Date is added by the writer when the handler
+	// did not set one (RFC 9110 §6.6.1), on every final response, 5xx
+	// included, ahead of these fields; a handler's own Date stays where
+	// the handler put it.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
@@ -422,8 +423,15 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 	dst = append(dst, ' ')
 	dst = append(dst, reason(status)...)
 	dst = append(dst, '\r', '\n')
-
-	hasDate := false
+	if !datedBy(res.Headers) {
+		// RFC 9110 §6.6.1: an origin server with a clock sends Date on every
+		// response. It leads the fields (§5.3: "Date on responses" first, so
+		// a recipient can decide early not to handle the message); see
+		// datedBy for one the handler set.
+		dst = append(dst, "Date: "...)
+		dst = append(dst, date...)
+		dst = append(dst, '\r', '\n')
+	}
 	for _, h := range res.Headers {
 		if !isToken(h.Name) {
 			return nil, fmt.Errorf("%w: %q is not a header name", ErrMalformed, h.Name)
@@ -456,24 +464,27 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 			// Trailer is the same promise on a response without Trailers.
 			return nil, fmt.Errorf("%w: %s is connection-specific, not the caller's", ErrMalformed, h.Name)
 		}
-		hasDate = hasDate || equalFold(h.Name, "date")
 		dst = append(dst, h.Name...)
 		dst = append(dst, ':', ' ')
 		dst = append(dst, h.Value...)
 		dst = append(dst, '\r', '\n')
 	}
-	if !hasDate {
-		// RFC 9110 §6.6.1: an origin server with a clock sends Date on every
-		// response. A handler that set its own is believed — a cache in
-		// front of it may be dating the entry — and is not doubled. The
-		// field follows the caller's rather than leading them: the order of
-		// distinct fields carries no meaning (§5.3), and one pass over the
-		// headers is enough to know whether it is owed.
-		dst = append(dst, "Date: "...)
-		dst = append(dst, date...)
-		dst = append(dst, '\r', '\n')
-	}
 	return dst, nil
+}
+
+// datedBy says whether a handler set its own Date among headers. One that did
+// is believed — a cache in front of it may be dating the entry — and is
+// neither doubled nor moved: the three writers add theirs only when this is
+// false, ahead of the handler's fields, which needs this pass before the one
+// that writes them.
+func datedBy(headers []Header) bool {
+	for _, h := range headers {
+		// The length first, inline: most names are not four bytes long.
+		if len(h.Name) == len("date") && equalFold(h.Name, "date") {
+			return true
+		}
+	}
+	return false
 }
 
 // noLengthAndBody applies RFC 9110 §8.6 / §9.3.2's constraint on a
