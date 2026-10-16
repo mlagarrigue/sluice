@@ -305,8 +305,9 @@ type Conn struct {
 	draining    bool
 	once        sync.Once
 	timerKick   chan struct{}
-	// closing is what a [Listener]-managed connection keeps after its own
-	// CONNECTION_CLOSE left, for the closing state of RFC 9000 §10.2.1;
+	// closing is what a connection that holds the closing state keeps
+	// after its own CONNECTION_CLOSE left (RFC 9000 §10.2.1), or after the
+	// peer's for the draining state (§10.2.2);
 	// gone is closed when that state ends — at once when there is none —
 	// and is what the listener waits on before it forgets the connection.
 	// See close.go.
@@ -644,6 +645,13 @@ type Datagram struct {
 // socket [udp.EnableECN] was applied to and passes what [udp.PacketECN]
 // finds in its out-of-band bytes. Left at zero, the packet counts as
 // Not-ECT and the client sends unmarked from then on.
+//
+// A server that keeps pc open after the connection, to accept the next one,
+// should call [Conn.SetClosingPeriod]: "Servers that retain an open socket
+// for accepting new connections SHOULD NOT end the closing or draining
+// state early" (RFC 9000 §10.2). Without it, the connection stops reading
+// pc the moment it closes, and a late packet of the peer reaches whatever
+// reads pc next.
 func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err

@@ -46,6 +46,9 @@ func (c *Conn) readLoop() {
 	}
 	buf := make([]byte, c.recvBufSize())
 	oob := make([]byte, udp.PacketInfoLen)
+	// Every way out of this loop follows a close; a connection that holds
+	// the closing period keeps the socket read through it from here.
+	defer c.holdClosing(buf)
 	readFails := 0 // consecutive transient ReadFrom errors, for the backoff
 	for {
 		// The socket is read under mu because [Conn.Rebind] replaces it:
@@ -570,7 +573,8 @@ func (c *Conn) isStatelessReset(datagram []byte) bool {
 	return false
 }
 
-// handleStatelessReset ends the connection the way §10.3.1 asks: silently.
+// handleStatelessReset ends the connection the way §10.3.1 asks: silently,
+// through the draining period.
 // The peer provably once owned this connection — only it was told the token
 // — and provably has no state left for it, so there are no keys on the
 // other side to read a CONNECTION_CLOSE with, and nothing to wait for.
@@ -578,6 +582,7 @@ func (c *Conn) handleStatelessReset() error {
 	c.fail(ErrStatelessReset)
 	c.mu.Lock()
 	c.closeSent = true // suppress the CONNECTION_CLOSE a Close would send
+	c.draining = true  // §10.3.1: "MUST enter the draining period"
 	c.mu.Unlock()
 	_ = c.Close()
 	return ErrStatelessReset

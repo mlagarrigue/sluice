@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -141,8 +142,10 @@ func (c *Conn) abort(err error) {
 // Close ends the connection, telling the peer with a CONNECTION_CLOSE frame
 // (NO_ERROR) so it can drop its state now rather than wait out an idle
 // period (§10.2). Close never blocks on the peer: the frame is sent once,
-// best effort — if it is lost, the peer's idle timer is the fallback the
-// protocol designed for.
+// best effort. If it is lost, a connection that holds the closing period —
+// a [Listener]'s, or one [Conn.SetClosingPeriod] asked — sends it again to
+// the next packet the peer sends; otherwise the peer's idle timer is the
+// fallback the protocol designed for.
 //
 // The error return always comes back nil, kept for [io.Closer] rather than
 // for anything it could report: a failed write here is already "best
@@ -374,7 +377,7 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	c.flushBatchLocked()
 	batching := c.batching
 	c.batching = false
-	c.closing.capturing = c.incoming != nil
+	c.closing.capturing = c.holdsClosingLocked()
 	defer func() {
 		c.closing.capturing = false
 		c.batching = batching
@@ -406,8 +409,8 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 
 		// closeSent is already set, so sendPacketLocked would refuse; write
 		// the packet directly. Best effort: a loss is repaired by the
-		// closing state when a listener manages the connection, and by
-		// the peer's idle timer otherwise.
+		// closing state when the connection holds one, and by the peer's
+		// idle timer otherwise.
 		_ = c.writePacketLocked(sp, space, frame, nil, sendOpts{ackOnly: true}, now)
 	}
 }
@@ -430,17 +433,25 @@ func (c *Conn) idleExpired() {
 // lost, or packets were in flight when it went. A connection that simply
 // vanished would answer those with a stateless reset (§10.3) — the listener
 // no longer routing its identifier — and the peer would learn that this end
-// lost its state, never the code it closed with. So a [Listener]-managed
-// connection stays routable for three probe timeouts after its close, and
-// every datagram the listener attributes to it in that time earns the same
-// sealed CONNECTION_CLOSE again, at a bounded rate.
+// lost its state, never the code it closed with. So a connection that holds
+// the state stays routable for three probe timeouts after its close, and
+// every datagram attributed to it in that time earns the same sealed
+// CONNECTION_CLOSE again, at a bounded rate.
 //
-// Only the listener's connections: a connection that owns its socket
-// ([Dial], the standalone [Accept]) gives the socket back to its caller the
-// moment Close returns — the caller may close it or dial again on it — and
-// nothing of this package may keep reading it. §10.2 allows ending the
-// state early for an endpoint that can close its socket; it asks servers
-// that keep their socket open not to, which is exactly the listener.
+// The draining state (§10.2.2) is the same period entered the other way,
+// when the peer closed first — or reset the connection statelessly, which
+// §10.3.1 treats alike: nothing is kept to send, since a draining endpoint
+// sends nothing at all, and what arrives is absorbed so that the late
+// packet earns neither a reply nor a stateless reset.
+//
+// A [Listener]'s connections always hold these states: §10.2 asks servers
+// that keep their socket open not to end them early. A connection that
+// owns its socket ([Dial], the standalone [Accept]) holds them only when
+// [Conn.SetClosingPeriod] asked: by default it gives the socket back to its
+// caller the moment Close returns — the caller may close it or dial again
+// on it — which §10.2 allows an endpoint able to close its socket. When it
+// holds them, its own read loop keeps reading the socket for the period,
+// and [Conn.Wait] tells the caller when the socket is free again.
 //
 // What is kept is what §10.2.1 says suffices — the sealed datagram(s) of
 // the close, where they went, and a count of what arrived — not the keys:
@@ -470,6 +481,20 @@ type closingState struct {
 	nextReply int   // the count at which the close goes out again
 	sent      int64 // bytes sent while closing, against 3× received
 	recv      int64
+	// hold is [Conn.SetClosingPeriod]'s choice for a connection that owns
+	// its socket; end is when its read loop stops answering — zeroed by a
+	// [Conn.Wait] whose context ended — and left records that gone is
+	// closed, which only leaveClosing does.
+	hold bool
+	end  time.Time
+	left bool
+}
+
+// holdsClosingLocked reports whether a close keeps the closing or draining
+// state: always for a Listener's connection, on request for one that owns
+// its socket.
+func (c *Conn) holdsClosingLocked() bool {
+	return c.incoming != nil || c.closing.hold
 }
 
 // closingPeriodLocked is how long the closing state lasts: three probe
@@ -486,30 +511,145 @@ func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Add
 }
 
 // enterClosingLocked runs in closeOnce after the close left: when a
-// datagram of it was kept, the connection stays routable for the closing
-// period and answers; otherwise — a connection that owns its socket, or
-// one that ended without sending a close: idle timeout, stateless reset,
-// the peer's own close — there is nothing to keep and gone closes now.
+// datagram of it was kept, or the peer's close put the connection in the
+// draining state, a connection that holds these states stays routable for
+// the period and answers (or absorbs); otherwise — a connection that gave
+// its socket back, or one that ended without a close on either side: idle
+// timeout — there is nothing to keep and gone closes now. A Listener's
+// connection leaves on a timer; one that owns its socket leaves when its
+// read loop, which keeps answering until end, returns (holdClosing).
 func (c *Conn) enterClosingLocked() {
-	if len(c.closing.datagrams) == 0 {
+	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
+		c.closing.left = true
 		close(c.gone)
 		return
 	}
 	c.closing.nextReply = 1
 	c.closing.active.Store(true)
-	time.AfterFunc(c.closingPeriodLocked(), c.leaveClosing)
+	if c.incoming != nil {
+		time.AfterFunc(c.closingPeriodLocked(), c.leaveClosing)
+		return
+	}
+	c.closing.end = time.Now().Add(c.closingPeriodLocked())
 }
 
 // leaveClosing ends the closing state: the kept datagrams are released,
-// and gone tells the listener it may forget the connection — after which
-// a late packet gets the stateless reset §10.2 allows "once its closing
-// state ends".
+// and gone tells the listener it may forget the connection, and
+// [Conn.Wait] that the socket is free — after which a late packet gets the
+// stateless reset §10.2 allows "once its closing state ends". Idempotent:
+// the period's timer and a Wait cutting it short may both call it.
 func (c *Conn) leaveClosing() {
 	c.mu.Lock()
+	if c.closing.left {
+		c.mu.Unlock()
+		return
+	}
+	c.closing.left = true
 	c.closing.active.Store(false)
 	c.closing.datagrams = nil
 	c.mu.Unlock()
 	close(c.gone)
+}
+
+// holdClosing is the end of a socket-owning read loop: when the close left
+// the connection in a held closing or draining state, keep reading the
+// socket until the period ends and hand each datagram to answerClosing,
+// then leave. A read error other than the deadline ends the state at once:
+// it is the caller closing the socket — the early end §10.2 allows an
+// endpoint that can — or a socket that no longer reads, and spinning on it
+// for three probe timeouts would answer nobody.
+func (c *Conn) holdClosing(buf []byte) {
+	if !c.closing.active.Load() {
+		return
+	}
+	defer c.leaveClosing()
+	for {
+		c.mu.Lock()
+		pc, end := c.pc, c.closing.end
+		c.mu.Unlock()
+		if !time.Now().Before(end) {
+			return
+		}
+		if err := pc.SetReadDeadline(end); err != nil {
+			return
+		}
+		// Re-read after arming, as readLoop does: a Wait that zeroed end
+		// and expired the deadline before the line above would otherwise
+		// leave this read parked until end.
+		c.mu.Lock()
+		end = c.closing.end
+		c.mu.Unlock()
+		if !time.Now().Before(end) {
+			return
+		}
+		n, from, err := pc.ReadFrom(buf)
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				continue
+			}
+			return
+		}
+		c.answerClosing(buf[:n], from)
+	}
+}
+
+// SetClosingPeriod makes a connection that owns its socket ([Dial], the
+// standalone [Accept]) hold the closing and draining states of RFC 9000
+// §10.2 after it closes, as a [Listener]'s connections always do: for
+// three probe timeouts its read loop keeps reading the socket, answers a
+// peer that missed this end's CONNECTION_CLOSE with the close again, and
+// absorbs what arrives after the peer's own close. Without it — the
+// default — the socket is the caller's again the moment Close returns, and
+// a late packet meets whatever the caller does with it next.
+//
+// A server that keeps the socket open to accept further connections should
+// turn it on: §10.2 asks such servers not to end these states early. While
+// the state lasts the socket is not the caller's; [Conn.Wait] reports when
+// it is, and closing the socket ends the state early, which §10.2 allows.
+// The choice is read when the connection closes; it changes nothing on a
+// Listener's connection. Safe from any goroutine.
+func (c *Conn) SetClosingPeriod(on bool) {
+	c.mu.Lock()
+	c.closing.hold = on
+	c.mu.Unlock()
+}
+
+// Wait blocks until the connection has closed and released its socket:
+// at the close for a connection that holds no closing period, at the end
+// of the period for one that does ([Conn.SetClosingPeriod], a [Listener]'s
+// connection). It returns nil then. Wait does not close the connection.
+//
+// When ctx ends first, Wait returns its error. If the connection has closed
+// by then, Wait first ends its closing period early, so that a closed
+// connection has released its socket whenever Wait returns; an open one is
+// left as it is. Safe from any goroutine.
+func (c *Conn) Wait(ctx context.Context) error {
+	select {
+	case <-c.gone:
+		return nil
+	case <-ctx.Done():
+	}
+	select {
+	case <-c.gone: // both were ready, and select picks at random
+		return nil
+	default:
+	}
+	select {
+	case <-c.closed:
+	default:
+		return ctx.Err()
+	}
+	if c.incoming != nil {
+		c.leaveClosing()
+	} else {
+		c.mu.Lock()
+		c.closing.end = time.Time{}
+		pc := c.pc
+		c.mu.Unlock()
+		_ = pc.SetReadDeadline(time.Now())
+	}
+	<-c.gone
+	return ctx.Err()
 }
 
 // answerClosing is what Listener.dispatch does with a datagram it routed
