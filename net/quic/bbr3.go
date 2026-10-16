@@ -54,9 +54,22 @@ import (
 // in UP, so the flight after an acknowledgement is always under it and the
 // draft's C.inflight read there would never stop a probe.
 //
-// Not yet followed from draft -06, which revised -03: the undo of a
-// spurious loss recovery (§5.5.11) is absent — the transport detects no
-// spurious loss.
+// Left out of draft -06 on purpose: the undo of a spurious loss recovery
+// (§2.15, §5.2.5, §5.5.11). The draft saves the window and the short- and
+// long-term model when a loss episode starts (SaveStateUponLoss, from
+// BBRNoteLoss), the state a loss sends out of Startup or ProbeBW_UP
+// (undo_state), and restores them if the transport later concludes that
+// no packet of the episode was lost (HandleSpuriousLossDetection). The
+// transport cannot conclude it: the ACK scan drops a packet from the
+// flight record the moment it declares it lost (sentTracker), so a late
+// acknowledgement of that number matches nothing and is never seen. A
+// detector would keep lost packets in the record on the ACK path, and
+// track each episode until all of its packets are acknowledged — a cost
+// on every scan for a call RFC 9002 leaves optional (§6.1, A.1). Without
+// it, the saved state would have no reader, so none is kept; a spurious
+// loss costs what a real one does. Revisit when the transport keeps lost
+// packets for reordering (an adaptive threshold, RFC 9002 §6.1.1): the
+// detector then comes for free and the undo is wired to it.
 type bbr3 struct {
 	// est is the connection's delivery estimator, which ProbeRTT marks
 	// application-limited (handleProbeRTT).
@@ -982,6 +995,7 @@ func (b *bbr3) onLost(ev lossEvent) {
 
 // noteCongestion is BBRNoteLoss: a loss or a mark opens a loss round if
 // none is running — it ends when a packet sent from now on is acknowledged.
+// The draft's SaveStateUponLoss is left out with the undo it feeds (bbr3).
 func (b *bbr3) noteCongestion() {
 	if !b.lossInRound {
 		b.lossRoundDelivered = b.delivered
@@ -1019,7 +1033,8 @@ func inflightAtLoss(p lostPacket) int {
 // handleInflightTooHigh is BBRHandleInflightTooHigh: once per probe, the
 // bound drops to the volume the losses name, never under 0.7 of the
 // target (CUBIC's decrease), a probe in UP goes DOWN, and the next probe
-// takes precaution (§5.3.3.6).
+// takes precaution (§5.3.3.6). The draft also records undo_state there,
+// left out with the undo (bbr3).
 func (b *bbr3) handleInflightTooHigh(now time.Time, txInFlight int) {
 	b.prevProbeTooHigh = true
 	b.bwProbeSamples = false // only react once per bw probe
