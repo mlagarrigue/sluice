@@ -1,7 +1,9 @@
 package quic
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -64,5 +66,29 @@ func TestAStreamPickedBeforeThePeerOpensItIsKept(t *testing.T) {
 	buf := make([]byte, 8)
 	if n, _ := picked.Read(buf); string(buf[:n]) != "req" {
 		t.Fatalf("the picked stream read %q, want \"req\"", buf[:n])
+	}
+}
+
+// A context already done that finds no credit still tells the peer it is
+// blocked (RFC 9000 §4.6, §19.14): STREAMS_BLOCKED of the kind asked for,
+// carrying the limit, before the context's error comes back.
+func TestATryOpenWithoutCreditSendsStreamsBlocked(t *testing.T) {
+	for _, uni := range []bool{false, true} {
+		c := newConn(&fuzzSink{addr: "open:self"}, fakeFuzzAddr("open:peer"),
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+		c.hasPeerParams = true // limits of zero: no credit of either kind
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := c.open(ctx, uni); !errors.Is(err, context.Canceled) {
+			t.Fatalf("uni=%v: open = %v; want context.Canceled", uni, err)
+		}
+		want := appendFrame(nil, frameStreamsBlocked, 0)
+		if uni {
+			want = appendFrame(nil, frameStreamsBlocked|1, 0)
+		}
+		if !bytes.Equal(c.control, want) {
+			t.Errorf("uni=%v: control queue %x; want STREAMS_BLOCKED %x", uni, c.control, want)
+		}
+		c.Close()
 	}
 }

@@ -700,7 +700,8 @@ func (c *Conn) signalAccept() {
 // A context that is already done still opens a stream when credit is at
 // hand: only the wait is cancellable.
 //
-// On the way into the wait this end tells the peer it is blocked with
+// On the way into the wait — or into the refusal, when a context already
+// done finds no credit — this end tells the peer it is blocked with
 // STREAMS_BLOCKED (§19.14), once per exhaustion of the limit rather than
 // once per wake-up — the frame is a hint for the peer's accounting, not a
 // retry. With [context.Background] the wait lasts as long as the peer
@@ -790,13 +791,16 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 			return errClosed
 		default:
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+		// Before the context's test: a caller that only tries, its context
+		// already done, is blocked all the same, and §4.6 asks that the peer
+		// hear of it.
 		if !*told {
 			*told = true
 			c.control = appendFrame(c.control, frame, *limit)
 			c.flushControlLocked()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		c.cond.Wait()
 	}
