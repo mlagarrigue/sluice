@@ -728,7 +728,8 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 		if sampled {
 			// pto = 100ms + 1ms + 25ms (the peer's default max_ack_delay,
 			// counted whatever the space, §7.6.1): the duration is 378ms.
-			c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true}
+			// Sampled before every send (B.8).
+			c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
 		}
 		sp := &c.spaces[spaceInitial]
 		for pn := range uint64(5) {
@@ -761,6 +762,99 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 	}
 	if cwnd, _, initial, collapses := run(t, 100*time.Millisecond, false); cwnd != initial/2 || collapses != 0 { // no sample yet
 		t.Errorf("cwnd %d, %d collapses after losses before any round-trip sample, want one halving to %d and none", cwnd, collapses, initial/2)
+	}
+}
+
+// RFC 9002 B.8: only losses sent after the first round-trip sample count
+// toward persistent congestion. The ACK that brings the first sample also
+// declares Initial packets lost that left before it, spread wider than the
+// persistent-congestion duration: one loss event, no collapse.
+func TestPersistentCongestionIgnoresLossesBeforeTheFirstSample(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	initial := c.reno().cwnd
+	sp := &c.spaces[spaceInitial]
+	// Five packets 300ms apart, 1.2s from first to last, and a sixth the
+	// peer acknowledges 100ms after it left.
+	for pn := range uint64(5) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-2*time.Second + time.Duration(pn)*300*time.Millisecond), size: 1200, ackEliciting: true, payload: []byte{byte(pn)}})
+		c.cc.onSent(now, 1200)
+	}
+	sp.sent.record(sentPacket{pn: 5, sentAt: now.Add(-100 * time.Millisecond), ackEliciting: true}) // sized 0: its ACK grows nothing
+	sp.nextPN = 6
+	c.mu.Unlock()
+
+	var peer ackTracker
+	peer.record(5, now)
+	if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The sample is 100ms: pto = 100ms + 4×50ms + 25ms, and the duration,
+	// three of those, 975ms — shorter than the 1.2s the losses span.
+	if !c.rtt.sampled {
+		t.Fatal("the acknowledgement gave no round-trip sample")
+	}
+	if cwnd := c.reno().cwnd; cwnd != initial/2 || c.persistentCongestions != 0 {
+		t.Errorf("cwnd %d, %d collapses after losses sent before the first sample, want one halving to %d and none", cwnd, c.persistentCongestions, initial/2)
+	}
+}
+
+// RFC 9002 A.7: an ACK that acknowledges a slow-start flight and declares
+// a loss is processed losses first — the window takes its decrease, and
+// the acknowledged packets, sent before the recovery period the loss
+// opened, grow nothing (B.5). Acknowledgements first grew the window by
+// the flight and then cut the result: 16200 instead of 6000 under Reno.
+func TestAckDeclaresLossesBeforeItGrowsTheWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cc   func() congestionController
+		want int // the window after one event, from 12000
+	}{
+		{"reno", func() congestionController { return newNewReno(1200) }, 6000},
+		{"cubic", func() congestionController { return newCubic(1200) }, 8400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pcA, pcB := newLoopbackPair(t)
+			c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+			defer c.Close()
+			if err := c.installInitial([]byte("dcid0000")); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			sentAt := now.Add(-50 * time.Millisecond)
+			c.mu.Lock()
+			c.cc = tc.cc()
+			sp := &c.spaces[spaceInitial]
+			// Eighteen packets: the peer acknowledges 1 to 17, and 0, three
+			// below the largest, is lost.
+			for pn := range uint64(18) {
+				sp.sent.record(sentPacket{pn: pn, sentAt: sentAt, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+				c.cc.onSent(sentAt, 1200)
+			}
+			sp.nextPN = 18
+			c.mu.Unlock()
+
+			var peer ackTracker
+			for pn := uint64(1); pn < 18; pn++ {
+				peer.record(pn, now)
+			}
+			if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+				t.Fatal(err)
+			}
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if got := c.cc.window(); got != tc.want {
+				t.Errorf("window %d after 17 acknowledged and one lost in one frame, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

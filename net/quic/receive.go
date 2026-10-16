@@ -1123,7 +1123,10 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, f.largest),
 		}
 	}
-	out, err := sp.sent.processAck(now, f.largest, f.Data, &c.rtt, c.cc, &c.delivery)
+	// RFC 9002 A.7's order: what the frame acknowledges, the round-trip
+	// sample, the ECN counts, the losses and persistent congestion, and
+	// only then the acknowledged packets to the controller (recovery.go).
+	out, err := sp.sent.markAcked(f.largest, f.Data)
 	if errors.Is(err, errOptimisticAck) {
 		// RFC 9000 §21.4: the ACK covers a number this end skipped on
 		// purpose — an acknowledgement of a packet that never existed.
@@ -1134,12 +1137,6 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	}
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
-	}
-	if newCE := c.validateECNLocked(space, f, out); newCE > 0 {
-		// After the frame's acknowledgements and before its losses: a mark
-		// is congestion the network reported without dropping (§13.4.2),
-		// and the controller hears it as such (draft-ietf-ccwg-bbr §3.7).
-		c.cc.onMarked(markEvent{now: now, latestSent: out.largestSentAt, packets: newCE})
 	}
 	if out.largestWasNew && out.largestEliciting {
 		var ackDelay time.Duration
@@ -1168,13 +1165,15 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 				}
 			}
 		}
-		c.rtt.sample(now.Sub(out.largestSentAt), ackDelay)
+		c.rtt.sampleAt(now, now.Sub(out.largestSentAt), ackDelay)
 	}
-	if out.newlyAcked > 0 {
-		// processAck already told the controller, packet by packet; the
-		// window may have grown and a writer parked on it must look again.
-		c.cond.Broadcast()
+	if newCE := c.validateECNLocked(space, f, out); newCE > 0 {
+		// Before the frame's losses (A.7's ProcessECN): a mark is
+		// congestion the network reported without dropping (§13.4.2), and
+		// the controller hears it as such (draft-ietf-ccwg-bbr §3.7).
+		c.cc.onMarked(markEvent{now: now, latestSent: out.largestSentAt, packets: newCE})
 	}
+	sp.sent.detectLost(now, &c.rtt, &c.delivery, &out)
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
 		// A packet under the current send keys reached the peer: both
 		// sides hold this phase, and the next rotation is permitted
@@ -1206,15 +1205,22 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			// RFC 9002 §7.6: two ack-eliciting losses further apart than
 			// the persistent-congestion duration — three probe intervals,
 			// max_ack_delay included whatever the space (§7.6.1) — with
-			// nothing acknowledged between them, after a round-trip sample
-			// exists (§7.6.2: the initial RTT would make the duration a
-			// guess). Only an ACK can establish it; probe timeouts count
-			// for nothing here, by design (§7.6.1).
-			if c.rtt.sampled && out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
+			// nothing acknowledged between them, both sent after the first
+			// round-trip sample (§7.6.2, B.8: the initial RTT would make the
+			// duration a guess; detectLost measures only those). Only an
+			// ACK can establish it; probe timeouts count for nothing here,
+			// by design (§7.6.1).
+			if out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
 				c.cc.onPersistentCongestion()
 				c.persistentCongestions++
 			}
 		}
+	}
+	sp.sent.release(now, &c.rtt, c.cc, &c.delivery, &out)
+	if out.newlyAcked > 0 {
+		// The controller heard each acknowledged packet; the window may
+		// have grown and a writer parked on it must look again.
+		c.cond.Broadcast()
 	}
 	c.settleProbeLocked(out)
 	return nil

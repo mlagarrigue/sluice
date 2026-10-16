@@ -21,8 +21,7 @@ import (
 // receiver's acknowledgement added. The minimum over a round discards that
 // delay the way it discards queueing jitter, and the controller does not
 // depend on the connection's RTT estimator, which samples once per
-// acknowledgement frame and after the controller has been told (B.5's
-// order in processAck).
+// acknowledgement frame, from its largest packet only.
 //
 // Only the initial slow start is armed (§4.3: later slow starts have a
 // threshold the path taught them). The constants are §4.3's, and L is

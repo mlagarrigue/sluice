@@ -73,7 +73,7 @@ func (e *ecnState) mark() uint8 {
 
 // validateECNLocked checks the ECN counts of one ACK frame against what
 // this end sent in that space (§13.4.2.1), and moves the path to capable
-// or failed. out is what processAck made of the frame. It returns how many
+// or failed. out is what markAcked made of the frame. It returns how many
 // more packets the frame reports as CE-marked than the last valid one in
 // that space (§13.4.2.1's "increase in the ECN-CE count"): the congestion
 // signal the controller reads, zero when the counts fail validation or

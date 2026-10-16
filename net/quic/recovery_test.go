@@ -18,6 +18,19 @@ func ackFrameFor(t *testing.T, tracker *ackTracker) Frame {
 	return frames[0]
 }
 
+// processAck runs the tracker's three steps for a test that drives it
+// alone: no round-trip sample, no ECN, and no loss reported to cc between
+// detectLost and release — Conn.handleAck does those.
+func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte, rtt *rttEstimator, cc congestionController, est *deliveryEstimator) (ackOutcome, error) {
+	out, err := s.markAcked(largest, rangeData)
+	if err != nil {
+		return out, err
+	}
+	s.detectLost(now, rtt, est, &out)
+	s.release(now, rtt, cc, est, &out)
+	return out, nil
+}
+
 func TestRTTEstimator(t *testing.T) {
 	var r rttEstimator
 	if r.current() != initialRTT {
@@ -539,7 +552,9 @@ func TestProcessAckMeasuresTheLostSpan(t *testing.T) {
 			peer.record(pn, now)
 		}
 		f := ackFrameFor(t, &peer)
-		var rtt rttEstimator
+		// Sampled before every send (B.8), at the initial RTT's value so
+		// the time threshold stays where it was before any sample.
+		rtt := rttEstimator{smoothed: initialRTT, sampled: true, firstAt: at(2000)}
 		out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -640,9 +655,10 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	c.mu.Lock()
 	spy := &spyController{congestionController: c.cc}
 	c.cc = spy
-	// A round-trip sample, so that persistent congestion can be judged:
-	// pto = 100ms + 1ms + 25ms, the duration is three of those, 378ms.
-	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true}
+	// A round-trip sample taken before every send, so that persistent
+	// congestion can be judged: pto = 100ms + 1ms + 25ms, the duration is
+	// three of those, 378ms.
+	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
 	sp := &c.spaces[spaceInitial]
 	// Five ack-eliciting packets spread over 400ms, all about to be lost,
 	// and a sixth the peer acknowledges.

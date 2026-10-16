@@ -98,7 +98,7 @@ type Conn struct {
 	spaces   [3]space
 	rtt      rttEstimator
 	cc       congestionController
-	delivery deliveryEstimator // delivery-rate state (BBR draft §4.1), fed by send.go and processAck
+	delivery deliveryEstimator // delivery-rate state (BBR draft §4.1), fed by send.go and sentTracker.release
 	pacer    pacer
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.

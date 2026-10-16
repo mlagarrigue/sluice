@@ -44,6 +44,10 @@ type rttEstimator struct {
 	smoothed time.Duration
 	variance time.Duration
 	sampled  bool
+	// firstAt is when the first sample was taken (B.8's first_rtt_sample),
+	// zero before: only a loss sent after it counts toward persistent
+	// congestion (detectLost).
+	firstAt time.Time
 }
 
 // sample folds in one measurement, taken when an ACK newly covers the largest
@@ -76,6 +80,14 @@ func (r *rttEstimator) sample(rtt, ackDelay time.Duration) {
 	}
 	r.variance = (3*r.variance + diff) / 4
 	r.smoothed = (7*r.smoothed + adjusted) / 8
+}
+
+// sampleAt is sample on the ACK path, which also dates the first sample.
+func (r *rttEstimator) sampleAt(now time.Time, rtt, ackDelay time.Duration) {
+	r.sample(rtt, ackDelay)
+	if r.sampled && r.firstAt.IsZero() {
+		r.firstAt = now
+	}
 }
 
 // current is the working estimate: the smoothed value once there is one, the
@@ -126,9 +138,10 @@ type sentPacket struct {
 	txInFlight     int
 	lost           int
 	ackEliciting   bool
-	// acked is processAck's working mark. It never survives a call: a marked
-	// packet is removed by the same call that marked it.
-	acked bool
+	// acked is markAcked's working mark, and declared detectLost's: neither
+	// survives an ACK frame, release removing both (Conn.handleAck).
+	acked    bool
+	declared bool
 	// pmtuProbe marks a DPLPMTUD probe (pmtu.go): its loss releases its
 	// bytes from flight but is no congestion event (RFC 9000 §14.4), and
 	// its acknowledgement or loss is reported by number to the search.
@@ -141,9 +154,10 @@ type sentPacket struct {
 	appLimited bool
 	// afterLoss says the packet tracked just before this one was declared
 	// lost by an earlier scan: if this one is lost too, it extends that lost
-	// range rather than opening one (declareLost). Set on the copy a scan
-	// keeps, never on a record the scan has yet to read: a byte stored
-	// just ahead of the record's copy stalls the copy.
+	// range rather than opening one (declareLost). The timer's scan sets it
+	// on the copy it keeps, never on a record it has yet to read: a byte
+	// stored just ahead of the record's copy stalls the copy. detectLost
+	// copies nothing and sets it in place; release copies later.
 	afterLoss bool
 }
 
@@ -187,7 +201,7 @@ type sentTracker struct {
 // onPath reports whether p was sent on the current path (see pathStart).
 func (s *sentTracker) onPath(p *sentPacket) bool { return !p.sentAt.Before(s.pathStart) }
 
-// errOptimisticAck is processAck's verdict on an ACK that covers the skipped
+// errOptimisticAck is markAcked's verdict on an ACK that covers the skipped
 // number; handleAck turns it into the connection error.
 var errOptimisticAck = errors.New("quic: the peer acknowledged a packet number that was skipped on purpose")
 
@@ -226,6 +240,13 @@ func skipGap(window uint64) uint64 {
 
 // ackOutcome is what processing one ACK frame yields.
 type ackOutcome struct {
+	// largestMarked is the highest packet the frame newly acknowledged;
+	// prevLargest the largest acknowledged before the frame, if hadPrev
+	// (detectLost's persistent-congestion span).
+	largestMarked    uint64
+	prevLargest      uint64
+	hadPrev          bool
+	declared         int  // packets detectLost marked, for release
 	newlyAcked       int  // bytes released from flight (current path only)
 	newlyAckedCount  int  // packets released, whichever path sent them
 	largestWasNew    bool // the frame's largest was newly acknowledged…
@@ -261,16 +282,24 @@ type ackOutcome struct {
 	probeLostBytes            int
 }
 
-// processAck removes what the ranges cover and declares losses. largest is
-// the frame's own largest field; visitRanges walks its encoded ranges. cc
-// hears each newly acknowledged packet of the current path, in order, as
-// it is released (RFC 9002 B.5 grows the window per packet); nil when a
-// test drives the tracker alone. est, the connection's delivery estimator,
-// sees the same packets and yields the frame's rate sample; nil likewise.
-// Losses are reported in the outcome, not to cc: the caller queues their
-// payloads and judges persistent congestion before it reports the batch as
-// one event.
-func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte, rtt *rttEstimator, cc congestionController, est *deliveryEstimator) (ackOutcome, error) {
+// The tracker's side of an ACK frame runs in three steps, in RFC 9002
+// A.7's order, with the connection's own steps between them
+// (Conn.handleAck): markAcked finds what the frame newly acknowledges; the
+// connection takes the round-trip sample and reads the ECN counts;
+// detectLost declares what the new largest acknowledged leaves behind, and
+// the connection reports those losses — the congestion event, then
+// persistent congestion; release hands each acknowledged packet to the
+// controller last. The order is what the window sees: one pass used to
+// grow the window by a slow-start flight and then halve the result, where
+// A.7 halves first and grows nothing sent before the recovery period the
+// losses just opened (B.5).
+
+// markAcked marks what the ranges cover and reads the frame's
+// acknowledgement side into the outcome: what it newly acknowledges, and
+// whether the largest it names is among that. largest is the frame's own
+// largest field; decodeAckRanges walks its encoded ranges. Nothing leaves
+// the record here: release does that, after detectLost.
+func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, error) {
 	var out ackOutcome
 
 	// Both sides are ordered — s.packets ascending by construction (the
@@ -280,8 +309,6 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	// without rescanning the slice per range. An ACK may name billions of
 	// packets; only the ones still in s.packets cost anything.
 	i := len(s.packets) - 1
-	marked := 0
-	var largestMarked uint64 // the first mark is the highest: both walks descend
 	optimistic := false
 	err := decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
 		if s.hasSkipped && lo <= s.skipped && s.skipped <= hi {
@@ -297,12 +324,9 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 			i--
 		}
 		for i >= 0 && s.packets[i].pn >= lo {
-			if !s.packets[i].acked {
-				if marked == 0 {
-					largestMarked = s.packets[i].pn
-				}
-				s.packets[i].acked = true
-				marked++
+			if p := &s.packets[i]; !p.acked {
+				p.acked = true
+				out.mark(p, s.onPath(p), largest)
 			}
 			i--
 		}
@@ -313,130 +337,181 @@ func (s *sentTracker) processAck(now time.Time, largest uint64, rangeData []byte
 	if optimistic {
 		return out, errOptimisticAck
 	}
-	if marked == 0 && len(s.packets) == 0 {
-		return out, nil
-	}
 
 	// The largest ever acknowledged persists (A.10); the one before this
-	// frame is remembered for the persistent-congestion span below.
-	prevLargest, hadPrev := s.largestAcked, s.hasLargestAcked
-	if marked > 0 && (!hadPrev || largestMarked > prevLargest) {
-		s.largestAcked = largestMarked
+	// frame is remembered for detectLost's persistent-congestion span.
+	out.prevLargest, out.hadPrev = s.largestAcked, s.hasLargestAcked
+	if out.newlyAckedCount > 0 && (!s.hasLargestAcked || out.largestMarked > s.largestAcked) {
+		s.largestAcked = out.largestMarked
 		s.hasLargestAcked = true
 		out.raisedLargest = true
 	}
+	return out, nil
+}
 
-	// One pass in packet-number order: what the frame marked is released,
-	// then anything packetThreshold below the largest acknowledged, or
-	// older than the time threshold, is gone (§6.1), and whatever is too
-	// young for either arms the loss timer instead. The loss scan runs on
-	// every ACK, not just the ones with news: the timer was cleared here,
-	// and an ACK that repeats old news used to disarm a pending loss
-	// deadline for good — the loss then surfaced only on a later new ACK,
-	// or on the PTO.
-	//
-	// The same pass measures the batch for RFC 9002 §7.6: the longest span
-	// between the send times of two ack-eliciting packets declared lost
-	// with nothing acknowledged between them — the only state it needs is
-	// where the current run began, because the order here is the send
-	// order. An acknowledged packet between two losses starts the run over
-	// whether this frame acknowledged it or an earlier one did: the
-	// earlier ones are all at or below the previous largest acknowledged,
-	// so a run that straddles that number is cut there. (A run can also
-	// straddle a packet acknowledged two frames ago and below that number;
-	// the RFC allows per-space state that errs on the side of declaring.)
+// mark books one newly acknowledged packet. The merge walks down, so the
+// first packet booked is the frame's highest.
+func (out *ackOutcome) mark(p *sentPacket, onPath bool, largest uint64) {
+	if out.newlyAckedCount == 0 {
+		out.largestMarked = p.pn
+	}
+	out.newlyAckedCount++
+	if p.ect0 {
+		out.newlyAckedECT0++
+	}
+	if onPath {
+		out.newlyAcked += p.size
+	}
+	if p.ackEliciting {
+		out.sawAckEliciting = true
+	}
+	if p.pmtuProbe && !out.probeAcked {
+		out.probeAcked, out.probeAckedPN = true, p.pn
+	}
+	if p.pn == largest {
+		out.largestWasNew = true
+		out.largestEliciting = p.ackEliciting && onPath
+		out.largestSentAt = p.sentAt
+	}
+}
+
+// detectLost declares lost what the largest acknowledged leaves behind
+// (§6.1): anything packetThreshold below it, or sent before it and older
+// than the time threshold — which the round-trip sample this frame just
+// took sets, A.7 sampling before it detects. Whatever is too young for
+// either arms the loss timer instead. The scan runs on every ACK, not just
+// the ones with news: the timer was cleared here, and an ACK that repeats
+// old news used to disarm a pending loss deadline for good — the loss then
+// surfaced only on a later new ACK, or on the PTO. Nothing past the
+// largest acknowledged can be lost, so the scan stops there. It marks and
+// moves nothing: release removes the lost with the acknowledged, in one
+// compaction.
+//
+// The same pass measures the batch for RFC 9002 §7.6: the longest span
+// between the send times of two ack-eliciting packets declared lost with
+// nothing acknowledged between them — the only state it needs is where the
+// current run began, because the order here is the send order. An
+// acknowledged packet between two losses starts the run over whether this
+// frame acknowledged it or an earlier one did: the earlier ones are all at
+// or below the previous largest acknowledged, so a run that straddles that
+// number is cut there. (A run can also straddle a packet acknowledged two
+// frames ago and below that number; the RFC allows per-space state that
+// errs on the side of declaring.) Only a loss sent after the first
+// round-trip sample counts (§7.6.2, B.8): before it, the probe timeout ran
+// on the initial RTT, and the span would measure a guess.
+func (s *sentTracker) detectLost(now time.Time, rtt *rttEstimator, est *deliveryEstimator, out *ackOutcome) {
 	s.lossTime = time.Time{}
-	var threshold time.Duration
-	var lostBefore time.Time
-	if s.hasLargestAcked {
-		threshold = max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
-		lostBefore = now.Add(-threshold)
+	if !s.hasLargestAcked {
+		return
 	}
-	if est != nil {
-		est.begin()
-	}
+	threshold := max(time.Duration(timeThresholdNum)*max(rtt.current(), rtt.latest)/timeThresholdDen, granularity)
+	lostBefore := now.Add(-threshold)
 	var runStart time.Time
 	var runStartPN uint64
 	prevLost := false // the packet before this one was lost, by this scan or (afterLoss) an earlier one
-	kept := s.packets[:0]
 	for i := range s.packets {
 		p := &s.packets[i]
+		if p.pn > s.largestAcked {
+			if prevLost {
+				p.afterLoss = true
+			}
+			break
+		}
 		if p.acked {
 			prevLost = false
 			runStart = time.Time{}
-			out.newlyAckedCount++
-			if p.ect0 {
-				out.newlyAckedECT0++
-			}
-			onPath := s.onPath(p)
-			if onPath {
-				out.newlyAcked += p.size
-				if est != nil {
-					est.update(p)
+			continue
+		}
+		lostByCount := p.pn+packetThreshold <= s.largestAcked
+		lostByTime := p.pn < s.largestAcked && !p.sentAt.After(lostBefore)
+		if lostByCount || lostByTime {
+			extends := prevLost || p.afterLoss
+			prevLost = true
+			p.declared = true
+			out.declared++
+			if s.declareLost(out, p, est, extends) && !rtt.firstAt.IsZero() && p.sentAt.After(rtt.firstAt) {
+				if out.hadPrev && runStartPN < out.prevLargest && out.prevLargest < p.pn {
+					runStart = time.Time{}
 				}
-				if cc != nil {
-					ev := ackEvent{now: now, sentAt: p.sentAt, size: p.size, srtt: rtt.current()}
-					if est != nil {
-						ev.delivered = est.delivered - p.delivered
-						ev.txInFlight, ev.lost = p.txInFlight, est.lost-p.lost
-						ev.sendElapsed, ev.sinceDelivered, ev.appLimited = p.sendElapsed, p.sinceDelivered, p.appLimited
-						// Sent times rise with numbers: the highest newly
-						// marked is the frame's newest, on this path if any
-						// is, and its sample is the frame's (ackEvent.rated).
-						ev.rated = p.pn == largestMarked && ev.rateSample().reliable(rtt.min)
-					}
-					cc.onAcked(ev)
+				if runStart.IsZero() {
+					runStart, runStartPN = p.sentAt, p.pn
+				} else if span := p.sentAt.Sub(runStart); span > out.lostSpan {
+					out.lostSpan = span
 				}
-			}
-			if p.ackEliciting {
-				out.sawAckEliciting = true
-			}
-			if p.pmtuProbe {
-				out.probeAcked, out.probeAckedPN = true, p.pn
-			}
-			if p.pn == largest {
-				out.largestWasNew = true
-				out.largestEliciting = p.ackEliciting && onPath
-				out.largestSentAt = p.sentAt
 			}
 			continue
 		}
-		if s.hasLargestAcked {
-			lostByCount := p.pn+packetThreshold <= s.largestAcked
-			lostByTime := p.pn < s.largestAcked && !p.sentAt.After(lostBefore)
-			if lostByCount || lostByTime {
-				extends := prevLost || p.afterLoss
-				prevLost = true
-				if s.declareLost(&out, p, est, extends) {
-					if hadPrev && runStartPN < prevLargest && prevLargest < p.pn {
-						runStart = time.Time{}
-					}
-					if runStart.IsZero() {
-						runStart, runStartPN = p.sentAt, p.pn
-					} else if span := p.sentAt.Sub(runStart); span > out.lostSpan {
-						out.lostSpan = span
-					}
-				}
-				continue
-			}
-			if p.pn < s.largestAcked && s.lossTime.IsZero() {
-				// Not lost yet by time, but older than the largest: it will
-				// be, if nothing acknowledges it by then.
-				s.lossTime = p.sentAt.Add(threshold)
-			}
+		if p.pn < s.largestAcked && s.lossTime.IsZero() {
+			// Not lost yet by time, but older than the largest: it will
+			// be, if nothing acknowledges it by then.
+			s.lossTime = p.sentAt.Add(threshold)
 		}
-		kept = append(kept, *p)
 		if prevLost {
-			kept[len(kept)-1].afterLoss = true
+			p.afterLoss = true
 			prevLost = false
 		}
 	}
-	s.packets = kept
 	if est != nil {
 		est.lost += out.lostBytes
+	}
+}
+
+// release removes what markAcked and detectLost marked, and hands each
+// acknowledged packet of the current path to the delivery estimator, then
+// to cc, in number order (B.5 grows the window per packet). A.7 calls it
+// after the losses, so a packet sent before the recovery period they
+// opened releases its flight and grows nothing. est yields the frame's
+// rate sample; cc and est are nil when a test drives the tracker alone.
+// The walk stops at the last marked packet and moves the rest of the
+// record in one copy.
+func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionController, est *deliveryEstimator, out *ackOutcome) {
+	left := out.newlyAckedCount + out.declared
+	if left == 0 {
+		return
+	}
+	i := 0
+	for i < len(s.packets) && !s.packets[i].acked && !s.packets[i].declared {
+		i++
+	}
+	kept := s.packets[:i]
+	if est != nil && out.newlyAckedCount > 0 {
+		est.begin()
+	}
+	for ; i < len(s.packets) && left > 0; i++ {
+		p := &s.packets[i]
+		if !p.acked {
+			if p.declared {
+				left--
+			} else {
+				kept = append(kept, *p)
+			}
+			continue
+		}
+		left--
+		if !s.onPath(p) {
+			continue
+		}
+		if est != nil {
+			est.update(p)
+		}
+		if cc != nil {
+			ev := ackEvent{now: now, sentAt: p.sentAt, size: p.size, srtt: rtt.current()}
+			if est != nil {
+				ev.delivered = est.delivered - p.delivered
+				ev.txInFlight, ev.lost = p.txInFlight, est.lost-p.lost
+				ev.sendElapsed, ev.sinceDelivered, ev.appLimited = p.sendElapsed, p.sinceDelivered, p.appLimited
+				// Sent times rise with numbers: the highest newly
+				// marked is the frame's newest, on this path if any
+				// is, and its sample is the frame's (ackEvent.rated).
+				ev.rated = p.pn == out.largestMarked && ev.rateSample().reliable(rtt.min)
+			}
+			cc.onAcked(ev)
+		}
+	}
+	s.packets = append(kept, s.packets[i:]...)
+	if est != nil && out.newlyAckedCount > 0 {
 		est.finish(now, rtt.min)
 	}
-	return out, nil
 }
 
 // collectTimeLosses declares the packets whose loss timer has now matured,
@@ -466,7 +541,7 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *d
 	// (TestLossTimerDeclaresAtTheInstantItMatures).
 	lostBefore := now.Add(-threshold)
 	s.lossTime = time.Time{}
-	prevLost := false // as in processAck
+	prevLost := false // as in detectLost
 	kept := s.packets[:0]
 	for i := range s.packets {
 		p := &s.packets[i]
@@ -477,7 +552,7 @@ func (s *sentTracker) collectTimeLosses(now time.Time, rtt *rttEstimator, est *d
 		}
 		// Past the largest acknowledged, not a candidate and not a reason
 		// to re-arm the timer: the next ACK that covers something newer
-		// scans it (processAck).
+		// scans it (detectLost).
 		if p.pn <= s.largestAcked && s.lossTime.IsZero() {
 			s.lossTime = p.sentAt.Add(threshold)
 		}
@@ -649,7 +724,7 @@ type ackEvent struct {
 	now    time.Time     // when the acknowledgement was processed
 	sentAt time.Time     // when the packet left
 	size   int           // bytes it occupied on the wire
-	srtt   time.Duration // the smoothed round trip as it stood before this frame
+	srtt   time.Duration // the smoothed round trip, this frame's sample included (A.7)
 	// The delivery estimator's reading for this packet (deliveryEstimator):
 	// delivered is how many bytes the network delivered between the
 	// packet's send and this acknowledgement, itself included; sendElapsed
@@ -661,7 +736,9 @@ type ackEvent struct {
 	appLimited     bool
 	// txInFlight is the flight the packet joined, itself included
 	// (RS.tx_in_flight, §2.3), and lost the bytes declared lost since it
-	// left (RS.lost = C.lost - P.lost): what IsInflightTooHigh weighs
+	// left, this frame's losses included — A.7 declares them before it
+	// releases the acknowledged (RS.lost = C.lost - P.lost): what
+	// IsInflightTooHigh weighs
 	// (§5.5.10.2).
 	txInFlight int
 	lost       int

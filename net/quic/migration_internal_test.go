@@ -2025,9 +2025,10 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 	c.mu.Lock()
 	cwnd, sampled = c.reno().cwnd, c.rtt.sampled
 	c.mu.Unlock()
-	// The acknowledged packet grows the window by its size (slow start)
-	// before the batch's loss halves it.
-	if want := (newNewReno(1200).cwnd + 1200) / 2; cwnd != want {
+	// The batch's loss halves the window first, and the acknowledged
+	// packet, sent before the recovery period that loss opened, grows
+	// nothing (RFC 9002 A.7, B.5).
+	if want := newNewReno(1200).cwnd / 2; cwnd != want {
 		t.Errorf("cwnd = %d after the new path's own losses, want %d: a loss on this path is a congestion event", cwnd, want)
 	}
 	if !sampled {
