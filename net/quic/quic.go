@@ -59,8 +59,8 @@
 //     many connections by connection identifier, the §8.1 anti-amplification
 //     limit on every address until it validates, and server-generated Retry
 //     ([ListenerConfig.AlwaysRetry]) for the deployments that want the
-//     address proved before a connection exists at all. On Linux a
-//     Listener on a UDP socket bound to 0.0.0.0 or [::] answers each
+//     address proved before a connection exists at all. On Linux and
+//     macOS a Listener on a UDP socket bound to 0.0.0.0 or [::] answers each
 //     datagram from the address it reached (IP_PKTINFO /
 //     IPV6_RECVPKTINFO), so a multi-homed server does not look like a
 //     path change to its clients. [Listener.Addr] reports where it

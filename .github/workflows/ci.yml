@@ -138,8 +138,15 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
+      # macOS has 127.0.0.1 alone on lo0; the packet-information test needs
+      # a second local address per family to tell a reply's source apart.
+      - name: Second loopback addresses
+        if: runner.os == 'macOS'
+        run: |
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          sudo ifconfig lo0 inet6 fd00::2 prefixlen 128 alias
       - name: Test
-        run: go test -race -shuffle=on ./net/quic/udp/...
+        run: go test -race -shuffle=on -v ./net/quic/udp/...
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.

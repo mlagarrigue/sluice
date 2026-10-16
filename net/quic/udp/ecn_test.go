@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -25,8 +26,8 @@ func TestECNMarkIsReadBack(t *testing.T) {
 		t.Run(tc.network, func(t *testing.T) {
 			srv, err := udp.Listen(tc.network, tc.bind)
 			if err != nil {
-				if tc.network == "udp6" {
-					t.Skipf("no IPv6 loopback: %v", err)
+				if tc.network == "udp6" && os.Getenv("GITHUB_ACTIONS") != "true" {
+					t.Skipf("no IPv6 loopback: %v", err) // every CI runner has ::1
 				}
 				t.Fatal(err)
 			}

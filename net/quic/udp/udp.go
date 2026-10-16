@@ -36,7 +36,7 @@
 // [EnablePacketInfo], [PacketDestination] and [AppendPacketSource] are the
 // second concern: a socket bound to the unspecified address learning which
 // of the host's addresses a datagram reached, and answering from it.
-// Linux only for now.
+// Linux and Darwin for now.
 //
 // Setting DF is the prerequisite for path MTU discovery (§14.2), which the
 // transport does not do yet; until it does, datagrams stay at 1200 bytes
@@ -135,8 +135,8 @@ const PacketInfoLen = 128
 // answer from an address it never wrote to, and to QUIC that is a
 // different path (RFC 9000 §9).
 //
-// Linux only for now (IP_PKTINFO / IPV6_RECVPKTINFO); elsewhere it returns
-// [errors.ErrUnsupported] (wrapped) and changes nothing.
+// Linux and Darwin for now (IP_PKTINFO / IPV6_RECVPKTINFO); elsewhere it
+// returns [errors.ErrUnsupported] (wrapped) and changes nothing.
 func EnablePacketInfo(c *net.UDPConn) error {
 	rc, err := c.SyscallConn()
 	if err != nil {

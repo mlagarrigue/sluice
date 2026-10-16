@@ -1,30 +1,32 @@
+//go:build linux || darwin
+
 package udp_test
 
 import (
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
-// secondLoopback is 127.0.0.2: on Linux the whole of 127/8 answers on lo,
-// so a socket bound to the unspecified address receives on two distinct
-// local addresses without any configuration.
-var secondLoopback = netip.MustParseAddr("127.0.0.2")
-
-// A datagram sent to 127.0.0.2 on a socket bound to the unspecified
-// address is reported as reaching 127.0.0.2, and the reply built with
-// AppendPacketSource leaves from 127.0.0.2. Without the control message
-// the kernel picks the source by route — 127.0.0.1 towards a 127.0.0.1
-// client — which is the path change this exists to prevent.
+// A datagram sent to a second local address on a socket bound to the
+// unspecified address is reported as reaching that address, and the reply
+// built with AppendPacketSource leaves from it. Without the control
+// message the kernel picks the source by route — 127.0.0.1 towards a
+// 127.0.0.1 client — which is the path change this exists to prevent.
 func TestPacketInfoAnswersFromDestination(t *testing.T) {
-	for _, tc := range []struct{ network, bind string }{
-		{"udp4", "0.0.0.0:0"},
-		{"udp", ":0"}, // dual-stack AF_INET6: IPv4 reported as mapped
+	for _, tc := range []struct{ network, bind, client, peer, second string }{
+		{"udp4", "0.0.0.0:0", "udp4", "127.0.0.1", "127.0.0.2"},
+		{"udp", ":0", "udp4", "127.0.0.1", "127.0.0.2"}, // dual-stack AF_INET6: IPv4 reported as mapped
+		{"udp6", "[::]:0", "udp6", "::1", "fd00::2"},
 	} {
 		t.Run(tc.network, func(t *testing.T) {
+			second := netip.MustParseAddr(tc.second)
+			requireLocal(t, second)
 			srv, err := udp.Listen(tc.network, tc.bind)
 			if err != nil {
 				t.Fatal(err)
@@ -33,15 +35,15 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 			if err := udp.EnablePacketInfo(srv); err != nil {
 				t.Fatalf("EnablePacketInfo: %v", err)
 			}
-			cli, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			cli, err := net.ListenUDP(tc.client, &net.UDPAddr{IP: net.ParseIP(tc.peer)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer cli.Close()
 			port := srv.LocalAddr().(*net.UDPAddr).Port
-			to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(secondLoopback, uint16(port)))
+			to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(second, uint16(port))) //nolint:gosec // G115: a port
 			if _, err := cli.WriteTo([]byte("ping"), to); err != nil {
-				t.Skipf("127.0.0.2 not reachable here: %v", err)
+				t.Fatalf("send to %v: %v", second, err)
 			}
 
 			_ = srv.SetReadDeadline(time.Now().Add(2 * time.Second))
@@ -55,8 +57,8 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 			if !ok {
 				t.Fatalf("no destination in %d control bytes", oobn)
 			}
-			if dst.Unmap() != secondLoopback {
-				t.Fatalf("destination %v, want %v", dst, secondLoopback)
+			if dst.Unmap() != second {
+				t.Fatalf("destination %v, want %v", dst, second)
 			}
 			if ifindex <= 0 {
 				t.Errorf("ifindex %d, want the loopback interface's", ifindex)
@@ -66,19 +68,36 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 			if _, err := srv.WriteTo(buf[:n], from); err != nil {
 				t.Fatal(err)
 			}
-			if src := readSource(t, cli); src == secondLoopback {
-				t.Skip("kernel already answers from 127.0.0.2; nothing to distinguish")
+			if src := readSource(t, cli); src == second {
+				t.Skipf("kernel already answers from %v; nothing to distinguish", second)
 			}
 
 			src := udp.AppendPacketSource(nil, dst, 0)
 			if _, _, err := srv.WriteMsgUDP(buf[:n], src, from); err != nil {
 				t.Fatalf("WriteMsgUDP: %v", err)
 			}
-			if got := readSource(t, cli); got != secondLoopback {
-				t.Fatalf("reply came from %v, want %v", got, secondLoopback)
+			if got := readSource(t, cli); got != second {
+				t.Fatalf("reply came from %v, want %v", got, second)
 			}
 		})
 	}
+}
+
+// requireLocal skips unless addr is one of this host's addresses. Linux
+// has the whole of 127/8 on lo; macOS has only 127.0.0.1, and neither has
+// fd00::2. The macOS job of the CI workflow adds both to lo0, so there
+// their absence is a failure, not a skip.
+func requireLocal(t *testing.T, addr netip.Addr) {
+	t.Helper()
+	c, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))
+	if err == nil {
+		c.Close()
+		return
+	}
+	if runtime.GOOS == "darwin" && os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf("%v is not configured on this runner: %v", addr, err)
+	}
+	t.Skipf("%v is not one of this host's addresses: %v", addr, err)
 }
 
 func readSource(t *testing.T, c *net.UDPConn) netip.Addr {
@@ -117,8 +136,8 @@ func TestPacketDestinationDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// Elsewhere than Linux these are stubs; here they must be live.
-func TestEnablePacketInfoOnLinux(t *testing.T) {
+// Elsewhere than Linux and Darwin these are stubs; here they must be live.
+func TestEnablePacketInfoIsLive(t *testing.T) {
 	c, err := udp.Listen("udp6", "[::]:0")
 	if err != nil {
 		t.Skipf("no IPv6 here: %v", err)
