@@ -15,10 +15,11 @@ import (
 // Config.WriteTimeout and no longer: the write is given up on, the stream
 // reset with H3_REQUEST_CANCELLED, and a streamed producer told at its next
 // yield. The client's request stream opens with 64 bytes of credit for the
-// response and is never read, so nothing past those bytes may leave; the
-// connection's idle timeout, at its 30s default, is far past the bound the
-// test holds the server to, which is what makes the write deadline — not the
-// idle timeout — the thing that ends the wait.
+// response and is never read, so nothing past those bytes may leave. The
+// idle timeout cannot end the wait instead, whatever its value: the starved
+// writer re-announces STREAM_DATA_BLOCKED every third of it (RFC 9000 §4.1),
+// and each announcement and its ACK restart both ends' idle clocks — set
+// under the write timeout, it leaves this test green.
 func TestH3WriteTimeoutResetsAStarvedResponse(t *testing.T) {
 	for _, mode := range []struct {
 		name string
