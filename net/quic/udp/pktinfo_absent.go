@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package udp
 
@@ -8,9 +8,10 @@ import (
 	"net/netip"
 )
 
-// Packet information is wired on Linux and Darwin. Windows has
-// IP_PKTINFO / IPV6_PKTINFO (19 / 19) and waits for a slice of its own.
-// Here the listener keeps letting the kernel pick a reply's source.
+// Packet information is wired on Linux, Darwin and Windows. The BSDs
+// have IP_RECVDSTADDR / IPV6_RECVPKTINFO and wait for a machine to verify
+// them on. Here the listener keeps letting the kernel pick a reply's
+// source.
 var errNoPacketInfo = fmt.Errorf("packet-info socket option: %w", errors.ErrUnsupported)
 
 func enablePacketInfo(fd uintptr, v6 bool) error { return errNoPacketInfo }

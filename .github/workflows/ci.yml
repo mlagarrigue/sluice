@@ -145,6 +145,10 @@ jobs:
         run: |
           sudo ifconfig lo0 alias 127.0.0.2 up
           sudo ifconfig lo0 inet6 fd00::2 prefixlen 128 alias
+      # Windows answers for the whole of 127/8 but has ::1 alone for IPv6.
+      - name: Second IPv6 loopback address
+        if: runner.os == 'Windows'
+        run: netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
       - name: Test
         run: go test -race -shuffle=on -v ./net/quic/udp/...
 

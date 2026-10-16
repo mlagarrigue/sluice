@@ -1,4 +1,4 @@
-//go:build linux || darwin
+//go:build linux || darwin || windows
 
 package udp_test
 
@@ -84,9 +84,10 @@ func TestPacketInfoAnswersFromDestination(t *testing.T) {
 }
 
 // requireLocal skips unless addr is one of this host's addresses. Linux
-// has the whole of 127/8 on lo; macOS has only 127.0.0.1, and neither has
-// fd00::2. The macOS job of the CI workflow adds both to lo0, so there
-// their absence is a failure, not a skip.
+// and Windows answer for the whole of 127/8 on the loopback; macOS has
+// only 127.0.0.1, and none has fd00::2. The macOS and Windows jobs of the
+// CI workflow add what their loopback lacks, so there an absence is a
+// failure, not a skip.
 func requireLocal(t *testing.T, addr netip.Addr) {
 	t.Helper()
 	c, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(addr, 0)))
@@ -94,7 +95,7 @@ func requireLocal(t *testing.T, addr netip.Addr) {
 		c.Close()
 		return
 	}
-	if runtime.GOOS == "darwin" && os.Getenv("GITHUB_ACTIONS") == "true" {
+	if runtime.GOOS != "linux" && os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Fatalf("%v is not configured on this runner: %v", addr, err)
 	}
 	t.Skipf("%v is not one of this host's addresses: %v", addr, err)
@@ -123,10 +124,10 @@ func TestPacketDestinationDoesNotAllocate(t *testing.T) {
 	if allocs != 0 {
 		t.Fatalf("PacketDestination allocates %v times", allocs)
 	}
-	// The first message wins, and both layouts round-trip — the IPv4 one on
-	// Linux only: XNU reports the destination in ipi_addr and takes the
-	// source from ipi_spec_dst (pktinfo_darwin_test.go).
-	if dst, ifindex, _ := udp.PacketDestination(oob); runtime.GOOS == "linux" && (dst != netip.MustParseAddr("192.0.2.7") || ifindex != 3) {
+	// The first message wins, and both layouts round-trip — the IPv4 one
+	// except on Darwin: XNU reports the destination in ipi_addr and takes
+	// the source from ipi_spec_dst (pktinfo_darwin_test.go).
+	if dst, ifindex, _ := udp.PacketDestination(oob); runtime.GOOS != "darwin" && (dst != netip.MustParseAddr("192.0.2.7") || ifindex != 3) {
 		t.Fatalf("got %v %d", dst, ifindex)
 	}
 	v6 := udp.AppendPacketSource(nil, netip.MustParseAddr("2001:db8::1"), 5)
@@ -138,7 +139,8 @@ func TestPacketDestinationDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// Elsewhere than Linux and Darwin these are stubs; here they must be live.
+// Elsewhere than Linux, Darwin and Windows these are stubs; here they must
+// be live.
 func TestEnablePacketInfoIsLive(t *testing.T) {
 	c, err := udp.Listen("udp6", "[::]:0")
 	if err != nil {

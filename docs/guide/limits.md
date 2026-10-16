@@ -253,8 +253,7 @@ to a separate module before a v1.
   them, and `net.PacketConn` does not deliver them): a path that shrinks
   under a connection is found by loss recovery, not by the probe. A lost
   probe is not a congestion event (§14.4).
-- **`net/quic/udp`**: follows `quic`; packet information on Windows the
-  day a deployment there needs it.
+- **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
   client in continuous integration, fuzzed parsers, the per-batch cost of a
