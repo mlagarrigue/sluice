@@ -120,6 +120,11 @@
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)
 //     rather than closing — a long-lived connection no longer dies of its
 //     packet count. [Stats.KeyUpdates] counts the rotations.
+//   - ECN (§13.4), on Linux: the field is read off every datagram and
+//     reported in ACK frames, this end marks its own packets ECT(0) once
+//     the path validates, and a rise in the CE count a peer reports is a
+//     congestion event for the controller. Elsewhere the field is neither
+//     read nor set, and [Stats] shows zero.
 //
 // # What is not here
 //
@@ -129,11 +134,6 @@
 //   - 0-RTT. A server issues no session ticket; a client given a
 //     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
 //     still in one round trip and with nothing sent in 0-RTT.
-//   - A congestion response to ECN. On Linux the ECN field is read off
-//     every datagram and reported in ACK frames, and this end marks its
-//     own packets ECT(0) once the path validates (§13.4); the CE counts a
-//     peer reports are checked, not yet acted on. Elsewhere the field is
-//     neither read nor set, and [Stats] shows zero.
 //
 // # The socket is the caller's
 //

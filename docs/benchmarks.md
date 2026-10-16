@@ -599,7 +599,8 @@ CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts
 of `RTT80Shallow` within 1.09–1.12 in `gate-cc.sh` — and leaves the reno
 job green (0.991 to 1.007).
 
-**The CI gate watches eight rows per controller** through a second script,
+**The CI gate watches the rows of its `GATED` list per controller** —
+eight, six on BBRv1 — through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
 `gate.sh`'s on every pull request and every push to `main`. It differs
 from `gate.sh` in the three ways these rows require: it builds

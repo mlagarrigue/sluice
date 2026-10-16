@@ -172,10 +172,10 @@ func parseShortHeader(b []byte, dcidLen int) (shortHeader, error) {
 // appendVersionNegotiation writes a Version Negotiation packet (RFC 9000
 // §17.2.1): version zero, the triggering packet's identifiers echoed swapped
 // — dcid is the sender's source identifier, scid the destination it named —
-// and the versions this endpoint actually serves. The low seven bits of the
-// first byte carry no meaning in this packet; RFC 9000 suggests randomising
-// them against fingerprinting, a traffic-analysis concern this package does
-// not take on (the Retry builder makes the same call).
+// and the versions this endpoint actually serves. The seven bits under the
+// header form are Unused: set "to an arbitrary value by the server", and
+// "Clients MUST ignore the value of this field". They are drawn at random
+// with 0x40 kept on, as appendRetryPacket draws its own four.
 func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte {
 	// §17.2.1: the seven bits under the header form are "set to an
 	// arbitrary value by the server", with the SHOULD of keeping 0x40 on so

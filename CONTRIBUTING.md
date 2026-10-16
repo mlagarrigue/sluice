@@ -258,7 +258,8 @@ session carry.
 The one exception is `net/quic`'s emulated-path benchmarks, which measure
 the congestion controller rather than the CPU: `gate-path.sh`, run by its
 own CI job once per controller, builds that package on both sides, runs
-them unpinned and fails when a median transfer is more than 6% slower;
+the benchmarks its `GATED` list names unpinned and fails when a median
+transfer is more than 6% slower;
 `gate-cc.sh` holds the controllers other than the default to their own
 bounds (`docs/benchmarks.md`, "QUIC, on an emulated path").
 

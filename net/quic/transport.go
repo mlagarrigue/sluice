@@ -423,24 +423,28 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 	return dst
 }
 
-// ParseParameters decodes what a peer announced.
-//
-// An identifier this package does not know is skipped rather than refused:
-// the space is extensible on purpose, and a peer that refuses the unknown is
-// how a protocol stops being able to change. A *known* identifier repeated
-// is refused, though — RFC 9000 §7.4 makes it TRANSPORT_PARAMETER_ERROR,
-// because two values for one limit is a peer this end cannot reason about.
 // parameterError is how every refusal of what the peer announced leaves
-// the parser and handlePeerParameters: RFC 9000 §7.4 makes an invalid value
-// or a duplicate TRANSPORT_PARAMETER_ERROR, §18.2 says the same of each
-// parameter's own bounds and of the server-only ones a client sends, and
-// §7.3 offers it (or PROTOCOL_VIOLATION) for identifiers that do not match
-// the handshake's packets — one code for the whole family, so a peer reads
-// "your parameters" rather than "my internals".
+// the parser and handlePeerParameters: RFC 9000 §20.1 defines
+// TRANSPORT_PARAMETER_ERROR for parameters "badly formatted, included an
+// invalid value, omitted a mandatory transport parameter, included a
+// forbidden transport parameter" — a block cut mid-varint or mid-value is
+// the first case, §7.4 adds the duplicate, §18.2 each parameter's own
+// bounds and the server-only ones a client sends, and §7.3 offers it (or
+// PROTOCOL_VIOLATION) for identifiers that do not match the handshake's
+// packets. One code for the whole family, so a peer reads "your
+// parameters" rather than "my internals".
 func parameterError(err error) error {
 	return &transportError{code: transportParameterError, err: err}
 }
 
+// parseParameters decodes what a peer announced.
+//
+// An identifier this package does not know is skipped rather than refused:
+// the space is extensible on purpose, and a peer that refuses the unknown is
+// how a protocol stops being able to change. An identifier repeated is
+// refused, though, known or not — RFC 9000 §7.4 makes it
+// TRANSPORT_PARAMETER_ERROR, because two values for one limit is a peer
+// this end cannot reason about.
 func parseParameters(b []byte) (TransportParameters, error) {
 	var p TransportParameters
 	// §7.4: no identifier twice, known or not — two values for one limit
@@ -452,9 +456,9 @@ func parseParameters(b []byte) (TransportParameters, error) {
 	var seen uint64
 	var seenHigh []uint64
 	for len(b) > 0 {
-		// A block that stops mid-varint or mid-value is a malformed
-		// parameter, and §7.4's TRANSPORT_PARAMETER_ERROR names it better
-		// than the INTERNAL_ERROR an unwrapped parse error would close
+		// A block that stops mid-varint or mid-value is a parameter
+		// "badly formatted" (§20.1), and TRANSPORT_PARAMETER_ERROR names it
+		// better than the INTERNAL_ERROR an unwrapped parse error would close
 		// with.
 		id, rest, err := Varint(b)
 		if err != nil {

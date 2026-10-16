@@ -1592,9 +1592,13 @@ type Stats struct {
 	// BytesRetransmitted is how many bytes of frames those losses put back
 	// on the send queue — payload, not packet size: the headers, the
 	// ACK and PADDING frames of a lost packet are not sent again (§6.1,
-	// RFC 9000 §13.3). On a path that reorders but loses nothing, every
-	// byte here was sent twice for no reason: the cost of a spurious loss,
-	// which LostPackets counts the same as a real one.
+	// RFC 9000 §13.3) — so it never exceeds LostPackets times the largest
+	// datagram the path carried. It counts at the moment of queuing: a
+	// byte queued as the connection closes, or in the Initial or Handshake
+	// space after its keys are discarded (RFC 9001 §4.9), is counted and
+	// never sent. On a path that reorders but loses nothing, every byte
+	// here was queued for no reason: the cost of a spurious loss, which
+	// LostPackets counts the same as a real one.
 	BytesRetransmitted uint64
 
 	// PersistentCongestions is how many times an acknowledgement proved
