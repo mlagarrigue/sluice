@@ -2,6 +2,7 @@ package quic_test
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice/net/quic"
@@ -129,16 +130,25 @@ func TestStatsCountsLostPackets(t *testing.T) {
 // the share of a sample interval the queue can stand empty after a loss;
 // the line bounds it above with only measurement noise, since nothing is
 // delivered faster than the line (draft-ietf-ccwg-bbr-06 §4.1.1.2.4).
+//
+// The transfer runs in a synctest bubble: the link is dgram.Pair and the
+// emulator's timers, so its clock is the bubble's, which only moves when
+// every goroutine waits. On the wall clock, a runner busy with the rest of
+// the suite delayed the emulator's deliveries and the figure measured the
+// runner (0.33 of the line, CI 2026-10-16); here it measures the estimator.
 func TestDeliveryRateOnBottleneck(t *testing.T) {
 	if testing.Short() {
 		t.Skip("a 4 MiB transfer over an emulated 50 Mbit/s bottleneck")
 	}
 	const line = 50_000_000 / 8
-	link := &netemLink{prof: netemProfile{owd: 10 * time.Millisecond, rate: line, queue: 5 * time.Millisecond}}
-	tr, err := transferOnce(t, link, 4<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var tr transfer
+	synctest.Test(t, func(t *testing.T) {
+		link := &netemLink{prof: netemProfile{owd: 10 * time.Millisecond, rate: line, queue: 5 * time.Millisecond}}
+		var err error
+		if tr, err = transferOnce(t, link, 4<<20); err != nil {
+			t.Fatal(err)
+		}
+	})
 	rate := tr.stats.DeliveryRate
 	// What the sender let the path carry. A Reno window halved by a loss in
 	// the last round trips is below the bandwidth-delay product, and the

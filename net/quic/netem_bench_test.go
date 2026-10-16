@@ -140,21 +140,36 @@ func writeMarked(dst net.PacketConn, data []byte, to net.Addr, ecn uint8, oob []
 // doomed packets are dropped at read time, survivors are handed to a
 // deliverer that sleeps until each one's arrival instant. A reordered
 // packet leaves that in-order queue for a timer of its own, which is what
-// lets it overtake. Returns when src closes.
+// lets it overtake. Returns when src closes, once the deliverer has too:
+// what is still in flight then is dropped rather than slept out, so a
+// transfer inside a synctest bubble leaves no goroutine asleep behind it.
 func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.Rand, bn *bottleneck) {
 	ch := make(chan timedPacket, 4096)
+	stopping, delivered := make(chan struct{}), make(chan struct{})
 	go func() {
+		defer close(delivered)
 		// On a closed pair the writes start failing; keep draining so the
 		// forwarder never blocks on a full channel while shutting down.
 		var oob []byte
+		wait := time.NewTimer(time.Hour)
+		defer wait.Stop()
 		for pkt := range ch {
 			if d := time.Until(pkt.arriveAt); d > 0 {
-				time.Sleep(d)
+				wait.Reset(d)
+				select {
+				case <-wait.C:
+				case <-stopping:
+					continue
+				}
 			}
 			oob = writeMarked(dst, pkt.data, to, pkt.ecn, oob)
 		}
 	}()
-	defer close(ch)
+	defer func() {
+		close(stopping)
+		close(ch)
+		<-delivered
+	}()
 
 	bad := false
 	buf := make([]byte, 2048)
@@ -257,13 +272,15 @@ func (l *netemLink) path() (client, server net.PacketConn, dialTo net.Addr, stop
 		a1, a2 = dgram.Pair()
 		b1, b2 = dgram.Pair()
 	}
-	go forward(a2, b1, b2.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed, seed+1)), &l.up)     //nolint:gosec // G404: a seeded loss pattern, reproducible on purpose
-	go forward(b1, a2, a1.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed+2, seed+3)), &l.down) //nolint:gosec // G404: same
+	var forwarders sync.WaitGroup
+	forwarders.Go(func() { forward(a2, b1, b2.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed, seed+1)), &l.up) })     //nolint:gosec // G404: a seeded loss pattern, reproducible on purpose
+	forwarders.Go(func() { forward(b1, a2, a1.LocalAddr(), l.prof, rand.New(rand.NewPCG(seed+2, seed+3)), &l.down) }) //nolint:gosec // G404: same
 	return a1, b2, a2.LocalAddr(), func() {
 		_ = a1.Close()
 		_ = b2.Close()
 		_ = a2.Close()
 		_ = b1.Close()
+		forwarders.Wait()
 	}, nil
 }
 
