@@ -1,7 +1,6 @@
 package parallel
 
 import (
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -25,17 +24,14 @@ func TestAsync(t *testing.T) {
 
 // A depth of zero or less is the documented no-op: the very stream, no wrapper.
 func TestAsyncZeroDepthIsIdentity(t *testing.T) {
-	before := runtime.NumGoroutine()
+	caller := goid()
 	want := []int{1, 2, 3}
 	src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 		// Probed from inside the source, while it is being driven: under a
-		// real wrapper this closure runs on a spawned producer while the
-		// consumer's goroutine waits on the hand-off, so the count rises
-		// here deterministically. Sampled after the stream returns — as
-		// this test once did — the producer is already joined and the
-		// assertion can never fail.
-		if now := runtime.NumGoroutine(); now > before {
-			t.Errorf("the no-op spawned a goroutine: %d -> %d", before, now)
+		// real wrapper this closure runs on a spawned producer, not on the
+		// consumer's goroutine.
+		if g := goid(); g != caller {
+			t.Errorf("the no-op drove the source on goroutine %s, want the caller's %s", g, caller)
 		}
 		for _, v := range want {
 			if !yield(sluice.Batch[int]{Items: []int{v}}) {
@@ -128,7 +124,6 @@ func TestAsyncCopiesInputBatch(t *testing.T) {
 // Async returns (S6, S10).
 func TestAsyncEarlyStopReleasesProducer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		finalized := false
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			defer func() { finalized = true }()
@@ -148,9 +143,6 @@ func TestAsyncEarlyStopReleasesProducer(t *testing.T) {
 		if !finalized {
 			t.Error("the source's deferred cleanup did not run before Async returned")
 		}
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after an early stop", before, got)
-		}
 	})
 }
 
@@ -158,7 +150,6 @@ func TestAsyncEarlyStopReleasesProducer(t *testing.T) {
 // producer has been shut down.
 func TestAsyncPropagatesSourcePanic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			yield(sluice.Batch[int]{Items: []int{1}})
 			panic("source boom")
@@ -173,10 +164,6 @@ func TestAsyncPropagatesSourcePanic(t *testing.T) {
 			sluice.Collect(Async(src, 2))
 			t.Error("the source's panic never reached the consumer")
 		}()
-
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a source panic", before, got)
-		}
 	})
 }
 
@@ -184,7 +171,6 @@ func TestAsyncPropagatesSourcePanic(t *testing.T) {
 // runs during the unwind.
 func TestAsyncConsumerPanicReleasesProducer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		finalized := false
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			defer func() { finalized = true }()
@@ -203,9 +189,6 @@ func TestAsyncConsumerPanicReleasesProducer(t *testing.T) {
 		if !finalized {
 			t.Error("the source was left running after a consumer panic")
 		}
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a consumer panic", before, got)
-		}
 	})
 }
 
@@ -214,7 +197,6 @@ func TestAsyncConsumerPanicReleasesProducer(t *testing.T) {
 // shut down.
 func TestAsyncEarlyStopStillRaisesSourcePanic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			for i := 0; ; i++ {
 				if !yield(sluice.Batch[int]{Items: []int{i}}) {
@@ -238,9 +220,6 @@ func TestAsyncEarlyStopStillRaisesSourcePanic(t *testing.T) {
 		}
 		if seen != 1 {
 			t.Errorf("consumer saw %d batches after refusing the first, want 1", seen)
-		}
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after", before, got)
 		}
 	})
 }

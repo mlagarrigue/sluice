@@ -2,7 +2,6 @@ package parallel
 
 import (
 	"errors"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -88,7 +87,6 @@ func TestParallelInitOneMatchesParallel(t *testing.T) {
 // happens before any worker goroutine exists.
 func TestParallelInitFactoryFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		causeErr := errors.New("no such file")
 		var made, closed atomic.Int64
 
@@ -120,9 +118,6 @@ func TestParallelInitFactoryFailure(t *testing.T) {
 
 		if closed.Load() != 2 {
 			t.Errorf("%d states closed, want the 2 created before the failure", closed.Load())
-		}
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a factory failure", before, got)
 		}
 	})
 }
@@ -194,7 +189,6 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				before := runtime.NumGoroutine()
 				var made, closed atomic.Int64
 				mk := func() (*closableState, error) {
 					return &closableState{id: int(made.Add(1)), closed: &closed}, nil
@@ -205,9 +199,6 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 				}
 				if closed.Load() != made.Load() {
 					t.Errorf("%d states made, %d closed", made.Load(), closed.Load())
-				}
-				if got := goroutinesSettle(t); got > before {
-					t.Errorf("%d goroutines before, %d after", before, got)
 				}
 			})
 		})
