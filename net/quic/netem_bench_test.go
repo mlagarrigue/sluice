@@ -58,7 +58,8 @@ type netemProfile struct {
 	// next reorderDepth datagrams instead and arrive heldGap behind them —
 	// overtaken by a count, not a delay, so the depth does not move with
 	// the sending rate; reorderDelay then bounds the wait, for a datagram
-	// that ends a flight. One datagram waits at a time. Below the packet
+	// that ends a flight or whose successors leave spaced out: only those
+	// that arrive within the bound count. One datagram waits at a time. Below the packet
 	// threshold this is the reordering §6.1.1 exists to tolerate: what it
 	// measures is that it costs nothing.
 	reorderDepth int
@@ -243,6 +244,13 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 			}
 		}
 		ch <- pkt
+		if held != nil && pkt.arriveAt.After(held.pkt.arriveAt.Add(prof.reorderDelay)) {
+			// Past the bound: the timer delivers the held datagram ahead of
+			// this one. Counted instead, it released the held datagram
+			// heldGap behind a successor the sender's pacing had spaced
+			// out — 2.7 ms late under BBR, past §6.1.2's time threshold.
+			held = nil
+		}
 		if held != nil {
 			behind++
 			if behind == prof.reorderDepth {

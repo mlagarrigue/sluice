@@ -27,13 +27,13 @@ import (
 // transfers of one binary, a threshold of two moving the median from 34 to
 // 40.5, inside the spread of an eight-round median.
 //
-// BBR is out, by name: about one transfer in a hundred, a packet one behind
-// the largest acknowledged is still unacknowledged 9/8 of a round trip after
-// it was sent, and the time threshold declares it — the packet count is
-// not what fails, and what holds that acknowledgement is not traced yet.
+// BBR found the emulator's bound unkept: one transfer in twenty, a datagram
+// released by the count arrived heldGap behind a second successor that
+// BBR's pacing had sent 2.6 ms after it, and the time threshold declared
+// it. A successor past reorderDelay no longer counts (forward).
 func TestReorderUnderThresholdIsNoLoss(t *testing.T) {
 	if testing.Short() {
-		t.Skip("three 4 MiB transfers over an emulated path")
+		t.Skip("four 4 MiB transfers over an emulated path")
 	}
 	prof := netemProfile{
 		owd:          10 * time.Millisecond,
@@ -41,7 +41,7 @@ func TestReorderUnderThresholdIsNoLoss(t *testing.T) {
 		reorderDepth: 2,
 		reorderDelay: 250 * time.Microsecond,
 	}
-	for _, cc := range []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBRv1} {
+	for _, cc := range []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBRv1, quic.CongestionBBR} {
 		t.Run(cc.String(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				tr, err := transferOnce(t, &netemLink{prof: prof, cc: cc}, 4<<20)
