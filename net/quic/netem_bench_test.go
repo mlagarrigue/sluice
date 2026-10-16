@@ -534,6 +534,19 @@ func BenchmarkTransferBottleneck(b *testing.B) {
 	}, 4<<20)
 }
 
+// BenchmarkTransferBottleneck16MiB is Bottleneck moving 16 MiB. On 4 MiB
+// the handshake and the ramp from 12 kB cost a controller 130 to 140 ms of
+// 800 — a ceiling near 0.84 of the line whatever it does — so the share of
+// the line a controller holds once it cruises is read here. Not gated: it
+// says nothing Bottleneck does not, four times slower.
+func BenchmarkTransferBottleneck16MiB(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   10 * time.Millisecond,
+		rate:  50_000_000 / 8,
+		queue: 5 * time.Millisecond,
+	}, 16<<20)
+}
+
 // BenchmarkTransferDeepBuffer is the same bottleneck behind ten round trips
 // of buffer (200 ms at line rate): the bufferbloat shape. A loss-driven
 // controller fills it before it sees a loss, so goodput is the line rate
