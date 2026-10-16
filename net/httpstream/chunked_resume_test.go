@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -75,14 +76,47 @@ func readAll(t *testing.T, c net.Conn, cfg Config) (bodies [][]byte, err error) 
 	return bodies, src.Err()
 }
 
+// rewalkProbe is a connection that delivers one write per Read and, before
+// every Read once the first chunk is in, overwrites that chunk's size digit
+// in the reader's own buffer with a byte no size line may hold. A walk that
+// resumes from the saved progress never reads it again; one that restarts
+// from the body's first chunk fails on it. The digit is put back before the
+// terminating chunk, which the moving pass then walks from the start.
+type rewalkProbe struct {
+	net.Conn // the deadlines; never read
+	r        *reader
+	writes   [][]byte
+	at       int // the first chunk's size digit in r.buf
+}
+
+func (p *rewalkProbe) Read(b []byte) (int, error) {
+	if len(p.writes) == 0 {
+		return 0, io.EOF
+	}
+	if p.r.n > p.at {
+		if len(p.writes) == 1 {
+			p.r.buf[p.at] = '1'
+		} else {
+			p.r.buf[p.at] = 'z'
+		}
+	}
+	n := copy(b, p.writes[0])
+	if p.writes[0] = p.writes[0][n:]; len(p.writes[0]) == 0 {
+		p.writes = p.writes[1:]
+	}
+	return n, nil
+}
+
 // 40 000 one-byte chunks, each in its own read, used to cost twelve seconds
-// of CPU: every read re-walked the body from its first chunk. Resumed from
-// the saved walk it is linear, and the bound here is loose enough for -race
-// while being an order of magnitude under what the quadratic walk took.
+// of CPU: every read re-walked the body from its first chunk. The bound on
+// the wall clock that guarded it failed under a loaded runner at 6.5 s
+// (CI 2026-10-16) without the walk restarting; the probe asks the question
+// itself — is a validated byte ever read twice? — and the clock has no say.
 func TestChunkedBodyArrivingOneChunkPerReadIsLinear(t *testing.T) {
-	const chunks = 40_000
+	const chunks = 1000
+	head := req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: chunked", "Connection: close")
 	writes := make([][]byte, 0, chunks+2)
-	writes = append(writes, req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: chunked", "Connection: close"))
+	writes = append(writes, head)
 	var want bytes.Buffer
 	for i := range chunks {
 		c := byte('a' + i%26)
@@ -91,17 +125,22 @@ func TestChunkedBodyArrivingOneChunkPerReadIsLinear(t *testing.T) {
 	}
 	writes = append(writes, []byte("0\r\n\r\n"))
 
-	start := time.Now()
-	bodies, err := readAll(t, oneWritePerRead(t, writes...), Config{ReadTimeout: 30 * time.Second})
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("stream ended with %v", err)
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	r := &reader{cfg: Config{ReadTimeout: 30 * time.Second}.mustResolve()}
+	r.conn = &rewalkProbe{Conn: server, r: r, writes: writes, at: len(head)}
+	var bodies [][]byte
+	r.stream(func(b sluice.Batch[Request]) bool {
+		for i := range b.Items {
+			bodies = append(bodies, append([]byte(nil), b.Items[i].Body...))
+		}
+		return true
+	})
+	if r.err != nil {
+		t.Fatalf("stream ended with %v: the walk read a chunk it had already validated", r.err)
 	}
 	if len(bodies) != 1 || !bytes.Equal(bodies[0], want.Bytes()) {
-		t.Fatalf("got %d bodies, first %d bytes long; want one of %d bytes", len(bodies), len(bodies[0]), want.Len())
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("decoding %d chunks took %v; the walk is being restarted on every read", chunks, elapsed)
+		t.Fatalf("got %d bodies; want one of %d bytes", len(bodies), want.Len())
 	}
 }
 
