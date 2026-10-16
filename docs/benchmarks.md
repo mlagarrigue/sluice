@@ -550,13 +550,31 @@ buffer: every marked round is a window cut, and a 5 ms threshold on a
 against a real client, and the marking AQM is the emulator's: a step at
 a threshold, not CoDel's or PIE's.
 
-The gate (`gate-path.sh`) runs the default, Reno: CUBIC, BBRv1 and BBR
-change none of its eight rows until they are chosen (measured the same
-days: the eight within 0.94–1.02 of `main` for CUBIC, `Bottleneck` the
-0.94 and the gate's known bias there; within 0.986–1.004 for BBRv1,
-0.994–1.013 for BBR).
+The gate (`gate-path.sh`) runs once per controller: CI sets
+`SLUICE_QUIC_CC` to reno, cubic, bbr1 and bbr in four parallel jobs, and
+both sides of the A/B run the same controller. A controller nobody
+measures is one whose regressions pass green. On an identical tree
+(2026-10-16, eight rounds each) the eight rows hold within 0.978–1.012 for
+Reno, 0.991–1.011 for CUBIC and 0.990–1.013 for BBR. BBRv1 holds six,
+within 0.993–1.019; its `RTT80` (1.151) and `Loss1pct` (0.855) leave its
+gate only: one transfer there spreads over 1.26–1.68 s and 314–390 ms on
+a single binary.
 
-**The CI gate watches eight of the Reno rows** through a second script,
+A second script, `gate-cc.sh`, holds the three controllers other than
+Reno to their own criteria, on one tree and without a base: the median of
+`share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
+0.51, BBRv1 0.61, BBR 0.50); every round of `RTT80Shallow` is at least
+1.3 times faster on CUBIC than on Reno in the same round (measured: 1.65
+to 2.31, bimodal); every round of `DeepBufferECN` keeps `rtt_x` at 1.5 at
+most on BBR (measured: 1.05 to 1.09). `gate-path.sh` sees a controller
+that gets worse from one commit to the next; `gate-cc.sh` sees one that
+never met its criterion, or drifts from it by less than 6% a commit.
+CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts
+— `BurstLoss` 1.566 and `Loss1pct` 1.255 in `gate-path.sh`, every round
+of `RTT80Shallow` within 1.09–1.12 in `gate-cc.sh` — and leaves the reno
+job green (0.991 to 1.007).
+
+**The CI gate watches eight rows per controller** through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
 `gate.sh`'s on every pull request and every push to `main`. It differs
 from `gate.sh` in the three ways these rows require: it builds

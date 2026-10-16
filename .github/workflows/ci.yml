@@ -497,16 +497,27 @@ jobs:
   # The emulated-path benchmarks of net/quic measure the congestion controller
   # on a timer-driven middlebox, which cannot run pinned to one core and does
   # not move with the CPU: a separate script, not pinned, eight transfers a
-  # side, red when a median is 15% slower (see gate-path.sh). Its own job
+  # side, red when a median is 6% slower (see gate-path.sh). Its own job
   # rather than a step of bench-gate: that job already takes five minutes,
   # and this one takes about five more (eight profiles, 2026-10-14) that
   # would otherwise be added to every pull request's critical path. It runs on
   # a push to main for the same reason as bench-gate.
+  #
+  # One job per controller, in parallel: the benchmarks run the one
+  # SLUICE_QUIC_CC names, and a controller nobody gates is one whose
+  # regressions pass green. The controllers other than the default also run
+  # gate-cc.sh, the absolute criteria each is held to on one tree.
   bench-path-gate:
     if: >-
       github.event_name == 'pull_request' ||
       (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000')
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [reno, cubic, bbr1, bbr]
+    env:
+      SLUICE_QUIC_CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -522,3 +533,7 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: internal/bench/scripts/gate-path.sh "$BASE"
+
+      - name: Criteria of the controller
+        if: matrix.cc != 'reno'
+        run: internal/bench/scripts/gate-cc.sh

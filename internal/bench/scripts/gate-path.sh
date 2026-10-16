@@ -3,7 +3,11 @@
 # of the working tree against a base ref, failing on any benchmark whose
 # median transfer is more than 6% slower.
 #
-#   internal/bench/scripts/gate-path.sh <base-ref> [rounds]
+#   SLUICE_QUIC_CC=<reno|cubic|bbr1|bbr> internal/bench/scripts/gate-path.sh <base-ref> [rounds]
+#
+# Both sides run the controller SLUICE_QUIC_CC names (netem_bench_test.go
+# reads it), Reno when it is unset: CI runs the script once per controller,
+# so a regression in one that is not the default is read too.
 #
 # gate.sh cannot read these benchmarks, which is why this script exists
 # rather than more names in its GATED set:
@@ -32,6 +36,18 @@ BASE="${1:?usage: gate-path.sh <base-ref> [rounds]}"
 ROUNDS="${2:-8}"
 PKG="./net/quic"
 
+# The benchmarks read any value they do not know as Reno, so a misspelt
+# controller would gate Reno under another name: refuse it here.
+CC="${SLUICE_QUIC_CC:-reno}"
+case "$CC" in
+  reno | cubic | bbr1 | bbr) ;;
+  *)
+    echo "path gate: SLUICE_QUIC_CC=$CC names no controller (reno, cubic, bbr1, bbr)"
+    exit 1
+    ;;
+esac
+export SLUICE_QUIC_CC="$CC"
+
 # The gated set, every name anchored. A path benchmark enters it when its
 # median holds within 5% of itself on an identical tree (this script, HEAD
 # against the working tree, eight rounds); one that does not stays out, with
@@ -41,6 +57,18 @@ PKG="./net/quic"
 # spurious loss is declared or not by a few microseconds of scheduling, and
 # its figure moves 7% with nothing changed.
 GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurstLoss$|BenchmarkTransferBottleneck$|BenchmarkTransferDeepBuffer$|BenchmarkTransferTwoFlows$|BenchmarkTransferRTT40$|BenchmarkTransferRTT80$'
+
+# The same rule per controller: a name whose median does not hold within 5%
+# of itself on an identical tree under that controller leaves its gate, and
+# only its gate. Measured 2026-10-16, eight rounds each: Reno 0.978-1.012,
+# CUBIC 0.991-1.011, BBR 0.990-1.013. BBRv1 kept six names within
+# 0.993-1.019; RTT80 came out at 1.151 and Loss1pct at 0.855, one transfer
+# spreading over 1.26-1.68 s and 314-390 ms on one binary, so out.
+case "$CC" in
+  bbr1) UNSTABLE='BenchmarkTransferLoss1pct$|BenchmarkTransferRTT80$' ;;
+  *) UNSTABLE='' ;;
+esac
+GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | paste -sd'|')"
 
 # 6%: four times the widest upward spread measured on an identical tree, and
 # below what an initial window halved costs. Measured 2026-10-15, ten passes
@@ -86,7 +114,7 @@ git -C "$ROOT" worktree add -q --detach "$WORKTREE" "$BASE"
 git -C "$ROOT" worktree remove --force "$WORKTREE"
 WORKTREE=""
 
-echo "measuring $ROUNDS interleaved rounds, one transfer each..."
+echo "measuring $ROUNDS interleaved rounds, one transfer each, controller $CC..."
 rows="$(BINDIR="$BINDIR" CORE='' BENCHTIME=1x "$ROOT/internal/bench/scripts/ab.sh" "$GATED" "$ROUNDS")"
 
 # Medians per side, then the verdict. The name is printed without its -N
@@ -137,7 +165,7 @@ if grep -q "MISSING" <<<"$out"; then
   exit 1
 fi
 if grep -q "SLOWER" <<<"$out"; then
-  echo "path gate: at least one transfer median is more than $PCT slower than $BASE"
+  echo "path gate ($CC): at least one transfer median is more than $PCT slower than $BASE"
   exit 1
 fi
-echo "path gate: no transfer median more than $PCT slower than $BASE"
+echo "path gate ($CC): no transfer median more than $PCT slower than $BASE"
