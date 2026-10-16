@@ -521,7 +521,11 @@ return tx.Commit(ctx)
 travel apart from the SQL text and cannot be read as SQL. It returns the
 **tag** the server sends when the statement completes (`UPDATE 3`,
 `INSERT 0 1`); `RowsAffected` reads its count, and answers "no count" for a
-statement that has none, such as `SET`. `Exec` takes no values at all: it is
+statement that has none, such as `SET`. To read the rows **and** the tag —
+an `UPDATE … RETURNING` whose changed rows you want — go through `Query`
+with `QueryConfig{Tag: &tag}`: the tag is written there once the stream is
+read to the end, and its count covers the whole result, even read in
+batches. `Exec` takes no values at all: it is
 for statements without parameters (creating a table, `SET`…).
 
 `Rollback` takes no context, on purpose: it runs from a `defer`, often

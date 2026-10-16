@@ -1570,3 +1570,39 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 		t.Errorf("SET: tag %q, RowsAffected() = %d, %v; want SET and no count", tag, n, ok)
 	}
 }
+
+// An UPDATE ... RETURNING read as a stream, in batches smaller than its
+// result: the tag reaches QueryConfig.Tag and counts the rows delivered.
+func TestIntegrationQueryTagOfAStreamedUpdate(t *testing.T) {
+	conn := dial(t)
+	ctx := t.Context()
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_query_tag AS SELECT i AS x FROM generate_series(1, 5) AS i"); err != nil {
+		t.Fatal(err)
+	}
+
+	var tag postgres.CommandTag
+	src := conn.Query(ctx, "UPDATE sluice_query_tag SET x = x + $1 RETURNING x",
+		[][]byte{postgres.AppendInt8(nil, 10)},
+		postgres.QueryConfig{BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8}, Tag: &tag})
+	var rows int64
+	for b := range src.Stream() {
+		rows += int64(len(b.Items))
+	}
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "UPDATE 5" || n != rows || !ok {
+		t.Errorf("tag %q, RowsAffected() = %d, %v; want UPDATE 5 and the %d rows delivered", tag, n, ok, rows)
+	}
+
+	// A SELECT in batches: the server's tag counts the last one, here too.
+	src = conn.Query(ctx, "SELECT x FROM sluice_query_tag", nil,
+		postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchBatches, Tag: &tag})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if tag != "SELECT 5" {
+		t.Errorf("tag %q, want SELECT 5", tag)
+	}
+}

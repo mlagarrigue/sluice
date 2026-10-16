@@ -576,6 +576,24 @@ type QueryConfig struct {
 	// replaces: 1 for `$1`. Zero means the bound is not pushed down, and only
 	// the limit is. It is only read when Demand is set.
 	KeyParam int
+
+	// Tag, when set, receives the statement's command tag: an
+	// UPDATE ... RETURNING read as a stream delivers its rows and leaves
+	// "UPDATE 3" here, whose count [CommandTag.RowsAffected] reads. It is
+	// written when the result is read to its CommandComplete, so read it
+	// once the source is consumed, next to [sluice.Source.Err].
+	//
+	// The count is the whole result's. Read in batches, the server's own tag
+	// counts only the last one — five rows in batches of two complete as
+	// "UPDATE 1" — so the rows of the batches before it are added; the verb
+	// is the server's.
+	//
+	// A query that failed, or whose consumer stopped before the last batch,
+	// leaves it empty: the count is unknown, and a tag next to an error
+	// would report writes the server may have rolled back.
+	// Nil, the default, copies nothing, so a query that does not ask for the
+	// tag pays no allocation for it.
+	Tag *CommandTag
 }
 
 // Query runs sql with the given binary parameters and returns its rows as a
@@ -654,16 +672,24 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 	var queryErr error
 
 	stream := sluice.Stream[Row](func(yield func(sluice.Batch[Row]) bool) {
-		queryErr = c.runQuery(ctx, sql, params, cfg, nil, yield)
+		// Cleared on both sides: a stream runs the query again each time it
+		// is read, and a tag left by the last run must not stand for this one.
+		if cfg.Tag != nil {
+			*cfg.Tag = ""
+		}
+		queryErr = c.runQuery(ctx, sql, params, cfg, yield)
+		if queryErr != nil && cfg.Tag != nil {
+			*cfg.Tag = ""
+		}
 	})
 
 	return sluice.NewSource(stream, func() error { return queryErr })
 }
 
 // runQuery is one execution of [Conn.Query], delivering to yield. A non-nil
-// tag receives the statement's CommandComplete tag; nil copies nothing, so a
-// streamed query pays for no tag it was not asked for.
-func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, tag *CommandTag, yield func(sluice.Batch[Row]) bool) error {
+// [QueryConfig.Tag] receives the statement's CommandComplete tag; nil copies
+// nothing, so a streamed query pays for no tag it was not asked for.
+func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, yield func(sluice.Batch[Row]) bool) error {
 	if c.broken != nil {
 		return c.broken
 	}
@@ -680,7 +706,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	if err != nil {
 		return err
 	}
-	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: tag}
+	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag}
 	if cfg.Demand != nil {
 		if cfg.Fetch == FetchAll {
 			return errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
@@ -751,8 +777,11 @@ type query struct {
 	rowsRead int
 	complete bool
 
-	// tag receives the CommandComplete tag, nil when nobody asked for it.
-	tag *CommandTag
+	// tag receives the CommandComplete tag, nil when nobody asked for it;
+	// suspendedRows counts the rows of the Executes the portal suspended,
+	// which the server's tag does not.
+	tag           *CommandTag
+	suspendedRows int
 }
 
 // recordRows tells the cache how many rows this execution produced, or that
@@ -1055,7 +1084,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 					return false, err
 				}
 			}
-			if !q.emit(yield) {
+			more := q.emit(yield)
+			q.suspendedRows = q.rowsRead
+			if !more {
 				return true, nil // the consumer stopped; the deferred resync tidies up
 			}
 			return false, nil
@@ -1066,7 +1097,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			q.complete = true
 			if q.tag != nil && m.Type == pgwire.BackendCommandComplete {
 				// Copied: the body borrows the reader's buffer.
-				*q.tag = CommandTag(bytes.TrimSuffix(m.Body, []byte{0}))
+				*q.tag = resultTag(bytes.TrimSuffix(m.Body, []byte{0}), q.suspendedRows)
 			}
 			q.emit(yield)
 			return true, nil
