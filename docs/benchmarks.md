@@ -76,7 +76,13 @@ to every pull request against its merge base, and additionally requires a 3%
 effect: the sign test controls the error rate of *one* comparison, and a
 suite of twenty produces a spurious verdict about two times in three. A
 benchmark lives in `internal/bench`, or it cannot be paired; an operator
-added is added to the gated set, or nobody watches its regressions.
+added is added to the gated set, or nobody watches its regressions. It
+measures only the benchmarks whose code changed: a benchmark is kept when the
+diff touches a package its file imports, or a dependency of one. The test
+binary links every package `internal/bench` imports, so a change to
+`net/quic` moves the code of all the others within the binary, and that move
+alone has declared an untouched benchmark 4 to 19% slower, always in the same
+direction, which the sign test takes for a regression.
 
 **Host settings that raise the floor**, none of them required: disabling
 Core Performance Boost in the BIOS, which removes the clock ramp at the cost

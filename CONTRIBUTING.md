@@ -249,8 +249,11 @@ exactly like one that found nothing wrong. An operator that fails its own
 gate does not ship.
 
 A pull request is compared to its merge base by `gate.sh`, which fails on any
-benchmark the sign test declares slower past 3%. Absolute figures do not
-transfer between sessions; only ratios within a session carry.
+benchmark the sign test declares slower past 3%. Only the benchmarks that
+measure a package the pull request changed, or one it depends on, are
+measured; a change to `internal/bench`, `go.mod` or `go.sum` measures them
+all. Absolute figures do not transfer between sessions; only ratios within a
+session carry.
 
 The one exception is `net/quic`'s emulated-path benchmarks, which measure
 the congestion controller rather than the CPU: `gate-path.sh`, run by its
