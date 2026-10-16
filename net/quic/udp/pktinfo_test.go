@@ -123,8 +123,10 @@ func TestPacketDestinationDoesNotAllocate(t *testing.T) {
 	if allocs != 0 {
 		t.Fatalf("PacketDestination allocates %v times", allocs)
 	}
-	// The first message wins, and both layouts round-trip.
-	if dst, ifindex, _ := udp.PacketDestination(oob); dst != netip.MustParseAddr("192.0.2.7") || ifindex != 3 {
+	// The first message wins, and both layouts round-trip — the IPv4 one on
+	// Linux only: XNU reports the destination in ipi_addr and takes the
+	// source from ipi_spec_dst (pktinfo_darwin_test.go).
+	if dst, ifindex, _ := udp.PacketDestination(oob); runtime.GOOS == "linux" && (dst != netip.MustParseAddr("192.0.2.7") || ifindex != 3) {
 		t.Fatalf("got %v %d", dst, ifindex)
 	}
 	v6 := udp.AppendPacketSource(nil, netip.MustParseAddr("2001:db8::1"), 5)
