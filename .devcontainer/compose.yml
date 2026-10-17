@@ -1,3 +1,7 @@
+# A fixed project name, rather than one derived from the folder the
+# repository was cloned into.
+name: sluice
+
 services:
   dev:
     # The image copies nothing from the repository: this folder is the whole
@@ -5,6 +9,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: sluice-dev:go1.26
     container_name: sluice-dev
     volumes:
       - ..:/workspaces/sluice:cached
@@ -21,8 +26,16 @@ services:
 
   # The same server CI runs, initialised by the same file.
   postgres:
-    image: postgres:17
+    image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
     container_name: sluice-postgres
+    # A test server: its data lives in memory and goes with the container,
+    # and durability is off. The integration database weighs 39 MB after a
+    # full run; the tmpfs counts against mem_limit.
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    tmpfs:
+      - /var/lib/postgresql/data:size=512m
+    mem_limit: 1536m
+    memswap_limit: 1536m
     environment:
       POSTGRES_PASSWORD: postgres
     volumes:
