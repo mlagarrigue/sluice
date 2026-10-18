@@ -1,14 +1,12 @@
 package postgres
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -305,7 +303,7 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // bound or turns it off.
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{
-		rw: rw, r: pgwire.NewReader(readSource(rw)), w: pgwire.NewWriter(rw),
+		rw: rw, r: pgwire.NewReaderSize(rw, ReadBufferSize), w: pgwire.NewWriter(rw),
 		stmts: newStmtCache(defaultStatementCacheBound),
 	}
 }
@@ -320,24 +318,15 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 // looked. Buffering took that scan from 33.5 ms to 13.5 ms, and a 1000-key
 // `= ANY` from 1.80 ms to 0.69 ms.
 //
+// Every transport is read this way, not only a [net.Conn]: an ssh.Channel or
+// a wrapper of the caller's own reaches a socket underneath too, and would pay
+// the same two reads per message. A message that fits in the buffer is handed
+// over where it lies, with no copy, which made the in-memory replay of a
+// thousand rows 25% faster than reading the transport directly.
+//
 // Sixty-four kilobytes per connection, and a connection is already an
 // expensive thing to hold.
 const ReadBufferSize = 64 << 10
-
-// readSource buffers a transport whose reads cost a system call, and leaves
-// everything else alone.
-//
-// The test is [net.Conn], because that is where the cost is certain: a socket
-// read is a syscall whatever its size. Anything else — a scripted server, a
-// replayed conversation, a bytes.Reader — is not wrapped, because buffering
-// memory is a pure copy and measured +5% on the replay benchmark. Making a
-// harness slower to make a socket faster is a trade nobody asked for.
-func readSource(rw io.ReadWriteCloser) io.Reader {
-	if _, ok := rw.(net.Conn); ok {
-		return bufio.NewReaderSize(rw, ReadBufferSize)
-	}
-	return rw
-}
 
 // Close closes the underlying connection, sending a Terminate first when the
 // protocol position still allows it.

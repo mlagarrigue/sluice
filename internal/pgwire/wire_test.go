@@ -385,3 +385,121 @@ func TestReaderReleasesALargeBufferAfterSmallMessages(t *testing.T) {
 		t.Errorf("cap = %d after %d small messages, want at most %d", c, readerShrinkAfter, readerRetainBytes)
 	}
 }
+
+// oneByteReader hands out its stream a byte per read, the worst split a
+// transport can make, and fails with err once it is empty.
+type oneByteReader struct {
+	data []byte
+	err  error
+}
+
+func (o *oneByteReader) Read(p []byte) (int, error) {
+	if len(o.data) == 0 {
+		return 0, o.err
+	}
+	p[0], o.data = o.data[0], o.data[1:]
+	return 1, nil
+}
+
+// A window must not change what is read, only how often the transport is
+// asked: messages split across fills, larger than the window, or delivered a
+// byte at a time come back whole and in order, and the end of the stream is
+// told apart from a truncation exactly as without one.
+func TestWindowedReaderReadsWhatTheDirectOneReads(t *testing.T) {
+	big := strings.Repeat("x", 100)
+	var stream []byte
+	for i := range 20 {
+		stream = append(stream, frame('D', strings.Repeat("r", i))...)
+	}
+	stream = append(stream, frame('D', big)...)
+	stream = append(stream, frame('C', "SELECT 21\x00")...)
+	stream = append(stream, frame('Z', "I")...)
+
+	want := func(t *testing.T, rd *Reader) {
+		t.Helper()
+		for i := range 20 {
+			m, err := rd.Next()
+			if err != nil || m.Type != 'D' || string(m.Body) != strings.Repeat("r", i) {
+				t.Fatalf("message %d: %q %q %v", i, m.Type, m.Body, err)
+			}
+		}
+		if m, err := rd.Next(); err != nil || string(m.Body) != big {
+			t.Fatalf("the message larger than the window: %d bytes, %v", len(m.Body), err)
+		}
+		if m, err := rd.Next(); err != nil || m.Type != 'C' || string(m.Body) != "SELECT 21\x00" {
+			t.Fatalf("the message after the large one: %q %q %v", m.Type, m.Body, err)
+		}
+		if m, err := rd.Next(); err != nil || m.Type != 'Z' {
+			t.Fatalf("the last message: %q %v", m.Type, err)
+		}
+		if _, err := rd.Next(); !errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("after the last message: %v, want io.EOF", err)
+		}
+	}
+	t.Run("whole reads", func(t *testing.T) { want(t, NewReaderSize(bytes.NewReader(stream), 64)) })
+	t.Run("a byte per read", func(t *testing.T) {
+		want(t, NewReaderSize(&oneByteReader{data: stream, err: io.EOF}, 64))
+	})
+
+	for _, tc := range []struct {
+		name string
+		in   []byte
+	}{
+		{"header cut short", []byte{'D', 0, 0}},
+		{"body cut short", frame('D', "twelve chars")[:10]},
+		{"large body cut short", frame('D', big)[:80]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := NewReaderSize(bytes.NewReader(tc.in), 64)
+			if _, err := rd.Next(); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("got %v, want io.ErrUnexpectedEOF", err)
+			}
+		})
+	}
+}
+
+// A read that returns bytes and an error together delivers the bytes first,
+// and the error is the answer to the next read rather than lost: a network
+// error is not guaranteed to come back a second time.
+func TestWindowedReaderKeepsAnErrorThatCameWithBytes(t *testing.T) {
+	boom := errors.New("connection reset")
+	in := append(frame('D', "one"), frame('D', "two")...)
+	fired := false
+	rd := NewReaderSize(readerFunc(func(p []byte) (int, error) {
+		n := copy(p, in)
+		in = in[n:]
+		if len(in) == 0 && !fired {
+			fired = true
+			return n, boom
+		}
+		if len(in) == 0 {
+			return n, io.EOF
+		}
+		return n, nil
+	}), 64)
+	for _, body := range []string{"one", "two"} {
+		if m, err := rd.Next(); err != nil || string(m.Body) != body {
+			t.Fatalf("got %q %v, want %q", m.Body, err, body)
+		}
+	}
+	if _, err := rd.Next(); !errors.Is(err, boom) {
+		t.Fatalf("after the bytes: %v, want the error that came with them", err)
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// The limit holds with a window too: a header claiming more than it is
+// refused from the header, before the body is waited for or anything is
+// allocated for it.
+func TestWindowedReaderRefusesOversizedFromTheHeader(t *testing.T) {
+	rd := NewReaderSize(bytes.NewReader([]byte{'D', 0x7f, 0xff, 0xff, 0xff}), 64)
+	if _, err := rd.Next(); !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("got %v, want ErrMessageTooLarge", err)
+	}
+	if cap(rd.buf) != 0 {
+		t.Errorf("%d bytes allocated for a message that was refused", cap(rd.buf))
+	}
+}

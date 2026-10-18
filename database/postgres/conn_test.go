@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -975,28 +974,79 @@ func TestWithoutFetchAllTheFlushRemains(t *testing.T) {
 	}
 }
 
-// A socket read is a system call whatever its size, and the protocol's
-// messages are small and numerous — so a connection over one must buffer.
-// Profiling a wide scan put 79% of its time in those calls.
-func TestConnBuffersASocketAndNothingElse(t *testing.T) {
-	t.Run("a net.Conn is buffered", func(t *testing.T) {
-		client, server := net.Pipe()
-		defer func() { _ = client.Close(); _ = server.Close() }()
+// countingTransport is a transport that is not a net.Conn — the shape of an
+// ssh.Channel or a caller's own wrapper — and counts the reads asked of it.
+//
+// chunk, when set, is the most one read hands back, as a socket hands back
+// what has arrived; smallest is the least room a read was offered.
+type countingTransport struct {
+	script   []byte
+	chunk    int
+	reads    int
+	smallest int
+}
 
-		conn := NewConn(client)
-		if _, ok := conn.r.Underlying().(*bufio.Reader); !ok {
-			t.Errorf("reads from a net.Conn go through %T, want a *bufio.Reader — "+
-				"every protocol message would cost two syscalls", conn.r.Underlying())
-		}
-	})
+func (c *countingTransport) Read(p []byte) (int, error) {
+	if len(c.script) == 0 {
+		return 0, io.EOF
+	}
+	c.reads++
+	if c.reads == 1 || len(p) < c.smallest {
+		c.smallest = len(p)
+	}
+	if c.chunk > 0 && len(p) > c.chunk {
+		p = p[:c.chunk]
+	}
+	n := copy(p, c.script)
+	c.script = c.script[n:]
+	return n, nil
+}
 
-	t.Run("an in-memory transport is not", func(t *testing.T) {
-		conn := NewConn(&fakeServer{})
-		if _, ok := conn.r.Underlying().(*bufio.Reader); ok {
-			t.Error("an in-memory transport was buffered; that is a pure copy, " +
-				"and it measured +5% on the replay benchmark")
+func (c *countingTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (c *countingTransport) Close() error                { return nil }
+
+// A read from a transport can cost a system call whatever its size, and the
+// protocol's messages are small and numerous: unbuffered, each costs two, one
+// for the header and one for the body. Profiling a wide scan put 79% of its
+// time in those calls. A transport that is not a net.Conn often has a socket
+// under it all the same, so it is buffered too: one read per ReadBufferSize
+// of the stream, whatever the messages in it.
+func TestConnReadsATransportOncePerBuffer(t *testing.T) {
+	row := frame(pgwire.BackendDataRow, "\x00\x01\x00\x00\x00\x08abcdefgh")
+	messages := 3*ReadBufferSize/len(row) + 1
+	script := bytes.Repeat(row, messages)
+	tr := &countingTransport{script: script}
+
+	conn := NewConn(tr)
+	for i := range messages {
+		m, err := conn.r.Next()
+		if err != nil {
+			t.Fatalf("message %d: %v", i, err)
 		}
-	})
+		if m.Type != pgwire.BackendDataRow {
+			t.Fatalf("message %d: type = %q", i, m.Type)
+		}
+	}
+	if limit := (len(script) + ReadBufferSize - 1) / ReadBufferSize; tr.reads > limit {
+		t.Errorf("%d messages, %d bytes: %d reads from the transport, want at most %d — "+
+			"one per %d bytes", messages, len(script), tr.reads, limit, ReadBufferSize)
+	}
+
+	// A socket hands back what has arrived, which ends anywhere in a message.
+	// Each read must still be offered the whole window but the unread tail:
+	// a read into the last few bytes of it is a system call for a few bytes,
+	// and the wide scan measured +16% when the tail stayed put.
+	tr = &countingTransport{script: script, chunk: 1000}
+	conn = NewConn(tr)
+	for i := range messages {
+		if _, err := conn.r.Next(); err != nil {
+			t.Fatalf("short reads, message %d: %v", i, err)
+		}
+	}
+	if least := ReadBufferSize - len(row); tr.smallest < least {
+		t.Errorf("a read was offered %d bytes of room, want at least %d — "+
+			"the window minus one message", tr.smallest, least)
+	}
 }
 
 // The buffer must not change what is read, only how often the kernel is asked.
