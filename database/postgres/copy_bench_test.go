@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"bytes"
+	"io"
 	"testing"
 
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -13,9 +15,24 @@ type discardTransport struct {
 	pos       int
 	buf       []byte
 	written   int64
+
+	// hold is the response a Read waits at until the client sends CopyDone,
+	// as a server in copy-in mode says nothing before it: the copy's reader
+	// would take a response delivered early for the end of the COPY. Close
+	// releases a Read still waiting. Zero holds none.
+	hold     int
+	copyDone chan struct{}
+	release  chan struct{}
 }
 
 func (d *discardTransport) Read(p []byte) (int, error) {
+	if len(d.buf) == 0 && d.hold > 0 && d.pos == d.hold {
+		select {
+		case <-d.copyDone:
+		case <-d.release:
+			return 0, io.EOF
+		}
+	}
 	if len(d.buf) == 0 {
 		if d.pos >= len(d.responses) {
 			d.pos = 0
@@ -29,10 +46,19 @@ func (d *discardTransport) Read(p []byte) (int, error) {
 }
 
 func (d *discardTransport) Write(p []byte) (int, error) {
+	if d.hold > 0 && bytes.HasSuffix(p, []byte{pgwire.FrontendCopyDone, 0, 0, 0, 4}) {
+		d.copyDone <- struct{}{}
+	}
 	d.written += int64(len(p))
 	return len(p), nil
 }
-func (d *discardTransport) Close() error { return nil }
+
+func (d *discardTransport) Close() error {
+	if d.release != nil {
+		close(d.release)
+	}
+	return nil
+}
 
 // BenchmarkCopyWriteTuples measures the path a bulk load actually spends its
 // time in, with the socket removed.
@@ -57,8 +83,9 @@ func BenchmarkCopyWriteTuples(b *testing.B) {
 		beCopyInResponseBench(),
 		append(beCommandCompleteBench("COPY 0"), beReadyForQueryBench()...),
 		append(beCommandCompleteBench("COMMIT"), beReadyForQueryBench()...),
-	}}
+	}, hold: 2, copyDone: make(chan struct{}, 1), release: make(chan struct{})}
 	conn := NewConn(srv)
+	b.Cleanup(func() { _ = conn.Close() })
 
 	cp, err := conn.CopyFrom(b.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 1 << 30, ChunkBytes: 64 << 10})

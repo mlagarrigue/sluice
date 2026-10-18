@@ -175,6 +175,12 @@ type Conn struct {
 	// outer query's delivered rows point into. See [Conn.beginBusy].
 	busy bool
 
+	// copier is the [Copier] whose COPY is open, nil when none is: from its
+	// CopyInResponse to the ReadyForQuery that ends it, the copier's reader
+	// goroutine owns r, and every other entry point is refused. See
+	// [Conn.claim].
+	copier *Copier
+
 	// Per-query scratch, reused across queries: a connection runs one query
 	// at a time, and a point-read workload otherwise pays a fresh row
 	// accumulator and view slice — the row buffer alone is BatchRows-sized —
@@ -203,11 +209,29 @@ type Conn struct {
 // shared scratch it would instead rewrite the buffers the outer query's
 // delivered rows point into — silent wrong data. One boolean turns that back
 // into an immediate error. The caller releases with endBusy on every path out.
-func (c *Conn) beginBusy() error {
+func (c *Conn) beginBusy() error { return c.claim(nil) }
+
+// errCopyOpen refuses a statement while a COPY is open on the connection. It
+// matches [ErrConnBusy], the family it belongs to, rather than standing as a
+// sentinel of its own: the remedy is the same — finish the other
+// conversation first — and the message says which one.
+var errCopyOpen = fmt.Errorf("%w: a COPY is open on this connection — Close or Abort the Copier first", ErrConnBusy)
+
+// claim is beginBusy for an entry point that may run while a COPY is open:
+// owner is the [Copier] that holds it, nil everywhere else.
+//
+// The refusal is what keeps the COPY finishable. A statement written in
+// copy-in mode does not run — the server takes it for a broken COPY and
+// aborts the transaction — and its reply would be read by the copy's reader
+// goroutine, which owns the connection's Reader until the COPY ends.
+func (c *Conn) claim(owner *Copier) error {
 	// Every wire-touching entry point comes through here, so this is the one
 	// place a broken connection is refused before a byte is written or read.
 	if c.broken != nil {
 		return c.broken
+	}
+	if c.copier != nil && c.copier != owner {
+		return errCopyOpen
 	}
 	if c.busy {
 		return fmt.Errorf("%w: one conversation at a time, and not from inside a consumer's callback", ErrConnBusy)
@@ -301,6 +325,10 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 //
 // It starts with the statement cache on; [Conn.PrepareStatements] changes the
 // bound or turns it off.
+//
+// rw is read on one goroutine while it is written on another during a
+// [Copier]'s COPY, as a [net.Conn] allows: the server's notices and errors
+// are read while the rows go out.
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{
 		rw: rw, r: pgwire.NewReaderSize(rw, ReadBufferSize), w: pgwire.NewWriter(rw),

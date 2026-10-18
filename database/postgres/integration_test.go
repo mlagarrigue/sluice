@@ -1719,3 +1719,119 @@ func TestIntegrationQueryTagOfAStreamedUpdate(t *testing.T) {
 		t.Errorf("tag %q, want SELECT 5", tag)
 	}
 }
+
+// copyRows writes n one-column rows numbered from first, a thousand per
+// batch, and returns the first error — on its own goroutine, so a copy that
+// deadlocks is reported by the caller's timer rather than by the test
+// binary's.
+func copyRows(cp *postgres.Copier, first, n int) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		var buf []byte
+		for i := 0; i < n; {
+			buf = buf[:0]
+			batch := min(1000, n-i)
+			for j := range batch {
+				buf = postgres.AppendTupleHeader(buf, 1)
+				buf = postgres.AppendField(buf, postgres.AppendInt8(nil, int64(first+i+j)))
+			}
+			if err := cp.WriteTuples(buf, batch); err != nil {
+				done <- err
+				return
+			}
+			i += batch
+		}
+		done <- nil
+	}()
+	return done
+}
+
+// A trigger raising a NOTICE per row makes the server write while the client
+// writes. Read only at CopyDone, the notices filled the socket, the server
+// blocked sending one and stopped reading CopyData, and the client blocked
+// sending the next: on PostgreSQL 17.11 the load stopped after about 100 000
+// rows, for good.
+func TestIntegrationCopyWithANoticePerRow(t *testing.T) {
+	conn := dial(t)
+	for _, sql := range []string{
+		"CREATE TEMP TABLE sluice_copy_notice (id bigint)",
+		"CREATE FUNCTION pg_temp.sluice_notice_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'row %', NEW.id; RETURN NEW; END $$",
+		"CREATE TRIGGER sluice_notice BEFORE INSERT ON sluice_copy_notice FOR EACH ROW EXECUTE FUNCTION pg_temp.sluice_notice_row()",
+	} {
+		if err := exec(t, conn, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	cp, err := conn.CopyFrom(t.Context(), "COPY sluice_copy_notice (id) FROM STDIN WITH (FORMAT BINARY)",
+		postgres.CopyConfig{RowsPerTx: 250_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rows = 1_000_000
+	select {
+	case err := <-copyRows(cp, 0, rows):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Minute):
+		t.Fatal("the copy did not finish within 3 minutes: client and server are each waiting for the other")
+	}
+	if err := cp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := countRows(t, conn, "sluice_copy_notice"); got != rows {
+		t.Errorf("the table holds %d rows, want %d", got, rows)
+	}
+}
+
+// A refused row ends the COPY on the server at once; the client learns it
+// from a WriteTuples, not from the commit RowsPerTx rows later.
+func TestIntegrationCopyRefusedRowFailsAWrite(t *testing.T) {
+	conn := dial(t)
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_copy_refused (id bigint PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := conn.CopyFrom(t.Context(), "COPY sluice_copy_refused (id) FROM STDIN WITH (FORMAT BINARY)",
+		postgres.CopyConfig{RowsPerTx: 100_000_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two batches of the same ids: the second one's first row is refused.
+	if err := <-copyRows(cp, 0, 1000); err != nil {
+		t.Fatal(err)
+	}
+	var writeErr error
+	select {
+	case writeErr = <-copyRows(cp, 0, 50_000_000):
+	case <-time.After(time.Minute):
+		t.Fatal("the refusal never reached a WriteTuples")
+	}
+	var pgErr *postgres.Error
+	if !errors.As(writeErr, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("WriteTuples returned %v, want the server's 23505 before any commit", writeErr)
+	}
+	if conn.Err() != nil {
+		t.Fatalf("the refusal broke the connection: %v", conn.Err())
+	}
+	if got := countRows(t, conn, "sluice_copy_refused"); got != 0 {
+		t.Errorf("the table holds %d rows after a refused transaction, want 0", got)
+	}
+}
+
+// countRows reads count(*) of a table.
+func countRows(t *testing.T, conn *postgres.Conn, table string) int64 {
+	t.Helper()
+	src := conn.Query(t.Context(), "SELECT count(*) FROM "+table, nil, postgres.QueryConfig{})
+	var n int64
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			v, _ := row.Value(0)
+			n, _ = postgres.DecodeInt8(v)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("counting %s: %v", table, err)
+	}
+	return n
+}

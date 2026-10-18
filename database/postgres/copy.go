@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -51,10 +52,10 @@ type CopyConfig struct {
 	// this parameter exists to make the caller take knowingly. 100 000 rows
 	// is a reasonable starting point on a wide table.
 	//
-	// It also bounds what an early failure costs. The server's answer is read
-	// when the transaction ends, so a row it refuses near the start — a
-	// duplicate key — still lets the rest of the transaction's rows go out,
-	// to be dropped by the server, before the error comes back.
+	// An early failure costs little whatever its value. The server's answer
+	// is read while the rows go out, so a row it refuses — a duplicate key —
+	// is reported by the next [Copier.WriteTuples], after at most what the
+	// socket buffers held when the error was sent.
 	RowsPerTx int
 
 	// ChunkBytes is how many bytes accumulate in one CopyData before it is
@@ -149,14 +150,23 @@ func EndField(dst []byte, at int) []byte {
 // and rebuilding after. Drop what can be dropped, copy, then rebuild — this
 // package cannot do it for the caller, since only the caller knows which
 // indexes may go.
+//
+// # One conversation at a time
+//
+// While a COPY is open — from the first WriteTuples of a transaction to the
+// commit that ends it — the connection belongs to the copier. Every other
+// method of the [Conn] that talks to the server is refused with an error
+// matching [ErrConnBusy], and the copy stays finishable: a statement sent
+// in copy-in mode would not run, it would end the COPY with an error.
 type Copier struct {
 	conn   *Conn
 	ctx    context.Context
 	sql    string
 	cfg    CopyConfig
-	buf    []byte // tuples waiting for a CopyData
-	inTx   bool   // a transaction and a COPY are open
-	rowsTx int    // rows written in the open transaction
+	buf    []byte      // tuples waiting for a CopyData
+	inTx   bool        // a transaction and a COPY are open
+	rd     *copyReader // the server's side of the open COPY; nil when none is open
+	rowsTx int         // rows written in the open transaction
 	total  int64
 	err    error
 }
@@ -243,7 +253,7 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 	// issued from inside a consumer's callback is the caller's bug, and its
 	// CopyData landing mid-result would corrupt the outer query's stream —
 	// but the copy itself is untouched and stays finishable.
-	if err := cp.conn.beginBusy(); err != nil {
+	if err := cp.conn.claim(cp); err != nil {
 		return err
 	}
 	defer cp.conn.endBusy()
@@ -264,6 +274,8 @@ func (cp *Copier) write(tuples []byte, rows int) error {
 		if err := cp.beginTx(); err != nil {
 			return err
 		}
+	} else if err := cp.serverEnded(); err != nil {
+		return err
 	}
 
 	cp.total += int64(rows)
@@ -312,7 +324,7 @@ func (cp *Copier) Close() error {
 	if !cp.inTx {
 		return nil
 	}
-	if err := cp.conn.beginBusy(); err != nil {
+	if err := cp.conn.claim(cp); err != nil {
 		return err
 	}
 	defer cp.conn.endBusy()
@@ -332,7 +344,7 @@ func (cp *Copier) Abort(reason string) error {
 	// Claimed before any state is cleared, so a nested Abort leaves the
 	// copier exactly as it found it — still abortable once the outer result
 	// is finished.
-	if err := cp.conn.beginBusy(); err != nil {
+	if err := cp.conn.claim(cp); err != nil {
 		return err
 	}
 	defer cp.conn.endBusy()
@@ -350,7 +362,7 @@ func (cp *Copier) Abort(reason string) error {
 	// acknowledgement, not a failure, so it is discarded here where everywhere
 	// else it would be surfaced. Only a connection-level failure — which is
 	// what breaks the connection — still counts.
-	if err := c.drainToReady(); err != nil && c.broken != nil {
+	if err := cp.endCopy(); err != nil && c.broken != nil {
 		return cp.fail(err)
 	}
 	c.inTx = false
@@ -390,6 +402,7 @@ func (cp *Copier) beginTx() error {
 			cp.buf = append(cp.buf[:0], copySignature...)
 			cp.buf = binary.BigEndian.AppendUint32(cp.buf, 0) // flags
 			cp.buf = binary.BigEndian.AppendUint32(cp.buf, 0) // header extension
+			cp.rd, c.copier = startCopyReader(c.r), cp
 			return nil
 		case pgwire.BackendErrorResponse:
 			serverErr, parseErr := ParseError(m.Body)
@@ -430,18 +443,9 @@ func (cp *Copier) beginTx() error {
 	}
 }
 
-// commitTx ends the COPY and commits it, and is where the server's verdict on
-// the transaction's rows is first read.
-//
-// Not earlier, by decision. The server reports a bad row as soon as it meets
-// it and drops every CopyData after that, so reading between writes would
-// stop a doomed load sooner. But nothing is waiting to be read in the normal
-// case, and a read that does not block needs one of two things this package
-// does not have: a goroutine owning the Reader across WriteTuples calls —
-// racing every Conn method the caller may use in between, and leaked by a
-// copier abandoned without Close or Abort — or a deadline on a socket this
-// package never sets one on (see Connect). What is lost is
-// bandwidth, bounded by one transaction's rows, which RowsPerTx sets.
+// commitTx ends the COPY and commits it. What the server said about the
+// transaction's rows has been read all along by the copy's reader; this is
+// where the last of it — the verdict on CopyDone — is waited for.
 func (cp *Copier) commitTx() error {
 	c := cp.conn
 	// The trailer says "no more tuples": a field count of -1.
@@ -453,7 +457,7 @@ func (cp *Copier) commitTx() error {
 	if err := c.w.Flush(); err != nil {
 		return c.breakConn(err)
 	}
-	if err := c.drainToReady(); err != nil {
+	if err := cp.endCopy(); err != nil {
 		if c.broken != nil {
 			return err
 		}
@@ -471,6 +475,130 @@ func (cp *Copier) commitTx() error {
 	cp.inTx, cp.rowsTx = false, 0
 	c.inTx = false
 	return c.exec("COMMIT")
+}
+
+// copyReader reads the server for the length of one COPY, from
+// CopyInResponse to the ReadyForQuery that ends it, and is the only reader of
+// the connection while it runs.
+//
+// It exists because a server in copy-in mode is not silent. A trigger that
+// raises a NOTICE per row sends one message per row the client writes, and a
+// client that only reads at CopyDone lets them pile up until the server's
+// socket is full: the server then blocks writing the notice, stops reading
+// CopyData, and the client blocks writing the next one — each waiting for the
+// other, seen on PostgreSQL 17 after about 100 000 rows. libpq avoids it
+// the same way, by reading whenever a write would block (pqSendSome); a
+// goroutine is how Go reads while a write blocks.
+//
+// It also brings a refused row back early: the server reports it as soon as
+// it meets it, ends the COPY with ReadyForQuery, and drops every CopyData
+// after that (§53.2.6), so the next WriteTuples returns the error instead of
+// sending the rest of the transaction into the void.
+//
+// It shares nothing with the copier's goroutine but the Reader, handed over
+// at start and taken back by endCopy after done: what it saw is kept here and
+// applied to the connection there, so no Conn field is written by two
+// goroutines. A copier abandoned without Close or Abort leaves it blocked in a
+// read until [Conn.Close] closes the socket under it.
+type copyReader struct {
+	done chan struct{}
+
+	// Written by the goroutine before done is closed, read only after.
+	serverErr error    // the first ErrorResponse, or why its payload could not be read
+	broken    error    // a transport or protocol failure: the position is lost
+	status    []byte   // the ReadyForQuery body
+	params    [][]byte // ParameterStatus bodies, for recordParameter
+}
+
+func startCopyReader(r *pgwire.Reader) *copyReader {
+	rd := &copyReader{done: make(chan struct{})}
+	go rd.run(r)
+	return rd
+}
+
+func (rd *copyReader) run(r *pgwire.Reader) {
+	defer close(rd.done)
+	for {
+		m, err := r.Next()
+		if err != nil {
+			rd.broken = eofToUnexpected(err)
+			return
+		}
+		// Every body is copied out before the next read: the Message borrows
+		// the Reader's buffer.
+		switch m.Type {
+		case pgwire.BackendReadyForQuery:
+			rd.status = bytes.Clone(m.Body)
+			return
+		case pgwire.BackendErrorResponse:
+			e, parseErr := ParseError(m.Body)
+			if rd.serverErr == nil {
+				if parseErr != nil {
+					rd.serverErr = parseErr
+				} else {
+					rd.serverErr = e // the first error is the cause; later ones follow from it
+				}
+			}
+		case pgwire.BackendParameterStatus:
+			rd.params = append(rd.params, bytes.Clone(m.Body))
+		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse, pgwire.BackendNotificationResponse:
+			// The COPY's tag, and two kinds of out-of-band messages discarded
+			// here as everywhere else in the package: there is no API to hand
+			// them to.
+		default:
+			rd.broken = fmt.Errorf("%w: %q during copy-in", ErrProtocol, m.Type)
+			return
+		}
+	}
+}
+
+// endCopy waits for the copy's reader to reach ReadyForQuery and folds what
+// it saw into the connection, returning what drainToReady would have: the
+// server's error, with the connection still usable, or the reason it broke.
+func (cp *Copier) endCopy() error {
+	c, rd := cp.conn, cp.rd
+	<-rd.done
+	cp.rd, c.copier = nil, nil
+	var paramErr error
+	for _, body := range rd.params {
+		if err := c.recordParameter(body); err != nil && paramErr == nil {
+			paramErr = err
+		}
+	}
+	if rd.broken != nil {
+		return c.breakConn(rd.broken)
+	}
+	if c.broken != nil {
+		return c.broken // an encoding nobody asked for
+	}
+	c.noteTxStatus(rd.status)
+	if rd.serverErr != nil {
+		return rd.serverErr
+	}
+	return paramErr
+}
+
+// serverEnded reports a COPY the server has already ended — a refused row, a
+// cancellation — before another byte is written into it. The connection is
+// at ReadyForQuery, in an aborted block, so the transaction is rolled back
+// and the server's error is what the caller sees.
+func (cp *Copier) serverEnded() error {
+	select {
+	case <-cp.rd.done:
+	default:
+		return nil
+	}
+	err := cp.endCopy()
+	if cp.conn.broken != nil {
+		return err
+	}
+	cp.rollback()
+	if err == nil {
+		// ReadyForQuery with no error, before CopyDone was sent: not a
+		// conversation this package can place.
+		return cp.conn.breakConn(fmt.Errorf("%w: the server ended the COPY before CopyDone", ErrProtocol))
+	}
+	return err
 }
 
 // rollback ends the open transaction after a failure, clearing both the
