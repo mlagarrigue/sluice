@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"hash"
+	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -85,7 +86,15 @@ func expandLabel(secret []byte, label string, length int) ([]byte, error) {
 	return expandLabelHash(sha256.New, secret, label, length)
 }
 
+// expansionSeen, when set, is told of every expansion before it runs: the
+// seam through which a test counts what the listener derives per Initial it
+// refuses, a cost no assertion on outputs can see. Nil outside that test.
+var expansionSeen atomic.Pointer[func(secret []byte, label string)]
+
 func expandLabelHash(h func() hash.Hash, secret []byte, label string, length int) ([]byte, error) {
+	if seen := expansionSeen.Load(); seen != nil {
+		(*seen)(secret, label)
+	}
 	full := "tls13 " + label
 	info := make([]byte, 0, 4+len(full))
 	info = append(info, byte(length>>8), byte(length), byte(len(full))) //nolint:gosec // G115: big-endian length of a short HKDF label

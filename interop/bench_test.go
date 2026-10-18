@@ -151,10 +151,24 @@ func BenchmarkH2FromNetHTTP(b *testing.B) {
 	}
 }
 
+// BenchmarkH3FromQuicGo also reports discarded, the datagrams the
+// listener's front door refused during the run — a connection's queue
+// overflowing among them. The bulk body draws back the largest burst of
+// acknowledgements, the one the queue is sized for: a single refusal there
+// fails the benchmark, since a dropped datagram costs the request a client
+// PTO that the mean would quietly absorb.
 func BenchmarkH3FromQuicGo(b *testing.B) {
-	base, _ := startH3Server(b)
+	base, ln, _ := startH3Server(b)
 	client := h3Client(b)
 	for _, r := range routes {
-		b.Run(r.name, func(b *testing.B) { benchGet(b, client, base+r.path, 3, r.want) })
+		b.Run(r.name, func(b *testing.B) {
+			before := ln.DiscardedPackets()
+			benchGet(b, client, base+r.path, 3, r.want)
+			n := ln.DiscardedPackets() - before
+			b.ReportMetric(float64(n), "discarded")
+			if r.name == "bulk" && n != 0 {
+				b.Errorf("the listener discarded %d datagrams during the bulk run", n)
+			}
+		})
 	}
 }

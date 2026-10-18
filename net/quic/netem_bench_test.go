@@ -448,6 +448,10 @@ type transfer struct {
 	stats   quic.Stats
 	marks   int // the sender's application-limited marks
 
+	// discarded is what the receiving end refused to read: its
+	// connection's DiscardedPackets, plus its listener's when one fronts it.
+	discarded uint64
+
 	// Set when small messages came first (transferAfterSmall): the bulk
 	// phase's own wall clock, the sender's counters as it began, and the
 	// largest flight the messages kept.
@@ -492,12 +496,13 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 	params.Congestion.SlowStart = benchSlowStart
 
 	type result struct {
-		n   int64
-		err error
+		n         int64
+		discarded uint64
+		err       error
 	}
 	done := make(chan result, 1)
 	go func() {
-		conn, err := acceptOne(tb, serverPC, params, link.prof.mark > 0)
+		conn, l, err := acceptOne(tb, serverPC, params, link.prof.mark > 0)
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -513,7 +518,11 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 			done <- result{err: fmt.Errorf("server read: %w (conn: %v)", err, conn.Err())} //nolint:errorlint // conn.Err() is context and may be nil
 			return
 		}
-		done <- result{n: got}
+		discarded := conn.Stats().DiscardedPackets
+		if l != nil {
+			discarded += l.DiscardedPackets()
+		}
+		done <- result{n: got, discarded: discarded}
 	}()
 
 	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), params)
@@ -564,6 +573,7 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 		if r.n != int64(small+total) {
 			return transfer{}, fmt.Errorf("the server read %d of %d bytes", r.n, small+total)
 		}
+		t.discarded = r.discarded
 	case <-time.After(120 * time.Second):
 		return transfer{}, errors.New("the transfer did not finish")
 	}
@@ -576,32 +586,34 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 // datagram and handing it to quic.Accept, or, when the path marks, behind a
 // Listener, which reads every datagram's ECN field with its bytes. The
 // marking figures in docs/benchmarks.md were measured behind a Listener;
-// the shape stays so they remain comparable.
-func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters, marks bool) (*quic.Conn, error) {
+// the shape stays so they remain comparable. The listener is returned for
+// its counters, nil without one.
+func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters, marks bool) (*quic.Conn, *quic.Listener, error) {
 	tb.Helper()
 	if marks {
 		l, err := quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		conn, err := l.Accept()
 		if err != nil {
 			_ = l.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		// The listener stays open as long as the connection: it owns the
 		// socket's read loop. Closing pc (the path's stop) ends both.
-		return conn, nil
+		return conn, l, nil
 	}
 	buf := make([]byte, 2048)
 	if err := pc.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	n, peer, err := pc.ReadFrom(buf)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return quic.Accept(pc, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(tb), params)
+	conn, err := quic.Accept(pc, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(tb), params)
+	return conn, nil, err
 }
 
 // benchTransfer moves total bytes on one flow and reports its goodput, and
@@ -612,7 +624,8 @@ func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters
 // packets behind them: on a path that reorders and loses nothing, both
 // count spurious losses alone, a figure the scheduler moves far less than
 // the transfer's wall clock. dgram_B is the datagram size the sender's
-// DPLPMTUD search reached (1452 on a path with no MTU).
+// DPLPMTUD search reached (1452 on a path with no MTU). discarded is what
+// the receiver refused to read; nothing on these paths should be.
 func benchTransfer(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(total))
@@ -626,6 +639,7 @@ func benchTransfer(b *testing.B, prof netemProfile, total int) {
 		b.ReportMetric(float64(t.stats.BytesRetransmitted), "retx_B")
 		b.ReportMetric(float64(t.stats.LostPackets), "lost")
 		b.ReportMetric(float64(t.stats.DatagramSize), "dgram_B")
+		b.ReportMetric(float64(t.discarded), "discarded")
 	}
 }
 

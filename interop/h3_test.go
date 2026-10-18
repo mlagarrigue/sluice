@@ -101,9 +101,10 @@ func h3Paced(yield func(sluice.Batch[[]byte]) bool) {
 }
 
 // startH3Server runs ServeH3 behind a quic.Listener and returns the URL
-// prefix to reach it. Every accepted connection is served until the test
-// ends; what ServeH3 returned is reported through served.
-func startH3Server(tb testing.TB) (base string, served <-chan error) {
+// prefix to reach it, and the listener for its counters. Every accepted
+// connection is served until the test ends; what ServeH3 returned is
+// reported through served.
+func startH3Server(tb testing.TB) (base string, ln *quic.Listener, served <-chan error) {
 	tb.Helper()
 	pc := listenUDP(tb)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
@@ -111,7 +112,7 @@ func startH3Server(tb testing.TB) (base string, served <-chan error) {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	ln, err := quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})
+	ln, err = quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func startH3Server(tb testing.TB) (base string, served <-chan error) {
 			go func() { out <- httpstream.ServeH3(ctx, c, cfg, h3Handle) }()
 		}
 	}()
-	return "https://" + pc.LocalAddr().String(), out
+	return "https://" + pc.LocalAddr().String(), ln, out
 }
 
 // h3Client is quic-go's HTTP/3 client over a 1-RTT handshake: sluice speaks
@@ -167,7 +168,7 @@ func h3Get(tb testing.TB, client *http.Client, url string) string {
 // plain response, a streamed one, and several requests on one connection —
 // sequentially, then two streamed bodies at once.
 func TestQuicGoHTTP3ClientAgainstServeH3(t *testing.T) {
-	base, served := startH3Server(t)
+	base, _, served := startH3Server(t)
 	client := h3Client(t)
 
 	if got := h3Get(t, client, base+"/hello"); got != "you asked for /hello" {

@@ -1091,6 +1091,67 @@ func BenchmarkListenerUndecryptableInitial(b *testing.B) {
 	}
 }
 
+// The listener expands the server's direction of the Initial keys only on
+// the one refusal that seals under it: never for noise shaped like an
+// Initial, whatever room the table has, never for a Retry, and once — not
+// twice — for the CONNECTION_REFUSED a full table answers. The three
+// benchmarks above measure what that saves; this counts it, so moving the
+// expansion back to the head of the path turns it red.
+func TestListenerExpandsTheServerKeyOnlyToSeal(t *testing.T) {
+	dcid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	initial, err := extractInitial(dcid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := sealedClientInitial(t, dcid, []byte{9, 9, 9, 9})
+	noise := append([]byte(nil), sealed...)
+	noise[len(noise)-1] ^= 0xff // the tag no longer matches
+	for _, tc := range []struct {
+		name      string
+		lcfg      ListenerConfig
+		full      bool
+		dgram     []byte
+		expanded  int64
+		answers   int
+		discarded uint64
+	}{
+		{"noise", ListenerConfig{}, false, noise, 0, 0, 1},
+		{"noise on a full table", ListenerConfig{}, true, noise, 0, 0, 1},
+		{"retried", ListenerConfig{AlwaysRetry: true}, false, sealed, 0, 1, 0},
+		{"refused on a full table", ListenerConfig{}, true, sealed, 1, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+			l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), tc.lcfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = l.Close() }()
+			if tc.full {
+				l.lcfg.MaxPendingConns = 0
+			}
+			var n atomic.Int64
+			seen := func(secret []byte, label string) {
+				if label == "server in" && bytes.Equal(secret, initial) {
+					n.Add(1)
+				}
+			}
+			expansionSeen.Store(&seen)
+			l.dispatch(tc.dgram, fakeFuzzAddr("client:"+tc.name), l.pc, 0)
+			expansionSeen.Store(nil)
+			if got := n.Load(); got != tc.expanded {
+				t.Errorf("the server's Initial secret was expanded %d times, want %d", got, tc.expanded)
+			}
+			if got := len(pc.taken()); got != tc.answers {
+				t.Errorf("%d answers sent, want %d", got, tc.answers)
+			}
+			if got := l.DiscardedPackets(); got != tc.discarded {
+				t.Errorf("DiscardedPackets = %d, want %d", got, tc.discarded)
+			}
+		})
+	}
+}
+
 // A connection whose read loop is busy for a moment must not lose the burst
 // a large response draws back: the listener queues up to connQueueLen
 // datagrams before it drops. A queue of 8 dropped this burst and stalled
