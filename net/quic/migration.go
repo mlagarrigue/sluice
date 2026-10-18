@@ -455,9 +455,10 @@ func probingOnly(frames []Frame) bool {
 // The same gate serves the server's own preferred address (§9.6): a packet
 // that arrives on the preferred-address socket rather than the main one is
 // the client having validated that path and moved, and the server moves its
-// sending there with it — no probe of its own, since the client's address
-// is unchanged and was validated long ago; §9.4's reset still applies,
-// because the path is new even if the peer is not.
+// sending there with it — provided its own §9.6.2 probe left from that
+// socket, under an identifier set aside for the path (§9.5); without one
+// it stays where it is. §9.4's reset still applies, because the path is
+// new even if the peer is not.
 //
 // A server that announced disable_active_migration still follows: §9 lets
 // it either drop the packets from the new address or validate the path
@@ -479,6 +480,12 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	}
 	if addrChanged {
 		c.migrateLocked(c.rxFrom, c.rxVia, now)
+		return
+	}
+	if c.pathProbe.via != c.rxVia && len(c.dcid) > 0 {
+		// No probe went out from this socket, so no identifier is set
+		// aside for it, and sending from it under the one in use would
+		// link the two paths (§9.5). The connection stays where it is.
 		return
 	}
 	c.pc = c.rxVia
@@ -771,6 +778,15 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// answered with this end's own probe of that path in the same packet
 	// (§9.6.2), under the identifier that path gets.
 	probe, dcid := c.preferredPathChallengeLocked(now)
+	if c.rxVia != nil && c.rxVia != c.pc && dcid == nil && len(c.dcid) > 0 {
+		// §9.5: "An endpoint MUST NOT reuse a connection ID when sending
+		// from more than one local address". The challenge arrived on a
+		// socket the connection does not send from, and the client has
+		// given no identifier that path could take: nothing leaves that
+		// socket. The client's validation of the path fails, and §9.6.1
+		// keeps it on the original address — a stay, not a fault.
+		return
+	}
 	const responseLen = 1 + 8 // type, data
 	per := c.maxStreamChunk() / responseLen * responseLen
 	for len(responses) > 0 {
@@ -794,14 +810,15 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 // rides in the same packet as the answer to the client's — the first
 // datagram this end sends from that socket carries both — under a peer
 // identifier never used on another path (§9.5: a new local address needs
-// a new identifier; with none pooled, the one in use is the fallback the
-// answer already takes). Returns the frame to append and the identifier to
+// a new identifier). Returns the frame to append and the identifier to
 // send under, both nil when nothing is to be probed: a client, an
 // unconfirmed handshake, a challenge that arrived on the socket in use or
-// from a new address (the latter is a migration, §9.3's business), or a
-// probe from this socket already pending — whose data is then repeated,
-// since the client's repeat means the first answer was lost. Callers hold
-// mu.
+// from a new address (the latter is a migration, §9.3's business), or no
+// pooled identifier for the path — the caller then sends nothing from that
+// socket, unless the client uses zero-length identifiers, which every path
+// shares (§5.1.1). A probe from this socket already pending has its data
+// repeated, since the client's repeat means the first answer was lost.
+// Callers hold mu.
 func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) {
 	if c.isClient || !c.handshakeConfirmed || c.rxVia == nil || c.rxVia == c.pc ||
 		(c.rxFrom != nil && !sameAddr(c.rxFrom, c.peer)) {
@@ -814,13 +831,14 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 	if err != nil {
 		return nil, nil
 	}
-	c.startPathChallengeData(data, now)
-	c.pathProbe.via = c.rxVia
-	c.pathProbe.sent, c.pathProbe.full = true, true
-	if cid, _, ok := c.pickFreshPeerCIDLocked(); ok {
-		c.pathProbe.targetCID = cid
+	cid, _, ok := c.pickFreshPeerCIDLocked()
+	if !ok && len(c.dcid) > 0 {
+		return nil, nil
 	}
-	return append(AppendVarint(nil, framePathChallenge), data...), c.pathProbe.targetCID
+	c.startPathChallengeData(data, now)
+	c.pathProbe.via, c.pathProbe.targetCID = c.rxVia, cid
+	c.pathProbe.sent, c.pathProbe.full = true, true
+	return append(AppendVarint(nil, framePathChallenge), data...), cid
 }
 
 // startPathChallengeData arms the probe state around data without sending

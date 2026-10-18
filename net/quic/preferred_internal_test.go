@@ -518,6 +518,53 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	}
 }
 
+// §9.5 on the server's preferred socket: "An endpoint MUST NOT reuse a
+// connection ID when sending from more than one local address". A client
+// that has issued no identifier beyond the one in use leaves the server
+// nothing to send under from that socket, so nothing leaves it — neither
+// the answer to the client's challenge nor a probe — and a non-probing
+// packet arriving there does not move the connection either. The main
+// socket stays silent too: the response belongs to the path it answers.
+// The client's validation then fails and §9.6.1 keeps it on the original
+// address.
+func TestServerWithoutASpareIdentifierSendsNothingFromItsPreferredSocket(t *testing.T) {
+	c, main := newMigratableServer(t, "spare")
+	pref := &recordingPC{addr: fakeFuzzAddr("spare:preferred")}
+	peer := fakeFuzzAddr("spare:peerA")
+	rxVia := func() {
+		c.mu.Lock()
+		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, pref, 1200, true
+		c.mu.Unlock()
+	}
+
+	rxVia()
+	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(pref.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left the preferred socket under the identifier in use, want none (§9.5)", n)
+	}
+	if n := len(main.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left the main socket, want none", n)
+	}
+	c.mu.Lock()
+	pending := c.pathProbe.pending
+	c.mu.Unlock()
+	if pending {
+		t.Error("a probe is armed with no identifier to send it under")
+	}
+
+	rxVia()
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	pc, dcid, migrations := c.pc, c.dcid, c.migrations
+	c.mu.Unlock()
+	if pc != net.PacketConn(main) || migrations != 0 || string(dcid) != "peercid0" {
+		t.Errorf("after a non-probing packet: pc=%v migrations=%d dcid=%q, want the main socket, 0, peercid0", pc, migrations, dcid)
+	}
+}
+
 // openShort decrypts a 1-RTT packet a test Conn sealed with installAppSealer
 // and returns its frames.
 func openShort(t *testing.T, packet []byte, dcidLen int) []Frame {
