@@ -158,8 +158,12 @@ jobs:
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.
-  # One workflow serves both branches: here the steps are skipped when the
-  # module is absent, so the file never diverges between them.
+  # One workflow serves both branches, so the file never diverges between
+  # them. On the branch, the module is vetted as committed. Anywhere else, it
+  # is taken from the branch and vetted against this tree — its go.mod
+  # replaces the root by ../ — so an API break here goes red the day it
+  # lands, not the day someone next merges into the branch. Tidy runs first
+  # in that case: a dependency bump here is not a break there.
   benchmarks-module:
     runs-on: ubuntu-latest
     env:
@@ -168,13 +172,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Take the module from the benchmarks branch
+        id: fetch
+        if: hashFiles('benchmarks/go.mod') == ''
+        run: |
+          git fetch --depth=1 origin benchmarks
+          git checkout FETCH_HEAD -- benchmarks
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        if: hashFiles('benchmarks/go.mod') != ''
         with:
           go-version: ${{ env.GO_LATEST }}
           cache-dependency-path: benchmarks/go.sum
+      - name: Tidy against this tree
+        if: steps.fetch.outcome == 'success'
+        working-directory: benchmarks
+        run: go mod tidy
       - name: Vet
-        if: hashFiles('benchmarks/go.mod') != ''
         working-directory: benchmarks
         run: go vet ./...
 
