@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,15 +24,17 @@ import (
 // fails.
 //
 // It needs a server with ssl = on and the certificate to trust in
-// SLUICE_PG_TLS_CA; CI makes both with scripts/pg-tls.sh, once with an RSA
-// PKCS #1 v1.5 certificate and once with an RSA-PSS SHA-384 one, and names
-// the signature it expects in SLUICE_PG_TLS_SIGALG, so that a server that
-// kept its previous certificate cannot pass for the new one.
+// SLUICE_PG_TLS_CA; CI makes both with scripts/pg-tls.sh, with an RSA
+// PKCS #1 v1.5 certificate, then with RSA-PSS SHA-384 ones, and names the
+// signature it expects in SLUICE_PG_TLS_SIGALG, so that a server that kept
+// its previous certificate cannot pass for the new one. "0" is
+// x509.UnknownSignatureAlgorithm, how crypto/x509 leaves a PSS signature
+// whose salt is not the hash length — OpenSSL's default — and the one whose
+// hash tlsServerEndPoint reads itself.
 //
-// One RSA-PSS certificate is refused where PostgreSQL and libpq accept it:
-// a salt length other than the hash length, which is OpenSSL's default.
-// crypto/x509 does not parse that signature, so crypto/tls fails the
-// handshake inside DialTLS; nothing in this package is reached.
+// Each certificate is met twice: through DialTLS's SSLRequest, and through
+// DialTLSDirect's immediate handshake, which a server before PostgreSQL 17
+// does not take and the subtest skips.
 func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	addr, cfg := pgTarget(t)
 	caFile := os.Getenv("SLUICE_PG_TLS_CA")
@@ -45,10 +49,28 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	if !roots.AppendCertsFromPEM(ca) {
 		t.Fatalf("%s holds no PEM certificate", caFile)
 	}
-	// DialTLS does the SSLRequest and the handshake; the wrapper only keeps
-	// the *tls.Conn it returns, unchanged, to read the certificate from.
+	tlsCfg := &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	var major int
+	t.Run("SSLRequest", func(t *testing.T) {
+		conn := bindOverTLS(t, postgres.DialTLS(addr, tlsCfg), cfg)
+		major, _ = strconv.Atoi(strings.SplitN(conn.Parameter("server_version"), ".", 2)[0])
+	})
+	t.Run("direct", func(t *testing.T) {
+		if major != 0 && major < 17 {
+			t.Skipf("PostgreSQL %d takes TLS only after an SSLRequest; direct TLS needs 17", major)
+		}
+		bindOverTLS(t, postgres.DialTLSDirect(addr, tlsCfg), cfg)
+	})
+}
+
+// bindOverTLS connects through dial with RequireChannelBinding, checks the
+// certificate is the one the harness expects and that the server sees a TLS
+// session, and returns the connection.
+func bindOverTLS(t *testing.T, dial postgres.DialFunc, cfg postgres.Config) *postgres.Conn {
+	t.Helper()
+	// The wrapper only keeps the *tls.Conn the recipe returns, unchanged, to
+	// read the certificate from.
 	var tc *tls.Conn
-	dial := postgres.DialTLS(addr, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
 	recipe := func(ctx context.Context) (io.ReadWriteCloser, error) {
 		rw, err := dial(ctx)
 		if c, ok := rw.(*tls.Conn); ok && tc == nil {
@@ -82,4 +104,5 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 			return postgres.DecodeText(v)
 		})
 	t.Logf("bound to the certificate over %s", version)
+	return conn
 }

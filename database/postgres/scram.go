@@ -9,6 +9,8 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
 	"hash"
@@ -171,8 +173,11 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 // such hash (Ed25519) has no defined binding, and PostgreSQL refuses it too.
 // For RSASSA-PSS the hash is the one inside the signature parameters, as
 // PostgreSQL takes it from X509_get_signature_info; CI checks the two agree
-// against a real server on an RSA-PSS SHA-384 certificate
-// (TestIntegrationChannelBindingOverTLS).
+// against a real server on RSA-PSS SHA-384 certificates
+// (TestIntegrationChannelBindingOverTLS). crypto/x509 names a PSS signature
+// only when its salt is as long as its hash; any other — OpenSSL's default
+// is the longest salt that fits — leaves SignatureAlgorithm unknown, and the
+// hash is then read from the certificate's own bytes (pssHash).
 func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	var h hash.Hash
 	switch cert.SignatureAlgorithm {
@@ -184,11 +189,61 @@ func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	case x509.SHA512WithRSA, x509.SHA512WithRSAPSS, x509.ECDSAWithSHA512:
 		h = sha512.New()
 	default:
-		return nil, fmt.Errorf("%w: the server offers %s, and its certificate's signature algorithm %v defines no tls-server-end-point hash",
-			ErrAuthUnsupported, mechSCRAMSHA256Plus, cert.SignatureAlgorithm)
+		h = pssHash(cert.Raw)
+		if h == nil {
+			return nil, fmt.Errorf("%w: the server offers %s, and its certificate's signature algorithm %v defines no tls-server-end-point hash",
+				ErrAuthUnsupported, mechSCRAMSHA256Plus, cert.SignatureAlgorithm)
+		}
 	}
 	h.Write(cert.Raw)
 	return h.Sum(nil), nil
+}
+
+var (
+	oidSignatureRSAPSS = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 10}
+	oidSHA1            = asn1.ObjectIdentifier{1, 3, 14, 3, 2, 26}
+	oidSHA224          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 4}
+	oidSHA256          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
+	oidSHA384          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 2}
+	oidSHA512          = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 3}
+)
+
+// pssHash returns the tls-server-end-point hash of a certificate signed with
+// RSASSA-PSS, read from the hashAlgorithm of its RSASSA-PSS-params
+// (RFC 4055 §3.1), or nil when der is not such a certificate or names a hash
+// this binding does not know. An absent hashAlgorithm is SHA-1, its DEFAULT,
+// which RFC 5929 §4.1 replaces with SHA-256. Only the hash is read: the
+// signature itself was the TLS library's to verify, or the caller's choice to
+// trust the certificate as it stands.
+func pssHash(der []byte) hash.Hash {
+	var cert struct {
+		TBS       asn1.RawValue
+		Algorithm pkix.AlgorithmIdentifier
+		Signature asn1.BitString
+	}
+	if rest, err := asn1.Unmarshal(der, &cert); err != nil || len(rest) != 0 || !cert.Algorithm.Algorithm.Equal(oidSignatureRSAPSS) {
+		return nil
+	}
+	var params struct {
+		Hash         pkix.AlgorithmIdentifier `asn1:"optional,explicit,tag:0"`
+		MGF          pkix.AlgorithmIdentifier `asn1:"optional,explicit,tag:1"`
+		SaltLength   int                      `asn1:"optional,explicit,tag:2,default:20"`
+		TrailerField int                      `asn1:"optional,explicit,tag:3,default:1"`
+	}
+	if rest, err := asn1.Unmarshal(cert.Algorithm.Parameters.FullBytes, &params); err != nil || len(rest) != 0 {
+		return nil
+	}
+	switch alg := params.Hash.Algorithm; {
+	case alg == nil, alg.Equal(oidSHA1), alg.Equal(oidSHA256):
+		return sha256.New()
+	case alg.Equal(oidSHA224):
+		return sha256.New224()
+	case alg.Equal(oidSHA384):
+		return sha512.New384()
+	case alg.Equal(oidSHA512):
+		return sha512.New()
+	}
+	return nil
 }
 
 // respond answers AuthenticationSASLContinue with the client's final message,

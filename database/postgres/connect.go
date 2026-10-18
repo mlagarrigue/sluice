@@ -22,9 +22,11 @@ import (
 // past the caller's deadline, and a cancellation past
 // [Config.CancelTimeout]. The connection's Close must be safe to call while
 // a Read is blocked, as every net.Conn's is: it is how a cancellation that
-// cannot be confirmed releases the statement waiting on the server. [DialTCP] and [DialTLS] are the two recipes most deployments
-// need; a recipe of your own — a UNIX socket, a proxy, a custom resolver — is
-// any function of this shape.
+// cannot be confirmed releases the statement waiting on the server.
+// [DialTCP] and [DialTLS] are the two recipes most deployments need, and
+// [DialTLSDirect] saves a round trip on PostgreSQL 17 and later; a recipe of
+// your own — a UNIX socket, a proxy, a custom resolver — is any function of
+// this shape.
 type DialFunc func(ctx context.Context) (io.ReadWriteCloser, error)
 
 // DialTCP is the recipe for a plain TCP connection to addr, "host:port".
@@ -65,6 +67,25 @@ const sslRequestCode = 80877103
 // through TLS (CVE-2021-23222). Here they reach the TLS library instead,
 // which fails the handshake on them.
 func DialTLS(addr string, cfg *tls.Config) DialFunc {
+	cfg = withServerName(addr, cfg)
+	return func(ctx context.Context) (io.ReadWriteCloser, error) {
+		var d net.Dialer
+		nc, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		tc, err := negotiateTLS(ctx, nc, cfg)
+		if err != nil {
+			_ = nc.Close()
+			return nil, err
+		}
+		return tc, nil
+	}
+}
+
+// withServerName returns cfg, or a clone of it whose empty ServerName is the
+// host part of addr. A nil cfg is the zero [tls.Config].
+func withServerName(addr string, cfg *tls.Config) *tls.Config {
 	if cfg == nil {
 		cfg = &tls.Config{}
 	}
@@ -76,16 +97,43 @@ func DialTLS(addr string, cfg *tls.Config) DialFunc {
 		cfg = cfg.Clone()
 		cfg.ServerName = host
 	}
+	return cfg
+}
+
+// alpnPostgres is the ALPN protocol PostgreSQL 17 registers for its wire
+// protocol over TLS.
+const alpnPostgres = "postgresql"
+
+// DialTLSDirect is the recipe for a TLS connection to addr, "host:port",
+// that starts the handshake at once, without the SSLRequest exchange
+// [DialTLS] goes through first: one round trip less, and no byte in clear.
+// It is libpq's sslnegotiation=direct, and needs a PostgreSQL 17 server or
+// later; an older one, or a proxy that only knows the SSLRequest, fails the
+// handshake.
+//
+// cfg is used as [DialTLS] uses it — an empty ServerName is filled in with
+// the host part of addr, a nil cfg is the zero [tls.Config] — with one more
+// change: NextProtos is set to the single ALPN protocol "postgresql",
+// replacing whatever cfg held. A PostgreSQL server refuses a direct handshake
+// that does not offer it, which is how it tells this connection from an HTTPS
+// client that reached the wrong port.
+//
+// The connection is refused when the server did not select "postgresql": a
+// server that completes the handshake without choosing a protocol has not
+// said it speaks this one, and libpq refuses it the same way.
+func DialTLSDirect(addr string, cfg *tls.Config) DialFunc {
+	cfg = withServerName(addr, cfg).Clone()
+	cfg.NextProtos = []string{alpnPostgres}
 	return func(ctx context.Context) (io.ReadWriteCloser, error) {
-		var d net.Dialer
+		d := tls.Dialer{Config: cfg}
 		nc, err := d.DialContext(ctx, "tcp", addr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("postgres: direct TLS: %w", err)
 		}
-		tc, err := negotiateTLS(ctx, nc, cfg)
-		if err != nil {
-			_ = nc.Close()
-			return nil, err
+		tc := nc.(*tls.Conn)
+		if p := tc.ConnectionState().NegotiatedProtocol; p != alpnPostgres {
+			_ = tc.Close()
+			return nil, fmt.Errorf("%w: the server completed a direct TLS handshake without selecting the ALPN protocol %q (got %q) — it does not say it speaks PostgreSQL; use DialTLS for a server older than PostgreSQL 17", ErrProtocol, alpnPostgres, p)
 		}
 		return tc, nil
 	}

@@ -263,7 +263,11 @@ jobs:
             echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
-          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log; then
+          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
+            echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
+            exit 1
+          fi
+          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log; then
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over TLS" >&2
             exit 1
           fi
@@ -280,7 +284,24 @@ jobs:
           SLUICE_PG_TLS_SIGALG: SHA384-RSAPSS
         run: |
           go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
-          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
+
+      # OpenSSL's default PSS salt, the longest that fits: crypto/x509 leaves
+      # that signature unknown ("0"), so the hash comes from the client's own
+      # reading of the PSS parameters. The certificate is trusted as it
+      # stands, which needs no check of its signature.
+      - name: Turn TLS on, RSA-PSS SHA-384 certificate, longest salt
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa-pss-maxsalt "$RUNNER_TEMP/pg-rsa-pss-maxsalt"
+      - name: Channel binding, RSA-PSS SHA-384 certificate, longest salt
+        shell: bash
+        env:
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa-pss-maxsalt/server.crt
+          SLUICE_PG_TLS_SIGALG: "0"
+        run: |
+          go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
 
   # net/httpstream against clients it did not write: curl over HTTP/1.1 and
   # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server

@@ -4,12 +4,18 @@
 # is sure to meet that certificate. A service container takes no server
 # flags, so ssl = on cannot be set where the container is declared.
 #
-#   scripts/pg-tls.sh <container> <rsa|rsa-pss> <dir>
+#   scripts/pg-tls.sh <container> <rsa|rsa-pss|rsa-pss-maxsalt> <dir>
 #
-#   rsa      RSA key, PKCS #1 v1.5 signature with SHA-256: the common case.
-#   rsa-pss  RSA key, RSASSA-PSS signature with SHA-384. The binding hash is
-#            taken from inside the PSS parameters, so this is the one where a
-#            client and the server can disagree (RFC 5929 §4.1).
+#   rsa              RSA key, PKCS #1 v1.5 signature with SHA-256: the common
+#                    case.
+#   rsa-pss          RSA key, RSASSA-PSS signature with SHA-384. The binding
+#                    hash is taken from inside the PSS parameters, so this is
+#                    the one where a client and the server can disagree
+#                    (RFC 5929 §4.1).
+#   rsa-pss-maxsalt  The same with OpenSSL's default salt, the longest that
+#                    fits. crypto/x509 names a PSS signature only when the
+#                    salt is the hash length, so here the client reads the
+#                    hash from the parameters itself.
 #
 # Writes <dir>/server.crt, self-signed for 127.0.0.1: it is also the root the
 # client trusts. The image's pg_hba.conf has host lines, which match TLS and
@@ -20,10 +26,10 @@ container=$1 kind=$2 dir=$3
 
 case $kind in
 rsa) sign=(-sha256) ;;
-# The salt length is the hash length, which is what crypto/x509 requires:
-# OpenSSL's default, the longest salt that fits, makes a certificate Go
-# refuses to parse, so the TLS handshake fails before SCRAM starts.
+# The salt length is the hash length, the only one crypto/x509 names
+# (SHA384-RSAPSS).
 rsa-pss) sign=(-sha384 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest) ;;
+rsa-pss-maxsalt) sign=(-sha384 -sigopt rsa_padding_mode:pss) ;;
 *)
 	echo "pg-tls.sh: unknown certificate kind $kind" >&2
 	exit 2

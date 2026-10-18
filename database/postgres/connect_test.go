@@ -218,6 +218,93 @@ func TestDialTLSNegotiatesSSLRequest(t *testing.T) {
 	}
 }
 
+// tlsDirectServer listens on loopback, runs a TLS handshake on the first
+// connection with no SSLRequest before it, and hands the TLS side to then.
+func tlsDirectServer(t *testing.T, cfg *tls.Config, then func(*tls.Conn)) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		nc, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		srv := tls.Server(nc, cfg)
+		defer func() { _ = srv.Close() }()
+		if err := srv.Handshake(); err != nil {
+			t.Errorf("server handshake: %v", err)
+			return
+		}
+		then(srv)
+	}()
+	return ln.Addr().String()
+}
+
+// DialTLSDirect opens TLS at once, offers the "postgresql" ALPN protocol in
+// place of the caller's, and Connect authenticates inside it. The server
+// accepts "postgresql" only, so a dial that kept the caller's "h2" would
+// fail the handshake.
+func TestDialTLSDirectHandshakesAtOnce(t *testing.T) {
+	cert, roots := testCert(t)
+	addr := tlsDirectServer(t, &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"postgresql"}, MinVersion: tls.VersionTLS12}, func(srv *tls.Conn) {
+		if _, err := pgwire.NewReader(srv).NextStartup(); err != nil {
+			t.Errorf("server reading the startup packet inside TLS: %v", err)
+			return
+		}
+		_, _ = srv.Write(trustScript())
+		_, _ = io.Copy(io.Discard, srv)
+	})
+
+	cfg := &tls.Config{RootCAs: roots, ServerName: "db.test", NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	conn, err := Connect(ctx, DialTLSDirect(addr, cfg), Config{User: "u"})
+	if err != nil {
+		t.Fatalf("Connect over DialTLSDirect: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	tc, ok := conn.rw.(*tls.Conn)
+	if !ok {
+		t.Fatalf("the connection is a %T, want *tls.Conn", conn.rw)
+	}
+	if p := tc.ConnectionState().NegotiatedProtocol; p != "postgresql" {
+		t.Errorf("negotiated protocol = %q, want postgresql", p)
+	}
+	if len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "h2" {
+		t.Errorf("the caller's config was changed: NextProtos = %q", cfg.NextProtos)
+	}
+}
+
+// A server that completes the handshake without selecting an ALPN protocol
+// — Go's crypto/tls client accepts that — is refused, as libpq refuses it:
+// it has not said it speaks PostgreSQL.
+func TestDialTLSDirectRefusesAServerWithoutALPN(t *testing.T) {
+	cert, roots := testCert(t)
+	closed := make(chan struct{})
+	addr := tlsDirectServer(t, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, func(srv *tls.Conn) {
+		_, _ = io.Copy(io.Discard, srv)
+		close(closed)
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	rw, err := DialTLSDirect(addr, &tls.Config{RootCAs: roots, ServerName: "db.test", MinVersion: tls.VersionTLS12})(ctx)
+	if err == nil {
+		_ = rw.Close()
+		t.Fatal("DialTLSDirect accepted a server that selected no ALPN protocol")
+	}
+	if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "ALPN") {
+		t.Errorf("DialTLSDirect = %v, want an ErrProtocol that names ALPN", err)
+	}
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Error("the socket was left open")
+	}
+}
+
 // DialTLS refuses rather than downgrades, does not repeat what an
 // unauthenticated server wrote, and reads exactly one byte before the
 // handshake, so bytes stuffed behind the 'S' reach TLS and fail it.

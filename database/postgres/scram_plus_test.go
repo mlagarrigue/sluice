@@ -12,11 +12,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +63,49 @@ func TestTLSServerEndPointHash(t *testing.T) {
 	}
 	if _, err := tlsServerEndPoint(&x509.Certificate{Raw: raw, SignatureAlgorithm: x509.PureEd25519}); !errors.Is(err, ErrAuthUnsupported) {
 		t.Errorf("Ed25519: %v, want ErrAuthUnsupported — the RFC defines no hash for it", err)
+	}
+}
+
+// A certificate signed with RSASSA-PSS whose salt is not the hash length —
+// OpenSSL's default, the longest that fits, which PostgreSQL and libpq
+// accept — is parsed by crypto/x509 with an unknown SignatureAlgorithm. The
+// binding hash is then the one in its PSS parameters: SHA-384 and SHA-224
+// as written, SHA-1 by the parameters' DEFAULT and so SHA-256. The files are
+// from `openssl req -x509 -newkey rsa:2048 -<hash> -sigopt
+// rsa_padding_mode:pss`.
+func TestTLSServerEndPointMaxSaltPSS(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		sum  func([]byte) []byte
+	}{
+		{"rsa-pss-maxsalt-sha384.crt", func(b []byte) []byte { s := sha512.Sum384(b); return s[:] }},
+		{"rsa-pss-maxsalt-sha224.crt", func(b []byte) []byte { s := sha256.Sum224(b); return s[:] }},
+		{"rsa-pss-maxsalt-sha1.crt", func(b []byte) []byte { s := sha256.Sum256(b); return s[:] }},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			pemBytes, err := os.ReadFile(filepath.Join("testdata", tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, _ := pem.Decode(pemBytes)
+			if block == nil {
+				t.Fatal("no PEM block")
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cert.SignatureAlgorithm != x509.UnknownSignatureAlgorithm {
+				t.Fatalf("crypto/x509 names the signature %v: the certificate no longer exercises the unknown-algorithm path", cert.SignatureAlgorithm)
+			}
+			got, err := tlsServerEndPoint(cert)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := tc.sum(cert.Raw); !bytes.Equal(got, want) {
+				t.Errorf("binding = %x, want %x", got, want)
+			}
+		})
 	}
 }
 

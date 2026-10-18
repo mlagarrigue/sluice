@@ -82,14 +82,18 @@ Three reasons come up, and the difference matters:
   addition needs vectors taken from a real server.
 - **Certificates are yours.** The connector opens the connection with
   the recipe you give it: `DialTCP`, `DialTLS` (which performs the
-  SSLRequest peculiar to PostgreSQL), or your own (direct TLS since 17, a
-  UNIX socket, a proxy). Which certificates to trust stays your decision,
+  SSLRequest peculiar to PostgreSQL), `DialTLSDirect` (direct TLS, since
+  PostgreSQL 17), or your own (a UNIX socket, a proxy). Which certificates to trust stays your decision,
   in the `tls.Config` you pass: see the
   [PostgreSQL guide](postgres.md#encrypting-the-connection).
-- **An RSA-PSS certificate whose salt is not the hash length is refused**
-  by `crypto/x509`, Go's standard library, in the TLS handshake, before
-  any authentication; libpq accepts it. It is OpenSSL's default when signing with
-  PSS: re-sign with `-sigopt rsa_pss_saltlen:digest`.
+- **An RSA-PSS signature whose salt is not the hash length is not
+  verified** by `crypto/x509`, Go's standard library; libpq verifies it.
+  It is OpenSSL's default when signing with PSS. A server certificate
+  placed itself in `RootCAs` (self-signed, trusted as it stands) passes,
+  and SCRAM-SHA-256-PLUS binding works: its signature is not checked. But
+  if an authority signed the server's certificate or an intermediate that
+  way, the TLS handshake fails before any authentication: re-sign with
+  `-sigopt rsa_pss_saltlen:digest`.
 - **No LISTEN/NOTIFY, no notices.** A `LISTEN` goes through `Exec`, but
   the notifications that arrive afterwards are discarded, for want of an
   API to receive them; the server's notices (`RAISE NOTICE`, warnings) are

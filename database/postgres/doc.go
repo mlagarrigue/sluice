@@ -10,10 +10,10 @@
 //
 // # The user path
 //
-// [Connect] opens a connection with a recipe — [DialTCP], [DialTLS] or one of
-// the caller's own — and authenticates it; the recipe is kept, so a context
-// that ends mid-statement cancels it on the server. From
-// there a [Conn] runs [Conn.Query] for rows as a [sluice.Source] of [Row]
+// [Connect] opens a connection with a recipe — [DialTCP], [DialTLS],
+// [DialTLSDirect] or one of the caller's own — and authenticates it; the
+// recipe is kept, so a context that ends mid-statement cancels it on the
+// server. From there a [Conn] runs [Conn.Query] for rows as a [sluice.Source] of [Row]
 // batches, [Conn.Exec] for statements without a result, [Conn.Begin] for a
 // [Tx] with savepoints and SET LOCAL, and [Conn.CopyFrom] for binary COPY of
 // a batch at a time. Parameters and results are binary: the Append* and

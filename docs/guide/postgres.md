@@ -123,22 +123,24 @@ complete, commented example is in
 [`example_tls_test.go`](../../database/postgres/example_tls_test.go).
 
 Since PostgreSQL 17, the client may also skip the SSLRequest and open TLS
-directly (`sslnegotiation=direct` in libpq): one round trip fewer. The
-protocol then requires the client to announce **ALPN** `postgresql`, and
-the server refuses the handshake without it. No recipe provided does this;
-a recipe of your own is enough, since a recipe is any function of this
-shape:
+directly (`sslnegotiation=direct` in libpq): one round trip fewer, and not a
+single byte in clear. The protocol then requires the client to announce
+**ALPN** `postgresql`, and the server refuses the handshake without it.
+That is the `DialTLSDirect` recipe, which takes the same arguments as
+`DialTLS`:
 
 ```go
-direct := func(ctx context.Context) (io.ReadWriteCloser, error) {
-    d := tls.Dialer{Config: &tls.Config{ServerName: "db.internal", MinVersion: tls.VersionTLS12, NextProtos: []string{"postgresql"}}}
-    return d.DialContext(ctx, "tcp", "db.internal:5432")
-}
-conn, err := postgres.Connect(ctx, direct, postgres.Config{ /* … */ })
+conn, err := postgres.Connect(ctx,
+    postgres.DialTLSDirect("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}),
+    postgres.Config{ /* … */ })
 ```
 
-A server at 16 or older does not understand this form: it only fits when
-you know which server is on the other side.
+It announces `postgresql` in place of whatever your `tls.Config` held in
+`NextProtos`, and refuses a server that completes the handshake without
+having chosen it, as libpq does: that server has not said it speaks
+PostgreSQL. A server at 16 or older does not understand this form and fails
+the handshake: it only fits when you know which server is on the other
+side; otherwise, `DialTLS`.
 
 > **In plain terms: ALPN.** A label the client slips into the TLS handshake
 > to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
