@@ -243,7 +243,7 @@ jobs:
           SLUICE_PG_TLS_SIGALG: SHA256-RSA
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
-          if grep -E 'SLUICE_PG is not set|is a superuser|SLUICE_PG_TLS_CA is not set' test.log; then
+          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
             exit 1
           fi
@@ -347,9 +347,9 @@ jobs:
           # not requirements and would fail the job for the wrong reason.
           json=$(go mod edit -json)
           extra=$(jq -r '.Require[]?.Path' <<<"$json" \
-            | grep -vE '^golang\.org/x/(crypto|sys)$' || true)
+            | grep -vE '^golang\.org/x/(crypto|sys|text)$' || true)
           if [ -n "$extra" ]; then
-            echo "::error file=go.mod::modules outside the allowlist (golang.org/x/crypto and the x/sys it brings):" >&2
+            echo "::error file=go.mod::modules outside the allowlist (golang.org/x/crypto and the x/sys it brings, golang.org/x/text):" >&2
             echo "$extra" >&2
             exit 1
           fi
@@ -368,10 +368,20 @@ jobs:
           external=$(go list -deps ./... \
             | grep -E '^[^/]+\.[^/]+/' \
             | grep -v "^${module}\(/\|$\)" \
-            | grep -vE '^golang\.org/x/(crypto|sys)(/|$)' || true)
+            | grep -vE '^golang\.org/x/(crypto|sys|text)(/|$)' || true)
           if [ -n "$external" ]; then
             echo "::error::packages outside the allowlist in the dependency graph:" >&2
             echo "$external" >&2
+            exit 1
+          fi
+          # x/text entered for one package (ADR 0002): SASLprep's NFKC in
+          # database/postgres. Any other importer is a new decision.
+          text=$(go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./... \
+            | awk '{for (i = 2; i <= NF; i++) if ($i ~ /^golang\.org\/x\/text(\/|$)/) print $1}' \
+            | sort -u | grep -vx "${module}/database/postgres" || true)
+          if [ -n "$text" ]; then
+            echo "::error::golang.org/x/text imported outside database/postgres:" >&2
+            echo "$text" >&2
             exit 1
           fi
 

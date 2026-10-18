@@ -64,8 +64,8 @@ a connection with no credit at all, unable to send anything.
 
 > **In plain terms: the one dependency.** QUIC's encryption needs an
 > algorithm (ChaCha20-Poly1305) that `crypto/tls` uses but does not expose.
-> It is for this that the project depends on `golang.org/x/crypto`, its only
-> module outside the standard library.
+> It is for this that the project depends on `golang.org/x/crypto`, the only
+> module outside the standard library that QUIC uses.
 
 `net/quic/udp` is its helper, experimental with it: it opens the UDP socket
 with the options a QUIC endpoint needs (no IP fragmentation, one IPv6 flow

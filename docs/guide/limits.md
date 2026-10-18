@@ -29,7 +29,8 @@ Three reasons come up, and the difference matters:
   not built: its state must live with you, not in the library. It is the
   first item on the ETL side of the roadmap.
 - **Dependencies are decided case by case.** Today, the standard library
-  plus `golang.org/x/crypto`, and nothing enters without a written decision
+  plus `golang.org/x/crypto` and `golang.org/x/text`, and nothing enters
+  without a written decision
   that says why and what it brings along. The criterion is the least
   useless code, not a count: a maintained compressor (zstd, brotli) beats a
   home-made one, and it will enter when the measurement says it pays. What
@@ -66,11 +67,6 @@ Three reasons come up, and the difference matters:
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on
   the server.
-- **SASLprep is not applied to the password.** That Unicode normalisation
-  needs tables the standard library does not have. For a password in
-  printable ASCII there is no difference; beyond that, a password the
-  server normalised fails cleanly rather than authenticating with a
-  weakened version.
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,

@@ -1674,11 +1674,14 @@ credit; any unbounded buffer reintroduces this bug.
 production dependency is a recorded decision, and the graph is as small as
 the job allows. Today:
 
-- **Production: the standard library plus one module, `golang.org/x/crypto`.**
-  It supplies ChaCha20-Poly1305, which `crypto/tls` negotiates in TLS 1.3 and
-  cannot be deselected, but does not export; the QUIC transport needs the raw
-  AEAD and keystream to protect packets (RFC 9001 §5). Maintained by the Go
-  team, pinned in `go.sum`, watched by Dependabot and `govulncheck`. No other
+- **Production: the standard library plus two modules.**
+  `golang.org/x/crypto` supplies ChaCha20-Poly1305, which `crypto/tls`
+  negotiates in TLS 1.3 and cannot be deselected, but does not export; the
+  QUIC transport needs the raw AEAD and keystream to protect packets (RFC
+  9001 §5). `golang.org/x/text/unicode/norm` supplies the NFKC
+  normalisation SASLprep (RFC 4013) applies to a PostgreSQL password, and
+  only `database/postgres` imports it. Both are maintained by the Go team,
+  pinned in `go.sum`, watched by Dependabot and `govulncheck`. No other
   module enters the graph: CI checks the allowlist on every push.
 - **Tests/tooling: allowed** if they cannot end up in the final binary; tests
   that compare against other libraries live in the separate `benchmarks`

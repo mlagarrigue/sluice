@@ -45,34 +45,10 @@ var ErrProtocolVersion = errors.New("postgres: the server does not speak the pro
 // "connection is out of sync", which sends whoever sees a 28P01 looking for a
 // protocol fault; it still matches [ErrConnBroken] for a caller that tests it,
 // and [errors.As] still finds the [*Error].
-type startupRefusal struct {
-	server *Error
-	hint   string
-}
+type startupRefusal struct{ server *Error }
 
-func (e *startupRefusal) Error() string   { return e.server.Error() + e.hint }
+func (e *startupRefusal) Error() string   { return e.server.Error() }
 func (e *startupRefusal) Unwrap() []error { return []error{e.server, ErrConnBroken} }
-
-// refusal builds the error for a server's refusal at startup. A password
-// failure after a SCRAM exchange with a non-ASCII password gets the one likely
-// cause this package can name: it sends the password without SASLprep (see
-// scramProof), and a server that stored it normalised derives another key.
-func refusal(server *Error, scram bool, password string) error {
-	e := &startupRefusal{server: server}
-	if server.Code == "28P01" && scram && !isASCII(password) {
-		e.hint = "; the password contains non-ASCII characters, which this package sends without SASLprep (RFC 4013) normalisation: unless the password is already in NFKC form, the server derived its key from a different string"
-	}
-	return e
-}
-
-func isASCII(s string) bool {
-	for i := range len(s) {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}
 
 // Authentication request codes, from the AuthenticationRequest message family.
 // They all arrive as type 'R' with the code in the first four bytes, which is
@@ -577,7 +553,7 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			}
 			// Unlike a query error, this one is terminal: there is no
 			// ReadyForQuery coming and no position to resynchronise to.
-			c.broken = refusal(serverErr, st.step != scramIdle, cfg.Password)
+			c.broken = &startupRefusal{server: serverErr}
 			return c.broken
 
 		case pgwire.BackendReadyForQuery:

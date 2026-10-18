@@ -539,9 +539,7 @@ outside the transaction under nobody's identity.
 No connection pool, no automatic resumption of an interrupted load, no
 LISTEN/NOTIFY and no `COPY ... TO STDOUT`, `md5`
 refused, no `money` or `tsvector` types, arrays and column scanners for
-thirteen types only (the table above), and passwords with characters
-outside printable ASCII may fail cleanly (SASLprep normalisation is not
-applied). The detail: [Limits](limits.md).
+and thirteen types only (the table above). The detail: [Limits](limits.md).
 
 ## Measured
 

@@ -223,8 +223,9 @@ The other rules follow:
   invariant, not a convention.
 - **Dependencies by decision** — today the standard library plus
   `golang.org/x/crypto`, for an encryption algorithm `crypto/tls` uses
-  without exposing it. Continuous integration refuses any module that no
-  recorded decision admitted.
+  without exposing it, and `golang.org/x/text`, for the Unicode
+  normalisation of a PostgreSQL password. Continuous integration refuses
+  any module that no recorded decision admitted.
 - **Measured, not asserted** — every performance figure has a benchmark and a
   denominator. And never a global "X% faster": a comparison says what it
   compares, in which situation, and where it loses.

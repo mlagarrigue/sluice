@@ -21,7 +21,8 @@ against the design, not work around it.
 
 1. **Every dependency is a recorded decision.** Today the graph holds the
    standard library plus `golang.org/x/crypto`, for the ChaCha20-Poly1305
-   cipher that `crypto/tls` negotiates in TLS 1.3 without exporting it. CI
+   cipher that `crypto/tls` negotiates in TLS 1.3 without exporting it, and
+   `golang.org/x/text`, for SASLprep's NFKC in `database/postgres` alone. CI
    fails on any module outside the current list; a new one enters through
    an ADR that states its reason and its transitive graph, never through a
    `go get` on the side. The criterion is the least useless code, not a

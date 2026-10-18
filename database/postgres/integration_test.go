@@ -386,10 +386,63 @@ func TestIntegrationWrongPassword(t *testing.T) {
 	}
 }
 
+// A password outside NFKC authenticates: the server ran SASLprep on it when
+// it stored the role's key, and the client must derive its proof from the
+// same prepared string. Its NFKC form is then the same password, which shows
+// the preparation happened on both ends rather than on neither.
+func TestIntegrationSASLprepPassword(t *testing.T) {
+	const role = "sluice_saslprep_test"
+	const password = "Ⅸ-ｐａｓｓ" //nolint:gosec // G101: a throwaway role's password; "Ⅸ" and fullwidth letters
+	addr, cfg := pgTarget(t)
+	admin := dial(t)
+	// The cleanup runs after t.Context() is cancelled, so it drops the role
+	// under a context of its own.
+	drop := func(ctx context.Context) error {
+		return execContext(ctx, admin, "DROP ROLE IF EXISTS "+role)
+	}
+	if err := drop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "SET password_encryption = 'scram-sha-256'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"'"); err != nil {
+		var pgErr *postgres.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+			t.Skipf("%s may not create roles: %v", cfg.User, err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := drop(ctx); err != nil {
+			t.Errorf("drop role %s: %v", role, err)
+		}
+	})
+
+	for _, p := range []string{password, "IX-pass"} {
+		c := cfg
+		c.User, c.Password = role, p
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), c)
+		cancel()
+		if err != nil {
+			t.Errorf("password %+q: %v", p, err)
+			continue
+		}
+		_ = conn.Close()
+	}
+}
+
 // exec runs a statement for its effect, draining whatever it returns.
 func exec(t *testing.T, conn *postgres.Conn, sql string) error {
 	t.Helper()
-	src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{BatchRows: 16})
+	return execContext(t.Context(), conn, sql)
+}
+
+func execContext(ctx context.Context, conn *postgres.Conn, sql string) error {
+	src := conn.Query(ctx, sql, nil, postgres.QueryConfig{BatchRows: 16})
 	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
 	return src.Err()
 }

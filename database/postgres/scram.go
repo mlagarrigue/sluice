@@ -259,22 +259,15 @@ func (s *scram) verify(serverFinal []byte) error {
 // are not the ones this client sends, and a function that assembled them
 // itself could only ever be tested against its own assembly.
 func scramProof(password string, salt []byte, iter int, authMessage string) (proof, serverSig []byte, err error) {
-	// SASLprep (RFC 4013) is not applied. It requires Unicode NFKC
-	// normalisation, which the standard library does not carry and which this
-	// repository will not take a dependency for. For a password of printable
-	// ASCII — every one this will meet in practice — SASLprep is the identity
-	// function, so the two agree exactly. For a password containing
-	// non-ASCII characters, a server that stored it normalised will compute a
-	// different SaltedPassword and authentication will fail: a clear failure,
-	// not a weakened one. libpq falls back to the same raw bytes when its
-	// SASLprep cannot run.
 	if len(salt) < minSaltLen {
 		// Reached only by a caller other than the exchange, which has already
 		// judged the salt. It is checked again rather than assumed, because
 		// this function is what a future codepath will reuse.
 		return nil, nil, fmt.Errorf("%w: a %d-byte salt is below the %d this client accepts", ErrAuth, len(salt), minSaltLen)
 	}
-	salted, err := pbkdf2.Key(sha256.New, password, salt, iter, sha256.Size)
+	// The password is prepared by SASLprep (RFC 4013) first, as libpq's
+	// scram_init does and as the server did when it stored the role's key.
+	salted, err := pbkdf2.Key(sha256.New, saslprep(password), salt, iter, sha256.Size)
 	if err != nil {
 		// crypto/pbkdf2 rejects the arguments only under GOFIPS140=only, and
 		// the two things it objects to there — a short salt and an
