@@ -196,16 +196,29 @@ func (c *Conn) watchCancel(ctx context.Context) *cancelWatch {
 		return nil
 	}
 	w := &cancelWatch{done: make(chan struct{})}
-	w.stop = context.AfterFunc(ctx, func() {
-		defer close(w.done)
-		if w.err = c.sendCancel(ctx); w.err != nil {
-			// Closed here rather than when the statement settles: its
-			// goroutine may be blocked in a read the server will never
-			// answer, and only the close releases it.
-			_ = c.rw.Close()
-		}
-	})
+	w.stop = context.AfterFunc(ctx, func() { w.run(c, ctx) })
 	return w
+}
+
+// cancelNow sends the cancellation at once rather than when ctx ends: for a
+// statement whose consumer stopped with its context still alive, and whose
+// rest would cost more to read than to cancel. Same goroutine, same recipe,
+// same confirmation as the watch; end waits for it.
+func (c *Conn) cancelNow(ctx context.Context) *cancelWatch {
+	w := &cancelWatch{done: make(chan struct{}), stop: func() bool { return false }}
+	go w.run(c, ctx)
+	return w
+}
+
+// run sends the cancellation and records how it went.
+func (w *cancelWatch) run(c *Conn, ctx context.Context) {
+	defer close(w.done)
+	if w.err = c.sendCancel(ctx); w.err != nil {
+		// Closed here rather than when the statement settles: its
+		// goroutine may be blocked in a read the server will never
+		// answer, and only the close releases it.
+		_ = c.rw.Close()
+	}
 }
 
 // end disarms the watch once the statement is over. A cancellation already
@@ -308,11 +321,7 @@ func sameTransport(a, b io.ReadWriteCloser) bool {
 // statement retried — and ctx.Err() with [ErrConnBroken] otherwise.
 func (c *Conn) settleCancel(ctx context.Context, w *cancelWatch, err error) error {
 	if cerr := w.end(); cerr != nil {
-		c.broken = fmt.Errorf("%w: the cancellation was not confirmed, so the connection was closed: %w", ErrConnBroken, cerr)
-		c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: cancellation not confirmed, connection closed",
-			slog.Uint64("pid", uint64(c.cancelKey.PID)),
-			slog.Bool("statement_completed", err == nil),
-			slog.String("error", cerr.Error()))
+		c.cancelUnconfirmed(ctx, cerr, err == nil)
 		if err == nil {
 			return nil
 		}
@@ -325,6 +334,16 @@ func (c *Conn) settleCancel(ctx context.Context, w *cancelWatch, err error) erro
 		return fmt.Errorf("abandoning the statement: %w (the server cancelled it: %w)", ctx.Err(), err)
 	}
 	return err
+}
+
+// cancelUnconfirmed breaks the connection a cancellation was not confirmed
+// on — the watch has closed it — and logs one warning saying why.
+func (c *Conn) cancelUnconfirmed(ctx context.Context, cerr error, completed bool) {
+	c.broken = fmt.Errorf("%w: the cancellation was not confirmed, so the connection was closed: %w", ErrConnBroken, cerr)
+	c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: cancellation not confirmed, connection closed",
+		slog.Uint64("pid", uint64(c.cancelKey.PID)),
+		slog.Bool("statement_completed", completed),
+		slog.String("error", cerr.Error()))
 }
 
 // log is the connection's logger: [Config.Logger], or the default one.

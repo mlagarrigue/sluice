@@ -406,10 +406,11 @@ const (
 	//
 	// A statement that usually returns a handful of rows, called with a
 	// parameter for which it returns millions, **and** abandoned by its
-	// consumer partway, drains the whole result once before the connection is
-	// usable again — what [FetchAll] costs on an early stop. The statement is
-	// then known to be large and fetched in batches the next time. A caller
-	// who cannot pay that once sets [FetchBatches].
+	// consumer partway, pays once what [FetchAll] costs on an early stop: a
+	// cancellation for a read outside a transaction block, the whole rest
+	// drained for anything else. The statement is then known to be large and
+	// fetched in batches the next time. A caller who cannot pay that once
+	// sets [FetchBatches].
 	FetchAuto Fetch = iota
 
 	// FetchAll asks the server for the whole result at once, saving a round
@@ -426,12 +427,31 @@ const (
 	//
 	// # What it costs
 	//
-	// An early stop stops being cheap. With a row limit, a consumer that stops
+	// An early stop costs more. With a row limit, a consumer that stops
 	// pulling leaves at most two batches to drain — the ones asked for ahead,
 	// see BatchRows. With FetchAll the server has been told to produce
-	// everything, so abandoning a ten-million-row result means draining ten
-	// million rows to get the connection back to a known position — or
+	// everything, and has to be told to stop.
+	//
+	// When the statement opens with SELECT, VALUES or TABLE and no
+	// transaction block is open, the rest is cancelled: two batches are read
+	// past the stop, then a [CancelRequest] goes out by the recipe [Connect]
+	// was given while the read goes on to the server's query_canceled, which
+	// is not reported. The stop costs those two batches, the cancellation's
+	// round trips and what was in flight, not the rest of the result. A
+	// cancellation the server does not confirm within [Config.CancelTimeout]
+	// closes the connection, as it does for a context.
+	//
+	// Anything else is drained to its end: inside a transaction block,
+	// because a cancellation would abort the whole block; WITH, INSERT ...
+	// RETURNING, CALL, because a cancellation would roll back what reading to
+	// the end commits; and on a Conn from [NewConn], which has no recipe to
+	// cancel with. There, abandoning a ten-million-row result means draining
+	// ten million rows to get the connection back to a known position — or
 	// closing it.
+	//
+	// A SELECT that calls a function which writes is cancelled like any
+	// SELECT, and its writes are rolled back with it where a drain would
+	// have committed them: fetch such a statement with FetchBatches.
 	//
 	// Client memory is still bounded by BatchRows either way, because rows are
 	// decoded and handed on a batch at a time and TCP stops the server when
@@ -781,8 +801,15 @@ type query struct {
 	fetch      Fetch
 	allRows    bool // decided in run: every row asked for at once
 	synced     bool // the Sync went out with the query, so resync must not send another
+	stopped    bool // the consumer stopped before the end of the result
 	rows       *Rows
 	items      []Row // reused: one Row view per row of the current batch
+
+	// cancelOnStop says an early stop may cancel the rest of a result asked
+	// for whole rather than read it, if sql only reads: see [query.resync]
+	// for when. The verb is read at the stop, never on the way out.
+	cancelOnStop bool
+	sql          string
 
 	// The pushdown side, nil without a QueryConfig.Demand. stmt and params
 	// are kept so a bound can re-bind the portal; bound is the one last
@@ -896,6 +923,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		c.w.Execute("", 0)
 		c.w.Sync()
 		q.synced = true
+		q.cancelOnStop, q.sql = !c.inTx, sql
 	} else {
 		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		q.asked = 1
@@ -1073,6 +1101,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// error path it replaced in a paired A/B of BenchmarkPGReadRows.
 			if q.rows.Full() && (q.allRows || q.rows.fullOnBytes()) {
 				if !q.emit(yield) {
+					q.stopped = true
 					return true, nil // the consumer stopped; the deferred resync tidies up
 				}
 			}
@@ -1115,6 +1144,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			more := q.emit(yield)
 			q.suspendedRows = q.rowsRead
 			if !more {
+				q.stopped = true
 				return true, nil // the consumer stopped; the deferred resync tidies up
 			}
 			return false, nil
@@ -1231,16 +1261,24 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 // portal after its end. That is bounded by two batches, which is the second
 // reason the server is asked for a batch at a time rather than for the whole
 // result.
+//
+// A result asked for whole has no such bound: the server was told to
+// produce everything. When the consumer stopped early, the statement only
+// reads and no transaction block is open, the rest is cancelled instead of
+// read — once two batches' worth have been read past the stop, the bound a
+// batched read drains, so a short rest costs no cancellation. The
+// cancellation goes out by the recipe [Connect] was given, beside this read:
+// a server blocked writing to a socket nobody reads takes no cancel, so the
+// read must go on until it does. Its query_canceled is this package's own
+// doing and is not reported, and the connection is handed back only once
+// the server confirmed the request — a request still travelling would
+// cancel the next statement instead.
 func (q *query) resync() error {
 	c := q.conn
 	// Fetched whole, the Sync left with the query, so sending another would
 	// draw a second ReadyForQuery that nothing reads — and the next query on
 	// this connection would take it for its own. What is left to do is read up
 	// to the one already coming.
-	//
-	// That read is bounded by the rest of the result rather than by BatchRows,
-	// which is the cost FetchAll names: an abandoned ten-million-row scan is
-	// drained ten million rows.
 	if !q.synced {
 		c.w.Sync()
 		if err := c.w.Flush(); err != nil {
@@ -1253,15 +1291,39 @@ func (q *query) resync() error {
 	// the query reported success, and every later statement failed 25P02 with
 	// nothing client-side to explain why.
 	var serverErr error
+	var cancel *cancelWatch
+	aheadRows, aheadBytes := executesAhead*q.batchRows, executesAhead*q.batchBytes
 	for {
 		m, err := c.r.Next()
 		if err != nil {
+			if cancel != nil {
+				if cerr := cancel.end(); cerr != nil {
+					// The watch closed the connection under this read: the
+					// error to report is why, not the read it cut short.
+					c.cancelUnconfirmed(q.ctx, cerr, true)
+					return withoutOwnCancel(serverErr)
+				}
+			}
 			return c.breakConn(fmt.Errorf("resynchronising: %w", err))
 		}
 		switch m.Type {
+		case pgwire.BackendDataRow:
+			if q.stopped && q.cancelOnStop {
+				aheadRows--
+				aheadBytes -= len(m.Body)
+				if aheadRows < 0 || aheadBytes < 0 {
+					cancel = q.cancelRest()
+				}
+			}
 		case pgwire.BackendReadyForQuery:
 			c.noteTxStatus(m.Body)
-			return serverErr
+			if cancel == nil {
+				return serverErr
+			}
+			if cerr := cancel.end(); cerr != nil {
+				c.cancelUnconfirmed(q.ctx, cerr, true)
+			}
+			return withoutOwnCancel(serverErr)
 		case pgwire.BackendErrorResponse:
 			if e, parseErr := ParseError(m.Body); serverErr == nil {
 				if parseErr != nil {
@@ -1302,6 +1364,29 @@ func (q *query) resync() error {
 			}
 		}
 	}
+}
+
+// cancelRest sends the cancellation for the rest of a result the consumer
+// stopped reading, and is called once: it returns nil, and the read goes on
+// to the end, when the statement may write, when the context has already
+// ended — its own watch is cancelling — or when there is no recipe or key to
+// cancel with.
+func (q *query) cancelRest() *cancelWatch {
+	c := q.conn
+	q.cancelOnStop = false
+	if !readsOnly(q.sql) || q.ctx.Err() != nil || c.cancelDial == nil || !c.cancelKey.Known() {
+		return nil
+	}
+	return c.cancelNow(q.ctx)
+}
+
+// withoutOwnCancel drops the query_canceled an early stop's cancellation
+// drew: the consumer asked for nothing more, and the statement only read.
+func withoutOwnCancel(err error) error {
+	if e, ok := errors.AsType[*Error](err); ok && e.Code == sqlstateQueryCanceled {
+		return nil
+	}
+	return err
 }
 
 // noteTxStatus derives the connection's transaction state from ReadyForQuery's

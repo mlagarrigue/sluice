@@ -1835,3 +1835,56 @@ func countRows(t *testing.T, conn *postgres.Conn, table string) int64 {
 	}
 	return n
 }
+
+// The early stop of a result asked for whole, against the real server: ten
+// million rows, stopped at the first batch. A read the package may cancel
+// comes back once the server has cancelled it; the same read behind a WITH,
+// which it must not cancel, drains every row. What the stop costs is the time
+// from the first batch to the return — the server builds generate_series
+// whole before its first row, the same for both — and the cancelled one is
+// bounded in absolute terms and against the drain. The connection then serves
+// what follows: a statement that sleeps a little, so that a cancellation
+// landing late would cut it.
+func TestIntegrationFetchAllEarlyStopCancelsTheRest(t *testing.T) {
+	conn := dialCancellable(t, postgres.Protocol30)
+	stop := func(sql string) time.Duration {
+		t.Helper()
+		src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{Fetch: postgres.FetchAll, BatchRows: 1024})
+		batches := 0
+		var first time.Time
+		src.Stream()(func(sluice.Batch[postgres.Row]) bool { batches++; first = time.Now(); return false })
+		took := time.Since(first)
+		if err := src.Err(); err != nil {
+			t.Fatalf("%s stopped at the first batch: %v", sql, err)
+		}
+		if batches != 1 {
+			t.Fatalf("%s delivered %d batches, want 1", sql, batches)
+		}
+		if err := conn.Err(); err != nil {
+			t.Fatalf("the early stop broke the connection: %v", err)
+		}
+		return took
+	}
+	cancelled := stop("SELECT i FROM generate_series(1, 10000000) AS i")
+	drained := stop("WITH s AS (SELECT i FROM generate_series(1, 10000000) AS i) SELECT i FROM s")
+	t.Logf("early stop of 10M rows: cancelled in %v, drained in %v", cancelled, drained)
+	if cancelled > 200*time.Millisecond || cancelled*4 > drained {
+		t.Errorf("the cancelled stop took %v, want under 200ms and under a quarter of the %v drain", cancelled, drained)
+	}
+
+	var got int64
+	next := conn.Query(t.Context(), "SELECT 4242::bigint FROM pg_sleep(0.2)", nil, postgres.QueryConfig{})
+	next.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			v, _ := row.Value(0)
+			got, _ = postgres.DecodeInt8(v)
+		}
+		return true
+	})
+	if err := next.Err(); err != nil {
+		t.Fatalf("the statement after the cancelled stop: %v", err)
+	}
+	if got != 4242 {
+		t.Errorf("the statement after the cancelled stop returned %d, want 4242", got)
+	}
+}

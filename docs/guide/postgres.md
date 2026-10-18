@@ -338,8 +338,16 @@ trip per batch.
 > query asks for everything at once. The first execution, or a query that
 > returned more than a batch, is read batch by batch. What this gives up,
 > once: a query that is usually small but, for this particular parameter,
-> returns millions of rows, and that you stop reading midway, is read to
-> the end before the connection can be used again. `QueryConfig.Fetch`
+> returns millions of rows, and that you stop reading midway. The server
+> was told to produce everything; on a connection opened by `Connect`,
+> outside a transaction, a query that starts with `SELECT`, `VALUES` or
+> `TABLE` is then **cancelled** (the same cancellation as when a context
+> ends, above) once two batches past the stop have been read. Any other
+> query (`WITH`, `INSERT ... RETURNING`, or any query inside a transaction)
+> is read to the end before the connection can be used again, because
+> cancelling it would undo what it wrote, or the whole transaction. A
+> `SELECT` that calls a function which writes loses those writes on the
+> stop: read it with `FetchBatches`. `QueryConfig.Fetch`
 > forces the choice: `FetchAll` asks for everything from the first
 > execution, `FetchBatches` always reads batch by batch.
 

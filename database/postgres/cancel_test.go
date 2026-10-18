@@ -859,3 +859,300 @@ func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
 		t.Errorf("settling nothing: %v", err)
 	}
 }
+
+// streamRows plays a server told to produce everything: after the query it
+// writes a description and then rows, one at a time, until a cancellation
+// packet arrives or limit rows are out. A cancellation aborts the statement
+// with query_canceled; otherwise the result ends normally. Either way the
+// ReadyForQuery of the Sync that left with the query follows. It reports
+// how many rows went out and whether the cancellation arrived.
+func streamRows(t *testing.T, srv *pipeServer, packets <-chan []byte, limit int) (sent int, cancelled bool) {
+	t.Helper()
+	<-srv.read // the query, Sync included
+	srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
+		beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+	for sent < limit {
+		select {
+		case <-packets:
+			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"), beReadyForQuery())
+			return sent, true
+		default:
+		}
+		sent++
+		srv.write(t, beDataRow(int8Val(int64(sent))))
+	}
+	srv.write(t, beCommandComplete(fmt.Sprintf("SELECT %d", sent)), beReadyForQuery())
+	return sent, false
+}
+
+// answerOne plays the next query, answered with the single row 2.
+func answerOne(t *testing.T, srv *pipeServer) {
+	t.Helper()
+	<-srv.read
+	srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
+		beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(2)),
+		beCommandComplete("SELECT 1"))
+	<-srv.read // Sync
+	srv.write(t, beReadyForQuery())
+}
+
+// firstBatchOnly runs sql with FetchAll and ten rows a batch, and stops after
+// the first batch.
+func firstBatchOnly(t *testing.T, conn *Conn, sql string) error {
+	t.Helper()
+	src := conn.Query(t.Context(), sql, nil, QueryConfig{Fetch: FetchAll, BatchRows: 10})
+	batches := 0
+	src.Stream()(func(sluice.Batch[Row]) bool { batches++; return false })
+	if batches != 1 {
+		t.Errorf("%d batches delivered, want 1", batches)
+	}
+	return src.Err()
+}
+
+// checkNextQuery runs a second query and checks it gets its own row on a
+// connection still good.
+func checkNextQuery(t *testing.T, conn *Conn) {
+	t.Helper()
+	src := conn.Query(t.Context(), "SELECT 2", nil, QueryConfig{})
+	var got [][]byte
+	src.Stream()(func(b sluice.Batch[Row]) bool {
+		for _, r := range b.Items {
+			v, _ := r.Value(0)
+			got = append(got, slices.Clone(v))
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the query after the early stop: %v", err)
+	}
+	if len(got) != 1 || !bytes.Equal(got[0], int8Val(2)) {
+		t.Errorf("the query after the early stop returned % x, want [2]", got)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken: %v", err)
+	}
+}
+
+// A consumer that stops at the first batch of a read asked for whole does
+// not pay for the rest: two batches past the stop, a cancellation goes out
+// by the recipe, the server's query_canceled is not reported, and the next
+// query finds the connection good. Draining instead would read all 100 000
+// rows the server is prepared to send.
+func TestAnEarlyStopOfAFetchAllCancelsTheRest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+
+		type outcome struct {
+			sent      int
+			cancelled bool
+		}
+		out := make(chan outcome, 1)
+		go func() {
+			sent, cancelled := streamRows(t, srv, packets, 100_000)
+			out <- outcome{sent, cancelled}
+			answerOne(t, srv)
+		}()
+
+		err := firstBatchOnly(t, conn, "SELECT n FROM generate_series(1, 100000) n")
+		o := <-out
+		sent, cancelled := o.sent, o.cancelled
+		if err != nil {
+			t.Fatalf("Err = %v, want nil: the query_canceled is the package's own doing", err)
+		}
+		if !cancelled || dials != 1 {
+			t.Fatalf("cancelled = %v after %d dials, %d rows sent: want the rest cancelled", cancelled, dials, sent)
+		}
+		// Ten delivered, twenty read past the stop before the cancellation,
+		// and a few in flight while it travels.
+		if sent < 30 || sent > 100 {
+			t.Errorf("%d rows sent before the cancellation, want 30 to 100", sent)
+		}
+		checkNextQuery(t, conn)
+		if dials != 1 {
+			t.Errorf("the recipe was called %d times, want 1", dials)
+		}
+	})
+}
+
+// A rest shorter than the two batches a batched read would drain is read,
+// not cancelled: a cancellation costs a connection and a fork on the server,
+// which twenty rows do not.
+func TestAShortRestIsReadRatherThanCancelled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		dials := 0
+		conn.cancelDial = cancelPipe(&dials, packets)
+
+		go func() {
+			streamRows(t, srv, packets, 30)
+			answerOne(t, srv)
+		}()
+		if err := firstBatchOnly(t, conn, "SELECT n FROM t"); err != nil {
+			t.Fatalf("Err = %v", err)
+		}
+		if dials != 0 {
+			t.Errorf("the recipe was called %d times for a 20-row rest, want 0", dials)
+		}
+		checkNextQuery(t, conn)
+	})
+}
+
+// Where a cancellation would undo what reading to the end commits, or abort
+// a transaction block the caller still holds, the rest is drained as before.
+func TestAnEarlyStopDrainsWhatACancellationWouldRollBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, sql string
+		inTx      bool
+	}{
+		{"insert returning", "INSERT INTO t SELECT n FROM generate_series(1, 200) n RETURNING n", false},
+		{"with", "WITH d AS (DELETE FROM t RETURNING n) SELECT n FROM d", false},
+		{"call", "CALL p()", false},
+		{"select in a transaction block", "SELECT n FROM t", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newPipeServer(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				conn.inTx = tc.inTx
+				packets := make(chan []byte, 1)
+				dials := 0
+				conn.cancelDial = cancelPipe(&dials, packets)
+
+				out := make(chan int, 1)
+				go func() {
+					sent, _ := streamRows(t, srv, packets, 200)
+					out <- sent
+					answerOne(t, srv)
+				}()
+				err := firstBatchOnly(t, conn, tc.sql)
+				sent := <-out
+				if err != nil {
+					t.Fatalf("Err = %v", err)
+				}
+				if dials != 0 || sent != 200 {
+					t.Errorf("%d dials, %d of 200 rows sent: want the rest drained, nothing cancelled", dials, sent)
+				}
+				conn.inTx = false
+				checkNextQuery(t, conn)
+			})
+		})
+	}
+}
+
+// The race the protocol warns of: the statement finishes on its own while
+// the cancellation travels, and a request that lands after it would cancel
+// whatever runs next. So the connection is handed back only once the server
+// has closed the cancellation connection — its word that the backend took
+// the signal, which an idle backend drops. Here it confirms two seconds
+// after the result ended; the query returns then, not before, and the next
+// one goes out after.
+func TestAnEarlyStopWaitsForItsCancellationBeforeTheNextStatement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(2*time.Second, packets)
+
+		start := time.Now()
+		nextSent := make(chan time.Duration, 1)
+		go func() {
+			// The rest outruns the cancellation: every row is out and the
+			// result ends before the packet is even looked for.
+			<-srv.read
+			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
+				beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+			for i := range 40 {
+				srv.write(t, beDataRow(int8Val(int64(i))))
+			}
+			srv.write(t, beCommandComplete("SELECT 40"), beReadyForQuery())
+			<-packets
+			<-srv.read
+			nextSent <- time.Since(start)
+			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
+				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(2)),
+				beCommandComplete("SELECT 1"))
+			<-srv.read
+			srv.write(t, beReadyForQuery())
+		}()
+
+		if err := firstBatchOnly(t, conn, "SELECT n FROM t"); err != nil {
+			t.Fatalf("Err = %v", err)
+		}
+		if took := time.Since(start); took != 2*time.Second {
+			t.Errorf("the early stop returned after %v, want 2s: the server's confirmation", took)
+		}
+		checkNextQuery(t, conn)
+		if at := <-nextSent; at < 2*time.Second {
+			t.Errorf("the next statement went out at %v, before the cancellation was confirmed at 2s", at)
+		}
+	})
+}
+
+// A cancellation the server never confirms leaves nothing to say where the
+// request is: at CancelTimeout the connection is closed, which also ends a
+// read the server stopped answering. The consumer had what it asked for, so
+// the query reports nil; the connection is broken and a warning says why.
+func TestAnUnconfirmedEarlyStopCancellationBreaksTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 9, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(-1, packets)
+		conn.cancelTimeout = 2 * time.Second
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
+
+		go func() {
+			<-srv.read
+			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
+				beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+			for i := 0; ; i++ {
+				select {
+				case <-packets:
+					return // and the statement runs on, saying nothing
+				default:
+				}
+				srv.write(t, beDataRow(int8Val(int64(i))))
+			}
+		}()
+
+		start := time.Now()
+		if err := firstBatchOnly(t, conn, "SELECT n FROM t"); err != nil {
+			t.Fatalf("Err = %v, want nil: the consumer stopped, the statement only read", err)
+		}
+		if took := time.Since(start); took != 2*time.Second {
+			t.Errorf("the early stop returned after %v, want the 2s CancelTimeout", took)
+		}
+		if !errors.Is(conn.Err(), ErrConnBroken) || !strings.Contains(conn.Err().Error(), "CancelTimeout") {
+			t.Errorf("conn.Err() = %v, want ErrConnBroken naming CancelTimeout", conn.Err())
+		}
+		attrs := logs.warning(t, testSecret)
+		if done := attrs["statement_completed"]; done.Kind() != slog.KindBool || !done.Bool() {
+			t.Errorf("statement_completed = %v, want true", done)
+		}
+	})
+}
+
+func TestReadsOnly(t *testing.T) {
+	for sql, want := range map[string]bool{
+		"SELECT 1": true,
+		"  -- why\n/* a /* nested */ */select n from t": true,
+		"VALUES (1), (2)": true,
+		"table t":         true,
+		"WITH d AS (DELETE FROM t RETURNING n) SELECT n FROM d": false,
+		"(SELECT 1)":                           false,
+		"INSERT INTO t VALUES (1) RETURNING n": false,
+		"selectivity":                          false,
+		"":                                     false,
+	} {
+		if got := readsOnly(sql); got != want {
+			t.Errorf("readsOnly(%q) = %v, want %v", sql, got, want)
+		}
+	}
+}
