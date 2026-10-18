@@ -243,6 +243,29 @@ the QUIC protocol.
   others wait on the connection's lock: `Stream.Write` for 54% of the
   waiting, the read loop for 12%, the timer loop for 9%.
 
+**What holds the connection's lock (measured 2026-10-18).** Since the
+batched send and the queue of 64, `bulk` reaches 118 MB/s over HTTP/3
+against 213 over HTTP/2 (three passes of `-benchtime 3s`, every core, same
+session): HTTP/3 stays at a little over half. The benchmark now reports
+`discarded`, the datagrams the `Listener`'s front door refused during the
+run: zero on all four routes, and a single refusal during `bulk` fails the
+benchmark. Queue losses are out of the picture.
+
+The server's profile during `bulk` (`-cpuprofile`, `-mutexprofile`) names
+the next item. `Stream.Write` keeps the connection's lock (`mu`, a *mutex*:
+one goroutine at a time holds it) from one end of the write to the other:
+building the packets, sealing them, then handing them to the kernel in one
+`sendmsg` (`flushBatchLocked`). That system call weighs 13% of the
+process's CPU samples, about two thirds of the time spent in
+`Stream.Write`, and it runs with the lock held. The mutex profile says who
+makes the others wait on `mu`: `Stream.Write` for 50% of the waiting, the
+read loop for 13%, the timer loop for 10% — the same split as on
+2026-10-13, batched send or not. While the kernel copies the batch, the
+read loop cannot process the acknowledgements arriving, and they are what
+opens the window for the next batch. The scheduler remains the other item
+(a quarter of the samples, both sides together); taking the system call
+out of the lock is the first one the server can change on its own.
+
 **First and last byte (measured 2026-10-13).** ns/op is a mean, and it
 only counts the last byte. The benchmark also records, request by request,
 two delays counted from the moment the request is sent: the first byte of
