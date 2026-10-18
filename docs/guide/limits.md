@@ -213,11 +213,23 @@ to a separate module before a v1.
   never used on the old path (§9.5). The reverse direction stays red for
   a reason outside sluice: the client validates the preferred address
   before moving, as §9.6.2 requires, so the first packet it sends there
-  carries nothing but a PATH_CHALLENGE, and ngtcp2's server answers such a
-  packet with a PATH_RESPONSE alone, probing in turn only once a
-  non-probing packet arrives — no client that validates first can hand
-  the runner the PATH_CHALLENGE it wants in that first packet (ngtcp2's
-  own client probes the same way, `conn_write_path_challenge`). The cases
+  carries nothing but a PATH_CHALLENGE. ngtcp2's server answers such a
+  packet with a PATH_RESPONSE alone
+  ([`conn_recv_path_challenge`](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L6145)
+  only queues the response) and probes in turn only once a non-probing
+  packet arrives
+  ([`conn_recv_non_probing_pkt_on_new_path`](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L8893),
+  called [from this one place](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L9835-L9840));
+  the runner, though, wants a PATH_CHALLENGE in the server's first packet
+  on the new path
+  ([`testcases_quic.py`](https://github.com/quic-interop/quic-interop-runner/blob/ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6/testcases_quic.py#L1023-L1029)).
+  No client that validates first can satisfy it (ngtcp2's own client
+  probes the same way, `conn_write_path_challenge`), and the public matrix
+  shows it: in the
+  [run of 15 October 2026](https://interop.seemann.io/logs/quic/2026-10-15T19:05/result.json),
+  ngtcp2's server fails CM against each of the 14 clients that attempt it
+  (Chrome does not). ngtcp2's code read at revision `4822893`, the
+  runner's at revision `ab039a4`. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
   resumption, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
