@@ -237,17 +237,18 @@ to a separate module before a v1.
   restrict the cipher suites), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
-- **`net/quic` throughput**: a 64 KiB response over HTTP/3 reaches about
-  81 MB/s against quic-go's client, against 143 MB/s over HTTP/2 measured in
-  the same session (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real
-  client"). On Linux, the datagrams one `Stream.Write` produces leave in one
-  system call (UDP segmentation offload); on other systems, or on a kernel
-  that refuses the option, each datagram is still its own write. The QUIC
-  windows are not the cause — scaled from 1 to 16 times, on either side, they
-  move nothing — so sizing them will not buy the rest back. The rest is the
-  Go scheduler: on two cores (`GOMAXPROCS=2`), the same response reaches
-  167 MB/s over HTTP/3 against 157 over HTTP/2, because a request crosses
-  several goroutines and each hand-off wakes one, often on another core.
+- **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
+  the same response over HTTP/2 with every core available, and catches up
+  on two; the figures, their date and the machine that measured them are
+  in [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client),
+  the one place that keeps them current. On Linux, the datagrams one
+  `Stream.Write` produces leave in one system call (UDP segmentation
+  offload); on other systems, or on a kernel that refuses the option, each
+  datagram is still its own write. The QUIC windows are not the cause —
+  scaled from 1 to 16 times, on either side, they move nothing — so sizing
+  them will not buy the gap back. The gap is the Go scheduler: a request
+  crosses several goroutines, and each hand-off wakes one, often on another
+  core.
 - **`net/quic` datagram size**: datagrams start at 1200 bytes, the
   smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
   rise by a search (DPLPMTUD, §14.3, RFC 8899): a probe — one PING+PADDING
