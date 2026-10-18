@@ -142,46 +142,60 @@ func wantViolation(t *testing.T, err error, code uint64, what string) {
 
 // --- A. Local identifier issuance -----------------------------------------
 
-// A connection with a registrar tops its identifiers up to
-// min(active_connection_id_limit, 4) once confirmed, numbering from 1 with
+// A connection with a registrar tops its identifiers up to min(the peer's
+// active_connection_id_limit, its own) once confirmed, numbering from 1 with
 // Retire Prior To 0, and queues each as a retransmittable NEW_CONNECTION_ID.
 func TestIssuanceTopsUpToTheLimit(t *testing.T) {
-	reg := newTestRegistrar()
-	c := newConn(&fuzzSink{addr: "issue:self"}, fakeFuzzAddr("issue:peer"),
-		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
-	defer c.Close()
+	for _, tc := range []struct {
+		name       string
+		own, peers uint64
+		want       int // active local identifiers, sequence 0 included
+	}{
+		{"the peer invites more than this end keeps", 4, 8, 4},
+		{"both ends at 6", 6, 6, 6},
+		{"the peer keeps fewer than this end allows", 6, 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newTestRegistrar()
+			params := DefaultParameters()
+			params.ActiveConnIDLimit = tc.own
+			c := newConn(&fuzzSink{addr: "issue:self"}, fakeFuzzAddr("issue:peer"),
+				[]byte("peercid0"), []byte("selfcid0"), false, params)
+			defer c.Close()
 
-	c.mu.Lock()
-	c.registrar = reg
-	c.handshakeConfirmed = true
-	c.hasPeerParams = true
-	c.peerParams.ActiveConnIDLimit = 8 // the peer invites more than this end keeps
-	c.issueLocalCIDsLocked()
-	locals := len(c.localCIDs)
-	nextSeq := c.nextLocalSeq
-	c.mu.Unlock()
+			c.mu.Lock()
+			c.registrar = reg
+			c.handshakeConfirmed = true
+			c.hasPeerParams = true
+			c.peerParams.ActiveConnIDLimit = tc.peers
+			c.issueLocalCIDsLocked()
+			locals := len(c.localCIDs)
+			nextSeq := c.nextLocalSeq
+			c.mu.Unlock()
 
-	if locals != maxLocalActiveCIDs {
-		t.Fatalf("%d active local identifiers, want %d", locals, maxLocalActiveCIDs)
-	}
-	if nextSeq != maxLocalActiveCIDs {
-		t.Errorf("nextLocalSeq = %d, want %d (sequences 1..%d issued)", nextSeq, maxLocalActiveCIDs, maxLocalActiveCIDs-1)
-	}
-	var issued int
-	for _, f := range controlFrames(t, c) {
-		if f.Type != frameNewConnectionID {
-			continue
-		}
-		issued++
-		if f.offset != 0 {
-			t.Errorf("sequence %d was issued with Retire Prior To %d, want 0", f.value, f.offset)
-		}
-		if cid := f.Data[:len(f.Data)-16]; !reg.has(cid) {
-			t.Errorf("sequence %d's identifier is not registered for routing", f.value)
-		}
-	}
-	if issued != maxLocalActiveCIDs-1 {
-		t.Errorf("%d NEW_CONNECTION_ID frames queued, want %d", issued, maxLocalActiveCIDs-1)
+			if locals != tc.want {
+				t.Fatalf("%d active local identifiers, want %d", locals, tc.want)
+			}
+			if nextSeq != uint64(tc.want) {
+				t.Errorf("nextLocalSeq = %d, want %d (sequences 1..%d issued)", nextSeq, tc.want, tc.want-1)
+			}
+			var issued int
+			for _, f := range controlFrames(t, c) {
+				if f.Type != frameNewConnectionID {
+					continue
+				}
+				issued++
+				if f.offset != 0 {
+					t.Errorf("sequence %d was issued with Retire Prior To %d, want 0", f.value, f.offset)
+				}
+				if cid := f.Data[:len(f.Data)-16]; !reg.has(cid) {
+					t.Errorf("sequence %d's identifier is not registered for routing", f.value)
+				}
+			}
+			if issued != tc.want-1 {
+				t.Errorf("%d NEW_CONNECTION_ID frames queued, want %d", issued, tc.want-1)
+			}
+		})
 	}
 }
 

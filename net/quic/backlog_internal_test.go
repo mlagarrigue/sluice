@@ -603,14 +603,17 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 // TestForeignTokenIsAnsweredWithARetry).
 func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
-	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	// A TTL far below the default, so the token below — one second old,
+	// fresh by the default's measure — is refused only if RetryTokenTTL is
+	// what the listener reads.
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true, RetryTokenTTL: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
 
 	// A sealed, padded Initial carrying a token this listener issued, to
-	// this address, for this identifier — a full TTL ago.
+	// this address, for this identifier — ten TTLs ago.
 	dcid, scid := []byte("post-ret"), []byte("cl-scid0")
 	secrets, err := initialSecrets(dcid)
 	if err != nil {
@@ -620,7 +623,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := appendRetryTokenAt(nil, l.key, time.Now().Add(-2*retryTokenTTL), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
+	token := appendRetryTokenAt(nil, l.lcfg.TokenKey, time.Now().Add(-time.Second), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
 	const pnLen = 4
 	var header []byte
 	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))

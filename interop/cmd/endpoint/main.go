@@ -36,6 +36,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path"
@@ -170,7 +171,7 @@ func runServer(testcase string) error {
 		if err != nil {
 			return err
 		}
-		lcfg.PreferredIPs = ips
+		lcfg.PreferredIPv4, lcfg.PreferredIPv6 = ips[0], ips[1]
 	}
 	l, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), lcfg)
 	if err != nil {
@@ -192,33 +193,31 @@ func runServer(testcase string) error {
 }
 
 // localIPs is what the preferred-address socket announces: the one global
-// unicast address of each family the simulated server has, IPv4 first.
-func localIPs() ([]net.IP, error) {
+// unicast address of each family the simulated server has, IPv4 then IPv6,
+// zero for a family it lacks.
+func localIPs() ([2]netip.Addr, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return nil, err
+		return [2]netip.Addr{}, err
 	}
-	var v4, v6 net.IP
+	var ips [2]netip.Addr // IPv4, IPv6
 	for _, a := range addrs {
 		n, ok := a.(*net.IPNet)
 		if !ok || !n.IP.IsGlobalUnicast() {
 			continue
 		}
-		switch {
-		case n.IP.To4() != nil && v4 == nil:
-			v4 = n.IP.To4()
-		case n.IP.To4() == nil && v6 == nil:
-			v6 = n.IP
+		ip, _ := netip.AddrFromSlice(n.IP)
+		ip = ip.Unmap()
+		i := 1
+		if ip.Is4() {
+			i = 0
+		}
+		if !ips[i].IsValid() {
+			ips[i] = ip
 		}
 	}
-	var ips []net.IP
-	for _, ip := range []net.IP{v4, v6} {
-		if ip != nil {
-			ips = append(ips, ip)
-		}
-	}
-	if len(ips) == 0 {
-		return nil, errors.New("no global unicast address to announce as preferred")
+	if !ips[0].IsValid() && !ips[1].IsValid() {
+		return ips, errors.New("no global unicast address to announce as preferred")
 	}
 	return ips, nil
 }

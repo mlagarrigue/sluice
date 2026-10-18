@@ -102,7 +102,10 @@ type TransportParameters struct {
 	// this endpoint will keep active at once (§18.2; the protocol minimum
 	// and default is 2). Zero or 1 is replaced with this package's working
 	// default of 4 when the connection is built, so there is always a spare
-	// for the peer to rotate into.
+	// for the peer to rotate into. It also caps how many identifiers this
+	// endpoint issues for itself, whatever the peer's own limit invites:
+	// each is a routing entry a [Listener] holds, so a figure raised for
+	// the peer is one this end pays for too.
 	ActiveConnIDLimit uint64
 
 	// DisableActiveMigration announces that this endpoint cannot follow a

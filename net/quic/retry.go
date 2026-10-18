@@ -18,16 +18,16 @@ import (
 //
 // A Retry needs no connection and no server-side state to issue: everything
 // a later Initial must prove is encoded into the token itself, authenticated
-// with an HMAC key the issuing [Listener] holds only in memory. A listener
-// restart simply invalidates every outstanding token, which costs an
-// abandoned handshake attempt a client retries from scratch — not a
-// correctness problem, the same tolerance RFC 9000 already assumes of any
-// stateless Retry scheme.
+// with an HMAC key the issuing [Listener] holds — random per listener unless
+// [ListenerConfig.TokenKey] names one. With a random key a listener restart
+// simply invalidates every outstanding token, which costs an abandoned
+// handshake attempt a client retries from scratch — not a correctness
+// problem, the same tolerance RFC 9000 already assumes of any stateless
+// Retry scheme; a key kept across restarts or shared between instances
+// spares even that.
 
-// retryTokenTTL is how long a Retry token remains acceptable. Generous for
-// one round trip, short enough that a captured token is useless shortly
-// after.
-const retryTokenTTL = 10 * time.Second
+// defaultRetryTokenTTL is what a zero [ListenerConfig.RetryTokenTTL] means.
+const defaultRetryTokenTTL = 10 * time.Second
 
 // spentTokens remembers each Retry token that already admitted a connection,
 // keyed by the identifier the token bound (the connection's first DCID), for
@@ -37,8 +37,7 @@ const retryTokenTTL = 10 * time.Second
 // fails in a millisecond frees the identifier with most of the TTL left,
 // and the same token would then open a second connection from the same
 // address without the round trip that validated the first. One entry per
-// Retry-born connection for at most retryTokenTTL; past spentTokensCap the
-// oldest is dropped, which bounds the memory at the price of a replay
+// Retry-born connection for at most ttl; past max the oldest is dropped, which bounds the memory at the price of a replay
 // becoming possible again for a token older than the cap's worth of
 // admissions — limited, as §8.1.4 allows, under a load the per-address and
 // pending-table limits already cap elsewhere. Every method is called with
@@ -46,13 +45,16 @@ const retryTokenTTL = 10 * time.Second
 type spentTokens struct {
 	byID  map[string]time.Time // newSCID → when the token can no longer verify
 	order []string             // byID's keys, oldest expiry first
+	ttl   time.Duration        // ListenerConfig.RetryTokenTTL
+	max   int                  // ListenerConfig.MaxSpentRetryTokens
 }
 
-// spentTokensCap bounds spentTokens: an entry is a key of listenerCIDLen
-// bytes and a time, under 100 bytes with the map's own overhead, so the
-// cap is about 1.6 MB at worst — and reaching it takes that many Retry
-// tokens consumed by connections within one retryTokenTTL.
-const spentTokensCap = 1 << 14
+// defaultMaxSpentRetryTokens is what a zero
+// [ListenerConfig.MaxSpentRetryTokens] means: an entry is a key of
+// listenerCIDLen bytes and a time, about 125 bytes with the map's and the
+// order slice's overhead, 2.04 MB measured at this figure — and reaching it
+// takes that many Retry tokens consumed by connections within one TTL.
+const defaultMaxSpentRetryTokens = 1 << 14
 
 // consume records newSCID's token as spent until expiry and reports whether
 // it was still unspent — false is a replay. now is the caller's clock, so
@@ -70,11 +72,11 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 		delete(s.byID, s.order[0])
 		s.order = s.order[1:]
 	}
-	if len(s.order) >= spentTokensCap {
+	if len(s.order) >= s.max {
 		delete(s.byID, s.order[0])
 		s.order = s.order[1:]
 	}
-	s.byID[id] = now.Add(retryTokenTTL)
+	s.byID[id] = now.Add(s.ttl)
 	s.order = append(s.order, id)
 	return true
 }
@@ -103,13 +105,10 @@ func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	return append(dst, tag[:]...)
 }
 
-// retryTokenKey is an HMAC-SHA256 key generated fresh for one [Listener]'s
-// lifetime — see the package comment above for why that's the right amount
-// of statefulness.
-type retryTokenKey [32]byte
-
-func newRetryTokenKey() (retryTokenKey, error) {
-	var k retryTokenKey
+// newRetryTokenKey draws an HMAC-SHA256 key for Retry tokens, what a zero
+// [ListenerConfig.TokenKey] stands for.
+func newRetryTokenKey() ([32]byte, error) {
+	var k [32]byte
 	_, err := rand.Read(k[:])
 	return k, err
 }
@@ -120,15 +119,18 @@ func newRetryTokenKey() (retryTokenKey, error) {
 // whole point being that verifying the token alone, with no connection
 // table, recovers everything [newServerConn] needs to continue correctly as
 // if this had been the client's first Initial.
-func appendRetryToken(dst []byte, key retryTokenKey, peer net.Addr, odcid, newSCID []byte) []byte {
+func appendRetryToken(dst []byte, key [32]byte, peer net.Addr, odcid, newSCID []byte) []byte {
 	return appendRetryTokenAt(dst, key, time.Now(), peer, odcid, newSCID)
 }
 
 // appendRetryTokenAt is AppendRetryToken with the issue time explicit, so a
 // test can produce a genuinely encoded token that has already expired.
-func appendRetryTokenAt(dst []byte, key retryTokenKey, issued time.Time, peer net.Addr, odcid, newSCID []byte) []byte {
+func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Addr, odcid, newSCID []byte) []byte {
 	start := len(dst)
-	dst = AppendVarint(dst, uint64(issued.Unix())) //nolint:gosec // G115: seconds since epoch, nowhere near overflowing uint64
+	// Milliseconds, not seconds: a TTL below one second must still mean
+	// what it says, and a second-truncated issue time ages a token by up
+	// to a second at birth.
+	dst = AppendVarint(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
 	addr := []byte(peer.String())
 	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port, at most 18 bytes
 	dst = append(dst, addr...)
@@ -158,12 +160,12 @@ var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQ
 
 // VerifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
-// the peer address it is arriving from. On success it returns the original
+// the peer address it is arriving from. ttl is [ListenerConfig.RetryTokenTTL]. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,
 // which is everything [newServerConn] needs beyond what the Initial itself
 // carries. A token the HMAC does not recognise is [errForeignToken]; any
 // other error is a token this listener issued and will not honour.
-func verifyRetryToken(token []byte, key retryTokenKey, peer net.Addr) (retryToken, error) {
+func verifyRetryToken(token []byte, key [32]byte, ttl time.Duration, peer net.Addr) (retryToken, error) {
 	const macLen = sha256.Size
 	if len(token) < macLen {
 		return retryToken{}, errForeignToken
@@ -179,7 +181,7 @@ func verifyRetryToken(token []byte, key retryTokenKey, peer net.Addr) (retryToke
 	if err != nil {
 		return retryToken{}, err
 	}
-	if time.Since(time.Unix(int64(issued), 0)) > retryTokenTTL { //nolint:gosec // G115: a Unix second count from this process's own clock
+	if time.Since(time.UnixMilli(int64(issued))) > ttl { //nolint:gosec // G115: a Unix millisecond count from a clock holding this key
 		return retryToken{}, fmt.Errorf("%w: an expired Retry token", ErrQUIC)
 	}
 	addr, rest, err := tokenField(rest)

@@ -205,8 +205,9 @@ to a separate module before a v1.
   address, but only to one of the family its connection already uses
   (RFC 9000 §9.6.1), and it had connected over IPv6 to a server announcing
   IPv4 alone — the endpoint now announces one address per family from a
-  dual-stack socket (`ListenerConfig.PreferredIPs`). The runner then wants
-  the first server packet on the new path to carry a PATH_CHALLENGE, which
+  dual-stack socket (`ListenerConfig.PreferredIPv4` and `PreferredIPv6`).
+  The runner then wants the first server packet on the new path to carry
+  a PATH_CHALLENGE, which
   is §9.6.2's own demand ("the server MUST probe on the path toward the
   client from its preferred address"): the server now puts that probe in
   the packet that answers the client's challenge, under an identifier

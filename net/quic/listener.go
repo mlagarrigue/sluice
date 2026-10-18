@@ -123,17 +123,70 @@ type ListenerConfig struct {
 	// here and closes it with [Listener.Close].
 	PreferredAddress net.PacketConn
 
-	// PreferredIPs names the addresses announced for PreferredAddress's
-	// port when that socket is bound to the unspecified address — a
-	// dual-stack one on "[::]", typically: at most one address per family,
-	// each a concrete address this host answers at. The parameter carries
-	// one address of each family (RFC 9000 §18.2), and a client only moves
-	// to the one of the family its connection already uses (§9.6.1) — a
-	// server reached over IPv6 that announces IPv4 alone is never moved to.
-	// Empty, the socket's own bound address is announced, which must then
-	// be concrete. With a socket bound to a concrete address, the only
-	// address allowed here is that one.
-	PreferredIPs []net.IP
+	// PreferredIPv4 and PreferredIPv6 name the addresses announced for
+	// PreferredAddress's port when that socket is bound to the unspecified
+	// address — a dual-stack one on "[::]", typically: each a concrete
+	// address of its family this host answers at. The parameter carries one
+	// address of each family (RFC 9000 §18.2), and a client only moves to
+	// the one of the family its connection already uses (§9.6.1) — a server
+	// reached over IPv6 that announces IPv4 alone is never moved to. Both
+	// zero, the socket's own bound address is announced, which must then be
+	// concrete. With a socket bound to a concrete address, the only address
+	// allowed here is that one. An IPv4-mapped IPv6 address counts as IPv4;
+	// either set without PreferredAddress is refused by [NewListener].
+	PreferredIPv4 netip.Addr
+	PreferredIPv6 netip.Addr
+
+	// ConnQueueLen is how many datagrams the listener queues for one
+	// connection before it drops them. A 64 KiB response draws back a
+	// burst: the client's ACKs and its next request arrive while the
+	// connection's read loop is still busy. At 8, HTTP/3 bulk lost 55
+	// datagrams in 1,200 requests, and each loss stalled its request for a
+	// client PTO (~27 ms, 45% of the send-to-receive time); at 32 none were
+	// lost. Zero means 64, twice that margin for about 3.5 KB of channel per
+	// connection; a negative value is refused by [NewListener].
+	ConnQueueLen int
+
+	// RetryTokenTTL is how long a Retry token stays acceptable: generous
+	// for one round trip, short enough that a captured token is useless
+	// shortly after. A token presented later is refused with INVALID_TOKEN
+	// (RFC 9000 §8.1.2). Zero means 10 seconds; a negative value is refused
+	// by [NewListener].
+	RetryTokenTTL time.Duration
+
+	// MaxSpentRetryTokens bounds the record of Retry tokens that already
+	// admitted a connection, which keeps a replayed token from opening a
+	// second one (RFC 9000 §8.1.4). An entry lives RetryTokenTTL and costs
+	// about 125 bytes — 2.04 MB measured at the default of 16,384; past the
+	// bound the oldest is forgotten, and a replay of it becomes possible
+	// again, which §8.1.4 allows as "limited". Raise it with the rate of
+	// Retry-born connections times RetryTokenTTL. Zero means 16,384; a
+	// negative value is refused by [NewListener].
+	MaxSpentRetryTokens int
+
+	// StatelessResetKey derives the stateless reset token of every
+	// connection identifier the listener issues (RFC 9000 §10.3.2:
+	// HMAC-SHA256 of the identifier, truncated to 16 bytes). Zero draws a
+	// random key per listener, and a restart then forgets it: a client of
+	// the previous process that sends again is answered with a reset it
+	// cannot recognise, and waits out its idle timeout instead of closing
+	// at once. A key kept across restarts, or shared by every instance
+	// behind one address, makes that reset recognised — which is the case
+	// stateless reset exists for. Keep it secret: anyone holding it can end
+	// any connection of the listeners that share it.
+	StatelessResetKey [32]byte
+
+	// TokenKey authenticates Retry tokens (HMAC-SHA256, RFC 9000 §8.1.4).
+	// Zero draws a random key per listener, so a token issued before a
+	// restart, or by another instance, fails to verify and the client is
+	// treated as unvalidated, not refused (§8.1.3). Shared between
+	// instances, a token one issued admits a client at another; the record
+	// of spent tokens (MaxSpentRetryTokens) stays per listener, so a token
+	// replayed at a second instance within RetryTokenTTL opens a second
+	// connection — the TTL is then the whole bound. Keep it distinct from
+	// StatelessResetKey and secret: anyone holding it can mint tokens that
+	// pass address validation.
+	TokenKey [32]byte
 }
 
 // Listener owns one [net.PacketConn] shared by many connections, the thing a
@@ -167,8 +220,9 @@ type Listener struct {
 	preferredV6 *net.UDPAddr
 	cfg         *tls.Config
 	params      TransportParameters
-	lcfg        ListenerConfig
-	key         retryTokenKey
+	// lcfg is the resolved config: every default filled in, the two keys
+	// included (StatelessResetKey for resetTokenFor, TokenKey for Retry).
+	lcfg ListenerConfig
 
 	// mu is taken after a connection's own mu, never before: a connection
 	// registers identifiers (addLocalCID) with its lock held, so nothing
@@ -203,11 +257,9 @@ type Listener struct {
 	spent     spentTokens
 	closed    bool
 	discarded uint64
-	// resetKey derives stateless reset tokens (resetTokenFor); resetWindow
-	// and resetsSent are the one-second budget maybeSendStatelessReset
+	// resetWindow and resetsSent are the one-second budget maybeSendStatelessReset
 	// spends, and resetsTo its per-source share of it. resetsTo only gains
 	// an entry when a reset is sent, so the global budget bounds it too.
-	resetKey    [32]byte
 	resetWindow time.Time
 	resetsSent  int
 	resetsTo    map[string]int
@@ -236,6 +288,30 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
 	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
+	if c.ConnQueueLen < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.ConnQueueLen %d is negative — zero means %d", c.ConnQueueLen, defaultConnQueueLen))
+	}
+	if c.RetryTokenTTL < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.RetryTokenTTL %v is negative — zero means %v", c.RetryTokenTTL, defaultRetryTokenTTL))
+	}
+	if c.MaxSpentRetryTokens < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxSpentRetryTokens %d is negative — zero means %d", c.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
+	}
+	if c.TokenKey != ([32]byte{}) && c.TokenKey == c.StatelessResetKey {
+		err = errors.Join(err, errors.New("quic: ListenerConfig.TokenKey equals StatelessResetKey — one key, two uses; give each its own"))
+	}
+	if c.PreferredIPv4.IsValid() {
+		c.PreferredIPv4 = c.PreferredIPv4.Unmap()
+		if !c.PreferredIPv4.Is4() || c.PreferredIPv4.IsUnspecified() {
+			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.PreferredIPv4 %v is not an IPv4 address a client can send to", c.PreferredIPv4))
+		}
+	}
+	if c.PreferredIPv6.IsValid() && (!c.PreferredIPv6.Is6() || c.PreferredIPv6.Is4In6() || c.PreferredIPv6.IsUnspecified()) {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.PreferredIPv6 %v is not an IPv6 address a client can send to", c.PreferredIPv6))
+	}
+	if c.PreferredAddress == nil && (c.PreferredIPv4.IsValid() || c.PreferredIPv6.IsValid()) {
+		err = errors.Join(err, errors.New("quic: ListenerConfig.PreferredIPv4 or PreferredIPv6 is set without a PreferredAddress socket to announce"))
+	}
 	if err != nil {
 		return ListenerConfig{}, err
 	}
@@ -244,6 +320,22 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	}
 	if c.HandshakeTimeout == 0 {
 		c.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	if c.ConnQueueLen == 0 {
+		c.ConnQueueLen = defaultConnQueueLen
+	}
+	if c.RetryTokenTTL == 0 {
+		c.RetryTokenTTL = defaultRetryTokenTTL
+	}
+	if c.MaxSpentRetryTokens == 0 {
+		c.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
+	}
+	// A random key per listener when none is given; both are drawn here so
+	// that what the listener runs with is all in its resolved config.
+	for _, k := range []*[32]byte{&c.StatelessResetKey, &c.TokenKey} {
+		if *k == ([32]byte{}) {
+			_, _ = rand.Read(k[:]) // never fails since Go 1.24
+		}
 	}
 	return c, nil
 }
@@ -264,25 +356,18 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err != nil {
 		return nil, err
 	}
-	key, err := newRetryTokenKey()
-	if err != nil {
-		return nil, err
-	}
-	var resetKey [32]byte
-	if _, err := rand.Read(resetKey[:]); err != nil {
-		return nil, err
-	}
 	var preferredV4, preferredV6 *net.UDPAddr
 	if lcfg.PreferredAddress != nil {
 		var err error
-		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredAddress.LocalAddr(), lcfg.PreferredIPs)
+		preferredV4, preferredV6, err = preferredAnnouncements(lcfg.PreferredAddress.LocalAddr(), lcfg.PreferredIPv4, lcfg.PreferredIPv6)
 		if err != nil {
 			return nil, err
 		}
 	}
 	l := &Listener{
 		pc: pc, sourced: packetInfoSocket(pc), preferred: lcfg.PreferredAddress, preferredV4: preferredV4, preferredV6: preferredV6,
-		cfg: cfg, params: params, lcfg: lcfg, key: key, resetKey: resetKey,
+		cfg: cfg, params: params, lcfg: lcfg,
+		spent:        spentTokens{ttl: lcfg.RetryTokenTTL, max: lcfg.MaxSpentRetryTokens},
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),
 		pendingConns: make(map[*Conn]struct{}),
@@ -821,7 +906,7 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // dispatcher made for a tokenless one.
 func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, ecn uint8, retry bool) {
 	if len(h.Token) > 0 {
-		rt, err := verifyRetryToken(h.Token, l.key, from)
+		rt, err := verifyRetryToken(h.Token, l.lcfg.TokenKey, l.lcfg.RetryTokenTTL, from)
 		switch {
 		case errors.Is(err, errForeignToken):
 			// RFC 9000 §8.1.3: a token the server cannot validate — here,
@@ -870,7 +955,7 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 	if err != nil {
 		return // nothing to send; the client's own retransmission tries again
 	}
-	token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
+	token := appendRetryToken(nil, l.lcfg.TokenKey, from, h.DCID, newSCID)
 	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
 	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
 }
@@ -967,14 +1052,9 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	go l.runHandshake(c, datagram, from, ecn)
 }
 
-// connQueueLen is how many datagrams the listener queues for one connection
-// before it drops them (see dispatch). A 64 KiB response draws back a burst:
-// the client's ACKs and its next request arrive while the connection's read
-// loop is still busy. At 8, HTTP/3 bulk lost 55 datagrams in 1,200 requests,
-// and each loss stalled its request for a client PTO (~27 ms, 45% of the
-// send-to-receive time); at 32 none were lost. 64 doubles that margin for
-// about 3.5 KB of channel per connection.
-const connQueueLen = 64
+// defaultConnQueueLen is what a zero [ListenerConfig.ConnQueueLen] means;
+// the field's comment has the measurement behind it.
+const defaultConnQueueLen = 64
 
 // prepareConn is what newServerConn runs on a listener-managed connection
 // before its transport parameters are serialised: the stateless reset token
@@ -988,7 +1068,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 	t := l.resetTokenFor(c.scid)
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
-	c.incoming = make(chan rawDatagram, connQueueLen)
+	c.incoming = make(chan rawDatagram, l.lcfg.ConnQueueLen)
 	if l.preferred == nil {
 		return nil
 	}
@@ -1006,18 +1086,19 @@ func (l *Listener) prepareConn(c *Conn) error {
 }
 
 // preferredAnnouncements resolves what a listener announces for its
-// preferred-address socket, bound at local, from [ListenerConfig.PreferredIPs]:
-// one address per family at most, each on the socket's port. Without IPs
-// the socket's own address is announced and must be concrete; a socket on a
-// concrete address accepts only that address, since nothing else reaches it.
-func preferredAnnouncements(local net.Addr, ips []net.IP) (v4, v6 *net.UDPAddr, err error) {
+// preferred-address socket, bound at local, from [ListenerConfig.PreferredIPv4]
+// and PreferredIPv6, already checked for their family by resolve: each on
+// the socket's port. With neither, the socket's own address is announced
+// and must be concrete; a socket on a concrete address accepts only that
+// address, since nothing else reaches it.
+func preferredAnnouncements(local net.Addr, ip4, ip6 netip.Addr) (v4, v6 *net.UDPAddr, err error) {
 	ua, ok := local.(*net.UDPAddr)
 	if !ok || ua == nil || ua.IP == nil {
 		return nil, nil, fmt.Errorf("%w: PreferredAddress must be a UDP socket, not %v", ErrQUIC, local)
 	}
-	if len(ips) == 0 {
+	if !ip4.IsValid() && !ip6.IsValid() {
 		if ua.IP.IsUnspecified() {
-			return nil, nil, fmt.Errorf("%w: PreferredAddress is bound to %v; name the addresses to announce in PreferredIPs — a client has to know where to send",
+			return nil, nil, fmt.Errorf("%w: PreferredAddress is bound to %v; name the addresses to announce in PreferredIPv4 and PreferredIPv6 — a client has to know where to send",
 				ErrQUIC, local)
 		}
 		if ua.IP.To4() != nil {
@@ -1025,23 +1106,20 @@ func preferredAnnouncements(local net.Addr, ips []net.IP) (v4, v6 *net.UDPAddr, 
 		}
 		return nil, ua, nil
 	}
-	for _, ip := range ips {
-		if ip == nil || ip.IsUnspecified() {
-			return nil, nil, fmt.Errorf("%w: PreferredIPs holds %v, not an address a client can send to", ErrQUIC, ip)
+	bound := ua.AddrPort().Addr().Unmap()
+	for _, ip := range []netip.Addr{ip4, ip6} {
+		if !ip.IsValid() {
+			continue
 		}
-		if !ua.IP.IsUnspecified() && !ua.IP.Equal(ip) {
-			return nil, nil, fmt.Errorf("%w: PreferredIPs names %v but PreferredAddress is bound to %v, which is the only address that reaches it",
+		if !bound.IsUnspecified() && bound != ip.WithZone(bound.Zone()) {
+			return nil, nil, fmt.Errorf("%w: PreferredIPv4 or PreferredIPv6 names %v but PreferredAddress is bound to %v, which is the only address that reaches it",
 				ErrQUIC, ip, ua.IP)
 		}
-		addr := &net.UDPAddr{IP: ip, Port: ua.Port, Zone: ua.Zone}
-		switch {
-		case ip.To4() != nil && v4 == nil:
+		addr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip, uint16(ua.Port))) //nolint:gosec // G115: a bound UDP port fits 16 bits
+		if ip.Is4() {
 			v4 = addr
-		case ip.To4() == nil && v6 == nil:
+		} else {
 			v6 = addr
-		default:
-			return nil, nil, fmt.Errorf("%w: PreferredIPs names two addresses of one family (%v); the parameter carries one per family (RFC 9000 §18.2)",
-				ErrQUIC, ip)
 		}
 	}
 	return v4, v6, nil
@@ -1195,7 +1273,7 @@ func (l *Listener) removeLocalCID(cid []byte) {
 // makes the reset *stateless* — the token can be recomputed, and honoured,
 // after every trace of the connection is gone.
 func (l *Listener) resetTokenFor(cid []byte) [16]byte {
-	mac := hmac.New(sha256.New, l.resetKey[:])
+	mac := hmac.New(sha256.New, l.lcfg.StatelessResetKey[:])
 	mac.Write(cid)
 	var token [16]byte
 	copy(token[:], mac.Sum(nil))

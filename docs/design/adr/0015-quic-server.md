@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family)
 - **Theme:** quic
 
 ## Problem
@@ -56,8 +56,19 @@ HMAC token for deployments under attack. `Close` ends pending and parked
 connections and follows `net.Listener`'s line around accepted ones. On
 Linux a listener bound to the unspecified address answers from the address
 each datagram reached. Unroutable short-header datagrams get a stateless
-reset whose token derives from a per-listener key, rate-limited per source
-IP.
+reset whose token derives from a listener key, rate-limited per source IP.
+That key, `StatelessResetKey`, and the one that authenticates Retry tokens,
+`TokenKey`, are drawn at random per listener when the caller gives none;
+given, they survive a restart and are shared by the instances behind one
+address (RFC 9000 §10.3.2): the client of a dead process receives a reset
+it recognises and stops at once instead of waiting out its idle timeout.
+What the listener used to fix in constants is tuned the way its bounds
+are: `ConnQueueLen` (64), `RetryTokenTTL` (10 s), `MaxSpentRetryTokens`
+(16,384), zero for the default, negative refused (ADR 0018). The number
+of identifiers a connection issues for itself is the minimum of the
+peer's limit and its own `ActiveConnIDLimit`: each identifier is an entry
+in the listener's table, and the figure a deployment chooses for the
+peer's is the one it pays for its own.
 
 **Identifiers rotate and the server survives a moving client.** A
 listener-managed connection issues additional identifiers via
@@ -77,7 +88,10 @@ PreferredAddress`, a second socket the listener reads and announces: it
 was kept private by the surface pass of 2026-10-04, which exported nothing
 only the package's own tests used, and is public since the feature is
 otherwise unreachable and the parameter's whole point (§9.6) is a server
-behind a shared address — a deployment, not a test.
+behind a shared address — a deployment, not a test. The preferred address
+is announced by `PreferredIPv4` and `PreferredIPv6`, one `netip.Addr`
+each: the transport parameter carries one address per family (§18.2), and
+the type enforces it instead of a list being checked.
 
 ## Rationale
 
@@ -87,7 +101,13 @@ behind a NAT. Two cipher suites come from the standard library and the
 third, ChaCha20-Poly1305, from the project's one dependency (ADR 0002).
 Costs: a timer goroutine per connection, a dispatch goroutine per listener,
 one copy per inbound datagram at the demux point, and one address
-comparison on the packet hot path.
+comparison on the packet hot path. Sharing `TokenKey` between instances
+does not share the record of tokens already spent: a token replayed at a
+second instance within `RetryTokenTTL` opens a second connection there,
+and the TTL is then the whole bound (§8.1.4 says "prevented or limited").
+In plain words: a given key is a deployment secret; whoever holds it can
+end any connection (`StatelessResetKey`) or forge a token that validates
+an address (`TokenKey`).
 
 Known residuals, stated rather than hidden: interoperation against a
 foreign implementation remains the missing proof — the harness drops,

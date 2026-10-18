@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
@@ -540,11 +542,12 @@ func openShort(t *testing.T, packet []byte, dcidLen int) []Frame {
 }
 
 // A dual-stack preferred socket announces one address per family, named in
-// PreferredIPs; the parameter then offers each client the address of its
+// PreferredIPv4 and PreferredIPv6; the parameter then offers each client the address of its
 // own family (§9.6.1 — a client reached over IPv6 never moves to an IPv4
 // address, which is what left ngtcp2 on the handshake path, 2026-10-10).
-// The refusals: two addresses of one family, an address a concretely bound
-// socket does not answer at, and an unspecified address.
+// The refusals: an address of the other family, an address a concretely
+// bound socket does not answer at, and an unspecified address. Two of one
+// family no longer has a spelling.
 func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	main, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -559,7 +562,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	port := dual.LocalAddr().(*net.UDPAddr).Port
 
 	l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
-		PreferredAddress: dual, PreferredIPs: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		PreferredAddress: dual, PreferredIPv4: netip.MustParseAddr("127.0.0.1"), PreferredIPv6: netip.IPv6Loopback(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -584,17 +587,31 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	}
 
 	refused := []struct {
-		name string
-		ips  []net.IP
+		name, field string
+		lcfg        ListenerConfig
 	}{
-		{"two IPv4", []net.IP{net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 2)}},
-		{"unspecified", []net.IP{net.IPv4zero}},
+		{"IPv6 as PreferredIPv4", "PreferredIPv4", ListenerConfig{PreferredIPv4: netip.IPv6Loopback()}},
+		{"IPv4 as PreferredIPv6", "PreferredIPv6", ListenerConfig{PreferredIPv6: netip.MustParseAddr("127.0.0.1")}},
+		{"mapped IPv4 as PreferredIPv6", "PreferredIPv6", ListenerConfig{PreferredIPv6: netip.MustParseAddr("::ffff:127.0.0.1")}},
+		{"unspecified", "PreferredIPv4", ListenerConfig{PreferredIPv4: netip.IPv4Unspecified()}},
 	}
 	for _, r := range refused {
-		if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredAddress: dual, PreferredIPs: r.ips}); err == nil {
+		r.lcfg.PreferredAddress = dual
+		l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), r.lcfg)
+		if err == nil {
 			l.Close()
-			t.Errorf("PreferredIPs %s was accepted", r.name)
+			t.Errorf("%s was accepted", r.name)
+		} else if !strings.Contains(err.Error(), "ListenerConfig."+r.field) {
+			t.Errorf("%s: the error %q does not name %s", r.name, err, r.field)
 		}
+	}
+	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{PreferredIPv4: netip.MustParseAddr("127.0.0.1")}); err == nil {
+		l.Close()
+		t.Error("PreferredIPv4 without a PreferredAddress socket was accepted")
+	}
+	mapped, err := ListenerConfig{PreferredAddress: dual, PreferredIPv4: netip.MustParseAddr("::ffff:127.0.0.1")}.resolve()
+	if err != nil || mapped.PreferredIPv4 != netip.MustParseAddr("127.0.0.1") {
+		t.Errorf("a mapped IPv4 PreferredIPv4 resolved to %v, %v; want 127.0.0.1", mapped.PreferredIPv4, err)
 	}
 	concrete, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -602,7 +619,7 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 	}
 	defer concrete.Close()
 	if l, err := NewListener(main, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
-		PreferredAddress: concrete, PreferredIPs: []net.IP{net.IPv4(127, 0, 0, 2)},
+		PreferredAddress: concrete, PreferredIPv4: netip.MustParseAddr("127.0.0.2"),
 	}); err == nil {
 		l.Close()
 		t.Error("an address the concretely bound socket does not answer at was accepted")

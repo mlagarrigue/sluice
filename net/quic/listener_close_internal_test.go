@@ -196,7 +196,7 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 	nowhere := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
 	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), nowhere, l.pc, 0)
 	newSCID := []byte("rscid-01")
-	token := appendRetryToken(nil, l.key, nowhere, []byte("odcid-cc"), newSCID)
+	token := appendRetryToken(nil, l.lcfg.TokenKey, nowhere, []byte("odcid-cc"), newSCID)
 	l.dispatch(sealedClientInitialWithToken(t, newSCID, []byte("cscid-dd"), token), nowhere, l.pc, 0)
 	if n := pendingCount(l); n != 2 {
 		t.Fatalf("priming left %d pending connections, want 2", n)

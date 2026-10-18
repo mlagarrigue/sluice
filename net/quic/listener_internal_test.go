@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -280,7 +281,7 @@ func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
 	// The witness: the same token under this listener's key but for another
 	// address is a Retry token this listener issued and cannot accept —
 	// INVALID_TOKEN (§8.1.2), as before.
-	elsewhere := appendRetryToken(nil, l.key, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
+	elsewhere := appendRetryToken(nil, l.lcfg.TokenKey, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
 	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc, 0)
 	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
 		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
@@ -1375,5 +1376,157 @@ func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not say %q", err, want)
 		}
+	}
+}
+
+// Every bound added to ListenerConfig on 2026-10-18 refuses a negative value
+// with an error naming its field, and the two keys refuse to be one; zero
+// resolves to the documented defaults, and a zero key to a random one per
+// listener. ListenerConfig stays comparable: the == below is the check.
+func TestListenerConfigTuningAndKeys(t *testing.T) {
+	refused := []struct {
+		field string
+		lcfg  ListenerConfig
+	}{
+		{"ConnQueueLen", ListenerConfig{ConnQueueLen: -1}},
+		{"RetryTokenTTL", ListenerConfig{RetryTokenTTL: -time.Second}},
+		{"MaxSpentRetryTokens", ListenerConfig{MaxSpentRetryTokens: -1}},
+		{"TokenKey", ListenerConfig{TokenKey: [32]byte{1}, StatelessResetKey: [32]byte{1}}},
+	}
+	for _, r := range refused {
+		_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), r.lcfg)
+		if err == nil || !strings.Contains(err.Error(), "ListenerConfig."+r.field) {
+			t.Errorf("%s: NewListener returned %v, want an error naming the field", r.field, err)
+		}
+	}
+
+	if a, b := (ListenerConfig{}), (ListenerConfig{}); a != b {
+		t.Error("two zero ListenerConfigs compare unequal")
+	}
+	given := ListenerConfig{StatelessResetKey: [32]byte{1}, TokenKey: [32]byte{2}}
+	got, err := given.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnQueueLen != 64 || got.RetryTokenTTL != 10*time.Second || got.MaxSpentRetryTokens != 16384 {
+		t.Errorf("zero resolved to ConnQueueLen %d, RetryTokenTTL %v, MaxSpentRetryTokens %d; want 64, 10s, 16384",
+			got.ConnQueueLen, got.RetryTokenTTL, got.MaxSpentRetryTokens)
+	}
+	if got.StatelessResetKey != given.StatelessResetKey || got.TokenKey != given.TokenKey {
+		t.Error("a given key was replaced")
+	}
+	r1, _ := ListenerConfig{}.resolve()
+	r2, _ := ListenerConfig{}.resolve()
+	var zero [32]byte
+	if r1.StatelessResetKey == zero || r1.TokenKey == zero || r1.StatelessResetKey == r2.StatelessResetKey || r1.TokenKey == r2.TokenKey {
+		t.Error("a zero key did not resolve to a fresh random one per listener")
+	}
+
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "cfg:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{ConnQueueLen: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	c := newConn(l.pc, fakeFuzzAddr("cfg:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	if err := l.prepareConn(c); err != nil {
+		t.Fatal(err)
+	}
+	if cap(c.incoming) != 3 {
+		t.Errorf("a connection's queue holds %d datagrams, want ConnQueueLen's 3", cap(c.incoming))
+	}
+}
+
+// crashablePC is a server socket that can fall silent at once, as a process
+// that dies does: after crash, nothing it is asked to write leaves.
+type crashablePC struct {
+	net.PacketConn
+	crashed atomic.Bool
+}
+
+func (p *crashablePC) WriteTo(b []byte, addr net.Addr) (int, error) {
+	if p.crashed.Load() {
+		return len(b), nil
+	}
+	return p.PacketConn.WriteTo(b, addr)
+}
+
+// A listener restarted on the same address with the same StatelessResetKey
+// answers a client of its previous life with a reset that client recognises
+// (RFC 9000 §10.3.2), so the client ends at once with ErrStatelessReset
+// instead of waiting out its idle timeout; restarted with a fresh key, the
+// reset it sends is one the client cannot tell from noise.
+func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sameKey   bool
+		wantReset bool
+	}{
+		{"same key", true, true},
+		{"fresh key", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := ListenerConfig{StatelessResetKey: [32]byte{7}}
+			raw, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			addr := raw.LocalAddr().(*net.UDPAddr)
+			pc := &crashablePC{PacketConn: raw}
+			l1, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted := make(chan struct{})
+			go func() {
+				if _, err := l1.Accept(); err == nil {
+					close(accepted)
+				}
+			}()
+			clientPC, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, err := Dial(clientPC, addr, ClientTLSForTest(), DefaultParameters())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			select {
+			case <-accepted:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the handshake never completed")
+			}
+
+			// The crash: the first listener's goodbyes never leave, then a
+			// second one takes the same address.
+			pc.crashed.Store(true)
+			_ = l1.Close()
+			raw2, err := net.ListenUDP("udp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second := ListenerConfig{}
+			if tc.sameKey {
+				second.StatelessResetKey = first.StatelessResetKey
+			}
+			l2, err := NewListener(raw2, ServerTLSForTest(t), DefaultParameters(), second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l2.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			_ = client.Ping(ctx)
+			select {
+			case <-client.Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+			if gotReset := errors.Is(client.Err(), ErrStatelessReset); gotReset != tc.wantReset {
+				t.Errorf("the client ended with %v; a recognised reset: %v, want %v", client.Err(), gotReset, tc.wantReset)
+			}
+		})
 	}
 }

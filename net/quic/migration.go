@@ -28,12 +28,6 @@ import (
 // challenged too (§9.3.3), and a new path that never validates abandoned
 // for the last validated one (§9.3.2).
 
-// maxLocalActiveCIDs caps how many identifiers this end keeps active for
-// itself, whatever the peer's active_connection_id_limit invites: each one is
-// a demux-table entry, and four — the same limit this end advertises for the
-// peer's — is enough for a NAT rebind and a deliberate rotation to overlap.
-const maxLocalActiveCIDs = 4
-
 // pathProbeMaxRetransmits is how many times an unanswered PATH_CHALLENGE is
 // resent before this end gives up on a path. A server whose migrated path
 // never validated reverts to the last validated one (RFC 9000 §9.3.2) —
@@ -208,10 +202,14 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 }
 
 // issueLocalCIDsLocked tops the set of identifiers this end answers to up to
-// min(the peer's active_connection_id_limit, [maxLocalActiveCIDs]), issuing
+// min(the peer's active_connection_id_limit, this end's own), issuing
 // each new one as a NEW_CONNECTION_ID on the control queue — which rides the
 // next packet's retransmittable payload, so a lost one is resent like any
-// other control frame. No-op before the handshake confirms (§5.1.1 wants
+// other control frame. This end's own limit caps it whatever the peer's
+// invites: each identifier is a demux-table entry, so the figure a
+// deployment chose for the peer's identifiers (4 by default, enough for a
+// NAT rebind and a deliberate rotation to overlap) is the one it pays for
+// its own. No-op before the handshake confirms (§5.1.1 wants
 // them in 1-RTT packets the peer is known able to read), or on a connection
 // a test built by hand with no registrar at all.
 //
@@ -235,9 +233,7 @@ func (c *Conn) issueLocalCIDsLocked() {
 	if c.hasPeerParams && c.peerParams.ActiveConnIDLimit != 0 {
 		limit = c.peerParams.ActiveConnIDLimit
 	}
-	if limit > maxLocalActiveCIDs {
-		limit = maxLocalActiveCIDs
-	}
+	limit = min(limit, c.params.ActiveConnIDLimit)
 	for uint64(len(c.localCIDs)) < limit && uint64(c.controlNewCIDs) < limit { //nolint:gosec // G115: a count, never negative
 		cid, err := c.registrar.addLocalCID(c)
 		if err != nil {

@@ -19,7 +19,7 @@ func TestRetryTokenRoundTrips(t *testing.T) {
 	newSCID := []byte("server-scid")
 
 	token := appendRetryToken(nil, key, peer, odcid, newSCID)
-	got, err := verifyRetryToken(token, key, peer)
+	got, err := verifyRetryToken(token, key, defaultRetryTokenTTL, peer)
 	if err != nil {
 		t.Fatalf("VerifyRetryToken: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestRetryTokenRejectsAWrongKey(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4242}
 
 	token := appendRetryToken(nil, key, peer, []byte("odcid"), []byte("scid"))
-	if _, err := verifyRetryToken(token, other, peer); !errors.Is(err, ErrQUIC) {
+	if _, err := verifyRetryToken(token, other, defaultRetryTokenTTL, peer); !errors.Is(err, ErrQUIC) {
 		t.Fatalf("a token signed with a different key verified: %v", err)
 	}
 }
@@ -48,7 +48,7 @@ func TestRetryTokenRejectsAWrongAddress(t *testing.T) {
 	other := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9999}
 
 	token := appendRetryToken(nil, key, issued, []byte("odcid"), []byte("scid"))
-	if _, err := verifyRetryToken(token, key, other); !errors.Is(err, ErrQUIC) {
+	if _, err := verifyRetryToken(token, key, defaultRetryTokenTTL, other); !errors.Is(err, ErrQUIC) {
 		t.Fatalf("a token replayed from a different address verified: %v", err)
 	}
 }
@@ -59,15 +59,15 @@ func TestRetryTokenExpires(t *testing.T) {
 
 	// The real encoder, handed an issue time already past the TTL, rather
 	// than sleeping past the real TTL in a test.
-	stale := appendRetryTokenAt(nil, key, time.Now().Add(-2*retryTokenTTL), peer, []byte("odcid"), []byte("scid"))
-	if _, err := verifyRetryToken(stale, key, peer); !errors.Is(err, ErrQUIC) {
+	stale := appendRetryTokenAt(nil, key, time.Now().Add(-2*defaultRetryTokenTTL), peer, []byte("odcid"), []byte("scid"))
+	if _, err := verifyRetryToken(stale, key, defaultRetryTokenTTL, peer); !errors.Is(err, ErrQUIC) {
 		t.Fatalf("an expired token verified: %v", err)
 	}
 
 	// The same token freshly issued verifies, so the rejection above is the
 	// timestamp's doing and not an encoding drift.
 	fresh := appendRetryTokenAt(nil, key, time.Now(), peer, []byte("odcid"), []byte("scid"))
-	if _, err := verifyRetryToken(fresh, key, peer); err != nil {
+	if _, err := verifyRetryToken(fresh, key, defaultRetryTokenTTL, peer); err != nil {
 		t.Fatalf("a fresh token built the same way did not verify: %v", err)
 	}
 }
@@ -76,32 +76,32 @@ func TestRetryTokenExpires(t *testing.T) {
 // the oldest admission is dropped first, so memory stays bounded and a
 // replay is only limited, never a leak.
 func TestSpentTokensExpireAndStayBounded(t *testing.T) {
-	var s spentTokens
+	s := spentTokens{ttl: defaultRetryTokenTTL, max: defaultMaxSpentRetryTokens}
 	now := time.Now()
 	first := []byte("first-id")
 	if !s.consume(first, now) {
 		t.Fatal("a fresh token counted as spent")
 	}
-	if s.consume(first, now.Add(retryTokenTTL/2)) {
+	if s.consume(first, now.Add(s.ttl/2)) {
 		t.Error("a token consumed half a TTL ago was accepted again")
 	}
-	if !s.consume(first, now.Add(retryTokenTTL)) {
+	if !s.consume(first, now.Add(s.ttl)) {
 		t.Error("a token past its TTL is still remembered; the entry should have been swept")
 	}
 	if len(s.byID) != 1 || len(s.order) != 1 {
 		t.Errorf("the sweep left %d entries and %d keys, want 1 and 1", len(s.byID), len(s.order))
 	}
 
-	s = spentTokens{}
-	for i := range spentTokensCap {
+	s = spentTokens{ttl: defaultRetryTokenTTL, max: 3}
+	for i := range s.max {
 		s.consume([]byte(fmt.Sprintf("id-%d", i)), now)
 	}
 	if s.consume([]byte("id-0"), now) {
 		t.Fatal("the oldest entry was dropped before the cap was reached")
 	}
 	s.consume([]byte("one-more"), now)
-	if len(s.byID) != spentTokensCap || len(s.order) != spentTokensCap {
-		t.Errorf("past the cap the set holds %d entries and %d keys, want %d", len(s.byID), len(s.order), spentTokensCap)
+	if len(s.byID) != s.max || len(s.order) != s.max {
+		t.Errorf("past the cap the set holds %d entries and %d keys, want %d", len(s.byID), len(s.order), s.max)
 	}
 	if s.consume([]byte("id-1"), now) {
 		t.Error("an entry younger than the oldest was dropped with it")
