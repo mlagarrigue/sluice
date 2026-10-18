@@ -461,8 +461,8 @@ type h3Batch struct {
 // assembly cap, the stream count ServeH3 admits, and [Config.IdleTimeout]
 // as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
 // own above the transport's, so this is the one place the field reaches an
-// HTTP/3 connection, and a zero field is the 30s every protocol defaults
-// to. Serving a connection built with these lets ServeH3 run the transport
+// HTTP/3 connection, and a zero field is the two minutes every protocol
+// defaults to. Serving a connection built with these lets ServeH3 run the transport
 // under manual flow-control credit, where a peer's window only reopens for
 // bytes this server has actually stopped retaining — the strongest memory
 // bound the layer offers. Any other parameters work too; below these

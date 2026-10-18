@@ -371,11 +371,15 @@ type Config struct {
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
-	// requests. Zero means 30s. [Serve] announces it on every HTTP/1.1
-	// response that does not close, as Keep-Alive: timeout=<seconds>, for a
-	// proxy in front that reads it. nginx and Envoy do not: their upstream
-	// idle timeout (60s and one hour by default) must be set below this one,
-	// or they reuse a connection this server is closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
+	// requests. Zero means two minutes, as in package web: two minutes
+	// outlasts the idle timeout of the common proxies in front (60 seconds on
+	// most load balancers and on nginx's upstream pool), so the server is not
+	// the side that closes a connection the proxy is about to reuse; a proxy
+	// that keeps its connections longer — Envoy, one hour by default — wants
+	// its upstream idle timeout set below this one. [Serve] announces it on
+	// every HTTP/1.1 response that does not close, as Keep-Alive:
+	// timeout=<seconds>, for a proxy in front that reads it; nginx and Envoy
+	// do not. HTTP/2 and HTTP/3 have no such field; their peers learn the
 	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
 	// clock does not run while this end owes the peer answers — a streamed
 	// response may take minutes during which a well-behaved client has
@@ -610,7 +614,7 @@ const (
 	defaultMaxHeaderBytes = 32 << 10
 	defaultMaxHeaders     = 64
 	defaultMaxBodyBytes   = 1 << 20
-	defaultIdleTimeout    = 30 * time.Second
+	defaultIdleTimeout    = 2 * time.Minute
 	defaultReadTimeout    = 10 * time.Second
 	defaultWriteTimeout   = 10 * time.Second
 )

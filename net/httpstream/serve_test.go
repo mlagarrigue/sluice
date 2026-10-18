@@ -1411,7 +1411,7 @@ func TestWriteBatchAnnouncesKeepAliveAsServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantLine(t, strings.Split(string(out), "\r\n"), "Keep-Alive: timeout=30", true)
+	wantLine(t, strings.Split(string(out), "\r\n"), "Keep-Alive: timeout=120", true)
 
 	// A negative field is refused as Serve refuses it, naming the field.
 	if _, err := WriteBatch(nil, Config{IdleTimeout: -time.Second}, requests, responses); err == nil || !strings.Contains(err.Error(), "Config.IdleTimeout") {
@@ -1446,7 +1446,7 @@ func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
 		head = append(head, line)
 	}
 	wantLine(t, head, "Connection: keep-alive", true)
-	wantLine(t, head, "Keep-Alive: timeout=30", true)
+	wantLine(t, head, "Keep-Alive: timeout=120", true)
 	wantLine(t, head, "Transfer-Encoding: chunked", true)
 }
 

@@ -543,12 +543,14 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 
 // Config.IdleTimeout reaches an HTTP/3 connection as the transport's
 // max_idle_timeout, through TransportParameters and nowhere else: a zero
-// field is the 30s every protocol defaults to, a set field is carried as
-// is. Before this, the field was read by HTTP/1.1 and HTTP/2 and silently
-// ignored by HTTP/3, which kept the transport's own 30s whatever Config said.
+// field is the two minutes every protocol defaults to, a set field is
+// carried as is. Before this, the field was read by HTTP/1.1 and HTTP/2 and
+// silently ignored by HTTP/3, which kept the transport's own 30s whatever
+// Config said. The default is written out rather than read from
+// defaultIdleTimeout: it is the value a proxy in front is set against.
 func TestTransportParametersCarryIdleTimeout(t *testing.T) {
-	if got := mustTransportParameters(Config{}).MaxIdleTimeout; got != defaultIdleTimeout {
-		t.Errorf("zero IdleTimeout → max_idle_timeout %v, want %v", got, defaultIdleTimeout)
+	if got := mustTransportParameters(Config{}).MaxIdleTimeout; got != 2*time.Minute {
+		t.Errorf("zero IdleTimeout → max_idle_timeout %v, want 2m0s", got)
 	}
 	if got := mustTransportParameters(Config{IdleTimeout: 7 * time.Second}).MaxIdleTimeout; got != 7*time.Second {
 		t.Errorf("IdleTimeout 7s → max_idle_timeout %v, want 7s", got)

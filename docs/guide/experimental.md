@@ -89,7 +89,7 @@ not supported yet.
 |---|---|---|
 | HTTP/1.1 exposed directly, with no proxy in front | Yes, by construction: parsing refuses anything two hops could read differently (obsolete line folding, a space before the colon, control characters, `Transfer-Encoding` next to `Content-Length`, absolute-form targets). A proxy that re-splits chunks is not required. | `net/httpstream/request.go`, `splitRequestLine` and `parseHeaders` |
 | HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2` |
-| HTTP/1.1 behind nginx or Envoy, upstream connections reused | Yes, with a setting on the proxy: its upstream idle timeout must be **shorter** than `IdleTimeout` (30 s by default), so that the proxy closes first instead of reusing a connection this server is closing and reporting a 502. Every response that keeps the connection does announce `Connection: keep-alive` and `Keep-Alive: timeout=<IdleTimeout in seconds>`, but neither proxy reads that value: nginx ignores the header and keeps its upstream connections 60 s by default, Envoy strips it and keeps them an hour. With nginx: `upstream app { server 10.0.0.1:8080; keepalive 16; keepalive_timeout 25s; }`; with Envoy: `idle_timeout: 25s` under `common_http_protocol_options` in the cluster's `HttpProtocolOptions`. HTTP/2 announces the end with `GOAWAY` instead. | `net/httpstream/response.go`, `keepAliveField` |
+| HTTP/1.1 behind nginx or Envoy, upstream connections reused | Yes. The rule: the proxy's upstream idle timeout must be **shorter** than `IdleTimeout`, so that the proxy closes first instead of reusing a connection this server is closing and reporting a 502. nginx keeps its upstream connections 60 s by default, below the 2 min default of `IdleTimeout`: nothing to set as long as neither is raised or lowered (full configuration below the table). Envoy keeps them an hour: `idle_timeout: 60s` under `common_http_protocol_options` in the cluster's `HttpProtocolOptions`. Every response that keeps the connection does announce `Connection: keep-alive` and `Keep-Alive: timeout=<IdleTimeout in seconds>`, but neither proxy reads that value: nginx ignores the header, Envoy strips it. HTTP/2 announces the end with `GOAWAY` instead. | `net/httpstream/response.go`, `keepAliveField`; `httpstream.go`, `defaultIdleTimeout` |
 | HTTP/2 clients with a reduced HPACK table (nghttp2, Envoy) | Yes: the table size requested by `SETTINGS_HEADER_TABLE_SIZE` is honored from the next header block, in the same critical section as the acknowledgement. | `net/httpstream/h2write.go`, `ackSettings` |
 | HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `Config.InitialWindowSize` raises it, for `Serve`, `Server` and `ServeH2` alike, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/httpstream.go`, `Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
 | QUIC clients behind a mobile NAT (address change in the middle of a connection) | Yes: four active connection IDs per endpoint, enough for a NAT rebind and a deliberate rotation to overlap; the new path is validated by `PATH_CHALLENGE` before it is believed. | `net/quic/migration.go`, `maxLocalActiveCIDs` and `migrateLocked` |
@@ -107,6 +107,35 @@ says what the code decides, not what an external review has confirmed.
 > **In plain terms.** "Supported" means here: the code makes this choice
 > explicitly, a test covers it, and the row says where to read the reason.
 > It takes nothing away from the *experimental* label of `net/quic`.
+
+The nginx row, in full: a configuration to copy as it is, where only the
+server's address changes. An *upstream* is the group of servers nginx
+relays to; `keepalive` there keeps connections open between two requests
+instead of opening one per request.
+
+```nginx
+upstream app {
+    server 10.0.0.1:8080;
+    keepalive 16;           # connections kept per worker; on by default since nginx 1.29.7
+    keepalive_timeout 60s;  # nginx's default, below IdleTimeout's 2 min
+}
+
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://app;
+        proxy_http_version 1.1;          # needed before nginx 1.29.7
+        proxy_set_header Connection "";  # needed before nginx 1.29.7
+    }
+}
+```
+
+Before 1.29.7, nginx speaks HTTP/1.0 to the upstream and sends
+`Connection: close` with every request: without the last two lines, every
+request opens a connection and `keepalive` does nothing. Since 1.29.7 that
+is the default, and the two lines no longer change anything. If you raise
+`keepalive_timeout` above 2 min, raise `IdleTimeout` above it.
 
 The "clear text" row points to TLS; this is what goes in front. The package
 does not terminate TLS ([ADR 0014](../design/adr/0014-tls-stays-in-front.md)):
