@@ -290,9 +290,8 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// writer fails on its next write.
 		for _, f := range frames {
 			if f.Type == quic.FrameStopSending && f.StreamID == control.ID() {
-				code, _ := control.WasReset()
 				_ = c.CloseWithError(h3ClosedCriticalStream)
-				return controlStopped(code)
+				return controlStopped(f.Code())
 			}
 		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own

@@ -397,6 +397,13 @@ func TestFramesCarryTheirVarintFields(t *testing.T) {
 				w.Type, w.StreamID, w.value, w.offset)
 		}
 	}
+	// Code is the caller's view of the same field, and only the two
+	// frames that carry an error code have one.
+	for i, want := range []uint64{0x10e, 0x10c, 0, 0} {
+		if got := frames[i].Code(); got != want {
+			t.Errorf("frame %d: Code() = %#x, want %#x", i, got, want)
+		}
+	}
 }
 
 // MaxIdleTimeoutMS: 0 is RFC 9000's "no timeout" case, and this package's own
