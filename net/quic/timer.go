@@ -170,6 +170,13 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	if anyExpired {
 		c.ptoCount++
 		c.ptoFired++
+		if c.ptoCount >= pmtuMaxProbes {
+			// Nothing acknowledged for three probe intervals: on a path
+			// that carried full-size datagrams, that is a black hole
+			// until proven otherwise (pmtu.go), and the probes below
+			// leave at 1200 bytes.
+			c.blackHoleLocked()
+		}
 		// The window is not touched: a timeout proves nothing about the
 		// path (RFC 9002 §6.2), and persistent congestion is a span of
 		// losses an ACK establishes (§7.6, handleAck), not a count of

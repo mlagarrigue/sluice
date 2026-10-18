@@ -306,6 +306,11 @@ type ackOutcome struct {
 	probeAcked, probeLost     bool
 	probeAckedPN, probeLostPN uint64
 	probeLostBytes            int
+	// largeAcked and largeLost feed the black-hole indicator (pmtu.go):
+	// a packet above 1200 bytes acknowledged on this path, and how many
+	// such packets were declared lost.
+	largeAcked bool
+	largeLost  int
 }
 
 // The tracker's side of an ACK frame runs in three steps, in RFC 9002
@@ -389,6 +394,9 @@ func (out *ackOutcome) mark(p *sentPacket, onPath bool, largest uint64) {
 	}
 	if onPath {
 		out.newlyAcked += p.size
+		if p.size > pmtuBaseSize {
+			out.largeAcked = true
+		}
 	}
 	if p.ackEliciting {
 		out.sawAckEliciting = true
@@ -632,6 +640,9 @@ func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryE
 		return false
 	}
 	out.lostBytes += p.size
+	if p.size > pmtuBaseSize {
+		out.largeLost++
+	}
 	if p.sentAt.After(out.latestLossSent) {
 		out.latestLossSent = p.sentAt
 	}

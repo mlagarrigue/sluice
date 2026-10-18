@@ -38,9 +38,9 @@
 // of the host's addresses a datagram reached, and answering from it.
 // Linux, Darwin and Windows.
 //
-// Setting DF is the prerequisite for path MTU discovery (§14.2), which the
-// transport does not do yet; until it does, datagrams stay at 1200 bytes
-// and DF is defence rather than a measurement. The flow label is a SHOULD
+// Setting DF is the prerequisite for path MTU discovery (§14.2): the
+// transport's probes (DPLPMTUD, §14.3) would prove nothing about the path
+// if a router could fragment them. The flow label is a SHOULD
 // and is applied where the platform allows, never reported as an error
 // where it does not.
 package udp

@@ -127,6 +127,18 @@ type TransportParameters struct {
 	// value is that default.
 	Congestion CongestionConfig
 
+	// MaxDatagramSize is the largest datagram this endpoint sends, once
+	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
+	// carries it. Local, like Congestion: never encoded on the wire. Zero
+	// means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
+	// that, the search climbs towards it — 8952 for a 9000-byte jumbo
+	// path. What is probed is also bounded by the peer's announced
+	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
+	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
+	// largest UDP payload), [Dial], [Accept] and [NewListener] refuse it.
+	// The size reached is [Stats.DatagramSize].
+	MaxDatagramSize int
+
 	// sawStatelessResetToken and sawPreferredAddress record that the peer
 	// announced these server-only parameters (§18.2). A *client* announcing
 	// either is a protocol violation a server must refuse with
@@ -349,12 +361,15 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
 
 // check refuses the zero value, which would announce a connection that
-// cannot move.
+// cannot move, and a MaxDatagramSize no path can carry.
 func (p TransportParameters) check() error {
 	if p.MaxIdleTimeout == 0 && p.MaxUDPPayloadSize == 0 && p.InitialMaxData == 0 &&
 		p.InitialMaxStreamDataUni == 0 && p.InitialMaxStreamDataBidiLocal == 0 && p.InitialMaxStreamDataBidiRemote == 0 &&
 		p.InitialMaxStreamsBidi == 0 && p.InitialMaxStreamsUni == 0 && p.ActiveConnIDLimit == 0 {
 		return ErrZeroParameters
+	}
+	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
+		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
 	}
 	return nil
 }

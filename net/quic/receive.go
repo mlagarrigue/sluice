@@ -1231,11 +1231,13 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	return nil
 }
 
-// settleProbeLocked applies what an ACK or the loss timer decided about a
-// DPLPMTUD probe: an acknowledged probe proves its size, a lost one is
-// released from flight without a congestion event and the search moves on
+// settleProbeLocked applies what an ACK or the loss timer decided about
+// DPLPMTUD: an acknowledged probe proves its size, a lost one is released
+// from flight without a congestion event and the search moves on, and the
+// full-size packets acknowledged or lost feed the black-hole indicator
 // (pmtu.go). Callers hold mu.
 func (c *Conn) settleProbeLocked(out ackOutcome) {
+	c.watchBlackHoleLocked(&out)
 	if out.probeLost {
 		c.cc.onLifted(out.probeLostBytes)
 		c.pmtuProbeLostLocked(out.probeLostPN)

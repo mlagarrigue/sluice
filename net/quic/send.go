@@ -722,7 +722,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		// Counted here, not where the probe was decided: a packet refused
 		// before sealing (number space or key exhausted) was never a try.
 		c.pmtu.inFlight, c.pmtu.probePN = true, p.pn
-		c.pmtu.tries++
+		c.pmtu.probes++
 	}
 	if !p.opts.noRetrans && len(p.retransPart) > 0 {
 		if p.opts.own {
@@ -869,11 +869,15 @@ func (c *Conn) retransmitLocked() {
 			continue
 		}
 		for len(sp.retrans) > 0 {
-			payload := sp.retrans[0]
+			payload, rest := c.fitLocked(space, sp.retrans[0])
 			if !c.cc.canSend(len(payload) + 64) {
 				return
 			}
-			sp.retrans = sp.retrans[1:]
+			if rest != nil {
+				sp.retrans[0] = rest
+			} else {
+				sp.retrans = sp.retrans[1:]
+			}
 			left := len(sp.retrans)
 			if err := c.sendPacketLocked(space, payload, sendOpts{own: true}); err != nil {
 				return
@@ -886,6 +890,80 @@ func (c *Conn) retransmitLocked() {
 			}
 		}
 	}
+}
+
+// fitLocked cuts a payload recorded for retransmission to what one packet
+// of space carries under maxDatagram, returning the part to send now and
+// the rest (nil when it all fits). A payload sent under a larger datagram
+// size — before a black hole or a new path brought it back to 1200
+// (pmtu.go) — would otherwise be resent whole into the path that just lost
+// it. Callers hold mu.
+func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
+	return fitFrames(payload, c.maxDatagram-c.packetOverhead(space))
+}
+
+// fitFrames cuts payload, frames this end encoded, so that the first part
+// is no longer than room: whole frames while they fit, then the first one
+// that does not, split in two if it carries stream or handshake data —
+// the same bytes at the same offsets, the FIN on the second half. A first
+// frame that cannot be split leaves whole, as it was sent before; so does
+// a payload that does not parse, which cannot happen.
+func fitFrames(payload []byte, room int) (now, rest []byte) {
+	if len(payload) <= room {
+		return payload, nil
+	}
+	n := 0
+	for n < len(payload) {
+		f, tail, err := parseFrame(payload[n:])
+		if err != nil {
+			return payload, nil
+		}
+		l := len(payload) - n - len(tail)
+		if n+l <= room {
+			n += l
+			continue
+		}
+		if first, second := splitDataFrame(f, room-n); first != nil {
+			return append(payload[:n:n], first...), append(second, tail...)
+		}
+		break
+	}
+	if n == 0 {
+		return payload, nil
+	}
+	return payload[:n], payload[n:]
+}
+
+// splitDataFrame re-encodes a STREAM or CRYPTO frame as two: the first no
+// longer than room, carrying as many bytes as fit, the second the rest.
+// Nil when f is another type or room leaves no byte of data.
+func splitDataFrame(f Frame, room int) (first, second []byte) {
+	stream := f.IsStream()
+	if !stream && f.Type != frameCrypto {
+		return nil, nil
+	}
+	header := 1 + varintBytes(f.offset) + varintBytes(uint64(max(room, 0))) //nolint:gosec // G115: non-negative
+	if stream {
+		header += varintBytes(f.StreamID)
+	}
+	k := room - header
+	if k <= 0 || k >= len(f.Data) {
+		return nil, nil
+	}
+	encode := func(dst []byte, off uint64, data []byte, fin bool) []byte {
+		if stream {
+			dst = AppendVarint(dst, FrameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
+			dst = AppendVarint(dst, f.StreamID)
+		} else {
+			dst = AppendVarint(dst, frameCrypto)
+		}
+		dst = AppendVarint(dst, off)
+		dst = AppendVarint(dst, uint64(len(data)))
+		return append(dst, data...)
+	}
+	first = encode(nil, f.offset, f.Data[:k], false)
+	second = encode(nil, f.offset+uint64(k), f.Data[k:], f.Fin) //nolint:gosec // G115: k is positive
+	return first, second
 }
 
 // sendProbeLocked answers a probe timeout in one space with two datagrams
@@ -924,8 +1002,13 @@ func (c *Conn) sendProbeLocked(space int) {
 	var payloads [probes][]byte
 	n := 0
 	for ; n < probes && len(sp.retrans) > 0; n++ {
-		payloads[n] = sp.retrans[0]
-		sp.retrans = sp.retrans[1:]
+		var rest []byte
+		payloads[n], rest = c.fitLocked(space, sp.retrans[0])
+		if rest != nil {
+			sp.retrans[0] = rest
+		} else {
+			sp.retrans = sp.retrans[1:]
+		}
 	}
 	// Lifted before any is sent: the copies are recorded as they go, and
 	// the newest of them must not be the next one lifted.
@@ -937,7 +1020,10 @@ func (c *Conn) sendProbeLocked(space int) {
 		if sp.sent.onPath(&p) { // a previous path's packet never counted here (RFC 9000 §9.4)
 			c.cc.onLifted(p.size)
 		}
-		payloads[n] = p.payload
+		var rest []byte
+		if payloads[n], rest = c.fitLocked(space, p.payload); rest != nil {
+			sp.retrans = append([][]byte{rest}, sp.retrans...)
+		}
 	}
 	switch n {
 	case 0:

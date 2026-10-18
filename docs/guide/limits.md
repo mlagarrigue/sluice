@@ -238,17 +238,27 @@ to a separate module before a v1.
   several goroutines and each hand-off wakes one, often on another core.
 - **`net/quic` datagram size**: datagrams start at 1200 bytes, the
   smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
-  rise to 1452 (an Ethernet MTU less IPv6 and UDP headers) once a probe of
-  that size is acknowledged — DPLPMTUD (§14.3, RFC 8899) in its simplest
-  form: one PING+PADDING datagram of 1452 bytes after the handshake and
-  after each migration, three tries, then 1200 for the rest of that path.
-  The size is never searched: a path that carries 1400 but not 1452 (a
-  tunnel, typically) stays at 1200. The peer's `MaxUDPPayloadSize`
-  transport parameter caps the probe; nothing below 1452 is probed for.
-  ICMP "packet too big" messages are ignored (§14.2.1 does not require
-  them, and `net.PacketConn` does not deliver them): a path that shrinks
-  under a connection is found by loss recovery, not by the probe. A lost
-  probe is not a congestion event (§14.4).
+  rise by a search (DPLPMTUD, §14.3, RFC 8899): a probe — one PING+PADDING
+  datagram — of 1452 bytes first (an Ethernet MTU less the IPv6 and UDP
+  headers), then, while nothing is lost, the ceiling itself; after the
+  first size lost, each probe halves the range between the last size
+  confirmed and the smallest lost, down to 20 bytes. A size is lost after
+  three unanswered probes. A tunnel with an MTU of 1420 settles within
+  20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
+  or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
+  1452; 8952 for a 9000-byte jumbo path), bounded by the
+  `MaxUDPPayloadSize` the peer announces; the size reached reads in
+  `Stats.DatagramSize`. The search starts over at 1200 after each
+  migration. A path that shrinks under a connection (a "black hole",
+  RFC 8899 §4.3) shows as three probe timeouts in a row, or three
+  full-size packets lost while only smaller ones are acknowledged: the size
+  falls back to 1200, what was lost is resent cut to that size, the search
+  runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
+  outage of three probe timeouts counts too, and costs one probe once the
+  path is back. A completed search is not run again on a path that might
+  have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
+  require them, and `net.PacketConn` does not deliver them). A lost probe
+  is not a congestion event (§14.4).
 - **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's

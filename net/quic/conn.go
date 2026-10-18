@@ -135,7 +135,9 @@ type Conn struct {
 	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
 	pmtu        pmtuState
-	spin        byte // 0 or 0x20, OR-ed into every short header (§17.4)
+	// pmtuBlackHoles counts the falls back to 1200 (pmtu.go), for Stats.
+	pmtuBlackHoles uint64
+	spin           byte // 0 or 0x20, OR-ed into every short header (§17.4)
 	// blockedResend is when the §4.1 periodic *_BLOCKED re-announcement
 	// next fires, zero while no writer is parked at a flow-control limit.
 	blockedResend time.Time
@@ -1306,10 +1308,10 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	// c.maxDatagram does not follow p.MaxUDPPayloadSize: the peer announces
 	// what it reads, not what the *path* carries, and a datagram the path
 	// swallows would be retransmitted at the same size into the same black
-	// hole until the connection stalled. It bounds the probe instead: once
-	// the handshake is confirmed the path is probed at min(1452,
-	// p.MaxUDPPayloadSize) — never more than 1452 whatever the peer offers
-	// (pmtu.go) — and maxDatagram rises only on the probe's acknowledgement.
+	// hole until the connection stalled. It bounds the search instead:
+	// once the handshake is confirmed the path is probed up to
+	// min(MaxDatagramSize, p.MaxUDPPayloadSize) (pmtu.go), and maxDatagram
+	// rises only on a probe's acknowledgement.
 	// Streams opened before the grants arrived — none in the ordinary order
 	// of things, but harmless to repair.
 	for _, s := range c.streams {
@@ -1629,6 +1631,21 @@ type Stats struct {
 	// rate while the window covers the bandwidth-delay product, and the
 	// window per round trip once a loss has cut the window below it.
 	DeliveryRate float64
+
+	// DatagramSize is the largest datagram this end sends on the current
+	// path: 1200 until a DPLPMTUD probe proves more (RFC 9000 §14.3),
+	// then the largest size proven, up to
+	// [TransportParameters.MaxDatagramSize]. It starts over at 1200 on
+	// every new path.
+	DatagramSize int
+
+	// MTUBlackHoles is how many times full-size datagrams stopped getting
+	// through after the path had carried them (RFC 8899 §4.3) — three
+	// probe timeouts in a row, or three of them lost while only smaller
+	// packets were acknowledged — and the datagram size fell back to 1200
+	// while the search ran again. A route change or a tunnel set up under
+	// the connection; an outage of three probe timeouts counts too.
+	MTUBlackHoles uint64
 }
 
 // Stats reports the connection's counters, consistently with each other.
@@ -1655,6 +1672,8 @@ func (c *Conn) Stats() Stats {
 		PersistentCongestions: c.persistentCongestions,
 		ProbeTimeouts:         c.ptoFired,
 		DeliveryRate:          c.delivery.rate,
+		DatagramSize:          c.maxDatagram,
+		MTUBlackHoles:         c.pmtuBlackHoles,
 	}
 }
 

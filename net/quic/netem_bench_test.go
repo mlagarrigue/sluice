@@ -76,6 +76,11 @@ type netemProfile struct {
 	// on the loopback interface rather than in-memory pairs, the only
 	// transport here that carries the ECN field (netemLink.path).
 	mark time.Duration
+	// mtu, when non-zero, is the path's IP MTU: a datagram whose UDP
+	// payload, with the 48 bytes of IPv6 and UDP headers, exceeds it
+	// vanishes, the way a router without ICMP drops it — the path a
+	// DPLPMTUD search (RFC 8899) has to find. Zero carries any size.
+	mtu int
 }
 
 // timedPacket is one datagram, the ECN field it leaves with (zero on a
@@ -194,6 +199,9 @@ func forward(src, dst net.PacketConn, to net.Addr, prof netemProfile, rng *rand.
 		if err != nil {
 			return
 		}
+		if prof.mtu > 0 && n+48 > prof.mtu {
+			continue
+		}
 		if prof.loss > 0 && rng.Float64() < prof.loss {
 			continue
 		}
@@ -293,6 +301,10 @@ type netemLink struct {
 	// cc is the congestion controller both ends of a transfer on this
 	// link are built with; the zero value is the package's default.
 	cc quic.CongestionAlgorithm
+	// watch, when set, runs beside a transfer on the sending connection,
+	// from the moment it is dialled, for a test that observes it while
+	// the transfer runs rather than once it is over.
+	watch func(*quic.Conn)
 }
 
 // benchAlgorithm is the controller the path benchmarks run, and
@@ -509,6 +521,9 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 		return transfer{}, fmt.Errorf("Dial: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
+	if link.watch != nil {
+		go link.watch(conn)
+	}
 	s, err := conn.OpenStream(tb.Context())
 	if err != nil {
 		return transfer{}, err
@@ -596,7 +611,8 @@ func acceptOne(tb testing.TB, pc net.PacketConn, params quic.TransportParameters
 // bytes the sender's declared losses put back on the queue, and lost the
 // packets behind them: on a path that reorders and loses nothing, both
 // count spurious losses alone, a figure the scheduler moves far less than
-// the transfer's wall clock.
+// the transfer's wall clock. dgram_B is the datagram size the sender's
+// DPLPMTUD search reached (1452 on a path with no MTU).
 func benchTransfer(b *testing.B, prof netemProfile, total int) {
 	b.Helper()
 	b.SetBytes(int64(total))
@@ -609,6 +625,7 @@ func benchTransfer(b *testing.B, prof netemProfile, total int) {
 		b.ReportMetric(float64(t.stats.SmoothedRTT)/float64(t.stats.MinRTT), "rtt_x")
 		b.ReportMetric(float64(t.stats.BytesRetransmitted), "retx_B")
 		b.ReportMetric(float64(t.stats.LostPackets), "lost")
+		b.ReportMetric(float64(t.stats.DatagramSize), "dgram_B")
 	}
 }
 
@@ -702,6 +719,23 @@ func BenchmarkTransferBottleneck(b *testing.B) {
 		owd:   10 * time.Millisecond,
 		rate:  50_000_000 / 8,
 		queue: 5 * time.Millisecond,
+	}, 4<<20)
+}
+
+// BenchmarkTransferBottleneckMTU1420 is Bottleneck behind a tunnel: an IP
+// MTU of 1420, so the first DPLPMTUD probe of 1452 bytes is lost and the
+// search (RFC 8899 §5.3) has to find a size between 1200 and 1372. Not
+// gated: what it reads is dgram_B, the size the search settled at — 1357,
+// where a single probe of 1452 stayed at 1200: 13 % more payload per
+// datagram, 12 % fewer packets. MB/s does not move with it (A/B of
+// 2026-10-18, inside the noise): this line counts bytes, and a packet's
+// header is a few percent of either size.
+func BenchmarkTransferBottleneckMTU1420(b *testing.B) {
+	benchTransfer(b, netemProfile{
+		owd:   10 * time.Millisecond,
+		rate:  50_000_000 / 8,
+		queue: 5 * time.Millisecond,
+		mtu:   1420,
 	}, 4<<20)
 }
 

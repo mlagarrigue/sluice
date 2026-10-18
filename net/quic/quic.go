@@ -97,14 +97,18 @@
 //     one datagram, with §14.1's padding carried by the packet that closes
 //     it rather than by the Initial alone.
 //   - Datagram size (§14): datagrams start at the 1200 bytes §14.1
-//     guarantees on any path and rise to 1452 — an Ethernet MTU less IPv6
-//     and UDP headers — once a PING+PADDING probe of that size is
-//     acknowledged (DPLPMTUD, §14.3, RFC 8899): one size, probed after the
-//     handshake and after each migration, three tries, then 1200 for the
-//     rest of that path. The peer's [TransportParameters.MaxUDPPayloadSize]
-//     caps the probe. No search between the two sizes, no ICMP (§14.2.1
-//     does not require it); a lost probe is not a congestion event
-//     (§14.4). See docs/guide/limits.md.
+//     guarantees on any path and rise by DPLPMTUD (§14.3, RFC 8899):
+//     PING+PADDING probes, 1452 bytes first — an Ethernet MTU less IPv6
+//     and UDP headers — then a search between the size confirmed and the
+//     smallest lost, to 20 bytes, up to
+//     [TransportParameters.MaxDatagramSize] and the peer's
+//     [TransportParameters.MaxUDPPayloadSize]; after the handshake and
+//     after each migration. A path that shrinks under the connection (a
+//     black hole: three probe timeouts, or full-size packets lost while
+//     smaller ones get through) brings the size back to 1200 and the
+//     search runs again. No ICMP (§14.2.1 does not require it); a lost
+//     probe is not a congestion event (§14.4). [Stats.DatagramSize] is the
+//     size reached. See docs/guide/limits.md.
 //   - Stateless resets (§10.3): a connection recognises a reset by the
 //     tokens its peer announced — NEW_CONNECTION_ID's, and the handshake's
 //     stateless_reset_token — and dies immediately rather than by idle

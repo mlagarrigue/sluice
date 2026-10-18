@@ -14,10 +14,10 @@ const (
 // sockets, IPV6_AUTOFLOWLABEL = 1.
 //
 // DO rather than PROBE: both set DF, but PROBE also tells the kernel to
-// ignore its path-MTU cache, which is what an endpoint running its own
-// PMTUD wants and this transport does not do yet. DO keeps the kernel's
-// knowledge working for us: a datagram it knows will not fit comes back
-// as EMSGSIZE from WriteTo instead of leaving and dying.
+// ignore its path-MTU cache. The transport runs its own search (DPLPMTUD)
+// and does not need the cache ignored: DO keeps the kernel's knowledge
+// working beside it, so a datagram the kernel knows will not fit comes
+// back as EMSGSIZE from WriteTo instead of leaving and dying.
 //
 // On an AF_INET6 socket the IPv4 option is set too, because the kernel
 // routes a packet to an IPv4-mapped peer through the IPv4 stack and reads
