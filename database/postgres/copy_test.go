@@ -186,14 +186,14 @@ func TestCopyRequiresRowsPerTx(t *testing.T) {
 	}
 }
 
-// Rows accumulate into one CopyData until MaxMessage, because message
+// Rows accumulate into one CopyData until ChunkBytes, because message
 // boundaries need not fall on row boundaries — that is what lets a batch leave
 // as one message rather than one per row.
 func TestCopyBatchesRowsIntoMessages(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
 	conn := NewConn(srv)
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1000, MaxMessage: 1 << 20})
+		CopyConfig{RowsPerTx: 1000, ChunkBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,11 +504,11 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 		return buf, 200
 	}
 
-	// One call whose payload exceeds MaxMessage: the direct path.
+	// One call whose payload exceeds ChunkBytes: the direct path.
 	direct := &fakeServer{responses: txCycle()}
 	dconn := NewConn(direct)
 	dcp, err := dconn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1000, MaxMessage: 64})
+		CopyConfig{RowsPerTx: 1000, ChunkBytes: 64})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestCopyDirectAndBufferedPathsAgree(t *testing.T) {
 	buffered := &fakeServer{responses: txCycle()}
 	bconn := NewConn(buffered)
 	bcp, err := bconn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1000, MaxMessage: 1 << 20})
+		CopyConfig{RowsPerTx: 1000, ChunkBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,7 +553,7 @@ func TestCopyDirectPathDoesNotRetainTheCallersBuffer(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
 	conn := NewConn(srv)
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1000, MaxMessage: 16})
+		CopyConfig{RowsPerTx: 1000, ChunkBytes: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestCopyDirectPathDoesNotOvertakeBufferedRows(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
 	conn := NewConn(srv)
 	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
-		CopyConfig{RowsPerTx: 1000, MaxMessage: 128})
+		CopyConfig{RowsPerTx: 1000, ChunkBytes: 128})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,5 +812,19 @@ func TestExecFailsCopyToStdoutInsteadOfDiscardingIt(t *testing.T) {
 	}
 	if err := conn.Exec(t.Context(), "SELECT 1"); err != nil {
 		t.Errorf("the statement after a refused copy-out returned %v", err)
+	}
+}
+
+// A negative ChunkBytes is refused, not read as the default: zero is how the
+// default is asked for.
+func TestCopyRefusesANegativeChunkBytes(t *testing.T) {
+	srv := &fakeServer{}
+	_, err := NewConn(srv).CopyFrom(t.Context(), "COPY t FROM STDIN WITH (FORMAT BINARY)",
+		CopyConfig{RowsPerTx: 1, ChunkBytes: -1})
+	if err == nil || !strings.Contains(err.Error(), "CopyConfig.ChunkBytes") {
+		t.Errorf("CopyFrom with ChunkBytes -1 returned %v, want an error naming ChunkBytes", err)
+	}
+	if srv.sent.Len() != 0 {
+		t.Errorf("a refused copy sent %d bytes", srv.sent.Len())
 	}
 }

@@ -20,10 +20,21 @@ import (
 // a peer sending one byte per frame pays its own bandwidth but would
 // otherwise choose this endpoint's bookkeeping overhead.
 
-// maxReassemblyChunks bounds how fragmented the parked bytes may be. A
-// conformant sender fragments a few ways on retransmission; hundreds of
-// disjoint slivers is a peer working at it.
-const maxReassemblyChunks = 256
+// The chunk bound grows with the bytes held. A conformant sender leaves a
+// hole per packet lost ahead of packets that arrived, and a drop-tail queue
+// that overflows under a window-doubling sender loses every other packet of
+// a round: measured on the DeepBuffer path under Reno, a 1.4 MB flight left
+// 257 holes, each between full packets — a fixed bound of 256 closed a
+// healthy connection. So the bound is one chunk per reassemblyChunkBytes
+// held, below the smallest datagram a path carries (RFC 9000 §14: 1200),
+// with a floor for a stream that holds little — hundreds of disjoint
+// slivers is a peer working at it — and a ceiling, because every insert
+// moves the slice's tail: the ceiling caps that move at half a megabyte.
+const (
+	reassemblyChunkFloor   = 256
+	reassemblyChunkCeiling = 1 << 14
+	reassemblyChunkBytes   = 1024
+)
 
 type rchunk struct {
 	off  uint64
@@ -38,6 +49,11 @@ type reassembly struct {
 	consumed uint64 // how far the delivered prefix reaches
 	chunks   []rchunk
 	held     int // bytes parked, kept so callers can observe the cost
+}
+
+// chunkLimit is how many chunks r may hold at its current size.
+func (r *reassembly) chunkLimit() int {
+	return min(max(r.held/reassemblyChunkBytes, reassemblyChunkFloor), reassemblyChunkCeiling)
 }
 
 // addThenTake files bytes at an offset and appends whatever is now
@@ -119,13 +135,13 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		r.held += len(merged)
 	}
 
-	if len(r.chunks) > maxReassemblyChunks {
+	if limit := r.chunkLimit(); len(r.chunks) > limit {
 		// The chunk above is already inserted — r.chunks and r.held both
 		// reflect it — before this is checked. Harmless today: every caller
 		// closes the connection on this error, so the state this leaves
 		// behind is never read again. Reusing a reassembly instance past a
 		// returned error would need this re-examined.
-		return fmt.Errorf("%w: stream bytes parked in over %d fragments", ErrQUIC, maxReassemblyChunks)
+		return fmt.Errorf("%w: stream bytes parked in over %d fragments", ErrQUIC, limit)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -91,18 +92,21 @@ type Part struct {
 // its own Sync and its own error boundary. It buys the round trip, and which
 // side of the trade a workload wants depends on how often a part fails.
 //
-// # ctx guards the start, not the read
+// # ctx guards the start, and the server's work
 //
-// ctx is checked **once**, before anything is sent. After the Flush the whole
-// sequence is already on its way to the server and the reader runs to the
-// final ReadyForQuery without consulting ctx again — unlike [Conn.Query],
+// ctx is checked before anything is sent, and the reader then runs to the
+// final ReadyForQuery without stopping between parts — unlike [Conn.Query],
 // which checks once per batch because its Execute asks for a batch at a time
 // and each pause is a place to stop. Here every part runs with no row limit,
-// so there is no pause to stop at: a cancellation observed mid-read could
-// only abandon the connection or drain it anyway, and the drain is the same
-// cost as finishing. What bounds a read against a hung server is the socket
-// deadline, and what bounds a long statement is a server-side timeout — the
-// same two answers as for Query.
+// so there is no pause to stop at: the client stopping mid-read would still
+// owe the drain to the end.
+//
+// What stops the server is the cancellation. On a connection opened by
+// [Connect], ctx ending while the pipeline is under way sends a
+// [CancelRequest]: the part the server is executing fails with
+// query_canceled, the ones after it never run, and Pipeline returns ctx.Err()
+// wrapped next to [ErrPipelineAborted] — and the transaction is aborted, as
+// after any failed part.
 //
 // # The rows belong to the batch
 //
@@ -122,9 +126,9 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	}
 	c := tx.conn
 
-	batchRows := cfg.BatchRows
-	if batchRows <= 0 {
-		batchRows = sluice.DefaultBatchSize
+	batchRows, batchBytes, err := batchBounds(cfg)
+	if err != nil {
+		return err
 	}
 
 	// Every part is validated before the first byte is buffered — the same
@@ -153,7 +157,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	}
 	defer c.endBusy()
 
-	// Everything goes out before anything is read. The statement cache is
+	// Everything is buffered before anything is sent. The statement cache is
 	// deliberately not consulted: a cached name would have to be prepared in
 	// an earlier round trip, which is the round trip this is removing.
 	for _, p := range parts {
@@ -179,11 +183,45 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 		c.w.Execute("", 0)
 	}
 	c.w.Sync()
-	if err := c.w.Flush(); err != nil {
-		return c.breakConn(fmt.Errorf("sending the pipeline: %w", err))
-	}
 
-	return c.readPipeline(parts, batchRows, fn)
+	// The send and the read overlap, on purpose. The server executes each
+	// part as it arrives and starts answering at once, so with enough parts
+	// its send buffer fills before it has read the last of ours — and a
+	// server whose send buffer is full stops reading. A synchronous Flush
+	// here then never returns, the server never reaches our Sync, and both
+	// sides wait for the other with no error to show for it: 64 parts of a
+	// 16 KiB parameter answering 200 KB each were enough on one machine, the
+	// threshold being the kernel's socket autotuning. Reading while the
+	// write is still going keeps the server's buffer draining. The two
+	// goroutines share nothing: the writer owns the Writer's buffer, the
+	// reader owns the Reader's, and the socket under them is read and
+	// written concurrently as every net.Conn allows.
+	//
+	// A failed write is the end of the connection either way (the Writer's
+	// position is unknown after a partial one), so the sender closes the
+	// socket under the reader to release it, and its error is the one
+	// reported: whatever the reader saw afterwards is a consequence.
+	sent := make(chan error, 1)
+	go func() {
+		err := c.w.Flush()
+		if err != nil {
+			_ = c.rw.Close()
+		}
+		sent <- err
+	}()
+	// Joined on every way out, a panic in fn included: the next statement
+	// on this connection reuses the Writer's buffer, which is the sender's
+	// until it has returned.
+	join := sync.OnceValue(func() error { return <-sent })
+	defer func() { _ = join() }()
+	w := c.watchCancel(ctx)
+	defer w.disarm()
+	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
+	if sendErr := join(); sendErr != nil {
+		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		err = c.broken
+	}
+	return c.settleCancel(ctx, w, err)
 }
 
 // readPipeline consumes the answers to a pipelined sequence, in order.
@@ -193,12 +231,13 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 // they are two extended-query sequences back to back — so the reader counts
 // CommandCompletes rather than looking for a marker that does not exist.
 //
-// ctx is deliberately absent: cancellation guarded the start, in
-// [Tx.Pipeline], and everything this reads was bought by the Flush already.
-// Stopping mid-answer would still owe the drain to ReadyForQuery — the whole
-// pipeline, since parts run with no row limit — so checking here buys no
-// earlier stop. See the "ctx guards the start" section on [Tx.Pipeline].
-func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Batch[Row]) bool) error {
+// ctx is never checked here, only handed to the log: it guarded the start, in
+// [Tx.Pipeline], and its end mid-read reaches the server through the
+// cancellation watched there. Stopping here would still owe the drain to
+// ReadyForQuery — the whole pipeline, since parts run with no row limit — so
+// checking buys no earlier stop. See the "ctx guards the start" section on
+// [Tx.Pipeline].
+func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchBytes int, fn func(int, sluice.Batch[Row]) bool) error {
 	// A panic in fn would otherwise abandon the connection mid-pipeline with
 	// broken still nil — and the next query would read this pipeline's
 	// leftover rows as its own. The same rule as query.run's deferred resync
@@ -228,7 +267,7 @@ func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Bat
 	deliver := func(b sluice.Batch[Row]) bool { return fn(part, b) }
 	emit := func() bool {
 		var ok bool
-		items, ok = c.emitRows(rows, items, deliver)
+		items, ok = c.emitRows(ctx, rows, items, deliver)
 		return ok
 	}
 
@@ -254,7 +293,7 @@ func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Bat
 				// The connection's per-query scratch, exactly as query.run
 				// uses it: parts run one after another, and each part's rows
 				// are delivered before the next one's description arrives.
-				rows, items = c.beginResult(desc, batchRows)
+				rows, items = c.beginResult(desc, batchRows, batchBytes)
 			}
 
 		case pgwire.BackendDataRow:
@@ -328,6 +367,10 @@ func (c *Conn) readPipeline(parts []Part, batchRows int, fn func(int, sluice.Bat
 			// This is where a SET's announcement lands, and dropping it is
 			// what makes Conn.Parameter report the opening state forever.
 			if err := c.recordParameter(m.Body); err != nil {
+				if c.broken != nil {
+					// An encoding nobody asked for: nothing left to drain.
+					return err
+				}
 				return c.abortPipeline(err)
 			}
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"syscall"
+
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // Linux names (include/uapi/linux/udp.h), spelled here because package
@@ -26,8 +28,9 @@ const cmsgLenSize = syscall.SizeofCmsghdr - 8
 // packet. ok is false when pc is not a socket this can drive, or when the
 // kernel refused the option itself (an older kernel, a device without
 // checksum offload): the caller then falls back to one write per datagram.
-// oob is scratch for the control message, returned grown for reuse.
-func writeSegments(pc net.PacketConn, b []byte, seg int, to net.Addr, oob []byte) (scratch []byte, ok bool, err error) {
+// ecn, when not Not-ECT, marks every segment (§13.4.2). oob is scratch for
+// the control messages, returned grown for reuse.
+func writeSegments(pc net.PacketConn, b []byte, seg int, to net.Addr, ecn uint8, oob []byte) (scratch []byte, ok bool, err error) {
 	ua, isUDP := to.(*net.UDPAddr)
 	if !isUDP {
 		return oob, false, nil
@@ -44,7 +47,11 @@ func writeSegments(pc net.PacketConn, b []byte, seg int, to net.Addr, oob []byte
 		return oob, false, nil
 	}
 	oob = appendSegmentSize(oob, seg)
-	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ua.AddrPort())
+	ap := ua.AddrPort()
+	if ecn != ecnNotECT {
+		oob = udp.AppendECN(oob, ecn, ap.Addr())
+	}
+	_, _, err = uc.WriteMsgUDPAddrPort(b, oob, ap)
 	if refusedSegmentation(err) {
 		return oob, false, nil
 	}

@@ -34,10 +34,25 @@ func beParameterStatus(name, val string) []byte {
 	return frame(pgwire.BackendParameterStatus, name+"\x00"+val+"\x00")
 }
 
-func beBackendKeyData() []byte {
+// testSecret is the four-byte secret beBackendKeyData sends: 5678, big-endian.
+const testSecret = "\x00\x00\x16\x2e"
+
+func beBackendKeyData() []byte { return beBackendKeyDataSecret(testSecret) }
+
+func beBackendKeyDataSecret(secret string) []byte {
 	body := binary.BigEndian.AppendUint32(nil, 1234)
-	body = binary.BigEndian.AppendUint32(body, 5678)
-	return frame(pgwire.BackendBackendKeyData, string(body))
+	return frame(pgwire.BackendBackendKeyData, string(body)+secret)
+}
+
+// beNegotiate is a NegotiateProtocolVersion offering 3.minor and declining the
+// options named. The version goes as a whole word, as a real server sends it.
+func beNegotiate(minor uint32, options ...string) []byte {
+	body := binary.BigEndian.AppendUint32(nil, 3<<16|minor)
+	body = binary.BigEndian.AppendUint32(body, uint32(len(options)))
+	for _, o := range options {
+		body = append(append(body, o...), 0)
+	}
+	return frame(pgwire.BackendNegotiateProtocolVersion, string(body))
 }
 
 // beReady is the tail every successful startup ends with.
@@ -98,7 +113,7 @@ func TestStartupTrust(t *testing.T) {
 	script = append(script, beReady()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn, err := Startup(srv, StartupConfig{User: "orders", Database: "shop"})
+	conn, err := startup(srv, Config{User: "orders", Database: "shop"})
 	if err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
@@ -113,8 +128,8 @@ func TestStartupTrust(t *testing.T) {
 	if len(types) != 0 {
 		t.Errorf("client sent %q after the startup packet, want nothing", types)
 	}
-	if v := binary.BigEndian.Uint32(startup[:4]); v != startupVersion {
-		t.Errorf("protocol version = %#x, want %#x", v, startupVersion)
+	if v := ProtocolVersion(binary.BigEndian.Uint32(startup[:4])); v != Protocol32 {
+		t.Errorf("protocol version = %v, want %v, the default", v, Protocol32)
 	}
 	want := "user\x00orders\x00database\x00shop\x00client_encoding\x00UTF8\x00\x00"
 	if got := string(startup[4:]); got != want {
@@ -135,17 +150,17 @@ func TestStartupRefusesAnEncodingItDidNotAskFor(t *testing.T) {
 	}
 
 	srv := &fakeServer{responses: [][]byte{script("LATIN1")}}
-	if _, err := Startup(srv, StartupConfig{User: "orders"}); err == nil || !strings.Contains(err.Error(), "LATIN1") {
+	if _, err := startup(srv, Config{User: "orders"}); err == nil || !strings.Contains(err.Error(), "LATIN1") {
 		t.Errorf("Startup with a LATIN1 session = %v, want the encoding refused", err)
 	}
 
 	srv = &fakeServer{responses: [][]byte{script("LATIN1")}}
-	if _, err := Startup(srv, StartupConfig{User: "orders", Params: map[string]string{"client_encoding": "LATIN1"}}); err != nil {
+	if _, err := startup(srv, Config{User: "orders", Params: map[string]string{"client_encoding": "LATIN1"}}); err != nil {
 		t.Errorf("Startup with client_encoding chosen by the caller = %v, want it accepted", err)
 	}
 
 	srv = &fakeServer{responses: [][]byte{script("utf8")}}
-	if _, err := Startup(srv, StartupConfig{User: "orders"}); err != nil {
+	if _, err := startup(srv, Config{User: "orders"}); err != nil {
 		t.Errorf("Startup with a lower-case utf8 report = %v, want it accepted", err)
 	}
 }
@@ -163,7 +178,7 @@ func TestStartupRefusesAMalformedReadyForQuery(t *testing.T) {
 		script = append(script, beAuth(authOK, "")...)
 		script = append(script, frame(pgwire.BackendReadyForQuery, body)...)
 		srv := &fakeServer{responses: [][]byte{script}}
-		if _, err := Startup(srv, StartupConfig{User: "orders", Database: "shop"}); !errors.Is(err, ErrProtocol) {
+		if _, err := startup(srv, Config{User: "orders", Database: "shop"}); !errors.Is(err, ErrProtocol) {
 			t.Errorf("%s: Startup = %v, want ErrProtocol", name, err)
 		}
 	}
@@ -204,7 +219,7 @@ func TestStartupSCRAM(t *testing.T) {
 		tail,
 	}}
 
-	conn, err := Startup(srv, StartupConfig{User: "orders", Password: password})
+	conn, err := startup(srv, Config{User: "orders", Password: password})
 	if err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
@@ -259,7 +274,7 @@ func TestStartupSCRAMRefusesAWrongServerSignature(t *testing.T) {
 		append(beAuth(authSASLFinal, "v="+bogus), beReady()...),
 	}}
 
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 	if err == nil {
 		t.Fatal("Startup accepted a server that does not know the password")
 	}
@@ -284,7 +299,7 @@ func TestStartupRefusesAnUnfinishedSCRAMExchange(t *testing.T) {
 		append(beAuth(authOK, ""), beReady()...), // no SASLFinal
 	}}
 
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 	if err == nil {
 		t.Fatal("Startup accepted a SCRAM exchange that never completed")
 	}
@@ -299,7 +314,7 @@ func TestStartupCleartextPassword(t *testing.T) {
 		append(beAuth(authOK, ""), beReady()...),
 	}}
 
-	if _, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil", AllowCleartextPassword: true}); err != nil {
+	if _, err := startup(srv, Config{User: "orders", Password: "pencil", AllowCleartextPassword: true}); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
 	_, types, bodies := clientTraffic(t, srv.sent.Bytes())
@@ -313,9 +328,33 @@ func TestStartupCleartextPassword(t *testing.T) {
 
 func TestStartupCleartextWithoutAPassword(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{beAuth(authCleartextPassword, "")}}
-	_, err := Startup(srv, StartupConfig{User: "orders", AllowCleartextPassword: true})
+	_, err := startup(srv, Config{User: "orders", AllowCleartextPassword: true})
 	if !errors.Is(err, ErrAuth) {
 		t.Errorf("error = %v, want ErrAuth rather than a password sent as an empty string", err)
+	}
+}
+
+// MaxMessage outside what a server can ever need is a configuration error,
+// refused before the first byte like startupBody's other refusals: below the
+// handshake's own bound, or above the 1 GiB PostgreSQL can build. The two
+// bounds themselves are accepted.
+func TestStartupRefusesAMaxMessageOutOfBounds(t *testing.T) {
+	for _, n := range []int{-1, 1, maxStartupMessage - 1, maxMaxMessage + 1} {
+		srv := &fakeServer{}
+		_, err := startup(srv, Config{User: "orders", MaxMessage: n})
+		if err == nil || !strings.Contains(err.Error(), "MaxMessage") {
+			t.Errorf("MaxMessage %d: error = %v, want a refusal naming the field", n, err)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("MaxMessage %d: %d bytes sent before the refusal", n, srv.sent.Len())
+		}
+	}
+	for _, n := range []int{0, maxStartupMessage, maxMaxMessage} {
+		srv := &fakeServer{}
+		_, err := startup(srv, Config{User: "orders", MaxMessage: n})
+		if err != nil && strings.Contains(err.Error(), "MaxMessage") {
+			t.Errorf("MaxMessage %d: refused with %v, want it accepted", n, err)
+		}
 	}
 }
 
@@ -325,7 +364,7 @@ func TestStartupCleartextWithoutAPassword(t *testing.T) {
 // that happens before the credential is touched.
 func TestStartupRefusesCleartextByDefault(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{beAuth(authCleartextPassword, "")}}
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("error = %v, want ErrAuth", err)
 	}
@@ -345,7 +384,7 @@ func TestStartupRefusesCleartextByDefault(t *testing.T) {
 // rather than a change.
 func TestStartupRefusesMD5(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{beAuth(authMD5Password, "salt")}}
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 	if !errors.Is(err, ErrAuthUnsupported) {
 		t.Fatalf("error = %v, want ErrAuthUnsupported", err)
 	}
@@ -373,7 +412,7 @@ func TestStartupRefusesAnUnusableMechanismList(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{beAuth(authSASL, tc.list)}}
-			_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+			_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 			if err == nil {
 				t.Fatal("Startup accepted it")
 			}
@@ -389,7 +428,7 @@ func TestStartupRefusesAnUnusableMechanismList(t *testing.T) {
 
 func TestStartupRefusesGSSAPI(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{beAuth(authGSS, "")}}
-	_, err := Startup(srv, StartupConfig{User: "orders"})
+	_, err := startup(srv, Config{User: "orders"})
 	if !errors.Is(err, ErrAuthUnsupported) {
 		t.Errorf("error = %v, want ErrAuthUnsupported", err)
 	}
@@ -404,7 +443,7 @@ func TestStartupServerRefusal(t *testing.T) {
 		beErrorResponse("28P01", "password authentication failed for user \"orders\""),
 	}}
 
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "wrong", AllowCleartextPassword: true})
+	_, err := startup(srv, Config{User: "orders", Password: "wrong", AllowCleartextPassword: true})
 	if err == nil {
 		t.Fatal("Startup accepted a refused connection")
 	}
@@ -418,6 +457,11 @@ func TestStartupServerRefusal(t *testing.T) {
 	if !errors.Is(err, ErrConnBroken) {
 		t.Errorf("error = %v, want it to also report the connection as unusable", err)
 	}
+	// The text is the server's refusal. Read as "out of sync", a wrong
+	// password sends whoever sees it looking for a protocol fault.
+	if got := err.Error(); !strings.HasPrefix(got, "postgres: ERROR 28P01: password authentication failed") {
+		t.Errorf("error = %q, want it to read as the server's refusal", got)
+	}
 }
 
 // A server that closes the socket during startup usually refused the
@@ -425,7 +469,7 @@ func TestStartupServerRefusal(t *testing.T) {
 // and said nothing. That must not read as a clean end of stream.
 func TestStartupTruncated(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{}}
-	_, err := Startup(srv, StartupConfig{User: "orders"})
+	_, err := startup(srv, Config{User: "orders"})
 	if err == nil {
 		t.Fatal("Startup accepted a connection the server hung up on")
 	}
@@ -437,7 +481,7 @@ func TestStartupTruncated(t *testing.T) {
 // The startup packet is built in a fixed order, so one configuration always
 // produces one packet. Ranging a map here would make it differ between runs.
 func TestStartupBodyIsDeterministic(t *testing.T) {
-	cfg := StartupConfig{
+	cfg := Config{
 		User:     "orders",
 		Database: "shop",
 		Params: map[string]string{
@@ -468,7 +512,7 @@ func TestStartupBodyIsDeterministic(t *testing.T) {
 }
 
 func TestStartupBodyOverridesClientEncoding(t *testing.T) {
-	b, err := startupBody(StartupConfig{
+	b, err := startupBody(Config{
 		User:   "orders",
 		Params: map[string]string{"client_encoding": "LATIN1"},
 	})
@@ -486,39 +530,44 @@ func TestStartupBodyOverridesClientEncoding(t *testing.T) {
 func TestStartupBodyRefusals(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  StartupConfig
+		cfg  Config
 		want string
 	}{
-		{"no user", StartupConfig{}, "User is empty"},
+		{"no user", Config{}, "User is empty"},
 		{
 			"a role smuggling extra parameters through a NUL",
-			StartupConfig{User: "app\x00options\x00-c search_path=evil"},
+			Config{User: "app\x00options\x00-c search_path=evil"},
 			"NUL byte",
 		},
 		{
 			"a parameter name smuggling another parameter",
-			StartupConfig{User: "orders", Params: map[string]string{"a\x00b": "c"}},
+			Config{User: "orders", Params: map[string]string{"a\x00b": "c"}},
 			"NUL byte",
 		},
 		{
 			"a parameter value smuggling another parameter",
-			StartupConfig{User: "orders", Params: map[string]string{"application_name": "a\x00b"}},
+			Config{User: "orders", Params: map[string]string{"application_name": "a\x00b"}},
 			"NUL byte",
 		},
 		{
 			"the role set twice, in two places that could disagree",
-			StartupConfig{User: "orders", Params: map[string]string{"user": "someone_else"}},
-			"StartupConfig.User",
+			Config{User: "orders", Params: map[string]string{"user": "someone_else"}},
+			"Config.User",
 		},
 		{
 			"a client_encoding smuggling another parameter",
-			StartupConfig{User: "orders", Params: map[string]string{"client_encoding": "UTF8\x00x\x00y"}},
+			Config{User: "orders", Params: map[string]string{"client_encoding": "UTF8\x00x\x00y"}},
 			"NUL byte",
 		},
 		{
 			"the database set twice",
-			StartupConfig{User: "orders", Params: map[string]string{"database": "other"}},
-			"StartupConfig.Database",
+			Config{User: "orders", Params: map[string]string{"database": "other"}},
+			"Config.Database",
+		},
+		{
+			"a replication connection, whose COPY BOTH no drain here reads",
+			Config{User: "orders", Params: map[string]string{"replication": "database"}},
+			`Params["replication"]`,
 		},
 	}
 	for _, tc := range tests {
@@ -538,7 +587,7 @@ func TestStartupBodyRefusals(t *testing.T) {
 // after the role. Sending "database" with an empty value would instead ask for
 // a database whose name is the empty string.
 func TestStartupBodyOmitsAnEmptyDatabase(t *testing.T) {
-	b, err := startupBody(StartupConfig{User: "orders"})
+	b, err := startupBody(Config{User: "orders"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +615,7 @@ func TestStartupIgnoresANoticeDuringTheHandshake(t *testing.T) {
 	script = append(script, beReady()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	if _, err := Startup(srv, StartupConfig{User: "orders"}); err != nil {
+	if _, err := startup(srv, Config{User: "orders"}); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
 }
@@ -615,7 +664,7 @@ func TestStartupRefusesMalformedMessages(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{tc.script}}
-			_, err := Startup(srv, StartupConfig{User: "orders"})
+			_, err := startup(srv, Config{User: "orders"})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("error = %v, want %v", err, tc.want)
 			}
@@ -635,7 +684,7 @@ func TestStartupRefusesMalformedMessages(t *testing.T) {
 func TestStartupReportsWhichStepFailedToSend(t *testing.T) {
 	t.Run("the startup packet", func(t *testing.T) {
 		srv := &fakeServer{writeErr: errors.New("broken pipe")}
-		_, err := Startup(srv, StartupConfig{User: "orders"})
+		_, err := startup(srv, Config{User: "orders"})
 		if err == nil || !strings.Contains(err.Error(), "sending the startup packet") {
 			t.Fatalf("error = %v, want it to name the startup packet", err)
 		}
@@ -650,7 +699,7 @@ func TestStartupReportsWhichStepFailedToSend(t *testing.T) {
 		srv := &failOnNthWrite{fakeServer: fakeServer{
 			responses: [][]byte{beAuth(authCleartextPassword, "")},
 		}, after: 1}
-		_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil", AllowCleartextPassword: true})
+		_, err := startup(srv, Config{User: "orders", Password: "pencil", AllowCleartextPassword: true})
 		if err == nil || !strings.Contains(err.Error(), "sending the password") {
 			t.Fatalf("error = %v, want it to name the password step", err)
 		}
@@ -681,7 +730,7 @@ func TestStartupSCRAMRefusesABadServerFirstMessage(t *testing.T) {
 		beAuth(authSASL, mechSCRAMSHA256+"\x00\x00"),
 		beAuth(authSASLContinue, "r=notthisclientsnonce,s="+rfcSalt+",i=4096"),
 	}}
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("error = %v, want ErrAuth", err)
 	}
@@ -700,7 +749,7 @@ func TestStartupSCRAMRefusesAnUnreadableFinalMessage(t *testing.T) {
 				beAuth(authSASLContinue, "r="+clientNonce+"ServerHalf,s="+rfcSalt+",i=4096"),
 				beAuth(authSASLFinal, final),
 			}}
-			_, err := Startup(srv, StartupConfig{User: "orders", Password: "pencil"})
+			_, err := startup(srv, Config{User: "orders", Password: "pencil"})
 			if !errors.Is(err, ErrAuth) {
 				t.Errorf("error = %v, want ErrAuth", err)
 			}
@@ -712,7 +761,7 @@ func TestStartupSCRAMRefusesAnUnreadableFinalMessage(t *testing.T) {
 // the transport is closed rather than left half-opened.
 func TestStartupRefusesABadConfigWithoutWriting(t *testing.T) {
 	srv := &fakeServer{}
-	_, err := Startup(srv, StartupConfig{User: "orders", Database: "shop\x00evil"})
+	_, err := startup(srv, Config{User: "orders", Database: "shop\x00evil"})
 	if err == nil || !strings.Contains(err.Error(), "NUL byte") {
 		t.Fatalf("error = %v, want the NUL refused", err)
 	}
@@ -734,7 +783,7 @@ func TestStartupBoundsWhatAnUnprovenServerCanSend(t *testing.T) {
 	oversized := frame(pgwire.BackendParameterStatus, strings.Repeat("x", maxStartupMessage))
 
 	srv := &fakeServer{responses: [][]byte{append(beAuth(authOK, ""), oversized...)}}
-	_, err := Startup(srv, StartupConfig{User: "orders"})
+	_, err := startup(srv, Config{User: "orders"})
 	if !errors.Is(err, ErrMessageTooLarge) {
 		t.Fatalf("error = %v, want ErrMessageTooLarge", err)
 	}
@@ -747,7 +796,7 @@ func TestStartupBoundsWhatAnUnprovenServerCanSend(t *testing.T) {
 // costs a real workload nothing.
 func TestStartupRestoresTheOrdinaryLimit(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{append(beAuth(authOK, ""), beReady()...)}}
-	conn, err := Startup(srv, StartupConfig{User: "orders"})
+	conn, err := startup(srv, Config{User: "orders"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -775,7 +824,7 @@ func TestParameterTracksAMidSessionChange(t *testing.T) {
 		result,
 		append(beParameterStatus("TimeZone", "Etc/UTC"), beReadyForQuery()...),
 	}}
-	conn, err := Startup(srv, StartupConfig{User: "orders"})
+	conn, err := startup(srv, Config{User: "orders"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +856,7 @@ func TestStartupBoundsTheParameterMap(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	_, err := Startup(srv, StartupConfig{User: "orders"})
+	_, err := startup(srv, Config{User: "orders"})
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
 	}
@@ -825,7 +874,7 @@ func TestStartupBoundsAParametersSize(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	_, err := Startup(srv, StartupConfig{User: "orders"})
+	_, err := startup(srv, Config{User: "orders"})
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
 	}
@@ -838,12 +887,180 @@ func TestStartupBoundsAParametersSize(t *testing.T) {
 // with a prefix, while the caller believes the whole password was sent.
 func TestStartupRefusesANULInThePassword(t *testing.T) {
 	srv := &fakeServer{}
-	_, err := Startup(srv, StartupConfig{User: "orders", Password: "pen\x00cil"})
+	_, err := startup(srv, Config{User: "orders", Password: "pen\x00cil"})
 	if err == nil || !strings.Contains(err.Error(), "NUL byte") {
 		t.Fatalf("error = %v, want the NUL refused", err)
 	}
 	// And the password itself must not travel into the error text.
 	if strings.Contains(err.Error(), "pen") {
 		t.Errorf("the error quotes the password: %v", err)
+	}
+}
+
+// A server configured for trust — or a peer standing in for the server —
+// declares the connection authenticated without asking for anything. The zero
+// value accepts that (TestStartupTrust); RequireAuth refuses it at the exit of
+// the exchange, whether AuthenticationOk was sent or skipped altogether.
+func TestStartupRequireAuthRefusesAnExchangeThatAskedNothing(t *testing.T) {
+	trust := append(beAuth(authOK, ""), beReady()...)
+	for name, script := range map[string][]byte{
+		"AuthenticationOk then ready":    trust,
+		"ready without AuthenticationOk": beReady(),
+	} {
+		srv := &fakeServer{responses: [][]byte{script}}
+		_, err := startup(srv, Config{User: "orders", Password: "pencil", RequireAuth: true})
+		if !errors.Is(err, ErrAuth) {
+			t.Fatalf("%s: error = %v, want ErrAuth", name, err)
+		}
+		if !strings.Contains(err.Error(), "RequireAuth") {
+			t.Errorf("%s: error = %v, want it to name the field", name, err)
+		}
+		if !srv.closed {
+			t.Errorf("%s: connection left open after the refusal", name)
+		}
+	}
+}
+
+// A server older than 18 answers a 3.2 request with NegotiateProtocolVersion
+// offering 3.0; the connection continues under 3.0, four-byte key and all.
+func TestStartupFollowsANegotiatedDowngrade(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
+	}}
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.CancelKey().Secret; got != testSecret {
+		t.Errorf("CancelKey().Secret = %x, want %x", got, testSecret)
+	}
+	if got := conn.Protocol(); got != Protocol30 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol30)
+	}
+}
+
+// Without MaxProtocol the startup packet asks for 3.2 (TestStartupTrust),
+// and a server that does not negotiate leaves the connection under it.
+func TestStartupKeepsProtocol32WithoutANegotiation(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{append(beAuth(0, ""), beReady()...)}}
+	conn, err := startup(srv, Config{User: "u"})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.Protocol(); got != Protocol32 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol32)
+	}
+}
+
+// MaxProtocol 3.0 is what the startup packet carries, for a pooler that
+// refuses a newer version instead of negotiating.
+func TestStartupAsksForTheMaxProtocol(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{append(beAuth(0, ""), beReady()...)}}
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol30})
+	if err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+	if got := conn.Protocol(); got != Protocol30 {
+		t.Errorf("Protocol() = %v, want %v", got, Protocol30)
+	}
+	startup, _, _ := clientTraffic(t, srv.sent.Bytes())
+	if v := ProtocolVersion(binary.BigEndian.Uint32(startup[:4])); v != Protocol30 {
+		t.Errorf("startup packet asks for %v, want %v", v, Protocol30)
+	}
+}
+
+// A server that negotiates below MinProtocol is closed on before it
+// authenticates anything, with the named error.
+func TestStartupRefusesANegotiationBelowMinProtocol(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0), append(beAuth(0, ""), beReady()...)...),
+	}}
+	_, err := startup(srv, Config{User: "u", MinProtocol: Protocol32})
+	if !errors.Is(err, ErrProtocolVersion) || !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("Startup returned %v, want ErrProtocolVersion and ErrConnBroken", err)
+	}
+	if !strings.Contains(err.Error(), "3.0") || !strings.Contains(err.Error(), "3.2") {
+		t.Errorf("error %q does not name both versions", err)
+	}
+	if !srv.closed {
+		t.Error("connection left open after the refusal")
+	}
+}
+
+func TestProtocolVersionString(t *testing.T) {
+	for v, want := range map[ProtocolVersion]string{Protocol30: "3.0", Protocol32: "3.2", 0: "0.0", 4<<16 | 17: "4.17"} {
+		if got := v.String(); got != want {
+			t.Errorf("ProtocolVersion(%#x).String() = %q, want %q", uint32(v), got, want)
+		}
+	}
+}
+
+// A protocol option the server does not recognise is declined, not fatal: it
+// is a request the caller made knowing the server may say no.
+func TestStartupToleratesADeclinedProtocolOption(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beNegotiate(0, "_pq_.sluice_test"), append(beAuth(0, ""), beReady()...)...),
+	}}
+	cfg := Config{User: "u", Params: map[string]string{"_pq_.sluice_test": "on"}}
+	if _, err := startup(srv, cfg); err != nil {
+		t.Fatalf("Startup returned %v", err)
+	}
+}
+
+// Every NegotiateProtocolVersion a server could not have meant breaks the
+// connection before authentication goes any further.
+func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		max    ProtocolVersion
+		params map[string]string
+		msgs   []byte
+	}{
+		{"above the version asked", Protocol30, nil, beNegotiate(2)},
+		{"to 3.1", Protocol32, nil, beNegotiate(1)},
+		{"the minor alone, without the major", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x00\x00\x00\x00\x00\x00\x00")},
+		{"another major", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x02\x00\x00\x00\x00\x00\x00")},
+		{"declining nothing", Protocol32, nil, beNegotiate(2)},
+		{"an option never sent", Protocol32, nil, beNegotiate(0, "_pq_.other")},
+		{"an option without the prefix", Protocol32, map[string]string{"search_path": "x"}, beNegotiate(0, "search_path")},
+		{"a count the body cannot hold", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\xff\xff\xff\xff")},
+		{"a name without its terminator", Protocol32, map[string]string{"_pq_.a": "1"}, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x01_pq_.a")},
+		{"bytes after the last option", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x00x")},
+		{"a truncated body", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00")},
+		{"sent twice", Protocol32, nil, append(beNegotiate(0), beNegotiate(0)...)},
+		{"after authentication began", Protocol32, nil, append(beAuth(0, ""), beNegotiate(0)...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := &fakeServer{responses: [][]byte{append(tc.msgs, append(beAuth(0, ""), beReady()...)...)}}
+			_, err := startup(srv, Config{User: "u", MaxProtocol: tc.max, Params: tc.params})
+			if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrConnBroken) {
+				t.Fatalf("Startup returned %v, want ErrProtocol and ErrConnBroken", err)
+			}
+		})
+	}
+}
+
+// Only the versions this package speaks may be asked for or required, a
+// minimum above the maximum satisfies nothing, and each is refused before
+// the server hears anything.
+func TestStartupRefusesAnUnspokenProtocolVersion(t *testing.T) {
+	for _, cfg := range []Config{
+		{MaxProtocol: 3<<16 | 1},
+		{MaxProtocol: 3<<16 | 3},
+		{MaxProtocol: 2 << 16},
+		{MaxProtocol: 4<<16 | 2},
+		{MaxProtocol: 2},
+		{MinProtocol: 3<<16 | 1},
+		{MinProtocol: 3<<16 | 3},
+		{MinProtocol: Protocol32, MaxProtocol: Protocol30},
+	} {
+		cfg.User = "u"
+		srv := &fakeServer{}
+		if _, err := startup(srv, cfg); err == nil {
+			t.Errorf("Startup accepted MinProtocol %v, MaxProtocol %v", cfg.MinProtocol, cfg.MaxProtocol)
+		}
+		if srv.sent.Len() != 0 {
+			t.Errorf("MinProtocol %v, MaxProtocol %v: % x went to the server", cfg.MinProtocol, cfg.MaxProtocol, srv.sent.Bytes())
+		}
 	}
 }

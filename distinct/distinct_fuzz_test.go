@@ -14,7 +14,7 @@ import (
 // implementation trades a map and a ring for that simplicity, and the trade is
 // where a subtle divergence would hide.
 func distinctReference(src []int, window int, policy sluice.Overflow) []int {
-	if window <= 0 {
+	if window == 0 {
 		return slices.Clone(src)
 	}
 	var out []int
@@ -59,8 +59,8 @@ func FuzzDistinctMatchesReference(f *testing.F) {
 		src := []int{a, b, c, d, e}
 
 		// Windows around the input size, so eviction happens in some runs and
-		// not others, plus the degenerate ones.
-		for _, window := range []int{-1, 0, 1, 2, 3, 5, 8} {
+		// not others, plus the degenerate one.
+		for _, window := range []int{0, 1, 2, 3, 5, 8} {
 			for _, policy := range []sluice.Overflow{sluice.DropOldest, sluice.DropNewest} {
 				// sluice.Batch size 2 so duplicates straddle batch boundaries: the
 				// window has to survive them, which is the state a per-batch

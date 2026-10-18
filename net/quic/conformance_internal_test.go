@@ -27,7 +27,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	var peer ackTracker
 	peer.record(1, now)
 	f := ackFrameFor(t, &peer)
-	if _, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{}); err != nil {
+	if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.lossTime.IsZero() {
@@ -35,7 +35,7 @@ func TestDuplicateAckKeepsTheLossTimerArmed(t *testing.T) {
 	}
 
 	// The same ACK again: no news, and the deadline must survive it.
-	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now.Add(time.Millisecond), f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHandshakeDoneInAnInitialIsRefused(t *testing.T) {
 	}
 
 	payload := AppendVarint(nil, frameHandshakeDone)
-	_, err := c.frames(spaceInitial, payload, time.Now())
+	err := c.frames(spaceInitial, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportProtocolViolation {
 		t.Fatalf("HANDSHAKE_DONE at the Initial level returned %v, want PROTOCOL_VIOLATION", err)
@@ -234,12 +234,13 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	}
 	c.mu.Lock()
 	c.spaces[spaceApplication].sealer = sealer
+	c.peerMaxStreamsUni = 1 // the grant the handshake would have brought
 	c.mu.Unlock()
 
 	// Stream 3 is, from this client's side, the peer's unidirectional
 	// stream: this end never sends on it, so STOP_SENDING cannot name it.
-	payload := appendFrame(nil, frameStopSending, 3, 0)
-	_, err = c.frames(spaceApplication, payload, time.Now())
+	payload := appendFrame(nil, FrameStopSending, 3, 0)
+	err = c.frames(spaceApplication, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportStreamState {
 		t.Errorf("STOP_SENDING on the peer's uni stream returned %v, want STREAM_STATE_ERROR", err)
@@ -248,13 +249,15 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	// Stream 2 is this client's own unidirectional stream: the peer never
 	// sends on it, so STREAM frames cannot name it either — even once the
 	// bookkeeping for it exists.
-	_ = c.Stream(2)
+	if _, err := c.Stream(2); err != nil {
+		t.Fatal(err)
+	}
 	frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
 	frame = AppendVarint(frame, 2)
 	frame = AppendVarint(frame, 0)
 	frame = AppendVarint(frame, 3)
 	frame = append(frame, "abc"...)
-	_, err = c.frames(spaceApplication, frame, time.Now())
+	err = c.frames(spaceApplication, frame, time.Now())
 	if !errors.As(err, &te) || te.code != transportStreamState {
 		t.Errorf("STREAM on this end's own uni stream returned %v, want STREAM_STATE_ERROR", err)
 	}
@@ -267,7 +270,7 @@ func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	params := DefaultParameters()
 	params.MaxIdleTimeout = 100
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()
 
 	c.mu.Lock()
@@ -283,11 +286,11 @@ func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	}
 }
 
-// RFC 9000 §14.1-14.2: without path MTU discovery, nothing proves the path
-// carries more than the 1200 bytes the protocol guarantees — whatever the
-// peer's max_udp_payload_size announces, datagrams stay at 1200 until
-// DPLPMTUD exists.
-func TestMaxDatagramStaysAt1200WithoutPMTUD(t *testing.T) {
+// RFC 9000 §14.1-14.2: the peer's max_udp_payload_size says what it reads,
+// not what the path carries — datagrams stay at 1200 until a DPLPMTUD probe
+// of that size is acknowledged (pmtu_internal_test.go), never on the
+// announcement alone.
+func TestMaxDatagramIgnoresPeerAnnouncementAlone(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	c := newConn(pcA, pcB.LocalAddr(), []byte("server00"), []byte("client00"), true, DefaultParameters())
 	defer c.Close()
@@ -305,7 +308,7 @@ func TestMaxDatagramStaysAt1200WithoutPMTUD(t *testing.T) {
 	got := c.maxDatagram
 	c.mu.Unlock()
 	if got != 1200 {
-		t.Errorf("maxDatagram = %d after the peer announced 1452; §14.2 caps it at 1200 until PMTUD exists", got)
+		t.Errorf("maxDatagram = %d on the peer's announcement alone; §14.2 wants a probe acknowledged first", got)
 	}
 }
 
@@ -330,7 +333,7 @@ func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 
 	payload := AppendVarint(nil, framePathChallenge)
 	payload = append(payload, 1, 2, 3, 4, 5, 6, 7, 8)
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -368,13 +371,13 @@ func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 func TestCongestionEventGatesOnTheLatestLoss(t *testing.T) {
 	cc := newNewReno(1200)
 	now := time.Now()
-	cc.onSent(4800)
-	cc.onLost(1200, now.Add(-time.Second), now.Add(-500*time.Millisecond))
+	cc.onSent(now, 4800)
+	cc.onLost(lossEvent{now: now.Add(-500 * time.Millisecond), latestSent: now.Add(-time.Second), bytes: 1200})
 	before := cc.cwnd
 
 	// A batch mixing a straggler from before recovery with a loss from
 	// after it: the latest is what decides, and it says new epoch.
-	cc.onLost(1200, now, now)
+	cc.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
 	if cc.cwnd >= before {
 		t.Errorf("cwnd = %d after a post-recovery loss, want below %d — the straggler shielded the batch", cc.cwnd, before)
 	}
@@ -395,7 +398,7 @@ func TestProcessAckReportsTheLatestLossSendTime(t *testing.T) {
 	var peer ackTracker
 	peer.record(4, now)
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,7 +463,7 @@ func TestClientAntiDeadlockPTOStaysArmed(t *testing.T) {
 // already about to answer, sooner.
 func TestPTOIsSuppressedWhileALossTimerIsArmed(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -496,14 +499,14 @@ func TestCryptoObeysTheCongestionWindow(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	c.cc.cwnd = 2000
+	c.reno().cwnd = 2000
 	c.mu.Unlock()
 
 	if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 8192)); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	inFlight, cwnd := c.cc.inFlight, c.cc.cwnd
+	inFlight, cwnd := c.reno().inFlight, c.reno().cwnd
 	queued := len(c.spaces[spaceInitial].retrans)
 	c.mu.Unlock()
 	if inFlight > cwnd+c.maxDatagram {
@@ -580,8 +583,8 @@ func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 
 	c.mu.Lock()
 	c.spaces[spaceApplication].sealer = sealer
-	c.cc.cwnd = 1200
-	c.cc.inFlight = 1200 // the window is spent
+	c.reno().cwnd = 1200
+	c.reno().inFlight = 1200 // the window is spent
 	c.control = appendFrame(c.control, frameRetireConnectionID, 0)
 	c.flushControlLocked()
 	deferred := len(c.control)
@@ -604,7 +607,7 @@ func TestControlFramesObeyTheCongestionWindowExceptGrants(t *testing.T) {
 
 	// The window reopens: the deferred frame goes on the next flush.
 	c.mu.Lock()
-	c.cc.inFlight = 0
+	c.reno().inFlight = 0
 	c.flushControlLocked()
 	controlLeft = len(c.control)
 	c.mu.Unlock()
@@ -681,8 +684,11 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 	copy(reset[len(reset)-16:], token[:])
 
 	err := c.receive(reset, pcB.LocalAddr())
-	if err == nil || !errors.Is(err, ErrQUIC) {
-		t.Fatalf("receive returned %v, want the stateless-reset teardown error", err)
+	if !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("receive returned %v, want ErrStatelessReset", err)
+	}
+	if err := c.Err(); !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("Err = %v, want ErrStatelessReset", err)
 	}
 	select {
 	case <-c.closed:
@@ -699,5 +705,248 @@ func TestStatelessResetIsDetectedByItsToken(t *testing.T) {
 	reset[len(reset)-1] ^= 0xff
 	if err := c2.receive(reset, pcB.LocalAddr()); err != nil {
 		t.Fatalf("a near-miss token ended the connection: %v", err)
+	}
+}
+
+// RFC 9002 §7.6: persistent congestion is two ack-eliciting losses further
+// apart than three probe intervals with nothing acknowledged between them,
+// after a round-trip sample — established by an ACK, never by a count of
+// probe timeouts. The window then collapses to its minimum below the
+// slow-start threshold the loss event just halved.
+func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
+	run := func(t *testing.T, spacing time.Duration, sampled bool) (cwnd, ssthresh, initial int, collapses uint64) {
+		t.Helper()
+		pcA, pcB := newLoopbackPair(t)
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		defer c.Close()
+		if err := c.installInitial([]byte("dcid0000")); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		c.mu.Lock()
+		initial = c.reno().cwnd
+		if sampled {
+			// pto = 100ms + 1ms + 25ms (the peer's default max_ack_delay,
+			// counted whatever the space, §7.6.1): the duration is 378ms.
+			// Sampled before every send (B.8).
+			c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
+		}
+		sp := &c.spaces[spaceInitial]
+		for pn := range uint64(5) {
+			sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-time.Second + time.Duration(pn)*spacing), size: 1200, ackEliciting: true, payload: []byte{byte(pn)}})
+			c.cc.onSent(now, 1200)
+		}
+		sp.sent.record(sentPacket{pn: 5, sentAt: now, ackEliciting: true}) // sized 0: its ACK grows nothing
+		sp.nextPN = 6
+		c.mu.Unlock()
+
+		var peer ackTracker
+		peer.record(5, now)
+		if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.reno().cwnd, c.reno().ssthresh, initial, c.persistentCongestions
+	}
+
+	cwnd, ssthresh, initial, collapses := run(t, 100*time.Millisecond, true) // losses 0–4 span 400ms > 378ms
+	if cwnd != 2400 || ssthresh != initial/2 {
+		t.Errorf("cwnd %d, ssthresh %d after persistent congestion; want the minimum 2400 under %d", cwnd, ssthresh, initial/2)
+	}
+	if collapses != 1 {
+		t.Errorf("Stats counted %d persistent-congestion collapses, want 1", collapses)
+	}
+	if cwnd, _, initial, collapses := run(t, 50*time.Millisecond, true); cwnd != initial/2 || collapses != 0 { // 200ms: one loss event
+		t.Errorf("cwnd %d, %d collapses after losses spanning 200ms, want one halving to %d and none", cwnd, collapses, initial/2)
+	}
+	if cwnd, _, initial, collapses := run(t, 100*time.Millisecond, false); cwnd != initial/2 || collapses != 0 { // no sample yet
+		t.Errorf("cwnd %d, %d collapses after losses before any round-trip sample, want one halving to %d and none", cwnd, collapses, initial/2)
+	}
+}
+
+// RFC 9002 B.8: only losses sent after the first round-trip sample count
+// toward persistent congestion. The ACK that brings the first sample also
+// declares Initial packets lost that left before it, spread wider than the
+// persistent-congestion duration: one loss event, no collapse.
+func TestPersistentCongestionIgnoresLossesBeforeTheFirstSample(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	initial := c.reno().cwnd
+	sp := &c.spaces[spaceInitial]
+	// Five packets 300ms apart, 1.2s from first to last, and a sixth the
+	// peer acknowledges 100ms after it left.
+	for pn := range uint64(5) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-2*time.Second + time.Duration(pn)*300*time.Millisecond), size: 1200, ackEliciting: true, payload: []byte{byte(pn)}})
+		c.cc.onSent(now, 1200)
+	}
+	sp.sent.record(sentPacket{pn: 5, sentAt: now.Add(-100 * time.Millisecond), ackEliciting: true}) // sized 0: its ACK grows nothing
+	sp.nextPN = 6
+	c.mu.Unlock()
+
+	var peer ackTracker
+	peer.record(5, now)
+	if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// The sample is 100ms: pto = 100ms + 4×50ms + 25ms, and the duration,
+	// three of those, 975ms — shorter than the 1.2s the losses span.
+	if !c.rtt.sampled {
+		t.Fatal("the acknowledgement gave no round-trip sample")
+	}
+	if cwnd := c.reno().cwnd; cwnd != initial/2 || c.persistentCongestions != 0 {
+		t.Errorf("cwnd %d, %d collapses after losses sent before the first sample, want one halving to %d and none", cwnd, c.persistentCongestions, initial/2)
+	}
+}
+
+// RFC 9002 A.7: an ACK that acknowledges a slow-start flight and declares
+// a loss is processed losses first — the window takes its decrease, and
+// the acknowledged packets, sent before the recovery period the loss
+// opened, grow nothing (B.5). Acknowledgements first grew the window by
+// the flight and then cut the result: 16200 instead of 6000 under Reno.
+func TestAckDeclaresLossesBeforeItGrowsTheWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cc   func() congestionController
+		want int // the window after one event, from 12000
+	}{
+		{"reno", func() congestionController { return newNewReno(1200) }, 6000},
+		{"cubic", func() congestionController { return newCubic(1200) }, 8400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pcA, pcB := newLoopbackPair(t)
+			c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+			defer c.Close()
+			if err := c.installInitial([]byte("dcid0000")); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			sentAt := now.Add(-50 * time.Millisecond)
+			c.mu.Lock()
+			c.cc = tc.cc()
+			sp := &c.spaces[spaceInitial]
+			// Eighteen packets: the peer acknowledges 1 to 17, and 0, three
+			// below the largest, is lost.
+			for pn := range uint64(18) {
+				sp.sent.record(sentPacket{pn: pn, sentAt: sentAt, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+				c.cc.onSent(sentAt, 1200)
+			}
+			sp.nextPN = 18
+			c.mu.Unlock()
+
+			var peer ackTracker
+			for pn := uint64(1); pn < 18; pn++ {
+				peer.record(pn, now)
+			}
+			if err := c.handleAck(spaceInitial, ackFrameFor(t, &peer), now); err != nil {
+				t.Fatal(err)
+			}
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			if got := c.cc.window(); got != tc.want {
+				t.Errorf("window %d after 17 acknowledged and one lost in one frame, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// RFC 9002 §7.6.1: probe timeouts do not establish persistent congestion —
+// three unanswered probes used to collapse the window on their own.
+func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	initial := c.reno().cwnd
+	sp := &c.spaces[spaceInitial]
+	sp.lastElicit = now
+	sp.sent.record(sentPacket{pn: 0, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing}})
+	sp.nextPN = 1
+	c.mu.Unlock()
+
+	for i := 1; i <= 3; i++ {
+		now = now.Add(10 * time.Second) // past any backoff of the initial PTO
+		c.actOnDeadlines(now)
+	}
+	c.mu.Lock()
+	ptoCount, cwnd := c.ptoCount, c.reno().cwnd
+	c.mu.Unlock()
+	if ptoCount != 3 {
+		t.Fatalf("ptoCount %d after three expiries, want 3", ptoCount)
+	}
+	if cwnd != initial {
+		t.Errorf("cwnd %d after three probe timeouts, want %d untouched", cwnd, initial)
+	}
+}
+
+// RFC 9002 §6.2.2.1: a server whose anti-amplification budget is spent does
+// not arm the PTO — the count stays where it is and no probe leaves — until
+// a datagram from the client reopens the budget, when a deadline already
+// past fires at once.
+func TestNoProbeTimeoutUnderTheAmplificationLimit(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	c.amplActive, c.amplRecv, c.amplSent = true, 1200, 3600 // the budget is spent
+	sp := &c.spaces[spaceInitial]
+	sp.lastElicit = now.Add(-time.Minute) // the PTO deadline is long past
+	sp.sent.record(sentPacket{pn: 0, sentAt: sp.lastElicit, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	sp.nextPN = 1
+	c.mu.Unlock()
+
+	for _, d := range []time.Duration{0, 5 * time.Second, 10 * time.Second} {
+		c.actOnDeadlines(now.Add(d))
+	}
+	c.mu.Lock()
+	ptoCount, nextPN := c.ptoCount, c.spaces[spaceInitial].nextPN
+	c.mu.Unlock()
+	if ptoCount != 0 || nextPN != 1 {
+		t.Fatalf("under the amplification limit, ptoCount %d and nextPN %d; want 0 and 1 (nothing probed)", ptoCount, nextPN)
+	}
+
+	c.mu.Lock()
+	c.amplRecv += 1200 // the client's next datagram
+	c.mu.Unlock()
+	c.actOnDeadlines(now.Add(10 * time.Second))
+	c.mu.Lock()
+	ptoCount, nextPN = c.ptoCount, c.spaces[spaceInitial].nextPN
+	c.mu.Unlock()
+	if ptoCount != 1 || nextPN == 1 {
+		t.Errorf("with the budget reopened, ptoCount %d and nextPN %d; want 1 and a probe sent", ptoCount, nextPN)
+	}
+}
+
+// RFC 9002 A.11: discarding a packet number space resets the probe count —
+// the backoff was about that space's unanswered probes.
+func TestDiscardingASpaceResetsTheProbeCount(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ptoCount = 2
+	c.discardSpaceLocked(spaceInitial)
+	if c.ptoCount != 0 {
+		t.Errorf("ptoCount %d after discarding the Initial space, want 0", c.ptoCount)
 	}
 }

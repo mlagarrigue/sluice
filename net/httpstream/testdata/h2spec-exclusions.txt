@@ -1,7 +1,9 @@
 # h2spec cases scripts/interop-http.sh expects to fail, one per line as
-# <group>/<section>/<case>, exactly as the script prints them. Every entry
-# names the RFC passage and the reason; an entry that starts passing fails
-# the script so the list cannot go stale.
+# <group>/<section>/<case>, exactly as the script prints them. The script
+# runs the suite in clear text and behind TLS; an entry applies to both
+# unless it starts with "clear:" or "tls:". Every entry names the RFC
+# passage and the reason; an entry that starts passing fails the script so
+# the list cannot go stale.
 #
 # h2spec v2.6.0 encodes RFC 7540. RFC 9113 obsoletes it and relaxed or
 # removed four of the rules below; the fifth is a server design choice

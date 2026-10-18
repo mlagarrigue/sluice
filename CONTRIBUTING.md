@@ -21,7 +21,8 @@ against the design, not work around it.
 
 1. **Every dependency is a recorded decision.** Today the graph holds the
    standard library plus `golang.org/x/crypto`, for the ChaCha20-Poly1305
-   cipher that `crypto/tls` negotiates in TLS 1.3 without exporting it. CI
+   cipher that `crypto/tls` negotiates in TLS 1.3 without exporting it, and
+   `golang.org/x/text`, for SASLprep's NFKC in `database/postgres` alone. CI
    fails on any module outside the current list; a new one enters through
    an ADR that states its reason and its transitive graph, never through a
    `go get` on the side. The criterion is the least useless code, not a
@@ -249,8 +250,19 @@ exactly like one that found nothing wrong. An operator that fails its own
 gate does not ship.
 
 A pull request is compared to its merge base by `gate.sh`, which fails on any
-benchmark the sign test declares slower past 3%. Absolute figures do not
-transfer between sessions; only ratios within a session carry.
+benchmark the sign test declares slower past 3%. Only the benchmarks that
+measure a package the pull request changed, or one it depends on, are
+measured; a change to `internal/bench`, `go.mod` or `go.sum` measures them
+all. Absolute figures do not transfer between sessions; only ratios within a
+session carry.
+
+The one exception is `net/quic`'s emulated-path benchmarks, which measure
+the congestion controller rather than the CPU: `gate-path.sh`, run by its
+own CI job once per controller, builds that package on both sides, runs
+the benchmarks its `GATED` list names unpinned and fails when a median
+transfer is more than 6% slower;
+`gate-cc.sh` holds the controllers other than the default to their own
+bounds (`docs/benchmarks.md`, "QUIC, on an emulated path").
 
 ## Style and conventions
 

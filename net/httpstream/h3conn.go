@@ -3,6 +3,9 @@ package httpstream
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -22,12 +25,38 @@ import (
 // streams, so the requests it completes are a batch before this code sees
 // them. Nothing waits, and the peer does nothing unusual.
 //
-// It is not safe for concurrent use, and it is per connection: a stream
-// identifier means nothing outside one.
+// It is not safe for concurrent use — the shutdown's state under mu is the
+// one exception, and says so — and it is per connection: a stream identifier
+// means nothing outside one.
 type h3Assembler struct {
 	cfg     Config
 	qpack   *qpackDecoder
 	streams map[uint64]*h3Stream
+
+	// The graceful shutdown's state (RFC 9114 §5.2; ServeH3 says how it is
+	// used). mu is shared with the goroutine that begins the shutdown and
+	// is taken on the admission of a new request stream and at the GOAWAY,
+	// never per frame: it is what makes the identifier the GOAWAY names and
+	// the streams this assembler admitted agree — a stream is either
+	// admitted before the GOAWAY, and below its identifier, or rejected.
+	mu       sync.Mutex
+	accepted bool   // whether a request stream was ever admitted
+	last     uint64 // the highest request stream admitted, when accepted
+	draining bool   // the GOAWAY is decided: streams from rejectFrom on are rejected
+	// rejectFrom is the identifier the GOAWAY carries: the first request
+	// stream this connection rejects (§5.2: "the indicated identifier or
+	// greater are rejected"), zero when none was ever admitted.
+	rejectFrom uint64
+	// inFlight counts the request streams admitted and not yet retired:
+	// still assembling, queued for the handler, being handled or being
+	// answered. The assembler retires a stream that leaves without a
+	// request (failed, forgotten); the response writer retires the rest.
+	inFlight atomic.Int64
+	// Finish, when set, is called by retire when the last in-flight stream
+	// of a draining connection retires: nothing more is owed, the
+	// connection may close. It must not block — it runs on the read
+	// goroutine or a writer's.
+	Finish func()
 
 	// refused remembers streams this assembler already rejected, so frames
 	// still arriving on them are dropped instead of re-opening assembly for
@@ -85,9 +114,6 @@ type h3Assembler struct {
 	// calls: nothing drain does retains the slice past its own use, so there
 	// is no reason to allocate it fresh every time a stream's buffer drains.
 	frames []h3Frame
-	// trailers is where a trailing HEADERS decodes to, validated and then
-	// dropped — reused across streams, never a request's.
-	trailers []Header
 }
 
 // maxRefusedRemembered bounds the tombstones. A peer still sending on a
@@ -134,9 +160,8 @@ const uniKindUnknown = -2
 // the assembler driven without one.
 const maxUniStreams = 32
 
-// newH3Assembler returns an assembler bounded by cfg.
+// newH3Assembler returns an assembler bounded by cfg, which is resolved.
 func newH3Assembler(cfg Config) *h3Assembler {
-	cfg = cfg.withDefaults()
 	return &h3Assembler{
 		cfg:     cfg,
 		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),
@@ -159,6 +184,11 @@ type h3StreamError struct {
 	StreamID uint64
 	Code     uint64
 	Err      error
+	// Status, when set, is answered on the stream before it is closed —
+	// for the bounds [Config] documents a status for, nothing else. Code is
+	// then H3_NO_ERROR: the response is complete and the stream ends with
+	// a FIN, and STOP_SENDING carries the code (RFC 9114 §4.1).
+	Status int
 }
 
 // Error returns the underlying error's message; the stream and code are
@@ -167,6 +197,24 @@ func (e h3StreamError) Error() string { return e.Err.Error() }
 
 // Unwrap exposes the underlying error to [errors.Is] and [errors.As].
 func (e h3StreamError) Unwrap() error { return e.Err }
+
+// h3StatusError is drain's refusal of a request over one of the bounds
+// [Config] documents a status for: Frames turns it into an [h3StreamError]
+// with that Status, answered on the stream rather than reset without a word
+// — RFC 9114 §4.2.2 permits the 431, §4.1 a complete response ahead of the
+// request's end. It wraps err so a caller keeps matching on [ErrTooLarge].
+type h3StatusError struct {
+	status int
+	err    error
+}
+
+func (e h3StatusError) Error() string { return e.err.Error() }
+func (e h3StatusError) Unwrap() error { return e.err }
+
+// h3StatusFail builds an h3StatusError, as statusFail builds the h2 kind.
+func h3StatusFail(status int, format string, args ...any) error {
+	return h3StatusError{status: status, err: fmt.Errorf(format, args...)}
+}
 
 // HTTP/3 error codes (RFC 9114 §8.1). Only the ones this server sends are
 // named.
@@ -182,6 +230,7 @@ const (
 	h3SettingsError        = 0x0109
 	h3MissingSettings      = 0x010a
 	h3RequestRejected      = 0x010b
+	h3RequestCancelled     = 0x010c
 	h3RequestIncomplete    = 0x010d
 	h3MessageError         = 0x010e
 )
@@ -197,10 +246,25 @@ const qpackEncoderStreamError = 0x0201
 const qpackDecoderStreamError = 0x0202
 
 // errH3FrameUnexpected marks a frame that is well-formed but arrived where
-// RFC 9114 §4.1 forbids it — DATA before HEADERS, or anything after the
-// trailers. Frames answers it with H3_FRAME_UNEXPECTED, the code §4.1
-// assigns, where other assembly refusals are H3_MESSAGE_ERROR.
+// RFC 9114 forbids it: DATA before HEADERS or anything after the trailers
+// (§4.1), a control-stream frame on a request stream (§7.2.3–§7.2.7), a
+// PUSH_PROMISE from a client (§7.2.5), an HTTP/2 frame type with no HTTP/3
+// meaning (§7.2.8). Every one of those sections makes it a *connection*
+// error of type H3_FRAME_UNEXPECTED, and Frames returns it as one — unlike a
+// malformed message, which is the stream's fault alone (H3_MESSAGE_ERROR).
+// It used to be answered on the stream; a peer that frames a stream wrongly
+// has a broken framer, not one bad request, and §4.1's MUST says so.
 var errH3FrameUnexpected = fmt.Errorf("%w: a frame out of sequence", ErrH3Protocol)
+
+// qpackDecompressionFailed is RFC 9204 §6's code for a field section the
+// decoder cannot interpret. §2.2.3, §3.1 and §4.5.1.1 make the shapes this
+// decoder can meet — a dynamic-table reference against a capacity of zero, a
+// static index past the table, a Required Insert Count no conformant encoder
+// produces — connection errors; §7.4 keeps one case on the stream, a value
+// wider than the decoder's limit. Before, every one of them was
+// H3_MESSAGE_ERROR on the stream, as if the request were malformed rather
+// than the compression state broken.
+const qpackDecompressionFailed = 0x0200
 
 // h3ConnectionError reports a violation of the connection's own critical
 // machinery — a duplicated or closed control or QPACK stream, a control
@@ -286,6 +350,16 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		}
 		st := a.streams[f.StreamID]
 		if st == nil {
+			if !a.admit(f.StreamID) {
+				// Past the GOAWAY's identifier: §5.2 has the server reject
+				// what it said it would, and REQUEST_REJECTED is the code
+				// that says nothing was processed, so the client retries
+				// elsewhere.
+				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: stream %d opened after GOAWAY(%d)",
+					ErrH3Protocol, f.StreamID, a.rejectFrom))
+				a.release(f.StreamID, len(f.Data))
+				continue
+			}
 			if len(a.streams) >= a.cfg.MaxConcurrentStreams {
 				// §5.2 wants a request refused rather than a connection lost
 				// when a server is at its limit, and REQUEST_REJECTED tells
@@ -297,6 +371,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			}
 			st = &h3Stream{declared: -1, deadline: now.Add(a.cfg.ReadTimeout)}
 			a.streams[f.StreamID] = st
+			a.inFlight.Add(1)
 		}
 		// The unparsed bytes are framing, not body: a request whose body is
 		// exactly MaxBodyBytes arrives as its HEADERS frame plus a DATA
@@ -334,12 +409,28 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// here + Δretained, every path, so the windows always balance.)
 		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body))
 		if err != nil {
+			if se, ok := errors.AsType[h3StatusError](err); ok {
+				a.answer(f.StreamID, se.status, err)
+				continue
+			}
+			// The connection's fault, not the stream's: an invalid frame
+			// sequence (§4.1), a frame that belongs on the control stream
+			// (§7.2.3–§7.2.7) or has no HTTP/3 meaning (§7.2.8), or a field
+			// section the QPACK state cannot decode (RFC 9204 §2.2.3, §3.1).
+			// Each of those is a MUST for a connection error, and a
+			// connection whose framer is wrong has nothing left to serve.
+			if errors.Is(err, errH3FrameUnexpected) {
+				err = h3ConnectionError{Code: h3FrameUnexpected, Err: err}
+			}
+			if ce, ok := errors.AsType[h3ConnectionError](err); ok {
+				return sluice.Batch[Request]{}, nil, a.failed, ce
+			}
 			code := uint64(h3MessageError)
 			switch {
 			case errors.Is(err, ErrTooLarge):
 				code = h3ExcessiveLoad
-			case errors.Is(err, errH3FrameUnexpected):
-				code = h3FrameUnexpected
+			case errors.Is(err, errIntegerWide):
+				code = qpackDecompressionFailed // RFC 9204 §7.4, on the stream
 			}
 			a.fail(f.StreamID, code, err)
 			continue
@@ -437,13 +528,33 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // and a tombstone is what keeps them from re-accumulating state for a
 // request nobody will answer.
 func (a *h3Assembler) fail(id, code uint64, err error) {
-	if st := a.streams[id]; st != nil {
+	if a.drop(id) {
+		a.retire()
+	}
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
+}
+
+// answer records a stream refused with a status: dropped and tombstoned as
+// fail does, but not retired — ServeH3 retires it once the status has left,
+// as it does a handler's response, so a draining connection waits for the
+// refusal to be written and acknowledged like any other answer.
+func (a *h3Assembler) answer(id uint64, status int, err error) {
+	a.drop(id)
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status})
+}
+
+// drop discards a stream's assembly state, releasing what it retained, and
+// leaves a tombstone. It reports whether the stream was being assembled —
+// admitted, so owed a retire.
+func (a *h3Assembler) drop(id uint64) bool {
+	st := a.streams[id]
+	if st != nil {
 		a.assembling -= len(st.buf) + len(st.req.Body)
 		a.release(id, len(st.buf)+len(st.req.Body))
+		delete(a.streams, id)
 	}
-	delete(a.streams, id)
 	a.tombstone(id)
-	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
+	return st != nil
 }
 
 // tombstone remembers a stream as dead so later frames on it are dropped
@@ -468,12 +579,58 @@ func (a *h3Assembler) tombstone(id uint64) {
 // future frame can ever complete — each one a permanently burnt admission
 // slot.
 func (a *h3Assembler) Forget(id uint64) {
-	if st := a.streams[id]; st != nil {
-		a.assembling -= len(st.buf) + len(st.req.Body)
-		a.release(id, len(st.buf)+len(st.req.Body))
-		delete(a.streams, id)
+	if a.drop(id) {
+		a.retire()
 	}
-	a.tombstone(id)
+}
+
+// admit decides, under mu, whether a new request stream may be served: not
+// once the GOAWAY is decided and the stream is at or past its identifier.
+// An admitted stream raises last, which is what the GOAWAY will be computed
+// from — a stream refused later for the concurrency limit raises it too,
+// which §5.2 allows ("servers MAY reject individual requests on streams
+// below the indicated ID").
+func (a *h3Assembler) admit(id uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.draining && id >= a.rejectFrom {
+		return false
+	}
+	if !a.accepted || id > a.last {
+		a.accepted, a.last = true, id
+	}
+	return true
+}
+
+// beginDrain decides the GOAWAY, under mu, and returns the identifier it
+// carries: the request stream after the highest one admitted, or zero when
+// none was. From here on admit rejects every stream from that identifier.
+func (a *h3Assembler) beginDrain() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.draining = true
+	if a.accepted {
+		a.rejectFrom = a.last + 4
+	}
+	return a.rejectFrom
+}
+
+// retire takes one request stream out of the in-flight count and, when it
+// was the last one of a draining connection, calls Finish. The count is
+// read after the decrement and the flag after that, under mu; beginDrain
+// sets the flag under mu before it reads the count: whichever of the two
+// runs second sees the other's write, so a connection that empties as the
+// GOAWAY is decided is finished exactly once, by one of them.
+func (a *h3Assembler) retire() {
+	if a.inFlight.Add(-1) != 0 {
+		return
+	}
+	a.mu.Lock()
+	draining := a.draining
+	a.mu.Unlock()
+	if draining && a.Finish != nil {
+		a.Finish()
+	}
 }
 
 // uni folds one frame of a client unidirectional stream (RFC 9114 §6.2): the
@@ -584,7 +741,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	if !a.controlSettings && len(u.buf) > 0 {
 		// §6.2.1: SETTINGS must be the control stream's very first frame.
-		// ParseH3Frames below skips reserved frame types, as §7.2.8 wants
+		// ParseH3Frames below skips GREASE frame types, as §7.2.8 wants
 		// everywhere else — so the first frame's type is read here, before
 		// the skip can hide a GREASE frame standing where SETTINGS has to be.
 		if typ, _, err := quic.Varint(u.buf); err == nil && typ != h3Settings {
@@ -595,7 +752,13 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	frames, rest, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
 	a.frames = frames
 	if err != nil {
-		return h3ConnectionError{Code: h3FrameError, Err: err}
+		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
+		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
+		code := uint64(h3FrameError)
+		if errors.Is(err, errH3FrameUnexpected) {
+			code = h3FrameUnexpected
+		}
+		return h3ConnectionError{Code: code, Err: err}
 	}
 	for _, fr := range frames {
 		if !a.controlSettings {
@@ -604,7 +767,14 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 					"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, fr.Type)}
 			}
 			if err := a.settings(fr.Payload); err != nil {
-				return h3ConnectionError{Code: h3SettingsError, Err: err}
+				// A payload that ends inside a pair fails the frame's layout,
+				// which §7.1 makes H3_FRAME_ERROR; what the pairs say is
+				// §7.2.4's H3_SETTINGS_ERROR.
+				code := uint64(h3SettingsError)
+				if errors.Is(err, errH3FrameLayout) {
+					code = h3FrameError
+				}
+				return h3ConnectionError{Code: code, Err: err}
 			}
 			a.controlSettings = true
 			continue
@@ -644,14 +814,13 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 		}
 		capacity, rest, err := hpackInt(u.buf, 5)
 		if err != nil {
-			// A 5-bit-prefix integer completes, or trips hpackInt's width
-			// bound, within six bytes; short of that the tail has simply
-			// not arrived yet.
-			if len(u.buf) < 6 {
+			// An integer that runs off the end has not all arrived yet; one
+			// wider than 62 bits (RFC 9204 §4.1.1) never will be legal.
+			if errors.Is(err, errIntegerShort) {
 				return nil
 			}
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: a dynamic-table capacity wider than any this decoder accepts", ErrH3Protocol)}
+				"%w: a dynamic-table capacity wider than 62 bits", ErrH3Protocol)}
 		}
 		if capacity != 0 {
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
@@ -682,16 +851,21 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 				"%w: an Insert Count Increment, but nothing was ever inserted", ErrH3Protocol)}
 		}
 		// Stream Cancellation: a stream identifier with a 6-bit prefix, and
-		// nothing for an encoder without a table to do about it.
+		// nothing for an encoder without a table to do about it. The
+		// identifier is a QUIC stream ID, 62 bits wide (RFC 9000 §2.1), and
+		// hpackInt admits the whole width: a decoder that stopped at 28 bits
+		// used to close the connection over the cancellation of stream
+		// 2^28 — a legal instruction a long-lived client reaches, since
+		// HTTP/3 caps no request count.
 		_, rest, err := hpackInt(u.buf, 6)
 		if err != nil {
-			// As in encoderInstructions: short of six bytes, the rest of
-			// the integer has not arrived yet.
-			if len(u.buf) < 6 {
+			// As in encoderInstructions: an integer that runs off the end
+			// has not all arrived yet.
+			if errors.Is(err, errIntegerShort) {
 				return nil
 			}
 			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
-				"%w: a Stream Cancellation naming a stream wider than any admitted", ErrH3Protocol)}
+				"%w: a Stream Cancellation naming a stream wider than 62 bits", ErrH3Protocol)}
 		}
 		u.buf = append(u.buf[:0], rest...)
 	}
@@ -758,7 +932,12 @@ func (a *h3Assembler) rawStreamBound() int {
 // datagrams is ordinary rather than an error.
 func (a *h3Assembler) drain(st *h3Stream) error {
 	frames, rest, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
-	if err != nil {
+	// A frame over the bound leaves rest at its start. A DATA frame there is
+	// judged below, after the frames ahead of it, as a body over
+	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
+	// says so before any of the payload is buffered. Any other type keeps the
+	// refusal parseH3Frames gave it.
+	if typ, _, e := quic.Varint(rest); err != nil && (e != nil || typ != h3Data) {
 		return err
 	}
 	a.frames = frames
@@ -777,19 +956,23 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
 			}
 			if st.gotHead {
-				// Trailers, which this does not serve — but their bytes are
-				// held to the same octet rules as everything else that could
-				// be re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3):
-				// decoded, validated, then dropped.
-				if a.trailers, err = a.qpack.Decode(a.trailers[:0], f.Payload); err != nil {
-					return err
+				// Trailers: held to the head's bounds and delivered in
+				// Request.Trailers — and their bytes are held to the same
+				// octet rules as everything else that could be
+				// re-serialised toward an HTTP/1.1 hop (§4.1.2, §10.3).
+				// Decoded behind the head's fields in the same storage:
+				// Request.Headers is capped at its own length, so neither
+				// overwrites the other.
+				trailers, err := a.qpack.Decode(st.headers[len(st.headers):], f.Payload)
+				if err != nil {
+					return sectionRefused(err)
 				}
 				// Same field-count bound as the request block below.
-				if len(a.trailers) > a.cfg.MaxHeaders {
-					return fmt.Errorf("%w: over %d trailer fields",
+				if len(trailers) > a.cfg.MaxHeaders {
+					return h3StatusFail(431, "%w: over %d trailer fields",
 						ErrTooLarge, a.cfg.MaxHeaders)
 				}
-				for _, h := range a.trailers {
+				for _, h := range trailers {
 					if len(h.Name) == 0 {
 						return fmt.Errorf("%w: an empty trailer name", ErrH3Protocol)
 					}
@@ -803,24 +986,30 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 						return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrH3Protocol, h.Name)
 					}
 				}
+				if len(trailers) > 0 {
+					st.req.Trailers = trailers
+				}
 				st.gotTrailers = true
 				continue
 			}
 			if st.headers, err = a.qpack.Decode(st.headers[:0], f.Payload); err != nil {
-				return err
+				return sectionRefused(err)
 			}
 			// The field-count bound the h1 parser applies as it reads and h2
 			// applies after its HPACK decode, applied here at the first
 			// moment the count exists: the byte bound is not this bound — a
 			// block of near-empty fields fits the bytes while making every
 			// [Request.Get] walk hundreds of entries.
-			if len(st.headers) > a.cfg.MaxHeaders {
-				return fmt.Errorf("%w: over %d header fields",
+			if fieldCount(st.headers) > a.cfg.MaxHeaders {
+				return h3StatusFail(431, "%w: over %d header fields",
 					ErrTooLarge, a.cfg.MaxHeaders)
 			}
-			if err := a.buildRequest(st); err != nil {
+			req, declared, err := buildRequest(st.headers, ErrH3Protocol)
+			if err != nil {
 				return err
 			}
+			st.headers, st.declared, st.req = req.Headers, declared, req
+			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 			st.gotHead = true
 		case h3Data:
 			if !st.gotHead {
@@ -834,148 +1023,67 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// DATA frames would grow the body without limit, bounded buffer
 			// notwithstanding.
 			if len(st.req.Body)+len(f.Payload) > a.cfg.MaxBodyBytes {
-				return fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 			st.req.Body = append(st.req.Body, f.Payload...)
 		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
-			return fmt.Errorf("%w: frame type %#x belongs on the control stream", ErrH3Protocol, f.Type)
+			// §7.2.3, §7.2.4, §7.2.6, §7.2.7: each names a connection error
+			// of type H3_FRAME_UNEXPECTED for its frame off the control stream.
+			return fmt.Errorf("%w: frame type %#x belongs on the control stream", errH3FrameUnexpected, f.Type)
 		case h3PushPromise:
-			return fmt.Errorf("%w: a client sent PUSH_PROMISE", ErrH3Protocol)
+			// §7.2.5: "A server MUST treat the receipt of a PUSH_PROMISE
+			// frame as a connection error of type H3_FRAME_UNEXPECTED."
+			return fmt.Errorf("%w: a client sent PUSH_PROMISE", errH3FrameUnexpected)
 		}
 	}
 	// What is left is the start of a frame that has not all arrived, kept at
-	// the front for the next datagram — unless it is a HEADERS frame already
-	// declared over the header bound, refused on the declaration rather than
-	// after a near-MaxBodyBytes buffer has been parked waiting for it.
+	// the front for the next datagram — unless its declaration already
+	// refuses it: a HEADERS frame over the header bound, or a DATA frame that
+	// would take the body past MaxBodyBytes, refused before a buffer near
+	// that size has been parked waiting for the payload. RFC 9114 §4.1 lets
+	// the server answer before the request has all arrived.
 	if typ, after, e := quic.Varint(rest); e == nil {
-		if length, _, e2 := quic.Varint(after); e2 == nil &&
-			typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes) { //nolint:gosec // G115: positive config, set by withDefaults
-			return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
-				ErrTooLarge, length, a.cfg.MaxHeaderBytes)
+		if length, _, e2 := quic.Varint(after); e2 == nil {
+			switch {
+			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
+				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
+					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
+			case typ == h3Data && !st.gotHead:
+				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
+			case typ == h3Data && st.gotTrailers:
+				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
+			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by withDefaults
+				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+			}
 		}
+	}
+	if err != nil {
+		return err // unreachable: a DATA frame over the bound is refused above
 	}
 	st.buf = append(st.buf[:0], rest...)
 	return nil
 }
 
-// buildRequest applies RFC 9114 §4.3's rules, which are HTTP/2's §8.3 again:
-// the same shapes are refused, because the same downgrade to an HTTP/1.1 hop
-// is how the same smuggled request gets written.
-func (a *h3Assembler) buildRequest(st *h3Stream) error {
-	var method, path, scheme, authority []byte
-	regular := st.headers[:0]
-	seenRegular := false
-	for _, h := range st.headers {
-		// h.Name stays []byte throughout: binding string(h.Name) to a
-		// variable allocates per field, while a conversion feeding only a
-		// switch or comparison does not.
-		if len(h.Name) == 0 {
-			return fmt.Errorf("%w: an empty field name", ErrH3Protocol)
-		}
-		if h.Name[0] == ':' {
-			if seenRegular {
-				return fmt.Errorf("%w: pseudo-header %s after a regular field", ErrH3Protocol, h.Name)
-			}
-			var dst *[]byte
-			switch string(h.Name) {
-			case ":method":
-				dst = &method
-			case ":path":
-				dst = &path
-			case ":scheme":
-				dst = &scheme
-			case ":authority":
-				dst = &authority
-			default:
-				return fmt.Errorf("%w: unknown pseudo-header %s", ErrH3Protocol, h.Name)
-			}
-			if *dst != nil {
-				return fmt.Errorf("%w: %s appears twice", ErrH3Protocol, h.Name)
-			}
-			*dst = h.Value
-			continue
-		}
-		seenRegular = true
-		if !lowerASCII(h.Name) {
-			return fmt.Errorf("%w: %q is not lowercase", ErrH3Protocol, h.Name)
-		}
-		// The h1 parser's octet rules, applied to what QPACK decoded
-		// (§4.1.2, §10.3). QPACK can carry any byte, so without these a name
-		// with an embedded colon or a value with CR LF reaches the handler —
-		// and the first hop that re-serialises the request toward HTTP/1.1
-		// turns that value into a second request.
-		if !isToken(h.Name) {
-			return fmt.Errorf("%w: %q is not a header name", ErrH3Protocol, h.Name)
-		}
-		if !validFieldValue(h.Value) {
-			return fmt.Errorf("%w: the value of %q holds a control character", ErrH3Protocol, h.Name)
-		}
-		switch string(h.Name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
-			return fmt.Errorf("%w: the connection-specific field %q", ErrH3Protocol, h.Name)
-		case "host":
-			// The same refusal as an empty :authority below: a host that
-			// names nothing is malformed, not a request with an empty host.
-			if len(h.Value) == 0 {
-				return fmt.Errorf("%w: an empty host", ErrH3Protocol)
-			}
-		case "te":
-			if string(h.Value) != "trailers" {
-				return fmt.Errorf("%w: TE may only be \"trailers\"", ErrH3Protocol)
-			}
-		case "content-length":
-			// Remembered for the FIN, where the DATA sum is known. A repeat
-			// is refused as the h1 parser refuses it: two lengths on one
-			// request is the smuggling family's opening move.
-			if st.declared >= 0 {
-				return fmt.Errorf("%w: content-length appears twice", ErrH3Protocol)
-			}
-			n, err := parseContentLength(h.Value)
-			if err != nil {
-				return fmt.Errorf("%w: content-length %q is not a length", ErrH3Protocol, h.Value)
-			}
-			st.declared = n
-		}
-		regular = append(regular, h)
-	}
-	if method == nil || path == nil || scheme == nil {
-		return fmt.Errorf("%w: a request without :method, :path and :scheme", ErrH3Protocol)
-	}
-	// Pseudo-header values compose the request line of any downstream
-	// HTTP/1.1 hop, which is why §10.3 asks for octet-level checks on them
-	// specifically: the same refusals the h1 request line makes.
-	if !isToken(method) {
-		return fmt.Errorf("%w: :method is not a token", ErrH3Protocol)
-	}
-	if !isToken(scheme) {
-		return fmt.Errorf("%w: :scheme is not a token", ErrH3Protocol)
-	}
-	if len(path) == 0 || path[0] != '/' {
-		return fmt.Errorf("%w: :path is not origin-form", ErrH3Protocol)
-	}
-	for _, c := range path {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :path holds a control character", ErrH3Protocol)
-		}
-	}
-	for _, c := range authority {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :authority holds a control character", ErrH3Protocol)
-		}
-	}
-	if authority != nil && len(authority) == 0 {
-		// §4.3.1: an :authority present but empty names no host at all, and a
-		// handler routing on an empty host is a request that should have been
-		// refused as malformed.
-		return fmt.Errorf("%w: an empty :authority", ErrH3Protocol)
-	}
-	regular, err := withAuthority(regular, authority, ErrH3Protocol)
-	if err != nil {
+// sectionRefused turns the decoder's error for a field section into the
+// refusal it earns. A section past the list bound is a 431 on the stream
+// (RFC 9114 §4.2.2), as the h2 reader's blockRefused has it. Anything else —
+// a dynamic reference, an index past the static table, a truncated string —
+// is a connection error of type QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2.3,
+// §3.1): the decoder "is not able to continue decoding that field section",
+// and the section's stream is not the fault. It used to be served as a
+// malformed request on the stream, which left a client whose encoder is
+// broken retrying the same bytes on the next one.
+func sectionRefused(err error) error {
+	switch {
+	case errors.Is(err, errHeadersTooLarge):
+		return h3StatusError{status: 431, err: err}
+	case errors.Is(err, errIntegerWide):
+		// RFC 9204 §7.4: "a value larger than it is able to decode" is a
+		// *stream* error of type QPACK_DECOMPRESSION_FAILED on a request
+		// stream. Frames reads this through the sentinel.
 		return err
 	}
-	st.headers = regular
-	st.req = Request{Method: method, Target: path, Headers: regular, KeepAlive: true}
-	return nil
+	return h3ConnectionError{Code: qpackDecompressionFailed, Err: err}
 }
 
 // appendH3StreamedBody writes one batch of a streamed response as DATA
@@ -998,7 +1106,7 @@ func appendH3StreamedBody(dst []byte, chunks [][]byte) []byte {
 // — the internal responder path, which knows the method and calls that
 // instead.
 func appendH3ResponseBasic(dst []byte, r Response) ([]byte, error) {
-	return appendH3Response(dst, r, nil, 0, &h3Scratch{})
+	return appendH3Response(dst, r, nil, 0, &h3Scratch{}, dateFor(time.Now()))
 }
 
 // h3Scratch is one responder's reusable per-response state: the field list
@@ -1009,6 +1117,7 @@ type h3Scratch struct {
 	head   []byte
 	fields []Header
 	qpack  []byte
+	names  []byte   // lowercased copies of the field names a handler spelled in HTTP/1.1 case
 	status [3]byte  // checkStatus bounds a final status to 200..599
 	clen   [20]byte // enough digits for any int
 }
@@ -1019,8 +1128,8 @@ type h3Scratch struct {
 // the peer's SETTINGS_MAX_FIELD_SECTION_SIZE — zero for unbounded — which
 // RFC 9114 §4.2.2 says a sender SHOULD NOT exceed. A field section that
 // would exceed it is refused here rather than sent to a client that told
-// us it will not accept it.
-func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection uint64, sc *h3Scratch) ([]byte, error) {
+// us it will not accept it. date is [dateFor]'s value for the batch.
+func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection uint64, sc *h3Scratch, date []byte) ([]byte, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
@@ -1033,15 +1142,25 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	}
 	noLength, noBody := noLengthAndBody(status, method)
 	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
+	if !datedBy(r.Headers) {
+		// RFC 9110 §6.6.1's Date, as the other two writers add it and
+		// where: on every final response the handler did not date itself,
+		// first after :status. The value is the batch's, formatted once and
+		// never written after.
+		fields = append(fields, Header{Name: h3DateName, Value: date})
+	}
+	sc.names = sc.names[:0]
 	for _, h := range r.Headers {
-		if !lowerASCII(h.Name) {
-			return nil, fmt.Errorf("%w: response field %q is not lowercase", ErrH3Protocol, h.Name)
-		}
+		// A name the handler spelled in HTTP/1.1 case goes on the wire
+		// lowercase (RFC 9114 §4.2), from a copy in sc.names: the handler's
+		// bytes are borrowed, never written. The copies outlive the loop,
+		// since fields holds them until appendQPACK reads them.
+		name := lowerName(h.Name, &sc.names)
 		// The octet rule the HTTP/1.1 writer applies (response.go): QPACK
 		// carries any byte, and a name holding a space or a colon becomes a
 		// second field, or a malformed one, at the first hop that
 		// re-serialises this response toward HTTP/1.1.
-		if !isToken(h.Name) {
+		if !isToken(name) {
 			return nil, fmt.Errorf("%w: response field %q is not a token", ErrH3Protocol, h.Name)
 		}
 		if hasCRLF(h.Value) {
@@ -1053,29 +1172,28 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		// The HTTP/2 writer's refusals, for the same reasons: a
 		// connection-specific field makes the response malformed (RFC 9114
 		// §4.2), and framing is this package's to state.
-		switch string(h.Name) {
+		switch string(name) {
 		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
 		}
-		fields = append(fields, h)
+		fields = append(fields, Header{Name: name, Value: h.Value})
 	}
-	if !r.streamed() && !noLength {
-		// A streamed response has no length to state, which is what the
-		// stream's FIN says instead. A 204/304 never states one either.
-		fields = append(fields, Header{Name: h3ContentLengthName, Value: appendDigits(sc.clen[:0], len(r.Body))})
+	if !noLength && (!r.streamed() || r.ContentLength > 0) {
+		// A streamed response states the length it declared, or none, which
+		// is what the stream's FIN says instead. A 204/304 never states one
+		// either.
+		var v []byte
+		if r.streamed() {
+			v = strconv.AppendInt(sc.clen[:0], r.ContentLength, 10)
+		} else {
+			v = appendDigits(sc.clen[:0], len(r.Body))
+		}
+		fields = append(fields, Header{Name: h3ContentLengthName, Value: v})
 	}
-	if peerFieldSection > 0 {
-		// §4.2.2's size: the uncompressed name and value, plus 32 per field.
-		var size uint64
-		for _, h := range fields {
-			size += uint64(len(h.Name)+len(h.Value)) + 32
-		}
-		if size > peerFieldSection {
-			return nil, fmt.Errorf("%w: a field section of %d bytes, over the peer's %d limit",
-				ErrH3Protocol, size, peerFieldSection)
-		}
+	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
+		return nil, err
 	}
 
 	sc.fields = fields
@@ -1084,14 +1202,61 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	if !noBody && len(r.Body) > 0 {
 		dst = appendH3Frame(dst, h3Data, r.Body)
 	}
+	if !noBody && !r.streamed() && r.Trailers != nil {
+		// A body in hand has its trailers in the same write, so a refusal
+		// is still answered with a 500.
+		return appendH3Trailers(dst, r, peerFieldSection, sc)
+	}
 	return dst, nil
 }
 
-// h3StatusName and h3ContentLengthName are the two field names the responder
-// writes itself, kept as package bytes so no response re-allocates them.
+// checkH3FieldSection refuses a field section over the peer's
+// SETTINGS_MAX_FIELD_SECTION_SIZE, zero for unbounded, measured as §4.2.2
+// does: the uncompressed name and value, plus 32 per field.
+func checkH3FieldSection(fields []Header, peerFieldSection uint64) error {
+	if peerFieldSection == 0 {
+		return nil
+	}
+	var size uint64
+	for _, h := range fields {
+		size += uint64(len(h.Name)+len(h.Value)) + 32
+	}
+	if size > peerFieldSection {
+		return fmt.Errorf("%w: a field section of %d bytes, over the peer's %d limit",
+			ErrH3Protocol, size, peerFieldSection)
+	}
+	return nil
+}
+
+// appendH3Trailers writes a response's trailer section as the HEADERS frame
+// that follows its DATA (RFC 9114 §4.1), held to [checkTrailer] and to the
+// peer's field section limit as the head is. Its names go on the wire
+// lowercase, from copies, as the head's do.
+func appendH3Trailers(dst []byte, r Response, peerFieldSection uint64, sc *h3Scratch) ([]byte, error) {
+	trailers, err := r.trailers()
+	if err != nil {
+		return nil, err
+	}
+	fields := sc.fields[:0]
+	sc.names = sc.names[:0]
+	for _, h := range trailers {
+		fields = append(fields, Header{Name: lowerName(h.Name, &sc.names), Value: h.Value})
+	}
+	sc.fields = fields
+	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
+		return nil, err
+	}
+	sc.qpack = appendQPACK(sc.qpack[:0], fields)
+	return appendH3Frame(dst, h3Headers, sc.qpack), nil
+}
+
+// h3StatusName, h3ContentLengthName and h3DateName are the three field names
+// the responder writes itself, kept as package bytes so no response
+// re-allocates them.
 var (
 	h3StatusName        = []byte(":status")
 	h3ContentLengthName = []byte("content-length")
+	h3DateName          = []byte("date")
 )
 
 // appendDigits writes v in decimal, the no-string itoa the response scratch

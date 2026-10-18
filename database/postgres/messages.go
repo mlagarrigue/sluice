@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
@@ -42,7 +43,24 @@ type Error struct {
 	Table      string
 	Column     string
 	Constraint string // constraint name
-	Routine    string // the server's source routine; not localised, unlike Message
+	DataType   string // data type name, when the error concerns one
+
+	// Position is where in the statement text the error lies, counted in
+	// characters from 1 — not bytes — and 0 when the server sent none. It is
+	// what points a syntax error at its token.
+	Position int
+
+	// InternalPosition and InternalQuery are the same pair for a statement the
+	// server generated itself, such as the body of a PL/pgSQL function: the
+	// position counts into InternalQuery, not into the caller's text.
+	InternalPosition int
+	InternalQuery    string
+
+	// File, Line and Routine locate the error in the server's own source.
+	// None is localised, unlike Message.
+	File    string
+	Line    string
+	Routine string
 }
 
 // Error renders the error for a log line. The SQLSTATE comes first because it
@@ -104,6 +122,27 @@ func ParseError(body []byte) (*Error, error) {
 			e.Column = val
 		case 'n':
 			e.Constraint = val
+		case 'd':
+			e.DataType = val
+		case 'P', 'p':
+			// Numeric by the protocol's definition. A value that is not one
+			// would otherwise surface as Position 0, which reads as "the
+			// server gave none" — a silent loss rather than a refusal.
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				return nil, fmt.Errorf("%w: ErrorResponse position %q is not a positive integer", ErrProtocol, val)
+			}
+			if typ == 'P' {
+				e.Position = n
+			} else {
+				e.InternalPosition = n
+			}
+		case 'q':
+			e.InternalQuery = val
+		case 'F':
+			e.File = val
+		case 'L':
+			e.Line = val
 		case 'R':
 			e.Routine = val
 		}
@@ -196,6 +235,9 @@ type Rows struct {
 	fields  int     // fields per row, from the RowDescription
 	rows    int
 	maxRows int
+	// maxBytes is the byte bound on a batch's values, resolved to
+	// maxRowBytes when the caller set none, so Full pays one comparison.
+	maxBytes int
 
 	// gen counts the results this accumulator has been initialised for. A
 	// [Row] view captures it and refuses to read once it moves on: the
@@ -220,9 +262,25 @@ var maxRowBytes = math.MaxInt32
 var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 
 // NewRows returns an accumulator for results of the given width, holding at
-// most maxRows rows per batch.
-func NewRows(fields, maxRows int) *Rows {
-	return &Rows{fields: fields, maxRows: maxRows}
+// most maxRows rows per batch, and full once its values reach maxBytes bytes.
+// A maxBytes of zero means the 2 GiB the offsets allow, alone; a negative one,
+// or one above that ceiling, panics — the bound is the caller's code, not
+// data, so a wrong one is a programming error, as an out-of-range
+// [Rows.Value] is.
+func NewRows(fields, maxRows, maxBytes int) *Rows {
+	return &Rows{fields: fields, maxRows: maxRows, maxBytes: rowBytes(maxBytes)}
+}
+
+// rowBytes resolves a byte bound on a batch, zero to the ceiling the int32
+// offsets allow, and panics on one outside it.
+func rowBytes(n int) int {
+	if n < 0 || n > maxRowBytes {
+		panic(fmt.Sprintf("postgres: Rows byte bound %d is outside 0..%d", n, maxRowBytes))
+	}
+	if n == 0 {
+		return maxRowBytes
+	}
+	return n
 }
 
 // Init readies the accumulator for a new result described by desc, keeping
@@ -233,11 +291,12 @@ func NewRows(fields, maxRows int) *Rows {
 // It clears through [Rows.Reset] rather than by hand, so a field Reset learns
 // to clear cannot be missed here — the two staying in step is what keeps a
 // reused accumulator from carrying one query's state into the next.
-func (r *Rows) Init(desc []Field, maxRows int) {
+func (r *Rows) Init(desc []Field, maxRows, maxBytes int) {
 	r.Reset()
 	r.desc = desc
 	r.fields = len(desc)
 	r.maxRows = maxRows
+	r.maxBytes = rowBytes(maxBytes)
 	r.gen++
 }
 
@@ -258,9 +317,38 @@ func (r *Rows) Len() int { return r.rows }
 // Fields reports the number of columns per row.
 func (r *Rows) Fields() int { return r.fields }
 
-// Full reports whether the accumulator has reached its row limit, which is
-// what a caller polls to decide when to hand the batch downstream.
-func (r *Rows) Full() bool { return r.rows >= r.maxRows }
+// Full reports whether the accumulator has reached its row limit or its byte
+// bound, which is what a caller polls after each [Rows.Append] to decide when
+// to hand the batch downstream.
+//
+// The byte bound is a threshold, not a refusal: the row that takes the values
+// past it is accepted, and the batch is full with it in. So a batch holds at
+// most maxBytes plus one row, and a single row wider than the bound still
+// travels, in a batch of its own.
+func (r *Rows) Full() bool { return r.rows >= r.maxRows || len(r.buf) >= r.maxBytes }
+
+// fullOnBytes reports whether the byte bound, not the row limit, is what
+// filled the batch: the cut a reader logs.
+func (r *Rows) fullOnBytes() bool { return r.rows < r.maxRows && len(r.buf) >= r.maxBytes }
+
+// largestRow returns the size of the widest row held, in bytes of values.
+// Cold: it walks the offsets, and is called once per result, when the byte
+// bound first cuts a batch.
+func (r *Rows) largestRow() int {
+	if r.fields == 0 {
+		return 0
+	}
+	widest, start := 0, 0
+	for row := range r.rows {
+		end := r.ends[(row+1)*r.fields-1]
+		if end < 0 {
+			end = ^end
+		}
+		widest = max(widest, int(end)-start)
+		start = int(end)
+	}
+	return widest
+}
 
 // Append decodes one DataRow body into the accumulator.
 func (r *Rows) Append(body []byte) error {
@@ -277,14 +365,19 @@ func (r *Rows) Append(body []byte) error {
 	if r.rows >= r.maxRows {
 		return fmt.Errorf("%w: %d rows", ErrTooManyRows, r.maxRows)
 	}
-	// The offsets in ends are int32, and the nolint annotations below lean on
-	// this check: one DataRow is bounded by the reader's message limit, but buf
-	// accumulates a whole batch, and a batch of wide values can cross 2 GiB
-	// with every row individually legal. Past that point int32(len(r.buf))
-	// wraps negative, which [Rows.Value] reads as NULL — silent corruption, not
-	// an error. One comparison per row, against values already in hand.
-	if len(r.buf) > maxRowBytes-len(body) {
-		return fmt.Errorf("%w: the batch's values exceed 2 GiB — lower QueryConfig.BatchRows", ErrTooManyRows)
+	// The byte bound (QueryConfig.BatchBytes) is not checked here: it is a
+	// threshold [Rows.Full] reports once crossed, and the reader closes the
+	// batch on it. What is checked is the ceiling the int32 offsets in ends
+	// allow, and the nolint annotations below lean on it: past 2 GiB
+	// int32(len(r.buf)) wraps negative, which [Rows.Value] reads as NULL —
+	// silent corruption, not an error. A reader that polls Full never reaches
+	// it; a caller that appends without polling does, and fails.
+	//
+	// What a well-formed row adds to buf is its values: the body less the
+	// field count and one length per field (a NULL has a length and no
+	// value). A malformed row is caught below, after this comparison.
+	if len(r.buf) > maxRowBytes-(len(body)-2-4*n) {
+		return fmt.Errorf("%w: the batch's values would pass the 2 GiB its offsets allow (%d bytes held)", ErrTooManyRows, len(r.buf))
 	}
 	body = body[2:]
 

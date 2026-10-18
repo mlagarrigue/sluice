@@ -208,19 +208,19 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	c.mu.Unlock()
 
 	// A sequence this end never issued.
-	_, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 9), time.Now())
+	err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 9), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring a never-issued sequence")
 
 	// The identifier the frame's own packet arrived under.
 	c.mu.Lock()
 	c.rxLocalCIDSeq = 2
 	c.mu.Unlock()
-	_, err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 2), time.Now())
+	err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 2), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring the arrival identifier")
 
 	// Legal: retire sequence 1 (the packet arrived under 2) — replaced,
 	// count kept, routing updated.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
 		t.Fatalf("a legal retirement failed: %v", err)
 	}
 	c.mu.Lock()
@@ -243,7 +243,7 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	}
 
 	// Legal too: retiring sequence 0 once alternatives exist.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now()); err != nil {
 		t.Fatalf("retiring sequence 0 with alternatives available failed: %v", err)
 	}
 	c.mu.Lock()
@@ -255,7 +255,7 @@ func TestRetireConnectionIDHandling(t *testing.T) {
 	c.mu.Unlock()
 
 	// A duplicate retirement is a retransmission, not a violation.
-	if _, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 1), time.Now()); err != nil {
 		t.Fatalf("a duplicate retirement failed: %v", err)
 	}
 }
@@ -266,9 +266,9 @@ func TestRetireOnAConnectionThatIssuedNothing(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "bare:self"}, fakeFuzzAddr("bare:peer"),
 		[]byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
 	defer c.Close()
-	_, err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now())
+	err := c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 0), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring sequence 0 on a single-identifier connection")
-	_, err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 3), time.Now())
+	err = c.frames(spaceApplication, appendFrame(nil, frameRetireConnectionID, 3), time.Now())
 	wantViolation(t, err, transportProtocolViolation, "retiring a sequence never issued")
 }
 
@@ -284,7 +284,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	c.adoptPeerCID([]byte("srv-cid0"))
 
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -295,7 +295,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	}
 
 	// Sequence 2, Retire Prior To 2: sequences 0 and 1 go, and 0 is in use.
-	if _, err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -321,7 +321,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 
 	// An identifier arriving already below the threshold is retired at
 	// once, never pooled.
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -344,14 +344,14 @@ func TestNewConnectionIDViolations(t *testing.T) {
 
 	t.Run("same sequence, different content", func(t *testing.T) {
 		c := newClient("dup")
-		if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		// The identical repeat is a retransmission, tolerated.
-		if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
 			t.Fatalf("an identical repeat was refused: %v", err)
 		}
-		_, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cidX"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cidX"), tok), time.Now())
 		wantViolation(t, err, transportProtocolViolation, "sequence 1 reissued with different content")
 	})
 
@@ -360,11 +360,11 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		for seq := uint64(1); seq <= 3; seq++ {
 			cid := []byte("srv-cid0")
 			cid[7] = byte('0' + seq)
-			if _, err := c.frames(spaceApplication, ncidFrame(seq, 0, cid, tok), time.Now()); err != nil {
+			if err := c.frames(spaceApplication, ncidFrame(seq, 0, cid, tok), time.Now()); err != nil {
 				t.Fatalf("sequence %d, within the limit of 4: %v", seq, err)
 			}
 		}
-		_, err := c.frames(spaceApplication, ncidFrame(4, 0, []byte("srv-cid4"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(4, 0, []byte("srv-cid4"), tok), time.Now())
 		wantViolation(t, err, transportConnectionIDLimit, "a fifth simultaneously-active identifier")
 	})
 
@@ -374,7 +374,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		c := newConn(&fuzzSink{addr: "zero:self"}, fakeFuzzAddr("zero:peer"),
 			nil, []byte("selfcid0"), false, DefaultParameters())
 		t.Cleanup(func() { _ = c.Close() })
-		_, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now())
+		err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now())
 		wantViolation(t, err, transportProtocolViolation, "NEW_CONNECTION_ID under a zero-length peer identifier")
 	})
 }
@@ -399,6 +399,12 @@ func newMigratableServer(t *testing.T, name string) (*Conn, *recordingPC) {
 // for an authenticated 1-RTT packet from addr.
 func rxFromNewAddress(c *Conn, addr net.Addr, size int, highest bool) {
 	c.mu.Lock()
+	if !sameAddr(addr, c.peer) {
+		if c.offPath.addr == nil || !sameAddr(c.offPath.addr, addr) {
+			c.offPath.addr, c.offPath.recv, c.offPath.sent = addr, 0, 0
+		}
+		c.offPath.recv += int64(size)
+	}
 	c.rxFrom = addr
 	c.rxDatagramLen = size
 	c.rxHighest = highest
@@ -415,7 +421,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 
 	challenge := AppendVarint(nil, framePathChallenge)
 	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -445,7 +451,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 	// an off-path address earns no expansion — the response must not be a
 	// 1200-byte reflection of a few bytes aimed at a spoofed source.
 	rxFromNewAddress(c, fakeFuzzAddr("probe:peerC"), 60, true)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	writes = pc.recorded()
@@ -465,20 +471,20 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	c, pc := newMigratableServer(t, "mig")
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
 	// Pollute the path state so the reset is observable.
 	c.mu.Lock()
 	c.rtt.sample(50*time.Millisecond, 0)
-	c.cc.cwnd = 999_999
+	c.reno().cwnd = 999_999
 	c.ptoCount = 2
 	c.mu.Unlock()
 
 	// A stale packet (not the highest-numbered) must not move the path.
 	rxFromNewAddress(c, fakeFuzzAddr("mig:peerB"), 1200, false)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -491,7 +497,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	// The highest-numbered one does.
 	newAddr := fakeFuzzAddr("mig:peerB")
 	rxFromNewAddress(c, newAddr, 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,7 +506,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	migrations := c.migrations
 	ampl, amplRecv := c.amplActive, c.amplRecv
 	rttReset := !c.rtt.sampled
-	cwnd := c.cc.cwnd
+	cwnd := c.reno().cwnd
 	ptoCount := c.ptoCount
 	probing := c.pathProbe.pending
 	dcid := append([]byte(nil), c.dcid...)
@@ -539,7 +545,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	wrong := AppendVarint(nil, framePathResponse)
 	wrong = append(wrong, 9, 9, 9, 9, 9, 9, 9, 9)
 	rxFromNewAddress(c, newAddr, 100, true)
-	if _, err := c.frames(spaceApplication, wrong, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, wrong, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -553,7 +559,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	right := AppendVarint(nil, framePathResponse)
 	right = append(right, challengeData[:]...)
 	rxFromNewAddress(c, fakeFuzzAddr("mig:peerC"), 100, true)
-	if _, err := c.frames(spaceApplication, right, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, right, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -702,7 +708,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 		}
 		return nil
 	})
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -914,7 +920,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 		t.Fatalf("%s: the server never received the %d bytes", what, n)
 	}
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,7 +1036,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 		})
 	}
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1157,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	}
 	_ = first.Close() // the old socket is the caller's, and the caller is done with it
 
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1298,7 +1304,7 @@ func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
 	resp := AppendVarint(nil, framePathResponse)
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1340,7 +1346,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	c, pc := newMigratableServer(t, "small")
 	newAddr := fakeFuzzAddr("small:peerB")
 	rxFromNewAddress(c, newAddr, 40, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	probes := writesTo(pc.recorded(), newAddr)
@@ -1354,7 +1360,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	c.mu.Lock()
 	first := c.pathProbe.data
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, pathResponse(first), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, pathResponse(first), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1370,7 +1376,7 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 	if last := probes[len(probes)-1]; len(last.data) < 1200 {
 		t.Fatalf("the second validation left in %d bytes, want ≥1200", len(last.data))
 	}
-	if _, err := c.frames(spaceApplication, pathResponse(second), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, pathResponse(second), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1404,12 +1410,12 @@ func TestSmallDatagramMigrationValidatesWithinTheBudget(t *testing.T) {
 func TestUnvalidatedMigrationRevertsToTheLastValidatedPath(t *testing.T) {
 	c, pc := newMigratableServer(t, "revert")
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	oldAddr, newAddr := fakeFuzzAddr("revert:peerA"), fakeFuzzAddr("revert:peerB")
 	rxFromNewAddress(c, newAddr, 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	old := writesTo(pc.recorded(), oldAddr)
@@ -1466,11 +1472,11 @@ func TestReturnToTheValidatedPathEndsAnUnprovenMigration(t *testing.T) {
 	c, _ := newMigratableServer(t, "spoof")
 	oldAddr := fakeFuzzAddr("spoof:peerA")
 	rxFromNewAddress(c, fakeFuzzAddr("spoof:attacker"), 1200, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	rxFromNewAddress(c, oldAddr, 50, true)
-	if _, err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -1499,7 +1505,7 @@ func TestRetirementFloodIsBounded(t *testing.T) {
 	seq := uint64(1)
 	for ; seq <= 1000 && err == nil; seq++ {
 		cid := []byte{'f', 'l', 'o', 'o', 'd', byte(seq >> 16), byte(seq >> 8), byte(seq)}
-		_, err = c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now())
+		err = c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now())
 	}
 	wantViolation(t, err, transportConnectionIDLimit, "an unending retirement flood")
 	if retired := len(controlFrames(t, c)); retired > limit {
@@ -1521,11 +1527,511 @@ func TestRetirementsThatLeaveDoNotAccumulate(t *testing.T) {
 	tok := make([]byte, 16)
 	for seq := uint64(1); seq <= 100; seq++ {
 		cid := []byte{'d', 'r', 'a', 'i', 'n', byte(seq >> 16), byte(seq >> 8), byte(seq)}
-		if _, err := c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, ncidFrame(seq, seq, cid, tok), time.Now()); err != nil {
 			t.Fatalf("sequence %d: %v", seq, err)
 		}
 		c.mu.Lock()
 		c.flushControlLocked()
 		c.mu.Unlock()
+	}
+}
+
+// openAppPackets decrypts every datagram a recordingPC captured from a Conn
+// that installAppSealer armed, and parses their frames: a cut that fell
+// inside a frame would not parse.
+func openAppPackets(t *testing.T, c *Conn, pc *recordingPC) [][]Frame {
+	t.Helper()
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out [][]Frame
+	for i, w := range pc.recorded() {
+		// The DPLPMTUD probe (pmtu.go) is the one datagram sized past
+		// maxDatagram, by design; everything else is bounded by it.
+		if len(w.data) > c.maxDatagram && len(w.data) != pmtuCommonSize {
+			t.Errorf("datagram %d is %d bytes, over maxDatagram %d", i, len(w.data), c.maxDatagram)
+		}
+		payload, _, err := opener.Open(w.data, 1+len(c.dcid), 0)
+		if err != nil {
+			t.Fatalf("datagram %d does not open: %v", i, err)
+		}
+		frames, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatalf("datagram %d does not parse: %v", i, err)
+		}
+		out = append(out, frames)
+	}
+	return out
+}
+
+// Four hundred RETIRE_CONNECTION_ID frames fit one 1200-byte packet, each
+// legal when read — the sequences are predictable — and each used to queue
+// a 29-byte NEW_CONNECTION_ID: the control queue grew ten times faster
+// than the peer's line. Now at most the active limit of replacements wait
+// on the queue; past it a retirement drops the identifier without one, so
+// nextLocalSeq stops growing and the next invented sequence is the §19.16
+// violation. The registrar's table never holds more than the limit either.
+func TestRetirementChainIsBounded(t *testing.T) {
+	reg := newTestRegistrar()
+	pc := &recordingPC{addr: fakeFuzzAddr("chain:self")}
+	c := newConn(pc, fakeFuzzAddr("chain:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.registrar = reg
+	c.handshakeConfirmed = true
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 4
+	c.issueLocalCIDsLocked()
+	c.flushControlLocked() // the first issuance leaves; the queue is empty
+	c.mu.Unlock()
+
+	var flood []byte
+	for seq := uint64(1); seq <= 400; seq++ {
+		flood = appendFrame(flood, frameRetireConnectionID, seq)
+	}
+	err := c.frames(spaceApplication, flood, time.Now())
+	wantViolation(t, err, transportProtocolViolation, "retiring past what was issued")
+
+	c.mu.Lock()
+	queued, newCIDs, nextSeq, locals := len(c.control), c.controlNewCIDs, c.nextLocalSeq, len(c.localCIDs)
+	c.mu.Unlock()
+	const limit = 4
+	var issued int
+	for _, f := range controlFrames(t, c) {
+		if f.Type == frameNewConnectionID {
+			issued++
+		}
+	}
+	if issued > limit || newCIDs != issued {
+		t.Errorf("%d NEW_CONNECTION_ID frames queued (counter %d), want at most %d", issued, newCIDs, limit)
+	}
+	if queued > limit*29 {
+		t.Errorf("the control queue holds %d bytes after a 400-frame flood, want at most %d", queued, limit*29)
+	}
+	if nextSeq > 2*limit {
+		t.Errorf("nextLocalSeq = %d after the flood, want at most %d: issuance did not stop", nextSeq, 2*limit)
+	}
+	if n := len(reg.table); n > limit || locals > limit {
+		t.Errorf("%d identifiers routed, %d active, want at most %d", n, locals, limit)
+	}
+	openAppPackets(t, c, pc) // nothing that left exceeded maxDatagram
+}
+
+// Once the queue drains, the deficit a bounded retirement left is made up:
+// the flush after the next processed packet issues the missing
+// identifiers, so a conformant peer that retires at the pace of the
+// replacements never runs short.
+func TestRetirementDeficitIsMadeUpOnFlush(t *testing.T) {
+	reg := newTestRegistrar()
+	pc := &recordingPC{addr: fakeFuzzAddr("deficit:self")}
+	c := newConn(pc, fakeFuzzAddr("deficit:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.registrar = reg
+	c.handshakeConfirmed = true
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 4
+	c.issueLocalCIDsLocked()
+	c.flushControlLocked()
+	c.mu.Unlock()
+
+	// Retire 1..7: 4 replacements (4..7) fill the queue, then 5, 6 and 7
+	// go without one.
+	var retire []byte
+	for seq := uint64(1); seq <= 7; seq++ {
+		retire = appendFrame(retire, frameRetireConnectionID, seq)
+	}
+	if err := c.frames(spaceApplication, retire, time.Now()); err != nil {
+		t.Fatalf("retiring what was issued: %v", err)
+	}
+	c.mu.Lock()
+	before := len(c.localCIDs)
+	c.flushControlLocked()
+	after, pending := len(c.localCIDs), c.controlNewCIDs
+	c.mu.Unlock()
+	if before != 1 {
+		t.Errorf("%d identifiers active after the queue filled, want 1 (sequence 0)", before)
+	}
+	if after != 4 || pending != 0 {
+		t.Errorf("after the flush: %d active, %d replacements still queued, want 4 and 0", after, pending)
+	}
+	for _, frames := range openAppPackets(t, c, pc) {
+		for _, f := range frames {
+			if f.Type == frameNewConnectionID && f.value >= 8 && reg.has(f.Data[:len(f.Data)-16]) {
+				return // a top-up identifier left, and it routes
+			}
+		}
+	}
+	t.Error("no top-up NEW_CONNECTION_ID (sequence 8 or above) was sent")
+}
+
+// A queue longer than one packet leaves in several, each under
+// maxDatagram and cut on a frame boundary, grants first; the counters
+// follow the frames out. The control flush used to copy the whole queue
+// into one packet — 11.5 KB observed on a 1200-byte path.
+func TestQueuedFramesLeaveWithinTheMTU(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("mtu:self")}
+	c := newConn(pc, fakeFuzzAddr("mtu:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	for i := range 100 {
+		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40) // 17 bytes each
+	}
+	for i := range 60 {
+		c.control = appendFrame(c.control, frameStreamDataBlocked, uint64(i)<<40, 1<<40)
+	}
+	for seq := range uint64(20) {
+		c.control = appendFrame(c.control, frameRetireConnectionID, seq)
+		c.controlRetires++
+	}
+	queued := len(c.grants) + len(c.control)
+	c.flushControlLocked()
+	left, retires := len(c.grants)+len(c.control), c.controlRetires
+	c.mu.Unlock()
+	if left != 0 || retires != 0 {
+		t.Fatalf("%d bytes and %d retirements still queued after the flush, want none", left, retires)
+	}
+	packets := openAppPackets(t, c, pc)
+	if len(packets) < queued/c.maxDatagram+1 {
+		t.Errorf("%d bytes of frames left in %d packets, want at least %d", queued, len(packets), queued/c.maxDatagram+1)
+	}
+	var grants, blocked, retired int
+	grantsDone := false
+	for _, frames := range packets {
+		for _, f := range frames {
+			switch f.Type {
+			case frameMaxStreamData:
+				grants++
+				if grantsDone {
+					t.Error("a grant left after a control frame: grants go first")
+				}
+			case frameStreamDataBlocked:
+				blocked++
+				grantsDone = true
+			case frameRetireConnectionID:
+				retired++
+				grantsDone = true
+			}
+		}
+	}
+	if grants != 100 || blocked != 60 || retired != 20 {
+		t.Errorf("%d grants, %d blocked, %d retirements left, want 100, 60, 20", grants, blocked, retired)
+	}
+}
+
+// What rides a data packet is cut to the room beside it: a full stream
+// chunk with a long queue waiting still leaves under maxDatagram, and the
+// rest of the queue leaves on its own afterwards.
+func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("ride:self")}
+	c := newConn(pc, fakeFuzzAddr("ride:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	for i := range 100 {
+		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40)
+	}
+	chunk := []byte{FrameStream | 0x02} // length present, offset 0
+	chunk = AppendVarint(chunk, 4)
+	chunk = AppendVarint(chunk, uint64(c.maxStreamChunk()-8))
+	chunk = append(chunk, make([]byte, c.maxStreamChunk()-len(chunk))...)
+	if err := c.sendPacketLocked(spaceApplication, chunk, sendOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Unlock()
+	packets := openAppPackets(t, c, pc)
+	if len(packets) != 1 {
+		t.Fatalf("%d packets left, want the one data packet", len(packets))
+	}
+	var rode int
+	for _, f := range packets[0] {
+		if f.Type == frameMaxStreamData {
+			rode++
+		}
+	}
+	if rode == 0 || rode == 100 {
+		t.Errorf("%d grants rode the data packet, want some but not all 100", rode)
+	}
+	c.mu.Lock()
+	c.flushControlLocked()
+	left := len(c.grants)
+	c.mu.Unlock()
+	if left != 0 {
+		t.Errorf("%d bytes of grants still queued after the flush", left)
+	}
+	openAppPackets(t, c, pc)
+}
+
+// RFC 9000 §18.2: disable_active_migration is a zero-length value, read and
+// announced; one that carries bytes is TRANSPORT_PARAMETER_ERROR (§7.4,
+// invalid value), and one repeated is refused like every known identifier.
+func TestDisableActiveMigrationParameter(t *testing.T) {
+	p := DefaultParameters()
+	again, err := parseParameters(appendParameters(nil, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DisableActiveMigration {
+		t.Fatal("the default parameters announce disable_active_migration")
+	}
+	p.DisableActiveMigration = true
+	raw := appendParameters(nil, p)
+	again, err = parseParameters(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.DisableActiveMigration {
+		t.Fatal("disable_active_migration did not survive the round trip")
+	}
+
+	wantParamError := func(t *testing.T, raw []byte, what string) {
+		t.Helper()
+		_, err := parseParameters(raw)
+		te := &transportError{}
+		if !errors.As(err, &te) || te.code != transportParameterError {
+			t.Errorf("%s: %v, want TRANSPORT_PARAMETER_ERROR", what, err)
+		}
+	}
+	oneByte := AppendVarint(nil, paramDisableActiveMigration)
+	oneByte = AppendVarint(oneByte, 1)
+	oneByte = append(oneByte, 0)
+	wantParamError(t, oneByte, "a one-byte disable_active_migration")
+	twice := AppendVarint(nil, paramDisableActiveMigration)
+	twice = AppendVarint(twice, 0)
+	wantParamError(t, append(twice, twice...), "disable_active_migration twice")
+}
+
+// RFC 9000 §18.2: a client whose server announced disable_active_migration
+// refuses Rebind — nothing leaves on the new socket, the connection keeps
+// the old one — until it has moved to that server's preferred address,
+// after which the handshake's address is no longer the one it sends to.
+// TestRebindValidatedByAResponseIsNotFatal is the control without the
+// parameter.
+func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
+	old := &recordingPC{addr: fakeFuzzAddr("dam:old")}
+	peer := fakeFuzzAddr("dam:peer")
+	c := newConn(old, peer, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerParams.DisableActiveMigration = true
+	c.hasPeerParams = true
+	c.mu.Unlock()
+
+	fresh := &recordingPC{addr: fakeFuzzAddr("dam:new")}
+	if err := c.Rebind(fresh); !errors.Is(err, ErrMigrationDisabled) {
+		t.Fatalf("Rebind under disable_active_migration: %v, want ErrMigrationDisabled", err)
+	}
+	if n := len(fresh.recorded()); n != 0 {
+		t.Errorf("%d datagrams left on the new socket after a refused Rebind", n)
+	}
+	c.mu.Lock()
+	if c.pc != old {
+		t.Error("a refused Rebind replaced the socket")
+	}
+	if c.pathProbe.pending {
+		t.Error("a refused Rebind started a path probe")
+	}
+	// A preferred address offered but not yet adopted changes nothing:
+	// the connection still sends to the handshake's address.
+	c.preferred = fakeFuzzAddr("dam:preferred")
+	c.mu.Unlock()
+	if err := c.Rebind(fresh); !errors.Is(err, ErrMigrationDisabled) {
+		t.Fatalf("Rebind with a preferred address not yet adopted: %v, want ErrMigrationDisabled", err)
+	}
+	// Once adopted — the connection sends to the preferred address, as
+	// adoptPreferredPathLocked leaves it — §18.2's last sentence applies.
+	c.mu.Lock()
+	c.peer = c.preferred
+	c.mu.Unlock()
+	if err := c.Rebind(fresh); err != nil {
+		t.Fatalf("Rebind after acting on preferred_address: %v", err)
+	}
+	if n := len(fresh.recorded()); n != 1 {
+		t.Errorf("%d datagrams left on the new socket after Rebind, want 1 (the PATH_CHALLENGE)", n)
+	}
+}
+
+// RFC 9000 §8.2.2 and §8: every PATH_CHALLENGE is answered, and what goes
+// to an address off the path — never validated, since a probing-only packet
+// does not move the path — stays under three times what that address sent.
+// One packet of k challenges used to earn k datagrams of 1200 bytes each: a
+// reflection of k× toward a spoofed source. Now its k answers share one
+// expanded datagram, and the address's own books cap the rest.
+func TestOffPathChallengesShareOneDatagramWithinBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "budget")
+	source := fakeFuzzAddr("budget:peerB")
+	const k = 8
+	var challenges []byte
+	for i := range k {
+		challenges = AppendVarint(challenges, framePathChallenge)
+		challenges = append(challenges, bytes.Repeat([]byte{byte(i + 1)}, 8)...)
+	}
+	rxFromNewAddress(c, source, 1200, true)
+	if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	writes := pc.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("%d datagrams answered one packet of %d challenges, want 1", len(writes), k)
+	}
+	if !sameAddr(writes[0].to, source) || len(writes[0].data) != 1200 {
+		t.Errorf("the answer is %d bytes to %v, want 1200 to %v", len(writes[0].data), writes[0].to, source)
+	}
+	if got := countFrames(t, c, writes[0].data, framePathResponse); got != k {
+		t.Errorf("the datagram carries %d PATH_RESPONSE frames, want %d", got, k)
+	}
+
+	// The books: 1200 received funds 3600; two more such packets spend it
+	// (1200 each), and a fourth answer — nothing more received — is
+	// withheld rather than sent past the limit.
+	for range 2 {
+		if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.frames(spaceApplication, challenges, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	for _, w := range pc.recorded() {
+		if sameAddr(w.to, source) {
+			total += len(w.data)
+		}
+	}
+	if total > 3*1200 {
+		t.Errorf("%d bytes went to an address that sent 1200: past the 3× limit (§8)", total)
+	}
+	if total != 3*1200 {
+		t.Errorf("%d bytes went to the source, want exactly the 3600 its datagram funds", total)
+	}
+}
+
+// countFrames opens a short-header datagram c sealed (the test key serves
+// both directions) and counts the frames of type typ in it.
+func countFrames(t *testing.T, c *Conn, datagram []byte, typ byte) int {
+	t.Helper()
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _, err := opener.Open(append([]byte(nil), datagram...), 1+len(c.dcid), 0)
+	if err != nil {
+		t.Fatalf("the datagram does not open: %v", err)
+	}
+	frames, err := parseFrames(nil, payload)
+	if err != nil {
+		t.Fatalf("the payload does not parse: %v", err)
+	}
+	n := 0
+	for _, f := range frames {
+		if f.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// RFC 9000 §9.4: "Packets sent on the old path MUST NOT contribute to
+// congestion control or RTT estimation for the new path." The flight the
+// migration finds in the record is still owed — a lost payload is queued
+// again — but its loss is no congestion event for the fresh window, its
+// acknowledgement releases nothing from a flight it never joined and dates
+// no round trip. Packets sent after the move are the new path's own: their
+// loss halves the window as ever.
+func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
+	c, _ := newMigratableServer(t, "flight")
+	tok := make([]byte, 16)
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ten packets in flight on the old path.
+	before := time.Now().Add(-10 * time.Millisecond)
+	c.mu.Lock()
+	sp := &c.spaces[spaceApplication]
+	for pn := range uint64(10) {
+		sp.sent.record(sentPacket{pn: pn, sentAt: before, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	}
+	sp.nextPN = 10
+	c.cc.onSent(before, 12_000)
+	c.mu.Unlock()
+
+	rxFromNewAddress(c, fakeFuzzAddr("flight:peerB"), 1200, true)
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	migrations, flightAfterMove := c.migrations, c.reno().inFlight
+	c.mu.Unlock()
+	if migrations != 1 {
+		t.Fatalf("migrations = %d, want 1", migrations)
+	}
+
+	// The peer acknowledges the old path's packet 9 alone: 0 to 6 are lost
+	// by the packet threshold, 9 is newly acknowledged and ack-eliciting.
+	var peer ackTracker
+	peer.record(9, time.Now())
+	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	cwnd, sampled, flight, queued := c.reno().cwnd, c.rtt.sampled, c.reno().inFlight, len(sp.retrans)
+	c.mu.Unlock()
+	if want := newNewReno(1200).cwnd; cwnd != want {
+		t.Errorf("cwnd = %d after the old path's losses, want the initial %d (§9.4)", cwnd, want)
+	}
+	if sampled {
+		t.Error("the old path's acknowledgement gave the new path a round-trip sample (§9.4)")
+	}
+	if flight != flightAfterMove {
+		t.Errorf("in flight = %d after the old path's acknowledgement, want %d: those bytes were never the new path's", flight, flightAfterMove)
+	}
+	if queued != 7 {
+		t.Errorf("%d payloads queued for retransmission, want 7: the old path's losses are still owed", queued)
+	}
+
+	// Witness: ten packets sent on the new path, seven of them lost.
+	after := time.Now()
+	c.mu.Lock()
+	base := sp.nextPN
+	for i := range uint64(10) {
+		sp.sent.record(sentPacket{pn: base + i, sentAt: after, size: 1200, ackEliciting: true, payload: []byte{framePing}})
+	}
+	sp.nextPN = base + 10
+	c.cc.onSent(after, 12_000)
+	c.mu.Unlock()
+	peer.record(base+9, time.Now())
+	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	cwnd, sampled = c.reno().cwnd, c.rtt.sampled
+	c.mu.Unlock()
+	// The batch's loss halves the window first, and the acknowledged
+	// packet, sent before the recovery period that loss opened, grows
+	// nothing (RFC 9002 A.7, B.5).
+	if want := newNewReno(1200).cwnd / 2; cwnd != want {
+		t.Errorf("cwnd = %d after the new path's own losses, want %d: a loss on this path is a congestion event", cwnd, want)
+	}
+	if !sampled {
+		t.Error("the new path's acknowledgement gave no round-trip sample")
 	}
 }

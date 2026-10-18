@@ -16,7 +16,7 @@ What runs here, and in the CI job `interop-quic` on every push:
 | Test | Peer | What it proves |
 |---|---|---|
 | `TestSluiceClientAgainstQuicGoServer` | quic-go listens, `quic.Dial` connects | handshake, a 256 KiB echo across flow-control windows, `Close` seen by the peer |
-| `TestQuicGoClientAgainstSluiceServer` | `quic.NewListener` listens, quic-go dials | the mirror, with the peer's application close surfaced by `PeerClosed` |
+| `TestQuicGoClientAgainstSluiceServer` | `quic.NewListener` listens, quic-go dials | the mirror, with the peer's application close surfaced by `Err` as a `ConnectionError` |
 | `TestQuicGoHTTP3ClientAgainstServeH3` | `httpstream.ServeH3` serves, `quic-go/http3` requests | a plain response, a streamed one, several on one connection, two streamed at once |
 
 The first of these found a bug on its first day: one echo in twenty came

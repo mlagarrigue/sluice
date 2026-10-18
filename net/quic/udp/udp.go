@@ -36,11 +36,11 @@
 // [EnablePacketInfo], [PacketDestination] and [AppendPacketSource] are the
 // second concern: a socket bound to the unspecified address learning which
 // of the host's addresses a datagram reached, and answering from it.
-// Linux only for now.
+// Linux, Darwin and Windows.
 //
-// Setting DF is the prerequisite for path MTU discovery (§14.2), which the
-// transport does not do yet; until it does, datagrams stay at 1200 bytes
-// and DF is defence rather than a measurement. The flow label is a SHOULD
+// Setting DF is the prerequisite for path MTU discovery (§14.2): the
+// transport's probes (DPLPMTUD, §14.3) would prove nothing about the path
+// if a router could fragment them. The flow label is a SHOULD
 // and is applied where the platform allows, never reported as an error
 // where it does not.
 package udp
@@ -135,8 +135,8 @@ const PacketInfoLen = 128
 // answer from an address it never wrote to, and to QUIC that is a
 // different path (RFC 9000 §9).
 //
-// Linux only for now (IP_PKTINFO / IPV6_RECVPKTINFO); elsewhere it returns
-// [errors.ErrUnsupported] (wrapped) and changes nothing.
+// Linux, Darwin and Windows (IP_PKTINFO / IPV6_PKTINFO); elsewhere it
+// returns [errors.ErrUnsupported] (wrapped) and changes nothing.
 func EnablePacketInfo(c *net.UDPConn) error {
 	rc, err := c.SyscallConn()
 	if err != nil {
@@ -174,4 +174,55 @@ func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 // [EnablePacketInfo] is unsupported, oob is returned unchanged.
 func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	return appendPacketSource(oob, src, ifindex)
+}
+
+// EnableECN asks the kernel to report, with every datagram read through
+// [net.UDPConn.ReadMsgUDP], the ECN field of the IP header it arrived in
+// (IP_RECVTOS / IPV6_RECVTCLASS). [PacketECN] reads the field back out of
+// the out-of-band bytes, and [AppendECN] builds the control message that
+// marks a datagram sent with [net.UDPConn.WriteMsgUDP]. A transport that
+// reads the field can report congestion marks to its peer, and one that
+// sets it lets the network signal congestion without dropping (RFC 9000
+// §13.4). The buffer [PacketInfoLen] sizes has room for it.
+//
+// Linux, Darwin and Windows; elsewhere it returns [errors.ErrUnsupported]
+// (wrapped) and changes nothing.
+func EnableECN(c *net.UDPConn) error {
+	rc, err := c.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("udp: %w", err)
+	}
+	v6 := isIPv6Socket(c)
+	var opErr error
+	if err := rc.Control(func(fd uintptr) {
+		opErr = enableECN(fd, v6)
+	}); err != nil {
+		return fmt.Errorf("udp: %w", err)
+	}
+	if opErr != nil {
+		return fmt.Errorf("udp: %w", opErr)
+	}
+	return nil
+}
+
+// PacketECN finds, in the out-of-band bytes of one datagram read from a
+// socket [EnableECN] was applied to, the ECN field of its IP header: the
+// two low bits of the TOS byte or traffic class, 0b00 Not-ECT, 0b01
+// ECT(1), 0b10 ECT(0), 0b11 CE (RFC 3168 §5). ok is false when oob
+// carries no such message. It does not allocate.
+func PacketECN(oob []byte) (ecn uint8, ok bool) {
+	return packetECN(oob)
+}
+
+// AppendECN appends to oob the control message that sets the ECN field of
+// a datagram sent with [net.UDPConn.WriteMsgUDP] to ecn, one of the
+// codepoints [PacketECN] documents. dst is the datagram's destination: an
+// IPv4 or IPv4-mapped address gets the IPv4 option, any other the IPv6
+// one, because a kernel reads the option of the family it sends through
+// and Winsock refuses the other family's message outright. Winsock also
+// refuses CE, the codepoint only the network sets; a transport sends
+// ECT(0) or ECT(1). Where [EnableECN] is unsupported, oob is returned
+// unchanged.
+func AppendECN(oob []byte, ecn uint8, dst netip.Addr) []byte {
+	return appendECN(oob, ecn, dst.Unmap().Is4())
 }

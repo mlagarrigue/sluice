@@ -1,13 +1,13 @@
 package postgres
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log/slog"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -112,11 +112,32 @@ type Conn struct {
 	// startup. It is nil for a Conn built by NewConn, which never saw them.
 	params map[string]string
 
+	// encodingChosen is set when the caller named client_encoding in
+	// [Config.Params]. Without it, recordParameter breaks the
+	// connection on any client_encoding other than UTF8, whenever the server
+	// announces it: at startup, or after a SET mid-session.
+	encodingChosen bool
+
 	// cancelKey is the pgwire.BackendKeyData the server sent during startup. Written
 	// once, there, and read-only afterwards — which is what makes
 	// [Conn.CancelKey] the one method another goroutine may call while a
 	// query is running. Zero for a Conn built by NewConn.
 	cancelKey CancelKey
+
+	// protocol is the version the server settled on during startup, written
+	// once there, like cancelKey. Zero for a Conn built by NewConn.
+	protocol ProtocolVersion
+
+	// cancelDial is the recipe [Connect] was given, kept so a context that
+	// ends mid-statement can reach the server through a second connection.
+	// Nil for a Conn built by NewConn.
+	cancelDial DialFunc
+
+	// cancelTimeout and logger are [Config.CancelTimeout] and
+	// [Config.Logger] as given, zero and nil included; [Conn.sendCancel]
+	// and [Conn.log] read the defaults into them.
+	cancelTimeout time.Duration
+	logger        *slog.Logger
 
 	// inTx records that a transaction is open, whether it was opened by
 	// [Conn.Begin] or by a [Copier]. It exists so a second BEGIN is refused:
@@ -170,6 +191,10 @@ type Conn struct {
 	// aliasing-sensitive, and two hand-rolled copies of it would drift.
 	rowsScratch  Rows
 	itemsScratch []Row
+	// cutLogged records that the current result's byte-bound cut has been
+	// logged, so a wide result warns once rather than once per batch. Reset
+	// by [Conn.beginResult].
+	cutLogged bool
 }
 
 // beginBusy claims the connection for one result's lifetime, refusing a
@@ -219,8 +244,9 @@ func (c *Conn) execBusy(sql string) error {
 // where a fresh one leaves it stale but stable. It is one small allocation
 // per query, against the accumulator's buffers — the expensive part — which
 // are reused.
-func (c *Conn) beginResult(desc []Field, batchRows int) (*Rows, []Row) {
-	c.rowsScratch.Init(desc, batchRows)
+func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Row) {
+	c.rowsScratch.Init(desc, batchRows, batchBytes)
+	c.cutLogged = false
 	return &c.rowsScratch, c.itemsScratch[:0]
 }
 
@@ -229,9 +255,23 @@ func (c *Conn) beginResult(desc []Field, batchRows int) (*Rows, []Row) {
 // scratch so the next result starts from the grown capacity — and whether the
 // consumer wants more. A nil or empty accumulator delivers nothing and
 // reports true.
-func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
+//
+// The first batch of a result that the byte bound cut is logged, once: a
+// result whose rows are so wide that BatchBytes closes batches before
+// BatchRows is a result the caller sized for something else. ctx is the
+// statement's, and serves the log alone.
+func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver func(sluice.Batch[Row]) bool) ([]Row, bool) {
 	if rows == nil || rows.Len() == 0 {
 		return items, true
+	}
+	if !c.cutLogged && rows.fullOnBytes() {
+		c.cutLogged = true
+		c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: batch cut by its byte bound before its row limit",
+			slog.Int("rows", rows.Len()),
+			slog.Int("bytes", len(rows.buf)),
+			slog.Int("largest_row_bytes", rows.largestRow()),
+			slog.Int("batch_rows", rows.maxRows),
+			slog.Int("batch_bytes", rows.maxBytes))
 	}
 	items = items[:0]
 	for i := range rows.Len() {
@@ -247,19 +287,23 @@ func (c *Conn) emitRows(rows *Rows, items []Row, deliver func(sluice.Batch[Row])
 // completed — a net.Conn, a TLS connection, or anything else with the same
 // shape.
 //
-// Use [Startup] instead unless you have a reason not to: it performs the
-// startup packet and authentication and hands back the same thing. NewConn is
+// Use [Connect] instead unless you have a reason not to: it dials, performs
+// the startup packet and authentication, and hands back the same thing —
+// with cancellation, which a Conn built here does not have. NewConn is
 // for a caller who has done that themselves, or who is speaking to something
 // that is already past it.
 //
 // A Conn built this way reports nothing from [Conn.Parameter], because the
-// ParameterStatus messages went past before it existed.
+// ParameterStatus messages went past before it existed. It holds the one
+// parameter it judges to the same rule as a [Connect] without
+// client_encoding in its Params: a later announcement of any encoding other
+// than UTF8 breaks it.
 //
 // It starts with the statement cache on; [Conn.PrepareStatements] changes the
 // bound or turns it off.
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{
-		rw: rw, r: pgwire.NewReader(readSource(rw)), w: pgwire.NewWriter(rw),
+		rw: rw, r: pgwire.NewReaderSize(rw, ReadBufferSize), w: pgwire.NewWriter(rw),
 		stmts: newStmtCache(defaultStatementCacheBound),
 	}
 }
@@ -274,24 +318,15 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 // looked. Buffering took that scan from 33.5 ms to 13.5 ms, and a 1000-key
 // `= ANY` from 1.80 ms to 0.69 ms.
 //
+// Every transport is read this way, not only a [net.Conn]: an ssh.Channel or
+// a wrapper of the caller's own reaches a socket underneath too, and would pay
+// the same two reads per message. A message that fits in the buffer is handed
+// over where it lies, with no copy, which made the in-memory replay of a
+// thousand rows 25% faster than reading the transport directly.
+//
 // Sixty-four kilobytes per connection, and a connection is already an
 // expensive thing to hold.
 const ReadBufferSize = 64 << 10
-
-// readSource buffers a transport whose reads cost a system call, and leaves
-// everything else alone.
-//
-// The test is [net.Conn], because that is where the cost is certain: a socket
-// read is a syscall whatever its size. Anything else — a scripted server, a
-// replayed conversation, a bytes.Reader — is not wrapped, because buffering
-// memory is a pure copy and measured +5% on the replay benchmark. Making a
-// harness slower to make a socket faster is a trade nobody asked for.
-func readSource(rw io.ReadWriteCloser) io.Reader {
-	if _, ok := rw.(net.Conn); ok {
-		return bufio.NewReaderSize(rw, ReadBufferSize)
-	}
-	return rw
-}
 
 // Close closes the underlying connection, sending a Terminate first when the
 // protocol position still allows it.
@@ -314,6 +349,13 @@ func (c *Conn) Err() error { return c.broken }
 // decoded against: a client that assumes UTF-8 and microsecond timestamps can
 // check here rather than assume. A Conn from [NewConn] has none of them.
 func (c *Conn) Parameter(name string) string { return c.params[name] }
+
+// Protocol returns the protocol version the server settled on during
+// startup: [Config.MaxProtocol], or the older version a
+// NegotiateProtocolVersion named in its place — [Protocol30] from any
+// PostgreSQL before 18 asked for 3.2. A Conn from [NewConn] reports zero, it
+// never saw a startup.
+func (c *Conn) Protocol() ProtocolVersion { return c.protocol }
 
 // Fetch says how a query asks the server for its rows: in batches, or all at
 // once. The zero value, FetchAuto, decides per statement.
@@ -378,12 +420,45 @@ const (
 	FetchBatches
 )
 
+// defaultBatchBytes is the byte bound on a batch when [QueryConfig.BatchBytes]
+// is zero: the same 64 MiB as a message from the server, so the two defaults
+// bound memory by one number.
+const defaultBatchBytes = 64 << 20
+
+// maxBatchBytes is the largest byte bound a batch accepts. A batch closes
+// with the row that crossed its bound in it, and that row is at most
+// [maxMaxMessage], so a bound of 1 GiB keeps the batch under the 2 GiB its
+// int32 offsets allow: past it, [Rows.Append] would refuse a row the bound
+// was meant to cut, not fail on.
+const maxBatchBytes = 1 << 30
+
+// batchBounds resolves a QueryConfig's row and byte bounds, zero to its
+// default and anything else out of range to an error: a typo behind a
+// fallback runs with a bound nobody chose and cannot be found from the
+// behaviour it produces (ADR 0018).
+func batchBounds(cfg QueryConfig) (rows, size int, err error) {
+	rows, size = cfg.BatchRows, cfg.BatchBytes
+	if rows < 0 {
+		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchRows %d is negative — zero means the default, %d", rows, sluice.DefaultBatchSize)
+	}
+	if size < 0 || size > maxBatchBytes {
+		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchBytes %d is outside 1..%d bytes — zero means the default, %d", size, maxBatchBytes, defaultBatchBytes)
+	}
+	if rows == 0 {
+		rows = sluice.DefaultBatchSize
+	}
+	if size == 0 {
+		size = defaultBatchBytes
+	}
+	return rows, size, nil
+}
+
 // QueryConfig states the bounds a query runs under. They are the caller's,
 // per S1: none has a value that suits every result.
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
 	// asked for exactly that many at a time — what bounds the rows in flight.
-	// A value of zero or less means [sluice.DefaultBatchSize].
+	// Zero means [sluice.DefaultBatchSize]; a negative value is refused.
 	//
 	// # Two batches in flight
 	//
@@ -415,6 +490,24 @@ type QueryConfig struct {
 	// trap is gone once the statement is known to fit — [FetchAuto] then asks
 	// for every row — but the first execution still falls into it.
 	BatchRows int
+
+	// BatchBytes bounds the values a batch holds, in bytes. BatchRows bounds
+	// a batch in rows, which says nothing about its size: a thousand rows of
+	// a megabyte each are a gigabyte, held until the batch is delivered — and
+	// a server, pooler or man in the middle can make every row that wide. A
+	// batch whose values reach BatchBytes is delivered with the row that
+	// crossed the bound in it, and the next row opens the next batch; nothing
+	// fails, the consumer sees more and smaller batches, and [Config.Logger]
+	// receives one warning per result. A single row wider than the bound
+	// travels in a batch of its own — it is bounded by [Config.MaxMessage] —
+	// so memory per batch is at most BatchBytes plus one row.
+	//
+	// Zero means 64 MiB, the same default as a message from the server; a
+	// negative value or one above 1 GiB is refused, the ceiling keeping a
+	// batch and its last row within the 2 GiB a batch can address. The cut is on
+	// this side of the wire: the server still sends BatchRows rows per round
+	// trip.
+	BatchBytes int
 
 	// Fetch says whether the rows are asked for in batches of BatchRows or
 	// all at once. The zero value, [FetchAuto], asks for everything when the
@@ -483,6 +576,24 @@ type QueryConfig struct {
 	// replaces: 1 for `$1`. Zero means the bound is not pushed down, and only
 	// the limit is. It is only read when Demand is set.
 	KeyParam int
+
+	// Tag, when set, receives the statement's command tag: an
+	// UPDATE ... RETURNING read as a stream delivers its rows and leaves
+	// "UPDATE 3" here, whose count [CommandTag.RowsAffected] reads. It is
+	// written when the result is read to its CommandComplete, so read it
+	// once the source is consumed, next to [sluice.Source.Err].
+	//
+	// The count is the whole result's. Read in batches, the server's own tag
+	// counts only the last one — five rows in batches of two complete as
+	// "UPDATE 1" — so the rows of the batches before it are added; the verb
+	// is the server's.
+	//
+	// A query that failed, or whose consumer stopped before the last batch,
+	// leaves it empty: the count is unknown, and a tag next to an error
+	// would report writes the server may have rolled back.
+	// Nil, the default, copies nothing, so a query that does not ask for the
+	// tag pays no allocation for it.
+	Tag *CommandTag
 }
 
 // Query runs sql with the given binary parameters and returns its rows as a
@@ -516,12 +627,17 @@ type QueryConfig struct {
 // [sluice.Source.Err] reports ctx.Err() wrapped, so errors.Is against
 // [context.Canceled] and [context.DeadlineExceeded] answers.
 //
-// What ctx cannot do is interrupt a statement the server is still executing.
-// Between sending a query and the first row, this client is blocked in a read
-// and the server is doing work no context of ours reaches. Two things bound
-// that, and neither is ctx: a server-side statement timeout, which is the one
-// to reach for, and [CancelRequest], which is best-effort and needs a second
-// connection.
+// What ctx cannot do on its own is interrupt a statement the server is still
+// executing. Between sending a query and the first row, this client is
+// blocked in a read and the server is doing work no context of ours reaches.
+// A Conn opened by [Connect] closes that gap: a ctx that ends during that
+// read opens a second connection with the same recipe and sends
+// [CancelRequest], the server aborts the statement, and the stream ends with
+// ctx.Err() wrapped — a round trip later rather than when the statement
+// would have finished — on a connection that stays usable. A Conn built by
+// [NewConn] has no recipe, and two things bound its statement, neither of
+// them ctx: a server-side statement timeout, and a [CancelRequest] the
+// caller sends itself.
 //
 // # The consumer's pull reaches the server
 //
@@ -550,82 +666,95 @@ type QueryConfig struct {
 // whole drains the rest of its result instead; [FetchAuto] says when that
 // happens without being asked.
 func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
-	batchRows := cfg.BatchRows
-	if batchRows <= 0 {
-		batchRows = sluice.DefaultBatchSize
-	}
-
 	// queryErr is what Source.Err reports. It is written by the stream below
 	// and read after consumption, on the same goroutine: a Stream is
 	// synchronous, so there is nothing to synchronise.
 	var queryErr error
 
 	stream := sluice.Stream[Row](func(yield func(sluice.Batch[Row]) bool) {
-		if c.broken != nil {
-			queryErr = c.broken
-			return
+		// Cleared on both sides: a stream runs the query again each time it
+		// is read, and a tag left by the last run must not stand for this one.
+		if cfg.Tag != nil {
+			*cfg.Tag = ""
 		}
-		// Checked before anything is written: a caller who has already given
-		// up should cost the server nothing at all, not one wasted round trip
-		// followed by a resynchronisation.
-		if err := ctx.Err(); err != nil {
-			queryErr = fmt.Errorf("abandoning the query before it was sent: %w", err)
-			return
-		}
-		if cfg.Fetch > FetchBatches {
-			queryErr = fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
-			return
-		}
-		q := &query{conn: c, ctx: ctx, batchRows: batchRows, fetch: cfg.Fetch, entry: -1}
-		if cfg.Demand != nil {
-			if cfg.Fetch == FetchAll {
-				queryErr = errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
-				return
-			}
-			if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
-				queryErr = fmt.Errorf("postgres: QueryConfig.KeyParam %d names no parameter among %d", cfg.KeyParam, len(params))
-				return
-			}
-			q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
-		}
-		queryErr = q.run(sql, params, cfg.ParamOIDs, yield)
-		q.recordRows(queryErr)
-		// Settled after the deferred resync has read to ReadyForQuery, so the
-		// cache's provisional entry is confirmed or dropped on the server's
-		// last word — see [Conn.settleParse] for what a kept-but-unparsed
-		// entry would poison.
-		c.settleParse(queryErr)
-		// A plan the server rejected as stale is dropped here rather than
-		// retried: the retry would usually work and would hide that something
-		// migrated the schema under a live connection. The entry is gone, so
-		// the caller's own retry re-prepares and succeeds.
-		if isStalePlan(queryErr) {
-			c.forgetStatement(sql, cfg.ParamOIDs)
-			queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
-		}
-		// A statement the server says it does not hold is dropped for the
-		// same reason, from the other direction: this happens on a cache hit
-		// whose server-side half has vanished — a pooler's DISCARD ALL, a
-		// swapped backend — and keeping the entry re-binds the dead name
-		// forever. See [isMissingStatement].
-		if isMissingStatement(queryErr) {
-			c.forgetStatement(sql, cfg.ParamOIDs)
+		queryErr = c.runQuery(ctx, sql, params, cfg, yield)
+		if queryErr != nil && cfg.Tag != nil {
+			*cfg.Tag = ""
 		}
 	})
 
 	return sluice.NewSource(stream, func() error { return queryErr })
 }
 
+// runQuery is one execution of [Conn.Query], delivering to yield. A non-nil
+// [QueryConfig.Tag] receives the statement's CommandComplete tag; nil copies
+// nothing, so a streamed query pays for no tag it was not asked for.
+func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, yield func(sluice.Batch[Row]) bool) error {
+	if c.broken != nil {
+		return c.broken
+	}
+	// Checked before anything is written: a caller who has already given
+	// up should cost the server nothing at all, not one wasted round trip
+	// followed by a resynchronisation.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("abandoning the query before it was sent: %w", err)
+	}
+	if cfg.Fetch > FetchBatches {
+		return fmt.Errorf("postgres: QueryConfig.Fetch %d is not FetchAuto, FetchAll or FetchBatches", cfg.Fetch)
+	}
+	batchRows, batchBytes, err := batchBounds(cfg)
+	if err != nil {
+		return err
+	}
+	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag}
+	if cfg.Demand != nil {
+		if cfg.Fetch == FetchAll {
+			return errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
+		}
+		if cfg.KeyParam < 0 || cfg.KeyParam > len(params) {
+			return fmt.Errorf("postgres: QueryConfig.KeyParam %d names no parameter among %d", cfg.KeyParam, len(params))
+		}
+		q.demand, q.keyParam = pushdown.NewReader(cfg.Demand), cfg.KeyParam
+	}
+	w := c.watchCancel(ctx)
+	defer w.disarm()
+	queryErr := c.settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
+	q.recordRows(queryErr)
+	// Settled after the deferred resync has read to ReadyForQuery, so the
+	// cache's provisional entry is confirmed or dropped on the server's
+	// last word — see [Conn.settleParse] for what a kept-but-unparsed
+	// entry would poison.
+	c.settleParse(queryErr)
+	// A plan the server rejected as stale is dropped here rather than
+	// retried: the retry would usually work and would hide that something
+	// migrated the schema under a live connection. The entry is gone, so
+	// the caller's own retry re-prepares and succeeds.
+	if isStalePlan(queryErr) {
+		c.forgetStatement(sql, cfg.ParamOIDs)
+		queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
+	}
+	// A statement the server says it does not hold is dropped for the
+	// same reason, from the other direction: this happens on a cache hit
+	// whose server-side half has vanished — a pooler's DISCARD ALL, a
+	// swapped backend — and keeping the entry re-binds the dead name
+	// forever. See [isMissingStatement].
+	if isMissingStatement(queryErr) {
+		c.forgetStatement(sql, cfg.ParamOIDs)
+	}
+	return queryErr
+}
+
 // query holds one execution's state, so Conn keeps none between calls.
 type query struct {
-	conn      *Conn
-	ctx       context.Context
-	batchRows int
-	fetch     Fetch
-	allRows   bool // decided in run: every row asked for at once
-	synced    bool // the Sync went out with the query, so resync must not send another
-	rows      *Rows
-	items     []Row // reused: one Row view per row of the current batch
+	conn       *Conn
+	ctx        context.Context
+	batchRows  int
+	batchBytes int
+	fetch      Fetch
+	allRows    bool // decided in run: every row asked for at once
+	synced     bool // the Sync went out with the query, so resync must not send another
+	rows       *Rows
+	items      []Row // reused: one Row view per row of the current batch
 
 	// The pushdown side, nil without a QueryConfig.Demand. stmt and params
 	// are kept so a bound can re-bind the portal; bound is the one last
@@ -647,6 +776,12 @@ type query struct {
 	entry    int
 	rowsRead int
 	complete bool
+
+	// tag receives the CommandComplete tag, nil when nobody asked for it;
+	// suspendedRows counts the rows of the Executes the portal suspended,
+	// which the server's tag does not.
+	tag           *CommandTag
+	suspendedRows int
 }
 
 // recordRows tells the cache how many rows this execution produced, or that
@@ -881,7 +1016,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// lost conversation.
 				return false, err
 			}
-			q.rows, q.items = c.beginResult(desc, q.batchRows)
+			q.rows, q.items = c.beginResult(desc, q.batchRows, q.batchBytes)
 
 		case pgwire.BackendDataRow:
 			if q.rows == nil {
@@ -890,34 +1025,27 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				return false, c.breakConn(fmt.Errorf("%w: DataRow before any RowDescription", ErrProtocol))
 			}
 			if err := q.rows.Append(m.Body); err != nil {
-				// Cold path. Fetched whole, the backend was given no row limit,
-				// so nothing pauses it at BatchRows — the pause that used to
-				// do that was the PortalSuspended a limit produces — and the
-				// batch fills mid-result. Emitting here rather than testing
-				// Full() before every Append is not a style choice: this is
-				// the per-row loop the regression gate watches, and a test in
-				// front of the Append measured +2.4% in a paired A/B. The
-				// Append already had to be checked, so the check is free.
-				if !q.allRows || !q.rows.Full() {
-					// A DataRow the reader framed whole but this package
-					// could not read: a column wider than its description
-					// said, a field count that disagrees. The connection is
-					// still at a known position — the message was consumed in
-					// full — so the query fails and the resync recovers it.
-					// Breaking the connection here throws away a working
-					// socket over one unreadable row.
-					return false, err
-				}
+				// A DataRow the reader framed whole but this package could
+				// not read — a column wider than its description said, a
+				// field count that disagrees — or, in the batched fetch, a
+				// row past the BatchRows the Execute asked for: a server that
+				// did not listen. The connection is still at a known position
+				// — the message was consumed in full — so the query fails and
+				// the resync recovers it. Breaking the connection here throws
+				// away a working socket over one unreadable row.
+				return false, err
+			}
+			// Full, the batch is handed on and the next row opens the next
+			// one. The batched fetch waits for the PortalSuspended when the
+			// row limit is what filled it — the server was told how many to
+			// send, and a row past them must reach Append to be refused — but
+			// the byte bound cuts on either fetch: it is this side's, and the
+			// server knows nothing of it. Polling here, on the per-row loop
+			// the regression gate watches, measured within noise of the
+			// error path it replaced in a paired A/B of BenchmarkPGReadRows.
+			if q.rows.Full() && (q.allRows || q.rows.fullOnBytes()) {
 				if !q.emit(yield) {
 					return true, nil // the consumer stopped; the deferred resync tidies up
-				}
-				if err := q.rows.Append(m.Body); err != nil {
-					// The batch was just emptied, so this retry cannot fail for
-					// fullness: the row itself is unreadable. Same class as the
-					// direct path above — the message was consumed whole, the
-					// position is known, the statement fails and the connection
-					// stays.
-					return false, err
 				}
 			}
 
@@ -956,7 +1084,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 					return false, err
 				}
 			}
-			if !q.emit(yield) {
+			more := q.emit(yield)
+			q.suspendedRows = q.rowsRead
+			if !more {
 				return true, nil // the consumer stopped; the deferred resync tidies up
 			}
 			return false, nil
@@ -965,6 +1095,10 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// The result is finished; what is held is the last batch. Read to
 			// the end, its row count is now the statement's to remember.
 			q.complete = true
+			if q.tag != nil && m.Type == pgwire.BackendCommandComplete {
+				// Copied: the body borrows the reader's buffer.
+				*q.tag = resultTag(bytes.TrimSuffix(m.Body, []byte{0}), q.suspendedRows)
+			}
 			q.emit(yield)
 			return true, nil
 
@@ -993,7 +1127,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// the reader framed the message whole, so the position is
 				// still known. Same class as an unreadable DataRow above — the
 				// statement fails, the deferred resync recovers, and the
-				// socket stays. drainToReady makes the same call.
+				// socket stays. drainToReady makes the same call. An
+				// encoding nobody asked for is the exception: recordParameter
+				// broke the connection, and the deferred resync skips it.
 				return false, err
 			}
 
@@ -1053,7 +1189,7 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 	if q.rows != nil {
 		q.rowsRead += q.rows.Len()
 	}
-	items, ok := q.conn.emitRows(q.rows, q.items, yield)
+	items, ok := q.conn.emitRows(q.ctx, q.rows, q.items, yield)
 	q.items = items
 	return ok
 }
@@ -1127,6 +1263,11 @@ func (q *query) resync() error {
 				// ReadyForQuery it came for. Giving up here would break a
 				// connection *while recovering it*, which is the one place
 				// that has to succeed — the same call drainToReady makes.
+				// Unless recordParameter broke it: an encoding nobody asked
+				// for leaves nothing worth recovering.
+				if c.broken != nil {
+					return err
+				}
 				if serverErr == nil {
 					serverErr = err
 				}
@@ -1157,6 +1298,11 @@ func (c *Conn) noteTxStatus(body []byte) {
 // reason, so a caller cannot keep going by ignoring one error.
 func (c *Conn) breakConn(cause error) error {
 	if c.broken == nil {
+		if errors.Is(cause, pgwire.ErrMessageTooLarge) {
+			// The one break the caller can configure away, so the error
+			// names the field rather than leaving a number to look up.
+			cause = fmt.Errorf("%w; Config.MaxMessage raises the limit", cause)
+		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
 	}
 	return c.broken

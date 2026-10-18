@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -182,7 +181,7 @@ func TestParkedConnectionHoldsItsPendingSlot(t *testing.T) {
 		t.Fatalf("second Dial: %v", err)
 	}
 	waitPending(1) // parked behind the full queue
-	if _, err := dial(); !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "code 0x2") {
+	if _, err := dial(); !isRefusedClose(err) {
 		t.Fatalf("third Dial = %v, want CONNECTION_REFUSED while the slot is held", err)
 	}
 

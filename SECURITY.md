@@ -53,10 +53,12 @@ tests). These are development tooling and never reach a user's binary.
 ## Dependencies
 
 Every production dependency is a recorded decision (ADR 0002). Today there
-is one, `golang.org/x/crypto`, maintained by the Go team and used for the
-ChaCha20-Poly1305 packet protection the QUIC transport needs (`crypto/tls`
-negotiates the suite but does not export the cipher). It brings
-`golang.org/x/sys/cpu` with it for CPU feature detection. Both are pinned in
+are two, both maintained by the Go team. `golang.org/x/crypto` is used for
+the ChaCha20-Poly1305 packet protection the QUIC transport needs
+(`crypto/tls` negotiates the suite but does not export the cipher); it
+brings `golang.org/x/sys/cpu` with it for CPU feature detection.
+`golang.org/x/text/unicode/norm` normalises a PostgreSQL password (SASLprep,
+RFC 4013), imported by `database/postgres` alone. All are pinned in
 `go.sum`, scanned by `govulncheck` in CI and tracked by Dependabot. CI fails
 if a module outside the recorded list appears in the graph, so the supply
 chain to audit is that list and the standard library.

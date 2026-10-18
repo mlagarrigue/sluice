@@ -53,14 +53,14 @@ func TestHandshakeAndStream(t *testing.T) {
 			done <- result{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
 		defer func() { _ = conn.Close() }()
 
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -79,7 +79,7 @@ func TestHandshakeAndStream(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,14 +135,14 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			done <- err
 			return
 		}
 		defer func() { _ = conn.Close() }()
 
-		s, err := conn.AcceptStream()
+		s, err := conn.AcceptStream(t.Context())
 		if err != nil {
 			done <- err
 			return
@@ -168,7 +168,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 			up <- server{err: err}
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		up <- server{conn: conn, err: err}
 	}()
 
@@ -237,7 +237,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 	}
 	defer func() { _ = s.conn.Close() }()
 
-	stream, err := conn.OpenStream()
+	stream, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	if _, err := quic.Dial(pc, peer.LocalAddr(), noALPN, quic.DefaultParameters()); err == nil {
 		t.Error("Dial accepted a config with no ALPN")
 	}
-	if _, err := quic.Accept(pc, peer.LocalAddr(), []byte{0}, noALPN, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Accept(pc, quic.Datagram{Peer: peer.LocalAddr(), Payload: []byte{0}}, noALPN, quic.DefaultParameters()); err == nil {
 		t.Error("Accept accepted a config with no ALPN")
 	}
 	if _, err := quic.NewListener(pc, noALPN, quic.DefaultParameters(), quic.ListenerConfig{}); err == nil {
@@ -294,10 +294,10 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	}
 }
 
-// PeerClosed is how a layer above learns the application code a peer closed
-// with — HTTP/3's H3_NO_ERROR — and distinguishes it from a transport close,
-// which it does not report.
-func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
+// Err is how a layer above learns the application code a peer closed with
+// — HTTP/3's H3_NO_ERROR — as a ConnectionError with Application set: the
+// transport reports it, the layer above decides what the code means.
+func TestErrReportsThePeersApplicationClose(t *testing.T) {
 	serverPC, clientPC := dgram.Pair()
 	defer serverPC.Close()
 	defer clientPC.Close()
@@ -309,7 +309,7 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 			close(accepted)
 			return
 		}
-		c, err := quic.Accept(serverPC, peer, buf[:n], serverTLS(t), quic.DefaultParameters())
+		c, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), quic.DefaultParameters())
 		if err != nil {
 			close(accepted)
 			return
@@ -325,8 +325,8 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 	if !ok {
 		t.Fatal("Accept failed")
 	}
-	if _, _, ok := client.PeerClosed(); ok {
-		t.Fatal("PeerClosed reports a close before any happened")
+	if err := client.Err(); err != nil {
+		t.Fatalf("Err = %v before any close happened", err)
 	}
 	if err := server.CloseWithError(0x100); err != nil {
 		t.Fatal(err)
@@ -336,11 +336,8 @@ func TestPeerClosedReportsTheApplicationCode(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the client never saw the peer's close")
 	}
-	code, _, ok := client.PeerClosed()
-	if !ok || code != 0x100 {
-		t.Fatalf("PeerClosed = (%#x, %v), want (0x100, true)", code, ok)
-	}
-	if err := client.Err(); err != nil {
-		t.Fatalf("an application close with code 0x100 is the peer's decision, not an error here: %v", err)
+	ce, ok := errors.AsType[*quic.ConnectionError](client.Err())
+	if !ok || !ce.Application || ce.Code != 0x100 {
+		t.Fatalf("client Err = %v, want a ConnectionError with application code 0x100", client.Err())
 	}
 }

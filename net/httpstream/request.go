@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 )
 
 // Header is one field of a request or a response.
@@ -24,11 +25,39 @@ type Request struct {
 	// Target is raw and origin-form: it begins with "/", the query is still
 	// attached, and nothing has been percent-decoded — decoding before the
 	// handler decides what a segment means is how two layers route one
-	// request differently.
+	// request differently. The one other form is "*", on an OPTIONS request
+	// only (RFC 9110 §7.1: the server as a whole, not a resource on it).
 	Target []byte
 
+	// Headers is the request's field section, in the order the client sent
+	// it.
 	Headers []Header
-	Body    []byte
+
+	// Trailers is the request's trailer section, in the order the client
+	// sent it, or nil when it sent none: the fields after the body of a
+	// chunked HTTP/1.1 request, or of a trailing HEADERS on HTTP/2 and
+	// HTTP/3. The whole request is read before the handler is called, so
+	// they are here as soon as the body is. They are held to the bounds the
+	// headers are held to, separately: a trailer section of its own up to
+	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
+	//
+	// They are kept apart from Headers on purpose and nothing in them is
+	// interpreted. RFC 9110 §6.5 has a trailer stored separately and never
+	// merged into the header section unless the field's own definition
+	// allows it: a Content-Length or Authorization arriving after the body
+	// came too late to frame, route or authorise this request, and a
+	// handler that reads one from here takes that on knowingly.
+	Trailers []Header
+
+	// Body is the request's content, exactly the bytes the client sent once
+	// the transfer coding is undone: a chunked body arrives joined, and
+	// nothing else is decoded. A Content-Encoding (gzip, br) is the
+	// handler's to read and to undo — the field stays in Headers and the
+	// body stays compressed. The package neither decodes a coding nor
+	// refuses one with a 415: it has no view on what a handler accepts, and
+	// a second parser between the socket and the handler is what this
+	// package exists not to be.
+	Body []byte
 
 	// KeepAlive reports whether the connection may serve another request
 	// after this one, per the version and the Connection header.
@@ -57,6 +86,39 @@ func (r Request) Get(name string) []byte {
 		}
 	}
 	return nil
+}
+
+// fieldCount is how many fields a decoded block yields once its cookie
+// crumbs are joined (RFC 9113 §8.2.3, RFC 9114 §4.2.1): a crumb after the
+// first is part of one field, not a field. It is what [Config.MaxHeaders]
+// bounds, so a client that splits its cookie per pair — net/http's HTTP/2
+// transport does — stands where an HTTP/1.1 client sending the same cookie
+// in one field stands, instead of 70 cookies being refused on HTTP/2 and
+// HTTP/3 alone.
+func fieldCount(fields []Header) int {
+	crumbs := 0
+	for _, h := range fields {
+		if string(h.Name) == "cookie" {
+			crumbs++
+		}
+	}
+	if crumbs > 1 {
+		return len(fields) - (crumbs - 1)
+	}
+	return len(fields)
+}
+
+// appendCrumb joins one more cookie crumb to the cookie's value with the
+// delimiter RFC 9113 §8.2.3 and RFC 9114 §4.2.1 prescribe, "; ". The first
+// crumb's bytes sit in the decoder's buffer next to the fields that follow,
+// so the join takes a buffer of its own the first time (owned false) and
+// grows that one afterwards.
+func appendCrumb(cookie []byte, owned bool, crumb []byte) []byte {
+	if !owned {
+		cookie = append(make([]byte, 0, 2*(len(cookie)+2+len(crumb))), cookie...)
+	}
+	cookie = append(cookie, ';', ' ')
+	return append(cookie, crumb...)
 }
 
 // hostFieldName is shared rather than built per request: the name is a
@@ -91,6 +153,286 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 		return regular, nil
 	}
 	return append(regular, Header{Name: hostFieldName, Value: authority}), nil
+}
+
+// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
+// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
+// — one function for both, because the two sections are the same rules and
+// the two protocols once held their own copies, which had drifted: a request
+// one refused and the other delivered to the handler. The rules exist because
+// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
+// is written.
+//
+// Errors wrap protocolErr; the caller maps them to its own stream error. The
+// regular fields are returned in fields' own storage, the pseudo-headers
+// dropped; declared is the content-length the head stated, or -1.
+func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
+	var method, path, scheme, authority []byte
+	regular := fields[:0]
+	declared = -1
+	seenRegular, hostSeen := false, false
+	cookie, cookieOwned := -1, false // the cookie field's index in regular, once seen; whether its value is a buffer of our own
+	for _, h := range fields {
+		// h.Name stays []byte throughout: binding string(h.Name) to a
+		// variable allocates per field (verified with -gcflags=-m), while a
+		// conversion feeding only a switch or comparison does not.
+		if len(h.Name) == 0 {
+			return req, 0, fmt.Errorf("%w: an empty field name", protocolErr)
+		}
+		if h.Name[0] == ':' {
+			if seenRegular {
+				return req, 0, fmt.Errorf("%w: pseudo-header %s after a regular field", protocolErr, h.Name)
+			}
+			var dst *[]byte
+			switch string(h.Name) {
+			case ":method":
+				dst = &method
+			case ":path":
+				dst = &path
+			case ":scheme":
+				dst = &scheme
+			case ":authority":
+				dst = &authority
+			default:
+				return req, 0, fmt.Errorf("%w: unknown pseudo-header %s", protocolErr, h.Name)
+			}
+			if *dst != nil {
+				return req, 0, fmt.Errorf("%w: %s appears twice", protocolErr, h.Name)
+			}
+			*dst = h.Value
+			continue
+		}
+		seenRegular = true
+		if !lowerASCII(h.Name) {
+			return req, 0, fmt.Errorf("%w: %q is not lowercase", protocolErr, h.Name)
+		}
+		// The h1 parser's octet rules, applied to what HPACK or QPACK decoded
+		// (RFC 9113 §8.2.1, RFC 9114 §4.1.2). Either can carry any byte, so
+		// without these a name with an embedded colon or a value with CR LF
+		// reaches the handler — and the first hop that re-serialises the
+		// request toward HTTP/1.1 turns that value into a second request.
+		if !isToken(h.Name) {
+			return req, 0, fmt.Errorf("%w: %q is not a header name", protocolErr, h.Name)
+		}
+		if !validFieldValue(h.Value) {
+			return req, 0, fmt.Errorf("%w: the value of %q holds a control character", protocolErr, h.Name)
+		}
+		switch string(h.Name) {
+		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+			// Connection-specific fields have no meaning here and are how
+			// one request becomes two HTTP/1.1 requests at the next hop.
+			return req, 0, fmt.Errorf("%w: the connection-specific field %q", protocolErr, h.Name)
+		case "host":
+			// The same rule as :authority below: a host that is not an
+			// authority is malformed, not a request with an odd host.
+			hostSeen = true
+			if !validAuthority(h.Value) {
+				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)
+			}
+		case "te":
+			if string(h.Value) != "trailers" {
+				return req, 0, fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
+			}
+		case "content-length":
+			// Remembered for the end of the stream, where the DATA sum is
+			// known. A repeat is refused as the h1 parser refuses it: two
+			// lengths on one request is the smuggling family's opening move.
+			if declared >= 0 {
+				return req, 0, fmt.Errorf("%w: content-length appears twice", protocolErr)
+			}
+			n, err := parseContentLength(h.Value)
+			if err != nil {
+				return req, 0, fmt.Errorf("%w: content-length %q is not a length", protocolErr, h.Value)
+			}
+			declared = n
+		case "cookie":
+			// RFC 9113 §8.2.3, RFC 9114 §4.2.1: a client may split its
+			// cookie into crumbs, one field per pair, and they MUST be
+			// joined by "; " before a generic server application sees them
+			// — the handler here. Left apart, [Request.Get] returned the
+			// first pair alone and every session cookie behind it went
+			// missing on HTTP/2 and HTTP/3 only.
+			if cookie >= 0 {
+				regular[cookie].Value = appendCrumb(regular[cookie].Value, cookieOwned, h.Value)
+				cookieOwned = true
+				continue
+			}
+			cookie = len(regular)
+		}
+		regular = append(regular, h)
+	}
+	if method == nil || path == nil || scheme == nil {
+		return req, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
+	}
+	// Pseudo-header values compose the request line of any downstream
+	// HTTP/1.1 hop, which is why RFC 9113 §10.3 and RFC 9114 §10.3 ask for
+	// octet-level checks on them specifically: these are the same refusals
+	// the h1 request line makes.
+	if !isToken(method) {
+		return req, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
+	}
+	if !isToken(scheme) {
+		return req, 0, fmt.Errorf("%w: :scheme is not a token", protocolErr)
+	}
+	if err := checkTarget(method, path, protocolErr); err != nil {
+		return req, 0, err
+	}
+	if authority != nil && !validAuthority(authority) {
+		return req, 0, fmt.Errorf("%w: :authority %q is not an authority", protocolErr, authority)
+	}
+	// RFC 9110 §4.2.1, RFC 9114 §4.3.1: a scheme with a mandatory authority
+	// component needs :authority or host, as HTTP/1.1 needs Host (400).
+	// Without this a handler routing on host saw it missing on two of the
+	// three protocols only. Other schemes, which may have no authority at
+	// all, are delivered as they came.
+	if authority == nil && !hostSeen && (equalFold(scheme, "http") || equalFold(scheme, "https")) {
+		return req, 0, fmt.Errorf("%w: no :authority or host for scheme %q", protocolErr, scheme)
+	}
+	regular, err = withAuthority(regular, authority, protocolErr)
+	if err != nil {
+		return req, 0, err
+	}
+	return Request{Method: method, Target: path, Headers: regular, KeepAlive: true}, declared, nil
+}
+
+// checkTarget applies the request-target rule every protocol shares: the
+// origin-form (RFC 9112 §3.2.1, RFC 9113 §8.3.1, RFC 9114 §4.3.1), or the
+// asterisk-form on an OPTIONS request alone (RFC 9112 §3.2.4) — "*" names the
+// server itself, which only OPTIONS may ask about, and any other method with
+// it is a request for no resource. Absolute-form and authority-form exist for
+// proxies, and a server that accepts them while routing on the path is how a
+// request reaches somewhere its authority said it would not.
+//
+// The octets are checked too: the target composes the request line of any
+// downstream HTTP/1.1 hop (RFC 9113 §10.3, RFC 9114 §10.3), and HPACK or
+// QPACK can carry any byte.
+func checkTarget(method, target []byte, protocolErr error) error {
+	if len(target) == 1 && target[0] == '*' {
+		if string(method) != "OPTIONS" {
+			return fmt.Errorf("%w: the asterisk-form target on a %s request", protocolErr, method)
+		}
+		return nil
+	}
+	if len(target) == 0 || target[0] != '/' {
+		return fmt.Errorf("%w: the target is not origin-form", protocolErr)
+	}
+	for _, c := range target {
+		if c <= 0x20 || c == 0x7f {
+			return fmt.Errorf("%w: the target holds a control character", protocolErr)
+		}
+	}
+	return nil
+}
+
+// authorityChar is RFC 3986 §3.2.2's reg-name alphabet: unreserved and
+// sub-delims. The '%' of a percent-encoding is checked apart, with the two hex
+// digits that must follow it. A userinfo's '@', a path's '/', a space and
+// every control character are outside it, which is what makes the rule below
+// a grammar check and not a list of things to refuse.
+var authorityChar = func() (t [256]bool) {
+	const allowed = "-._~!$&'()*+,;="
+	for i := range 26 {
+		t['a'+i], t['A'+i] = true, true
+	}
+	for i := range 10 {
+		t['0'+i] = true
+	}
+	for i := range len(allowed) {
+		t[allowed[i]] = true
+	}
+	return t
+}()
+
+// validAuthority says whether b is an authority a request may name: RFC 9110
+// §7.2's uri-host [ ":" port ] — a registered name, an IPv4 address, or an IP
+// literal in brackets, with a port of digits, possibly none. It is the one
+// rule for HTTP/1.1's Host and HTTP/2's and HTTP/3's :authority, and it has
+// the same shape on each because the three deliver the value under one name
+// and a handler routes on it.
+//
+// The empty authority is refused: RFC 9114 §4.3.1 says so outright, RFC 9112
+// §3.3 lets a server reject it, and a handler routing on a host that names
+// nothing is a request that should have been refused. The userinfo RFC 3986
+// allows is refused too (RFC 9113 §8.3.1 and RFC 9114 §4.3.1 forbid it, and
+// RFC 9110's Host never had it): "u@h" delivered as a host is how a routing
+// layer reads the host that follows the '@' while the one before it was
+// looked at.
+//
+// The grammar is RFC 3986 §3.2.2's, whole: a reg-name's '%' starts two hex
+// digits, and an IP literal is an IPv6 address or an IPvFuture. An IPv6
+// address with a zone (RFC 6874's "[fe80::1%25eth0]") is refused: RFC 6874 §4
+// has every client and intermediary remove the zone from an outgoing URI,
+// since it means something only on the host that wrote it, so one that
+// arrives names a link this server cannot know.
+func validAuthority(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	host := b
+	if b[0] == '[' {
+		end := indexByte(b, ']')
+		if end < 0 || !validIPLiteral(b[1:end]) {
+			return false
+		}
+		host = b[end+1:]
+		if len(host) == 0 {
+			return true
+		}
+		if host[0] != ':' {
+			return false
+		}
+	}
+	for i := 0; i < len(host); i++ {
+		switch c := host[i]; {
+		case c == ':':
+			for _, d := range host[i+1:] {
+				if d < '0' || d > '9' {
+					return false
+				}
+			}
+			return true
+		case c == '%':
+			if i+2 >= len(host) || !isHex(host[i+1]) || !isHex(host[i+2]) {
+				return false
+			}
+			i += 2
+		case !authorityChar[c]:
+			return false
+		}
+	}
+	return true
+}
+
+// validIPLiteral says whether b, the inside of an authority's brackets, is
+// RFC 3986 §3.2.2's IPv6address or IPvFuture: "v", hex digits, ".", then
+// unreserved, sub-delims and ':'. The IPv6 address is parsed rather than
+// matched character by character; a zone is refused (see validAuthority) and
+// so is a bare IPv4 address, which needs no brackets.
+func validIPLiteral(b []byte) bool {
+	if len(b) > 0 && (b[0] == 'v' || b[0] == 'V') {
+		dot := indexByte(b, '.')
+		if dot < 2 || dot == len(b)-1 {
+			return false
+		}
+		for _, c := range b[1:dot] {
+			if !isHex(c) {
+				return false
+			}
+		}
+		for _, c := range b[dot+1:] {
+			if !authorityChar[c] && c != ':' {
+				return false
+			}
+		}
+		return true
+	}
+	addr, err := netip.ParseAddr(string(b))
+	return err == nil && addr.Is6() && addr.Zone() == ""
+}
+
+// isHex says whether c is one of RFC 3986's HEXDIG, in either case.
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // tchar is RFC 9110's token character set, which both a method and a header
@@ -163,14 +505,21 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	out = arena
 	start := len(arena)
 
+	// RFC 9112 §2.2: at least one empty line before the request-line is
+	// ignored — the CRLF some clients send after a body. One, exactly: a
+	// second is a request line with no method, as it always was.
+	skipped := 0
+	if len(buf) >= 2 && buf[0] == '\r' && buf[1] == '\n' {
+		buf, skipped = buf[2:], 2
+	}
 	line, rest, ok := cutCRLF(buf, cfg.MaxRequestLineBytes)
 	if !ok {
 		if len(buf) > cfg.MaxRequestLineBytes+1 {
-			return req, 0, out, fmt.Errorf("%w: the request line is over %d bytes", ErrTooLarge, cfg.MaxRequestLineBytes)
+			return req, 0, out, fmt.Errorf("%w: over %d bytes", errRequestLineTooLong, cfg.MaxRequestLineBytes)
 		}
 		return req, 0, out, errIncomplete
 	}
-	consumed = len(buf) - len(rest)
+	consumed = skipped + len(buf) - len(rest)
 
 	method, target, version, err := splitRequestLine(line)
 	if err != nil {
@@ -181,8 +530,10 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	// HTTP/1.1 keeps the connection open unless told otherwise; HTTP/1.0
 	// closes it unless told otherwise. Getting this backwards is a hang, not
 	// a wrong answer, so the two versions are separated here rather than
-	// folded into a default.
-	http11 := string(version) == "HTTP/1.1"
+	// folded into a default. A minor version above 1 is processed as 1.1
+	// (RFC 9110 §6.2) and persists like it (RFC 9112 §9.3, "HTTP/1.1 (or
+	// later)"); splitRequestLine has already refused every other major.
+	http11 := version[7] != '0'
 	req.KeepAlive = http11
 	req.http10 = !http11
 
@@ -194,6 +545,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	// backing array, so a sub-slice handed out mid-parse would dangle the way
 	// a retained batch does. The caller re-slices once the batch is complete.
 	req.Headers = out[start:]
+	headersEnd := len(out)
 	consumed += n
 	rest = rest[n:]
 
@@ -210,14 +562,21 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	}
 
 	if chunked {
-		body, n, cerr := decodeChunked(rest, cfg, progress, consumed)
+		body, n, trailers, cerr := decodeChunked(rest, cfg, progress, consumed, out)
 		if cerr != nil {
-			if errors.Is(cerr, errIncomplete) && fieldHasToken(req.Headers, "expect", "100-continue") {
+			if errors.Is(cerr, errIncomplete) && expectsContinue(req) {
 				return req, 0, out, errExpectContinue
 			}
 			return req, 0, out, cerr
 		}
+		out = trailers
 		req.Body = body
+		// The same views as Headers, after the same appends; capped, so a
+		// handler appending to Headers cannot write over the trailers.
+		req.Headers = out[start:headersEnd:headersEnd]
+		if len(out) > headersEnd {
+			req.Trailers = out[headersEnd:]
+		}
 		return req, consumed + n, out, nil
 	}
 	length, err := contentLength(req, cfg)
@@ -225,7 +584,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		return req, 0, out, err
 	}
 	if len(rest) < length {
-		if fieldHasToken(req.Headers, "expect", "100-continue") {
+		if expectsContinue(req) {
 			return req, 0, out, errExpectContinue
 		}
 		return req, 0, out, errIncomplete
@@ -256,6 +615,14 @@ func connectionOptions(headers []Header) (hasClose, hasKeepAlive bool) {
 		}
 	}
 	return hasClose, hasKeepAlive
+}
+
+// expectsContinue reports whether the request is owed an interim 100 before
+// its body. Never on HTTP/1.0: RFC 9110 §15.2 forbids a 1xx to such a client
+// (it would read the interim as the response), and §10.1.1 says Expect is
+// ignored there — the body is waited for as if the field were absent.
+func expectsContinue(req Request) bool {
+	return !req.http10 && fieldHasToken(req.Headers, "expect", "100-continue")
 }
 
 // fieldHasToken reports whether token appears as a member of the
@@ -308,19 +675,19 @@ func splitRequestLine(line []byte) (method, target, version []byte, err error) {
 	if !isToken(method) {
 		return nil, nil, nil, fmt.Errorf("%w: the method is not a token", ErrMalformed)
 	}
-	// Origin-form only. Absolute-form and authority-form exist for proxies,
-	// and a server that accepts them while routing on the path is how a
-	// request reaches somewhere its Host said it would not.
-	if len(target) == 0 || target[0] != '/' {
-		return nil, nil, nil, fmt.Errorf("%w: the target is not origin-form", ErrMalformed)
+	if err := checkTarget(method, target, ErrMalformed); err != nil {
+		return nil, nil, nil, err
 	}
-	for _, c := range target {
-		if c <= 0x20 || c == 0x7f {
-			return nil, nil, nil, fmt.Errorf("%w: the target holds a control character", ErrMalformed)
-		}
+	// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3): anything of
+	// another shape is not a request line. Of that shape, 505 refuses a major
+	// version (RFC 9110 §15.6.6), so only a major other than 1 is declined;
+	// any minor of 1 is served.
+	v := string(version)
+	if len(v) != 8 || v[:5] != "HTTP/" || v[5] < '0' || v[5] > '9' || v[6] != '.' || v[7] < '0' || v[7] > '9' {
+		return nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
 	}
-	if v := string(version); v != "HTTP/1.1" && v != "HTTP/1.0" {
-		return nil, nil, nil, fmt.Errorf("%w: unsupported version %q", ErrMalformed, version)
+	if v[5] != '1' {
+		return nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
 	}
 	return method, target, version, nil
 }
@@ -331,7 +698,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 	start, consumed := len(arena), 0
 	for {
 		if consumed > cfg.MaxHeaderBytes {
-			return arena, 0, fmt.Errorf("%w: headers over %d bytes", ErrTooLarge, cfg.MaxHeaderBytes)
+			return arena, 0, fmt.Errorf("%w: over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 		}
 		// The budget counts line endings, so the line itself gets two
 		// bytes less than what is left of it.
@@ -339,7 +706,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 		line, rest, ok := cutCRLF(buf[consumed:], limit)
 		if !ok {
 			if len(buf)-consumed > limit+1 {
-				return arena, 0, fmt.Errorf("%w: a header line is over the bound", ErrTooLarge)
+				return arena, 0, fmt.Errorf("%w: a header line is over the bound", errHeadersTooLarge)
 			}
 			return arena, 0, errIncomplete
 		}
@@ -354,7 +721,7 @@ func parseHeaders(arena []Header, buf []byte, cfg Config) ([]Header, int, error)
 			return arena, 0, fmt.Errorf("%w: obsolete line folding", ErrMalformed)
 		}
 		if len(arena)-start >= cfg.MaxHeaders {
-			return arena, 0, fmt.Errorf("%w: over %d header fields", ErrTooLarge, cfg.MaxHeaders)
+			return arena, 0, fmt.Errorf("%w: over %d fields", errHeadersTooLarge, cfg.MaxHeaders)
 		}
 		h, err := parseHeaderLine(line)
 		if err != nil {
@@ -411,6 +778,11 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 		case equalFold(h.Name, "content-length"):
 			lengths++
 		case equalFold(h.Name, "host"):
+			// RFC 9112 §3.2: a Host with an invalid value is answered 400,
+			// and the value is valid by the rule :authority is held to.
+			if !validAuthority(h.Value) {
+				return false, fmt.Errorf("%w: Host %q is not an authority", ErrMalformed, h.Value)
+			}
 			hosts++
 		}
 	}
@@ -491,11 +863,12 @@ type chunkProgress struct {
 // validated prefix when the body is still incomplete. On any other outcome
 // it is cleared: the request is done, or the connection is.
 //
-// Trailer fields are parsed and discarded — parsed, so a trailer section
-// that is not made of field lines is refused like any other framing fault,
-// and discarded because this package delivers complete requests, where a
-// field arriving after the body has nobody left to inform.
-func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd int) (body []byte, consumed int, err error) {
+// Trailer fields are parsed — a trailer section that is not made of field
+// lines is refused like any other framing fault — and appended to arena by
+// the moving pass, which returns it as out. They are views into buf past
+// the body, where the in-place copy never writes: decoded data only moves
+// toward the front, and the trailer section is behind every chunk.
+func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd int, arena []Header) (body []byte, consumed int, out []Header, err error) {
 	var local chunkProgress
 	if progress == nil {
 		progress = &local
@@ -503,23 +876,24 @@ func decodeChunked(buf []byte, cfg Config, progress *chunkProgress, headersEnd i
 		*progress = chunkProgress{}
 	}
 	progress.headersEnd = headersEnd
-	if _, _, err := walkChunks(buf, cfg, progress, false); err != nil {
+	if _, _, _, err := walkChunks(buf, cfg, progress, false, nil); err != nil {
 		if !errors.Is(err, errIncomplete) {
 			*progress = chunkProgress{}
 		}
-		return nil, 0, err
+		return nil, 0, arena, err
 	}
 	*progress = chunkProgress{}
-	w, r, _ := walkChunks(buf, cfg, &local, true)
-	return buf[:w], r, nil
+	w, r, out, _ := walkChunks(buf, cfg, &local, true, arena)
+	return buf[:w], r, out, nil
 }
 
 // walkChunks walks the chunked framing at the front of buf from the state in
 // p, copying the data down over it when move is set. w is where the decoded
 // body ends, r where the encoded form does. p is advanced past each chunk
 // and trailer line as it is validated, so an errIncomplete leaves it at the
-// last whole one and the next call starts there.
-func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, err error) {
+// last whole one and the next call starts there. The moving pass appends
+// the trailer fields to out; the validating pass only counts them.
+func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool, out []Header) (w, r int, fields []Header, err error) {
 	w, r = p.w, p.r
 	if move {
 		// The moving pass starts from zero: chunk data is copied down over
@@ -531,13 +905,13 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 		line, rest, ok := cutCRLF(buf[r:], maxChunkLineBytes)
 		if !ok {
 			if len(buf)-r > maxChunkLineBytes+1 {
-				return 0, 0, fmt.Errorf("%w: a chunk-size line over %d bytes", ErrMalformed, maxChunkLineBytes)
+				return 0, 0, out, fmt.Errorf("%w: a chunk-size line over %d bytes", ErrMalformed, maxChunkLineBytes)
 			}
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		size, serr := parseChunkSize(line, cfg.MaxBodyBytes-w)
 		if serr != nil {
-			return 0, 0, serr
+			return 0, 0, out, serr
 		}
 		r = len(buf) - len(rest)
 		if size == 0 {
@@ -547,10 +921,10 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 			break
 		}
 		if len(rest) < size+2 {
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		if rest[size] != '\r' || rest[size+1] != '\n' {
-			return 0, 0, fmt.Errorf("%w: chunk data is not ended by CRLF", ErrMalformed)
+			return 0, 0, out, fmt.Errorf("%w: chunk data is not ended by CRLF", ErrMalformed)
 		}
 		if move {
 			copy(buf[w:], rest[:size])
@@ -573,21 +947,25 @@ func walkChunks(buf []byte, cfg Config, p *chunkProgress, move bool) (w, r int, 
 		line, rest, ok := cutCRLF(buf[r:], limit)
 		if !ok {
 			if len(buf)-r > limit+1 {
-				return 0, 0, fmt.Errorf("%w: trailers over %d bytes", ErrTooLarge, cfg.MaxHeaderBytes)
+				return 0, 0, out, fmt.Errorf("%w: trailers over %d bytes", errHeadersTooLarge, cfg.MaxHeaderBytes)
 			}
-			return 0, 0, errIncomplete
+			return 0, 0, out, errIncomplete
 		}
 		trailerBytes += len(buf) - len(rest) - r
 		r = len(buf) - len(rest)
 		if len(line) == 0 {
-			return w, r, nil
+			return w, r, out, nil
 		}
 		if trailerFields >= cfg.MaxHeaders {
-			return 0, 0, fmt.Errorf("%w: over %d trailer fields", ErrTooLarge, cfg.MaxHeaders)
+			return 0, 0, out, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, cfg.MaxHeaders)
 		}
 		trailerFields++
-		if _, err := parseHeaderLine(line); err != nil {
-			return 0, 0, err
+		h, err := parseHeaderLine(line)
+		if err != nil {
+			return 0, 0, out, err
+		}
+		if move {
+			out = append(out, h)
 		}
 		if !move {
 			p.r, p.trailerBytes, p.trailerFields = r, trailerBytes, trailerFields

@@ -232,14 +232,18 @@ func (c *stmtCache) moveToFront(i int) {
 //     cache; it is a reason to know that "prepared" is a planning decision and
 //     not only a parsing one.
 //
-// It is a method rather than a [StartupConfig] field because it applies to a
+// It is a method rather than a [Config] field because it applies to a
 // [Conn] however it was built — including one from [NewConn], which never saw
 // a startup exchange. Calling it with a smaller bound evicts down to it;
-// calling it with zero or less closes everything and turns the cache off.
+// calling it with zero closes everything and turns the cache off. A negative
+// bound is refused and changes nothing.
 //
 // The statements are closed on the server as they are evicted, so what this
 // bounds is real memory in a backend rather than a map in this process.
 func (c *Conn) PrepareStatements(bound int) error {
+	if bound < 0 {
+		return fmt.Errorf("postgres: PrepareStatements bound %d is negative — zero turns the cache off", bound)
+	}
 	if c.broken != nil {
 		return c.broken
 	}
@@ -251,7 +255,7 @@ func (c *Conn) PrepareStatements(bound int) error {
 		return err
 	}
 	defer c.endBusy()
-	if bound <= 0 {
+	if bound == 0 {
 		err := c.closeAllStatements()
 		c.stmts = nil
 		return err

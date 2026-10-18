@@ -227,7 +227,7 @@ func localIPs() ([]net.IP, error) {
 // ends.
 func serveHQ(c *quic.Conn) {
 	for {
-		s, err := c.AcceptStream()
+		s, err := c.AcceptStream(context.Background())
 		if err != nil {
 			log.Printf("connection ended: %v (%v)", err, c.Err())
 			return
@@ -244,9 +244,17 @@ func serveHQ(c *quic.Conn) {
 // A path it cannot serve is answered with an empty body: HTTP/0.9 has no
 // status line, and a reset would read as a transport failure.
 func serveHQStream(s *quic.Stream) error {
-	line, err := bufio.NewReaderSize(s, 4096).ReadString('\n')
+	r := bufio.NewReaderSize(s, 4096)
+	line, err := r.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
+	}
+	// The request is the whole stream: reading it to its end is what grants
+	// the client its stream slot back (RFC 9000 §3.2, "Data Read").
+	if err == nil {
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return err
+		}
 	}
 	fields := strings.Fields(line)
 	if len(fields) < 2 || fields[0] != "GET" {
@@ -282,9 +290,10 @@ func wwwPath(target string) (string, error) {
 // serveH3 serves HTTP/3 with net/httpstream: the runner's files from /www,
 // a 404 with an empty body otherwise.
 func serveH3(c *quic.Conn) {
-	err := httpstream.ServeH3(context.Background(), c, httpstream.Config{}, func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	err := httpstream.ServeH3(context.Background(), c, httpstream.Config{}, func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, 0, b.Len())
-		for _, r := range b.Items {
+		for i := range b.Items {
+			r := &b.Items[i]
 			out = append(out, h3File(string(r.Target)))
 		}
 		return sluice.Batch[httpstream.Response]{Items: out}
@@ -412,23 +421,14 @@ func fetchAll(requests []string, kl io.Writer) error {
 }
 
 // fetch requests one path on a new stream and writes the answer under
-// /downloads. OpenStream refuses rather than waits when the peer's
-// MAX_STREAMS grant is spent, so a refusal is retried while the connection
-// lives.
+// /downloads. OpenStream waits for the peer's MAX_STREAMS grant when it is
+// spent; the context bounds that wait.
 func fetch(c *quic.Conn, p string) error {
-	var (
-		s   *quic.Stream
-		err error
-	)
-	for deadline := time.Now().Add(30 * time.Second); ; {
-		s, err = c.OpenStream()
-		if err == nil {
-			break
-		}
-		if c.Err() != nil || time.Now().After(deadline) {
-			return fmt.Errorf("open stream: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := c.OpenStream(ctx)
+	if err != nil {
+		return fmt.Errorf("open stream: %w", err)
 	}
 	if _, err := io.WriteString(s, "GET "+p+"\r\n"); err != nil {
 		return err

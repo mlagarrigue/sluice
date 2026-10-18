@@ -107,4 +107,26 @@ func TestServeBehindATLSListener(t *testing.T) {
 			t.Errorf("the first frame back has type %#x, want SETTINGS", head[3])
 		}
 	})
+
+	// ADR 0014, Rationale: the sniff decides, ALPN merely makes the client
+	// cooperate. A client that negotiated http/1.1 and then sends the h2
+	// preface is served HTTP/2, because Serve never reads the negotiated
+	// protocol; this case pins that choice so that a change to it is a
+	// revision of the ADR, not a drift.
+	t.Run("HTTP/2 preface under ALPN http/1.1 is served HTTP/2", func(t *testing.T) {
+		c := client(t, "http/1.1")
+		if _, err := c.Write([]byte(Preface)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write([]byte{0, 0, 0, 0x04, 0, 0, 0, 0, 0}); err != nil {
+			t.Fatal(err)
+		}
+		head := make([]byte, 9)
+		if _, err := readFull(bufio.NewReader(c), head); err != nil {
+			t.Fatal(err)
+		}
+		if head[3] != 0x04 {
+			t.Errorf("the first frame back has type %#x, want SETTINGS", head[3])
+		}
+	})
 }

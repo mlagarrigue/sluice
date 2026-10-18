@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 // The receive path. The rule that shapes all of it: unauthenticated bytes
@@ -43,6 +45,10 @@ func (c *Conn) readLoop() {
 		return
 	}
 	buf := make([]byte, c.recvBufSize())
+	oob := make([]byte, udp.PacketInfoLen)
+	// Every way out of this loop follows a close; a connection that holds
+	// the closing period keeps the socket read through it from here.
+	defer c.holdClosing(buf)
 	readFails := 0 // consecutive transient ReadFrom errors, for the backoff
 	for {
 		// The socket is read under mu because [Conn.Rebind] replaces it:
@@ -50,7 +56,7 @@ func (c *Conn) readLoop() {
 		// next that it has moved.
 		c.mu.Lock()
 		deadline := c.idleDeadline
-		pc := c.pc
+		pc, ecnOK := c.pc, c.ecnRecv
 		c.mu.Unlock()
 		if deadline.IsZero() {
 			deadline = time.Now().Add(30 * time.Second)
@@ -76,7 +82,7 @@ func (c *Conn) readLoop() {
 		if c.rebound(pc) {
 			continue
 		}
-		n, addr, err := pc.ReadFrom(buf)
+		n, addr, ecn, err := readDatagram(pc, ecnOK, buf, oob)
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) || c.rebound(pc) {
 				// The idle deadline is the timer loop's to act on; the read
@@ -106,7 +112,7 @@ func (c *Conn) readLoop() {
 			continue
 		}
 		readFails = 0
-		if err := c.processDatagram(rawDatagram{data: buf[:n], from: addr}); err != nil {
+		if err := c.processDatagram(rawDatagram{data: buf[:n], from: addr, ecn: ecn}); err != nil {
 			return
 		}
 	}
@@ -138,7 +144,7 @@ func readBackoff(fails int, stop <-chan struct{}) bool {
 // (abort already sent the CONNECTION_CLOSE) or a TLS failure.
 func (c *Conn) processDatagram(d rawDatagram) error {
 	c.mu.Lock()
-	c.rxVia = d.via
+	c.rxVia, c.rxECN = d.via, d.ecn
 	c.gatherLocked(true)
 	c.mu.Unlock()
 	err := c.receive(d.data, d.from)
@@ -259,6 +265,12 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 		// the path, where they seed the new path's own accounting.
 		c.amplRecv += int64(len(datagram))
 	}
+	if !fromPeer {
+		if c.offPath.addr == nil || !sameAddr(c.offPath.addr, from) {
+			c.offPath.addr, c.offPath.recv, c.offPath.sent = from, 0, 0
+		}
+		c.offPath.recv += int64(len(datagram))
+	}
 	c.rxFrom = from
 	c.rxDatagramLen = len(datagram)
 	c.rxLocalCIDSeq = 0
@@ -372,6 +384,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				c.deferred[space] = append(c.deferred[space], deferredPacket{
 					raw: append([]byte(nil), raw...),
 					at:  now,
+					ecn: c.rxECN,
 				})
 			}
 			c.mu.Unlock()
@@ -380,6 +393,14 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 		}
 		payload, pn, used, err := opener.openPhased(raw, pnOffset, largest)
 		if err != nil {
+			// A transportError is the one refusal of a packet that did
+			// authenticate (reserved bits, §17.2): the peer's own
+			// violation, ended as one. Everything below is bytes nobody
+			// proved they sent.
+			if te, ok := errors.AsType[*transportError](err); ok {
+				c.abort(te)
+				return te
+			}
 			// A datagram that names this connection but does not
 			// authenticate can still be the peer's stateless reset: a
 			// resetting peer may reuse the identifier it was sent (§10.3).
@@ -443,6 +464,12 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 		c.mu.Unlock()
 		return nil
 	}
+	if cp := c.rxECN; cp != ecnNotECT {
+		// §13.4.1: counted once per QUIC packet processed, in its own
+		// space; coalesced packets share one IP header and each count.
+		sp.ack.ecn[cp]++
+		c.ecnReceived[cp]++
+	}
 	if pn > sp.largest {
 		sp.largest = pn
 	}
@@ -461,6 +488,7 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	// A packet was received and processed, so the next ack-eliciting send may
 	// restart the idle timer again (§10.1).
 	c.elicitingSinceRecv = false
+	c.armKeepAliveLocked(now)
 	// A server that authenticates a Handshake packet is done with Initial
 	// keys (RFC 9001 §4.9.1).
 	if space == spaceHandshake && !c.isClient {
@@ -473,16 +501,12 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	}
 	c.mu.Unlock()
 
-	eliciting, err := c.frames(space, payload, now)
-	if err != nil {
+	if err := c.frames(space, payload, now); err != nil {
 		c.abort(err)
 		return err
 	}
 
 	c.mu.Lock()
-	if eliciting {
-		c.spaces[space].ack.onAckEliciting(space, now)
-	}
 	c.flushAcksLocked(now)
 	c.retransmitLocked()
 	// Control frames queued while processing — grants, mostly — usually ride
@@ -549,20 +573,19 @@ func (c *Conn) isStatelessReset(datagram []byte) bool {
 	return false
 }
 
-// handleStatelessReset ends the connection the way §10.3.1 asks: silently.
+// handleStatelessReset ends the connection the way §10.3.1 asks: silently,
+// through the draining period.
 // The peer provably once owned this connection — only it was told the token
 // — and provably has no state left for it, so there are no keys on the
 // other side to read a CONNECTION_CLOSE with, and nothing to wait for.
 func (c *Conn) handleStatelessReset() error {
-	err := fmt.Errorf("%w: stateless reset — the peer no longer holds state for this connection", ErrQUIC)
+	c.fail(ErrStatelessReset)
 	c.mu.Lock()
-	if c.closeErr == nil {
-		c.closeErr = err
-	}
 	c.closeSent = true // suppress the CONNECTION_CLOSE a Close would send
+	c.draining = true  // §10.3.1: "MUST enter the draining period"
 	c.mu.Unlock()
 	_ = c.Close()
-	return err
+	return ErrStatelessReset
 }
 
 // adoptPeerCID pins the connection identifier the peer chose, from the first
@@ -619,7 +642,7 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 		}
 		b = b[4:]
 	}
-	c.fail(fmt.Errorf("%w: the server does not speak QUIC version 1", ErrQUIC))
+	c.fail(ErrVersionNegotiation)
 	_ = c.Close()
 }
 
@@ -652,10 +675,7 @@ func (c *Conn) handleRetry(h longHeader) {
 	sp := &c.spaces[spaceInitial]
 	payloads, inFlight := sp.sent.takeAll()
 	sp.retrans = append(sp.retrans, payloads...)
-	c.cc.inFlight -= inFlight
-	if c.cc.inFlight < 0 {
-		c.cc.inFlight = 0
-	}
+	c.cc.onLifted(inFlight)
 	c.mu.Unlock()
 
 	// New identifier, new Initial secrets (RFC 9001 §5.2).
@@ -668,15 +688,16 @@ func (c *Conn) handleRetry(h longHeader) {
 	c.mu.Unlock()
 }
 
-// frames acts on one authenticated packet's frames. It reports whether any
-// of them elicit an acknowledgement. A non-nil error is a protocol violation
-// for the caller to abort with. now is the packet's arrival time.
-func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool, err error) {
+// frames acts on one authenticated packet's frames, and owes the packet's
+// acknowledgement when any of them elicits one. A non-nil error is a
+// protocol violation for the caller to abort with. now is the packet's
+// arrival time.
+func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// RFC 9000 §12.4: a packet with no frames at all is PROTOCOL_VIOLATION.
 	// A payload of nothing but PADDING contains frames and stays legal; only
 	// the empty payload is refused here.
 	if len(payload) == 0 {
-		return true, &transportError{
+		return &transportError{
 			code: transportProtocolViolation,
 			err:  fmt.Errorf("%w: a packet containing no frames", ErrQUIC),
 		}
@@ -697,7 +718,22 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	frames, err := parseFrames(parseScratch[:0], payload)
 	defer func() { c.parseScratch = frames[:0] }()
 	if err != nil {
-		return true, &transportError{code: transportFrameEncoding, err: err}
+		return &transportError{code: transportFrameEncoding, err: err}
+	}
+	// The acknowledgement is owed from the parse, before any frame is acted
+	// on: delivery wakes readers, and one that answers at once — a response
+	// to a request — sends while this goroutine is still in the loop below.
+	// Owed after the loop, the ACK was not yet pending when that answer
+	// left, so the answer went without it (sendPacketLocked carries only a
+	// pending one) and the delayed ACK followed in a datagram of its own
+	// localMaxAckDelay later.
+	for _, f := range frames {
+		if f.Type != frameACK && f.Type != frameACK|1 {
+			c.mu.Lock()
+			c.spaces[space].ack.onAckEliciting(space, now)
+			c.mu.Unlock()
+			break
+		}
 	}
 	if space == spaceApplication {
 		// The §9.3 decision point: a confirmed server whose client's
@@ -725,12 +761,12 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 	// final signal — a Read blocked on it would then wait out the idle
 	// timeout for an EOF that already happened.
 	var ended []*Stream
+	// The PATH_RESPONSE frames this packet's challenges earn, sent
+	// together once every frame is read.
+	var pathResponses []byte
 	scratch := c.takeScratch()
 
 	for _, f := range frames {
-		if f.Type != frameACK && f.Type != frameACK|1 {
-			eliciting = true
-		}
 		// RFC 9000 §12.4: Initial and Handshake packets may carry only
 		// PADDING, PING, ACK, CRYPTO and the transport CONNECTION_CLOSE.
 		// The table is not pedantry — Initial keys are public, so every
@@ -741,7 +777,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			switch f.Type {
 			case framePing, frameCrypto, frameACK, frameACK | 1, frameConnectionClose:
 			default:
-				return eliciting, &transportError{
+				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: frame type %#x at encryption level %d", ErrQUIC, f.Type, space),
 				}
@@ -750,18 +786,18 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		switch {
 		case f.Type == frameCrypto:
 			if err := c.handleCrypto(space, f); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.Type == frameACK || f.Type == frameACK|1:
 			if err := c.handleAck(space, f, now); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.IsStream():
 			s, tolerated, err := c.streamFor(f.StreamID, space, false)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
@@ -769,7 +805,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			deltaStart := s.deliveredSoFar()
 			grown, finished, growth, err := s.deliver(f, scratch)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			delta := grown[len(scratch):]
 			scratch = grown
@@ -787,14 +823,14 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		case f.Type == FrameResetStream:
 			s, tolerated, err := c.streamFor(f.StreamID, space, false)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
 			}
 			growth, neverConsumed, err := s.abandon(f.value, f.offset)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			connGrowth += growth
 			if neverConsumed > 0 {
@@ -807,19 +843,27 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			batch = append(batch, Frame{Type: FrameResetStream, StreamID: f.StreamID, value: f.value})
 			ended = append(ended, s)
 
-		case f.Type == frameStopSending:
+		case f.Type == FrameStopSending:
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if tolerated {
 				continue
 			}
 			c.mu.Lock()
-			sendErr := s.onStopSendingLocked(f.value)
+			stopped, sendErr := s.onStopSendingLocked(f.value)
 			c.mu.Unlock()
 			if sendErr != nil && !errors.Is(sendErr, errClosed) {
-				return eliciting, sendErr
+				return sendErr
+			}
+			// Handed up even when it is all the packet carries: an
+			// application whose stream the peer refuses to read — HTTP/3's
+			// control stream, which RFC 9114 §6.2.1 makes a connection
+			// error — used to learn of it only at the next datagram that
+			// carried stream data.
+			if stopped {
+				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
 			}
 
 		case f.Type == frameMaxData:
@@ -838,7 +882,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 			// where both used to be silently ignored.
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
-				return eliciting, err
+				return err
 			}
 			if !tolerated {
 				c.mu.Lock()
@@ -851,60 +895,33 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		case f.Type == frameMaxStreams, f.Type == frameMaxStreams|1:
 			c.mu.Lock()
 			if f.Type == frameMaxStreams {
-				c.peerMaxStreamsBidi = max(c.peerMaxStreamsBidi, f.value)
-			} else {
-				c.peerMaxStreamsUni = max(c.peerMaxStreamsUni, f.value)
+				if f.value > c.peerMaxStreamsBidi {
+					c.peerMaxStreamsBidi = f.value
+					c.bidiBlockedTold = false
+				}
+			} else if f.value > c.peerMaxStreamsUni {
+				c.peerMaxStreamsUni = f.value
+				c.uniBlockedTold = false
 			}
 			c.cond.Broadcast()
 			c.mu.Unlock()
 
 		case f.Type == framePathChallenge:
 			// §8.2: must be answered, on pain of the peer concluding the
-			// path is dead. The answer has its own rules (§8.2.2): expanded
-			// to a 1200-byte datagram, because the probe is also an MTU
-			// probe, and sent exactly once — never via loss recovery, since
-			// the peer retries with a fresh challenge and a stale response
-			// proves nothing. Hence its own packet, noRetrans, with PADDING
-			// up to the short header's 1200 (1 type byte + dcid + 4 pn +
-			// 16 tag around the payload) — and the control queue flushed
-			// first, so no grant hitches a ride out of loss recovery. §9.3
-			// sends the response back to the address the challenge came
-			// from, which during a migration is not the path in use.
-			c.mu.Lock()
-			c.flushControlLocked()
-			resp := AppendVarint(nil, framePathResponse)
-			resp = append(resp, f.Data...)
-			// §8.2.2: the response MUST be expanded to 1200 — except past
-			// the anti-amplification limit, which the section itself says
-			// happens only when the challenge did not arrive expanded. On
-			// the path in use the books cover the send; toward any other
-			// address there are no books, so the triggering datagram's own
-			// size is the budget: a ≥1200-byte challenge earns a 1200-byte
-			// answer (factor ≤ 1), a small one gets a small one — never a
-			// 1200-byte reflection of a few spoofed-source bytes. (Replay
-			// is already closed: duplicates drop before frames are read.)
-			// On the path in use the expansion stops at what the §8.1
-			// budget allows, if the path is still unvalidated: a response
-			// padded past it would not leave at all.
-			onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
-			padTo := 0
-			if onPath || c.rxDatagramLen >= 1200 {
-				padTo = 1200
-			}
-			// A challenge that reached a server's preferred-address socket
-			// is answered with this end's own probe of that path in the
-			// same packet (§9.6.2), under the identifier that path gets.
-			probe, dcid := c.preferredPathChallengeLocked(now)
-			resp = append(resp, probe...)
-			_ = c.sendPacketLocked(spaceApplication, resp, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
-			c.mu.Unlock()
+			// path is dead. The answers to one packet's challenges leave
+			// together once its frames are read (answerPathChallengesLocked
+			// says how): one datagram, not one per frame — a packet of k
+			// challenges from an address off the path used to earn k
+			// datagrams of 1200 bytes, many times what it cost to send.
+			pathResponses = AppendVarint(pathResponses, framePathResponse)
+			pathResponses = append(pathResponses, f.Data...)
 
 		case f.Type == framePathResponse:
-			c.handlePathResponse(f)
+			c.handlePathResponse(f, now)
 
 		case f.Type == frameHandshakeDone:
 			if !c.isClient {
-				return eliciting, &transportError{
+				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: a client sent HANDSHAKE_DONE", ErrQUIC),
 				}
@@ -915,23 +932,34 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 
 		case f.Type == frameConnectionClose || f.Type == frameConnectionClose|1:
 			c.handlePeerClose(f)
-			return eliciting, nil
+			return nil
 
 		case f.Type == frameRetireConnectionID:
 			if err := c.handleRetireConnectionID(f.value); err != nil {
-				return eliciting, err
+				return err
 			}
 
 		case f.Type == frameNewConnectionID:
 			if err := c.handleNewConnectionID(f); err != nil {
-				return eliciting, err
+				return err
 			}
 
-		// NEW_TOKEN stores tokens this package will never spend; the
-		// *_BLOCKED frames are the peer saying our grants are the
+		case f.Type == frameNewToken:
+			// §19.7: only a server hands out tokens, and a server that
+			// receives one closes with PROTOCOL_VIOLATION. A client stores
+			// nothing — this package never spends a token — so the frame is
+			// legal and inert there.
+			if !c.isClient {
+				return &transportError{
+					code: transportProtocolViolation,
+					err:  fmt.Errorf("%w: a client sent a NEW_TOKEN frame", ErrQUIC),
+				}
+			}
+
+		// The *_BLOCKED frames are the peer saying our grants are the
 		// bottleneck, which consumption already answers with fresh grants.
 		// All legal, all deliberately inert.
-		case f.Type == frameNewToken, f.Type == frameDataBlocked,
+		case f.Type == frameDataBlocked,
 			f.Type == frameStreamDataBlocked,
 			f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1,
 			f.Type == framePing:
@@ -943,14 +971,21 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		c.mu.Lock()
 		if err := c.connRecv.receive(c.connRecv.highest + connGrowth); err != nil {
 			c.mu.Unlock()
-			return eliciting, &transportError{code: transportFlowControl, err: err}
+			return err // FLOW_CONTROL_ERROR, attached by receive
 		}
 		c.mu.Unlock()
 	}
 
+	if len(pathResponses) > 0 {
+		// Before the batch is dispatched: §8.2.2 says not to delay the
+		// response, and the batch callback is the caller's time.
+		c.mu.Lock()
+		c.answerPathChallengesLocked(pathResponses, now)
+		c.mu.Unlock()
+	}
 	if len(batch) > 0 {
 		if err := c.dispatchDeltas(batch); err != nil {
-			return eliciting, err
+			return err
 		}
 	}
 	if len(ended) > 0 {
@@ -960,7 +995,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) (eliciting bool,
 		}
 		c.mu.Unlock()
 	}
-	return eliciting, nil
+	return nil
 }
 
 // dispatchDeltas hands one packet's ordered deltas to whichever consumer the
@@ -1093,7 +1128,18 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, f.largest),
 		}
 	}
-	out, err := sp.sent.processAck(now, f.largest, f.Data, &c.rtt, c.cc.recoveryStart)
+	// RFC 9002 A.7's order: what the frame acknowledges, the round-trip
+	// sample, the ECN counts, the losses and persistent congestion, and
+	// only then the acknowledged packets to the controller (recovery.go).
+	out, err := sp.sent.markAcked(f.largest, f.Data)
+	if errors.Is(err, errOptimisticAck) {
+		// RFC 9000 §21.4: the ACK covers a number this end skipped on
+		// purpose — an acknowledgement of a packet that never existed.
+		return &transportError{
+			code: transportProtocolViolation,
+			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, sp.sent.caught),
+		}
+	}
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}
@@ -1124,12 +1170,15 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 				}
 			}
 		}
-		c.rtt.sample(now.Sub(out.largestSentAt), ackDelay)
+		c.rtt.sampleAt(now, now.Sub(out.largestSentAt), ackDelay)
 	}
-	if out.newlyAcked > 0 {
-		c.cc.onAcked(out.newlyAcked, out.growableBytes)
-		c.cond.Broadcast()
+	if newCE := c.validateECNLocked(space, f, out); newCE > 0 {
+		// Before the frame's losses (A.7's ProcessECN): a mark is
+		// congestion the network reported without dropping (§13.4.2), and
+		// the controller hears it as such (draft-ietf-ccwg-bbr §3.7).
+		c.cc.onMarked(markEvent{now: now, latestSent: out.largestSentAt, packets: newCE})
 	}
+	sp.sent.detectLost(now, &c.rtt, &c.delivery, &out)
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
 		// A packet under the current send keys reached the peer: both
 		// sides hold this phase, and the next rotation is permitted
@@ -1138,7 +1187,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	}
 	if out.newlyAckedCount > 0 && space == spaceHandshake {
 		// An acknowledged Handshake packet is the client's proof the server
-		// finished validating its address (RFC 9002 §6.2.1) — the gate for
+		// finished validating its address (RFC 9002 §6.2.1, A.8) — the gate for
 		// the backoff reset below and for the anti-deadlock probe.
 		c.peerAddrValidated = true
 	}
@@ -1151,28 +1200,71 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			c.ptoCount = 0
 		}
 	}
-	if len(out.lost) > 0 || out.lostBytes > 0 {
-		sp.retrans = append(sp.retrans, out.lost...)
-		c.cc.onLost(out.lostBytes, out.latestLossSent, now)
+	if out.lostCount > 0 {
+		c.queueLostLocked(sp, out)
+		// Losses from a previous path carry no bytes (RFC 9000 §9.4):
+		// nothing to release, and no event for a window they never
+		// counted against.
+		if out.lostBytes > 0 {
+			c.cc.onLost(out.lossEvent(now))
+			// RFC 9002 §7.6: two ack-eliciting losses further apart than
+			// the persistent-congestion duration — three probe intervals,
+			// max_ack_delay included whatever the space (§7.6.1) — with
+			// nothing acknowledged between them, both sent after the first
+			// round-trip sample (§7.6.2, B.8: the initial RTT would make the
+			// duration a guess; detectLost measures only those). Only an
+			// ACK can establish it; probe timeouts count for nothing here,
+			// by design (§7.6.1).
+			if out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
+				c.cc.onPersistentCongestion()
+				c.persistentCongestions++
+			}
+		}
 	}
+	sp.sent.release(now, &c.rtt, c.cc, &c.delivery, &out)
+	if out.newlyAcked > 0 {
+		// The controller heard each acknowledged packet; the window may
+		// have grown and a writer parked on it must look again.
+		c.cond.Broadcast()
+	}
+	c.settleProbeLocked(out)
 	return nil
 }
 
+// settleProbeLocked applies what an ACK or the loss timer decided about
+// DPLPMTUD: an acknowledged probe proves its size, a lost one is released
+// from flight without a congestion event and the search moves on, and the
+// full-size packets acknowledged or lost feed the black-hole indicator
+// (pmtu.go). Callers hold mu.
+func (c *Conn) settleProbeLocked(out ackOutcome) {
+	c.watchBlackHoleLocked(&out)
+	if out.probeLost {
+		c.cc.onLifted(out.probeLostBytes)
+		c.pmtuProbeLostLocked(out.probeLostPN)
+	}
+	if out.probeAcked {
+		c.pmtuProbeAckedLocked(out.probeAckedPN)
+	}
+}
+
 // peerAckDelayExponent is the scale the peer applies to its ACK delay
-// fields. Callers hold mu.
+// fields: what it announced, or RFC 9000 §18.2's default of 3 only when it
+// announced nothing. An announced 0 is a multiplier of 1, not the default —
+// read as 3 it would inflate every ACK delay eightfold and with it the RTT
+// sample. Callers hold mu.
 func (c *Conn) peerAckDelayExponent() uint64 {
-	if c.hasPeerParams && c.peerParams.AckDelayExponent != 0 {
+	if c.hasPeerParams && c.peerParams.sawAckDelayExponent {
 		return c.peerParams.AckDelayExponent
 	}
 	return 3
 }
 
 // peerMaxAckDelayLocked is how long the peer said it may sit on an
-// acknowledgement — the protocol default of 25 ms unless announced. It caps
-// the delay field of incoming ACKs and pads the probe timeout. Callers hold
-// mu.
+// acknowledgement — §18.2's default of 25 ms only when it said nothing; an
+// announced 0 is 0. It caps the delay field of incoming ACKs and pads the
+// probe timeout. Callers hold mu.
 func (c *Conn) peerMaxAckDelayLocked() time.Duration {
-	if c.hasPeerParams && c.peerParams.MaxAckDelay != 0 {
+	if c.hasPeerParams && c.peerParams.sawMaxAckDelay {
 		return c.peerParams.MaxAckDelay
 	}
 	return 25 * time.Millisecond
@@ -1207,31 +1299,45 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 		}
 	}
 	c.mu.Lock()
-	if s := c.streams[id]; s != nil {
+	if s := c.streams[id]; s != nil && !c.pickedAheadLocked(id) {
 		c.mu.Unlock()
 		return s, false, nil
 	}
-	if _, closed := c.closedIDs[id]; closed {
-		c.mu.Unlock()
-		return nil, true, nil
-	}
+	// Opening stream N opens every lower-numbered stream of its kind with
+	// it (§2.1), so the count in use is the highest identifier's ordinal,
+	// and every stream at or below it is in the table until it closes. An
+	// identifier within that count and absent from the table is therefore
+	// a stream that closed: its frame is tolerated — ignored, never
+	// answered, no stream created, no MAX_STREAMS credit returned —
+	// however long ago the closure was. §19.8 and §19.10 reserve
+	// STREAM_STATE_ERROR for a locally initiated stream that "has not yet
+	// been created": one past what this end opened.
+	count := id/4 + 1
+	uni := id&0x02 != 0
 	peerInitiated := (id&1 == 0) != c.isClient
 	if !peerInitiated {
+		opened := c.openedBidi
+		if uni {
+			opened = c.openedUni
+		}
 		c.mu.Unlock()
+		if count <= opened {
+			return nil, true, nil
+		}
 		return nil, false, &transportError{
 			code: transportStreamState,
 			err:  fmt.Errorf("%w: the peer sent on stream %d, which this end never opened", ErrQUIC, id),
 		}
 	}
-	// Opening stream N implicitly opens every lower-numbered stream of its
-	// kind (§3.2), so the count in use is the highest identifier's ordinal.
-	count := id/4 + 1
-	uni := id&0x02 != 0
 	limit := c.localMaxStreamsBidi
 	seen := &c.seenPeerBidi
 	if uni {
 		limit = c.localMaxStreamsUni
 		seen = &c.seenPeerUni
+	}
+	if count <= *seen {
+		c.mu.Unlock()
+		return nil, true, nil
 	}
 	if count > limit {
 		c.mu.Unlock()
@@ -1240,27 +1346,56 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 			err:  fmt.Errorf("%w: the peer opened stream %d, past the %d allowed", ErrQUIC, id, limit),
 		}
 	}
-	if count > *seen {
-		*seen = count
-	}
-	s := newStream(c, id) // newStream closes the direction a unidirectional stream lacks
-	c.streams[id] = s
-	batchMode := c.batchMode
-	c.mu.Unlock()
-
-	if !batchMode {
-		// The accept queue applies back-pressure by blocking the read loop:
-		// a server that stops calling AcceptStream stops reading, and the
-		// peer feels it through this connection's flow control — nothing is
-		// dropped and nothing torn down (the 65th stream used to be fatal
-		// here).
-		select {
-		case c.accepted <- s:
-		case <-c.closed:
-			return nil, false, errClosed
+	// The lower-numbered streams this frame opens with its own are
+	// registered too, in identifier order, so a frame for one of them that
+	// arrives later — reordered, or simply sent second — finds its stream
+	// rather than the closed-stream tolerance above. newStream closes the
+	// direction a unidirectional stream lacks.
+	//
+	// A stream the application already picked by identifier (Conn.Stream)
+	// is the one opened, not replaced: replacing it left the caller holding
+	// a stream no frame would ever reach.
+	//
+	// Outside batch mode each goes to the accept queue, which never blocks
+	// this loop: MAX_STREAMS bounds it (see AcceptStream). A bounded channel
+	// used to stand here, 64 deep under a default limit of 100: the 65th
+	// stream stopped the read loop, and with it the acknowledgements every
+	// other stream's writer was waiting on.
+	var last *Stream
+	for n := *seen + 1; n <= count; n++ {
+		nid := (n-1)*4 + id&0x03
+		s := c.streams[nid]
+		if s == nil {
+			s = newStream(c, nid)
+			c.streams[nid] = s
 		}
+		if !c.batchMode {
+			s.queued = true
+			c.acceptQ = append(c.acceptQ, s)
+		}
+		last = s
 	}
-	return s, false, nil
+	*seen = count
+	if !c.batchMode {
+		c.signalAccept()
+	}
+	c.mu.Unlock()
+	return last, false, nil
+}
+
+// pickedAheadLocked reports a stream of the peer's that Conn.Stream
+// registered before the peer opened it: its first frame from the peer still
+// opens it — and the lower-numbered streams with it — as any other. Callers
+// hold c.mu.
+func (c *Conn) pickedAheadLocked(id uint64) bool {
+	if (id&1 == 0) == c.isClient {
+		return false
+	}
+	seen := c.seenPeerBidi
+	if id&0x02 != 0 {
+		seen = c.seenPeerUni
+	}
+	return id/4 >= seen // its count, id/4+1, past what the peer opened
 }
 
 // settleBatchConsumption credits flow control — per stream and per
@@ -1342,6 +1477,75 @@ func (c *Conn) SetManualCredit(on bool) {
 	c.mu.Unlock()
 }
 
+// SetKeepAlive makes the connection send a PING frame after every period of
+// complete silence — nothing sent, nothing received — so that the peer's
+// idle timeout, and this end's, keep restarting (RFC 9000 §10.1.2). Without
+// it, a connection nobody uses for longer than the negotiated idle timeout
+// ends quietly: that is the right outcome for a connection that is done, and
+// the wrong one for a connection kept between two requests or parked in a
+// pool. A period of zero turns the keepalive off, the default; a negative
+// one is refused with an error and changes nothing, since it is a mistake
+// rather than a setting.
+//
+// What it costs: one small packet and its acknowledgement per period of
+// silence, nothing while the connection is busy. A period longer than half
+// the negotiated idle timeout is brought down to that half when the PING is
+// scheduled, because a PING that leaves close to the deadline risks
+// arriving after the peer has already given up (§10.1); a keepalive that
+// holds nothing in silence would be a trap. When neither end announced an
+// idle timeout the keepalive is harmless and pointless: there is no silence
+// to break. [Conn.KeepAlive] reads the period in force. Safe from any
+// goroutine, before or after the first stream.
+func (c *Conn) SetKeepAlive(period time.Duration) error {
+	if period < 0 {
+		return fmt.Errorf("quic: keepalive period %v is negative — zero turns it off", period)
+	}
+	c.mu.Lock()
+	c.keepAlive = period
+	c.armKeepAliveLocked(time.Now())
+	c.mu.Unlock()
+	c.kickTimer()
+	return nil
+}
+
+// KeepAlive reports the period a PING waits for in silence: zero when the
+// keepalive is off, otherwise the period [Conn.SetKeepAlive] asked for,
+// brought down to half the negotiated idle timeout when it was longer.
+// The cap follows the effective idle timeout: this end's own until the
+// peer's transport parameters arrive, the smaller of the two after. Safe
+// from any goroutine.
+func (c *Conn) KeepAlive() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.keepAlivePeriodLocked()
+}
+
+// keepAlivePeriodLocked is the period a PING actually waits for: the one
+// asked for, capped at half the effective idle timeout — recomputed at each
+// arming rather than stored, so a cap set before the peer's parameters
+// arrived never goes stale. Zero when the keepalive is off.
+func (c *Conn) keepAlivePeriodLocked() time.Duration {
+	period := c.keepAlive
+	if period == 0 {
+		return 0
+	}
+	if half := c.idleTimeout / 2; c.idleTimeout != 0 && period > half {
+		period = max(half, time.Millisecond)
+	}
+	return period
+}
+
+// armKeepAliveLocked schedules the next PING one period after now, or
+// clears the deadline when the keepalive is off. Called wherever the
+// silence breaks: a packet received, an ack-eliciting packet sent.
+func (c *Conn) armKeepAliveLocked(now time.Time) {
+	if period := c.keepAlivePeriodLocked(); period != 0 {
+		c.keepAliveDeadline = now.Add(period)
+	} else {
+		c.keepAliveDeadline = time.Time{}
+	}
+}
+
 // ReleaseStreamBytes reports n bytes of stream id's data released by a
 // manual-credit consumer (see [Conn.SetManualCredit]): no longer retained,
 // so the peer may be granted that much again. The stream-level window
@@ -1385,15 +1589,15 @@ type settledStream struct {
 	grant uint64
 }
 
-// handlePeerClose acts on the peer's CONNECTION_CLOSE: record why, stop
-// sending anything — including a close of this end's own (§10.2.2) — and
-// end.
+// handlePeerClose acts on the peer's CONNECTION_CLOSE: record it as a
+// [ConnectionError] whatever its code — NO_ERROR included, since what a
+// code means is the caller's to judge — stop sending anything, including a
+// close of this end's own (§10.2.2), and end.
 func (c *Conn) handlePeerClose(f Frame) {
 	c.mu.Lock()
 	c.draining = true
-	c.peerClose = peerClose{code: f.value, app: f.Type == frameConnectionClose|1, reason: string(f.Data), seen: true}
-	if f.Type == frameConnectionClose && f.value != 0 && c.closeErr == nil {
-		c.closeErr = fmt.Errorf("%w: the peer closed the connection: code %#x %q", ErrQUIC, f.value, f.Data)
+	if c.closeErr == nil {
+		c.closeErr = &ConnectionError{Code: f.value, Application: f.Type == frameConnectionClose|1, Reason: string(f.Data)}
 	}
 	c.mu.Unlock()
 	_ = c.Close()
@@ -1443,6 +1647,7 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 		return c.readOneFed(deadline)
 	}
 	buf := make([]byte, c.recvBufSize())
+	oob := make([]byte, udp.PacketInfoLen)
 	if err := c.pc.SetReadDeadline(deadline); err != nil {
 		return false, err
 	}
@@ -1462,11 +1667,11 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 	if woke {
 		return false, os.ErrDeadlineExceeded
 	}
-	n, addr, err := c.pc.ReadFrom(buf)
+	n, addr, ecn, err := readDatagram(c.pc, c.ecnRecv, buf, oob)
 	if err != nil {
 		return false, err
 	}
-	return true, c.receiveGathered(rawDatagram{data: buf[:n], from: addr})
+	return true, c.receiveGathered(rawDatagram{data: buf[:n], from: addr, ecn: ecn})
 }
 
 // receiveGathered is receive under datagram gathering, for the handshake's
@@ -1475,7 +1680,7 @@ func (c *Conn) readOne(deadline time.Time) (got bool, err error) {
 // leave together.
 func (c *Conn) receiveGathered(d rawDatagram) error {
 	c.mu.Lock()
-	c.rxVia = d.via
+	c.rxVia, c.rxECN = d.via, d.ecn
 	c.gatherLocked(true)
 	c.mu.Unlock()
 	return c.receive(d.data, d.from)

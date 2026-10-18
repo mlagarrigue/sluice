@@ -48,7 +48,7 @@ func FuzzRowsAppendReproducesTheRow(f *testing.F) {
 			return
 		}
 
-		r := NewRows(fields, 4)
+		r := NewRows(fields, 4, 0)
 		if err := r.Append(body); err != nil {
 			if !errors.Is(err, ErrProtocol) && !errors.Is(err, ErrTooManyRows) {
 				t.Fatalf("unclassified error %v for %x", err, body)
@@ -100,7 +100,7 @@ func FuzzRowsAppendBatchReproducesEachRow(f *testing.F) {
 			return
 		}
 
-		r := NewRows(fields, 4)
+		r := NewRows(fields, 4, 0)
 		if err := r.Append(first); err != nil {
 			return
 		}

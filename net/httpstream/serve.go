@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 )
 
 // Handler answers a batch of requests with a batch of responses, positionally:
@@ -50,28 +53,54 @@ import (
 //     A handler therefore matches names case-insensitively, which is what
 //     [Request.Get] does — reading Headers directly by byte comparison is the
 //     mistake this line exists to prevent.
+//   - **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
+//     Cookie into one field per pair for compression's sake; they reach the
+//     handler joined again by "; " as one field, which is what HTTP/1.1
+//     delivers, and count as one field under [Config.MaxHeaders].
 //   - **The body is complete and bounded.** An element handed over is a whole
 //     request: its body has arrived in full, under [Config.MaxBodyBytes].
 //     There are no partial reads to finish and no framing left to check.
-type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
+//
+// # The context
+//
+// ctx is cancelled when the server stops by force — [Server.Close], or the
+// grace of [Serve] or [ServeH3] passing with the handler still running — and
+// not when it stops normally, which lets the requests in flight finish. It is
+// the context a handler hands to what it calls on the batch's behalf, a
+// database query or an upstream request, so that a forced stop reaches them
+// rather than leaving them to run with nobody waiting for the answer. It is
+// one context for the whole batch, because the batch is answered as a whole:
+// a client that gives up on one request of it is not seen there.
+type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]
 
-// Serve accepts connections and drives handle over each one until ctx is
-// cancelled.
+// Serve accepts connections on ln and drives handle over each one until ctx
+// is cancelled. It is the shortest way to run a [Server]: the cancellation is
+// [Server.Shutdown] bounded by [Config.ShutdownGrace], followed by
+// [Server.Close] when the grace passes first.
 //
 // Every connection is one goroutine reading one stream of request batches.
 // There is no worker pool and no queue: the goroutine is the unit the runtime
 // already schedules well, and a pool in front of it would add a queue whose
 // bound nobody chose.
 //
-// Serve returns when ctx is cancelled and every connection has finished, or
-// when the listener fails. It closes the listener on the way out.
+// Serve returns when ctx is cancelled and the connections have drained, or
+// when the listener fails. It closes the listener on the way out. A
+// temporary Accept failure — a [net.Error] whose Temporary reports true,
+// which is how the kernel says it ran out of descriptors (EMFILE, ENFILE)
+// or that a peer hung up mid-handshake (ECONNABORTED) — is not the listener
+// failing: Serve waits and tries again, 5 ms doubling to 1 s, the policy
+// net/http applies, and the connections already accepted keep being
+// served. Treating it as fatal would let a burst of descriptor pressure end
+// every connection the server holds.
 //
-// Cancellation reaches the connections, not only the listener. A goroutine
-// parked in Accept is released by closing the listener under it; a goroutine
-// parked reading a keep-alive connection is released by closing that
-// connection, and nothing else does it — waiting for them instead means Serve
-// returns when the last idle client happens to time out, which is
-// [Config.IdleTimeout] after the cancellation rather than at it.
+// Cancellation drains rather than cuts (docs/design/adr/0017), as
+// [Server.Shutdown] describes. What bounds the drain is
+// [Config.ShutdownGrace]: when it passes, every connection still open is
+// closed under its handler, whose context is cancelled, and Serve returns
+// [ErrShutdownForced] without waiting for the goroutines still inside one —
+// a handler that has not returned by then is the handler's bug, and holding
+// the process up for it would turn the bug into a hang. A drain that ends
+// within the grace returns nil.
 //
 // What Serve speaks on a bare TCP listener is cleartext HTTP/1.1, with
 // prior-knowledge HTTP/2 sniffed from the preface. Cleartext is kept for
@@ -81,106 +110,218 @@ type Handler func(sluice.Batch[Request]) sluice.Batch[Response]
 // listener the same preface sniff still picks the protocol — Serve does not
 // read the negotiated ALPN — so a client that negotiated h2 and sends the
 // preface is served HTTP/2, and one that did not is served HTTP/1.1.
+//
+// A configuration [Config] refuses is returned as an error before the
+// listener is read.
 func Serve(ctx context.Context, ln net.Listener, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: Serve requires a handler")
 	}
-	// Taken before the defaults: a zero MaxConcurrentStreams is HTTP/2's own
-	// default of 100, not the 64 Config's default is sized to HTTP/3 by.
-	h2Streams := cfg.MaxConcurrentStreams
-	cfg = cfg.withDefaults()
-	h2cfg := h2ConfigOf(cfg, h2Streams)
-
-	var wg sync.WaitGroup
-	live := &connSet{conns: map[net.Conn]struct{}{}}
-	stop := make(chan struct{})
-	var once sync.Once
-	shutdown := func() {
-		once.Do(func() {
-			close(stop)
-			_ = ln.Close()
-			live.closeAll()
-		})
+	resolved, err := cfg.resolve()
+	if err != nil {
+		return err
 	}
-	defer func() {
-		shutdown()
-		wg.Wait()
-	}()
-	go func() {
-		select {
-		case <-ctx.Done():
-			shutdown()
-		case <-stop:
-		}
-	}()
-
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			select {
-			case <-stop:
-				return nil // asked to stop: not a failure
-			default:
-			}
-			return fmt.Errorf("httpstream: accepting: %w", err)
-		}
-		if !live.add(c) {
-			// The shutdown ran between Accept and here, so this connection
-			// would never be closed by it.
-			_ = c.Close()
-			continue
-		}
-		wg.Go(func() {
-			defer func() { live.remove(c); _ = c.Close() }()
-			serveAny(ctx, c, cfg, h2cfg, handle)
-		})
+	srv := &Server{Config: cfg, Handler: handle}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	select {
+	case err = <-served:
+		// The listener failed; what it accepted is drained all the same.
+		served = nil
+	case <-ctx.Done():
 	}
+	grace, cancel := context.WithTimeout(context.Background(), resolved.ShutdownGrace)
+	defer cancel()
+	if srv.Shutdown(grace) != nil {
+		_ = srv.Close()
+		err = errors.Join(err, ErrShutdownForced)
+	}
+	if served != nil {
+		// Shutdown closed the listener, so this returns now: nil, or the
+		// listener's failure if it came first.
+		err = errors.Join(<-served, err)
+	}
+	return err
 }
 
-// connSet is the connections Serve has accepted and not yet finished with. It
-// exists for one operation — close every one of them at once — and holds
-// nothing else.
+// connSet is the connections a [Server] has accepted and not yet finished with,
+// each with where it stands between two requests. It exists for the
+// shutdown: close the ones that owe nothing, then, when the grace has
+// passed, the rest. It is also where Config.MaxConns and Config.MaxConnsPerIP
+// bind, since it already counts every live connection: the one that would
+// take either past its bound is not admitted.
 type connSet struct {
 	mu     sync.Mutex
-	conns  map[net.Conn]struct{}
+	conns  map[net.Conn]*connState
 	closed bool
+	max    int // Config.MaxConns; zero is unbounded
+	// maxPerIP is Config.MaxConnsPerIP, zero unbounded; byIP counts the
+	// connections in conns by remote prefix (ipkey.Of, v4Bits or v6Bits
+	// long), the ones with an IP address only.
+	maxPerIP       int
+	v4Bits, v6Bits int
+	byIP           map[netip.Prefix]int
+	// wg counts the connections admitted and not yet removed. It is added to
+	// under mu while the set is open, so a Wait begun after drain races no
+	// Add.
+	wg sync.WaitGroup
+	// draining is cancelled when the shutdown begins; every connection's state
+	// shares it, which is how the request reader learns not to read another
+	// request and how an HTTP/2 connection learns to say GOAWAY. A context
+	// rather than a channel so the latter is a [context.AfterFunc], not a
+	// goroutine parked for the life of every connection.
+	draining   context.Context
+	beginDrain context.CancelFunc
 }
 
-// add registers a connection, reporting false if the set has already been
-// closed and this one therefore has to be closed by its caller.
-func (s *connSet) add(c net.Conn) bool {
+// newConnSet takes the resolved Config: its two bounds, zero unbounded, and
+// the prefix lengths MaxConnsPerIP counts by.
+func newConnSet(c Config) *connSet {
+	draining, begin := context.WithCancel(context.Background())
+	return &connSet{
+		conns: map[net.Conn]*connState{}, max: max(c.MaxConns, 0),
+		maxPerIP: max(c.MaxConnsPerIP, 0), byIP: map[netip.Prefix]int{},
+		v4Bits: c.IPv4PrefixBits, v6Bits: c.IPv6PrefixBits,
+		draining: draining, beginDrain: begin,
+	}
+}
+
+// remoteIP is the key Config.MaxConnsPerIP counts c under: its remote
+// address's prefix (ipkey.Of), the port ignored; false when the address is
+// not IP, which no per-IP bound applies to.
+func (s *connSet) remoteIP(c net.Conn) (netip.Prefix, bool) {
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		if ip, ok := netip.AddrFromSlice(a.IP); ok {
+			return ipkey.Of(ip, s.v4Bits, s.v6Bits), true
+		}
+	}
+	return netip.Prefix{}, false
+}
+
+// connState is what the shutdown needs to know about one connection: whether
+// a request is in flight on it. It is written by the goroutine serving the
+// connection and read by the shutdown, hence the atomic.
+type connState struct {
+	phase atomic.Int32
+	drain context.Context
+	ip    netip.Prefix // the connection's key in connSet.byIP; invalid when it has none
+}
+
+// The phases a connection moves through, as the shutdown sees them.
+const (
+	// connIdle: nothing has arrived for the next request — the connection
+	// is parked, in the preface sniff or between two keep-alive requests.
+	// Closing it owes nobody an answer.
+	connIdle int32 = iota
+	// connBusy: a request has begun to arrive, is being handled or is being
+	// answered — on HTTP/2, a stream is open or in flight. The shutdown
+	// waits for it, up to the grace.
+	connBusy
+)
+
+// set records the phase. A nil state is a connection nothing watches — a
+// test driving serveConn directly — and takes no note.
+func (st *connState) set(phase int32) {
+	if st != nil {
+		st.phase.Store(phase)
+	}
+}
+
+// drainingNow reports whether the shutdown has begun; never, for a nil state.
+func (st *connState) drainingNow() bool {
+	return st != nil && st.drain.Err() != nil
+}
+
+// add registers a connection, returning nil if it is not admitted — the set
+// has already been closed, it is at max, or its remote IP is at maxPerIP —
+// and this one therefore has to be closed by its caller. A slot frees in
+// remove, which the connection's goroutine runs when it is done with the
+// socket, so a client that hung up counts until the server has read its
+// close.
+func (s *connSet) add(c net.Conn) *connState {
+	ip, hasIP := s.remoteIP(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
-		return false
+	if s.closed || (s.max > 0 && len(s.conns) >= s.max) ||
+		(hasIP && s.maxPerIP > 0 && s.byIP[ip] >= s.maxPerIP) {
+		return nil
 	}
-	s.conns[c] = struct{}{}
-	return true
+	st := &connState{drain: s.draining}
+	if hasIP {
+		st.ip = ip
+		s.byIP[ip]++
+	}
+	s.conns[c] = st
+	s.wg.Add(1)
+	return st
 }
 
 func (s *connSet) remove(c net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.conns, c)
+	if st, ok := s.conns[c]; ok {
+		delete(s.conns, c)
+		if st.ip.IsValid() {
+			s.byIP[st.ip]--
+			if s.byIP[st.ip] <= 0 {
+				delete(s.byIP, st.ip)
+			}
+		}
+		s.wg.Done()
+	}
 }
 
-func (s *connSet) closeAll() {
+// busy is the number of connections with a request in flight.
+func (s *connSet) busy() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, st := range s.conns {
+		if st.phase.Load() == connBusy {
+			n++
+		}
+	}
+	return n
+}
+
+// drain begins the shutdown: it refuses new connections, tells the readers
+// not to take another request, and closes every connection that has none in
+// flight. The order matters against the reader, which marks itself idle
+// before it looks at draining: a reader that marked itself after this scan
+// sees the context cancelled; one that marked itself before is closed here.
+// Either way no idle connection outlives the call. An HTTP/2 connection with
+// a stream open is told instead (see serveH2Conn): the cancellation runs its
+// GOAWAY, and it closes itself once the stream is answered.
+func (s *connSet) drain() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
+	s.beginDrain()
+	for c, st := range s.conns {
+		if st.phase.Load() != connBusy {
+			_ = c.Close()
+		}
+	}
+}
+
+// closeAll closes what the grace did not drain. The map is kept: remove
+// still runs for each connection when its goroutine ends.
+func (s *connSet) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for c := range s.conns {
 		_ = c.Close()
 	}
-	s.conns = nil
 }
 
 // serveConn runs one connection to its end, answering whatever it can and
 // closing when it cannot.
 //
 // c is a [prefixConn] even when nothing was peeked: it is where a streamed
-// response's peer watch (see watchPeer) puts back what it read ahead.
-func serveConn(c *prefixConn, cfg Config, handle Handler) {
-	src := Requests(c, cfg)
+// response's peer watch (see watchPeer) puts back what it read ahead. st is
+// the shutdown's view of the connection, nil when nothing is watching it.
+func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, handle Handler) {
+	src := newRequestReader(c, st, cfg)
 	// Reused for every batch on this connection, growing toward whatever the
 	// largest one needed and never shrinking back — the ordinary trade of a
 	// reused buffer against a per-batch allocation, paid once per connection
@@ -189,11 +330,20 @@ func serveConn(c *prefixConn, cfg Config, handle Handler) {
 
 	stopped := false
 	src.Stream()(func(b sluice.Batch[Request]) bool {
-		res, err := apply(handle, b)
+		res, err := apply(ctx, handle, b)
 		if err != nil {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
 			return false
+		}
+		if st.drainingNow() && len(b.Items) > 0 {
+			// The shutdown began while the handler ran: this batch is the
+			// connection's last, and its last response says so (RFC 9112
+			// §9.6) the way a request's own Connection: close would — the
+			// reader reads the same field and stops after it. A shutdown
+			// that begins once the header is out cannot be announced; the
+			// client finds the close at its next request instead.
+			b.Items[len(b.Items)-1].KeepAlive = false
 		}
 		// A streamed response is written as it is produced rather than
 		// gathered first, which is the whole point of it: the batch's
@@ -211,7 +361,7 @@ func serveConn(c *prefixConn, cfg Config, handle Handler) {
 			return true
 		}
 		var werr error
-		if out, werr = WriteBatch(out[:0], b.Items, res); werr != nil {
+		if out, werr = WriteBatch(out[:0], cfg, b.Items, res); werr != nil {
 			// A response this package refuses to put on the wire — an
 			// injected header, a framing header the caller set. The caller's
 			// bug, answered as one rather than written out.
@@ -228,15 +378,44 @@ func serveConn(c *prefixConn, cfg Config, handle Handler) {
 		return true
 	})
 
-	if stopped {
+	if !stopped {
+		// The read side ended. A clean close needs no answer; a refused
+		// request gets the status its refusal maps to, on the connection
+		// that is about to close anyway.
+		if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
+			if status := statusFor(err); status != 0 {
+				_ = writeStatus(c, cfg, nil, status)
+			}
+		}
+	}
+	tearDown(c, cfg)
+}
+
+// tearDown ends the connection in the two stages RFC 9112 §9.6 asks for,
+// so that the last response reaches the client.
+//
+// Closing a socket with unread bytes in it makes the TCP stack answer the
+// client's next segment with a reset, and a reset can erase what the client
+// had received and not yet read — the 413 an upload was refused with, the
+// last response before a pipelined request the shutdown will not serve. So
+// the write side is closed first, which is the client's EOF, and whatever
+// it still sends is read and dropped until it closes in turn or a short
+// deadline passes; the caller's Close then finds the socket empty. The
+// deadline is [Config.LingerTimeout]. A connection that
+// cannot half-close (a pipe, a wrapper without CloseWrite) is closed in one
+// stage as before.
+func tearDown(c *prefixConn, cfg Config) {
+	cw, ok := c.Conn.(interface{ CloseWrite() error })
+	if !ok || cw.CloseWrite() != nil {
 		return
 	}
-	// The read side ended. A clean close needs no answer; a refused request
-	// gets the status its refusal maps to, on the connection that is about to
-	// close anyway.
-	if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
-		if status := statusFor(err); status != 0 {
-			_ = writeStatus(c, cfg, nil, status)
+	if err := c.SetReadDeadline(time.Now().Add(cfg.LingerTimeout)); err != nil {
+		return
+	}
+	var sink [4 << 10]byte
+	for {
+		if _, err := c.Read(sink[:]); err != nil {
+			return
 		}
 	}
 }
@@ -254,7 +433,7 @@ func firstMethod(reqs []Request) []byte {
 
 // apply runs the handler and checks what it returned, since a batch of the
 // wrong length would answer the wrong caller.
-func apply(handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
+func apply(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A panic in the handler is the caller's bug and must not take
@@ -263,7 +442,7 @@ func apply(handle Handler, b sluice.Batch[Request]) (res []Response, err error) 
 			err = fmt.Errorf("httpstream: the handler panicked: %v", r)
 		}
 	}()
-	out := handle(b)
+	out := handle(ctx, b)
 	if len(out.Items) != b.Len() {
 		return nil, fmt.Errorf("httpstream: the handler answered %d of %d requests; "+
 			"a pipelined connection correlates by position, so a dropped or added "+
@@ -296,8 +475,18 @@ func statusFor(err error) int {
 		// answered 501, not 400 — the request may be well-formed; the server
 		// is the one missing the feature.
 		return 501
+	case errors.Is(err, errRequestLineTooLong):
+		// RFC 9112 §3: a request-target longer than the server will parse
+		// MUST be answered 414 — the client learns which part was too long.
+		return 414
+	case errors.Is(err, errHeadersTooLarge):
+		// RFC 6585 §5: header fields too large in total or singly are 431.
+		return 431
 	case errors.Is(err, ErrTooLarge):
 		return 413
+	case errors.Is(err, errVersionUnsupported):
+		// RFC 9110 §15.6.6: a version this server does not speak is 505.
+		return 505
 	case errors.Is(err, ErrMalformed):
 		return 400
 	}
@@ -308,7 +497,7 @@ func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 	// closing is always true here: every caller is about to end the
 	// connection, so appendResponse writes the Connection: close itself
 	// rather than have it duplicated as a caller-supplied header.
-	buf, err := appendResponse(nil, method, true, Response{Status: status})
+	buf, err := appendResponse(nil, method, true, false, nil, Response{Status: status}, dateFor(time.Now()))
 	if err != nil {
 		return err
 	}
@@ -316,11 +505,44 @@ func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 }
 
 func writeAll(c net.Conn, cfg Config, buf []byte) error {
-	if err := c.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout)); err != nil {
-		return err
+	return writeBoundOf(cfg).write(c.SetWriteDeadline, c.Write, buf)
+}
+
+// writeBound is [Config.WriteTimeout] read as a time without progress: a
+// write that times out having put progress bytes or more on the wire is
+// given the timeout again, from where it stopped, and one that times out
+// short of them fails. HTTP/1.1 and HTTP/3 write through it; the HTTP/2
+// writer applies the same rule to a stream's credit itself.
+type writeBound struct {
+	timeout  time.Duration
+	progress int
+}
+
+func writeBoundOf(cfg Config) writeBound {
+	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.WriteProgressBytes}
+}
+
+// write puts p on the wire with write, under deadlines it sets through
+// setDeadline.
+//
+// The bytes are handed over whole rather than in progress-sized pieces: a
+// client that is reading takes them in one write, one syscall, and only one
+// that is not costs a second. That relies on a timed-out write reporting
+// what it wrote and taking a later deadline, which net.Conn and quic.Stream
+// both do. crypto/tls does not — it makes the timeout fatal — so over TLS
+// the second write fails at once and the first timeout is the last, as it
+// was before progress counted.
+func (b writeBound) write(setDeadline func(time.Time) error, write func([]byte) (int, error), p []byte) error {
+	for {
+		if err := setDeadline(time.Now().Add(b.timeout)); err != nil {
+			return err
+		}
+		n, err := write(p)
+		if err == nil || n < b.progress || !errors.Is(err, os.ErrDeadlineExceeded) {
+			return err
+		}
+		p = p[n:]
 	}
-	_, err := c.Write(buf)
-	return err
 }
 
 // serveAny picks the protocol from what the client says first.
@@ -335,38 +557,22 @@ func writeAll(c net.Conn, cfg Config, buf []byte) error {
 //
 // The peeked bytes are handed on rather than re-read, since a connection
 // cannot be rewound.
-func serveAny(ctx context.Context, c net.Conn, cfg Config, h2cfg H2Config, handle Handler) {
+func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle Handler) {
 	peek, isH2, err := sniffPreface(c, cfg)
 	if err != nil {
 		return // silent past IdleTimeout, or gone: nothing to hand on
 	}
 	if isH2 {
-		_ = ServeH2(ctx, prefixed(c, peek), h2cfg, handle)
+		// Busy until the reader has seen the first batch: a preface is
+		// followed by a request, and the reader keeps the phase from there.
+		st.set(connBusy)
+		_ = serveH2Conn(ctx, prefixed(c, peek), st, cfg, handle)
 		return
 	}
-	serveConn(&prefixConn{Conn: c, head: peek}, cfg, handle)
-}
-
-// h2ConfigOf is the [H2Config] a [Serve] connection that turns out to be
-// HTTP/2 runs under. streams is Config.MaxConcurrentStreams as the caller set
-// it, zero included.
-//
-// MaxFrameSize is left to its default on purpose. It is a transport bound
-// with a protocol floor of 16384 (RFC 9113 §4.2/§6.5.2), not a body bound:
-// wiring MaxBodyBytes into it made a small body limit advertise an illegal
-// SETTINGS value, and a large one hand the peer a megabyte-sized frame
-// ceiling to amplify SETTINGS processing against. Bodies are bounded by
-// MaxBodyBytes across frames, however large each frame is allowed to be.
-func h2ConfigOf(cfg Config, streams int) H2Config {
-	return H2Config{
-		MaxBodyBytes:         cfg.MaxBodyBytes,
-		MaxHeaderBlockBytes:  cfg.MaxHeaderBytes,
-		MaxHeaders:           cfg.MaxHeaders,
-		MaxConcurrentStreams: streams,
-		IdleTimeout:          cfg.IdleTimeout,
-		ReadTimeout:          cfg.ReadTimeout,
-		WriteTimeout:         cfg.WriteTimeout,
-	}
+	// The peeked bytes are the start of a request: busy from here, and the
+	// reader takes over the phase from its first read.
+	st.set(connBusy)
+	serveConn(ctx, &prefixConn{Conn: c, head: peek}, st, cfg, handle)
 }
 
 // sniffPreface reads only as far as it must to tell the protocols apart.
@@ -418,6 +624,11 @@ func prefixed(c net.Conn, head []byte) net.Conn {
 	}
 	return &prefixConn{Conn: c, head: head}
 }
+
+// buffered reports whether bytes put back in front of the connection are
+// waiting to be read — the start of a request, as far as the shutdown is
+// concerned.
+func (c *prefixConn) buffered() bool { return len(c.head) > 0 }
 
 func (c *prefixConn) Read(p []byte) (int, error) {
 	if len(c.head) > 0 {
@@ -523,7 +734,8 @@ func streamedIn(res []Response) bool {
 //
 // closed reports that a close-delimited body was written: a streamed body
 // for an HTTP/1.0 client has no chunk framing (RFC 9112 §6.1 forbids
-// Transfer-Encoding there) and therefore no end but EOF, so the caller must
+// Transfer-Encoding there) and, without a ContentLength, no end but EOF, so
+// the caller must
 // close the connection now — a response written after it would be read as
 // more of the body.
 //
@@ -541,6 +753,8 @@ func streamedIn(res []Response) bool {
 // body bytes, so a mid-stream write failure closes the connection with
 // nothing more said.
 func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
+	var field [keepAliveFieldMax]byte
+	keepAlive := appendKeepAlive(field[:0], cfg.IdleTimeout)
 	buf = buf[:0]
 	// fail answers response i's refusal with a 500, after flushing the
 	// responses coalesced ahead of it — they were owed whatever happened to
@@ -572,7 +786,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 			// Appended behind whatever is already pending, not written on its
 			// own: WriteBatch returns nil on refusal and buf keeps the
 			// responses gathered so far, which is what lets fail flush them.
-			out, err := WriteBatch(buf, oneReq, []Response{r})
+			out, err := WriteBatch(buf, cfg, oneReq, []Response{r})
 			if err != nil {
 				return fail(i, err)
 			}
@@ -590,14 +804,14 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		if status == 0 {
 			status = 200
 		}
-		_, noBody := noLengthAndBody(status, method)
-		closeDelimited := http10 && !noBody
+		noLength, noBody := noLengthAndBody(status, method)
+		chunked, size, closeDelimited := streamedFraming(r, http10, noLength, noBody)
 		if closeDelimited {
 			// The 1.0 client gets the body to EOF, so this response is the
 			// connection's last whatever the request's Connection field said.
 			closing = true
 		}
-		out, err := appendStreamedHeader(buf, closing, http10, noBody, r)
+		out, err := appendStreamedHeader(buf, closing, chunked, size, keepAlive, r, dateFor(time.Now()))
 		if err != nil {
 			return fail(i, err)
 		}
@@ -615,6 +829,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		// The transport pulls: the producer runs at the socket's pace, and
 		// what it holds is one batch rather than the whole answer.
 		var werr error
+		var sent int64
 		watch := watchPeer(c, cfg.maxBuffer())
 		// A producer that panics has already had its header and perhaps
 		// some chunks sent: there is no status left to change, so the
@@ -628,12 +843,19 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 				werr = errPeerGone
 				return false
 			}
+			if overLength(&sent, r.ContentLength, b.Items) {
+				// The batch that would take the body past its declared
+				// length is not written: the connection closes short of it,
+				// or, if the length is already out, with no surplus behind.
+				werr = errLengthMismatch
+				return false
+			}
 			buf = buf[:0]
 			for _, chunk := range b.Items {
-				if closeDelimited {
-					buf = append(buf, chunk...)
-				} else {
+				if chunked {
 					buf = appendChunk(buf, chunk)
+				} else {
+					buf = append(buf, chunk...)
 				}
 			}
 			if len(buf) == 0 {
@@ -648,13 +870,34 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		if werr == nil {
 			werr = perr
 		}
+		if werr == nil && sent < r.ContentLength {
+			// Short of the declared length: no end may be written, so the
+			// connection closes and the client reads the body as incomplete
+			// (RFC 9112 §6.3), the chunked one left unterminated.
+			werr = errLengthMismatch
+		}
 		if werr != nil {
 			return buf, false, werr
 		}
 		if closeDelimited {
 			return buf, true, nil
 		}
-		buf = appendLastChunk(buf[:0])
+		if !chunked {
+			buf = buf[:0] // the declared length was the end
+			continue
+		}
+		if r.Trailers == nil {
+			buf = appendLastChunk(buf[:0])
+		} else {
+			// The body is out and a refusal can no longer become a 500:
+			// the chunked body is left unterminated and the connection
+			// closes, as for a producer that panicked.
+			fields, err := r.trailers()
+			if err != nil {
+				return buf, false, err
+			}
+			buf = appendLastChunkTrailers(buf[:0], fields)
+		}
 		if err := writeAll(c, cfg, buf); err != nil {
 			return buf, false, err
 		}

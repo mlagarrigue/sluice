@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +30,7 @@ func TestPeerWatchPutsBackAPipelinedRequest(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer func() { _ = server.Close() }()
-		serveConn(&prefixConn{Conn: server}, Config{}.withDefaults(), func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		serveConn(t.Context(), &prefixConn{Conn: server}, nil, Config{}.mustResolve(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/stream" {

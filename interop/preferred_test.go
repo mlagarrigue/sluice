@@ -40,7 +40,7 @@ func TestQuicGoClientAgainstSluiceServerWithPreferredAddress(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			st, err := c.AcceptStream()
+			st, err := c.AcceptStream(t.Context())
 			if err != nil {
 				return err
 			}

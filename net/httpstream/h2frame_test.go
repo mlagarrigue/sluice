@@ -44,10 +44,10 @@ func (c *memConn) SetDeadline(time.Time) error      { return nil }
 func (c *memConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *memConn) SetWriteDeadline(time.Time) error { return nil }
 
-func readFrames(t *testing.T, script []byte, cfg H2Config) ([][]h2Frame, error) {
+func readFrames(t *testing.T, script []byte, cfg Config) ([][]h2Frame, error) {
 	t.Helper()
 	c := &memConn{in: script}
-	src := h2Frames(c, cfg)
+	src := h2Frames(c, cfg.mustResolve())
 	var batches [][]h2Frame
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {
 		batch := make([]h2Frame, 0, b.Len())
@@ -76,7 +76,7 @@ func TestFramesFromSeveralStreamsArriveAsOneBatch(t *testing.T) {
 		script = append(script, frame(frameHeaders, flagEndHeaders|flagEndStream, id, []byte{0x82})...)
 	}
 
-	batches, err := readFrames(t, script, H2Config{})
+	batches, err := readFrames(t, script, Config{})
 	if err != nil {
 		t.Fatalf("Err = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestFramesFromSeveralStreamsArriveAsOneBatch(t *testing.T) {
 
 func TestFramesRefusesABadPreface(t *testing.T) {
 	script := append([]byte("GET / HTTP/1.1\r\nHost: h\r\n\r\n"), 0, 0, 0)
-	if _, err := readFrames(t, script, H2Config{}); !errors.Is(err, ErrH2Protocol) {
+	if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
 	}
 }
@@ -130,7 +130,7 @@ func TestFrameShapeRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			script := append([]byte(Preface), tt.frame...)
-			if _, err := readFrames(t, script, H2Config{}); !errors.Is(err, ErrH2Protocol) {
+			if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 				t.Fatalf("err = %v, want ErrH2Protocol", err)
 			}
 		})
@@ -148,7 +148,7 @@ func TestFrameLengthIsCheckedBeforeThePayload(t *testing.T) {
 	script := append([]byte(Preface), hdr[:]...)
 	// No payload follows: if the length were believed, the reader would wait
 	// for sixteen megabytes that never come.
-	if _, err := readFrames(t, script, H2Config{}); !errors.Is(err, ErrH2Protocol) {
+	if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
 	}
 }
@@ -161,7 +161,7 @@ func TestContinuationFloodIsBounded(t *testing.T) {
 	for range 64 {
 		script = append(script, frame(frameContinuation, 0, 1, make([]byte, 16))...)
 	}
-	_, err := readFrames(t, script, H2Config{MaxContinuationFrames: 8})
+	_, err := readFrames(t, script, Config{MaxContinuationFrames: 8})
 	if !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
 	}
@@ -172,7 +172,7 @@ func TestContinuationFloodIsBounded(t *testing.T) {
 func TestHeaderBlockCannotBeInterleaved(t *testing.T) {
 	script := append([]byte(Preface), frame(frameHeaders, 0, 1, []byte{0x82})...)
 	script = append(script, frame(frameHeaders, flagEndHeaders, 3, []byte{0x82})...)
-	if _, err := readFrames(t, script, H2Config{}); !errors.Is(err, ErrH2Protocol) {
+	if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
 	}
 }
@@ -184,7 +184,7 @@ func TestSplitHeaderBlockIsAccepted(t *testing.T) {
 	script = append(script, frame(frameContinuation, flagEndHeaders, 1, []byte{0x86})...)
 	script = append(script, frame(frameData, flagEndStream, 1, []byte("hello"))...)
 
-	batches, err := readFrames(t, script, H2Config{})
+	batches, err := readFrames(t, script, Config{})
 	if err != nil {
 		t.Fatalf("Err = %v", err)
 	}
@@ -207,7 +207,7 @@ func TestFrameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, n, err := parseFrame(raw, H2Config{}.withDefaults())
+	out, n, err := parseFrame(raw, defaultMaxFrameSize)
 	if err != nil {
 		t.Fatalf("parseFrame returned %v", err)
 	}
@@ -225,10 +225,10 @@ func TestFrameRoundTrip(t *testing.T) {
 // Framing hands out views into the read buffer, like the HTTP/1.1 side.
 func TestFrameParsingAllocatesNothing(t *testing.T) {
 	raw := frame(frameData, flagEndStream, 1, []byte("payload"))
-	cfg := H2Config{}.withDefaults()
+	cfg := Config{}.mustResolve()
 	var sink h2Frame
 	allocs := testing.AllocsPerRun(200, func() {
-		sink, _, _ = parseFrame(raw, cfg)
+		sink, _, _ = parseFrame(raw, cfg.MaxFrameSize)
 	})
 	if allocs != 0 {
 		t.Errorf("parsing a frame allocated %.1f times", allocs)

@@ -66,6 +66,18 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		}
 	}
 
+	// The keepalive (Conn.SetKeepAlive): a PING into silence, so that both
+	// idle clocks restart (§10.1.2). Only with 1-RTT keys in hand — before
+	// them the handshake's own packets are the activity — and rearmed here
+	// before the send, so a send that fails cannot make the loop spin.
+	if sp := &c.spaces[spaceApplication]; !c.keepAliveDeadline.IsZero() && !sp.discarded && sp.sealer != nil {
+		if !now.Before(c.keepAliveDeadline) {
+			c.armKeepAliveLocked(now)
+			_ = c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{})
+		}
+		earlier(c.keepAliveDeadline)
+	}
+
 	// An unanswered PATH_CHALLENGE on a migrated path retransmits on its own
 	// probe-timeout backoff — the same timer loop, not a second timer system.
 	earlier(c.pathProbeDeadlineLocked(now))
@@ -81,6 +93,16 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		} else {
 			earlier(c.paceDeadline)
 		}
+	}
+
+	// A stream's read or write deadline (Stream.SetReadDeadline): the
+	// earliest one armed is what sleeps here; when it matures, the streams
+	// it holds are woken and the next earliest takes its place.
+	if !c.streamDeadline.IsZero() {
+		if !now.Before(c.streamDeadline) {
+			c.streamDeadline = c.expireStreamDeadlinesLocked(now)
+		}
+		earlier(c.streamDeadline)
 	}
 
 	// A writer parked at a flow-control limit re-announces *_BLOCKED
@@ -118,12 +140,15 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 
 		// The loss timer: packets an ACK left too young to declare.
 		if lt := sp.sent.lossTime; !lt.IsZero() && !now.Before(lt) {
-			lost, lostBytes, latestSent := sp.sent.collectTimeLosses(now, &c.rtt)
-			if lostBytes > 0 {
-				sp.retrans = append(sp.retrans, lost...)
-				c.cc.onLost(lostBytes, latestSent, now)
+			out := sp.sent.collectTimeLosses(now, &c.rtt, &c.delivery)
+			if out.lostCount > 0 {
+				c.queueLostLocked(sp, out)
+				if out.lostBytes > 0 { // see handleAck: a previous path's losses carry no bytes
+					c.cc.onLost(out.lossEvent(now))
+				}
 				c.retransmitLocked()
 			}
+			c.settleProbeLocked(out)
 		}
 		earlier(sp.sent.lossTime)
 
@@ -144,13 +169,20 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	}
 	if anyExpired {
 		c.ptoCount++
-		// Three unanswered probes with exponential backoff: the path is
-		// not dropping a packet, it is gone. Collapse the window (a
-		// simplification of RFC 9002 §7.6's persistent-congestion test,
-		// on the safe side of it).
-		if c.ptoCount >= 3 {
-			c.cc.onPersistentCongestion()
+		c.ptoFired++
+		if c.ptoCount >= pmtuMaxProbes {
+			// Nothing acknowledged for three probe intervals: on a path
+			// that carried full-size datagrams, that is a black hole
+			// until proven otherwise (pmtu.go), and the probes below
+			// leave at 1200 bytes.
+			c.blackHoleLocked()
 		}
+		// The window is not touched: a timeout proves nothing about the
+		// path (RFC 9002 §6.2), and persistent congestion is a span of
+		// losses an ACK establishes (§7.6, handleAck), not a count of
+		// probes — three unanswered probes used to collapse it here, and
+		// a sender pausing between small writes restarts this timer at
+		// every send without a single acknowledgement (§7.6.1).
 		for space, fired := range expired {
 			if fired {
 				c.sendProbeLocked(space)
@@ -184,6 +216,17 @@ func (c *Conn) ptoDeadlineLocked(sp *space, space int) time.Time {
 	// the server may not be able to read 1-RTT packets yet, and the
 	// Handshake space's own PTO covers the interval.
 	if space == spaceApplication && !c.handshakeConfirmed {
+		return time.Time{}
+	}
+	// §6.2.2.1: a server that has spent its anti-amplification budget does
+	// not arm the PTO at all — what a probe sends counts against the very
+	// limit that stops it — until the client's next datagram reopens the
+	// budget; that datagram kicks the timer (receive), and a deadline then
+	// found in the past fires at once. The count is left alone meanwhile:
+	// it used to climb here with every probe the budget withheld, doubling
+	// the interval of probes that never left, and the first one to leave
+	// was a pile of PINGs.
+	if c.amplActive && c.amplSent >= 3*c.amplRecv {
 		return time.Time{}
 	}
 	if _, ok := sp.sent.oldestEliciting(); !ok {

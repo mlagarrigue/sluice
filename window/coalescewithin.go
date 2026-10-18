@@ -1,6 +1,7 @@
 package window
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -92,12 +93,16 @@ type slot[T any] struct {
 //
 // CoalesceWithin panics if within is zero or negative: an operator that costs
 // a goroutine to watch a clock must not be given a clock it cannot watch. A
-// size of zero or less means [sluice.DefaultBatchSize], as in [sluice.Coalesce].
+// size of zero means [sluice.DefaultBatchSize] and a negative size panics, as
+// in [sluice.Coalesce].
 func CoalesceWithin[T any](s sluice.Stream[T], size int, within time.Duration) sluice.Stream[T] {
 	if within <= 0 {
 		panic("sluice: CoalesceWithin requires a positive within — use Coalesce when there is no deadline")
 	}
-	if size <= 0 {
+	if size < 0 {
+		panic("sluice: CoalesceWithin size " + strconv.Itoa(size) + " is negative — zero means DefaultBatchSize")
+	}
+	if size == 0 {
 		size = sluice.DefaultBatchSize
 	}
 	return func(yield func(sluice.Batch[T]) bool) {

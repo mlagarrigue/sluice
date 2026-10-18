@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/quic"
@@ -60,12 +63,55 @@ import (
 // retransmits, enforces flow control and interoperates with quic-go, whose
 // HTTP/3 client reads this layer's responses too (the interop/ module, in
 // CI) — and the server side is one connection per packet socket.
+//
+// The connection must have negotiated "h3" (RFC 9114 §3.1): the server's
+// [crypto/tls.Config] announces it in NextProtos, and a connection that
+// settled on any other protocol is refused and closed rather than served,
+// as is any connection when [Config] refuses the configuration.
+//
+// The cancellation of ctx stops the connection normally, as below; when
+// [Config.ShutdownGrace] passes before the drain ends, the connection is
+// closed under its handler, whose context is cancelled, and ServeH3 returns
+// [ErrShutdownForced]. The handler's context carries ctx's values but not
+// its cancellation, which is the normal stop and not the handler's to see.
 func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3 requires a handler")
 	}
-	cfg = cfg.withDefaults()
+	cfg, err := cfg.resolve()
+	if err != nil {
+		_ = c.CloseWithError(h3InternalError)
+		return err
+	}
+	// The grace is a timer armed at the cancellation, not a context scoped
+	// to the drain: the wait at the bottom of serveH3 reads it too, after
+	// the connection has ended, and the drain can end — client gone, grace
+	// passed — before the handler has returned.
+	forced, force := context.WithCancel(context.WithoutCancel(ctx))
+	defer force()
+	var graceTimer atomic.Pointer[time.Timer]
+	stop := context.AfterFunc(ctx, func() {
+		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, force))
+	})
+	defer func() {
+		stop()
+		// Stopped once ServeH3 has returned, when nobody reads it.
+		if t := graceTimer.Load(); t != nil {
+			t.Stop()
+		}
+	}()
+	err = serveH3(ctx, forced, c, cfg, handle)
+	if errors.Is(err, ErrShutdownForced) {
+		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
+			"connections", 1, "grace", cfg.ShutdownGrace)
+	}
+	return err
+}
 
+// serveH3 is [ServeH3] with its two stops apart, as a [Server] drives them:
+// the cancellation of drain is the normal stop, that of forced the forced
+// one, and forced is also the handler's context. cfg is resolved.
+func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	// The hand-off to the responder below is provably non-blocking only while
 	// the transport admits no more request streams than the channel can hold,
 	// and h3MaxServeStreams is where that proof is capped. A connection whose
@@ -78,6 +124,17 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		return fmt.Errorf(
 			"httpstream: InitialMaxStreamsBidi %d is over the %d ServeH3 can serve without deadlock",
 			lim, h3MaxServeStreams)
+	}
+	// RFC 9114 §3.1: HTTP/3 is the protocol identified by the ALPN token
+	// "h3". A peer that settled on anything else is waiting for that other
+	// protocol and would read this layer's SETTINGS and frames as garbage;
+	// refused and closed, like the limit above.
+	if proto := c.ConnectionState().NegotiatedProtocol; proto != "h3" {
+		_ = c.CloseWithError(h3InternalError)
+		return fmt.Errorf("httpstream: ServeH3 on a connection that negotiated %q, not h3", proto)
+	}
+	if cfg.KeepAlive > 0 {
+		_ = c.SetKeepAlive(cfg.KeepAlive) // positive: SetKeepAlive refuses only a negative period
 	}
 	a := newH3Assembler(cfg)
 	// Manual flow-control credit closes the security report's M-3 residue:
@@ -98,21 +155,85 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
 	}
 
-	// A cancelled server ends with an application close, which is the graceful
-	// end RFC 9114 §5.2 describes (GOAWAY, which would precede it on the
-	// control stream, is not implemented — a client just sees the connection
-	// end cleanly rather than being invited to retry elsewhere).
-	stop := context.AfterFunc(ctx, func() { _ = c.CloseWithError(h3GracefulCode()) })
-	defer stop()
-
 	// RFC 9114 §6.2.1: each endpoint opens a control stream and sends
 	// SETTINGS as its first frame. A peer is entitled to wait for it, so a
 	// server that never sends one is a server a conformant client hangs on.
-	// Stream 3 is the first server-initiated unidirectional identifier.
-	control := c.Stream(3)
+	// Stream 3 is the first server-initiated unidirectional identifier. A
+	// client that grants no unidirectional stream breaks §6.2's "MUST permit
+	// at least three": no control stream can open, and the connection is
+	// closed with the generic protocol error, §6.2 naming no specific one.
+	control, err := c.Stream(3)
+	if err != nil {
+		_ = c.CloseWithError(h3GeneralProtocolError)
+		return fmt.Errorf("httpstream: the client grants no unidirectional stream for the control stream: %w", err)
+	}
 	if _, err := control.Write(appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
+		// Closed on the way out, like the two refusals above. The one
+		// failure a live connection produces here is the client's
+		// STOP_SENDING on the control stream landing between Stream(3)
+		// and this write: the §6.2.1 error the callback below names,
+		// which used to leave the connection open with nobody serving it.
+		if code, reset := control.WasReset(); reset {
+			_ = c.CloseWithError(h3ClosedCriticalStream)
+			return controlStopped(code)
+		}
+		_ = c.CloseWithError(h3InternalError)
 		return err
 	}
+
+	// A cancelled server drains (ADR 0017), the way RFC 9114 §5.2 has it
+	// "without losing requests": a first GOAWAY at 2^62−4, the highest
+	// identifier a server may send, which tells the client to open nothing
+	// more while every request it already sent is still admitted; a PING
+	// whose acknowledgement measures the round trip in which those requests
+	// arrive; then a second GOAWAY naming the first request stream this
+	// connection rejects — the one after the highest it admitted, decided
+	// under the assembler's lock so no stream is both admitted and named.
+	// A request the client sent before it read the first GOAWAY is thereby
+	// served, not rejected, as on HTTP/2. Then every admitted request is
+	// answered, then the connection closes
+	// H3_NO_ERROR (or §8.1's grease) once the last answer is acknowledged,
+	// which is what [quic.Conn.ShutdownWithError] waits for: a close sent at
+	// once could reach the client before the response it follows. A request
+	// stream opened from the named identifier on is rejected on arrival
+	// (REQUEST_REJECTED, see the assembler's admit). The forced stop bounds
+	// the whole: when it comes, what is still open is closed under its
+	// handler and serveH3 returns, as Serve does. The goroutine this runs on
+	// lives for the drain only — nothing is parked for the life of the
+	// connection.
+	drained := make(chan struct{})
+	var finishOnce sync.Once
+	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
+	stop := context.AfterFunc(drain, func() {
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, h3MaxServerGoAway))); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
+		// The forced stop bounds the round trip, as it bounds the rest: a
+		// client that never acknowledges is closed at the grace.
+		if err := c.Ping(forced); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
+		from := a.beginDrain()
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
+			_ = c.CloseWithError(h3GracefulCode())
+			return
+		}
+		if a.inFlight.Load() == 0 {
+			a.Finish()
+		}
+		select {
+		case <-drained:
+			// The forced stop bounds the acknowledgement too; at it the
+			// connection closes anyway, as Shutdown promises.
+			_ = c.ShutdownWithError(forced, h3GracefulCode())
+		case <-forced.Done():
+			_ = c.CloseWithError(h3GracefulCode())
+		case <-c.Done():
+		}
+	})
+	defer stop()
 
 	// The channel is never closed, and both ends select on the connection
 	// instead. Closing it would be the natural thing and it is a panic waiting
@@ -151,7 +272,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 		for {
 			select {
 			case b := <-in:
-				answerH3(c, b, handle, &writers)
+				answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers)
 			case <-c.Done():
 				return
 			}
@@ -159,6 +280,21 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	}()
 
 	c.OnStreamFrames(func(frames []quic.Frame) error {
+		// RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender
+		// close the control stream", and a closed one is a connection error
+		// of type H3_CLOSED_CRITICAL_STREAM. The transport has answered the
+		// STOP_SENDING already (RESET_STREAM, RFC 9000 §3.5) and hands it up
+		// in the datagram that carried it; the connection ends before any
+		// request beside it is admitted. A STOP_SENDING on a request stream
+		// needs nothing here: the transport abandoned the response, whose
+		// writer fails on its next write.
+		for _, f := range frames {
+			if f.Type == quic.FrameStopSending && f.StreamID == control.ID() {
+				code, _ := control.WasReset()
+				_ = c.CloseWithError(h3ClosedCriticalStream)
+				return controlStopped(code)
+			}
+		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own
 		// loop: a separate pass here used to run every Forget before the
 		// datagram's STREAM deltas, which resurrected assembly state for
@@ -175,13 +311,35 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 			return err
 		}
 		for _, se := range failed {
-			// One stream's refusal, on that stream: RESET_STREAM abandons
-			// the answer and STOP_SENDING tells the peer to stop supplying
-			// the request (RFC 9114 §4.1.1 uses both). The connection and
+			// One stream's refusal, on that stream. The connection and
 			// every other request the datagram carried are untouched, which
 			// is the whole of what a multiplexed transport offers over a
 			// sequential one.
-			s := c.Stream(se.StreamID)
+			s, err := c.Stream(se.StreamID)
+			if err != nil {
+				continue // unreachable: the peer opened it, within the limit
+			}
+			if se.Status != 0 {
+				// A request over a bound with a status: RFC 9114 §4.1 has
+				// the server stop reading with H3_NO_ERROR, send the
+				// complete response and close its side cleanly — a client
+				// behind a proxy acts on a 431 or 413 where a bare reset
+				// tells it nothing. STOP_SENDING leaves the read loop now;
+				// the head leaves on a writer goroutine like any response,
+				// since a Write waits on the peer's credit.
+				if err := s.StopSending(h3NoError); err != nil {
+					return err
+				}
+				writers.Add(1)
+				go func(id uint64, status int, fieldSection uint64) {
+					defer writers.Done()
+					defer a.retire()
+					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
+				}(se.StreamID, se.Status, a.peerMaxFieldSection())
+				continue
+			}
+			// RESET_STREAM abandons the answer and STOP_SENDING tells the
+			// peer to stop supplying the request (§4.1.1 uses both).
 			if err := s.Reset(se.Code); err != nil {
 				return err
 			}
@@ -206,6 +364,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 			// must not reach into it.
 			fieldSection: a.peerMaxFieldSection(),
 			credit:       a.Credit,
+			retire:       a.retire,
 		}:
 		case <-c.Done():
 		}
@@ -213,15 +372,60 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	})
 
 	<-c.Done()
-	<-answered
-	// Every writer that is writing exits once the connection is done: its
-	// writes fail. A writer inside a streamed producer is not waited for —
-	// the producer is the caller's code, and one blocked on something other
-	// than its yield would hold this return forever. It learns the
-	// connection is gone at its next yield, which returns false (see the
-	// package documentation), and its goroutine ends then.
-	writers.Wait()
-	return c.Err()
+	// The responder exits at its next select, and every writer that is
+	// writing exits once the connection is done: its writes fail. A writer
+	// inside a streamed producer is not waited for — the producer is the
+	// caller's code, and one blocked on something other than its yield
+	// would hold this return forever. It learns the connection is gone at
+	// its next yield, which returns false (see the package documentation),
+	// and its goroutine ends then. A handler that has not returned is the
+	// same case one level up: after a cancellation the wait for it ends
+	// with the forced stop, as Serve's does (ADR 0017 §2), and the goroutine
+	// below ends when the handler does. A connection the client ended is
+	// waited for in full — there is no grace to count from until the
+	// server is cancelled, which arms one.
+	finished := make(chan struct{})
+	go func() {
+		<-answered
+		writers.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-forced.Done():
+		select {
+		case <-finished:
+		default:
+			return ErrShutdownForced
+		}
+	}
+	return h3CloseErr(c.Err())
+}
+
+// controlStopped is the connection error for a client that asked the control
+// stream to stop (RFC 9114 §6.2.1): a critical stream closed, whenever the
+// refusal is noticed.
+func controlStopped(code uint64) error {
+	return h3ConnectionError{Code: h3ClosedCriticalStream, Err: fmt.Errorf(
+		"%w: the client asked the control stream to stop (STOP_SENDING %#x)", ErrH3Protocol, code)}
+}
+
+// h3CloseErr is what ServeH3 reports once the connection ended: nil for
+// the ends an HTTP/3 server treats as the client leaving — its H3_NO_ERROR
+// (RFC 9114 §8.1), its transport NO_ERROR, or silence past the idle timeout
+// — and the transport's cause for everything else. The transport reports
+// every peer close as a [quic.ConnectionError] because it does not know
+// what the codes mean; this is the layer that does.
+func h3CloseErr(err error) error {
+	if errors.Is(err, quic.ErrIdleTimeout) {
+		return nil
+	}
+	if ce, ok := errors.AsType[*quic.ConnectionError](err); ok {
+		if (ce.Application && ce.Code == h3NoError) || (!ce.Application && ce.Code == 0) {
+			return nil
+		}
+	}
+	return err
 }
 
 // h3ReleaseStreamBytes is the manual-credit release, a variable so a test
@@ -244,25 +448,46 @@ type h3Batch struct {
 	// credited every byte twice, so MAX_DATA ran ahead of what this server
 	// had consumed without bound.
 	credit func(streamID, n uint64)
+	// retire, when set, is called once per request when its response has
+	// left — or its writer has given up — which is how a draining connection
+	// learns it owes nothing more.
+	retire func()
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
 // configuration's own admission bounds, for the connection ServeH3 will
 // serve: stream windows that fit a full request (MaxBodyBytes plus header
 // room), a connection window that fits the 4×MaxBodyBytes aggregate
-// assembly cap, and the stream count ServeH3 admits. Serving a connection
-// built with these lets ServeH3 run the transport under manual
-// flow-control credit, where a peer's window only reopens for bytes this
-// server has actually stopped retaining — the strongest memory bound the
-// layer offers. Any other parameters work too; below these windows ServeH3
-// falls back to delivery-time crediting, bounded by the assembler's caps.
-func (c Config) TransportParameters() quic.TransportParameters {
-	c = c.withDefaults()
+// assembly cap, the stream count ServeH3 admits, and [Config.IdleTimeout]
+// as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
+// own above the transport's, so this is the one place the field reaches an
+// HTTP/3 connection, and a zero field is the 30s every protocol defaults
+// to. Serving a connection built with these lets ServeH3 run the transport
+// under manual flow-control credit, where a peer's window only reopens for
+// bytes this server has actually stopped retaining — the strongest memory
+// bound the layer offers. Any other parameters work too; below these
+// windows ServeH3 falls back to delivery-time crediting, bounded by the
+// assembler's caps, and the idle timeout is whatever those parameters say.
+//
+// It returns an error for a configuration [Config] refuses, and for a
+// MaxConcurrentStreams over the 4096 streams ServeH3 serves on one
+// connection: announced, that limit would have ServeH3 refuse every
+// connection built on these parameters.
+func (c Config) TransportParameters() (quic.TransportParameters, error) {
+	c, err := c.resolve()
+	if err != nil {
+		return quic.TransportParameters{}, err
+	}
+	if c.MaxConcurrentStreams > h3MaxServeStreams {
+		return quic.TransportParameters{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3 serves on one connection",
+			c.MaxConcurrentStreams, h3MaxServeStreams)
+	}
 	p := quic.DefaultParameters()
+	p.MaxIdleTimeout = c.IdleTimeout
 	p.InitialMaxStreamDataBidiRemote = uint64(c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
 	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack               //nolint:gosec // G115: positive config
-	p.InitialMaxStreamsBidi = min(uint64(c.MaxConcurrentStreams), h3MaxServeStreams)          //nolint:gosec // G115: positive config
-	return p
+	p.InitialMaxStreamsBidi = uint64(c.MaxConcurrentStreams)                                  //nolint:gosec // G115: positive config
+	return p, nil
 }
 
 // h3MaxServeStreams caps the stream limit ServeH3 will serve: the responder
@@ -288,8 +513,8 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(c *quic.Conn, b h3Batch, handle Handler, writers *sync.WaitGroup) {
-	res, err := apply(handle, sluice.Batch[Request]{Items: b.reqs})
+func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
+	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Every request of the batch is answered
@@ -313,6 +538,7 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writers *sync.WaitGroup) 
 		}
 	}
 
+	date := dateFor(time.Now())
 	for i, id := range b.ids {
 		writers.Add(1)
 		go func(id uint64, r Response, method []byte) {
@@ -321,8 +547,14 @@ func answerH3(c *quic.Conn, b h3Batch, handle Handler, writers *sync.WaitGroup) 
 				if !detached {
 					writers.Done()
 				}
+				// Retired at the goroutine's very end, a streamed producer's
+				// pull included: the drain waits for the body it is writing,
+				// bounded by the grace, where ServeH3's own return does not.
+				if b.retire != nil {
+					b.retire()
+				}
 			}()
-			writeH3Response(c, id, r, method, b.fieldSection, func() {
+			writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
 				detached = true
 				writers.Done()
 			})
@@ -337,21 +569,30 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // writeH3Response frames and writes one response on its own goroutine — the
 // lift of the old single-writer design's head-of-line block. A write stalled
 // on this stream's flow control stalls this goroutine alone; packets keep
-// arriving on the read loop, every other response keeps leaving, and the
-// idle timeout bounds how long a starving client can hold the goroutine.
+// arriving on the read loop and every other response keeps leaving. Each
+// write is bounded by wb — [Config.WriteTimeout] without progress, the bound
+// the HTTP/2 writer puts on a job — so a client that keeps the connection
+// alive but never grants credit holds the goroutine, and a streamed
+// producer's body, for that long and no longer: the stream is then reset and
+// the goroutine returned. One that keeps granting holds it as long as it
+// reads.
 //
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, detach func()) {
-	s := c.Stream(id)
+func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) {
+	s, err := c.Stream(id)
+	if err != nil {
+		return // unreachable: the request arrived on it, within the limit
+	}
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
-	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc)
+	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)
 	if err != nil {
-		if head, err = appendH3Response(sc.head[:0], Response{Status: 500}, method, fieldSection, sc); err != nil {
+		if head, err = appendH3Response(sc.head[:0], Response{Status: 500}, method, fieldSection, sc, date); err != nil {
 			// Only reachable when the peer's MAX_FIELD_SECTION_SIZE is under
-			// a bare 500's own (:status and content-length, ~90 bytes): no
+			// a bare 500's own (:status, date and content-length, ~155
+			// bytes): no
 			// answer fits what the client said it accepts, so the stream is
 			// reset rather than sent a section §4.2.2 says it will refuse.
 			_ = s.Reset(h3InternalError)
@@ -360,36 +601,85 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		r = Response{Status: 500}
 	}
 	sc.head = head
-	if _, err := s.Write(head); err != nil {
-		return // the stream is gone; its neighbours are not
-	}
 	status := r.Status
 	if status == 0 {
 		status = 200
 	}
 	_, noBody := noLengthAndBody(status, method)
-	if r.streamed() && !noBody {
-		// The payload follows as DATA frames on the same stream, at the
-		// pace the producer supplies them — off the read goroutine, so
-		// packets and the credit this write waits on keep arriving.
-		//
-		// A HEAD or 204/304 response states no body and sends none —
-		// the producer is never pulled, the same way the HTTP/1.1 and
-		// HTTP/2 paths never do for these.
-		detach()
-		if !streamH3Body(c, s, r.Stream) {
-			return
-		}
+	if !r.streamed() || noBody {
+		// The whole response is in head: it and the FIN leave in one write,
+		// one datagram for a response that fits one, where a write and then
+		// CloseWrite sent the FIN in a datagram of its own — one more per
+		// request, measured at 1.0 per request over 20,000 small responses.
+		_ = writeH3Bounded(s, head, true, wb)
+		return
 	}
-	_ = s.CloseWrite()
+	if !writeH3Bounded(s, head, false, wb) {
+		return // the stream is gone or given up on; its neighbours are not
+	}
+	// The payload follows as DATA frames on the same stream, at the pace the
+	// producer supplies them — off the read goroutine, so packets and the
+	// credit this write waits on keep arriving. A HEAD or 204/304 response
+	// states no body and sends none: it took the branch above, and the
+	// producer is never pulled, the same way the HTTP/1.1 and HTTP/2 paths
+	// never do for these.
+	detach()
+	if !streamH3Body(c, s, r.Stream, r.ContentLength, wb) {
+		return
+	}
+	if r.Trailers == nil {
+		_ = s.CloseWrite()
+		return
+	}
+	tail, err := appendH3Trailers(sc.head[:0], r, fieldSection, sc)
+	if err != nil {
+		// The body is out: a refused trailer resets the stream, as a
+		// producer that panicked does, so the client never reads the
+		// answer as whole.
+		_ = s.Reset(h3InternalError)
+		return
+	}
+	sc.head = tail
+	// The trailer section and the FIN leave in one write, as a buffered
+	// response's last frame and its FIN do.
+	_ = writeH3Bounded(s, tail, true, wb)
+}
+
+// writeH3Bounded writes p on s under [Config.WriteTimeout], read as a time
+// without progress (see writeBound), and the FIN with it when fin is set,
+// reporting whether it all went out. A write the peer starves of credit is
+// given up on and its stream reset with H3_REQUEST_CANCELLED, the code
+// RFC 9114 §4.1.1 says a server SHOULD abort with when it "abandons a
+// response after partial processing": the peer granted less than the
+// response needs, which it is entitled to do, and this end is the one that
+// stopped waiting — the same reading as the HTTP/2 writer's CANCEL after its
+// write timeout. Any other failure means the stream is already gone.
+func writeH3Bounded(s *quic.Stream, p []byte, fin bool, wb writeBound) bool {
+	write := s.Write
+	if fin {
+		write = s.WriteClose
+	}
+	if err := wb.write(s.SetWriteDeadline, write, p); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			_ = s.Reset(h3RequestCancelled)
+		}
+		return false
+	}
+	return true
 }
 
 // streamH3Body pulls a streamed response onto its stream, reporting whether it
 // ran to the end. A stream the peer reset stops the pull, which is a cancelled
 // request reaching the handler that is still working for it; so does a
 // connection that ended, even on an empty batch that would write nothing.
-func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte]) bool {
-	ok := true
+//
+// length is the response's ContentLength, zero for none. A producer that
+// yields more — the batch that would cross it is not written — or ends short
+// of it has its stream reset, never ended: RFC 9114 §4.1.2 makes the
+// mismatch a malformed response.
+func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], length int64, wb writeBound) bool {
+	ok, wrong := true, false
+	var sent int64
 	var out []byte // reused across batches; Stream.Write copies before returning
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
 		select {
@@ -402,19 +692,24 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte]) bo
 			ok = false
 			return false
 		}
+		if overLength(&sent, length, b.Items) {
+			wrong = true
+			return false
+		}
 		out = appendH3StreamedBody(out[:0], b.Items)
 		if len(out) == 0 {
 			return true // an empty batch is cadence, not an end
 		}
-		if _, err := s.Write(out); err != nil {
+		if !writeH3Bounded(s, out, false, wb) {
 			ok = false
 			return false
 		}
 		return true
 	})
-	if perr != nil {
-		// The producer panicked: its stream is reset, the same answer a
-		// response that cannot be framed gets, and nothing else is touched.
+	if perr != nil || wrong || ok && sent < length {
+		// The producer panicked or missed its length: its stream is reset,
+		// the same answer a response that cannot be framed gets, and nothing
+		// else is touched.
 		_ = s.Reset(h3InternalError)
 		return false
 	}

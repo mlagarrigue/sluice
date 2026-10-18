@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -178,7 +179,7 @@ func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
 // It is for DDL and for control statements — the things that have no rows and
 // no parameters. It takes no values because it cannot: this is the simple
 // Query message, which has nowhere to put a bound parameter, so anything
-// carrying a value goes through [Conn.Query] instead, where it travels in
+// carrying a value goes through [Conn.ExecParams] instead, where it travels in
 // binary and cannot be read as SQL.
 //
 // A statement that fails leaves the connection usable: the server reports the
@@ -196,7 +197,111 @@ func (c *Conn) Exec(ctx context.Context, sql string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("abandoning the statement: %w", err)
 	}
-	return c.execUser(sql)
+	w := c.watchCancel(ctx)
+	return c.settleCancel(ctx, w, c.execUser(sql))
+}
+
+// CommandTag is the server's word on a statement it completed: "UPDATE 3",
+// "INSERT 0 1", "SET", "CREATE TABLE". [Conn.ExecParams] returns it, and
+// [Conn.Query] writes it to [QueryConfig.Tag] when asked.
+type CommandTag string
+
+// RowsAffected reports the row count the tag carries, and whether it carries
+// one at all.
+//
+// Only the commands the protocol gives a count do — INSERT, DELETE, UPDATE,
+// MERGE, SELECT (and CREATE TABLE AS, which completes as SELECT), MOVE, FETCH
+// and COPY — so a SET or a CREATE TABLE answers false rather than a zero
+// that would read as "no rows matched". The list is the protocol's, not a
+// guess from the tag's last word: a tag this package does not know answers
+// false.
+func (t CommandTag) RowsAffected() (n int64, ok bool) {
+	verb, rest, _ := strings.Cut(string(t), " ")
+	switch verb {
+	case "INSERT":
+		// "INSERT oid rows": the oid has been 0 since tables lost OIDs, and
+		// is skipped whatever it says, which an older server may still set.
+		var found bool
+		if _, rest, found = strings.Cut(rest, " "); !found {
+			return 0, false
+		}
+	case "DELETE", "UPDATE", "MERGE", "SELECT", "MOVE", "FETCH", "COPY":
+	default:
+		return 0, false
+	}
+	// ParseUint, not ParseInt: a sign is not something the server writes.
+	u, err := strconv.ParseUint(rest, 10, 63)
+	if err != nil {
+		return 0, false
+	}
+	return int64(u), true
+}
+
+// resultTag copies a CommandComplete body into a tag that counts the whole
+// result. The server counts only the rows of the Execute that completed the
+// portal — an UPDATE ... RETURNING of five rows read in batches of two
+// completes as "UPDATE 1", measured against PostgreSQL 17 — so the rows of
+// the earlier Executes, which suspended, are added to its count. A result
+// read in one Execute keeps the server's tag as it is.
+func resultTag(body []byte, suspended int) CommandTag {
+	if suspended == 0 {
+		return CommandTag(body)
+	}
+	n, ok := CommandTag(body).RowsAffected()
+	if !ok {
+		return CommandTag(body)
+	}
+	// RowsAffected found a count, so the body holds a space before it.
+	var buf [64]byte
+	b := append(buf[:0], body[:bytes.LastIndexByte(body, ' ')+1]...)
+	return CommandTag(strconv.AppendInt(b, n+int64(suspended), 10))
+}
+
+// ExecParams runs one statement with bound parameters and returns its
+// command tag — the way to run an UPDATE ... WHERE id = $1 and learn how many
+// rows it touched:
+//
+//	tag, err := conn.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
+//		[][]byte{postgres.AppendText(nil, customer)}, []uint32{postgres.OIDText})
+//	n, _ := tag.RowsAffected()
+//
+// The values travel in binary on the extended-query path, as they do for
+// [Conn.Query], so none of them can be read as SQL; oids gives their types
+// as [QueryConfig.ParamOIDs] does, and nil lets the server infer them. The
+// text is one statement: the extended protocol takes no more.
+//
+// Rows the statement returns — a SELECT, an UPDATE ... RETURNING — are read
+// and dropped; the tag still counts them. Use [Conn.Query] to see them.
+//
+// A COMMIT sent here inside an aborted block returns [ErrTxCommitRollback]
+// with the tag "ROLLBACK", as [Conn.Exec] does. On any other error the tag is
+// empty: the statement did not complete.
+func (c *Conn) ExecParams(ctx context.Context, sql string, params [][]byte, oids []uint32) (CommandTag, error) {
+	failed := c.txFailed
+	var tag CommandTag
+	// FetchAll, not a row limit, and not FetchAuto either: the first
+	// execution counts too. Most statements here return no row and the rest
+	// return rows nobody reads, and a row limit walks into the trap
+	// [QueryConfig.BatchRows] documents: asking for exactly what the result
+	// holds costs an extra Execute to learn there is no more, and the Flush
+	// path adds the Sync as a round trip of its own — three trips where
+	// FetchAll takes one. On the per-transaction RLS path that tax lands on
+	// every SetLocal, which is every principal.
+	err := c.runQuery(ctx, sql, params, QueryConfig{Fetch: FetchAll, ParamOIDs: oids, Tag: &tag},
+		func(sluice.Batch[Row]) bool { return true })
+	// The rule of [Conn.execUser]: in an aborted block the server answers a
+	// COMMIT with "ROLLBACK" and no error, and only the caller's text says a
+	// commit was asked for. One statement, so the tag is its first.
+	if (failed || tag == "ROLLBACK") && c.broken == nil && asksToCommit(sql) {
+		if err != nil {
+			return tag, errors.Join(ErrTxCommitRollback, err)
+		}
+		return tag, ErrTxCommitRollback
+	}
+	if err != nil {
+		return "", err
+	}
+	return tag, nil
 }
 
 // execUser runs a caller's simple statement behind the busy guard and turns a
@@ -370,7 +475,8 @@ func (tx *Tx) end(verb string) error {
 //
 // The statement is the caller's text with no parameters, so it is for DDL and
 // for control statements — not for anything carrying a value. Values go
-// through [Tx.Query]'s binary parameters, where they cannot be read as SQL.
+// through [Tx.ExecParams]'s binary parameters, where they cannot be read as
+// SQL.
 // A COMMIT sent this way in an aborted block reports [ErrTxCommitRollback], as
 // [Conn.Exec] does.
 func (tx *Tx) Exec(ctx context.Context, sql string) error {
@@ -378,14 +484,30 @@ func (tx *Tx) Exec(ctx context.Context, sql string) error {
 		return err
 	}
 	err := tx.conn.execUser(sql)
-	// A COMMIT, ROLLBACK or END sent as SQL ends the block on the server.
-	// ReadyForQuery said so; a Tx left open past it would run the caller's
-	// next statements in autocommit, outside any transaction, with no error.
+	tx.endedBySQL()
+	return err
+}
+
+// ExecParams is [Conn.ExecParams] inside the transaction: bound parameters,
+// the command tag back.
+func (tx *Tx) ExecParams(ctx context.Context, sql string, params [][]byte, oids []uint32) (CommandTag, error) {
+	if err := tx.check(ctx); err != nil {
+		return "", err
+	}
+	tag, err := tx.conn.ExecParams(ctx, sql, params, oids)
+	tx.endedBySQL()
+	return tag, err
+}
+
+// endedBySQL closes the Tx when a statement the caller sent ended the block on
+// the server. A COMMIT, ROLLBACK or END sent as SQL does that, and
+// ReadyForQuery said so; a Tx left open past it would run the caller's next
+// statements in autocommit, outside any transaction, with no error.
+func (tx *Tx) endedBySQL() {
 	if !tx.conn.inTx && tx.conn.broken == nil {
 		tx.done = true
 		tx.conn.txGen++
 	}
-	return err
 }
 
 // Query runs a query inside the transaction. It is [Conn.Query], with one
@@ -400,7 +522,15 @@ func (tx *Tx) Exec(ctx context.Context, sql string) error {
 // nobody's tenant. That is a wrong answer with no error, so this returns
 // [ErrTxDone] instead.
 func (tx *Tx) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
+	// The tag of an earlier run must not stand next to ErrTxDone, here or
+	// at consumption below.
+	clearTag := func() {
+		if cfg.Tag != nil {
+			*cfg.Tag = ""
+		}
+	}
 	if tx.done {
+		clearTag()
 		return errSource(ErrTxDone)
 	}
 	gen := tx.gen
@@ -412,6 +542,7 @@ func (tx *Tx) Query(ctx context.Context, sql string, params [][]byte, cfg QueryC
 		// Checked at consumption, not at construction: that is the whole
 		// point — the gap between the two is where the transaction ends.
 		if tx.done || c.txGen != gen {
+			clearTag()
 			err = ErrTxDone
 			return
 		}
@@ -648,21 +779,10 @@ func validSettingName(name string) error {
 	return validIdentifier(name)
 }
 
-// execParams runs a statement with bound parameters and discards its rows.
-// It is the extended-query path, which is the only one that takes parameters
-// at all — the simple Query message has nowhere to put them.
+// execParams is [Conn.ExecParams] for this package's own statements, which
+// want no tag and name the statement in the error.
 func (c *Conn) execParams(ctx context.Context, sql string, params [][]byte, oids []uint32) error {
-	// FetchAll, not a row limit, and not FetchAuto either: the first
-	// execution counts too. These statements return at most one row that
-	// nobody reads, and a row limit here walks into the trap
-	// [QueryConfig.BatchRows] documents: asking for exactly what the result
-	// holds costs an extra Execute to learn there is no more, and the Flush
-	// path adds the Sync as a round trip of its own — three trips where
-	// FetchAll takes one. On the per-transaction RLS path that tax lands on
-	// every SetLocal, which is every principal.
-	src := c.Query(ctx, sql, params, QueryConfig{Fetch: FetchAll, ParamOIDs: oids})
-	src.Stream()(func(sluice.Batch[Row]) bool { return true })
-	if err := src.Err(); err != nil {
+	if _, err := c.ExecParams(ctx, sql, params, oids); err != nil {
 		return fmt.Errorf("running %q: %w", sql, err)
 	}
 	return nil

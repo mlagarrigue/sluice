@@ -144,8 +144,9 @@
 // consumes DATA, bounds concurrent streams, counts RST_STREAM against the
 // rapid-reset bound (CVE-2023-44487), and tracks a header block across
 // CONTINUATION with the count and total bounded (CVE-2024-27316). Trailers
-// are decoded then discarded rather than refused, because HPACK's shared
-// table means an undecoded block corrupts every one after it.
+// are delivered in [Request.Trailers]; on a stream already ended or reset
+// they are decoded then discarded rather than refused, because HPACK's
+// shared table means an undecoded block corrupts every one after it.
 //
 // HPACK and QPACK are transcribed from their RFCs rather than typed, and
 // pinned by the RFCs' own vectors (RFC 7541 Appendix C, including C.4 for
@@ -182,10 +183,10 @@
 //
 //   - **Transfer-Encoding, except "chunked" alone.** A chunked body with no
 //     Content-Length beside it is decoded — bounded by [Config.MaxBodyBytes],
-//     chunk extensions ignored, trailers parsed and discarded. A coding this
-//     server does not implement is answered 501; Transfer-Encoding beside
-//     Content-Length — the request-smuggling pair in its entirety — or on an
-//     HTTP/1.0 request is answered 400.
+//     chunk extensions ignored, trailers delivered in [Request.Trailers]. A
+//     coding this server does not implement is answered 501;
+//     Transfer-Encoding beside Content-Length — the request-smuggling pair
+//     in its entirety — or on an HTTP/1.0 request is answered 400.
 //   - **A repeated or non-numeric Content-Length**, answered 400.
 //   - **Absolute-form and authority-form targets** — only origin-form, a
 //     target starting with "/", is accepted. The others exist for proxies and
@@ -206,14 +207,17 @@
 // takes a batch of complete requests, and an element that is not complete is
 // not an element. Every limit is a number the caller sets in [Config]; none
 // of them has a value that suits every deployment, so none has a default
-// that pretends otherwise beyond the modest ones [Config.withDefaults] fills
+// that pretends otherwise beyond the modest ones [Config.resolve] fills
 // in.
 package httpstream
 
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 )
 
 // ErrMalformed reports a request this package will not parse. The connection
@@ -224,6 +228,26 @@ var ErrMalformed = errors.New("httpstream: malformed request")
 
 // ErrTooLarge reports a request past one of [Config]'s bounds.
 var ErrTooLarge = errors.New("httpstream: request exceeds a configured bound")
+
+// errRequestLineTooLong and errHeadersTooLarge are internal: the two bounds
+// an HTTP/1.1 refusal has its own status for. Both wrap [ErrTooLarge], so a
+// caller matching on it sees no change; they exist because the status a
+// client is told differs — RFC 9112 §3 puts a request-target the server will
+// not parse at 414, RFC 6585 §5 puts header fields it will not hold at 431 —
+// and a client told 413 for either goes looking at a body that was never the
+// problem. A body over MaxBodyBytes stays the plain ErrTooLarge, which is 413.
+var (
+	errRequestLineTooLong = fmt.Errorf("%w: the request line", ErrTooLarge)
+	errHeadersTooLarge    = fmt.Errorf("%w: the header fields", ErrTooLarge)
+)
+
+// errVersionUnsupported is internal: the request line carries an HTTP-version
+// the grammar accepts and this server does not speak. It wraps [ErrMalformed]
+// for callers and is answered 505 rather than 400 (RFC 9110 §15.6.6): the
+// line is well-formed, the version is the disagreement, and 505 is the status
+// that tells a client to try another. A version the grammar refuses — no
+// digits, no slash — is a malformed line and stays 400.
+var errVersionUnsupported = fmt.Errorf("%w: HTTP version", ErrMalformed)
 
 // errUnsupportedCoding is internal: a request declared a transfer coding this
 // server does not implement. Distinct from [ErrMalformed] because the honest
@@ -253,28 +277,59 @@ var errIdleTimeout = errors.New("httpstream: idle timeout")
 // still recognise it; the reader distinguishes it to answer the 100 once.
 var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w", errIncomplete)
 
-// Config bounds everything a client controls. There is no zero value that is
-// safe on a public socket, and the defaults below are modest rather than
-// generous — a deployment that needs more says so.
+// Config bounds everything a client controls, for every protocol this package
+// serves: [Serve] reads it for HTTP/1.1 and HTTP/2, [ServeH3] for HTTP/3.
+// Every bound is mandatory and none is a required parameter: the zero value
+// of each field is the default named in its comment, chosen modest rather
+// than generous, so that an empty Config is a bounded server and a
+// deployment that needs more says so. Zero is the only value that means
+// something else: a negative bound is refused, with an error naming the
+// field, by every function that takes a Config. A field that one protocol has no use
+// for says which protocols read it, and a bound the protocols share is set
+// once, here, whichever function serves the connection. See
+// docs/design/adr/0018.
 type Config struct {
 	// MaxRequestLineBytes bounds the method, target and version together.
-	// Zero means 8 KiB.
+	// Zero means 8 KiB. HTTP/1.1 only: HTTP/2 and HTTP/3 carry them as
+	// pseudo-header fields, under MaxHeaderBytes.
 	MaxRequestLineBytes int
 
 	// MaxHeaderBytes bounds all headers of one request together, including
-	// their names, colons and line endings. Zero means 32 KiB.
+	// their names, colons and line endings. Zero means 32 KiB. Every
+	// protocol: over HTTP/2 it is the header block, CONTINUATION frames
+	// included, over HTTP/3 the field section, and both announce it to the
+	// peer as their MAX_HEADER_LIST_SIZE or MAX_FIELD_SECTION_SIZE setting.
 	MaxHeaderBytes int
 
 	// MaxHeaders bounds how many header fields one request may carry. Zero
 	// means 64. It exists beside MaxHeaderBytes because a thousand one-byte
-	// headers cost lookups rather than bytes.
+	// headers cost lookups rather than bytes. Every protocol.
 	MaxHeaders int
 
-	// MaxBodyBytes bounds one request body. Zero means 1 MiB.
+	// MaxBodyBytes bounds one request body. Zero means 1 MiB. Every
+	// protocol. A body is delivered whole, never streamed
+	// (docs/design/adr/0009, article 4), so this is also what one connection
+	// may hold in its read buffer: the buffer grows from 4 KiB toward
+	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes as a request
+	// arrives, and a request that has not arrived in full after ReadTimeout
+	// is refused and the buffer freed. The most the request buffers of a
+	// server hold at once is therefore that sum times MaxConns, and a server
+	// without MaxConns has no such bound. Over HTTP/2 and HTTP/3, where
+	// several bodies assemble at once, four times this value bounds what one
+	// connection holds across all of them. The per-stream bound alone is not
+	// a connection bound: flow-control windows are replenished as DATA is
+	// buffered, so without the aggregate cap a peer could park
+	// MaxConcurrentStreams × MaxBodyBytes — 100 MiB at the defaults — by
+	// never finishing any of its uploads. The factor of four keeps several
+	// full-size concurrent uploads legal while bounding the parked memory to
+	// the same order as one window's worth of honest traffic.
 	MaxBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
-	// at once. Zero means 64. It is what keeps a client that writes ten
+	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
+	// frames (MaxFramesPerBatch) and an HTTP/3 batch is what one
+	// datagram carried, each already bounded by MaxConcurrentStreams. It is
+	// what keeps a client that writes ten
 	// thousand requests in one burst from turning them into one batch and one
 	// allocation the size of the burst. For a client that sends one request
 	// at a time the bound never binds — a batch is whatever one read
@@ -287,47 +342,260 @@ type Config struct {
 	// MaxConcurrentStreams bounds how many request streams one HTTP/2 or
 	// HTTP/3 connection may have open and unfinished at once; the stream over
 	// it is refused (REFUSED_STREAM, H3_REQUEST_REJECTED) rather than the
-	// connection lost (RFC 9113 §5.1.2, RFC 9114 §5.2). For HTTP/3, zero
-	// means 64, the transport's own MAX_STREAMS grant
-	// ([quic.DefaultParameters]'s InitialMaxStreamsBidi), so a zero config
-	// admits exactly what the transport invites; for an HTTP/2 connection
-	// [Serve] accepts, zero keeps [H2Config.MaxConcurrentStreams]'s own
-	// default. It exists beside MaxRequestsPerBatch because the two bound
-	// different things — one is how many requests ride one hand-off, the
-	// other how much assembly state a peer may park — and tuning the batch
-	// size must not change who is admitted. HTTP/1.1, being sequential, has
-	// no use for it.
+	// connection lost (RFC 9113 §5.1.2, RFC 9114 §5.2). Zero means 100 for
+	// both: RFC 9114 §6.1 has an HTTP/3 server grant at least 100 request
+	// streams, [quic.DefaultParameters] grants exactly that as its
+	// InitialMaxStreamsBidi, so a zero config admits what the transport
+	// invites, and HTTP/2 advertises the same number as
+	// SETTINGS_MAX_CONCURRENT_STREAMS. Over HTTP/2 a stream holds its slot
+	// until its response has been written, so the queue between the read
+	// goroutine and the handler never holds more than this many requests —
+	// which is what lets the reader hand a batch over without blocking on it.
+	// It exists beside MaxRequestsPerBatch because the two bound different
+	// things — one is how many requests ride one hand-off, the other how
+	// much assembly state a peer may park — and tuning the batch size must
+	// not change who is admitted. HTTP/2 and HTTP/3 only: HTTP/1.1, being
+	// sequential, has no use for it.
 	MaxConcurrentStreams int
 
-	// MaxRequestsPerConn bounds how many requests one connection may make
-	// before it is closed. Zero means 1024, which is keep-alive with an end.
-	// The end costs a client that does not pipeline a TCP and a TLS
-	// handshake every 1024 requests: +3.7% per request over loopback against
-	// no end at all, the handshake and nothing else (docs/benchmarks.md,
-	// "The connection budget and the batch bound"). Over a real network it
-	// is two extra round trips on one request in 1024 — the tail, which
-	// loopback does not see. There is no unbounded setting; math.MaxInt is
-	// one.
+	// MaxRequestsPerConn bounds how many requests one HTTP/1.1 connection
+	// may make before it is closed. Zero means 1024, which is keep-alive
+	// with an end. HTTP/1.1 only: an HTTP/2 or HTTP/3 connection is bounded
+	// by MaxConcurrentStreams and IdleTimeout, not by a request count. The end
+	// costs a client that does not pipeline a TCP and a TLS handshake every
+	// 1024 requests: +3.7% per request over loopback against no end at all,
+	// the handshake and nothing else (docs/benchmarks.md, "The connection
+	// budget and the batch bound"). Over a real network it is two extra
+	// round trips on one request in 1024 — the tail, which loopback does
+	// not see. There is no unbounded setting; math.MaxInt is one.
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
-	// requests. Zero means 30s.
+	// requests. Zero means 30s. [Serve] announces it on every HTTP/1.1
+	// response that does not close, as Keep-Alive: timeout=<seconds>, for a
+	// proxy in front that reads it. nginx and Envoy do not: their upstream
+	// idle timeout (60s and one hour by default) must be set below this one,
+	// or they reuse a connection this server is closing. HTTP/2 and HTTP/3 have no such field; their peers learn the
+	// end from GOAWAY. Every protocol, each in its own way: over HTTP/2 the
+	// clock does not run while this end owes the peer answers — a streamed
+	// response may take minutes during which a well-behaved client has
+	// nothing to send — and once the last answer is out the connection ends
+	// with GOAWAY(NO_ERROR) after between one and two IdleTimeouts of
+	// silence; over HTTP/3 the transport keeps it, as the
+	// max_idle_timeout that [Config.TransportParameters] derives from this
+	// field, so a connection ServeH3 serves on other parameters has the
+	// idle timeout those parameters say, not this one.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its
-	// first byte has. Zero means 10s. This is the bound that answers
-	// slowloris: a client that sends a header byte a minute is disconnected
-	// by the clock rather than tolerated.
+	// first byte has. Zero means 10s. Every protocol. This is the bound
+	// that answers slowloris: a client that sends a header byte a minute is
+	// disconnected by the clock rather than tolerated; over HTTP/2 and
+	// HTTP/3 it is the stream still assembling that is reset, not the
+	// connection.
 	ReadTimeout time.Duration
 
-	// WriteTimeout is how long one batch of responses has to be written.
-	// Zero means 10s.
+	// WriteTimeout is how long a response may go without progress: a write
+	// that has not put [Config.WriteProgressBytes] on the wire by the time it
+	// passes is given up on, and one that has gets the same time again, so a
+	// slow client that keeps reading is served to the end and one that stops
+	// is not waited on. Over HTTP/1.1 the progress is the socket's and giving
+	// up ends the connection. Over HTTP/2 it is the stream's: the wait for the
+	// flow-control credit one stream needs, after which that stream alone is
+	// reset with CANCEL while the others carry on, and each write to the
+	// socket, which ends the connection. Over HTTP/3 it is each write of a
+	// response — its head, then each batch of a streamed body — on the
+	// stream's flow control, and the stream is reset with
+	// H3_REQUEST_CANCELLED. A peer that drips one byte of credit per timeout
+	// is therefore cut at the second timeout rather than kept (data dribble,
+	// CVE-2019-9511). Zero means 10s. Every protocol.
+	//
+	// Over HTTP/1.1 on TLS the first timeout ends the connection whatever
+	// the progress: crypto/tls makes a write that timed out fatal to the
+	// connection, so there is no second wait to grant.
 	WriteTimeout time.Duration
+
+	// WriteProgressBytes is the progress that moves [Config.WriteTimeout]:
+	// how much of a response must go out for the wait to start again. Zero
+	// means 4 KiB — a quarter of the smallest frame an HTTP/2 peer may ask
+	// for, 400 bytes a second at the default timeout, which no client that is
+	// reading falls under. It is a number of bytes rather than a share of
+	// anything the peer announces, so that the peer cannot move it. Every
+	// protocol.
+	WriteProgressBytes int
+
+	// MaxConns bounds how many connections [Serve] holds open at once,
+	// HTTP/1.1 and HTTP/2 together. Zero means no bound. The connection
+	// over it is closed as it is accepted, with nothing written: answering
+	// 503 would mean reading its request, which is the cost the bound
+	// exists to refuse — a connection is a goroutine and a read buffer
+	// before its first byte says which protocol it speaks. This is what
+	// net/http does under netutil.LimitListener. There is no queue: a
+	// client that was refused retries, as it would after a reset. [ServeH3]
+	// is not bound by it; QUIC bounds its connections in the transport.
+	//
+	// It is also the memory bound: each connection may hold one request at
+	// its ceiling, MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes (about
+	// 1 MiB at the defaults), for ReadTimeout at most, so MaxConns times
+	// that sum is the most the request buffers occupy. A public socket sets
+	// it; a server without it is bounded by the peers' goodwill.
+	MaxConns int
+
+	// MaxConnsPerIP is the same bound applied per remote address, so that
+	// one peer cannot hold the whole MaxConns on its own; the connection
+	// over it is closed as it is accepted, the same way. The port is ignored
+	// and an address is counted by its prefix, IPv4PrefixBits or
+	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. A
+	// connection whose remote address is not IP, a Unix socket's, is bound
+	// by MaxConns alone: its peers share one empty address, and a per-peer
+	// bound would be a second total. Zero means no bound: a figure that is
+	// fair to a home connection starves a carrier-grade NAT, so the operator
+	// chooses. [ServeH3] is not bound by it: the QUIC listener has its own,
+	// [github.com/mlagarrigue/sluice/net/quic.ListenerConfig].MaxConnsPerIP.
+	MaxConnsPerIP int
+
+	// IPv4PrefixBits and IPv6PrefixBits are how much of a remote address
+	// MaxConnsPerIP counts by: two addresses that share that many leading
+	// bits share one count. Zero means 32 and 64. An IPv6 host is handed a
+	// whole /64 (RFC 6177), so a count by the full 128 bits is one it steps
+	// around by changing address; an IPv4 host rarely holds more than one.
+	// A value outside 1..32 or 1..128 is a configuration error. The QUIC
+	// listener's fields of the same names count the same way.
+	IPv4PrefixBits int
+	IPv6PrefixBits int
+
+	// ShutdownGrace is how long [Serve], [ServeH2] or [ServeH3], once its
+	// context is cancelled, waits for the requests already in flight to be
+	// answered before it closes the connections still open, cancels their
+	// handlers' context and returns [ErrShutdownForced]. Zero means 5s.
+	// Every protocol. What it bounds is the handler and the response's writes
+	// together, not either alone: WriteTimeout governs one write, this
+	// governs how long a stopping server stays up for a response that was
+	// owed. Idle connections are closed at once and do not spend it. A
+	// [Server] does not read it: the context given to [Server.Shutdown] is
+	// its bound. See docs/design/adr/0017.
+	ShutdownGrace time.Duration
+
+	// KeepAlive is how long a connection may stay silent before this end
+	// sends something to keep it, and the paths between, alive: a PING on
+	// HTTP/3 (see [quic.Conn.SetKeepAlive], which holds it to half the idle
+	// timeout the two ends negotiated), a TCP keep-alive probe on HTTP/1.1
+	// and HTTP/2, over TLS too. What it is for is a client that keeps a
+	// connection between two requests across a NAT or a load balancer that
+	// forgets a silent flow, or a QUIC idle timeout shorter than the gaps
+	// between requests. [Serve] and [Server] apply it to every connection
+	// they accept; [ServeH2] and [ServeH3] to the one they are handed. Zero
+	// sends nothing of this end's own: an HTTP/3 connection stays silent,
+	// and a TCP connection keeps what its listener set — one from
+	// [net.Listen] probes every 15s. Every protocol.
+	//
+	// Over HTTP/1.1 and HTTP/2 it does not hold a connection open against
+	// IdleTimeout, which counts requests, not packets. Over HTTP/3 it does:
+	// IdleTimeout is there the transport's, which every PING restarts, so a
+	// connection stays open until the client closes it or the server
+	// stops. That is the price: a client that opened a connection and went
+	// silent holds its state for as long as it stays, where the idle
+	// timeout would otherwise have reclaimed it.
+	KeepAlive time.Duration
+
+	// Logger receives what the server reports besides the errors it
+	// returns — today, a warning with the number of connections a forced
+	// stop cut with requests in flight. Nil means [slog.Default]. Every
+	// protocol.
+	Logger *slog.Logger
+
+	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side
+	// already shut, reads and drops what the client still sends before the
+	// socket is closed — so that the close does not turn the response still
+	// in flight into a reset. Zero means a second, or ReadTimeout if that is
+	// shorter: this is a tail being drained, not a request being waited for,
+	// and a client that neither closes nor stops is not owed more. HTTP/1.1
+	// only.
+	LingerTimeout time.Duration
+
+	// MaxFrameSize is the largest frame payload accepted. Zero means 16384,
+	// the protocol's own initial value. Any other value outside
+	// [16384, 1<<24-1] is refused: the value is advertised as
+	// SETTINGS_MAX_FRAME_SIZE and RFC 9113 §6.5.2 bounds that to
+	// [2^14, 2^24-1] — a smaller value on the wire is an illegal setting a
+	// conformant client must treat as a connection error, §4.2 obliges this
+	// end to receive 16384-byte frames regardless, and 1<<24-1 is what the
+	// length field can express. HTTP/2 only.
+	//
+	// It also caps the frames this end sends: a peer may advertise up to
+	// 16 MiB, and a frame that large is a buffer that large on this side.
+	// It is a transport bound, not a body bound: bodies are bounded by
+	// MaxBodyBytes across frames, however large each frame may be.
+	MaxFrameSize int
+
+	// MaxFramesPerBatch bounds how many HTTP/2 frames are handed over at
+	// once. Zero means 64. HTTP/2 only.
+	MaxFramesPerBatch int
+
+	// MaxContinuationFrames bounds how many CONTINUATION frames may follow
+	// one HEADERS before END_HEADERS arrives. Zero means 16. HTTP/2 only.
+	//
+	// This is not a tuning knob. A peer may legally split a header block
+	// across CONTINUATION frames, and a server that accepts an unbounded
+	// number of them can be made to read and buffer forever without ever
+	// completing a request — CVE-2024-27316's shape, and the reason the bound
+	// exists rather than the count being trusted.
+	MaxContinuationFrames int
+
+	// InitialWindowSize is the flow-control window this server grants each
+	// HTTP/2 request stream, advertised as SETTINGS_INITIAL_WINDOW_SIZE and
+	// topped back up as the body is consumed. Zero means 65535, the
+	// protocol's own initial value; a value over 2^31-1 — the largest a
+	// window can be (RFC 9113 §6.5.2) — is refused rather than advertised as
+	// a setting the peer must refuse. HTTP/2 only: HTTP/3's windows are the
+	// QUIC transport's, in [Config.TransportParameters].
+	//
+	// The window is what a client may have in flight on one stream before it
+	// hears back, so on a link with latency it is the ceiling on an upload's
+	// throughput: 65535 bytes per round trip is about 0.65 MB/s at 100 ms of
+	// RTT, whatever the link carries. The test behind this field moves a
+	// 4 MiB body over a proxy that adds 100 ms of round trip; a window of
+	// 1 MiB carried it eleven times faster than the default on that bench
+	// (0.48 MB/s against 5.5 MB/s, h2rtt_test.go).
+	//
+	// What it costs: a client may send the whole window before this end has
+	// read any of it, so the window is memory the peer can make this side
+	// hold, per stream. It is bounded above by MaxBodyBytes — a body over
+	// that bound is refused whatever the window granted — and across the
+	// connection by the aggregate 4×MaxBodyBytes bound, so a window larger
+	// than MaxBodyBytes only lets the peer hit the 413 sooner. The
+	// connection-level window follows this one: it is raised to
+	// MaxConcurrentStreams times the stream window, capped at 2^31-1, so that
+	// the connection never queues what the streams alone would admit.
+	InitialWindowSize int
+
+	// MaxPendingControlBytes bounds the HTTP/2 control frames — SETTINGS and
+	// PING acknowledgements, WINDOW_UPDATE, RST_STREAM — waiting to be
+	// written. Zero means 16 KiB. HTTP/2 only.
+	//
+	// It is the S1 bound on the one queue a peer fills directly: a client can
+	// send PING faster than this end can answer, and the answer to that is to
+	// stop reading until the queue drains, not to buffer without limit. The
+	// pressure then sits in the peer's send buffer, which is what TCP flow
+	// control is for.
+	MaxPendingControlBytes int
+
+	// MaxWriteBufferBytes is how much HTTP/2 response payload the writer
+	// gathers before one write to the socket. Zero means 64 KiB. A round
+	// always holds at least one whole frame, so below the frame size in use a
+	// round is one frame: the value is honoured as a bound on gathering, not
+	// as a reason to split a frame. HTTP/2 only.
+	//
+	// It is the round of the writer's round-robin: one stream on its own gets
+	// the whole of it and pays a single syscall for it, and several streams
+	// share it a frame at a time so that a large response does not hold a
+	// small one behind it.
+	MaxWriteBufferBytes int
 
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
 	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
-	// indexed field lines outright.
+	// indexed field lines outright. HTTP/3 only.
 	//
 	// It is an interop and testing override, kept by ADR 0013 so a
 	// decoder can be pinned against a table it did not transcribe itself.
@@ -336,36 +604,95 @@ type Config struct {
 	QPACKStatic []Header
 }
 
-func (c Config) withDefaults() Config {
-	if c.MaxRequestLineBytes <= 0 {
-		c.MaxRequestLineBytes = 8 << 10
+// The defaults a bound takes when its field is zero, named because more than
+// [Config.resolve] reads them.
+const (
+	defaultMaxHeaderBytes = 32 << 10
+	defaultMaxHeaders     = 64
+	defaultMaxBodyBytes   = 1 << 20
+	defaultIdleTimeout    = 30 * time.Second
+	defaultReadTimeout    = 10 * time.Second
+	defaultWriteTimeout   = 10 * time.Second
+)
+
+// resolve returns c with every zero bound replaced by its default, or an
+// error naming each field whose value is out of range. Zero is the one value
+// that stands for another: a negative bound is the caller's mistake, said at
+// start rather than quietly turned into the default (docs/design/adr/0018).
+func (c Config) resolve() (Config, error) {
+	err := errors.Join(
+		orDefault("Config.MaxRequestLineBytes", &c.MaxRequestLineBytes, 8<<10),
+		orDefault("Config.MaxHeaderBytes", &c.MaxHeaderBytes, defaultMaxHeaderBytes),
+		orDefault("Config.MaxHeaders", &c.MaxHeaders, defaultMaxHeaders),
+		orDefault("Config.MaxBodyBytes", &c.MaxBodyBytes, defaultMaxBodyBytes),
+		orDefault("Config.MaxRequestsPerBatch", &c.MaxRequestsPerBatch, 64),
+		orDefault("Config.MaxConcurrentStreams", &c.MaxConcurrentStreams, defaultMaxConcurrency),
+		orDefault("Config.MaxRequestsPerConn", &c.MaxRequestsPerConn, 1024),
+		orDefault("Config.IdleTimeout", &c.IdleTimeout, defaultIdleTimeout),
+		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
+		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
+		orDefault("Config.WriteProgressBytes", &c.WriteProgressBytes, defaultMaxFrameSize/4),
+		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
+		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
+		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),
+		orDefault("Config.MaxPendingControlBytes", &c.MaxPendingControlBytes, 16<<10),
+		orDefault("Config.MaxWriteBufferBytes", &c.MaxWriteBufferBytes, 64<<10),
+	)
+	// RFC 9113 §6.5.2 bounds both settings; a value outside would be
+	// advertised as a setting a conformant peer must answer with a connection
+	// error, so every connection would end at its first SETTINGS.
+	switch {
+	case c.MaxFrameSize == 0:
+		c.MaxFrameSize = defaultMaxFrameSize
+	case c.MaxFrameSize < defaultMaxFrameSize || c.MaxFrameSize > maxFrameSize:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxFrameSize %d is outside %d..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.MaxFrameSize, defaultMaxFrameSize, maxFrameSize, defaultMaxFrameSize))
 	}
-	if c.MaxHeaderBytes <= 0 {
-		c.MaxHeaderBytes = 32 << 10
+	switch {
+	case c.InitialWindowSize == 0:
+		c.InitialWindowSize = defaultInitialWindow
+	case c.InitialWindowSize < 0 || c.InitialWindowSize > maxWindow:
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
+			c.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
-	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = 64
+	if c.MaxConns < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
 	}
-	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = 1 << 20
+	if c.MaxConnsPerIP < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
 	}
-	if c.MaxRequestsPerBatch <= 0 {
-		c.MaxRequestsPerBatch = 64
+	err = errors.Join(err, ipkey.Check("httpstream: Config.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
+	if c.KeepAlive < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.KeepAlive %v is negative — zero means none", c.KeepAlive))
 	}
-	if c.MaxConcurrentStreams <= 0 {
-		c.MaxConcurrentStreams = 64
+	if c.LingerTimeout < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.LingerTimeout %v is negative — zero means a second, or ReadTimeout if shorter", c.LingerTimeout))
 	}
-	if c.MaxRequestsPerConn <= 0 {
-		c.MaxRequestsPerConn = 1024
+	if err != nil {
+		return Config{}, err
 	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = 30 * time.Second
+	if c.LingerTimeout == 0 {
+		c.LingerTimeout = min(c.ReadTimeout, time.Second)
 	}
-	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = 10 * time.Second
+	return c, nil
+}
+
+// logger is c.Logger, or the default one.
+func (c Config) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
 	}
-	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = 10 * time.Second
+	return slog.Default()
+}
+
+// orDefault sets *v to def when it is zero and refuses it when it is
+// negative, naming the field, its value and what zero would have meant.
+func orDefault[T int | time.Duration](field string, v *T, def T) error {
+	switch {
+	case *v < 0:
+		return fmt.Errorf("httpstream: %s %v is negative — zero means the default, %v", field, *v, def)
+	case *v == 0:
+		*v = def
 	}
-	return c
+	return nil
 }

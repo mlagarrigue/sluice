@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
-	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 // Full batches are emitted on size, exactly like sluice.Coalesce, whatever the
@@ -181,7 +181,6 @@ func TestCoalesceWithinCopiesInputBatch(t *testing.T) {
 // promptly, discarding what was accumulated (S6, S10).
 func TestCoalesceWithinEarlyStopReleasesProducer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		finalized := false
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			defer func() { finalized = true }()
@@ -201,9 +200,6 @@ func TestCoalesceWithinEarlyStopReleasesProducer(t *testing.T) {
 		if !finalized {
 			t.Error("the source's deferred cleanup did not run")
 		}
-		if got := streamtest.GoroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after an early stop", before, got)
-		}
 	})
 }
 
@@ -211,7 +207,6 @@ func TestCoalesceWithinEarlyStopReleasesProducer(t *testing.T) {
 // producer already shut down.
 func TestCoalesceWithinPropagatesSourcePanic(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			yield(sluice.Batch[int]{Items: []int{1}})
 			panic("source boom")
@@ -226,17 +221,12 @@ func TestCoalesceWithinPropagatesSourcePanic(t *testing.T) {
 			sluice.Collect(CoalesceWithin(src, 100, time.Hour))
 			t.Error("the source's panic never reached the consumer")
 		}()
-
-		if got := streamtest.GoroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a source panic", before, got)
-		}
 	})
 }
 
 // A panic in the consumer must not strand the producer.
 func TestCoalesceWithinConsumerPanicReleasesProducer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		finalized := false
 		src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 			defer func() { finalized = true }()
@@ -254,9 +244,6 @@ func TestCoalesceWithinConsumerPanicReleasesProducer(t *testing.T) {
 
 		if !finalized {
 			t.Error("the source was left running after a consumer panic")
-		}
-		if got := streamtest.GoroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a consumer panic", before, got)
 		}
 	})
 }
@@ -321,7 +308,6 @@ func TestCoalesceWithinEarlyStopStillRaisesSourcePanic(t *testing.T) {
 		for _, panics := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/panic %v", tt.name, panics), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
-					before := runtime.NumGoroutine()
 					refused := make(chan struct{})
 					src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 						yield(sluice.Batch[int]{Items: tt.items})
@@ -353,9 +339,6 @@ func TestCoalesceWithinEarlyStopStillRaisesSourcePanic(t *testing.T) {
 					}
 					if recovered != want {
 						t.Errorf("recovered %v, want %v", recovered, want)
-					}
-					if got := streamtest.GoroutinesSettle(t); got > before {
-						t.Errorf("%d goroutines before, %d after", before, got)
 					}
 				})
 			})
@@ -395,8 +378,13 @@ func BenchmarkCoalesceWithinEmptyStream(b *testing.B) {
 	}
 }
 
-// The first garbage collection of the process starts the runtime's mark
-// worker goroutines, which runtime.NumGoroutine counts. Running one up
-// front keeps the goroutine baselines in this package from blaming a leak
-// on the runtime when that first cycle happens to land inside a test.
-func init() { runtime.GC() }
+// A negative size is a mistake, as in sluice.Coalesce: zero is the one way to
+// ask for the default.
+func TestCoalesceWithinNegativeSizePanics(t *testing.T) {
+	defer func() {
+		if msg := fmt.Sprint(recover()); !strings.Contains(msg, "CoalesceWithin") || !strings.Contains(msg, "-1") {
+			t.Errorf("panic = %q, want one naming CoalesceWithin and -1", msg)
+		}
+	}()
+	CoalesceWithin(sluice.Of([]int{1}, 0), -1, time.Second)
+}

@@ -38,11 +38,24 @@ type app struct {
 	gw      *gateway.Gateway[int64, orderRow]
 	listMax int
 	codec   *codec // axis F; nil in R
+	stream  bool   // axis E: the list is written as it comes
+	// appendJSON encodes the list by hand (encode.go) instead of through
+	// encoding/json; the answer then carries the bytes, not the value.
+	appendJSON bool
 }
 
+// answer is a status and either a body, encoded by the transport in one
+// write, a body already encoded (raw, the -json append path: the transport
+// writes the bytes as they are, compressed under axis F like the others),
+// or a stream of fragments of the document (axis E), which the transport
+// writes and flushes batch by batch. The stream runs when the transport
+// pulls it, after the status has gone out: an error it meets then can only
+// cut the document short.
 type answer struct {
 	status int
 	body   any
+	raw    []byte
+	stream sluice.Stream[[]byte]
 }
 
 type orderRow struct {
@@ -101,7 +114,11 @@ func newApp(o options) (*app, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("write table: %w", err)
 	}
-	a := &app{static: newStaticDoc(), st: st, listMax: o.listMax, codec: lookupCodec(o.compression)}
+	a := &app{
+		static: newStaticDoc(), st: st, listMax: o.listMax,
+		codec: lookupCodec(o.compression), stream: o.response == responseStream,
+		appendJSON: o.json == jsonAppend,
+	}
 	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
 		unitPipeline(st, o.gatewaySize))
 	return a, nil
@@ -170,7 +187,7 @@ func (a *app) route(ctx context.Context, method, target string, body []byte) ans
 	path, rawQuery, _ := strings.Cut(target, "?")
 	switch {
 	case path == "/static" && method == "GET":
-		return answer{200, a.static}
+		return answer{status: 200, body: a.static}
 	case strings.HasPrefix(path, "/orders/") && method == "GET":
 		return a.unit(ctx, path[len("/orders/"):])
 	case path == "/orders" && method == "GET":
@@ -178,13 +195,13 @@ func (a *app) route(ctx context.Context, method, target string, body []byte) ans
 	case path == "/orders" && method == "POST":
 		return a.write(ctx, body)
 	}
-	return answer{404, errDoc{Error: "no such route"}}
+	return answer{status: 404, body: errDoc{Error: "no such route"}}
 }
 
 func (a *app) unit(ctx context.Context, key string) answer {
 	id, err := strconv.ParseInt(key, 10, 64)
 	if err != nil {
-		return answer{400, errDoc{Error: "bad key"}}
+		return answer{status: 400, body: errDoc{Error: "bad key"}}
 	}
 	row, err := a.gw.Do(ctx, id)
 	return unitAnswer(id, row, err)
@@ -193,43 +210,96 @@ func (a *app) unit(ctx context.Context, key string) answer {
 func unitAnswer(id int64, row orderRow, err error) answer {
 	switch {
 	case errors.Is(err, errNotFound):
-		return answer{404, errDoc{Error: "no such key", Key: &id}}
+		return answer{status: 404, body: errDoc{Error: "no such key", Key: &id}}
 	case err != nil:
-		return answer{503, errDoc{Error: "unavailable", Key: &id}}
+		return answer{status: 503, body: errDoc{Error: "unavailable", Key: &id}}
 	}
-	return answer{200, row}
+	return answer{status: 200, body: row}
 }
 
 func (a *app) list(ctx context.Context, rawQuery string) answer {
 	q, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return answer{400, errDoc{Error: "bad query"}}
+		return answer{status: 400, body: errDoc{Error: "bad query"}}
 	}
 	from, err := strconv.ParseInt(q.Get("from"), 10, 64)
 	if err != nil {
-		return answer{400, errDoc{Error: "bad from"}}
+		return answer{status: 400, body: errDoc{Error: "bad from"}}
 	}
 	limit, err := strconv.Atoi(q.Get("limit"))
 	if err != nil || limit <= 0 || limit > a.listMax {
-		return answer{400, errDoc{Error: "bad limit", Key: &from}}
+		return answer{status: 400, body: errDoc{Error: "bad limit", Key: &from}}
 	}
-	items, err := a.st.list(ctx, from, limit)
+	if a.stream {
+		return answer{status: 200, stream: a.listStream(ctx, from, limit)}
+	}
+	items, err := listAll(ctx, a.st, from, limit)
 	switch {
 	case errors.Is(err, errDecode):
-		return answer{500, errDoc{Error: "decode", Key: &from}}
+		return answer{status: 500, body: errDoc{Error: "decode", Key: &from}}
 	case err != nil:
-		return answer{503, errDoc{Error: "unavailable", Key: &from}}
+		return answer{status: 503, body: errDoc{Error: "unavailable", Key: &from}}
 	}
-	return answer{200, listDoc{From: from, Limit: limit, Items: items}}
+	if a.appendJSON {
+		return answer{status: 200, raw: appendListDoc(make([]byte, 0, listDocSize(len(items))), from, limit, items)}
+	}
+	return answer{status: 200, body: listDoc{From: from, Limit: limit, Items: items}}
+}
+
+// listDocSize is a guess at the encoded size of n rows, so that the hand
+// encoder appends into one allocation: about 60 bytes per row of
+// bench_orders, the head and brackets on top.
+func listDocSize(n int) int { return 64 + 64*n }
+
+// listStream is axis E: the same document as listDoc encodes, byte for
+// byte, produced as the store delivers it — the head with the key, then
+// each batch of rows as one fragment, then the closing brackets. Each
+// fragment is a batch of one element so that the transport flushes once
+// per batch of rows, which is the grain the axis measures. The one
+// difference with the buffered path is what an error can do: the status is
+// already on the wire, so a store that fails mid-way cuts the document
+// short and the client's parser says so.
+func (a *app) listStream(ctx context.Context, from int64, limit int) sluice.Stream[[]byte] {
+	return func(yield func(sluice.Batch[[]byte]) bool) {
+		emit := func(b []byte) bool { return yield(sluice.Batch[[]byte]{Items: [][]byte{b}}) }
+		if !emit(appendListHead(nil, from, limit)) {
+			return
+		}
+		first := true
+		err := a.st.listBatches(ctx, from, limit, func(rows []orderRow) bool {
+			if len(rows) == 0 {
+				return true
+			}
+			var b []byte
+			if a.appendJSON {
+				b = appendRows(make([]byte, 0, listDocSize(len(rows))), rows, first)
+			} else {
+				var err error
+				if b, err = json.Marshal(rows); err != nil {
+					return false
+				}
+				b = b[1 : len(b)-1] // the rows without the array's own brackets
+				if !first {
+					b = append([]byte{','}, b...)
+				}
+			}
+			first = false
+			return emit(b)
+		})
+		if err != nil {
+			return
+		}
+		emit([]byte("]}"))
+	}
 }
 
 func (a *app) write(ctx context.Context, body []byte) answer {
 	var req writeReq
 	if err := json.Unmarshal(body, &req); err != nil || req.Key == 0 {
-		return answer{400, errDoc{Error: "bad body"}}
+		return answer{status: 400, body: errDoc{Error: "bad body"}}
 	}
 	if err := a.st.write(ctx, req.Key, req.Total); err != nil {
-		return answer{503, errDoc{Error: "unavailable", Key: &req.Key}}
+		return answer{status: 503, body: errDoc{Error: "unavailable", Key: &req.Key}}
 	}
-	return answer{200, writeDoc{Key: req.Key}}
+	return answer{status: 200, body: writeDoc{Key: req.Key}}
 }

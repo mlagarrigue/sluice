@@ -95,17 +95,49 @@ type Conn struct {
 	retryToken  []byte
 	retrySCID   []byte // what the Retry carried; retry_source_connection_id must echo it
 
-	spaces [3]space
-	rtt    rttEstimator
-	cc     newReno
-	pacer  pacer
+	spaces   [3]space
+	rtt      rttEstimator
+	cc       congestionController
+	delivery deliveryEstimator // delivery-rate state (BBR draft §4.1), fed by send.go and sentTracker.release
+	pacer    pacer
 	// paceDeadline is when the earliest pacer-blocked writer may try again;
 	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
+	// writers is how many Stream writes are in progress, writeSent when a
+	// write last cleared the pacer to send: whether the sender has data, and
+	// since when it has sent none. limitCheck says the next paced packet is
+	// the first of a write that started alone (writeBeginLocked).
+	// appLimitedMarks counts the writes that found the sender
+	// application-limited, for tests.
+	writers         int
+	writeSent       time.Time
+	limitCheck      bool
+	appLimitedMarks int
+	// streamDeadline is the earliest read or write deadline a stream has
+	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
+	// what it holds when it matures and recomputes the next from the stream
+	// table. Zero while no stream has one. A deadline removed or moved later
+	// is not recomputed here: the loop fires once for nothing and moves on.
+	streamDeadline time.Time
 
-	ptoCount    int
+	ptoCount int
+	// lostPackets, bytesRetransmitted, persistentCongestions and ptoFired
+	// are the cumulative counters Stats reports: packets declared lost by
+	// either detection path (an ACK's packet or time threshold, the loss
+	// timer), DPLPMTUD probes excepted; the payload bytes those losses put
+	// back on the send queue; persistent-congestion collapses; and probe
+	// timeouts that fired. None is ever reset.
+	lostPackets           uint64
+	bytesRetransmitted    uint64
+	persistentCongestions uint64
+	ptoFired              uint64
+	// maxDatagram bounds every datagram sent on the path in use: 1200 until
+	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
-	spin        byte // 0 or 0x20, OR-ed into every short header (§17.4)
+	pmtu        pmtuState
+	// pmtuBlackHoles counts the falls back to 1200 (pmtu.go), for Stats.
+	pmtuBlackHoles uint64
+	spin           byte // 0 or 0x20, OR-ed into every short header (§17.4)
 	// blockedResend is when the §4.1 periodic *_BLOCKED re-announcement
 	// next fires, zero while no writer is parked at a flow-control limit.
 	blockedResend time.Time
@@ -115,6 +147,9 @@ type Conn struct {
 	// packet into WriteTo, which may not retain its argument).
 	hdrScratch []byte
 	pktScratch []byte
+	// ackScratch holds the ACK sendPacketLocked encodes before it knows
+	// the packet will leave; consumed within the call, like the two above.
+	ackScratch []byte
 	// gather, dgram, dgramPend and dgramPad are datagram coalescing (RFC
 	// 9000 §12.2): while gather is set, Initial and Handshake packets
 	// accumulate in dgram — the last one built kept unsealed in dgramPend,
@@ -159,10 +194,12 @@ type Conn struct {
 	connSend sendQuota
 	connRecv recvQuota
 	control  []byte // small control frames waiting to ride the next packet
-	// controlRetires counts the RETIRE_CONNECTION_ID frames in control —
-	// the one control frame a peer can make this end queue at will; see
-	// queueRetireLocked.
+	// controlRetires and controlNewCIDs count the RETIRE_CONNECTION_ID and
+	// NEW_CONNECTION_ID frames in control — the two control frames a peer
+	// can make this end queue at will; see queueRetireLocked and
+	// issueLocalCIDsLocked.
 	controlRetires int
+	controlNewCIDs int
 	// grants holds the flow-control credit frames — MAX_DATA, MAX_STREAM_DATA,
 	// MAX_STREAMS — queued apart from control because they alone may exceed
 	// the congestion window when flushed: a grant is how a blocked peer
@@ -178,21 +215,37 @@ type Conn struct {
 	peerMaxStreamsUni   uint64
 	localMaxStreamsBidi uint64 // how many the peer may open
 	localMaxStreamsUni  uint64
-	openedBidi          uint64 // opened by this end
-	openedUni           uint64
-	seenPeerBidi        uint64 // highest count the peer has opened
-	seenPeerUni         uint64
+	// retiredBidi and retiredUni count the peer's retired streams whose
+	// slot has not been granted back yet; see returnStreamSlotLocked.
+	retiredBidi uint64
+	retiredUni  uint64
+	openedBidi  uint64 // opened by this end
+	openedUni   uint64
+	// bidiBlockedTold and uniBlockedTold record that STREAMS_BLOCKED went
+	// out for the current limit of that kind, so a parked OpenStream or
+	// OpenUniStream says it once per exhaustion rather than once per
+	// wake-up; a MAX_STREAMS that raises the limit clears it.
+	bidiBlockedTold bool
+	uniBlockedTold  bool
+	seenPeerBidi    uint64 // highest count the peer has opened
+	seenPeerUni     uint64
 
 	idleTimeout        time.Duration
 	idleDeadline       time.Time
 	handshakeConfirmed bool
+	// keepAlive is the period Conn.SetKeepAlive asked for, zero when off;
+	// keepAliveDeadline is when the next PING leaves if nothing else moves
+	// first. Both the receive path and every ack-eliciting send push the
+	// deadline back, so a PING only ever goes out into real silence.
+	keepAlive         time.Duration
+	keepAliveDeadline time.Time
 	// elicitingSinceRecv is true once an ack-eliciting packet has been sent
 	// since the last packet was received and processed. RFC 9000 §10.1 lets a
 	// send restart the idle timer only while this is false — the *first*
 	// ack-eliciting packet after a receive — so an endpoint transmitting into
 	// silence does not keep extending its own idle clock forever.
 	elicitingSinceRecv bool
-	// peerAddrValidated is the client-side answer to RFC 9002's
+	// peerAddrValidated is the client-side answer to RFC 9002 A.8's
 	// PeerCompletedAddressValidation: the server acknowledged a Handshake
 	// packet, or confirmed the handshake. Until then the server may be
 	// amplification-blocked, which changes what a stalled probe means —
@@ -234,17 +287,34 @@ type Conn struct {
 	// buffers and holding it would only grow.
 	readTaken atomic.Bool
 
-	streams     map[uint64]*Stream
-	closedIDs   map[uint64]struct{}
-	closedOrder []uint64
-	accepted    chan *Stream
+	// streams holds every stream that is open at this end, and it is the
+	// whole memory of which streams closed: an identifier below what has
+	// been opened (seenPeer*, opened*) that is not in the table belongs to
+	// a stream that closed, however long ago. No bounded list of closed
+	// identifiers stands beside it — the one that used to let the 1025th
+	// closure forget the first, so a late or forged frame on that stream
+	// reopened it, delivered an HTTP/3 request twice and credited
+	// MAX_STREAMS twice (see streamFor).
+	streams map[uint64]*Stream
+	// acceptQ holds the streams the peer opened that AcceptStream has not
+	// handed out yet, in identifier order per kind; acceptReady wakes a
+	// waiting AcceptStream. MAX_STREAMS bounds it, not a capacity.
+	acceptQ     []*Stream
+	acceptReady chan struct{}
 	closed      chan struct{}
 	closeErr    error
 	closeSent   bool
 	draining    bool
-	peerClose   peerClose
 	once        sync.Once
 	timerKick   chan struct{}
+	// closing is what a connection that holds the closing state keeps
+	// after its own CONNECTION_CLOSE left (RFC 9000 §10.2.1), or after the
+	// peer's for the draining state (§10.2.2);
+	// gone is closed when that state ends — at once when there is none —
+	// and is what the listener waits on before it forgets the connection.
+	// See close.go.
+	closing closingState
+	gone    chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
 
@@ -276,6 +346,20 @@ type Conn struct {
 	amplActive bool
 	amplRecv   int64
 	amplSent   int64
+	// offPath is the same limit for the one address off the path that
+	// this end answers: the source of the datagram in hand when it is not
+	// the peer's. Nothing sent there validates it — a probing-only packet
+	// does not move the path (§9.1), so no migration seeds amplRecv for
+	// it — yet §8 bounds what goes to *any* unvalidated address to three
+	// times what came from it, and a PATH_RESPONSE expanded to 1200 bytes
+	// per PATH_CHALLENGE would otherwise reflect many times what a spoofed
+	// datagram cost its sender (§21.1.1.1). One address at a time: a
+	// datagram from another off-path address starts a fresh count, and
+	// what the earlier one had left is forgotten, never carried over.
+	offPath struct {
+		addr       net.Addr
+		recv, sent int64
+	}
 
 	// registrar issues this connection's additional identifiers: the
 	// [Listener]'s demux table for a connection it manages, an
@@ -317,6 +401,22 @@ type Conn struct {
 	// meaning pc. Only a Listener-fed server connection ever sees another
 	// one: the listener's preferred-address socket (§9.6).
 	rxVia net.PacketConn
+	// rxECN is the ECN codepoint of the datagram being processed, as its
+	// socket reported it (§13.4.1); zero where the socket does not.
+	rxECN uint8
+	// ecnReceived counts every processed packet by the codepoint its
+	// datagram arrived with, for Stats; the per-space counts the ACKs
+	// report are the ackTrackers'.
+	ecnReceived [4]uint64
+
+	// ecn is the current path's ECN validation (§13.4.2); ecnRecv says the
+	// kernel reports the field for datagrams read from pc, and dgramECN
+	// and batchECN hold the mark of the datagram or batch being built, so
+	// every packet in it is recorded with what it actually left with.
+	ecn      ecnState
+	ecnRecv  bool
+	dgramECN uint8
+	batchECN uint8
 
 	// preferred is, on a client, the server's preferred address of this
 	// connection's family (§9.6), kept after the move for
@@ -332,6 +432,9 @@ type rawDatagram struct {
 	// via is the socket the datagram arrived on: the listener's main one,
 	// or its preferred-address one (§9.6). nil means the main one.
 	via net.PacketConn
+	// ecn is the codepoint of the IP header it arrived in, where the socket
+	// reports it (§13.4.1).
+	ecn uint8
 }
 
 // deferredPacket is one packet parked until the keys for its level arrive,
@@ -339,14 +442,7 @@ type rawDatagram struct {
 type deferredPacket struct {
 	raw []byte
 	at  time.Time
-}
-
-// peerClose is what a peer's CONNECTION_CLOSE carried.
-type peerClose struct {
-	code   uint64
-	app    bool
-	reason string
-	seen   bool
+	ecn uint8 // its datagram's ECN codepoint, counted when it is finally processed
 }
 
 // keyUpdateState is what a sender must know to rotate 1-RTT keys and to
@@ -393,6 +489,13 @@ type space struct {
 	retrans    [][]byte // payloads of lost packets, waiting to go again
 	lastElicit time.Time
 	discarded  bool
+	// ecnSent counts this space's packets that left marked ECT(0), ACK-only
+	// ones included (the peer counts them too); ecnLast is the ECT(0),
+	// ECT(1) and CE counts of the last ACK that passed validation
+	// (§13.4.2.1). Both are the sender's side of ECN; ack.ecn is the
+	// receiver's.
+	ecnSent uint64
+	ecnLast [3]uint64
 }
 
 // The three packet-number spaces (RFC 9000 §12.3). Early data shares the
@@ -451,6 +554,11 @@ func requireALPN(cfg *tls.Config) error {
 // the AES-GCM pair from the standard library, ChaCha20-Poly1305 from
 // golang.org/x/crypto, the module's one dependency.
 //
+// A cfg with a [tls.ClientSessionCache] resumes a session the server has
+// issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
+// round trip and no 0-RTT data is sent — this package carries nothing in
+// 0-RTT packets, even when the server offers to accept them.
+//
 // The handshake gives up after [DefaultHandshakeTimeout]; [DialContext]
 // takes a context instead.
 func Dial(pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
@@ -507,8 +615,19 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	return c, nil
 }
 
-// Accept completes a server handshake for a connection whose first datagram
-// has already been read.
+// Datagram is one UDP datagram as read from a socket: who sent it, its
+// bytes, and the ECN field of the IP header it arrived in — 0b00 Not-ECT,
+// 0b01 ECT(1), 0b10 ECT(0), 0b11 CE, the codepoints [udp.PacketECN]
+// reports (RFC 3168 §5). Zero is Not-ECT, the value to leave where the
+// socket does not report the field.
+type Datagram struct {
+	Peer    net.Addr
+	Payload []byte
+	ECN     uint8
+}
+
+// Accept completes a server handshake for a connection whose first
+// datagram, first, has already been read.
 //
 // It serves exactly one connection per [net.PacketConn] — for a shared
 // socket serving many connections at once, see [Listener] instead, which
@@ -520,14 +639,29 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 // from it decrypts, sends are held to RFC 9000 §8.1's anti-amplification
 // limit of three times the bytes received — the same accounting
 // Listener-managed connections pay, with the same implicit release.
-func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+//
+// first.ECN is the mark the first datagram arrived with. A client tests the
+// path by marking its first packets ECT(0), and fails ECN validation when
+// the acknowledgement covering them does not count the marks (RFC 9000
+// §13.4.2.1). A caller that wants ECN therefore reads the datagram from a
+// socket [udp.EnableECN] was applied to and passes what [udp.PacketECN]
+// finds in its out-of-band bytes. Left at zero, the packet counts as
+// Not-ECT and the client sends unmarked from then on.
+//
+// A server that keeps pc open after the connection, to accept the next one,
+// should call [Conn.SetClosingPeriod]: "Servers that retain an open socket
+// for accepting new connections SHOULD NOT end the closing or draining
+// state early" (RFC 9000 §10.2). Without it, the connection stops reading
+// pc the moment it closes, and a late packet of the peer reaches whatever
+// reads pc next.
+func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
 	if err := requireALPN(cfg); err != nil {
 		return nil, err
 	}
-	h, _, err := parseLongHeader(first)
+	h, _, err := parseLongHeader(first.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +674,7 @@ func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, par
 	if len(h.DCID) < 8 {
 		return nil, fmt.Errorf("%w: a client Initial with a %d-byte destination identifier; §7.2 requires 8", ErrQUIC, len(h.DCID))
 	}
-	c, err := newServerConn(pc, peer, h, cfg, params, nil, nil, nil)
+	c, err := newServerConn(pc, first.Peer, h, cfg, params, nil, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +685,7 @@ func Accept(pc net.PacketConn, peer net.Addr, first []byte, cfg *tls.Config, par
 	c.mu.Lock()
 	c.amplActive = true
 	c.mu.Unlock()
-	if err := c.receiveGathered(rawDatagram{data: first, from: peer}); err != nil {
+	if err := c.receiveGathered(rawDatagram{data: first.Payload, from: first.Peer, ecn: first.ECN}); err != nil {
 		return nil, err // receive only fails through abort, which closed
 	}
 	if err := c.handshake(context.Background()); err != nil {
@@ -619,7 +753,10 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 	}
 
 	if keys != nil {
-		err = c.installInitialKeys(keys.secrets, keys.opener)
+		var s secrets
+		if s, err = keys.secrets(); err == nil {
+			err = c.installInitialKeys(s, keys.opener)
+		}
 	} else {
 		err = c.installInitial(h.DCID)
 	}
@@ -636,6 +773,15 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 }
 
 func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
+	c := assembleConn(pc, peer, dcid, scid, isClient, params)
+	go c.timerLoop()
+	return c
+}
+
+// assembleConn is newConn without the timer loop. Tests that call
+// actOnDeadlines themselves build on it: with the loop running, the scheduler
+// decides whether a deadline fires between two of their steps.
+func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool, params TransportParameters) *Conn {
 	// This end always keeps at least one spare identifier slot for the peer
 	// to rotate into; below the protocol minimum of 2 the announcement would
 	// be refused by any conformant peer (§18.2), so the zero value and any
@@ -643,21 +789,33 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 	if params.ActiveConnIDLimit < 2 {
 		params.ActiveConnIDLimit = 4
 	}
+	// An algorithm this build does not know runs the default, and Stats
+	// says so: the choice is local, so there is no peer to refuse it.
+	if params.Congestion.Algorithm > CongestionBBR {
+		params.Congestion.Algorithm = CongestionNewReno
+	}
+	if params.Congestion.SlowStart > SlowStartHyStart {
+		params.Congestion.SlowStart = SlowStartDefault
+	}
 	c := &Conn{
 		pc: pc, peer: peer, dcid: dcid, scid: scid, isClient: isClient,
 		params:              params,
 		streams:             make(map[uint64]*Stream),
-		closedIDs:           make(map[uint64]struct{}),
-		accepted:            make(chan *Stream, 64),
+		acceptReady:         make(chan struct{}, 1),
 		closed:              make(chan struct{}),
+		gone:                make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),
-		maxDatagram:         1200, // until the peer's max_udp_payload_size says more
+		maxDatagram:         1200, // until a probe proves the path carries more (pmtu.go)
 		connSend:            sendQuota{},
 		connRecv:            newRecvQuota(params.InitialMaxData),
 		localMaxStreamsBidi: params.InitialMaxStreamsBidi,
 		localMaxStreamsUni:  params.InitialMaxStreamsUni,
 		idleTimeout:         params.MaxIdleTimeout,
 	}
+	// ECN marks and counts need a socket that reports the field; one that
+	// cannot leaves the path on failed, which marks nothing (§13.4.2.2).
+	c.ecnRecv = ecnSocket(pc)
+	c.ecn.reset(c.ecnRecv)
 	c.cond.L = &c.mu
 	// RFC 9000 §17.4: an endpoint that does not implement the latency spin
 	// bit SHOULD still set it to a random value per connection, so that
@@ -674,14 +832,13 @@ func newConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient bool,
 		// authenticated packet and seeds the pool in adoptPeerCID.
 		c.peerCIDs = []peerCID{{seq: 0, cid: dcid, used: true}}
 	}
-	c.cc = newNewReno(c.maxDatagram)
+	c.cc = newController(c.params.Congestion, c.maxDatagram, &c.delivery)
 	// §7.7: the pacer's bucket is the initial window, which is also the
 	// freshly-built controller's cwnd.
-	c.pacer.burst = int64(c.cc.cwnd)
+	c.pacer.burst = int64(c.cc.window())
 	if c.idleTimeout != 0 {
 		c.idleDeadline = time.Now().Add(c.idleTimeout)
 	}
-	go c.timerLoop()
 	return c
 }
 
@@ -817,6 +974,11 @@ func (c *Conn) handshake(ctx context.Context) error {
 				<-fired
 				return c.endedDuringHandshakeErr()
 			}
+			// From here the read loop, not the close, frees the socket
+			// (enterClosingLocked) — unless the close already ran.
+			c.mu.Lock()
+			c.closing.loop = c.incoming == nil && !c.closing.left
+			c.mu.Unlock()
 			go c.readLoop()
 			return nil
 		}
@@ -918,17 +1080,15 @@ func abandonedErr(ctx context.Context) error {
 const handshakeRefusalLimit = 2
 
 // endedDuringHandshakeErr is why a connection closed before its handshake
-// finished: the recorded failure, else the peer's close, which a code of
-// zero or an application close leaves unrecorded but is still a handshake
+// finished: the recorded cause — the peer's close is one, whatever its
+// code, so a refused ALPN reaches the dialer as the [*ConnectionError]
+// carrying 0x0178 — else this end's own Close, which is still a handshake
 // that did not happen.
 func (c *Conn) endedDuringHandshakeErr() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closeErr != nil {
 		return c.closeErr
-	}
-	if pc := c.peerClose; pc.seen {
-		return fmt.Errorf("%w: the peer closed the connection during the handshake: code %#x", ErrQUIC, pc.code)
 	}
 	return fmt.Errorf("%w: the connection closed during the handshake", ErrQUIC)
 }
@@ -963,6 +1123,9 @@ func (c *Conn) confirmLocked() {
 	if c.isClient && c.preferred != nil && !sameAddr(c.preferred, c.peer) {
 		c.probePreferredAddressLocked(time.Now())
 	}
+	// DPLPMTUD's BASE state (RFC 9000 §14.3.1): the path may now be probed
+	// for more than 1200 bytes.
+	c.maybeProbePMTULocked()
 }
 
 // discardSpaceLocked drops a space's keys and every timer and in-flight
@@ -978,12 +1141,12 @@ func (c *Conn) discardSpaceLocked(space int) {
 	sp.sealer, sp.opener = nil, nil
 	_, inFlight := sp.sent.takeAll()
 	sp.retrans = nil
-	c.cc.inFlight -= inFlight
-	if c.cc.inFlight < 0 {
-		c.cc.inFlight = 0
-	}
+	c.cc.onLifted(inFlight)
 	c.deferred[space] = nil
 	sp.ack = ackTracker{}
+	// RFC 9002 A.11: the backoff was about this space's unanswered
+	// probes, and the handshake just moved past it.
+	c.ptoCount = 0
 	c.kickTimer()
 }
 
@@ -1005,10 +1168,27 @@ func (c *Conn) pump() (done bool, err error) {
 // complete.
 func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	switch e.Kind {
-	case tls.QUICSetReadSecret:
-		return false, c.install(e.Level, e.Suite, e.Data, false)
-	case tls.QUICSetWriteSecret:
-		return false, c.install(e.Level, e.Suite, e.Data, true)
+	case tls.QUICSetReadSecret, tls.QUICSetWriteSecret:
+		if e.Level == tls.QUICEncryptionLevelEarly {
+			// The 0-RTT secret. crypto/tls hands it out whenever a
+			// resumption it attempts (a tls.Config with a
+			// ClientSessionCache, a ticket the server marked for early
+			// data, RFC 9001 §4.6.1) or accepts carries it. This package
+			// sends no 0-RTT packet and accepts none, which §4.6.1 leaves
+			// a client free to do after a resumption — so the secret has
+			// no space to go to. spaceFor would file it under the
+			// application space, where it sealed 1-RTT packets with a
+			// key the peer holds only for 0-RTT: dropped by the peer,
+			// declared lost here, until the 1-RTT secret replaced it.
+			// 0-RTT is not planned (quic.go, "what is not there").
+			return false, nil
+		}
+		return false, c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret)
+	case tls.QUICRejectedEarlyData:
+		// Nothing was sent under the early secret, so nothing is to be
+		// resent in 1-RTT (§4.6.2): the rejection is a non-event, not one
+		// of the kinds UnhandledTLSEvents counts.
+		return false, nil
 	case tls.QUICWriteData:
 		return false, c.sendCrypto(e.Level, e.Data)
 	case tls.QUICTransportParameters:
@@ -1034,14 +1214,18 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 // checks are RFC 9000 §7.3's authentication of the handshake against the
 // packets that carried it: the identifiers each side saw on the wire must be
 // the ones the handshake names, or someone spliced two conversations.
-// idleDuration converts an announced max_idle_timeout to a Duration,
-// saturating. The field is a varint of up to 2^62-1 milliseconds, far past
-// what a Duration holds, and a wrapped product turns a peer's "practically
-// never" into a deadline already passed.
+// idleDuration converts an announced max_idle_timeout (max_ack_delay uses
+// it too) to a Duration, saturating. The field is a varint of up to 2^62-1
+// milliseconds, far past what a Duration holds, and a wrapped product turns
+// a peer's "practically never" into a deadline already passed. The
+// saturation point is a whole number of milliseconds: appendParameters
+// re-encodes the Duration in milliseconds, and a value that was not one
+// (math.MaxInt64 is not) would parse back different — the drift
+// FuzzParseParameters caught.
 func idleDuration(ms uint64) time.Duration {
 	const most = uint64(math.MaxInt64 / int64(time.Millisecond))
 	if ms > most {
-		return math.MaxInt64
+		ms = most
 	}
 	return time.Duration(ms) * time.Millisecond //nolint:gosec // G115: bounded by most just above
 }
@@ -1054,13 +1238,15 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Every refusal below is TRANSPORT_PARAMETER_ERROR (parameterError says
+	// which section names it for which check).
 	if !bytes.Equal(p.initialSourceCID, c.dcid) {
-		return fmt.Errorf("%w: the peer's initial_source_connection_id is not the identifier its packets carry", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: the peer's initial_source_connection_id is not the identifier its packets carry", ErrQUIC))
 	}
 	switch {
 	case c.isClient:
 		if !bytes.Equal(p.originalDCID, c.initialDCID) {
-			return fmt.Errorf("%w: the server did not echo the original destination identifier", ErrQUIC)
+			return parameterError(fmt.Errorf("%w: the server did not echo the original destination identifier", ErrQUIC))
 		}
 		// retry_source_connection_id binds this handshake to the Retry that
 		// redirected it (RFC 9000 §7.3): present iff a Retry actually
@@ -1069,36 +1255,30 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		// the server's own identifier by the time the parameters arrive.
 		if c.retried {
 			if !bytes.Equal(p.retrySourceCID, c.retrySCID) {
-				return fmt.Errorf("%w: the server did not echo the Retry's source identifier", ErrQUIC)
+				return parameterError(fmt.Errorf("%w: the server did not echo the Retry's source identifier", ErrQUIC))
 			}
 		} else if p.retrySourceCID != nil {
-			return fmt.Errorf("%w: retry_source_connection_id without a Retry", ErrQUIC)
+			return parameterError(fmt.Errorf("%w: retry_source_connection_id without a Retry", ErrQUIC))
 		}
+	// §18.2: the four server-only announcements a client must not send.
 	case p.originalDCID != nil:
-		return fmt.Errorf("%w: a client sent original_destination_connection_id", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: a client sent original_destination_connection_id", ErrQUIC))
 	case p.retrySourceCID != nil:
-		return fmt.Errorf("%w: a client sent retry_source_connection_id", ErrQUIC)
+		return parameterError(fmt.Errorf("%w: a client sent retry_source_connection_id", ErrQUIC))
 	case p.sawStatelessResetToken:
-		// §18.2: stateless_reset_token and preferred_address are server-only
-		// announcements; a client sending either is TRANSPORT_PARAMETER_ERROR.
-		return &transportError{
-			code: transportParameterError,
-			err:  fmt.Errorf("%w: a client sent stateless_reset_token", ErrQUIC),
-		}
+		return parameterError(fmt.Errorf("%w: a client sent stateless_reset_token", ErrQUIC))
 	case p.sawPreferredAddress:
-		return &transportError{
-			code: transportParameterError,
-			err:  fmt.Errorf("%w: a client sent preferred_address", ErrQUIC),
-		}
+		return parameterError(fmt.Errorf("%w: a client sent preferred_address", ErrQUIC))
 	}
+	// §18.2's own bounds: below 1200, above 20, 2^14 or more are "invalid".
 	if p.MaxUDPPayloadSize != 0 && p.MaxUDPPayloadSize < 1200 {
-		return fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, p.MaxUDPPayloadSize)
+		return parameterError(fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, p.MaxUDPPayloadSize))
 	}
 	if p.AckDelayExponent > 20 {
-		return fmt.Errorf("%w: ack_delay_exponent %d is over 20", ErrQUIC, p.AckDelayExponent)
+		return parameterError(fmt.Errorf("%w: ack_delay_exponent %d is over 20", ErrQUIC, p.AckDelayExponent))
 	}
 	if p.MaxAckDelay >= 1<<14*time.Millisecond {
-		return fmt.Errorf("%w: max_ack_delay %v is over the protocol maximum", ErrQUIC, p.MaxAckDelay)
+		return parameterError(fmt.Errorf("%w: max_ack_delay %v is over the protocol maximum", ErrQUIC, p.MaxAckDelay))
 	}
 
 	c.peerParams = p
@@ -1125,13 +1305,13 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	c.connSend.grant(p.InitialMaxData)
 	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
 	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
-	// c.maxDatagram deliberately ignores p.MaxUDPPayloadSize: the peer may
-	// announce room for more, but without path MTU discovery (RFC 9000
-	// §14.2-14.3, not implemented) this end has no proof the *path* carries
-	// more than the 1200 bytes §14.1 guarantees — and a datagram the path
-	// swallows is retransmitted at the same size into the same black hole
-	// until the connection stalls to death. 1200 it stays until DPLPMTUD
-	// exists.
+	// c.maxDatagram does not follow p.MaxUDPPayloadSize: the peer announces
+	// what it reads, not what the *path* carries, and a datagram the path
+	// swallows would be retransmitted at the same size into the same black
+	// hole until the connection stalled. It bounds the search instead:
+	// once the handshake is confirmed the path is probed up to
+	// min(MaxDatagramSize, p.MaxUDPPayloadSize) (pmtu.go), and maxDatagram
+	// rises only on a probe's acknowledgement.
 	// Streams opened before the grants arrived — none in the ordinary order
 	// of things, but harmless to repair.
 	for _, s := range c.streams {
@@ -1185,17 +1365,23 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 	held := c.deferred[space]
 	c.deferred[space] = nil
 	peer := c.peer
+	rxECN := c.rxECN
 	c.mu.Unlock()
 	// The keys just arrived, so whatever was waiting on them can be read
-	// now — stamped with when each packet actually arrived, not with now.
+	// now — stamped with when each packet actually arrived, not with now,
+	// and with the ECN mark of its own datagram, not the current one's.
 	// Unlocked first: opening a packet takes the lock again.
 	for _, pkt := range held {
+		c.mu.Lock()
+		c.rxECN = pkt.ecn
+		c.mu.Unlock()
 		if err := c.receiveAt(pkt.raw, peer, pkt.at); err != nil {
 			c.mu.Lock()
 			return err
 		}
 	}
 	c.mu.Lock()
+	c.rxECN = rxECN
 	return nil
 }
 
@@ -1280,24 +1466,25 @@ func randomID(n int) ([]byte, error) {
 
 var errClosed = errors.New("quic: the connection is closed")
 
-// Err reports why the connection ended, or nil. A clean close — this end's
-// [Conn.Close], the peer's CONNECTION_CLOSE with no error, an idle timeout —
-// is not an error.
+// Err reports why the connection ended: nil while it is open and after
+// this end closed it ([Conn.Close], [Conn.CloseWithError], [Conn.Shutdown]);
+// otherwise the cause, one of [ErrIdleTimeout], [ErrStatelessReset],
+// [ErrVersionNegotiation], a [*ConnectionError] for the peer's
+// CONNECTION_CLOSE whatever its code, a [crypto/tls.AlertError] in the
+// chain for a handshake this end's TLS refused, or the protocol violation
+// that made this end abort. The peer's clean goodbye is a ConnectionError
+// too — NO_ERROR, or HTTP/3's H3_NO_ERROR — because the transport cannot
+// tell a clean code from a failure; the layer that knows the codes does.
+// HTTP/3 reads the peer's clean goodbye this way:
+//
+//	ce, ok := errors.AsType[*quic.ConnectionError](c.Err())
+//	clean := ok && ce.Application && ce.Code == 0x0100 // H3_NO_ERROR
 //
 // It is safe to call from any goroutine at any time.
 func (c *Conn) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closeErr
-}
-
-// PeerClosed reports the application close the peer sent, if any: HTTP/3's
-// H3_NO_ERROR arrives here, and what it means belongs to the layer that
-// knows the codes.
-func (c *Conn) PeerClosed() (code uint64, reason string, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.peerClose.code, c.peerClose.reason, c.peerClose.seen && c.peerClose.app
 }
 
 // fail records why the connection is ending, keeping the first reason: what
@@ -1320,6 +1507,16 @@ type Stats struct {
 	// load is an attacker probing, or a path corrupting datagrams.
 	DiscardedPackets uint64
 
+	// ECT0Received, ECT1Received and CEReceived count the packets processed
+	// whose IP header carried that ECN codepoint (RFC 9000 §13.4.1), the
+	// counts this end reports back in its ACK frames. All zero where the
+	// socket does not report the field (every platform but Linux today), or
+	// when the peer does not mark. A rising CEReceived is the network
+	// signalling congestion without dropping.
+	ECT0Received uint64
+	ECT1Received uint64
+	CEReceived   uint64
+
 	// KeyUpdates is how many times this end's 1-RTT send keys rotated
 	// (RFC 9001 §6), whichever side initiated. Each rotation renews the
 	// AEAD's confidentiality budget (§6.6); a count that never moves on a
@@ -1339,6 +1536,116 @@ type Stats struct {
 	// received of a kind this package does not handle — most likely one a
 	// newer Go release added that this package does not know yet.
 	UnhandledTLSEvents uint64
+
+	// SmoothedRTT is the round-trip estimate loss recovery runs on
+	// (RFC 9002 §5.3, smoothed_rtt): an exponentially weighted mean of the
+	// samples, moved by every ACK that newly covers the largest packet it
+	// names, the peer's declared ACK delay subtracted. Zero before the first
+	// sample, which the handshake supplies. It is what a probe timeout and
+	// the loss time threshold are scaled by.
+	SmoothedRTT time.Duration
+
+	// MinRTT is the smallest round trip sampled (§5.2, min_rtt): the path's
+	// propagation delay, as close as this end can know it. It only ever
+	// falls, except across a migration, which starts it over.
+	MinRTT time.Duration
+
+	// RTTVariance is the mean deviation of the samples from SmoothedRTT
+	// (§5.3, rttvar). A variance that climbs while the mean holds is a
+	// path whose queue is filling and emptying.
+	RTTVariance time.Duration
+
+	// LatestRTT is the last round trip sampled (§5.1, latest_rtt), before
+	// the peer's declared ACK delay is subtracted: the path as it was one
+	// acknowledgement ago, where SmoothedRTT is the path as it has been. A
+	// LatestRTT that sits well above MinRTT on a path that loses nothing
+	// is a queue building somewhere in front of this sender — the signal
+	// a delay-based controller reads, and the one a loss-based one does
+	// not.
+	LatestRTT time.Duration
+
+	// CongestionWindow is how many bytes the congestion controller lets
+	// this end have in flight (RFC 9002 §7): it grows on every ACK, halves
+	// on a loss epoch and collapses on persistent congestion (§7.6).
+	// A window that stays near 2 × 1200 on a connection that keeps writing
+	// is a path losing packets faster than it recovers.
+	CongestionWindow int
+
+	// Algorithm is the congestion controller this end sends with
+	// ([TransportParameters.Congestion]), as built: an unknown choice reads
+	// back as the default it fell to.
+	Algorithm CongestionAlgorithm
+
+	// BytesInFlight is how many bytes are sent and neither acknowledged nor
+	// declared lost (§B.2). It rises on every ack-eliciting send, falls
+	// when an ACK arrives or a loss is declared, and reads zero once
+	// everything written has been acknowledged. BytesInFlight approaching
+	// CongestionWindow is a sender limited by the path, not by its data.
+	BytesInFlight int
+
+	// LostPackets is how many packets loss recovery declared lost (§6.1),
+	// by either path that can: an ACK proving a packet three behind or too
+	// old, or the loss timer maturing on one left too young to call. A
+	// DPLPMTUD probe that goes missing is not counted: its size was the
+	// question, and its loss is no congestion event (RFC 9000 §14.4). A
+	// retransmission is not a second loss until it is itself declared.
+	LostPackets uint64
+
+	// BytesRetransmitted is how many bytes of frames those losses put back
+	// on the send queue — payload, not packet size: the headers, the
+	// ACK and PADDING frames of a lost packet are not sent again (§6.1,
+	// RFC 9000 §13.3) — so it never exceeds LostPackets times the largest
+	// datagram the path carried. It counts at the moment of queuing: a
+	// byte queued as the connection closes, or in the Initial or Handshake
+	// space after its keys are discarded (RFC 9001 §4.9), is counted and
+	// never sent. On a path that reorders but loses nothing, every byte
+	// here was queued for no reason: the cost of a spurious loss, which
+	// LostPackets counts the same as a real one.
+	BytesRetransmitted uint64
+
+	// PersistentCongestions is how many times an acknowledgement proved
+	// that everything sent over more than three probe intervals was lost
+	// (§7.6) and the window collapsed to its minimum. A blackout, a
+	// migration to a dead path, or a peer that went away mid-transfer; a
+	// count that moves on a path that merely loses packets is a detector
+	// firing where the RFC's conditions were not met.
+	PersistentCongestions uint64
+
+	// ProbeTimeouts is how many times the probe timeout fired (§6.2):
+	// acknowledgements stopped arriving for a whole timeout, and this end
+	// sent probes to find out whether anything still gets through. It
+	// counts expiries, not probes sent: a pass that probes two packet
+	// number spaces together is one. A count that moves on a quiet path is
+	// a peer that stalls, or ACKs that do not come back.
+	ProbeTimeouts uint64
+
+	// DeliveryRate is how fast the network delivered this end's packets, in
+	// bytes per second, as the last reliable sample measured it
+	// (draft-ietf-ccwg-bbr-06 §4.1): the bytes an
+	// acknowledgement proved delivered, over the longer of the time they
+	// took to send and the time they took to be acknowledged. Samples taken
+	// while the application had nothing to send, or while BBR's ProbeRTT
+	// held the flight down on purpose, are skipped — they measure the
+	// sender, not the path — and so are intervals shorter than MinRTT. Zero until the first such sample. It is what the path carried,
+	// not what CongestionWindow allowed: over a bottleneck it reads the line
+	// rate while the window covers the bandwidth-delay product, and the
+	// window per round trip once a loss has cut the window below it.
+	DeliveryRate float64
+
+	// DatagramSize is the largest datagram this end sends on the current
+	// path: 1200 until a DPLPMTUD probe proves more (RFC 9000 §14.3),
+	// then the largest size proven, up to
+	// [TransportParameters.MaxDatagramSize]. It starts over at 1200 on
+	// every new path.
+	DatagramSize int
+
+	// MTUBlackHoles is how many times full-size datagrams stopped getting
+	// through after the path had carried them (RFC 8899 §4.3) — three
+	// probe timeouts in a row, or three of them lost while only smaller
+	// packets were acknowledged — and the datagram size fell back to 1200
+	// while the search ran again. A route change or a tunnel set up under
+	// the connection; an outage of three probe timeouts counts too.
+	MTUBlackHoles uint64
 }
 
 // Stats reports the connection's counters, consistently with each other.
@@ -1346,10 +1653,27 @@ func (c *Conn) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return Stats{
-		DiscardedPackets:   c.discarded,
-		KeyUpdates:         c.ku.updates,
-		WriteFailures:      c.writeFailures,
-		UnhandledTLSEvents: c.unhandledTLSEvents.Load(),
+		DiscardedPackets:      c.discarded,
+		ECT0Received:          c.ecnReceived[ecnECT0],
+		ECT1Received:          c.ecnReceived[ecnECT1],
+		CEReceived:            c.ecnReceived[ecnCE],
+		KeyUpdates:            c.ku.updates,
+		WriteFailures:         c.writeFailures,
+		UnhandledTLSEvents:    c.unhandledTLSEvents.Load(),
+		SmoothedRTT:           c.rtt.smoothed,
+		MinRTT:                c.rtt.min,
+		RTTVariance:           c.rtt.variance,
+		LatestRTT:             c.rtt.latest,
+		CongestionWindow:      c.cc.window(),
+		Algorithm:             c.params.Congestion.Algorithm,
+		BytesInFlight:         c.cc.bytesInFlight(),
+		LostPackets:           c.lostPackets,
+		BytesRetransmitted:    c.bytesRetransmitted,
+		PersistentCongestions: c.persistentCongestions,
+		ProbeTimeouts:         c.ptoFired,
+		DeliveryRate:          c.delivery.rate,
+		DatagramSize:          c.maxDatagram,
+		MTUBlackHoles:         c.pmtuBlackHoles,
 	}
 }
 
@@ -1358,6 +1682,39 @@ func (c *Conn) Stats() Stats {
 // enforces — most of all the stream limit, which is what caps how many
 // requests can be admitted and unanswered at once.
 func (c *Conn) LocalParameters() TransportParameters { return c.params }
+
+// ConnectionState reports the TLS state the handshake settled: the
+// negotiated application protocol (NegotiatedProtocol, what a server
+// checks before it speaks h3), the server name the client asked for, the
+// peer's certificates, the TLS version. It is what
+// [crypto/tls.QUICConn.ConnectionState] returns; [Dial] and [Accept]
+// return only once the handshake is complete, so every field is settled by
+// the time a caller can ask.
+func (c *Conn) ConnectionState() tls.ConnectionState { return c.tls.ConnectionState() }
+
+// LocalAddr reports the address of the socket this connection sends on:
+// the one [Dial] was given, or the listener's, until a client's
+// [Conn.Rebind] replaces it or the client adopts its server's preferred
+// address. A connection fed by a [Listener] on a Linux socket bound to
+// 0.0.0.0 or [::] reports the address its datagrams reach, the one the
+// listener answers from; elsewhere, the unspecified address the socket
+// was bound to.
+func (c *Conn) LocalAddr() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pc.LocalAddr()
+}
+
+// RemoteAddr reports the address this connection sends to: the peer as the
+// handshake saw it, then wherever the peer has moved to — a server follows
+// its client across a NAT rebind (RFC 9000 §9.5), a client moves to the
+// preferred address its server offered (§9.6). A log line taken after a
+// migration names the new address.
+func (c *Conn) RemoteAddr() net.Addr {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peer
+}
 
 // Done is closed when the connection ends.
 func (c *Conn) Done() <-chan struct{} { return c.closed }

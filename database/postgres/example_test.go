@@ -3,7 +3,6 @@ package postgres_test
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"time"
 
@@ -139,26 +138,19 @@ func ExampleError() {
 	// matchable:  true
 }
 
-// ExampleStartup is the shape of a connection, from a socket to a Conn that
-// answers queries.
+// ExampleConnect is the shape of a connection, from an address to a Conn
+// that answers queries.
 //
-// The transport stays the caller's — which host, which timeout, whether it is
-// wrapped in TLS — because those are deployment decisions a library cannot see.
-// Everything from the startup packet onwards is this package's, including the
-// SCRAM-SHA-256 exchange the server will almost certainly ask for.
-func ExampleStartup() {
-	nc, err := net.DialTimeout("tcp", "db.internal:5432", 5*time.Second)
-	if err != nil {
-		fmt.Println("dialling:", err)
-		return
-	}
-	// The handshake takes its deadline from the connection, so this bounds it.
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		fmt.Println(err)
-		return
-	}
+// The recipe — DialTLS here, DialTCP or one of your own elsewhere — says how
+// to reach the server; the context bounds the dial and the handshake, and
+// nothing of it stays on the connection. Everything from the startup packet
+// onwards is this package's, including the SCRAM-SHA-256 exchange the server
+// will almost certainly ask for.
+func ExampleConnect() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
+	conn, err := postgres.Connect(ctx, postgres.DialTLS("db.internal:5432", nil), postgres.Config{
 		User:     "orders",
 		Database: "orders",
 		Password: os.Getenv("PGPASSWORD"),
@@ -179,11 +171,9 @@ func ExampleStartup() {
 // mustConnect stands in for the caller's own connection in the examples above,
 // which need a server and are therefore compiled rather than run.
 func mustConnect() *postgres.Conn {
-	nc, err := net.DialTimeout("tcp", "localhost:5432", 5*time.Second)
-	if err != nil {
-		panic(err)
-	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP("localhost:5432"), postgres.Config{
 		User:     "postgres",
 		Password: os.Getenv("PGPASSWORD"),
 	})

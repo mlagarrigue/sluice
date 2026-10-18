@@ -1,6 +1,8 @@
 package parallel
 
 import (
+	"strconv"
+
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/batch"
 )
@@ -37,9 +39,9 @@ import (
 // producer waits, which is exactly the back-pressure the model promises. The
 // consumer still sets the pace, with depth batches of slack.
 //
-// A depth of zero or less is the explicit no-op: s is returned as it is, no
+// A depth of zero is the explicit no-op: s is returned as it is, no
 // goroutine, no channel, no copy. Async(s, 0) is the way to turn the
-// decoupling off, not a slower way to keep it.
+// decoupling off, not a slower way to keep it. A negative depth panics.
 //
 // # The batches are copied
 //
@@ -62,7 +64,10 @@ import (
 // unwinds, is re-raised all the same. Only a panic already unwinding through
 // the consumer takes precedence.
 func Async[T any](s sluice.Stream[T], depth int) sluice.Stream[T] {
-	if depth <= 0 {
+	if depth < 0 {
+		panic("sluice: Async depth " + strconv.Itoa(depth) + " is negative — zero means no decoupling")
+	}
+	if depth == 0 {
 		return s
 	}
 	return func(yield func(sluice.Batch[T]) bool) {

@@ -50,14 +50,23 @@ type CopyConfig struct {
 	// a prefix, and the caller needs its own way to resume. That is the trade
 	// this parameter exists to make the caller take knowingly. 100 000 rows
 	// is a reasonable starting point on a wide table.
+	//
+	// It also bounds what an early failure costs. The server's answer is read
+	// when the transaction ends, so a row it refuses near the start — a
+	// duplicate key — still lets the rest of the transaction's rows go out,
+	// to be dropped by the server, before the error comes back.
 	RowsPerTx int
 
-	// MaxMessage is how many bytes accumulate in one CopyData before it is
+	// ChunkBytes is how many bytes accumulate in one CopyData before it is
 	// sent. Message boundaries need not fall on row boundaries — the server
-	// concatenates them — so this is purely a buffering choice, and a value
-	// of zero or less means 64 KiB.
-	MaxMessage int
+	// concatenates them — so this is purely a buffering choice. Zero means
+	// 64 KiB; a negative value is refused. It bounds what is written; what is
+	// read from the server is bounded by [Config.MaxMessage], a separate number.
+	ChunkBytes int
 }
+
+// defaultChunkBytes is the CopyData size when [CopyConfig.ChunkBytes] is zero.
+const defaultChunkBytes = 64 << 10
 
 // AppendTupleHeader begins one row of a binary COPY stream by writing its
 // field count.
@@ -169,11 +178,18 @@ type Copier struct {
 // ctx is checked once per [Copier.WriteTuples] — the same per-batch
 // granularity [Conn.Query] uses, and for the same reason: a batch of tuples is
 // the unit that goes on the wire, so there is nothing finer to stop between.
+// On a connection opened by [Connect], ctx ending *during* a WriteTuples that
+// waits on the server sends a [CancelRequest], as for [Conn.Query], and the
+// server aborts the COPY. Waiting for its answer — the transaction opening,
+// the commit at RowsPerTx and the triggers it runs — WriteTuples returns
+// ctx.Err() wrapped, with the transaction rolled back. Waiting on a full
+// socket, it returns once the server has drained it, and the abort is read
+// by the Close or Abort that follows.
 //
-// A cancelled copy leaves the open transaction **open**, deliberately. The
-// caller decides what a half-loaded transaction is worth: [Copier.Abort] rolls
-// it back and tells the server why, [Copier.Close] commits what got through.
-// Neither consults ctx — a cleanup path that refuses to run because the
+// A copy cancelled between two batches leaves the open transaction **open**,
+// deliberately. The caller decides what a half-loaded transaction is worth:
+// [Copier.Abort] rolls it back and tells the server why, [Copier.Close]
+// commits what got through. Neither consults ctx — a cleanup path that refuses to run because the
 // context is cancelled is how a transaction is left open for the vacuum
 // horizon to trip over, which is the failure this type spends its
 // documentation avoiding.
@@ -190,8 +206,11 @@ func (c *Conn) CopyFrom(ctx context.Context, sql string, cfg CopyConfig) (*Copie
 	if cfg.RowsPerTx <= 0 {
 		return nil, errors.New("postgres: CopyConfig.RowsPerTx must be positive — a transaction granularity nobody chose is one nobody owns")
 	}
-	if cfg.MaxMessage <= 0 {
-		cfg.MaxMessage = 64 << 10
+	if cfg.ChunkBytes < 0 {
+		return nil, fmt.Errorf("postgres: CopyConfig.ChunkBytes %d is negative — zero means the default, %d", cfg.ChunkBytes, defaultChunkBytes)
+	}
+	if cfg.ChunkBytes == 0 {
+		cfg.ChunkBytes = defaultChunkBytes
 	}
 	return &Copier{conn: c, ctx: ctx, sql: sql, cfg: cfg}, nil
 }
@@ -228,16 +247,29 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		return err
 	}
 	defer cp.conn.endBusy()
+	// Watched like a statement: the batch may open the transaction, wait on
+	// a server that has stopped reading, or commit — and a commit is where
+	// the server runs what the rows set off, triggers and constraints.
+	w := cp.conn.watchCancel(cp.ctx)
+	if err := cp.conn.settleCancel(cp.ctx, w, cp.write(tuples, rows)); err != nil {
+		return cp.fail(err)
+	}
+	return nil
+}
+
+// write is WriteTuples once the batch is accepted: everything that talks to
+// the server.
+func (cp *Copier) write(tuples []byte, rows int) error {
 	if !cp.inTx {
 		if err := cp.beginTx(); err != nil {
-			return cp.fail(err)
+			return err
 		}
 	}
 
 	cp.total += int64(rows)
 	cp.rowsTx += rows
 
-	if len(cp.buf) == 0 && len(tuples) >= cp.cfg.MaxMessage {
+	if len(cp.buf) == 0 && len(tuples) >= cp.cfg.ChunkBytes {
 		// Nothing is waiting and this batch already exceeds the threshold, so
 		// copying it into cp.buf only to copy it straight back out is two
 		// passes over the same megabytes. Profiling a bulk COPY put **18% of
@@ -247,13 +279,13 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 		// the time WriteTuples returns the bytes are gone and `tuples` is
 		// theirs again — which is the contract this method already promises.
 		if err := cp.writeData(tuples); err != nil {
-			return cp.fail(err)
+			return err
 		}
 	} else {
 		cp.buf = append(cp.buf, tuples...)
-		if len(cp.buf) >= cp.cfg.MaxMessage {
+		if len(cp.buf) >= cp.cfg.ChunkBytes {
 			if err := cp.flushData(); err != nil {
-				return cp.fail(err)
+				return err
 			}
 		}
 	}
@@ -263,9 +295,7 @@ func (cp *Copier) WriteTuples(tuples []byte, rows int) error {
 	// within it, which is what makes RowsPerTx a floor: splitting the
 	// caller's bytes at a row boundary would mean parsing every tuple.
 	if cp.rowsTx >= cp.cfg.RowsPerTx {
-		if err := cp.commitTx(); err != nil {
-			return cp.fail(err)
-		}
+		return cp.commitTx()
 	}
 	return nil
 }
@@ -400,6 +430,18 @@ func (cp *Copier) beginTx() error {
 	}
 }
 
+// commitTx ends the COPY and commits it, and is where the server's verdict on
+// the transaction's rows is first read.
+//
+// Not earlier, by decision. The server reports a bad row as soon as it meets
+// it and drops every CopyData after that, so reading between writes would
+// stop a doomed load sooner. But nothing is waiting to be read in the normal
+// case, and a read that does not block needs one of two things this package
+// does not have: a goroutine owning the Reader across WriteTuples calls —
+// racing every Conn method the caller may use in between, and leaked by a
+// copier abandoned without Close or Abort — or a deadline on a socket this
+// package never sets one on (see Connect). What is lost is
+// bandwidth, bounded by one transaction's rows, which RowsPerTx sets.
 func (cp *Copier) commitTx() error {
 	c := cp.conn
 	// The trailer says "no more tuples": a field count of -1.
@@ -593,7 +635,11 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 				// position is still known and this drain can carry on to the
 				// ReadyForQuery it came for. Giving up here would break a
 				// connection *while recovering it*, which is the one place
-				// that has to succeed.
+				// that has to succeed. Unless recordParameter broke it: an
+				// encoding nobody asked for leaves nothing worth recovering.
+				if c.broken != nil {
+					return rolledBack, err
+				}
 				if serverErr == nil {
 					serverErr = err
 				}

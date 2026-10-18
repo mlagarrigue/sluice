@@ -3,7 +3,6 @@ package udp
 import (
 	"encoding/binary"
 	"net/netip"
-	"slices"
 	"syscall"
 )
 
@@ -14,6 +13,10 @@ const (
 	ipPktinfo       = 0x8  // IP_PKTINFO
 	ipv6RecvPktinfo = 0x31 // IPV6_RECVPKTINFO
 	ipv6Pktinfo     = 0x32 // IPV6_PKTINFO
+	ipTOS           = 0x1  // IP_TOS, the control message on both directions
+	ipRecvTOS       = 0xd  // IP_RECVTOS
+	ipv6TClass      = 0x43 // IPV6_TCLASS, the control message on both directions
+	ipv6RecvTClass  = 0x42 // IPV6_RECVTCLASS
 )
 
 // enablePacketInfo sets IP_PKTINFO on an AF_INET socket and
@@ -27,36 +30,31 @@ func enablePacketInfo(fd uintptr, v6 bool) error {
 	return syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipPktinfo, 1)
 }
 
-// cmsghdr is { size_t len; int level; int type; }: the length field is a
-// word wide, the two ints follow, and the data starts at CmsgLen(0).
-const cmsgLenSize = syscall.SizeofCmsghdr - 8
-
-func cmsgHeader(b []byte) (length, level, typ int) {
-	if cmsgLenSize == 8 {
-		length = int(binary.NativeEndian.Uint64(b)) //nolint:gosec // G115: a wrapped length fails the bounds check that follows
-	} else {
-		length = int(binary.NativeEndian.Uint32(b))
+// enableECN sets IP_RECVTOS on an AF_INET socket and IPV6_RECVTCLASS on an
+// AF_INET6 one. A dual-stack socket receives IPv4 traffic through the IPv4
+// stack, which reads the IPv4 option, so that one is set too, best effort.
+func enableECN(fd uintptr, v6 bool) error {
+	if v6 {
+		if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, ipv6RecvTClass, 1); err != nil {
+			return err
+		}
+		return ignoreOptionAbsent(syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipRecvTOS, 1))
 	}
-	level = int(int32(binary.NativeEndian.Uint32(b[cmsgLenSize:]))) //nolint:gosec // G115: the kernel ABI field is a C int
-	typ = int(int32(binary.NativeEndian.Uint32(b[cmsgLenSize+4:]))) //nolint:gosec // G115: the kernel ABI field is a C int
-	return length, level, typ
+	return syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipRecvTOS, 1)
 }
 
-// packetDestination walks the control messages by hand:
-// syscall.ParseSocketMessage would allocate a slice per datagram.
+// packetDestination finds the packet-information message.
 //
 // For IPv4 it returns in_pktinfo's ipi_spec_dst, the local address the
 // kernel would itself answer from — equal to the header's destination for
 // unicast, and the interface's own address for a broadcast, which is the
 // one a reply can actually use as its source.
 func packetDestination(oob []byte) (netip.Addr, int, bool) {
-	hdr := syscall.CmsgLen(0)
-	for len(oob) >= hdr {
-		length, level, typ := cmsgHeader(oob)
-		if length < hdr || length > len(oob) {
-			break
+	for {
+		level, typ, data, rest, ok := nextCmsg(oob)
+		if !ok {
+			return netip.Addr{}, 0, false
 		}
-		data := oob[hdr:length]
 		switch {
 		case level == syscall.IPPROTO_IP && typ == ipPktinfo && len(data) >= 12:
 			// struct in_pktinfo { int ifindex; in_addr spec_dst; in_addr addr; }
@@ -67,13 +65,39 @@ func packetDestination(oob []byte) (netip.Addr, int, bool) {
 			ifindex := int(binary.NativeEndian.Uint32(data[16:20]))
 			return netip.AddrFrom16([16]byte(data[0:16])), ifindex, true
 		}
-		next := syscall.CmsgSpace(length - hdr)
-		if next >= len(oob) {
-			break
-		}
-		oob = oob[next:]
+		oob = rest
 	}
-	return netip.Addr{}, 0, false
+}
+
+// packetECN finds the IP_TOS or IPV6_TCLASS message and returns the two
+// ECN bits of the byte it carries. The kernel reports IP_TOS as one byte
+// and IPV6_TCLASS as a C int; the ECN field is the low two bits of either.
+func packetECN(oob []byte) (uint8, bool) {
+	for {
+		level, typ, data, rest, ok := nextCmsg(oob)
+		if !ok {
+			return 0, false
+		}
+		switch {
+		case level == syscall.IPPROTO_IP && typ == ipTOS && len(data) >= 1:
+			return data[0] & 3, true
+		case level == syscall.IPPROTO_IPV6 && typ == ipv6TClass:
+			return ecnOfInt(data)
+		}
+		oob = rest
+	}
+}
+
+// appendECN appends the IP_TOS message for an IPv4 destination and the
+// IPV6_TCLASS one otherwise, each carrying ecn as a C int. A dual-stack
+// socket sends to a mapped address through the IPv4 stack (udp_sendmsg),
+// which reads IP_TOS, and to an IPv6 one through udpv6_sendmsg, which
+// reads IPV6_TCLASS.
+func appendECN(oob []byte, ecn uint8, v4 bool) []byte {
+	if v4 {
+		return appendIntCmsg(oob, syscall.IPPROTO_IP, ipTOS, uint32(ecn))
+	}
+	return appendIntCmsg(oob, syscall.IPPROTO_IPV6, ipv6TClass, uint32(ecn))
 }
 
 func appendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
@@ -81,19 +105,8 @@ func appendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	if src.Is4() {
 		level, typ, dataLen = syscall.IPPROTO_IP, ipPktinfo, 12
 	}
-	start := len(oob)
-	oob = slices.Grow(oob, syscall.CmsgSpace(dataLen))
-	oob = oob[:start+syscall.CmsgSpace(dataLen)]
-	b := oob[start:]
-	clear(b)
-	if cmsgLenSize == 8 {
-		binary.NativeEndian.PutUint64(b, uint64(syscall.CmsgLen(dataLen))) //nolint:gosec // G115: CmsgLen of a small fixed payload
-	} else {
-		binary.NativeEndian.PutUint32(b, uint32(syscall.CmsgLen(dataLen))) //nolint:gosec // G115: CmsgLen of a small fixed payload
-	}
-	binary.NativeEndian.PutUint32(b[cmsgLenSize:], uint32(level))
-	binary.NativeEndian.PutUint32(b[cmsgLenSize+4:], uint32(typ))
-	data := b[syscall.CmsgLen(0):]
+	var data []byte
+	oob, data = appendCmsg(oob, level, typ, dataLen)
 	if src.Is4() {
 		// ipi_spec_dst is the source the kernel uses; ipi_addr is ignored
 		// on send.

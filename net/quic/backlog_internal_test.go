@@ -33,7 +33,7 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	payload = append(payload, data...)
 	payload = appendFrame(payload, FrameResetStream, 0, 7, uint64(len(data)))
 
-	if _, err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,13 +130,13 @@ func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 
-	_, err := c.frames(spaceApplication, nil, time.Now())
+	err := c.frames(spaceApplication, nil, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportProtocolViolation {
 		t.Errorf("an empty payload returned %v, want PROTOCOL_VIOLATION", err)
 	}
 
-	if _, err := c.frames(spaceApplication, make([]byte, 16), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, make([]byte, 16), time.Now()); err != nil {
 		t.Errorf("a payload of nothing but PADDING was refused: %v", err)
 	}
 }
@@ -367,7 +367,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 	t.Run("standalone Accept", func(t *testing.T) {
 		pcA, pcB := newLoopbackPair(t)
 		_ = pcB
-		_, err := Accept(pcA, pcB.LocalAddr(), syntheticInitial(t, short, scid), ServerTLSForTest(t), DefaultParameters())
+		_, err := Accept(pcA, Datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultParameters())
 		if err == nil {
 			t.Fatal("Accept took an Initial with a 4-byte destination identifier")
 		}
@@ -380,7 +380,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer l.Close()
-		l.dispatch(sealedClientInitial(t, short, scid), clientPC.LocalAddr(), l.pc)
+		l.dispatch(sealedClientInitial(t, short, scid), clientPC.LocalAddr(), l.pc, 0)
 		if got := l.DiscardedPackets(); got != 1 {
 			t.Errorf("discarded = %d, want 1", got)
 		}
@@ -414,10 +414,10 @@ func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 		return append(b, data...)
 	}
 
-	if _, err := c.frames(spaceApplication, stream(0, []byte("hello"), false), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, stream(0, []byte("hello"), false), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	_, err := c.frames(spaceApplication, stream(0, []byte("he"), true), time.Now())
+	err := c.frames(spaceApplication, stream(0, []byte("he"), true), time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportFinalSize {
 		t.Errorf("a FIN below bytes already received returned %v, want FINAL_SIZE_ERROR", err)
@@ -441,7 +441,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 		peer.record(pn, now)
 	}
 	f := ackFrameFor(t, &peer)
-	out, err := s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err := s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 
 	// The same frame again: everything it covers is already gone, and the
 	// merge must newly acknowledge nothing.
-	out, err = s.processAck(now, f.largest, f.Data, &rtt, time.Time{})
+	out, err = s.processAck(now, f.largest, f.Data, &rtt, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 		return append(b, make([]byte, size-len(b))...)
 	}
 
-	l.dispatch(foreign(1200), clientPC.LocalAddr(), l.pc)
+	l.dispatch(foreign(1200), clientPC.LocalAddr(), l.pc, 0)
 	if err := clientPC.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 
 	// Below 1200 bytes nothing is sent — answering would amplify.
 	before := l.DiscardedPackets()
-	l.dispatch(foreign(600), clientPC.LocalAddr(), l.pc)
+	l.dispatch(foreign(600), clientPC.LocalAddr(), l.pc, 0)
 	if err := clientPC.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,10 @@ func TestListenerSendsVersionNegotiation(t *testing.T) {
 
 // RFC 9000 §8.1.2: an Initial whose Retry token cannot be validated is
 // answered with an immediate INVALID_TOKEN close, so the client learns now
-// instead of eating its whole handshake timeout.
+// instead of eating its whole handshake timeout. The token here is this
+// listener's own, expired: a token its key never signed is not an invalid
+// Retry token but an unvalidated client (§8.1.3; see
+// TestForeignTokenIsAnsweredWithARetry).
 func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	serverPC, clientPC := newLoopbackPair(t)
 	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
@@ -606,7 +609,8 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	}
 	defer l.Close()
 
-	// A sealed, padded Initial carrying a token this listener never issued.
+	// A sealed, padded Initial carrying a token this listener issued, to
+	// this address, for this identifier — a full TTL ago.
 	dcid, scid := []byte("post-ret"), []byte("cl-scid0")
 	secrets, err := initialSecrets(dcid)
 	if err != nil {
@@ -616,7 +620,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := make([]byte, 64) // long enough to look like a token, verifies as nothing
+	token := appendRetryTokenAt(nil, l.key, time.Now().Add(-2*retryTokenTTL), clientPC.LocalAddr(), []byte("orig-dst"), dcid)
 	const pnLen = 4
 	var header []byte
 	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))
@@ -639,7 +643,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	l.dispatch(pkt, clientPC.LocalAddr(), l.pc)
+	l.dispatch(pkt, clientPC.LocalAddr(), l.pc, 0)
 
 	if err := clientPC.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
@@ -690,7 +694,7 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 			done <- result{nil, err}
 			return
 		}
-		c, err := Accept(serverPC, from, append([]byte(nil), buf[:n]...), serverCfg, DefaultParameters())
+		c, err := Accept(serverPC, Datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultParameters())
 		done <- result{c, err}
 	}()
 
@@ -744,7 +748,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 		// Two streams interleaved, so the replay's order is tested too.
 		id := uint64(i%2) * 4
 		off := uint64(i/2) * size
-		if _, err := c.frames(spaceApplication, streamFrameBytes(id, off, data), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrameBytes(id, off, data), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		want = append(want, data...)
@@ -790,7 +794,7 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 	var off uint64
 	send := func(n int) error {
 		for range n {
-			if _, err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now()); err != nil {
+			if err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now()); err != nil {
 				return err
 			}
 			off += uint64(len(chunk))
@@ -829,11 +833,14 @@ func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	for i := range 30 {
-		if _, err := c.frames(spaceApplication, streamFrameBytes(0, uint64(i)*100, []byte(strings.Repeat("x", 100))), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrameBytes(0, uint64(i)*100, []byte(strings.Repeat("x", 100))), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s := <-c.accepted
+	s, err := c.AcceptStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n, err := s.Read(make([]byte, 250)); err != nil || n != 250 {
 		t.Fatalf("Read = %d, %v", n, err)
 	}

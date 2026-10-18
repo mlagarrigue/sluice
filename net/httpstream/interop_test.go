@@ -41,7 +41,7 @@ func interopServer(t *testing.T, cfg Config, h Handler) string {
 // efficiently, checked here from the far side with a client this package did
 // not write.
 func TestInteropKeepAliveReusesConnection(t *testing.T) {
-	base := interopServer(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	base := interopServer(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
@@ -90,7 +90,7 @@ func TestInteropKeepAliveReusesConnection(t *testing.T) {
 // not known when the headers go out — so a stdlib client must fall back to
 // chunked framing and still read the whole body back in order.
 func TestInteropReadsChunkedStreamedResponse(t *testing.T) {
-	base := interopServer(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	base := interopServer(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -138,7 +138,7 @@ func TestInteropReadsChunkedStreamedResponse(t *testing.T) {
 // server's 100-continue handling from a client this package never had to
 // special-case for it.
 func TestInteropExpectContinue(t *testing.T) {
-	base := interopServer(t, Config{ReadTimeout: 2 * time.Second}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	base := interopServer(t, Config{ReadTimeout: 2 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Body...)})

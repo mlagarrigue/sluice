@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -39,8 +40,8 @@ import (
 //     scheduling. See [h2Writer].
 //
 // Everything between them is bounded, and the bounds are stated in
-// [H2Config]. The one that is not a setting is the batch queue: it holds at
-// most [H2Config.MaxConcurrentStreams] batches, which it can never exceed
+// [Config]. The one that is not a setting is the batch queue: it holds at
+// most [Config.MaxConcurrentStreams] batches, which it can never exceed
 // because every batch carries at least one request and a request occupies a
 // stream slot from the moment it is admitted until its response is written.
 // That is why the reader can hand a batch over without ever blocking — and it
@@ -72,7 +73,8 @@ const (
 	defaultInitialWindow = 65535
 )
 
-// connRecvWindow is the connection-level receive window this server grants.
+// connRecvWindow is the floor of the connection-level receive window this
+// server grants; connWindow computes the window itself.
 //
 // The protocol starts it at 65535, which is also where every stream starts —
 // so a connection with two uploads on it runs out of connection credit before
@@ -81,6 +83,15 @@ const (
 // of the connection, puts the pacing back where it belongs: a stream's own
 // window bounds that stream, and the connection's bounds the sum.
 const connRecvWindow = 1 << 20
+
+// connWindow is the connection-level receive window for cfg: enough for every
+// admitted stream to spend its whole window at once, so that the connection's
+// credit never binds before the streams' own does, and never below the floor
+// the default configuration always granted.
+func connWindow(cfg Config) int32 {
+	sum := min(int64(cfg.MaxConcurrentStreams)*int64(cfg.InitialWindowSize), maxWindow)
+	return int32(max(sum, connRecvWindow)) //nolint:gosec // G115: capped at maxWindow
+}
 
 // streamError is a failure RFC 9113 §5.4.2 ends one stream for rather than the
 // connection.
@@ -95,6 +106,12 @@ type streamError struct {
 	id   uint32
 	code uint32
 	err  error
+	// status, when set, is answered on the stream before it is reset: a
+	// request over one of the configured bounds gets 431 or 413 and then
+	// RST_STREAM NO_ERROR, which RFC 9113 §8.1 lets a server send after a
+	// complete response to stop a request it will not read. A client behind
+	// a proxy acts on a status; a bare reset tells it nothing (§10.5.1).
+	status int
 }
 
 func (e streamError) Error() string { return e.err.Error() }
@@ -104,6 +121,12 @@ func (e streamError) Unwrap() error { return e.err }
 // other refusal here, so a caller keeps matching on the one error it knows.
 func streamFail(id, code uint32, format string, args ...any) error {
 	return streamError{id: id, code: code, err: fmt.Errorf(format, args...)}
+}
+
+// statusFail builds a stream error answered with status before the reset —
+// for the bounds [Config] documents a status for, nothing else.
+func statusFail(id uint32, status int, format string, args ...any) error {
+	return streamError{id: id, code: errNoError, status: status, err: fmt.Errorf(format, args...)}
 }
 
 // h2State is where a stream is in RFC 9113 §5.1's lifecycle, kept to the three
@@ -134,7 +157,7 @@ type h2Stream struct {
 	// block or nothing: a peer may split one at any byte, including inside an
 	// integer or a Huffman string, so decoding per frame refuses a client
 	// that is doing nothing wrong. The byte bound is already enforced a layer
-	// down by MaxHeaderBlockBytes, so holding the fragments adds nothing
+	// down by MaxHeaderBytes, so holding the fragments adds nothing
 	// unbounded.
 	block []byte
 	// endStream remembers END_STREAM from the HEADERS frame, because the
@@ -182,11 +205,18 @@ type h2Batch struct {
 // h2Answer is one response on its way out: where its framed head sits in the
 // responder's buffer, and what body follows.
 type h2Answer struct {
-	id     uint32
-	from   int
+	id   uint32
+	from int
+	// mid ends the head in s.out and starts the trailer section, which runs
+	// to to; they meet when there is none.
+	mid    int
 	to     int
 	body   []byte
 	stream sluice.Stream[[]byte]
+	// length and trailers are a streamed response's: the ContentLength its
+	// producer is held to, and the function called once the stream is.
+	length   int64
+	trailers func() []Header
 	// skip marks a response nothing could be framed for; its stream was reset
 	// instead. job is its index in the jobs built from these answers, or -1.
 	skip bool
@@ -194,21 +224,32 @@ type h2Answer struct {
 }
 
 type h2Server struct {
-	cfg     H2Config
+	cfg     Config
 	handler Handler
-	dec     *hpackDecoder
-	w       *h2Writer
+	// ctx is the handler's context: cancelled when the connection is cut
+	// rather than drained (see [Handler]).
+	ctx context.Context
+	dec *hpackDecoder
+	w   *h2Writer
 
 	streams map[uint32]*h2Stream
 	// open counts the streams the peer may still send on. It is not
 	// len(streams), which also holds the ones kept for the closed-stream
-	// grace period.
-	open int
-	// inFlight counts requests handed to the responder and not yet answered.
-	// open + inFlight is what SETTINGS_MAX_CONCURRENT_STREAMS bounds, and the
-	// sum is invariant across the hand-off — which is what makes the batch
-	// queue provably big enough for the reader never to block on it.
+	// grace period. Written by the reader; the responder reads it to know
+	// whether a drained connection is finished, hence the atomic.
+	open atomic.Int32
+	// inFlight counts requests handed to the responder whose answer has not
+	// yet left the writer's hands — written, dropped or given up on. open +
+	// inFlight is what SETTINGS_MAX_CONCURRENT_STREAMS bounds, and the sum is
+	// invariant across the hand-off — which is what makes the batch queue
+	// provably big enough for the reader never to block on it, and what
+	// bounds the answers the writer holds once deliver no longer waits for
+	// them. Decremented by answered, on the responder or the writer.
 	inFlight atomic.Int32
+	// settled wakes the responder when the writer has finished an answer, so
+	// that a drained connection whose last answer the writer, not the
+	// responder, finished is still closed.
+	settled chan struct{}
 	// lastID is the highest stream the client has opened. Stream identifiers
 	// must increase, and one that goes backwards is a client reusing a
 	// closed stream rather than opening a new one.
@@ -221,10 +262,13 @@ type h2Server struct {
 	// first. See closeStream.
 	closedRing []uint32
 
-	recvWind int32 // the connection window we have granted and not topped up
+	// connWind is the connection window this end grants, connWindow(cfg);
+	// recvWind is how much of it the peer has not yet spent.
+	connWind int32
+	recvWind int32
 	// assembling is the sum of the bodies still being assembled across all
 	// open streams — what the aggregate 4×MaxBodyBytes bound (see
-	// [H2Config.MaxBodyBytes]) is measured against. Windows are replenished
+	// [Config.MaxBodyBytes]) is measured against. Windows are replenished
 	// as DATA is buffered, so this, not flow control, is what bounds the
 	// memory a peer can park by never finishing its uploads.
 	assembling int
@@ -234,11 +278,24 @@ type h2Server struct {
 	// states what the bound means.
 	resets int
 	served int
-	// trailers is where a trailing header block is decoded to and left. It is
-	// reused rather than allocated per block, and it is never a request's.
-	trailers []Header
+	// discard is where a header block nobody will read is decoded to and
+	// left — one for a stream already ended or reset, which must still go
+	// through the decoder (see headers). It is reused rather than allocated
+	// per block, and it is never a request's.
+	discard []Header
 
 	goingAway bool
+
+	// drainStep is where the graceful shutdown stands (see serveH2Conn):
+	// drainNone, then drainBegun once the first GOAWAY and the PING are
+	// queued, then drainAnnounced once the PING's acknowledgement has had
+	// the second GOAWAY sent. Written by the drain's function and the
+	// reader, read by the responder.
+	drainStep atomic.Int32
+	// drained is set by the responder just before it closes the socket of a
+	// drained connection, so the reader knows the error that unparks it is
+	// the close and not a failure.
+	drained atomic.Bool
 
 	// readEnded is set by the reader once it has stopped reading — the peer
 	// closed, the connection was cancelled, or a connection error ended it.
@@ -248,20 +305,30 @@ type h2Server struct {
 
 	// The responder's own scratch, reused across batches. Nothing here is
 	// touched by the reader: the responder is the only goroutine in answer.
-	out     []byte
+	// The framed heads are not among it: they go out after answer returns,
+	// so each batch frames into an h2Sent the writer hands back when done.
 	block   []byte
+	names   []byte // lowercased copies of the response field names a handler spelled in HTTP/1.1 case
 	answers []h2Answer
-	jobs    []h2Job
-	ptrs    []*h2Job
+	// date is the batch's Date value, read from the clock once in answer
+	// (time.Now is 35 ns here, a fifth of a head) and from here by
+	// appendHead, whose signature the tests and the benchmark call.
+	date []byte
 	// streamBody's state, kept here rather than in locals its pull closure
 	// would move to the heap on every call: two jobs, alternating — one may
 	// be queued or in flight while the other, done, is ready to be reused
 	// with its buffer (see h2Writer.extend for why two and never more) — the
 	// one the last batch went to, and the scratch a multi-chunk batch is
 	// flattened into.
+	// heads is the head job of each streamed answer of the batch answer is
+	// on, read once deliver has taken the batch.
+	heads      []*h2Job
 	streamJobs [2]h2Job
 	streamCur  *h2Job
 	streamBuf  []byte
+	// streamTail is the streamed response's framed trailer section, held
+	// until finish has seen it written.
+	streamTail []byte
 }
 
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
@@ -279,23 +346,103 @@ const maxWindow = 1<<31 - 1
 // TLS is still not this function's job; a [net.Conn] from a [crypto/tls]
 // listener arrives here already decrypted.
 //
-// ctx cancels the connection. It reaches all three of its goroutines through
-// the socket: closing it unblocks the read the reader is parked in and the
-// write the writer is parked in, and both then unwind through their ordinary
-// error paths. That is [context.AfterFunc] rather than a fourth goroutine
-// parked on ctx.Done() for the life of every connection.
-func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) error {
-	cfg = cfg.withDefaults()
+// The cancellation of ctx stops the connection normally, as [Serve] stops
+// the connections it accepted (ADR 0017, serveH2Conn says how): a GOAWAY
+// and a PING, the streams already open answered whole, then the close. When
+// [Config.ShutdownGrace] passes before the drain ends, the connection is
+// closed under its handler, whose context is cancelled, the [Config.Logger]
+// is told, and ServeH2 returns [ErrShutdownForced]. The handler's context
+// carries ctx's values but not its cancellation, which is the normal stop
+// and not the handler's to see.
+//
+// cfg is the [Config] [Serve] takes: ServeH2 reads the fields that say
+// they bound HTTP/2 and ignores the others. A configuration it refuses is
+// returned as an error before a byte is read, and the connection is left to
+// the caller.
+func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error {
+	cfg, err := cfg.resolve()
+	if err != nil {
+		return err
+	}
+	setTCPKeepAlive(c, cfg.KeepAlive)
+	// The grace is a timer armed at the cancellation, as in ServeH3. When it
+	// passes it closes the socket, which unwinds the connection's goroutines
+	// through their ordinary error paths, and only then cancels the
+	// handler's context: the other order lets a handler that returns at its
+	// cancellation have its answer written before the close. cut is set
+	// before either, since serveH2Conn may return between the two.
+	forced, force := context.WithCancel(context.WithoutCancel(ctx))
+	defer force()
+	var graceTimer atomic.Pointer[time.Timer]
+	var cut atomic.Bool
+	stop := context.AfterFunc(ctx, func() {
+		graceTimer.Store(time.AfterFunc(cfg.ShutdownGrace, func() {
+			cut.Store(true)
+			_ = c.Close()
+			force()
+		}))
+	})
+	defer func() {
+		stop()
+		// Stopped once ServeH2 has returned, when nobody reads it.
+		if t := graceTimer.Load(); t != nil {
+			t.Stop()
+		}
+	}()
+	err = serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handler)
+	if cut.Load() {
+		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
+			"connections", 1, "grace", cfg.ShutdownGrace)
+		return ErrShutdownForced
+	}
+	return err
+}
+
+// serveH2Conn is [ServeH2] once its two stops are set: ctx is the forced
+// stop, which closes the socket through its owner's bookkeeping — ServeH2's
+// grace timer, or a [Server]'s — and reaches the handler through its
+// context, and st.drain is the normal stop, which takes the connection
+// through RFC 9113 §6.8's graceful close rather than the socket's —
+//
+//   - first a GOAWAY with the last stream identifier at 2^31−1 and NO_ERROR,
+//     which tells the peer to open nothing more, and a PING, which measures
+//     the round trip during which its streams already on the wire arrive;
+//   - at the PING's acknowledgement, a second GOAWAY naming the last stream
+//     actually taken, after which a new stream is refused (REFUSED_STREAM,
+//     the code that says it may be retried elsewhere);
+//   - when no stream is open or in flight, the close — by the reader if that
+//     is already true at the second GOAWAY, by the responder when it has
+//     written the last answer.
+//
+// The reader also keeps the state's phase: busy while a stream is open or in
+// flight, idle otherwise, so Serve's drain closes an idle HTTP/2 connection
+// at once as it does an idle HTTP/1.1 one; ServeH2 alone closes it at the
+// PING's acknowledgement. The phase is the reader's view at
+// its last batch, which runs late when the last answer went out and the peer
+// has since said nothing: that connection is drained like a busy one and
+// closes one round trip after the cancellation rather than at it. Writing the
+// phase from the responder too would make it exact, and would also let an
+// idle verdict land after a stream the reader has just opened; late is the
+// safe side. A peer that never acknowledges the PING holds the connection
+// until the grace closes it, which is the bound every drain has. A nil state
+// is a test driving the connection directly, which nothing drains.
+func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, handler Handler) error {
 	s := &h2Server{
 		cfg:      cfg,
 		handler:  handler,
-		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
+		ctx:      ctx,
+		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
-		recvWind: connRecvWindow,
+		connWind: connWindow(cfg),
+		recvWind: connWindow(cfg),
 		w:        newH2Writer(c, cfg),
+		settled:  make(chan struct{}, 1),
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
+	s.w.answered = s.answered
+	if st != nil {
+		stop := context.AfterFunc(st.drain, s.beginDrain)
+		defer stop()
+	}
 
 	go s.w.run()
 	if err := s.hello(); err != nil {
@@ -310,8 +457,29 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 	answered := make(chan struct{})
 	go func() {
 		defer close(answered)
-		for b := range in {
-			s.answer(b)
+		for {
+			select {
+			case b, ok := <-in:
+				if !ok {
+					return
+				}
+				s.answer(b)
+			case <-s.settled:
+			}
+			// The last answer of a drained connection closes it, whether the
+			// responder or the writer finished it. open is read before
+			// inFlight because finish moves a stream the other way round,
+			// inFlight up then open down: read in this order, a stream
+			// mid-hand-off is counted at least once. Nothing opens after the
+			// second GOAWAY, so both at zero is final. The writer goes first
+			// so the answer is on the wire before the socket closes under the
+			// reader.
+			if !s.drained.Load() && s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 {
+				s.drained.Store(true)
+				s.w.stop()
+				<-s.w.done
+				_ = c.Close()
+			}
 		}
 	}()
 
@@ -331,6 +499,17 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 		}
 		if len(ready) > 0 {
 			in <- h2Batch{reqs: ready, ids: ids}
+		}
+		live := s.open.Load() > 0 || s.inFlight.Load() > 0
+		if live {
+			st.set(connBusy)
+		} else {
+			st.set(connIdle)
+		}
+		if !live && s.drainStep.Load() == drainAnnounced {
+			// Drained with nothing left to answer: the second GOAWAY is out
+			// and this end owes nothing more, so this is the clean close.
+			return false
 		}
 		// A peer's GOAWAY does not stop the reader. While answers are still
 		// owed, the WINDOW_UPDATE and PING an in-flight response depends on
@@ -355,11 +534,20 @@ func ServeH2(ctx context.Context, c net.Conn, cfg H2Config, handler Handler) err
 	<-answered
 
 	err := errors.Join(fatal, ignoreEOF(src.Err()))
+	if s.drained.Load() {
+		// The responder closed the socket under this reader once the last
+		// answer was written; the read error that unparked it is that close.
+		err = nil
+	}
 	code := uint32(errNoError)
 	if err != nil {
 		code = codeFor(err)
 	}
-	s.goAway(code)
+	if err != nil || s.drainStep.Load() < drainAnnounced {
+		// A drained connection has already said its last GOAWAY, and a
+		// third one would only repeat it; a failure after it is still told.
+		s.goAway(code)
+	}
 	s.w.stop()
 	<-s.w.done
 	return errors.Join(err, s.w.failure())
@@ -420,9 +608,10 @@ func (s *h2Server) hello() error {
 	var payload []byte
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
-		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},    //nolint:gosec // G115: bounded by withDefaults
-		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},             //nolint:gosec // G115: same
-		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBlockBytes)}, //nolint:gosec // G115: same
+		{settingMaxConcurrent, uint32(s.cfg.MaxConcurrentStreams)},  //nolint:gosec // G115: bounded by withDefaults
+		{settingInitialWindowSize, uint32(s.cfg.InitialWindowSize)}, //nolint:gosec // G115: same
+		{settingMaxFrameSize, uint32(s.cfg.MaxFrameSize)},           //nolint:gosec // G115: same
+		{settingMaxHeaderListSize, uint32(s.cfg.MaxHeaderBytes)},    //nolint:gosec // G115: same
 	}
 	for _, kv := range settings {
 		payload = binary.BigEndian.AppendUint16(payload, uint16(kv[0])) //nolint:gosec // G115: setting identifiers are 16 bits
@@ -434,7 +623,7 @@ func (s *h2Server) hello() error {
 	// And the connection window this end grants, which SETTINGS cannot carry:
 	// SETTINGS_INITIAL_WINDOW_SIZE is per stream, and the connection's is only
 	// ever moved by WINDOW_UPDATE.
-	return s.w.control32(frameWindowUpdate, 0, connRecvWindow-defaultInitialWindow)
+	return s.w.control32(frameWindowUpdate, 0, uint32(s.connWind-defaultInitialWindow)) //nolint:gosec // G115: connWind is at least connRecvWindow
 }
 
 // consume folds a batch of frames into stream state and returns the requests
@@ -484,7 +673,7 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 // alive, and each of those somethings arrives through consume. A peer that
 // sends nothing at all is the frame reader's own timeout's to end.
 func (s *h2Server) expireAssembly() error {
-	if s.open == 0 {
+	if s.open.Load() == 0 {
 		return nil
 	}
 	now := time.Now()
@@ -517,6 +706,9 @@ func (s *h2Server) reset(se streamError) error {
 	}
 	s.retire(se.id, stateClosed)
 	s.w.forget(se.id)
+	if se.status != 0 {
+		return s.w.refuse(se.id, se.status)
+	}
 	return s.w.control32(frameRSTStream, se.id, se.code)
 }
 
@@ -567,7 +759,7 @@ func (s *h2Server) retire(id uint32, state h2State) {
 		return
 	}
 	if st.state == stateOpen {
-		s.open--
+		s.open.Add(-1)
 		s.closedRing = append(s.closedRing, id)
 		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
 			delete(s.streams, s.closedRing[0])
@@ -607,6 +799,16 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 
 	case framePing:
 		if f.Flags&flagAck != 0 {
+			if s.drainStep.Load() == drainBegun && string(f.Payload) == drainPing {
+				// The round trip the first GOAWAY allowed for is over: every
+				// stream the peer opened before it saw that GOAWAY is in,
+				// and the second GOAWAY names the last of them. Set before
+				// the frame goes out so a HEADERS later in this very batch
+				// is refused rather than taken past the identifier it names.
+				s.goingAway = true
+				s.goAwayWith(s.lastID, errNoError)
+				s.drainStep.Store(drainAnnounced)
+			}
 			return nil, nil
 		}
 		return nil, s.w.control(h2Frame{Type: framePing, Flags: flagAck, Payload: f.Payload})
@@ -756,8 +958,14 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// refusal after this point is a stream error, which by then can be one
 	// because the shared decoder is already consistent.
 	dst := st.headers
-	if st.gotHead || st.state != stateOpen {
-		dst = s.trailers[:0]
+	switch {
+	case st.state != stateOpen:
+		dst = s.discard[:0]
+	case st.gotHead:
+		// Trailers, decoded behind the head's fields in the same storage:
+		// Request.Headers is capped at its own length, so neither overwrites
+		// the other, and a stream whose head left room costs no allocation.
+		dst = st.headers[len(st.headers):]
 	}
 	fields, err := s.dec.Decode(dst, st.block)
 	st.block = st.block[:0]
@@ -765,14 +973,14 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		st.block = nil // a retired stream keeps no scratch warm
 	}
 	if err != nil {
-		return nil, err
+		return nil, s.blockRefused(st, err)
 	}
 	if st.state == stateClosed {
 		// Tolerated, and before the field-count bound below on purpose: the
 		// stream has already been reset, and refusing an oversized block on
 		// it would send a second RST_STREAM — and charge a second reset —
 		// for a stream that is gone.
-		s.trailers = fields
+		s.discard = fields
 		return nil, nil
 	}
 	// The field-count bound the h1 parser applies as it reads, applied here
@@ -780,9 +988,8 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// enforces is not this bound: a block of near-empty fields fits the
 	// bytes while making every [Request.Get] walk hundreds of entries. A
 	// stream error, not a connection error — the table is already consistent.
-	if len(fields) > s.cfg.MaxHeaders {
-		return nil, streamFail(st.id, errEnhanceYourCalm,
-			"%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
+	if fieldCount(fields) > s.cfg.MaxHeaders {
+		return nil, statusFail(st.id, 431, "%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
 	}
 
 	switch {
@@ -790,11 +997,11 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: HEADERS on stream %d after it ended", ErrH2Protocol, st.id)
 	case st.gotHead:
-		// A trailer section. Not served here, as on the HTTP/3 side — but it
-		// ends the message, and §8.1 makes a pseudo-header in it malformed:
-		// a trailer that carries :status or :path is a second request's head
-		// pretending to be the end of this one.
-		s.trailers = fields
+		// A trailer section, held to the head's bounds and delivered in
+		// Request.Trailers — but it ends the message, and §8.1 makes a
+		// pseudo-header in it malformed: a trailer that carries :status or
+		// :path is a second request's head pretending to be the end of this
+		// one.
 		st.gotTrailers = true
 		// §8.1: the trailer block is the one that ends the stream, so a
 		// second HEADERS without END_STREAM is a malformed request, a stream
@@ -824,21 +1031,42 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 					"%w: the trailer %q holds a control character", ErrH2Protocol, h.Name)
 			}
 		}
+		if len(fields) > 0 {
+			st.req.Trailers = fields
+		}
 		return s.finish(st)
 	}
 
-	st.headers = fields
 	st.gotHead = true
-	if err := s.buildRequest(st); err != nil {
+	req, declared, err := buildRequest(fields, ErrH2Protocol)
+	if err != nil {
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
 		// costs that one.
 		return nil, streamError{id: st.id, code: errProtocolError, err: err}
 	}
+	st.headers, st.declared, st.req = req.Headers, declared, req
+	st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 	if st.endStream {
 		return s.finish(st)
 	}
 	return nil, nil
+}
+
+// blockRefused turns the decoder's error for a stream's header block into
+// this connection's: an HPACK fault is a connection error, the table being in
+// doubt; a list over its bound is a 431 on the stream, because the decoder
+// read the block to its end and the table is consistent (RFC 9113 §10.5.1).
+// On a stream already closed it is nothing at all, for the reason the
+// field-count bound in headers gives.
+func (s *h2Server) blockRefused(st *h2Stream, err error) error {
+	switch {
+	case !errors.Is(err, errHeadersTooLarge):
+		return err
+	case st.state == stateClosed:
+		return nil
+	}
+	return statusFail(st.id, 431, "%w", err)
 }
 
 func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
@@ -890,13 +1118,14 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 		body = body[:len(body)-pad]
 	}
 	if len(st.body)+len(body) > s.cfg.MaxBodyBytes {
-		return nil, streamFail(st.id, errEnhanceYourCalm,
-			"%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
+		return nil, statusFail(st.id, 413, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
 	}
 	// The aggregate bound, beside the per-stream one: windows are granted
 	// back as DATA is buffered here, so flow control does not bound what a
 	// connection's unfinished uploads hold together — this does. See
-	// [H2Config.MaxBodyBytes] for the factor.
+	// [Config.MaxBodyBytes] for the factor. A reset rather than a 413:
+	// this request alone is under its bound, so it is not the one that is
+	// too large, and the status would say otherwise.
 	if s.assembling+len(body) > 4*s.cfg.MaxBodyBytes {
 		return nil, streamFail(st.id, errEnhanceYourCalm,
 			"%w: over %d bytes buffered across this connection's unfinished requests",
@@ -928,9 +1157,10 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	last := f.Flags&flagEndStream != 0
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
-	if !last && st.recvWind < defaultInitialWindow/2 {
-		inc := defaultInitialWindow - st.recvWind
-		st.recvWind = defaultInitialWindow
+	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by withDefaults
+	if !last && st.recvWind < initial/2 {
+		inc := initial - st.recvWind
+		st.recvWind = initial
 		if err := s.w.control32(frameWindowUpdate, st.id, uint32(inc)); err != nil { //nolint:gosec // G115: positive by construction
 			return nil, err
 		}
@@ -955,122 +1185,12 @@ func (s *h2Server) consumeConnWindow(f h2Frame) error {
 			ErrH2Protocol, errFlowControl, used, s.recvWind)
 	}
 	s.recvWind -= used
-	if s.recvWind >= connRecvWindow/2 {
+	if s.recvWind >= s.connWind/2 {
 		return nil
 	}
-	inc := connRecvWindow - s.recvWind
-	s.recvWind = connRecvWindow
+	inc := s.connWind - s.recvWind
+	s.recvWind = s.connWind
 	return s.w.control32(frameWindowUpdate, 0, uint32(inc)) //nolint:gosec // G115: positive by construction
-}
-
-// buildRequest turns decoded fields into a [Request], applying the rules
-// RFC 9113 §8.3 states — which exist because an HTTP/2 request that reaches an
-// HTTP/1.1 hop unchecked is how a smuggled request is written.
-func (s *h2Server) buildRequest(st *h2Stream) error {
-	var method, path, scheme, authority []byte
-	regular := st.headers[:0]
-	seenRegular := false
-	for _, h := range st.headers {
-		// h.Name stays []byte throughout: binding string(h.Name) to a
-		// variable allocates per field (verified with -gcflags=-m), while a
-		// conversion feeding only a switch or comparison does not.
-		if len(h.Name) == 0 {
-			return fmt.Errorf("%w: an empty header name", ErrH2Protocol)
-		}
-		if h.Name[0] == ':' {
-			if seenRegular {
-				return fmt.Errorf("%w: pseudo-header %s after a regular field", ErrH2Protocol, h.Name)
-			}
-			var dst *[]byte
-			switch string(h.Name) {
-			case ":method":
-				dst = &method
-			case ":path":
-				dst = &path
-			case ":scheme":
-				dst = &scheme
-			case ":authority":
-				dst = &authority
-			default:
-				return fmt.Errorf("%w: unknown pseudo-header %s", ErrH2Protocol, h.Name)
-			}
-			if *dst != nil {
-				return fmt.Errorf("%w: %s appears twice", ErrH2Protocol, h.Name)
-			}
-			*dst = h.Value
-			continue
-		}
-		seenRegular = true
-		if !lowerASCII(h.Name) {
-			return fmt.Errorf("%w: %q is not lowercase", ErrH2Protocol, h.Name)
-		}
-		// The h1 parser's octet rules, applied to what HPACK decoded
-		// (§8.2.1). HPACK can carry any byte, so without these a name with
-		// an embedded colon or a value with CR LF reaches the handler — and
-		// the first hop that re-serialises the request toward HTTP/1.1 turns
-		// that value into a second request.
-		if !isToken(h.Name) {
-			return fmt.Errorf("%w: %q is not a header name", ErrH2Protocol, h.Name)
-		}
-		if !validFieldValue(h.Value) {
-			return fmt.Errorf("%w: the value of %q holds a control character", ErrH2Protocol, h.Name)
-		}
-		// Connection-specific fields have no meaning here and are how an
-		// HTTP/2 request becomes two HTTP/1.1 requests at the next hop.
-		switch string(h.Name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
-			return fmt.Errorf("%w: the connection-specific field %q", ErrH2Protocol, h.Name)
-		case "te":
-			if string(h.Value) != "trailers" {
-				return fmt.Errorf("%w: TE may only be \"trailers\"", ErrH2Protocol)
-			}
-		case "content-length":
-			// Remembered for finish, where the DATA sum is known. A repeat
-			// is refused as the h1 parser refuses it: two lengths on one
-			// request is the smuggling family's opening move.
-			if st.declared >= 0 {
-				return fmt.Errorf("%w: content-length appears twice", ErrH2Protocol)
-			}
-			n, err := parseContentLength(h.Value)
-			if err != nil {
-				return err
-			}
-			st.declared = n
-		}
-		regular = append(regular, h)
-	}
-	if method == nil || path == nil || scheme == nil {
-		return fmt.Errorf("%w: a request without :method, :path and :scheme", ErrH2Protocol)
-	}
-	// Pseudo-header values compose the request line of any downstream
-	// HTTP/1.1 hop, which is why §10.3 asks for octet-level checks on them
-	// specifically: these are the same refusals the h1 request line makes.
-	if !isToken(method) {
-		return fmt.Errorf("%w: :method is not a token", ErrH2Protocol)
-	}
-	if !isToken(scheme) {
-		return fmt.Errorf("%w: :scheme is not a token", ErrH2Protocol)
-	}
-	if len(path) == 0 || path[0] != '/' {
-		return fmt.Errorf("%w: :path is not origin-form", ErrH2Protocol)
-	}
-	for _, c := range path {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :path holds a control character", ErrH2Protocol)
-		}
-	}
-	for _, c := range authority {
-		if c <= 0x20 || c == 0x7f {
-			return fmt.Errorf("%w: :authority holds a control character", ErrH2Protocol)
-		}
-	}
-	regular, err := withAuthority(regular, authority, ErrH2Protocol)
-	if err != nil {
-		return err
-	}
-	st.headers = regular
-	st.req = Request{Method: method, Target: path, Headers: regular, KeepAlive: true}
-	return nil
 }
 
 // finish completes a request and hands its stream over to the responder.
@@ -1120,7 +1240,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		// opened that many more streams before its trailers arrived.
 		return nil, fmt.Errorf("%w: stream %d reopens one already used", ErrH2Protocol, id)
 	}
-	if s.goingAway || s.open+int(s.inFlight.Load()) >= s.cfg.MaxConcurrentStreams {
+	if s.goingAway || int(s.open.Load())+int(s.inFlight.Load()) >= s.cfg.MaxConcurrentStreams {
 		// §5.1.2 makes this a stream error, and REFUSED_STREAM is the code
 		// that tells the client nothing was processed — so it may retry the
 		// request elsewhere rather than assume it half-happened. The same
@@ -1142,7 +1262,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 			return nil, err
 		}
 		s.lastID = id
-		st := &h2Stream{id: id, state: stateClosed, declared: -1, recvWind: defaultInitialWindow}
+		st := &h2Stream{id: id, state: stateClosed, declared: -1, recvWind: int32(s.cfg.InitialWindowSize)} //nolint:gosec // G115: capped by withDefaults
 		s.streams[id] = st
 		s.closedRing = append(s.closedRing, id)
 		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
@@ -1156,11 +1276,11 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 	}
 	s.lastID = id
 	st := &h2Stream{
-		id: id, declared: -1, recvWind: defaultInitialWindow,
+		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by withDefaults
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
 	s.streams[id] = st
-	s.open++
+	s.open.Add(1)
 	s.w.open(id)
 	return st, nil
 }
@@ -1234,7 +1354,7 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 			}
 			window, haveWindow = v, true
 		case settingMaxFrameSize:
-			if v < defaultMaxFrameSize || v > 1<<24-1 {
+			if v < defaultMaxFrameSize || v > maxFrameSize {
 				return 0, false, fmt.Errorf("%w: a maximum frame size of %d", ErrH2Protocol, v)
 			}
 			frame, haveFrame = v, true
@@ -1265,13 +1385,16 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 //
 // The heads of a batch are framed into one buffer and queued together, so the
 // writer can interleave their bodies rather than serve them in order — a
-// large response no longer holds a small one behind it. The buffer is reused
-// across batches, which is safe because deliver does not return until the
-// writer has finished with every byte of it.
+// large response no longer holds a small one behind it. The buffer is the
+// batch's own, an h2Sent: deliver returns once it is queued, so the next
+// batch is answered while this one waits for credit, and the writer hands
+// the buffer back once it has finished with every byte of it.
+//
+// Every request of b is answered once: by the writer, for a buffered answer,
+// when its job leaves its hands; here for the others — a stream reset
+// because nothing could be framed, a streamed body once it has ended.
 func (s *h2Server) answer(b h2Batch) {
-	defer s.inFlight.Add(-int32(len(b.reqs))) //nolint:gosec // G115: a batch is bounded by MaxConcurrentStreams
-
-	res, err := apply(s.handler, sluice.Batch[Request]{Items: b.reqs})
+	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Neither is the peer's doing and
@@ -1293,7 +1416,9 @@ func (s *h2Server) answer(b h2Batch) {
 	// live value at write time, so only headers needed this. A block over
 	// 16384 bytes is rare, and costs one CONTINUATION more when it happens.
 	const maxFrame = defaultMaxFrameSize
-	s.out, s.answers = s.out[:0], s.answers[:0]
+	s.date = dateFor(time.Now())
+	sent := s.w.sent()
+	s.answers = s.answers[:0]
 	for i, r := range res {
 		method := b.reqs[i].Method
 		status := r.Status
@@ -1309,70 +1434,109 @@ func (s *h2Server) answer(b h2Batch) {
 			// for these.
 			body, stream = nil, nil
 		}
-		a := h2Answer{id: b.ids[i], from: len(s.out), body: body, stream: stream, job: -1}
-		out, err := s.appendHead(s.out, a.id, method, r, maxFrame)
+		a := h2Answer{id: b.ids[i], from: len(sent.out), body: body, stream: stream, job: -1}
+		if stream != nil {
+			a.length, a.trailers = r.ContentLength, r.Trailers
+		}
+		out, err := s.appendHead(sent.out, a.id, method, r, maxFrame)
+		mid := len(out)
+		if err == nil && r.Trailers != nil && !noBody && !r.streamed() {
+			// A body in hand has its trailers framed now, behind its head:
+			// a refusal is still a 500 rather than a reset.
+			out, err = s.appendTrailers(out, a.id, r, maxFrame)
+		}
 		if err != nil {
 			// A response this package will not put on the wire — an injected
 			// header, a status no version of HTTP carries, a body and a
 			// stream at once. The caller's bug, answered as one, on its own
 			// stream and nobody else's.
-			s.out = s.out[:a.from]
+			sent.out = sent.out[:a.from]
 			a.body, a.stream = nil, nil
-			if out, err = s.appendHead(s.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
+			a.trailers = nil
+			if out, err = s.appendHead(sent.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
 				_ = s.w.control32(frameRSTStream, a.id, errInternalError)
 				s.w.forget(a.id)
 				a.skip = true
 				s.answers = append(s.answers, a)
 				continue
 			}
+			mid = len(out)
 		}
-		s.out = out
-		a.to = len(s.out)
+		sent.out = out
+		a.mid, a.to = mid, len(sent.out)
 		s.answers = append(s.answers, a)
 	}
 
-	// Two passes, because appending to s.out may move it: the heads are
+	// Two passes, because appending to sent.out may move it: the heads are
 	// sliced only once the buffer has stopped growing.
-	s.jobs, s.ptrs = s.jobs[:0], s.ptrs[:0]
 	for i := range s.answers {
 		a := &s.answers[i]
 		if a.skip {
 			continue
 		}
-		a.job = len(s.jobs)
-		s.jobs = append(s.jobs, h2Job{
+		a.job = len(sent.jobs)
+		var tail []byte
+		if a.mid < a.to {
+			tail = sent.out[a.mid:a.to]
+		}
+		sent.jobs = append(sent.jobs, h2Job{
 			id:   a.id,
-			head: s.out[a.from:a.to],
+			head: sent.out[a.from:a.mid],
 			data: a.body,
-			end:  len(a.body) > 0,
+			tail: tail,
+			end:  len(a.body) > 0 || tail != nil,
 			// A response with neither a body nor a stream carries END_STREAM
 			// on its head, so it closes the stream without a DATA frame.
 			closes: a.stream == nil,
 		})
 	}
-	for i := range s.jobs {
-		s.ptrs = append(s.ptrs, &s.jobs[i])
+	// The jobs are read through sent only until deliver: from there the
+	// writer may finish them all and hand sent to the next batch. What a
+	// streamed answer needs of its head job is kept aside first.
+	heads := s.heads[:0]
+	for i := range s.answers {
+		if a := &s.answers[i]; a.stream != nil && a.job >= 0 {
+			heads = append(heads, &sent.jobs[a.job])
+		}
 	}
-	if err := s.w.deliver(s.ptrs); err != nil {
-		return // the write side is gone; the reader will see it too
-	}
+	s.heads = heads
+	failed := s.w.deliver(sent) != nil
 
-	// The streamed ones follow, one at a time. Each is pulled here, on this
+	// The streamed ones follow, one at a time, each once its head is out —
+	// its DATA may not overtake its HEADERS. Each is pulled here, on this
 	// goroutine, so a producer never runs ahead of the socket and what is
 	// held is one batch rather than the whole answer — and, since the writer
 	// waits for credit instead of refusing, a streamed response may be any
 	// size the peer is willing to receive.
+	k := 0
 	for i := range s.answers {
 		a := &s.answers[i]
-		if a.stream == nil || a.job < 0 || s.jobs[a.job].err != nil {
-			continue
+		switch {
+		case a.skip:
+			s.answered()
+		case a.stream != nil:
+			if !failed && s.w.await(heads[k]) == nil {
+				s.streamBody(a.id, a.stream, a.length, a.trailers)
+			}
+			k++
+			s.answered()
 		}
-		s.streamBody(a.id, a.stream)
+	}
+}
+
+// answered counts one request as answered: its stream no longer counts
+// against [Config.MaxConcurrentStreams] on this end's side, and the
+// responder rechecks whether a drained connection is done.
+func (s *h2Server) answered() {
+	s.inFlight.Add(-1)
+	select {
+	case s.settled <- struct{}{}:
+	default:
 	}
 }
 
 // appendHead frames a response's HEADERS, and its CONTINUATION frames if the
-// block does not fit one.
+// block does not fit one. s.date is the batch's Date value, set by answer.
 func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, maxFrame int) ([]byte, error) {
 	if err := r.check(); err != nil {
 		return nil, err
@@ -1389,16 +1553,28 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// listSize is RFC 9113 §6.5.2's measure — names and values uncompressed,
 	// plus 32 per field — of what this block decodes to at the peer.
 	listSize := uint64(len(":status") + 3 + 32)
+	if !datedBy(r.Headers) {
+		// RFC 9110 §6.6.1's Date, as the h1 writer adds it and where: on
+		// every final response the handler did not date itself, first after
+		// :status. The static table names the field (entry 33); the value
+		// is the batch's, formatted once.
+		block = appendHPACKInt(block, hpackDateIndex, 4, 0x00)
+		block = appendHPACKString(block, s.date)
+		listSize += uint64(len("date")+len(s.date)) + 32
+	}
+	s.names = s.names[:0]
 	for _, h := range r.Headers {
 		// h.Name and h.Value stay []byte into appendHPACK: a string binding
 		// here allocates twice per response field on the encode hot path.
-		if !lowerASCII(h.Name) {
-			return nil, fmt.Errorf("%w: response header %q is not lowercase", ErrH2Protocol, h.Name)
-		}
+		// A name the handler spelled in HTTP/1.1 case goes on the wire
+		// lowercase (RFC 9113 §8.2.1), from a copy: the handler's bytes are
+		// borrowed, never written. lowerName is one pass over the name,
+		// which is what the refusal it replaces cost.
+		name := lowerName(h.Name, &s.names)
 		// The h1 writer's octet rule: HPACK carries any byte, and a name
 		// with a space or a colon is a second field at the first hop that
 		// re-serialises this response toward HTTP/1.1.
-		if !isToken(h.Name) {
+		if !isToken(name) {
 			return nil, fmt.Errorf("%w: response header %q is not a token", ErrH2Protocol, h.Name)
 		}
 		if hasCRLF(h.Value) {
@@ -1415,22 +1591,29 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		// Content-length is the h1 writer's refusal for the h1 writer's
 		// reason: framing is this package's to state, and a second opinion
 		// on it is the smuggling class arriving from the inside.
-		switch string(h.Name) {
+		switch string(name) {
 		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH2Protocol, h.Name)
 		case "content-length":
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH2Protocol)
 		}
-		block = appendHPACK(block, h.Name, h.Value)
-		listSize += uint64(len(h.Name)+len(h.Value)) + 32
+		block = appendHPACK(block, name, h.Value)
+		listSize += uint64(len(name)+len(h.Value)) + 32
 	}
-	if !r.streamed() && !noLength {
-		// A streamed response has no length to state, which is what the
-		// DATA frame's END_STREAM says instead. A 204/304 never states one
-		// either (RFC 9110 §8.6).
-		n := itoa(len(r.Body))
-		block = appendHPACK(block, "content-length", n)
-		listSize += uint64(len("content-length")+len(n)) + 32
+	if !noLength && (!r.streamed() || r.ContentLength > 0) {
+		// A streamed response states the length it declared, or none, which
+		// is what the DATA frame's END_STREAM says instead. A 204/304 never
+		// states one either (RFC 9110 §8.6).
+		if r.streamed() {
+			var digits [20]byte
+			v := strconv.AppendInt(digits[:0], r.ContentLength, 10)
+			block = appendHPACK(block, "content-length", v)
+			listSize += uint64(len("content-length")+len(v)) + 32
+		} else {
+			v := itoa(len(r.Body))
+			block = appendHPACK(block, "content-length", v)
+			listSize += uint64(len("content-length")+len(v)) + 32
+		}
 	}
 	s.block = block
 	// The peer's SETTINGS_MAX_HEADER_LIST_SIZE is advisory (§6.5.2), but a
@@ -1448,10 +1631,35 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// last piece and nothing else may be interleaved between them — the same
 	// rule this server enforces on the way in.
 	flags := byte(0)
-	if noBody || (len(r.Body) == 0 && !r.streamed()) {
+	if noBody || (len(r.Body) == 0 && !r.streamed() && r.Trailers == nil) {
 		flags |= flagEndStream
 	}
 	return appendHeaderFrames(dst, id, flags, block, maxFrame)
+}
+
+// appendTrailers frames a response's trailer section as a header block
+// carrying END_STREAM (RFC 9113 §8.1), held to [checkTrailer] and to the
+// peer's SETTINGS_MAX_HEADER_LIST_SIZE as the head is. Its fields go on the
+// wire lowercase, from copies, as the head's do.
+func (s *h2Server) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
+	fields, err := r.trailers()
+	if err != nil {
+		return nil, err
+	}
+	block := s.block[:0]
+	var listSize uint64
+	s.names = s.names[:0]
+	for _, h := range fields {
+		name := lowerName(h.Name, &s.names)
+		block = appendHPACK(block, name, h.Value)
+		listSize += uint64(len(name)+len(h.Value)) + 32
+	}
+	s.block = block
+	if limit := s.peerMaxHeaderList.Load(); limit > 0 && listSize > uint64(limit) {
+		return nil, fmt.Errorf("%w: a trailer list of %d bytes, over the peer's %d limit",
+			ErrH2Protocol, listSize, limit)
+	}
+	return appendHeaderFrames(dst, id, flagEndStream, block, maxFrame)
 }
 
 // appendHeaderFrames frames one header block as HEADERS and as many
@@ -1493,8 +1701,8 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // last DATA frame when the end catches that job in time. The producer still
 // cannot run away: [h2Writer.extend] makes it wait once a queued job holds a
 // round's budget of unframed bytes, so what is held is bounded by
-// [H2Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
-// pull after [H2Config.WriteTimeout] as before.
+// [Config.MaxWriteBufferBytes] per stream, and a stalled window stops the
+// pull after [Config.WriteTimeout] as before.
 //
 // Before that, the hand-off blocked until the bytes were written, and a
 // streamed response paid one write, two goroutine hand-offs and one TCP
@@ -1508,17 +1716,25 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // Every batch, empty or not, is also checked against the stream's and the
 // connection's state first, since an empty one is never handed to the writer
 // and so could not be refused by it.
-func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
+func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header) {
 	// Both jobs start free: done is what marks a job as reusable.
 	s.streamJobs[0].done, s.streamJobs[1].done = true, true
 	s.streamCur = nil
-	stopped := false
+	stopped, wrong := false, false
+	var sent int64
 	perr := pull(stream, func(b sluice.Batch[[]byte]) bool {
 		// Asked on every batch, empty ones included: an empty batch is never
 		// handed to the writer, so neither a reset stream nor a dead
 		// connection would otherwise reach a producer of cadence ticks.
 		if s.readEnded.Load() || !s.w.alive(id) {
 			stopped = true // cut short: no END_STREAM may claim the body whole
+			return false
+		}
+		if overLength(&sent, length, b.Items) {
+			// Past the declared length: the batch is not handed over, and
+			// the stream is reset below rather than ended (RFC 9113 §8.1.1
+			// makes the mismatch a malformed response).
+			wrong = true
 			return false
 		}
 		// A single chunk is handed over as it is; several are flattened
@@ -1553,17 +1769,32 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte]) {
 	if stopped {
 		return
 	}
-	if perr != nil {
-		// The producer panicked partway through its answer. Only its own
-		// stream pays: it is reset, as the response that cannot be framed
-		// is, and the connection carries on serving the others.
+	if perr != nil || wrong || sent < length {
+		// The producer panicked partway through its answer, or did not
+		// yield the length it declared. Only its own stream pays: it is
+		// reset, as the response that cannot be framed is, and the
+		// connection carries on serving the others.
 		_ = s.w.control32(frameRSTStream, id, errInternalError)
 		s.w.forget(id)
 		return
 	}
-	// The end: END_STREAM on the last DATA frame still queued, or on an empty
-	// one of its own, which costs no credit and therefore always goes out.
-	_ = s.w.finish(id, s.streamCur, s.streamSpare())
+	var tail []byte
+	if trailers != nil {
+		var err error
+		if tail, err = s.appendTrailers(s.streamTail[:0], id, Response{Trailers: trailers}, defaultMaxFrameSize); err != nil {
+			// The body is out: a refused trailer resets the stream, as a
+			// producer that panicked does, so the client never reads the
+			// answer as whole.
+			_ = s.w.control32(frameRSTStream, id, errInternalError)
+			s.w.forget(id)
+			return
+		}
+		s.streamTail = tail
+	}
+	// The end: END_STREAM on the trailers, on the last DATA frame still
+	// queued, or on an empty one of its own — none costs credit, so the end
+	// always goes out.
+	_ = s.w.finish(id, s.streamCur, s.streamSpare(), tail)
 }
 
 // streamSpare is the streamed-body job the last batch did not go to.
@@ -1598,10 +1829,44 @@ func addWindow(cur, delta int32) (int32, error) {
 // who caused the failure. The code is what a peer acts on; the text stays on
 // this side, where the caller reads it as ServeH2's return value.
 func (s *h2Server) goAway(code uint32) {
+	s.goAwayWith(s.lastID, code)
+}
+
+// goAwayWith is goAway with the last stream identifier chosen by the caller:
+// the graceful shutdown's first GOAWAY names 2^31−1, a stream the peer can
+// never have reached, before the reader knows the real one (RFC 9113 §6.8).
+func (s *h2Server) goAwayWith(last, code uint32) {
 	payload := make([]byte, 8)
-	be32put(payload[:4], s.lastID)
+	be32put(payload[:4], last)
 	be32put(payload[4:8], code)
 	_ = s.w.control(h2Frame{Type: frameGoAway, Payload: payload})
+}
+
+// The steps of a graceful shutdown, in drainStep; see serveH2Conn.
+const (
+	drainNone int32 = iota
+	drainBegun
+	drainAnnounced
+)
+
+// drainPing is the opaque data of the PING the shutdown sends after its
+// first GOAWAY, so its acknowledgement is told apart from any other.
+const drainPing = "shutdown"
+
+// maxStreamID is the highest stream identifier the protocol has (RFC 9113
+// §5.1.1), and what the first GOAWAY of a graceful shutdown names.
+const maxStreamID = 1<<31 - 1
+
+// beginDrain is the shutdown's first step, run by the drain's
+// [context.AfterFunc] on a goroutine of its own: the GOAWAY that forbids new
+// streams without yet naming the last one taken, and the PING whose
+// acknowledgement will. Both are queued before the step is recorded, so the
+// second GOAWAY the reader sends at the acknowledgement cannot be queued
+// ahead of the first (§6.8: the identifier sent must never increase).
+func (s *h2Server) beginDrain() {
+	s.goAwayWith(maxStreamID, errNoError)
+	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
+	s.drainStep.Store(drainBegun)
 }
 
 func be32(b []byte) uint32 {

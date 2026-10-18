@@ -7,11 +7,13 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -52,6 +54,14 @@ func sealedClientInitial(tb testing.TB, dcid, scid []byte) []byte {
 // shape of a client's second Initial after a Retry.
 func sealedClientInitialWithToken(tb testing.TB, dcid, scid, token []byte) []byte {
 	tb.Helper()
+	return sealedClientInitialFirstByte(tb, 0xc0, dcid, scid, token)
+}
+
+// sealedClientInitialFirstByte is sealedClientInitialWithToken with the
+// high nibble of the first byte chosen by the caller — 0xc0 for a client's
+// real Initial, 0xcc for one with the reserved bits set.
+func sealedClientInitialFirstByte(tb testing.TB, first byte, dcid, scid, token []byte) []byte {
+	tb.Helper()
 	secrets, err := initialSecrets(dcid)
 	if err != nil {
 		tb.Fatal(err)
@@ -62,7 +72,7 @@ func sealedClientInitialWithToken(tb testing.TB, dcid, scid, token []byte) []byt
 	}
 	const pnLen = 4
 	var header []byte
-	header = append(header, 0xc0|byte(packetInitial)<<4|byte(pnLen-1))
+	header = append(header, first|byte(packetInitial)<<4|byte(pnLen-1))
 	header = append(header, 0, 0, 0, 1) // version 1
 	header = append(header, byte(len(dcid)))
 	header = append(header, dcid...)
@@ -102,8 +112,8 @@ func TestListenerRetransmittedInitialDoesNotDuplicateTheConnection(t *testing.T)
 	from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
 	dg := sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb"))
 
-	l.dispatch(append([]byte(nil), dg...), from, l.pc)
-	l.dispatch(append([]byte(nil), dg...), from, l.pc)
+	l.dispatch(append([]byte(nil), dg...), from, l.pc, 0)
+	l.dispatch(append([]byte(nil), dg...), from, l.pc, 0)
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
@@ -135,7 +145,7 @@ func TestListenerDiscardsAnInitialThatDoesNotDecrypt(t *testing.T) {
 	defer l.Close()
 
 	from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(syntheticInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), from, l.pc)
+	l.dispatch(syntheticInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), from, l.pc, 0)
 
 	l.mu.Lock()
 	pending, entries := len(l.pendingConns), len(l.byDCID)
@@ -176,7 +186,7 @@ func TestListenerDiscardsSmallInitialDatagrams(t *testing.T) {
 	if len(dg) >= 1200 {
 		t.Fatalf("the test datagram is %d bytes; it must be under 1200 to prove anything", len(dg))
 	}
-	l.dispatch(dg, clientPC.LocalAddr(), l.pc)
+	l.dispatch(dg, clientPC.LocalAddr(), l.pc, 0)
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
@@ -192,6 +202,183 @@ func TestListenerDiscardsSmallInitialDatagrams(t *testing.T) {
 	buf := make([]byte, 2048)
 	if n, _, err := clientPC.ReadFrom(buf); err == nil {
 		t.Errorf("a %d-byte answer came back for a sub-1200 Initial", n)
+	}
+}
+
+// statelessCloseCodes opens every Initial among writes under the server
+// keys dcid derives (what a stateless close is sealed with) and returns the
+// transport code of each CONNECTION_CLOSE found — empty when the listener
+// answered with anything else, or nothing.
+func statelessCloseCodes(tb testing.TB, writes [][]byte, dcid []byte) []uint64 {
+	tb.Helper()
+	secrets, err := initialSecrets(dcid)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	opener, err := newPacketOpener(secrets.Server)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	var codes []uint64
+	for _, w := range writes {
+		h, _, err := parseLongHeader(w)
+		if err != nil || h.Type != packetInitial {
+			continue
+		}
+		opened, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			continue
+		}
+		frames, err := parseFrames(nil, opened)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for _, f := range frames {
+			if f.Type == frameConnectionClose {
+				codes = append(codes, f.value)
+			}
+		}
+	}
+	return codes
+}
+
+// RFC 9000 §8.1.3: a token this listener's key never signed — a NEW_TOKEN
+// from another server of the same name, or a Retry token from a listener
+// since restarted — proves nothing and is not an error either: the client
+// is unvalidated, which with the Retry flow on means a Retry, not the
+// INVALID_TOKEN close §8.1.2 reserves for a Retry token this listener
+// issued and cannot accept.
+func TestForeignTokenIsAnsweredWithARetry(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:foreign")
+	dcid, scid := []byte("dst-cid1"), []byte("src-cid1")
+
+	// Genuinely encoded, same shape, same address — under another key.
+	other, err := newRetryTokenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc, 0)
+
+	writes := pc.taken()
+	if len(writes) != 1 {
+		t.Fatalf("the listener wrote %d datagrams for a foreign token, want one Retry", len(writes))
+	}
+	if h, _, err := parseLongHeader(writes[0]); err != nil || h.Type != packetRetry {
+		t.Errorf("the answer is %v (type %d), want a Retry", err, h.Type)
+	}
+	if codes := statelessCloseCodes(t, writes, dcid); len(codes) != 0 {
+		t.Errorf("a foreign token was closed with %v; §8.1.3 wants the client treated as unvalidated", codes)
+	}
+
+	// The witness: the same token under this listener's key but for another
+	// address is a Retry token this listener issued and cannot accept —
+	// INVALID_TOKEN (§8.1.2), as before.
+	elsewhere := appendRetryToken(nil, l.key, fakeFuzzAddr("client:other"), []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, elsewhere), from, l.pc, 0)
+	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 1 || codes[0] != transportInvalidToken {
+		t.Errorf("this listener's token for another address got %v, want one INVALID_TOKEN close", codes)
+	}
+}
+
+// Without the Retry flow, the same foreign token leaves the client exactly
+// where a tokenless one stands: admitted on the direct path, under the
+// amplification limit, and never closed for it.
+func TestForeignTokenStartsAConnectionWithoutRetry(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:foreign")
+	dcid, scid := []byte("dst-cid2"), []byte("src-cid2")
+
+	other, err := newRetryTokenKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := appendRetryToken(nil, other, from, []byte("orig-dst"), dcid)
+	l.dispatch(sealedClientInitialWithToken(t, dcid, scid, foreign), from, l.pc, 0)
+
+	l.mu.Lock()
+	pending := len(l.pendingConns)
+	c := l.byDCID[string(dcid)]
+	l.mu.Unlock()
+	if pending != 1 || c == nil {
+		t.Fatalf("a foreign token started %d connection attempts (routed: %v), want one on the direct path", pending, c != nil)
+	}
+	if !c.amplActive {
+		t.Error("the connection a foreign token started is exempt from the amplification limit; it proved nothing")
+	}
+	if codes := statelessCloseCodes(t, pc.taken(), dcid); len(codes) != 0 {
+		t.Errorf("a foreign token was closed with %v on the direct path", codes)
+	}
+}
+
+// RFC 9000 §8.1.4: a Retry token admits one connection. Once that
+// connection is forgotten — its identifiers free again, most of the token's
+// TTL still ahead — the same token from the same address is answered with
+// INVALID_TOKEN (§8.1.2: the client holds a Retry token and accepts no
+// other), not with a second connection that skipped the round trip.
+func TestRetryTokenIsConsumedWithItsConnection(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	from := fakeFuzzAddr("client:replay")
+	scid := []byte("src-cid3")
+
+	// The Retry flow, as a client would walk it: a tokenless Initial, the
+	// Retry it earns, and the second Initial echoing the token under the
+	// identifier the Retry chose.
+	l.dispatch(sealedClientInitial(t, []byte("dst-cid3"), scid), from, l.pc, 0)
+	writes := pc.taken()
+	if len(writes) != 1 {
+		t.Fatalf("the listener wrote %d datagrams for a first Initial, want one Retry", len(writes))
+	}
+	retry, _, err := parseLongHeader(writes[0])
+	if err != nil || retry.Type != packetRetry {
+		t.Fatalf("the answer is %v (type %d), want a Retry", err, retry.Type)
+	}
+	newSCID, token := retry.SCID, retry.Token
+	second := sealedClientInitialWithToken(t, newSCID, scid, token)
+	l.dispatch(second, from, l.pc, 0)
+
+	l.mu.Lock()
+	c := l.byDCID[string(newSCID)]
+	l.mu.Unlock()
+	if c == nil {
+		t.Fatal("the Initial echoing the token started no connection")
+	}
+	if c.amplActive {
+		t.Error("the connection the token admitted still pays the amplification limit")
+	}
+
+	// The connection ends and is forgotten, as a failed handshake or a
+	// finished closing period would leave it; the token has most of its
+	// TTL left.
+	_ = c.Close()
+	l.forget(c)
+	pc.taken()
+
+	l.dispatch(second, from, l.pc, 0)
+	l.mu.Lock()
+	again := l.byDCID[string(newSCID)]
+	l.mu.Unlock()
+	if again != nil {
+		t.Error("the same token opened a second connection from the same address")
+	}
+	if codes := statelessCloseCodes(t, pc.taken(), newSCID); len(codes) != 1 || codes[0] != transportInvalidToken {
+		t.Errorf("the replayed token got %v, want one INVALID_TOKEN close", codes)
 	}
 }
 
@@ -211,7 +398,7 @@ func TestListenerRetriesPastThePendingHighWaterMark(t *testing.T) {
 
 	// Fill the table to the mark (2/2 = 1) with one genuine attempt.
 	first := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), first, l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), first, l.pc, 0)
 	l.mu.Lock()
 	pending := len(l.pendingConns)
 	l.mu.Unlock()
@@ -224,7 +411,7 @@ func TestListenerRetriesPastThePendingHighWaterMark(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientPC.Close()
-	l.dispatch(sealedClientInitial(t, []byte("odcid-cc"), []byte("cscid-dd")), clientPC.LocalAddr(), l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-cc"), []byte("cscid-dd")), clientPC.LocalAddr(), l.pc, 0)
 
 	l.mu.Lock()
 	pending = len(l.pendingConns)
@@ -496,7 +683,7 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	trigger := make([]byte, 60)
 	trigger[0] = 0x40
 	copy(trigger[1:], dcid)
-	l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+	l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 
 	writes := pc.taken()
 	if len(writes) != 1 {
@@ -515,14 +702,14 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	}
 
 	// Too small to answer without a possible loop: silence.
-	l.dispatch(append([]byte(nil), trigger[:21]...), from, l.pc)
+	l.dispatch(append([]byte(nil), trigger[:21]...), from, l.pc, 0)
 	if got := pc.taken(); len(got) != 0 {
 		t.Errorf("a 21-byte trigger was answered with %d datagrams, want none", len(got))
 	}
 
 	// The budget: within one window, emission stops at the cap.
 	for range 3 * maxResetsPerSecond {
-		l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
 	if got := len(pc.taken()); got > maxResetsPerSecond {
 		t.Errorf("%d resets in one window, over the %d budget", got, maxResetsPerSecond)
@@ -546,14 +733,14 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 
 	for port := range 3 * maxResetsPerSecond {
 		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
-		l.dispatch(append([]byte(nil), trigger...), from, l.pc)
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
 	if got := len(pc.taken()); got != maxResetsPerSourcePerSecond {
 		t.Errorf("one address drew %d resets in one window, want its share of %d", got, maxResetsPerSourcePerSecond)
 	}
 
 	other := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 443}
-	l.dispatch(append([]byte(nil), trigger...), other, l.pc)
+	l.dispatch(append([]byte(nil), trigger...), other, l.pc, 0)
 	if got := len(pc.taken()); got != 1 {
 		t.Errorf("another address drew %d resets after the first one's flood, want 1", got)
 	}
@@ -625,8 +812,10 @@ func TestForgetUsesThePerConnectionIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = l.Close() }()
 	a, b := &Conn{}, &Conn{}
+	// Bare values with no state to end: Close ends every routed connection,
+	// so b leaves the table before it, and a already did.
+	defer func() { l.forget(b); _ = l.Close() }()
 	l.mu.Lock()
 	l.routeLocked("a-scid", a)
 	l.routeLocked("shared", a) // a client-chosen first identifier...
@@ -764,7 +953,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 		<-release
 		return nil
 	})
-	s, err := slowClient.OpenStream()
+	s, err := slowClient.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +992,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 	fastServer := recv(accepted, "second server Accept")
 	defer func() { _ = fastServer.Close() }()
 	go func() {
-		ss, err := fastServer.AcceptStream()
+		ss, err := fastServer.AcceptStream(t.Context())
 		if err != nil {
 			return
 		}
@@ -814,7 +1003,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 		_, _ = ss.Write(buf)
 		_ = ss.CloseWrite()
 	}()
-	fs, err := fastClient.OpenStream()
+	fs, err := fastClient.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -852,8 +1041,52 @@ func BenchmarkListenerRefusedInitial(b *testing.B) {
 	from := fakeFuzzAddr("client:refused")
 	b.ReportAllocs()
 	for b.Loop() {
-		l.dispatch(dgram, from, l.pc)
+		l.dispatch(dgram, from, l.pc, 0)
 		pc.taken()
+	}
+}
+
+// BenchmarkListenerRetriedInitial measures the front door's cost for a
+// first Initial answered with a Retry: the decrypt check, then a token and
+// a packet sealed under Retry's fixed key — the server's own Initial secret
+// is never needed, and never derived.
+func BenchmarkListenerRetriedInitial(b *testing.B) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{AlwaysRetry: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	dgram := sealedClientInitial(b, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 9, 9, 9})
+	from := fakeFuzzAddr("client:retried")
+	b.ReportAllocs()
+	for b.Loop() {
+		l.dispatch(dgram, from, l.pc, 0)
+		pc.taken()
+	}
+}
+
+// BenchmarkListenerUndecryptableInitial measures what a flood of noise
+// shaped like Initials costs: a full key schedule for the client's
+// direction and one failed decrypt per datagram, nothing more.
+func BenchmarkListenerUndecryptableInitial(b *testing.B) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	dgram := sealedClientInitial(b, []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 9, 9, 9})
+	dgram[len(dgram)-1] ^= 0xff // the tag no longer matches
+	from := fakeFuzzAddr("client:noise")
+	before := l.DiscardedPackets()
+	l.dispatch(dgram, from, l.pc, 0)
+	if l.DiscardedPackets() != before+1 || len(pc.taken()) != 0 {
+		b.Fatal("the corrupted Initial was not refused silently")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		l.dispatch(dgram, from, l.pc, 0)
 	}
 }
 
@@ -887,12 +1120,260 @@ func TestListenerQueuesABurstForABusyConnection(t *testing.T) {
 	dg = append(dg, make([]byte, 40)...)
 	before := l.DiscardedPackets()
 	for range burst {
-		l.dispatch(append([]byte(nil), dg...), pc.LocalAddr(), l.pc)
+		l.dispatch(append([]byte(nil), dg...), pc.LocalAddr(), l.pc, 0)
 	}
 	if n := l.DiscardedPackets() - before; n != 0 {
 		t.Errorf("the listener dropped %d of a %d-datagram burst", n, burst)
 	}
 	if n := len(c.incoming); n != burst {
 		t.Errorf("%d datagrams queued, want %d", n, burst)
+	}
+}
+
+// A handshake that never completes holds a pending slot only for
+// HandshakeTimeout: the slot is given back when it fires. The control, with
+// the timeout unset, keeps the slot well past the configured figure — the
+// client's default is what bounds it then.
+func TestHandshakeTimeoutFreesThePendingSlot(t *testing.T) {
+	pendingAfter := func(t *testing.T, lcfg ListenerConfig, wait time.Duration) int {
+		t.Helper()
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), lcfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+
+		from := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5556}
+		l.dispatch(sealedClientInitial(t, []byte("odcid-ht"), []byte("cscid-ht")), from, l.pc, 0)
+		l.mu.Lock()
+		pending := len(l.pendingConns)
+		l.mu.Unlock()
+		if pending != 1 {
+			t.Fatalf("%d pending connections right after the Initial, want 1", pending)
+		}
+
+		deadline := time.Now().Add(wait)
+		for {
+			l.mu.Lock()
+			pending = len(l.pendingConns)
+			l.mu.Unlock()
+			if pending == 0 || !time.Now().Before(deadline) {
+				return pending
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if pending := pendingAfter(t, ListenerConfig{HandshakeTimeout: 200 * time.Millisecond}, time.Second); pending != 0 {
+		t.Errorf("%d pending connections a second after a 200 ms HandshakeTimeout, want 0", pending)
+	}
+	if pending := pendingAfter(t, ListenerConfig{}, 600*time.Millisecond); pending != 1 {
+		t.Errorf("%d pending connections 600 ms into the default handshake timeout, want 1 still", pending)
+	}
+	if _, err := NewListener(nil, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{HandshakeTimeout: -time.Second}); err == nil {
+		t.Error("NewListener accepted a negative HandshakeTimeout")
+	}
+}
+
+// capRefusesTheSecondDial checks one admission bound end to end: a listener
+// under lcfg admits one connection, refuses the next from the same loopback
+// address with CONNECTION_REFUSED, and admits again once the first is gone
+// and the listener has forgotten it.
+func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
+	t.Helper()
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), lcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	dial := func() (*Conn, error) {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Dial(pc, spc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	}
+
+	first, err := dial()
+	if err != nil {
+		t.Fatalf("the first Dial under the cap: %v", err)
+	}
+	start := time.Now()
+	second, err := dial()
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("the second Dial got a connection; the cap is 1")
+	}
+	if ce, ok := errors.AsType[*ConnectionError](err); !ok || ce.Application || ce.Code != transportConnectionRefused {
+		t.Fatalf("the second Dial failed with %v; want CONNECTION_REFUSED (0x2) during the handshake", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the refusal took %v to reach the client", elapsed)
+	}
+
+	// Closing the first lets the listener forget it, which gives the
+	// slot back — to the total and to the address alike.
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		l.mu.Lock()
+		carried, perIP := len(l.keysOf), len(l.connsByIP)
+		l.mu.Unlock()
+		if carried == 0 && perIP == 0 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("2 s after the close the listener still carries %d connections, %d addresses", carried, perIP)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	third, err := dial()
+	if err != nil {
+		t.Fatalf("the Dial after the first closed: %v", err)
+	}
+	_ = third.Close()
+}
+
+// MaxConns bounds what the listener carries in total, accepted connections
+// included — the pending table alone would have let the second one in.
+func TestMaxConnsRefusesBeyondTheCap(t *testing.T) {
+	capRefusesTheSecondDial(t, ListenerConfig{MaxConns: 1})
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConns: -1}); err == nil {
+		t.Error("NewListener accepted a negative MaxConns")
+	}
+}
+
+// MaxConnsPerIP applies the same bound per source prefix: ports differ
+// between the two dials, and an IPv4-mapped IPv6 address counts with its
+// IPv4 form. Two IPv4 addresses stay apart, two IPv6 addresses of one /64
+// share a key, and the next /64 has its own. (Proving the second address is
+// admitted end to end is TestMaxConnsPerIPCountsEachFamilyApart's.)
+func TestMaxConnsPerIPCountsBySourcePrefix(t *testing.T) {
+	capRefusesTheSecondDial(t, ListenerConfig{MaxConnsPerIP: 1})
+	if _, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: -1}); err == nil {
+		t.Error("NewListener accepted a negative MaxConnsPerIP")
+	}
+
+	lcfg, err := ListenerConfig{}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &Listener{lcfg: lcfg}
+	key := func(ip string, port int) string { return l.connKey(&net.UDPAddr{IP: net.ParseIP(ip), Port: port}) }
+	v4a, v4b := key("127.0.0.1", 1000), key("127.0.0.1", 2000)
+	mapped, other := key("::ffff:127.0.0.1", 3000), key("127.0.0.2", 1000)
+	if v4a != v4b {
+		t.Errorf("two ports of one address key apart: %q vs %q", v4a, v4b)
+	}
+	if v4a != mapped {
+		t.Errorf("an IPv4-mapped address keys apart from its IPv4 form: %q vs %q", mapped, v4a)
+	}
+	if v4a == other {
+		t.Errorf("two addresses share the key %q", v4a)
+	}
+	if a, b := key("2001:db8:0:1::1", 1000), key("2001:db8:0:1:ffff::1", 1000); a != b {
+		t.Errorf("two addresses of one /64 key apart: %q vs %q", a, b)
+	}
+	if a, b := key("2001:db8:0:1::1", 1000), key("2001:db8:0:2::1", 1000); a == b {
+		t.Errorf("two neighbouring /64 share the key %q", a)
+	}
+}
+
+// On a dual-stack socket 127.0.0.1 arrives IPv4-mapped and ::1 as IPv6: the
+// two are different peers and each gets its own MaxConnsPerIP, while a
+// second connection from 127.0.0.1 is still refused.
+func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
+	if pc, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback}); err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	} else {
+		_ = pc.Close()
+	}
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(spc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{MaxConnsPerIP: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	port := spc.LocalAddr().(*net.UDPAddr).Port
+	dial := func(ip net.IP) (*Conn, error) {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Dial(pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultParameters())
+	}
+	v4, err := dial(net.IPv4(127, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("the first Dial from 127.0.0.1: %v", err)
+	}
+	defer v4.Close()
+	v6, err := dial(net.IPv6loopback)
+	if err != nil {
+		t.Fatalf("the Dial from ::1 while 127.0.0.1 is at the cap: %v", err)
+	}
+	defer v6.Close()
+	if again, err := dial(net.IPv4(127, 0, 0, 1)); err == nil {
+		_ = again.Close()
+		t.Fatal("a second Dial from 127.0.0.1 was admitted over MaxConnsPerIP 1")
+	}
+}
+
+// A negative bound, or a prefix longer than its address, is refused rather
+// than turned into the default, and every faulty field is named in the one
+// error, with its value and what zero means (docs/design/adr/0018).
+func TestListenerConfigRefusesOutOfRangeValues(t *testing.T) {
+	_, err := NewListener(nil, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{
+		MaxPendingConns:  -1,
+		HandshakeTimeout: -time.Second,
+		MaxConns:         -2,
+		MaxConnsPerIP:    -3,
+		IPv4PrefixBits:   33,
+		IPv6PrefixBits:   -1,
+	})
+	if err == nil {
+		t.Fatal("NewListener accepted negative ListenerConfig values")
+	}
+	for _, want := range []string{
+		"ListenerConfig.MaxPendingConns -1 is negative — zero means 1024",
+		"ListenerConfig.HandshakeTimeout -1s is negative — zero means " + DefaultHandshakeTimeout.String(),
+		"ListenerConfig.MaxConns -2 is negative — zero means no bound",
+		"ListenerConfig.MaxConnsPerIP -3 is negative — zero means no bound",
+		"ListenerConfig.IPv4PrefixBits 33 is outside 1..32 — zero means 32",
+		"ListenerConfig.IPv6PrefixBits -1 is outside 1..128 — zero means 64",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
 	}
 }

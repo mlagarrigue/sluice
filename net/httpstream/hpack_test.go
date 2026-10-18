@@ -112,7 +112,10 @@ func TestHPACKRefusals(t *testing.T) {
 		{"an index past the table", "ff00"},
 		{"a string longer than the block", "00 7f"},
 		{"an integer that runs off the end", "00 00 ff"},
-		{"an integer wider than a length can be", "00 00 ffffffffff7f"},
+		{"a string of 2^35 bytes, longer than the block", "00 00 ffffffffff7f"},
+		// RFC 9204 §4.1.1's 62 bits are decoded; 2^62 itself is not. The
+		// refusal used to fall at 28 bits, on the fifth continuation octet.
+		{"an integer past 62 bits", "00 00 ff81ffffffffffffff3f"},
 		{"a name index past the table", "7f00 00"},
 	}
 	for _, tt := range tests {
@@ -137,8 +140,16 @@ func TestHPACKBoundsTheDecodedList(t *testing.T) {
 	for range 64 {
 		block = append(block, 0xbe) // index 62: the entry just added
 	}
-	if _, err := d.Decode(nil, block); !errors.Is(err, ErrHPACK) {
-		t.Fatalf("Decode returned %v, want the list bound to refuse", err)
+	fields, err := d.Decode(nil, block)
+	if !errors.Is(err, ErrTooLarge) || errors.Is(err, ErrHPACK) {
+		t.Fatalf("Decode returned %v, want the list bound to refuse as too large, not as an HPACK fault", err)
+	}
+	if len(fields) != 0 {
+		t.Errorf("Decode kept %d fields of a refused list, want none", len(fields))
+	}
+	// The block was read to its end: the entry it added is in the table.
+	if _, err := d.Decode(nil, []byte{0xbe}); err != nil {
+		t.Fatalf("the entry the refused block added is gone: %v", err)
 	}
 }
 

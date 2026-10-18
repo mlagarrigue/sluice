@@ -22,9 +22,10 @@ import (
 // answered with its own target, and /stream with a body of three batches
 // pulled one at a time, so a streamed response crosses a wire a client that
 // shares no code reads.
-func h3Handle(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+func h3Handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		switch string(r.Target) {
 		case "/stream":
 			out = append(out, httpstream.Response{Status: 200, Stream: h3Streamed})
@@ -106,7 +107,11 @@ func startH3Server(tb testing.TB) (base string, served <-chan error) {
 	tb.Helper()
 	pc := listenUDP(tb)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
-	ln, err := quic.NewListener(pc, serverTLS(tb), cfg.TransportParameters(), quic.ListenerConfig{})
+	params, err := cfg.TransportParameters()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	ln, err := quic.NewListener(pc, serverTLS(tb), params, quic.ListenerConfig{})
 	if err != nil {
 		tb.Fatal(err)
 	}

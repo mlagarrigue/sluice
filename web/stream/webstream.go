@@ -30,7 +30,7 @@
 // A handler over these stages reads top to bottom:
 //
 //	rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
-//	handle := func(b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+//	handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 //	    ex := stream.Exchanges(nil, b)
 //	    rt.Route(ex)
 //	    stream.Authenticate(verifier, ex)
@@ -140,8 +140,8 @@ func (e *Exchange) Refused() bool { return e.Status != 0 }
 // handler can reuse one slice across batches. The exchanges alias the
 // requests and follow the same lifetime.
 func Exchanges(dst []Exchange, b sluice.Batch[httpstream.Request]) []Exchange {
-	for _, r := range b.Items {
-		dst = append(dst, Exchange{Request: r, Route: RouteNone})
+	for i := range b.Items {
+		dst = append(dst, Exchange{Request: b.Items[i], Route: RouteNone})
 	}
 	return dst
 }

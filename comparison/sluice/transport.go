@@ -14,10 +14,12 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/httpstream"
+	"github.com/mlagarrigue/sluice/net/quic"
 	"github.com/mlagarrigue/sluice/web"
 )
 
@@ -25,7 +27,8 @@ const maxBody = 1 << 16
 
 // serve runs the app on ln with the transport the options name, until ctx is
 // cancelled. It takes a listener rather than an address so that the test can
-// bind port 0 and read the port back.
+// bind port 0 and read the port back. httpstream-h3 runs on a packet socket,
+// not a stream listener: see serveH3.
 func serve(ctx context.Context, o options, a *app, ln net.Listener) error {
 	if o.tls {
 		cfg, err := tlsConfig(o)
@@ -35,13 +38,50 @@ func serve(ctx context.Context, o options, a *app, ln net.Listener) error {
 		ln = tls.NewListener(ln, cfg)
 	}
 	if o.httpstream() {
-		return httpstream.Serve(ctx, ln, httpstream.Config{
-			MaxBodyBytes:        maxBody,
-			MaxRequestsPerBatch: o.maxRequestsPerBatch,
-			MaxRequestsPerConn:  o.perConn(),
-		}, a.handler())
+		return httpstream.Serve(ctx, ln, httpstreamConfig(o), a.handler())
 	}
 	return serveNetHTTP(ctx, o, a, ln)
+}
+
+// httpstreamConfig is axis D's budget, the same under every httpstream
+// transport.
+func httpstreamConfig(o options) httpstream.Config {
+	return httpstream.Config{
+		MaxBodyBytes:        maxBody,
+		MaxRequestsPerBatch: o.maxRequestsPerBatch,
+		MaxRequestsPerConn:  o.perConn(),
+	}
+}
+
+// serveH3 is axis A's UDP transport: one quic.Listener on pc served by an
+// httpstream.Server until ctx is cancelled, then stopped normally, and by
+// force if the drain outlasts the default grace. The TLS config is a
+// parameter rather than built here so that the test can hand over the
+// certificate its client trusts; run passes tlsConfig(o).
+func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *tls.Config) error {
+	cfg := httpstreamConfig(o)
+	params, err := cfg.TransportParameters()
+	if err != nil {
+		return err
+	}
+	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{})
+	if err != nil {
+		return err
+	}
+	srv := &httpstream.Server{Config: cfg, Handler: a.handler()}
+	served := make(chan error, 1)
+	go func() { served <- srv.ServeQUIC(ln) }()
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+	grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if srv.Shutdown(grace) != nil {
+		_ = srv.Close()
+	}
+	return errors.Join(ctx.Err(), <-served)
 }
 
 // serveNetHTTP is R's transport: net/http, srv.Serve on the (TLS) listener,
@@ -87,17 +127,28 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = b
 	}
 	ans := a.route(r.Context(), r.Method, r.URL.RequestURI(), body)
-	if !a.codec.accepts(r.Header.Get("Accept-Encoding")) {
+	accepts := a.codec.accepts(r.Header.Get("Accept-Encoding"))
+	if ans.stream != nil {
+		a.writeStream(w, ans, accepts)
+		return
+	}
+	b := ans.raw
+	switch {
+	case b != nil && !accepts:
+		writeRaw(w, ans.status, b)
+		return
+	case b == nil && !accepts:
 		_ = web.WriteJSON(w, ans.status, ans.body)
 		return
+	case b == nil:
+		var err error
+		if b, err = json.Marshal(ans.body); err != nil {
+			_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "encode"})
+			return
+		}
 	}
 	// Axis F: the same document, encoded. Vary is set whatever the outcome
 	// of the negotiation, so a cache keys on the header that decided it.
-	b, err := json.Marshal(ans.body)
-	if err != nil {
-		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "encode"})
-		return
-	}
 	enc, err := a.codec.encode(b)
 	if err != nil {
 		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "compress"})
@@ -111,6 +162,64 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(enc)
 }
 
+// writeRaw writes an answer already encoded the way web.WriteJSON writes
+// a value: Content-Type, Content-Length counting the newline, the newline
+// as its own write.
+func writeRaw(w http.ResponseWriter, status int, b []byte) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(b)+1))
+	w.WriteHeader(status)
+	if _, err := w.Write(b); err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, "\n")
+}
+
+// writeStream is axis E on net/http: no Content-Length, so net/http frames
+// the body as the protocol streams it (chunked under HTTP/1.1, DATA frames
+// under h2), and each batch of fragments is flushed to the socket as soon as
+// it is written. The document is the one WriteJSON would have written, its
+// trailing newline included; under axis F the fragments go through the
+// codec, flushed per batch as well, and the newline is dropped as the
+// buffered compressed path drops it.
+func (a *app) writeStream(w http.ResponseWriter, ans answer, compress bool) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	var out io.Writer = w
+	var zw resetWriter
+	if compress {
+		h.Set("Content-Encoding", a.codec.token)
+		h.Set("Vary", "Accept-Encoding")
+		zw = a.codec.get(w)
+		defer a.codec.put(zw)
+		out = zw
+	}
+	w.WriteHeader(ans.status)
+	flusher, _ := w.(http.Flusher)
+	ans.stream(func(batch sluice.Batch[[]byte]) bool {
+		for _, frag := range batch.Items {
+			if _, err := out.Write(frag); err != nil {
+				return false
+			}
+		}
+		if zw != nil {
+			if err := zw.Flush(); err != nil {
+				return false
+			}
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	})
+	if zw != nil {
+		_ = zw.Close()
+		return
+	}
+	_, _ = io.WriteString(w, "\n")
+}
+
 var (
 	jsonHeader = []httpstream.Header{{Name: []byte("content-type"), Value: []byte("application/json")}}
 	varyHeader = httpstream.Header{Name: []byte("vary"), Value: []byte("Accept-Encoding")}
@@ -121,7 +230,7 @@ var (
 // (DoBatch), which is what the transport's batch is for; the other requests
 // are answered one by one on this goroutine.
 func (a *app) handler() httpstream.Handler {
-	return func(batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	return func(_ context.Context, batch sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		out := make([]httpstream.Response, batch.Len())
 		var unitIdx []int
 		var unitKeys []int64
@@ -163,9 +272,20 @@ func unitTarget(req httpstream.Request) (int64, bool) {
 // request accepts the codec. The headers of a compressed answer are built
 // per response: the slice is read during the write and not retained.
 func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
-	b, err := json.Marshal(ans.body)
-	if err != nil {
-		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
+	if ans.stream != nil {
+		// Axis E: Response.Stream, the transport pulls the fragments and
+		// frames them itself; under axis F the codec is flushed per batch.
+		if !a.codec.accepts(string(req.Get("accept-encoding"))) {
+			return httpstream.Response{Status: ans.status, Headers: jsonHeader, Stream: ans.stream}
+		}
+		return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Stream: a.codec.encodeStream(ans.stream)}
+	}
+	b := ans.raw
+	if b == nil {
+		var err error
+		if b, err = json.Marshal(ans.body); err != nil {
+			return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"encode"}`)}
+		}
 	}
 	if !a.codec.accepts(string(req.Get("accept-encoding"))) {
 		return httpstream.Response{Status: ans.status, Headers: jsonHeader, Body: b}
@@ -174,12 +294,17 @@ func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
 	if err != nil {
 		return httpstream.Response{Status: 500, Headers: jsonHeader, Body: []byte(`{"error":"compress"}`)}
 	}
-	headers := []httpstream.Header{
+	return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Body: enc}
+}
+
+// encodedHeaders are the headers of a compressed answer, built per response:
+// the slice is read during the write and not retained.
+func (a *app) encodedHeaders() []httpstream.Header {
+	return []httpstream.Header{
 		jsonHeader[0],
 		{Name: []byte("content-encoding"), Value: []byte(a.codec.token)},
 		varyHeader,
 	}
-	return httpstream.Response{Status: ans.status, Headers: headers, Body: enc}
 }
 
 // tlsConfig is the certificate the options name, or a self-signed ECDSA P-256
@@ -202,6 +327,8 @@ func tlsConfig(o options) (*tls.Config, error) {
 		cfg.NextProtos = []string{"http/1.1"}
 	case transportNetHTTPH2, transportHTTPStreamH2:
 		cfg.NextProtos = []string{"h2"}
+	case transportHTTPStreamH3:
+		cfg.NextProtos = []string{"h3"}
 	default:
 		return nil, errors.New("tlsConfig: transport without a TLS protocol")
 	}

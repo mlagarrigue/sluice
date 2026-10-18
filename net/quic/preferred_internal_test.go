@@ -152,7 +152,7 @@ func TestClientMovesToTheServersPreferredAddress(t *testing.T) {
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.rxFrom = pref
 	c.mu.Unlock()
-	if _, err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -247,8 +247,17 @@ func TestPreferredAddressOfAnotherFamilyIsIgnored(t *testing.T) {
 	c.confirmLocked()
 	pending := c.pathProbe.pending
 	c.mu.Unlock()
-	if pending || len(pc.recorded()) != 0 {
-		t.Fatalf("a probe was sent (pending=%v, %d datagrams) for an address of another family", pending, len(pc.recorded()))
+	if pending {
+		t.Fatal("a path probe is pending for an address of another family")
+	}
+	// What confirmation sends is the DPLPMTUD probe of the path in use
+	// (pmtu.go), never a PATH_CHALLENGE.
+	for i, frames := range openAppPackets(t, c, pc) {
+		for _, f := range frames {
+			if f.Type == framePathChallenge {
+				t.Fatalf("datagram %d carries a PATH_CHALLENGE for an address of another family", i)
+			}
+		}
 	}
 }
 
@@ -344,7 +353,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		}
 		return nil
 	})
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +388,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		}
 		return nil
 	})
-	ss, err := server.OpenStream()
+	ss, err := server.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +450,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	c, main := newMigratableServer(t, "pref")
 	pref := &recordingPC{addr: fakeFuzzAddr("pref:preferred")}
 	tok := make([]byte, 16)
-	if _, err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	peer := fakeFuzzAddr("pref:peerA")
@@ -453,7 +462,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	}
 	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	rxVia(pref)
-	if _, err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 

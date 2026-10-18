@@ -35,16 +35,17 @@ import (
 // # The scheduling policy, stated
 //
 // Round-robin over the streams that have data queued, one frame each per pass,
-// repeated until the round's byte budget ([H2Config.MaxWriteBufferBytes]) is
+// repeated until the round's byte budget ([Config.MaxWriteBufferBytes]) is
 // spent or nothing can progress. One stream alone therefore gets the whole
 // budget and pays one syscall for it; eight streams share it evenly and none
 // is starved by a large neighbour. No priorities: RFC 9113 deprecated the
 // scheme and RFC 9218's replacement is not implemented here, which is a choice
 // rather than an omission — see the ADR.
 //
-// Within one batch the buffered bodies are all queued at once and interleave.
-// A streamed body does not interleave with another streamed body of the same
-// batch: its producer is pulled by the handler goroutine, one at a time, and
+// The buffered bodies of every batch the writer holds interleave: a batch is
+// queued whole and the responder moves on to the next without waiting for
+// the wire, so a stream waiting for its window holds nobody else behind it.
+// A streamed body does not interleave with another streamed body: its producer is pulled by the handler goroutine, one at a time, and
 // a batch's buffers may not be retained past the call that received them (S14).
 // The ADR records that trade and what would reverse it.
 
@@ -54,21 +55,26 @@ import (
 var errStreamGone = errors.New("httpstream: the stream ended before its response was written")
 
 // errWriteStalled reports a stream the peer never granted credit for. It is
-// bounded by [H2Config.WriteTimeout] rather than waited on forever, which is
+// bounded by [Config.WriteTimeout] rather than waited on forever, which is
 // what keeps a shutdown from hanging on a peer that stopped reading.
 var errWriteStalled = errors.New("httpstream: the peer granted no window before the write timeout")
 
 // h2Job is one stream's contribution to the write queue: a framed head that
 // needs no credit, and a payload that does.
 //
-// For a job [h2Writer.deliver] queues, data is borrowed from whoever queued
-// it and must stay valid until the job reports done — which is what makes
-// deliver a blocking call. For a streamed body's job ([h2Writer.extend]) data
+// For a job [h2Writer.deliver] queues, head and data are borrowed from the
+// batch that queued it, an [h2Sent], and stay valid until every job of the
+// batch reports done — which is when the writer hands the batch back for
+// reuse. For a streamed body's job ([h2Writer.extend]) data
 // is the job's own buffer, grown under the lock while the job is still queued,
 // so that the producer runs ahead of the socket by at most one round's budget
 // and the batches that arrive during a write leave together in the next one.
 type h2Job struct {
 	id uint32
+
+	// batch is the deliver call's batch this job belongs to, nil for a
+	// streamed body's job.
+	batch *h2Sent
 
 	// queued is true while the job sits in h2Writer.jobs: the one state in
 	// which more data may be appended to it. It is cleared wherever a job
@@ -82,7 +88,12 @@ type h2Job struct {
 
 	data []byte
 	off  int
-	end  bool // END_STREAM rides on the last DATA frame
+	end  bool // END_STREAM rides on the last DATA frame, or on tail
+
+	// tail, when set, is the trailer section, framed: HEADERS and
+	// CONTINUATION frames carrying END_STREAM, written once data is. Like
+	// head it needs no credit.
+	tail []byte
 
 	// closes says the stream is over once this job is written, whether the
 	// flag went out on a DATA frame or on the head. It is what releases the
@@ -94,12 +105,31 @@ type h2Job struct {
 	headSent bool
 	endSent  bool
 
-	// deadline is refreshed every time the job writes something. It bounds
-	// the wait for credit, not the response.
+	// deadline bounds the wait for credit, not the response. It is refreshed
+	// when the head goes out and then each time the job has written
+	// [Config.WriteProgressBytes] since the last refresh — progress counts in
+	// bytes, not in writes, since a peer that grants one byte per timeout
+	// would otherwise hold the stream open forever (data dribble,
+	// CVE-2019-9511). written is that count.
 	deadline time.Time
+	written  int
 
 	done bool
 	err  error
+}
+
+// h2Sent is one batch of buffered answers on its way out: the heads framed
+// into out, and the jobs that point into it and into the bodies. It is the
+// writer's from deliver until every job has left its hands, then goes back on
+// the writer's free list for the responder to frame its next batch into.
+//
+// What the free list holds is bounded by what can be unanswered at once: a
+// batch is out as long as one of its streams is, and the streams are bounded
+// by [Config.MaxConcurrentStreams].
+type h2Sent struct {
+	out  []byte
+	jobs []h2Job
+	left int // jobs not yet done
 }
 
 func (j *h2Job) complete() bool {
@@ -108,7 +138,7 @@ func (j *h2Job) complete() bool {
 
 type h2Writer struct {
 	conn net.Conn
-	cfg  H2Config
+	cfg  Config
 
 	mu   sync.Mutex
 	cond *sync.Cond
@@ -128,6 +158,12 @@ type h2Writer struct {
 	// expiry is park's stall deadline, one timer re-armed per wakeup rather
 	// than one AfterFunc allocated per wakeup — see park for the numbers.
 	expiry *time.Timer
+	// free holds the batches every job of which is done, for sent to reuse.
+	free []*h2Sent
+	// answered, when set, is told each time a buffered answer leaves the
+	// writer's hands — written, dropped or given up on: that stream is no
+	// longer owed anything. Called with the lock held.
+	answered func()
 
 	// connWind and windows are the peer's grants, and they live here rather
 	// than on the read side because this is the goroutine that spends them.
@@ -164,7 +200,7 @@ type h2Writer struct {
 // so — nothing would use it.
 const hpackEncoderTableSize = 4096
 
-func newH2Writer(c net.Conn, cfg H2Config) *h2Writer {
+func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 	w := &h2Writer{
 		conn:      c,
 		cfg:       cfg,
@@ -217,7 +253,7 @@ func (w *h2Writer) run() {
 			w.setErr(err)
 		} else {
 			for _, j := range w.inflight {
-				j.done = true
+				w.settle(j, nil)
 			}
 			w.inflight = nil
 		}
@@ -278,8 +314,7 @@ func (w *h2Writer) expire() {
 			kept = append(kept, j)
 			continue
 		}
-		j.err = fmt.Errorf("%w: stream %d", errWriteStalled, j.id)
-		j.done, j.queued = true, false
+		w.settle(j, fmt.Errorf("%w: stream %d", errWriteStalled, j.id))
 		delete(w.windows, j.id)
 		// CANCEL rather than a code that blames the peer: it granted less
 		// than we wanted, which it is entitled to do, and we are the side
@@ -328,7 +363,7 @@ func (w *h2Writer) fill() []*h2Job {
 			}
 			n, err := w.emit(j)
 			if err != nil {
-				j.err, j.done = err, true
+				w.settle(j, err)
 				continue
 			}
 			if n > 0 {
@@ -342,8 +377,7 @@ func (w *h2Writer) fill() []*h2Job {
 	kept := w.jobs[:0]
 	for _, j := range w.jobs {
 		switch {
-		case j.done: // failed inside emit; already answered
-			j.queued = false
+		case j.done: // failed inside emit; already settled
 		case j.complete():
 			if j.closes {
 				// The stream is over on this side; its window is nobody's to
@@ -370,7 +404,7 @@ func (w *h2Writer) fill() []*h2Job {
 func (w *h2Writer) emit(j *h2Job) (int, error) {
 	if !j.headSent {
 		if w.tableUpdate {
-			head, err := w.prefixTableUpdate(j)
+			head, err := w.prefixTableUpdate(j.id, j.head)
 			if err != nil {
 				return 0, err
 			}
@@ -384,6 +418,21 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	}
 	left := len(j.data) - j.off
 	if left == 0 {
+		if j.end && !j.endSent && j.tail != nil {
+			if w.tableUpdate {
+				// A trailer section is a header block like any other, and
+				// the first to leave after the setting changed owes the
+				// update just as a head would.
+				tail, err := w.prefixTableUpdate(j.id, j.tail)
+				if err != nil {
+					return 0, err
+				}
+				j.tail = tail
+				w.tableUpdate = false
+			}
+			w.out, j.endSent = append(w.out, j.tail...), true
+			return len(j.tail), nil
+		}
 		if j.end && !j.endSent {
 			out, err := appendH2Frame(w.out, h2Frame{Type: frameData, Flags: flagEndStream, StreamID: j.id})
 			if err != nil {
@@ -398,7 +447,7 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 		return 0, nil
 	}
 	var flags byte
-	if j.end && j.off+n == len(j.data) {
+	if j.end && j.tail == nil && j.off+n == len(j.data) {
 		flags = flagEndStream
 	}
 	out, err := appendH2Frame(w.out, h2Frame{
@@ -413,27 +462,52 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 	j.endSent = j.endSent || flags&flagEndStream != 0
 	w.connWind -= spent
 	w.windows[j.id] -= spent
-	j.deadline = time.Now().Add(w.cfg.WriteTimeout)
+	if j.written += n; j.written >= w.cfg.WriteProgressBytes {
+		j.written = 0
+		j.deadline = time.Now().Add(w.cfg.WriteTimeout)
+	}
 	return n, nil
 }
 
-// deliver queues jobs and returns when every one of them has been written, has
-// been dropped because its stream is gone, or has run out of time.
+// deliver queues a batch of buffered answers and returns, without waiting
+// for the wire.
+//
+// It used to wait, and that was the connection's backpressure; it was also a
+// head-of-line block: one stream waiting for its window held every later
+// batch behind it for up to WriteTimeout, the streams with credit to spare
+// included. What bounds a connection now is what bounds HTTP/3: one
+// unfinished answer per stream the reader admitted,
+// [Config.MaxConcurrentStreams] of them at most, since a stream counts
+// against that bound until its answer has left the writer's hands (see
+// answered). The memory is the same order: MaxConcurrentStreams answers,
+// against one batch of up to as many.
 //
 // It returns an error only when the write side itself failed, which ends the
-// connection. A per-stream outcome is left on the job, where the caller reads
-// it and decides — that is the whole difference between one bad stream and a
-// dead connection.
-func (w *h2Writer) deliver(jobs []*h2Job) error {
+// connection; every job of b is then settled with it. A per-stream outcome
+// is left on the job, where [h2Writer.await] reads it — that is the whole
+// difference between one bad stream and a dead connection.
+func (w *h2Writer) deliver(b *h2Sent) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	b.left = len(b.jobs)
+	if b.left == 0 {
+		w.free = append(w.free, b)
+		return w.err
+	}
+	for i := range b.jobs {
+		b.jobs[i].batch = b
+	}
 	if w.err != nil {
+		for i := range b.jobs {
+			w.settle(&b.jobs[i], w.err)
+		}
 		return w.err
 	}
 	deadline := time.Now().Add(w.cfg.WriteTimeout)
-	for _, j := range jobs {
+	for i := range b.jobs {
+		j := &b.jobs[i]
 		if _, alive := w.windows[j.id]; !alive || w.stopping {
-			j.err, j.done = errStreamGone, true
+			w.settle(j, errStreamGone)
 			continue
 		}
 		j.deadline = deadline
@@ -441,21 +515,63 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 		w.jobs = append(w.jobs, j)
 	}
 	w.cond.Broadcast()
-	for {
+	return nil
+}
+
+// await returns once j has left the writer's hands, with what became of it:
+// nil when it was written whole.
+func (w *h2Writer) await(j *h2Job) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for !j.done {
 		if w.err != nil {
 			return w.err
 		}
-		pending := false
-		for _, j := range jobs {
-			if !j.done {
-				pending = true
-				break
-			}
-		}
-		if !pending {
-			return nil
-		}
 		w.cond.Wait()
+	}
+	return j.err
+}
+
+// sent hands the responder a batch to frame its answers into: one the writer
+// has finished with, emptied, or a new one.
+func (w *h2Writer) sent() *h2Sent {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(w.free)
+	if n == 0 {
+		return &h2Sent{}
+	}
+	b := w.free[n-1]
+	w.free = w.free[:n-1]
+	b.out, b.jobs = b.out[:0], b.jobs[:0]
+	return b
+}
+
+// settle takes j out of the writer's hands with err as its outcome, nil for
+// written whole, once. A buffered answer that closes its stream tells
+// answered, and the last job of a batch hands the batch back. Called with
+// the lock held.
+func (w *h2Writer) settle(j *h2Job, err error) {
+	if j.done {
+		return
+	}
+	// err is written only when there is one: a job starts with none, and a
+	// streamed body's producer reads cur.err without the lock between two
+	// extends, which a nil written here would race with.
+	if err != nil {
+		j.err = err
+	}
+	j.done, j.queued = true, false
+	b := j.batch
+	if b == nil {
+		return
+	}
+	if j.closes && w.answered != nil {
+		w.answered()
+	}
+	b.left--
+	if b.left == 0 {
+		w.free = append(w.free, b)
 	}
 }
 
@@ -472,12 +588,12 @@ func (w *h2Writer) deliver(jobs []*h2Job) error {
 // is always done by the time it is needed, and its buffer can be reused.
 //
 // The only wait is for room: a queued job holding one round's budget or more
-// of unframed bytes ([H2Config.MaxWriteBufferBytes]) is a peer that reads
+// of unframed bytes ([Config.MaxWriteBufferBytes]) is a peer that reads
 // slower than the producer yields, and the producer then runs at the window's
 // pace, bounded by the same deadline every stalled job has. This is the whole
-// difference between a batch on HTTP/2 and on HTTP/3 before it: deliver
-// returned once the bytes were on the wire, so three batches of eight bytes
-// cost three writes, six goroutine hand-offs and three TCP segments the
+// difference between a batch on HTTP/2 and on HTTP/3 before it: the streamed
+// path returned once the bytes were on the wire, so three batches of eight
+// bytes cost three writes, six goroutine hand-offs and three TCP segments the
 // client woke on one at a time — about 70 µs each against a loopback —
 // where quic-go's Stream.Write copies, returns, and lets the send loop pack
 // what has accumulated into one packet.
@@ -531,30 +647,31 @@ func (w *h2Writer) claim(id uint32, cur, spare *h2Job) (*h2Job, error) {
 	data := j.data[:0]
 	*j = h2Job{id: id, headSent: true, data: data, deadline: time.Now().Add(w.cfg.WriteTimeout)}
 	if _, alive := w.windows[id]; !alive || w.stopping {
-		j.err, j.done = errStreamGone, true
+		w.settle(j, errStreamGone)
 		return j, nil
 	}
 	j.queued = true
 	return j, nil
 }
 
-// finish ends a streamed body: END_STREAM rides on the last DATA frame of the
-// job still queued when there is one, and on an empty DATA frame of its own
-// otherwise. It returns once the stream's last job has been written — or
-// dropped, which is not this connection's failure.
-func (w *h2Writer) finish(id uint32, cur, spare *h2Job) error {
+// finish ends a streamed body: END_STREAM rides on tail, the framed trailer
+// section, when there is one, else on the last DATA frame of the job still
+// queued when there is one, and on an empty DATA frame of its own otherwise.
+// It returns once the stream's last job has been written — or dropped, which
+// is not this connection's failure — so tail is free to reuse then.
+func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	j := cur
 	if j != nil && j.queued {
-		j.end, j.closes = true, true
+		j.end, j.closes, j.tail = true, true, tail
 		w.cond.Broadcast()
 	} else {
 		var err error
 		if j, err = w.claim(id, cur, spare); err != nil || j.err != nil {
 			return err
 		}
-		j.end, j.closes = true, true
+		j.end, j.closes, j.tail = true, true, tail
 		w.jobs = append(w.jobs, j)
 		w.cond.Broadcast()
 	}
@@ -569,10 +686,12 @@ func (w *h2Writer) finish(id uint32, cur, spare *h2Job) error {
 
 // control queues a control frame, blocking while the queue is at its bound.
 //
-// Blocking is the design: the read goroutine is the only caller, and a peer
-// that sends PING faster than this end can answer must be made to wait on TCP
-// rather than have its frames buffered without limit. It is the S1 bound the
-// project asks for, put where the pressure is.
+// Blocking is the design: the read goroutine is the caller — the shutdown's
+// first GOAWAY, queued from the drain's own goroutine, is the one exception
+// and queues two frames once — and a peer that sends PING faster than this
+// end can answer must be made to wait on TCP rather than have its frames
+// buffered without limit. It is the S1 bound the project asks for, put where
+// the pressure is.
 func (w *h2Writer) control(f h2Frame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -615,17 +734,14 @@ func (w *h2Writer) ackSettings(table uint32, haveTable bool) error {
 	return nil
 }
 
-// prefixTableUpdate reframes j's head with the dynamic table size updates
-// the peer is owed at the front of its block. It runs once per change of the
-// setting, so it allocates rather than disturb the borrowed head in place.
-func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
-	block := make([]byte, 0, len(j.head)+10)
-	if w.tableMin < w.tableFinal {
-		block = appendHPACKInt(block, uint64(w.tableMin), 5, 0x20)
-	}
-	block = appendHPACKInt(block, uint64(w.tableFinal), 5, 0x20)
+// prefixTableUpdate reframes head, a framed header block on stream id —
+// a job's head or its tail — with the dynamic table size updates the peer
+// is owed at the front of its block. It runs once per change of the
+// setting, so it allocates rather than disturb the borrowed block in place.
+func (w *h2Writer) prefixTableUpdate(id uint32, head []byte) ([]byte, error) {
+	block := w.appendTableUpdate(make([]byte, 0, len(head)+10))
 	var flags byte
-	for rest := j.head; len(rest) >= frameHeaderSize; {
+	for rest := head; len(rest) >= frameHeaderSize; {
 		n := int(rest[0])<<16 | int(rest[1])<<8 | int(rest[2])
 		if rest[3] == frameHeaders {
 			flags = rest[4] &^ flagEndHeaders
@@ -635,7 +751,55 @@ func (w *h2Writer) prefixTableUpdate(j *h2Job) ([]byte, error) {
 		block = append(block, rest[frameHeaderSize:frameHeaderSize+n]...)
 		rest = rest[frameHeaderSize+n:]
 	}
-	return appendHeaderFrames(nil, j.id, flags, block, w.maxFrame)
+	return appendHeaderFrames(nil, id, flags, block, w.maxFrame)
+}
+
+// appendTableUpdate writes the dynamic table size updates the peer is owed:
+// the minimum the setting passed through, when it went below where it ended,
+// then where it ended (RFC 7541 §4.2). The caller clears tableUpdate.
+func (w *h2Writer) appendTableUpdate(block []byte) []byte {
+	if w.tableMin < w.tableFinal {
+		block = appendHPACKInt(block, uint64(w.tableMin), 5, 0x20)
+	}
+	return appendHPACKInt(block, uint64(w.tableFinal), 5, 0x20)
+}
+
+// refuse answers a stream the reader refused with a bare status head —
+// :status and date, END_STREAM on it — then RST_STREAM NO_ERROR, both in
+// one critical section so that no other head lands between them.
+//
+// The request never reached the responder, so this is the one head that is
+// built outside appendHead; it stays correct for the same reasons that one
+// is. Nothing in it is indexed, so the encoder's table — always empty — is
+// untouched, and a size update the peer is owed goes out in front of this
+// block as it would in front of any other: nghttp2 answers its absence with
+// COMPRESSION_ERROR whatever block it is missing from.
+func (w *h2Writer) refuse(id uint32, status int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
+		w.cond.Wait()
+	}
+	if w.err != nil {
+		return w.err
+	}
+	var buf [64]byte // a size update, :status and date fit without the heap
+	block := buf[:0]
+	if w.tableUpdate {
+		block = w.appendTableUpdate(block)
+		w.tableUpdate = false
+	}
+	block = appendHPACKStatus(block, status)
+	block = appendHPACK(block, "date", dateFor(time.Now()))
+	err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: id, Payload: block})
+	if err != nil {
+		return err
+	}
+	if err := w.appendCtrl32(frameRSTStream, id, errNoError); err != nil {
+		return err
+	}
+	w.cond.Broadcast()
+	return nil
 }
 
 // control32 and appendCtrl32 queue a control frame whose payload is one
@@ -686,7 +850,7 @@ func (w *h2Writer) forget(id uint32) {
 			kept = append(kept, j)
 			continue
 		}
-		j.err, j.done, j.queued = errStreamGone, true, false
+		w.settle(j, errStreamGone)
 	}
 	w.jobs = kept
 	w.turn = 0
@@ -756,7 +920,7 @@ func (w *h2Writer) setInitialWindow(v int32) error {
 }
 
 // setMaxFrame applies the peer's SETTINGS_MAX_FRAME_SIZE, capped at this
-// end's own [H2Config.MaxFrameSize].
+// end's own [Config.MaxFrameSize].
 //
 // The peer's value is a ceiling it will accept, not a size this end must
 // use (RFC 9113 §4.2). Taken as is, a peer advertising 16 MiB made one DATA
@@ -799,13 +963,10 @@ func (w *h2Writer) setErr(err error) {
 		_ = w.conn.Close()
 	}
 	for _, j := range w.jobs {
-		if !j.done {
-			j.err, j.done = w.err, true
-		}
-		j.queued = false
+		w.settle(j, w.err)
 	}
 	for _, j := range w.inflight {
-		j.err, j.done = w.err, true
+		w.settle(j, w.err)
 	}
 	w.jobs, w.inflight = nil, nil
 }

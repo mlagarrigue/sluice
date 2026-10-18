@@ -73,7 +73,7 @@ func TestListenerServesTwoConnectionsOnOneSocket(t *testing.T) {
 	for i := range n {
 		wg.Go(func() {
 			c := dialUDP(t, addr, quic.DefaultParameters())
-			s, err := c.OpenStream()
+			s, err := c.OpenStream(t.Context())
 			if err != nil {
 				t.Errorf("client %d OpenStream: %v", i, err)
 				return
@@ -113,7 +113,7 @@ func TestListenerServesTwoConnectionsOnOneSocket(t *testing.T) {
 
 func echoOneStream(t *testing.T, c *quic.Conn) {
 	t.Helper()
-	s, err := c.AcceptStream()
+	s, err := c.AcceptStream(t.Context())
 	if err != nil {
 		return
 	}
@@ -178,9 +178,10 @@ func TestListenerDropsUnroutableDatagramsWithoutWedgingOthers(t *testing.T) {
 // plausible-looking short header for the noise test above.
 const listenerCIDLenForTest = 8
 
-// Listener.Close ends a connection still mid-handshake and unblocks a
-// parked Accept — but must not touch a connection already handed out.
-func TestListenerCloseEndsOnlyPendingConnections(t *testing.T) {
+// Listener.Close unblocks a parked Accept, and ends a connection already
+// handed out — on both ends, since the connection has no socket of its own
+// to outlive the listener on.
+func TestListenerCloseUnblocksAcceptAndEndsAcceptedConnections(t *testing.T) {
 	l, addr := newUDPListener(t, quic.ListenerConfig{})
 
 	accepted := make(chan *quic.Conn, 1)
@@ -206,11 +207,10 @@ func TestListenerCloseEndsOnlyPendingConnections(t *testing.T) {
 	}
 
 	// Prove the handed-out connection genuinely works — echo data over a
-	// stream — before Close. Afterwards no data can flow at all: the socket
-	// is the listener's, and Close closes it. So "untouched" below can only
-	// mean "not torn down", and this echo is what makes that worth saying.
+	// stream — before Close: what ends below is a live connection, not one
+	// that was already failing.
 	go echoOneStream(t, live)
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
@@ -248,16 +248,19 @@ func TestListenerCloseEndsOnlyPendingConnections(t *testing.T) {
 		t.Fatal("Close did not unblock a pending Accept")
 	}
 
-	// The connection that just echoed was not torn down by Close. Its
-	// transport is gone with the listener's socket, so carrying more data is
-	// impossible by construction; what Close must not have done is end the
-	// connection's own state, and Done() firing is how that would show.
-	select {
-	case <-live.Done():
-		t.Error("the already-accepted connection was closed by Listener.Close")
-	default:
+	// The connection that just echoed is ended by Close on both ends: its
+	// transport is gone with the listener's socket, so left alone it would
+	// only have waited out its idle timeout, and so would its peer.
+	for _, end := range []struct {
+		name string
+		conn *quic.Conn
+	}{{"server", live}, {"client", c}} {
+		select {
+		case <-end.conn.Done():
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("the %s end of the accepted connection survived Listener.Close", end.name)
+		}
 	}
-	_ = c.Close()
 }
 
 // AlwaysRetry round-trips a real token through a real second Initial and
@@ -277,7 +280,7 @@ func TestListenerAlwaysRetryStillCompletesTheHandshake(t *testing.T) {
 	}()
 
 	c := dialUDP(t, addr, quic.DefaultParameters())
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +348,7 @@ func TestListenerHandshakeSurvivesAnAmplificationLimitedFirstFlight(t *testing.T
 	}()
 
 	c := dialUDP(t, pc.LocalAddr(), quic.DefaultParameters())
-	s, err := c.OpenStream()
+	s, err := c.OpenStream(t.Context())
 	if err != nil {
 		t.Fatalf("OpenStream: %v", err)
 	}
@@ -428,7 +431,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +452,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	back, err := server.OpenStream()
+	back, err := server.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -111,8 +111,8 @@ func FuzzH3Assembler(f *testing.F) {
 	f.Add([]byte{0, 0, 0})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		cfg := Config{MaxBodyBytes: 4096, MaxHeaderBytes: 4096, MaxConcurrentStreams: 16}.withDefaults()
-		a := newH3Assembler(cfg)
+		cfg := Config{MaxBodyBytes: 4096, MaxHeaderBytes: 4096, MaxConcurrentStreams: 16}.mustResolve()
+		a := testAssembler(cfg)
 		var released, delivered, handedOff uint64
 		balanced := true
 		a.Credit = func(_, n uint64) { released += n }
@@ -123,7 +123,8 @@ func FuzzH3Assembler(f *testing.F) {
 				delivered += uint64(len(f.Data))
 			}
 			batch, ids, failed, err := a.Frames(frames)
-			for _, r := range batch.Items {
+			for i := range batch.Items {
+				r := &batch.Items[i]
 				handedOff += uint64(len(r.Body))
 			}
 			// A connection error abandons the rest of its batch unread, so

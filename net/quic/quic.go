@@ -33,27 +33,38 @@
 //
 //   - A [Conn]: TLS 1.3 handshake via [crypto/tls.QUICConn], packet
 //     protection per RFC 9001, streams with interval reassembly, per-stream
-//     failure via [Stream.Reset] and [Stream.StopSending].
+//     failure via [Stream.Reset] and [Stream.StopSending], and read and
+//     write deadlines ([Stream.SetReadDeadline], [Stream.SetWriteDeadline])
+//     with the [net.Conn] contract: [os.ErrDeadlineExceeded]. What the
+//     handshake settled is readable — [Conn.ConnectionState] for the
+//     negotiated protocol, server name and peer certificates — and so are
+//     the two addresses, [Conn.LocalAddr] and [Conn.RemoteAddr], the
+//     latter following the peer across a migration.
 //   - Recovery per RFC 9002: ACK generation with delayed acknowledgements,
 //     packet- and time-threshold loss detection, probe timeouts,
 //     retransmission, NewReno with slow start and recovery periods.
 //   - Flow control per RFC 9000 §4, both levels and both directions:
 //     senders wait for credit, receivers grant it as data is consumed, and
 //     a peer that overruns its grant loses the connection.
-//   - Lifecycle: CONNECTION_CLOSE both ways, HANDSHAKE_DONE, the negotiated
-//     idle timeout, transport-parameter validation with the §7.3
+//   - Lifecycle: CONNECTION_CLOSE both ways — at once with [Conn.Close],
+//     or once everything sent is acknowledged with [Conn.Shutdown] —
+//     HANDSHAKE_DONE, the negotiated idle timeout and the
+//     [Conn.SetKeepAlive] PING that holds a connection under it; why a
+//     connection ended is one typed value from [Conn.Err] ([ErrIdleTimeout],
+//     [ErrStatelessReset], [ErrVersionNegotiation], [ConnectionError]),
+//     transport-parameter validation with the §7.3
 //     identifier-binding checks, version-negotiation and Retry handling on
 //     the client (the Retry integrity tag is verified per RFC 9001 §5.8).
 //   - A server [Listener]: one shared [net.PacketConn] demultiplexed to
 //     many connections by connection identifier, the §8.1 anti-amplification
 //     limit on every address until it validates, and server-generated Retry
 //     ([ListenerConfig.AlwaysRetry]) for the deployments that want the
-//     address proved before a connection exists at all. On Linux a
-//     Listener on a UDP socket bound to 0.0.0.0 or [::] answers each
-//     datagram from the address it reached (IP_PKTINFO /
-//     IPV6_RECVPKTINFO), so a multi-homed server does not look like a
-//     path change to its clients. [Accept] remains for the
-//     one-connection-per-socket case.
+//     address proved before a connection exists at all. On Linux,
+//     macOS and Windows a Listener on a UDP socket bound to 0.0.0.0 or [::]
+//     answers each datagram from the address it reached (IP_PKTINFO /
+//     IPV6_PKTINFO), so a multi-homed server does not look like a
+//     path change to its clients. [Listener.Addr] reports where it
+//     listens. [Accept] remains for the one-connection-per-socket case.
 //   - Connection-identifier rotation and server-side passive migration
 //     (RFC 9000 §5.1, §9): every connection issues additional identifiers
 //     once its handshake confirms — a client's are what let a server
@@ -85,6 +96,19 @@
 //     flight it provokes leave together, Initial and Handshake packets in
 //     one datagram, with §14.1's padding carried by the packet that closes
 //     it rather than by the Initial alone.
+//   - Datagram size (§14): datagrams start at the 1200 bytes §14.1
+//     guarantees on any path and rise by DPLPMTUD (§14.3, RFC 8899):
+//     PING+PADDING probes, 1452 bytes first — an Ethernet MTU less IPv6
+//     and UDP headers — then a search between the size confirmed and the
+//     smallest lost, to 20 bytes, up to
+//     [TransportParameters.MaxDatagramSize] and the peer's
+//     [TransportParameters.MaxUDPPayloadSize]; after the handshake and
+//     after each migration. A path that shrinks under the connection (a
+//     black hole: three probe timeouts, or full-size packets lost while
+//     smaller ones get through) brings the size back to 1200 and the
+//     search runs again. No ICMP (§14.2.1 does not require it); a lost
+//     probe is not a congestion event (§14.4). [Stats.DatagramSize] is the
+//     size reached. See docs/guide/limits.md.
 //   - Stateless resets (§10.3): a connection recognises a reset by the
 //     tokens its peer announced — NEW_CONNECTION_ID's, and the handshake's
 //     stateless_reset_token — and dies immediately rather than by idle
@@ -100,13 +124,20 @@
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)
 //     rather than closing — a long-lived connection no longer dies of its
 //     packet count. [Stats.KeyUpdates] counts the rotations.
+//   - ECN (§13.4), on Linux: the field is read off every datagram and
+//     reported in ACK frames, this end marks its own packets ECT(0) once
+//     the path validates, and a rise in the CE count a peer reports is a
+//     congestion event for the controller. Elsewhere the field is neither
+//     read nor set, and [Stats] shows zero.
 //
 // # What is not here
 //
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT, ECN and session resumption.
+//   - 0-RTT. A server issues no session ticket; a client given a
+//     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
+//     still in one round trip and with nothing sent in 0-RTT.
 //
 // # The socket is the caller's
 //

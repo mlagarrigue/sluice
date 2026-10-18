@@ -113,7 +113,7 @@ func TestDialContextCancelAfterReturnKeepsTheConnection(t *testing.T) {
 	defer c.Close()
 	cancel()
 
-	if _, err := c.OpenStream(); err != nil {
+	if _, err := c.OpenStream(t.Context()); err != nil {
 		t.Fatalf("OpenStream after cancel: %v", err)
 	}
 	if isClosed(c) {

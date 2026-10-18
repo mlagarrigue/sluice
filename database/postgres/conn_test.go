@@ -1,15 +1,17 @@
 package postgres
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -33,7 +35,21 @@ type fakeServer struct {
 	// wrong for free: see errNotAsked.
 	scanned  int
 	triggers int
+
+	// mu guards everything above, because a client may send and read on two
+	// goroutines at once — Tx.Pipeline does — exactly as it may on a socket.
+	// asked is closed and replaced by every Write, so a Read that found
+	// nothing to deliver can wait for the client to ask instead of
+	// complaining at once; see Read.
+	mu    sync.Mutex
+	asked chan struct{}
 }
+
+// askWait bounds how long a Read waits for the client to send something a
+// backend answers. A client that sends on another goroutine asks within
+// microseconds; a script that reads before asking is a bug, reported as
+// errNotAsked once this has elapsed rather than as a hang.
+const askWait = time.Second
 
 // errNotAsked reports a script read from before the client asked to be
 // answered.
@@ -50,21 +66,40 @@ type fakeServer struct {
 var errNotAsked = errors.New("fakeServer: read before the client sent anything that makes a backend deliver (Sync, Flush, Query, CopyDone or CopyFail)")
 
 func (s *fakeServer) Read(p []byte) (int, error) {
-	if s.readBuf.Len() == 0 {
+	deadline := time.Now().Add(askWait)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.readBuf.Len() == 0 {
 		if s.pos >= len(s.responses) {
 			return 0, io.EOF
 		}
 		s.scanClient()
-		if s.triggers == 0 {
+		if s.triggers > 0 {
+			// Decremented, not cleared: a client may send several
+			// deliverable messages before reading any of them — which is
+			// what pipelining is — and each one is owed its own answer.
+			// Clearing the count made the second read of such a batch look
+			// like a read nobody had asked for.
+			s.triggers--
+			s.readBuf.Write(s.responses[s.pos])
+			s.pos++
+			break
+		}
+		// Nothing to deliver yet. A real backend would block here until the
+		// client's Sync arrives, which it may be sending on another
+		// goroutine right now; wait for the next Write, bounded.
+		if s.asked == nil {
+			s.asked = make(chan struct{})
+		}
+		asked := s.asked
+		s.mu.Unlock()
+		select {
+		case <-asked:
+		case <-time.After(time.Until(deadline)):
+			s.mu.Lock()
 			return 0, errNotAsked
 		}
-		// Decremented, not cleared: a client may send several deliverable
-		// messages before reading any of them — which is what pipelining is —
-		// and each one is owed its own answer. Clearing the count made the
-		// second read of such a batch look like a read nobody had asked for.
-		s.triggers--
-		s.readBuf.Write(s.responses[s.pos])
-		s.pos++
+		s.mu.Lock()
 	}
 	return s.readBuf.Read(p)
 }
@@ -107,14 +142,26 @@ func (s *fakeServer) scanClient() {
 }
 
 func (s *fakeServer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.writeErr != nil {
 		return 0, s.writeErr
 	}
 	s.writes++
-	return s.sent.Write(p)
+	n, err := s.sent.Write(p)
+	if s.asked != nil {
+		close(s.asked)
+		s.asked = nil
+	}
+	return n, err
 }
 
-func (s *fakeServer) Close() error { s.closed = true; return nil }
+func (s *fakeServer) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return nil
+}
 
 // clientMessages parses back everything the client wrote, as type bytes.
 func (s *fakeServer) clientMessages(t *testing.T) []byte {
@@ -599,6 +646,129 @@ func TestConnCloseSkipsTerminateWhenBroken(t *testing.T) {
 	}
 }
 
+// A batch is bounded in bytes as in rows: twenty rows of a megabyte under
+// BatchBytes of eight megabytes arrive as 8, 8 and 4, nothing fails, and the
+// connection serves the next query. Before the bound, the twenty rows were
+// one batch of twenty megabytes — and a hostile server could make it two
+// gigabytes with rows individually legal.
+func TestBatchBytesCutsABatchEarly(t *testing.T) {
+	const rows, rowBytes = 20, 1 << 20
+	value := bytes.Repeat([]byte("x"), rowBytes)
+	var script []byte
+	script = append(script, beSimple(pgwire.BackendParseComplete)...)
+	script = append(script, beSimple(pgwire.BackendBindComplete)...)
+	script = append(script, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	for range rows {
+		script = append(script, beDataRow(value)...)
+	}
+	script = append(script, beCommandComplete("SELECT 20")...)
+	script = append(script, beReadyForQuery()...)
+
+	var next []byte
+	next = append(next, beSimple(pgwire.BackendParseComplete)...)
+	next = append(next, beSimple(pgwire.BackendBindComplete)...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beDataRow(int8Val(1))...)
+	next = append(next, beCommandComplete("SELECT 1")...)
+	next = append(next, beReadyForQuery()...)
+
+	srv := &fakeServer{responses: [][]byte{script, next}}
+	conn := NewConn(srv)
+	logs := &recordHandler{}
+	conn.logger = slog.New(logs)
+
+	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchBytes: 8 * rowBytes, Fetch: FetchAll})
+	var sizes []int
+	src.Stream()(func(b sluice.Batch[Row]) bool {
+		sizes = append(sizes, b.Len())
+		for _, r := range b.Items {
+			if v, _ := r.Value(0); len(v) != rowBytes {
+				t.Errorf("a row of %d bytes, want %d", len(v), rowBytes)
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if want := []int{8, 8, 4}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v rows, want %v", sizes, want)
+	}
+	// Two batches were cut, one warning says so: the first cut's shape, and
+	// nothing of the values themselves.
+	attrs := logs.warning(t, string(value[:16]))
+	for key, want := range map[string]int64{"rows": 8, "bytes": 8 * rowBytes, "largest_row_bytes": rowBytes, "batch_bytes": 8 * rowBytes} {
+		if got := attrs[key]; got.Kind() != slog.KindInt64 || got.Int64() != want {
+			t.Errorf("the warning's %s = %v, want %d", key, got, want)
+		}
+	}
+
+	seen := 0
+	src = conn.Query(t.Context(), "SELECT id", nil, QueryConfig{Fetch: FetchAll})
+	src.Stream()(func(b sluice.Batch[Row]) bool { seen += b.Len(); return true })
+	if err := src.Err(); err != nil {
+		t.Fatalf("the next query: %v", err)
+	}
+	if seen != 1 {
+		t.Errorf("the next query returned %d rows, want 1", seen)
+	}
+}
+
+// The byte bound cuts the batched fetch too, mid-Execute: the server was asked
+// for a hundred rows and sends five of a kilobyte, which a bound of two
+// kilobytes delivers as 2, 2 and 1.
+func TestBatchBytesCutsTheBatchedFetch(t *testing.T) {
+	const rowBytes = 1 << 10
+	value := bytes.Repeat([]byte("x"), rowBytes)
+	var head []byte
+	head = append(head, beSimple(pgwire.BackendParseComplete)...)
+	head = append(head, beSimple(pgwire.BackendBindComplete)...)
+	head = append(head, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	for range 5 {
+		head = append(head, beDataRow(value)...)
+	}
+	head = append(head, beCommandComplete("SELECT 5")...)
+
+	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
+	conn := NewConn(srv)
+	conn.logger = slog.New(&recordHandler{})
+	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchRows: 100, BatchBytes: 2 * rowBytes, Fetch: FetchBatches})
+	var sizes []int
+	src.Stream()(func(b sluice.Batch[Row]) bool { sizes = append(sizes, b.Len()); return true })
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if want := []int{2, 2, 1}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v rows, want %v", sizes, want)
+	}
+}
+
+// In the batched fetch the server is told how many rows to send, so a row past
+// them is a server that did not listen: the query fails with ErrTooManyRows
+// rather than opening a batch the Execute never asked for.
+func TestBatchedFetchRefusesARowPastTheExecute(t *testing.T) {
+	var head []byte
+	head = append(head, beSimple(pgwire.BackendParseComplete)...)
+	head = append(head, beSimple(pgwire.BackendBindComplete)...)
+	head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	for i := range 3 {
+		head = append(head, beDataRow(int8Val(int64(i)))...)
+	}
+	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
+
+	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
+	conn := NewConn(srv)
+	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, Fetch: FetchBatches})
+	delivered := 0
+	src.Stream()(func(b sluice.Batch[Row]) bool { delivered += b.Len(); return true })
+	if err := src.Err(); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("Err = %v, want ErrTooManyRows", err)
+	}
+	if delivered != 0 {
+		t.Errorf("%d rows delivered from an answer the server got wrong", delivered)
+	}
+}
+
 // FetchAll sends the Sync with the query instead of a Flush, so the answer and
 // the ReadyForQuery arrive together. One round trip instead of two.
 func TestFetchAllSendsSyncInsteadOfFlush(t *testing.T) {
@@ -804,28 +974,79 @@ func TestWithoutFetchAllTheFlushRemains(t *testing.T) {
 	}
 }
 
-// A socket read is a system call whatever its size, and the protocol's
-// messages are small and numerous — so a connection over one must buffer.
-// Profiling a wide scan put 79% of its time in those calls.
-func TestConnBuffersASocketAndNothingElse(t *testing.T) {
-	t.Run("a net.Conn is buffered", func(t *testing.T) {
-		client, server := net.Pipe()
-		defer func() { _ = client.Close(); _ = server.Close() }()
+// countingTransport is a transport that is not a net.Conn — the shape of an
+// ssh.Channel or a caller's own wrapper — and counts the reads asked of it.
+//
+// chunk, when set, is the most one read hands back, as a socket hands back
+// what has arrived; smallest is the least room a read was offered.
+type countingTransport struct {
+	script   []byte
+	chunk    int
+	reads    int
+	smallest int
+}
 
-		conn := NewConn(client)
-		if _, ok := conn.r.Underlying().(*bufio.Reader); !ok {
-			t.Errorf("reads from a net.Conn go through %T, want a *bufio.Reader — "+
-				"every protocol message would cost two syscalls", conn.r.Underlying())
-		}
-	})
+func (c *countingTransport) Read(p []byte) (int, error) {
+	if len(c.script) == 0 {
+		return 0, io.EOF
+	}
+	c.reads++
+	if c.reads == 1 || len(p) < c.smallest {
+		c.smallest = len(p)
+	}
+	if c.chunk > 0 && len(p) > c.chunk {
+		p = p[:c.chunk]
+	}
+	n := copy(p, c.script)
+	c.script = c.script[n:]
+	return n, nil
+}
 
-	t.Run("an in-memory transport is not", func(t *testing.T) {
-		conn := NewConn(&fakeServer{})
-		if _, ok := conn.r.Underlying().(*bufio.Reader); ok {
-			t.Error("an in-memory transport was buffered; that is a pure copy, " +
-				"and it measured +5% on the replay benchmark")
+func (c *countingTransport) Write(p []byte) (int, error) { return len(p), nil }
+func (c *countingTransport) Close() error                { return nil }
+
+// A read from a transport can cost a system call whatever its size, and the
+// protocol's messages are small and numerous: unbuffered, each costs two, one
+// for the header and one for the body. Profiling a wide scan put 79% of its
+// time in those calls. A transport that is not a net.Conn often has a socket
+// under it all the same, so it is buffered too: one read per ReadBufferSize
+// of the stream, whatever the messages in it.
+func TestConnReadsATransportOncePerBuffer(t *testing.T) {
+	row := frame(pgwire.BackendDataRow, "\x00\x01\x00\x00\x00\x08abcdefgh")
+	messages := 3*ReadBufferSize/len(row) + 1
+	script := bytes.Repeat(row, messages)
+	tr := &countingTransport{script: script}
+
+	conn := NewConn(tr)
+	for i := range messages {
+		m, err := conn.r.Next()
+		if err != nil {
+			t.Fatalf("message %d: %v", i, err)
 		}
-	})
+		if m.Type != pgwire.BackendDataRow {
+			t.Fatalf("message %d: type = %q", i, m.Type)
+		}
+	}
+	if limit := (len(script) + ReadBufferSize - 1) / ReadBufferSize; tr.reads > limit {
+		t.Errorf("%d messages, %d bytes: %d reads from the transport, want at most %d — "+
+			"one per %d bytes", messages, len(script), tr.reads, limit, ReadBufferSize)
+	}
+
+	// A socket hands back what has arrived, which ends anywhere in a message.
+	// Each read must still be offered the whole window but the unread tail:
+	// a read into the last few bytes of it is a system call for a few bytes,
+	// and the wide scan measured +16% when the tail stayed put.
+	tr = &countingTransport{script: script, chunk: 1000}
+	conn = NewConn(tr)
+	for i := range messages {
+		if _, err := conn.r.Next(); err != nil {
+			t.Fatalf("short reads, message %d: %v", i, err)
+		}
+	}
+	if least := ReadBufferSize - len(row); tr.smallest < least {
+		t.Errorf("a read was offered %d bytes of room, want at least %d — "+
+			"the window minus one message", tr.smallest, least)
+	}
 }
 
 // The buffer must not change what is read, only how often the kernel is asked.
@@ -1328,5 +1549,60 @@ func TestSQLWithNULIsRefusedBeforeSending(t *testing.T) {
 	}
 	if conn.Err() != nil {
 		t.Errorf("connection broken by a refused statement: %v", conn.Err())
+	}
+}
+
+// A SET client_encoding mid-session is announced by a ParameterStatus before
+// the statement's ReadyForQuery. Unasked for, it would have every text decoder
+// read the new encoding's bytes as UTF-8 without an error, so the connection
+// ends at the announcement; a caller who chose the encoding at startup keeps
+// theirs.
+func TestAnEncodingChangeNobodyAskedForBreaksTheConnection(t *testing.T) {
+	setLatin1 := func() []byte {
+		var b []byte
+		b = append(b, beSimple(pgwire.BackendParseComplete)...)
+		b = append(b, beSimple(pgwire.BackendBindComplete)...)
+		b = append(b, beSimple(pgwire.BackendNoData)...)
+		b = append(b, beCommandComplete("SET")...)
+		b = append(b, beParameterStatus("client_encoding", "LATIN1")...)
+		return append(b, beReadyForQuery()...)
+	}
+	start := func(params map[string]string) *Conn {
+		t.Helper()
+		var b []byte
+		b = append(b, beAuth(authOK, "")...)
+		b = append(b, beParameterStatus("client_encoding", "UTF8")...)
+		b = append(b, beReadyForQuery()...)
+		srv := &fakeServer{responses: [][]byte{b, setLatin1(), setLatin1()}}
+		conn, err := startup(srv, Config{User: "orders", Params: params})
+		if err != nil {
+			t.Fatalf("Startup: %v", err)
+		}
+		return conn
+	}
+	set := func(conn *Conn) error {
+		src := conn.Query(t.Context(), "SET client_encoding = 'LATIN1'", nil, QueryConfig{})
+		src.Stream()(func(sluice.Batch[Row]) bool { return true })
+		return src.Err()
+	}
+
+	conn := start(nil)
+	err := set(conn)
+	if !errors.Is(err, ErrConnBroken) || !strings.Contains(err.Error(), "LATIN1") {
+		t.Errorf("SET client_encoding to LATIN1 = %v, want ErrConnBroken naming the encoding", err)
+	}
+	if !errors.Is(conn.Err(), ErrConnBroken) {
+		t.Errorf("conn.Err() = %v after the encoding changed, want ErrConnBroken", conn.Err())
+	}
+
+	conn = start(map[string]string{"client_encoding": "UTF8"})
+	if err := set(conn); err != nil {
+		t.Errorf("SET client_encoding with the encoding chosen by the caller = %v, want it accepted", err)
+	}
+	if err := set(conn); err != nil {
+		t.Errorf("the next statement = %v, want the connection intact", err)
+	}
+	if got := conn.Parameter("client_encoding"); got != "LATIN1" {
+		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
 	}
 }

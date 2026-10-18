@@ -31,10 +31,21 @@ import (
 // reached, when a request says Connection: close, or when a deadline expires.
 // A parse failure ends it too and is reported by [sluice.Source.Err]; the
 // caller answers with a status and closes, since a stream whose framing is in
-// doubt cannot be resynchronised.
+// doubt cannot be resynchronised. A configuration [Config] refuses is
+// reported the same way, by a stream that yields nothing.
 func Requests(c net.Conn, cfg Config) sluice.Source[Request] {
-	cfg = cfg.withDefaults()
-	r := &reader{conn: c, cfg: cfg}
+	cfg, err := cfg.resolve()
+	if err != nil {
+		return sluice.NewSource(func(func(sluice.Batch[Request]) bool) {}, func() error { return err })
+	}
+	return newRequestReader(c, nil, cfg)
+}
+
+// newRequestReader is Requests with the shutdown's view of the connection attached,
+// which [Serve] has and a caller of Requests does not. cfg is resolved.
+func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Request] {
+	r := &reader{conn: c, cfg: cfg, state: st}
+	r.held, _ = c.(interface{ buffered() bool })
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })
 }
 
@@ -55,6 +66,15 @@ type reader struct {
 	n      int // bytes held in buf
 	served int
 	err    error
+
+	// state is where this connection stands for Serve's shutdown — idle
+	// between requests, busy once one has begun — and whether the shutdown
+	// has begun. Nil when no Serve is behind this reader.
+	state *connState
+	// held is the connection's own view of bytes already read and put back
+	// in front of it (a [prefixConn]): they are the start of a request even
+	// while buf is empty, so the connection is not idle.
+	held interface{ buffered() bool }
 
 	// deadline is the current request's absolute read deadline, held fixed
 	// once set rather than re-armed on every read. A sliding per-read
@@ -78,7 +98,7 @@ type reader struct {
 	// [postgres.Rows] applied to a different wire protocol.
 	batch   []Request
 	headers []Header
-	bounds  [][2]int // each request's span in headers
+	bounds  [][3]int // each request's span in headers: its headers, then its trailers
 
 	// pending is what the last batch consumed, compacted at the start of the
 	// next round rather than before that batch was yielded: its elements
@@ -193,9 +213,19 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			break
 		}
 		if perr != nil {
+			// A refused request costs itself, not the valid ones parsed
+			// ahead of it in this pass: those are returned and served, and
+			// the next pass re-parses the refused one from the front of the
+			// buffer with the batch empty — then the error is the
+			// connection's, and the caller answers it after the responses
+			// that came before (RFC 9112 §9.3). Returning the error now
+			// would throw away a batch the handler never saw.
+			if len(r.batch) > 0 {
+				break
+			}
 			return nil, 0, perr
 		}
-		r.bounds = append(r.bounds, [2]int{start, len(r.headers)})
+		r.bounds = append(r.bounds, [3]int{start, start + len(req.Headers), len(r.headers)})
 		r.batch = append(r.batch, req)
 		used += n
 		if !req.KeepAlive {
@@ -228,8 +258,13 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 	// The header views are taken now, not during the loop: appending to the
 	// arena may move its backing array, so a sub-slice handed out earlier
 	// would point at the array the next request outgrew.
-	for i := range r.batch {
-		r.batch[i].Headers = r.headers[r.bounds[i][0]:r.bounds[i][1]]
+	// Each view is capped at its own end, so a handler appending to one
+	// request's fields cannot write over the next ones in the arena.
+	for i, b := range r.bounds {
+		r.batch[i].Headers = r.headers[b[0]:b[1]:b[1]]
+		if b[2] > b[1] {
+			r.batch[i].Trailers = r.headers[b[1]:b[2]:b[2]]
+		}
 	}
 	return r.batch, used, nil
 }
@@ -255,7 +290,7 @@ func (r *reader) fill() error {
 	// and held there — see the field comment on deadline — so a request has
 	// exactly ReadTimeout to arrive in full, not ReadTimeout since whenever
 	// it last sent a byte.
-	idle := r.n == 0
+	idle := r.n == 0 && (r.held == nil || !r.held.buffered())
 	deadline := time.Now().Add(r.cfg.IdleTimeout)
 	if !idle {
 		if r.deadline.IsZero() {
@@ -263,13 +298,34 @@ func (r *reader) fill() error {
 		}
 		deadline = r.deadline
 	}
+	if r.state != nil {
+		if idle {
+			// Marked before the shutdown is looked at, so that a shutdown
+			// beginning between the two either sees the mark and closes
+			// this connection, or is seen here — see connSet.drain.
+			r.state.set(connIdle)
+			if r.state.drainingNow() {
+				return io.EOF // the shutdown reads no further request
+			}
+		} else {
+			r.state.set(connBusy)
+		}
+	}
 	if err := r.conn.SetReadDeadline(deadline); err != nil {
 		return err
 	}
 
 	n, err := r.conn.Read(r.buf[r.n:])
 	r.n += n
+	if r.state != nil && n > 0 {
+		r.state.set(connBusy)
+	}
 	if err != nil {
+		if idle && r.state != nil && r.state.drainingNow() {
+			// Closed under this read by the shutdown, between requests: a
+			// clean end, nothing was owed.
+			return io.EOF
+		}
 		if errors.Is(err, io.EOF) {
 			if r.n == 0 {
 				return io.EOF // a clean close between requests

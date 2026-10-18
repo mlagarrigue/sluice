@@ -753,9 +753,11 @@ func TestServeTLSNegotiatesHTTP2(t *testing.T) {
 }
 
 // A server that bounds no read leaves header reception unbounded — the
-// slowloris shape. Serve gives it a header deadline; a server that already
-// bounds its reads, or opted out with a negative value, is left as it was.
-func TestServeBoundsHeaderReadsByDefault(t *testing.T) {
+// slowloris shape — and a keep-alive connection that went quiet after its
+// response held forever. Serve gives it a header deadline and an idle
+// deadline; a server that already bounds its reads, or opted out with a
+// negative value, is left as it was.
+func TestServeBoundsHeaderReadsAndIdleConnectionsByDefault(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -763,24 +765,29 @@ func TestServeBoundsHeaderReadsByDefault(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	for _, tc := range []struct {
-		name               string
-		srv                *http.Server
-		wantHeader, wantRd time.Duration
+		name                         string
+		srv                          *http.Server
+		wantHeader, wantRd, wantIdle time.Duration
 	}{
-		{"unbounded", &http.Server{}, web.DefaultReadHeaderTimeout, 0}, //nolint:gosec // the unbounded server is what is under test
-		{"own header bound", &http.Server{ReadHeaderTimeout: time.Second}, time.Second, 0},
-		{"read bound only", &http.Server{ReadTimeout: 3 * time.Second}, 0, 3 * time.Second},
-		{"explicit opt-out", &http.Server{ReadHeaderTimeout: -1}, -1, 0},
+		{"unbounded", &http.Server{}, web.DefaultReadHeaderTimeout, 0, web.DefaultIdleTimeout}, //nolint:gosec // the unbounded server is what is under test
+		{"own header bound", &http.Server{ReadHeaderTimeout: time.Second}, time.Second, 0, web.DefaultIdleTimeout},
+		{"read bound only", &http.Server{ReadTimeout: 3 * time.Second}, 0, 3 * time.Second, 0},
+		{"explicit header opt-out", &http.Server{ReadHeaderTimeout: -1}, -1, 0, web.DefaultIdleTimeout},
+		{"own idle bound", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: 5 * time.Second}, time.Second, 0, 5 * time.Second},
+		{"explicit idle opt-out", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: -1}, time.Second, 0, -1},
 	} {
 		// The port is taken, so the listen fails at once: what is under test
-		// is what Serve did to the server before it tried.
+		// is what Serve did to the server before it tried. That net/http then
+		// closes a quiet keep-alive connection after IdleTimeout is its own
+		// documented contract, and not waited out here for two minutes.
 		tc.srv.Addr = ln.Addr().String()
 		if err := web.Serve(context.Background(), tc.srv, time.Second); err == nil {
 			t.Fatalf("%s: listening on a taken port succeeded", tc.name)
 		}
-		if tc.srv.ReadHeaderTimeout != tc.wantHeader || tc.srv.ReadTimeout != tc.wantRd {
-			t.Errorf("%s: ReadHeaderTimeout=%v ReadTimeout=%v, want %v and %v",
-				tc.name, tc.srv.ReadHeaderTimeout, tc.srv.ReadTimeout, tc.wantHeader, tc.wantRd)
+		if tc.srv.ReadHeaderTimeout != tc.wantHeader || tc.srv.ReadTimeout != tc.wantRd || tc.srv.IdleTimeout != tc.wantIdle {
+			t.Errorf("%s: ReadHeaderTimeout=%v ReadTimeout=%v IdleTimeout=%v, want %v, %v and %v",
+				tc.name, tc.srv.ReadHeaderTimeout, tc.srv.ReadTimeout, tc.srv.IdleTimeout,
+				tc.wantHeader, tc.wantRd, tc.wantIdle)
 		}
 	}
 }

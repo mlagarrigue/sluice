@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -25,16 +24,6 @@ func echo(calls sluice.Stream[*Call[int, string]]) {
 		}
 		return true
 	})
-}
-
-// goroutinesSettle waits for every other goroutine in the test's synctest
-// bubble to exit or block, then returns the goroutine count: exact, where a
-// poll could only hope the scheduler had caught up. It must be called inside
-// synctest.Test.
-func goroutinesSettle(t *testing.T) int {
-	t.Helper()
-	synctest.Wait()
-	return runtime.NumGoroutine()
 }
 
 func TestGatewayDo(t *testing.T) {
@@ -265,10 +254,11 @@ func TestGatewayWithAsyncPipeline(t *testing.T) {
 }
 
 // A panic in the pipeline must fail every call in flight and every later one,
-// not leave a room full of goroutines waiting on deadlines.
+// not leave a room full of goroutines waiting on deadlines. The bubble checks
+// the latter: synctest.Test fails the test when one of its goroutines is still
+// blocked once the function returns.
 func TestGatewayPipelinePanicFailsCallers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		// The panic value quotes what was being processed — here, another
 		// caller's data. It must not reach the error every caller shares.
 		const secret = "tenant-acme card 4242"
@@ -296,17 +286,13 @@ func TestGatewayPipelinePanicFailsCallers(t *testing.T) {
 		}
 
 		_ = gw.Close()
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after a pipeline panic", before, got)
-		}
 	})
 }
 
 // Close answers what is queued, refuses what comes after, is idempotent, and
-// releases the pipeline goroutine.
+// releases the pipeline goroutine, which the bubble checks as above.
 func TestGatewayClose(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		before := runtime.NumGoroutine()
 		gw := New(Config{Size: 8, Within: 5 * time.Millisecond}, echo)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -324,9 +310,6 @@ func TestGatewayClose(t *testing.T) {
 
 		if _, err := gw.Do(ctx, 2); !errors.Is(err, ErrClosed) {
 			t.Errorf("Do after Close returned %v, want ErrClosed", err)
-		}
-		if got := goroutinesSettle(t); got > before {
-			t.Errorf("%d goroutines before, %d after Close", before, got)
 		}
 	})
 }
@@ -443,9 +426,3 @@ func TestSweepInDiscardsWhatTheRunLoopWillNeverTake(t *testing.T) {
 	// It returns on an empty channel rather than waiting for one more.
 	g.sweepIn()
 }
-
-// The first garbage collection of the process starts the runtime's mark
-// worker goroutines, which runtime.NumGoroutine counts. Running one up
-// front keeps the goroutine baselines in this package from blaming a leak
-// on the runtime when that first cycle happens to land inside a test.
-func init() { runtime.GC() }

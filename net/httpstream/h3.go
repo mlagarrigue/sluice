@@ -40,6 +40,12 @@ const (
 	h3MaxPushID   = 0x0d
 )
 
+// h3MaxServerGoAway is the identifier of a server's first GOAWAY in a
+// graceful shutdown (RFC 9114 §5.2): the highest client-initiated
+// bidirectional stream identifier QUIC has, 2^62−4, which stops new
+// requests without yet naming the last one taken.
+const h3MaxServerGoAway = 1<<62 - 4
+
 // ErrH3Protocol reports an HTTP/3 frame or request this package will not
 // accept. Named as [ErrHPACK] explains.
 var ErrH3Protocol = errors.New("httpstream: HTTP/3 protocol error")
@@ -57,6 +63,11 @@ type h3Frame struct {
 // the remainder comes back rather than being an error, and the caller keeps
 // it for the next arrival. That is the difference from the HTTP/2 layer,
 // where a frame is whole or the connection is lost.
+//
+// A frame declared over maxFrame is refused on its declaration, with the
+// frames ahead of it returned and rest starting at it: a request stream
+// answers an oversized DATA frame with a 413 once the frames before it — its
+// HEADERS — are read, rather than with the protocol error.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, err error) {
 	for len(buf) > 0 {
 		typ, after, err := quic.Varint(buf)
@@ -67,19 +78,32 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 		if err != nil {
 			return dst, buf, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
+		if h3ReservedH2(typ) {
+			// RFC 9114 §7.2.8: the HTTP/2 frame types with no HTTP/3
+			// counterpart — PRIORITY, PING, WINDOW_UPDATE, CONTINUATION —
+			// "MUST NOT be sent, and their receipt MUST be treated as a
+			// connection error of type H3_FRAME_UNEXPECTED". Refused on the
+			// type alone, before the payload is waited for: there is nothing
+			// in it this layer would read. They used to be skipped with the
+			// GREASE types, which the same section wants ignored.
+			return dst, nil, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
+				errH3FrameUnexpected, typ)
+		}
 		if maxFrame > 0 && length > uint64(maxFrame) {
 			// ErrTooLarge as well as ErrH3Protocol: a frame too long to read is the
 			// peer asking for more than it may, whatever its type — a GREASE
 			// frame included — which a request stream answers with
 			// H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.
-			return dst, nil, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
+			return dst, buf, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
 		}
 		if length > uint64(len(after)) {
 			return dst, buf, nil // the payload has not all arrived
 		}
-		// Reserved types exist to be ignored: RFC 9114 §7.2.8 has peers send
-		// them precisely so that a receiver which refuses the unknown is
-		// found out early. Refusing them is how a protocol ossifies.
+		// Unknown types exist to be ignored: RFC 9114 §7.2.8 has peers send
+		// GREASE types precisely so that a receiver which refuses the
+		// unknown is found out early. Refusing them is how a protocol
+		// ossifies. The one exception is the four above, which §7.2.8
+		// reserves by name.
 		if !h3Known(typ) {
 			buf = after[length:]
 			continue
@@ -95,6 +119,19 @@ func h3Known(typ uint64) bool {
 	case h3Data, h3Headers, h3CancelPush, h3Settings, h3GoAway, h3MaxPushID:
 		return true
 	case h3PushPromise:
+		return true
+	}
+	return false
+}
+
+// h3ReservedH2 reports a frame type RFC 9114 §11.2.1 registers as "Reserved"
+// because HTTP/2 used it for a frame HTTP/3 has no equivalent of: 0x02
+// PRIORITY, 0x06 PING, 0x08 WINDOW_UPDATE, 0x09 CONTINUATION. §7.2.8 makes
+// their receipt H3_FRAME_UNEXPECTED, as §7.2.4.1 does for the matching
+// setting identifiers walkH3Settings refuses.
+func h3ReservedH2(typ uint64) bool {
+	switch typ {
+	case 0x02, 0x06, 0x08, 0x09:
 		return true
 	}
 	return false
@@ -268,7 +305,12 @@ func (d *qpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 
 		listSize += len(name) + len(value) + 32
 		if listSize > d.maxListSize {
-			return dst, fmt.Errorf("%w: a field section past %d bytes", ErrH3Protocol, d.maxListSize)
+			// The request's fault, not the connection's: RFC 9114 §4.2.2
+			// answers it 431 on the stream, which [errHeadersTooLarge] maps
+			// to. No dynamic table means nothing past this field has to be
+			// read for the next section to decode (the HPACK decoder's
+			// decodeOver has no twin here).
+			return dst, fmt.Errorf("%w: a field section past %d bytes", errHeadersTooLarge, d.maxListSize)
 		}
 		dst = append(dst, Header{Name: name, Value: value})
 	}
@@ -303,7 +345,7 @@ func qpackString(d *qpackDecoder, block []byte, n uint8, budget int, arena *[]by
 		floor = floor * 8 / 30
 	}
 	if floor > budget {
-		return nil, nil, fmt.Errorf("%w: a field section past %d bytes", ErrH3Protocol, d.maxListSize)
+		return nil, nil, fmt.Errorf("%w: a field section past %d bytes", errHeadersTooLarge, d.maxListSize)
 	}
 	raw, rest := rest[:length], rest[length:]
 	if s, err = appendFieldString(arena, raw, huff, len(block), budget); err != nil {
@@ -412,13 +454,19 @@ func parseH3Settings(payload []byte) (map[uint64]uint64, error) {
 	return out, nil
 }
 
+// errH3FrameLayout marks a frame payload that ends inside one of its fields —
+// RFC 9114 §7.1's H3_FRAME_ERROR, distinct from what the fields say once they
+// are whole. walkH3Settings raises it so the control stream can tell a
+// truncated SETTINGS (a layout fault) from a reserved one (H3_SETTINGS_ERROR).
+var errH3FrameLayout = fmt.Errorf("%w: a frame payload that ends inside a field", ErrH3Protocol)
+
 // walkH3Settings calls each for every pair of a SETTINGS payload, refusing a
 // truncated pair and the reserved HTTP/2 identifiers on the way.
 func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 	for len(payload) > 0 {
 		id, rest, err := quic.Varint(payload)
 		if err != nil {
-			return fmt.Errorf("%w: a truncated setting", ErrH3Protocol)
+			return fmt.Errorf("%w: a truncated setting", errH3FrameLayout)
 		}
 		switch id {
 		case 0x00, 0x02, 0x03, 0x04, 0x05:
@@ -426,7 +474,7 @@ func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 		}
 		v, rest, err := quic.Varint(rest)
 		if err != nil {
-			return fmt.Errorf("%w: setting %#x has no value", ErrH3Protocol, id)
+			return fmt.Errorf("%w: setting %#x has no value", errH3FrameLayout, id)
 		}
 		if err := each(id, v); err != nil {
 			return err

@@ -7,9 +7,11 @@ import (
 	"testing"
 )
 
-// One production dependency is the project's founding constraint — the
-// standard library plus golang.org/x/crypto, for the ChaCha20-Poly1305 cipher
-// crypto/tls negotiates but does not export — and CI checks it two ways:
+// A short list of production dependencies is the project's founding
+// constraint — the standard library plus golang.org/x/crypto, for the
+// ChaCha20-Poly1305 cipher crypto/tls negotiates but does not export, and
+// golang.org/x/text, for the NFKC normalisation SASLprep needs (ADR 0002) —
+// and CI checks it two ways:
 // go.mod requiring nothing outside that allowlist, and `go list -deps ./...`
 // finding no package from anywhere else in the graph.
 //
@@ -30,6 +32,7 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 	allowed := map[string]bool{
 		"golang.org/x/crypto": true,
 		"golang.org/x/sys":    true,
+		"golang.org/x/text":   true,
 	}
 	seen := map[string]bool{}
 	inBlock := false
@@ -55,7 +58,8 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 		seen[mod] = true
 		if !allowed[mod] {
 			t.Errorf("go.mod:%d requires %q.\n"+
-				"the recorded dependencies are golang.org/x/crypto (and the x/sys it brings). "+
+				"the recorded dependencies are golang.org/x/crypto (and the x/sys it brings) "+
+				"and golang.org/x/text. "+
 				"If this came from measuring against another library, the measurement "+
 				"belongs in the comparison module on the benchmarks branch, which depends on this one and is "+
 				"never depended on by it.", lineNo, mod)

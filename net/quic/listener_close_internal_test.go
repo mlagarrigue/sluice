@@ -2,6 +2,7 @@ package quic
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/netip"
 	"runtime"
@@ -103,6 +104,39 @@ func TestListenerCloseEndsQueuedConnections(t *testing.T) {
 	}
 }
 
+// A connection Accept already handed out is ended by Listener.Close too,
+// and its peer hears a CONNECTION_CLOSE before the shared socket goes:
+// unlike a TCP connection, it has no socket of its own to outlive the
+// listener on. Before, Close only closed the socket under it — alive on
+// the server until its idle timeout, dead for the peer without a word.
+func TestListenerCloseEndsAcceptedConnections(t *testing.T) {
+	l, pc := newInternalUDPListener(t, "udp", "127.0.0.1:0", ListenerConfig{})
+	client := dialInternal(t, loopbackSocket(t), pc.LocalAddr())
+	server, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !isClosed(server) {
+		t.Error("the accepted server connection survived Listener.Close")
+	}
+	select {
+	case <-client.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("the client never learned its accepted connection was closed")
+	}
+	// A transport NO_ERROR close, reported as the ConnectionError with code
+	// 0, Application unset — not an application close. That error is what
+	// proves the client heard the frame: an idle timeout or a local close
+	// ends the connection with another.
+	if ce, ok := errors.AsType[*ConnectionError](client.Err()); !ok || ce.Application || ce.Code != transportNoError {
+		t.Errorf("Err = %v, want the ConnectionError for a transport NO_ERROR close", client.Err())
+	}
+}
+
 // A handshake that completes while the accept queue is full parks on it;
 // Close must end that connection too, along with the one in the queue.
 func TestListenerCloseEndsConnectionsBlockedOnAFullQueue(t *testing.T) {
@@ -160,10 +194,10 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 	// Two slots: the first attempt goes direct (below the half-way mark),
 	// the second has to come back with a Retry token.
 	nowhere := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5555}
-	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), nowhere, l.pc)
+	l.dispatch(sealedClientInitial(t, []byte("odcid-aa"), []byte("cscid-bb")), nowhere, l.pc, 0)
 	newSCID := []byte("rscid-01")
 	token := appendRetryToken(nil, l.key, nowhere, []byte("odcid-cc"), newSCID)
-	l.dispatch(sealedClientInitialWithToken(t, newSCID, []byte("cscid-dd"), token), nowhere, l.pc)
+	l.dispatch(sealedClientInitialWithToken(t, newSCID, []byte("cscid-dd"), token), nowhere, l.pc, 0)
 	if n := pendingCount(l); n != 2 {
 		t.Fatalf("priming left %d pending connections, want 2", n)
 	}
@@ -171,7 +205,7 @@ func TestListenerRefusesWhenThePendingTableIsFull(t *testing.T) {
 
 	clientPC := loopbackSocket(t)
 	dcid := []byte("odcid-ee")
-	l.dispatch(sealedClientInitial(t, dcid, []byte("cscid-ff")), clientPC.LocalAddr(), l.pc)
+	l.dispatch(sealedClientInitial(t, dcid, []byte("cscid-ff")), clientPC.LocalAddr(), l.pc, 0)
 
 	if n := pendingCount(l); n != 2 {
 		t.Errorf("a full table still took a connection: %d pending", n)
@@ -307,7 +341,7 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 	}
 
 	go func() {
-		s, err := server.AcceptStream()
+		s, err := server.AcceptStream(t.Context())
 		if err != nil {
 			return
 		}
@@ -316,7 +350,7 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 		_, _ = s.Write(buf[:n])
 		_ = s.CloseWrite()
 	}()
-	s, err := client.OpenStream()
+	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,6 +41,18 @@ func run(ctx context.Context, o options) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, a.Close()) }()
+	if o.transport == transportHTTPStreamH3 {
+		pc, err := net.ListenPacket("udp", o.listen)
+		if err != nil {
+			return err
+		}
+		tlsCfg, err := tlsConfig(o)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "sluice-study: %s on udp %s\n", o.transport, pc.LocalAddr())
+		return serveH3(ctx, o, a, pc, tlsCfg)
+	}
 	ln, err := net.Listen("tcp", o.listen)
 	if err != nil {
 		return err

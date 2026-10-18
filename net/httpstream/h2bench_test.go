@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -13,14 +14,17 @@ import (
 // consume's success path — HEADERS that complete in one frame, no window
 // updates — never touches s.w, so a writer that is never run is enough to
 // benchmark the frame-to-request path in isolation from the socket.
-func newBenchH2Server(cfg H2Config) *h2Server {
-	cfg = cfg.withDefaults()
+func newBenchH2Server(cfg Config) *h2Server {
+	cfg = cfg.mustResolve()
 	return &h2Server{
-		cfg:      cfg,
-		handler:  func(b sluice.Batch[Request]) sluice.Batch[Response] { return sluice.Batch[Response]{} },
-		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBlockBytes),
+		cfg: cfg,
+		handler: func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{}
+		},
+		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
-		recvWind: connRecvWindow,
+		connWind: connWindow(cfg),
+		recvWind: connWindow(cfg),
 		w:        newH2Writer(&memConn{}, cfg),
 	}
 }
@@ -32,11 +36,11 @@ func newBenchH2Server(cfg H2Config) *h2Server {
 // leaves no dynamic-table state behind.
 func resetBenchH2Server(s *h2Server) {
 	clear(s.streams)
-	s.open = 0
+	s.open.Store(0)
 	s.inFlight.Store(0)
 	s.lastID = 0
 	s.closedRing = s.closedRing[:0]
-	s.recvWind = connRecvWindow
+	s.recvWind = s.connWind
 	s.assembling = 0
 	s.resets = 0
 	s.served = 0
@@ -70,14 +74,14 @@ func BenchmarkH2Consume(b *testing.B) {
 			for i := range depth {
 				id := uint32(2*i + 1)
 				raw := h2HeadersFrame(id, fmt.Sprintf("/orders/%d", i))
-				parsed, _, err := parseFrame(raw, H2Config{}.withDefaults())
+				parsed, _, err := parseFrame(raw, defaultMaxFrameSize)
 				if err != nil {
 					b.Fatal(err)
 				}
 				frames = append(frames, parsed)
 			}
 
-			s := newBenchH2Server(H2Config{})
+			s := newBenchH2Server(Config{})
 			b.ReportAllocs()
 			for b.Loop() {
 				resetBenchH2Server(s)
@@ -135,7 +139,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 			// One connection, writer and server for the whole loop, so the
 			// alloc signal is streamBody's own and not the setup's.
 			conn := &countingConn{}
-			cfg := H2Config{}.withDefaults()
+			cfg := Config{}.mustResolve()
 			w := newH2Writer(conn, cfg)
 			w.connWind = 1 << 30
 			go w.run()
@@ -150,7 +154,7 @@ func BenchmarkH2StreamBody(b *testing.B) {
 				w.mu.Lock()
 				w.windows[1] = 1 << 30
 				w.mu.Unlock()
-				s.streamBody(1, chunkStream(chunks))
+				s.streamBody(1, chunkStream(chunks), 0, nil)
 				if err := w.creditConn(spent); err != nil {
 					b.Fatal(err)
 				}

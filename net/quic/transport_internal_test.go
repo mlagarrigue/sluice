@@ -22,7 +22,7 @@ import (
 func newIdleServerConn(t *testing.T) *Conn {
 	t.Helper()
 	pcA, pcB := newLoopbackPair(t)
-	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -145,7 +145,7 @@ func TestDialReportsAHandshakeCloseAsItself(t *testing.T) {
 		}
 		_, _ = srv.WriteTo(pkt, from)
 	})
-	if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "code 0x2") {
+	if !isRefusedClose(err) {
 		t.Fatalf("Dial = %v, want the peer's CONNECTION_REFUSED", err)
 	}
 	if took > 3*time.Second {
@@ -289,14 +289,20 @@ func TestWithheldNoRetransPacketKeepsQueuedFrames(t *testing.T) {
 	}
 }
 
+// isRefusedClose reports whether err is the peer's CONNECTION_CLOSE with
+// CONNECTION_REFUSED, read by its code rather than its text.
+func isRefusedClose(err error) bool {
+	ce, ok := errors.AsType[*ConnectionError](err)
+	return ok && !ce.Application && ce.Code == transportConnectionRefused
+}
+
 // The idle timeout firing: the connection ends, silently — no
-// CONNECTION_CLOSE (§10.1), and no error, since idleness is how the protocol
-// expects an unused connection to end. The existing idle tests only pinned
-// when it does not fire.
+// CONNECTION_CLOSE (§10.1) — and Err names the cause, ErrIdleTimeout. The
+// existing idle tests only pinned when it does not fire.
 func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	pc := newScriptedPC()
-	c := newConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	c := assembleConn(pc, peer, []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial([]byte("dcid0000")); err != nil {
 		t.Fatal(err)
@@ -316,8 +322,8 @@ func TestIdleTimeoutExpiresSilently(t *testing.T) {
 	default:
 		t.Fatal("the idle timeout matured and the connection is still open")
 	}
-	if err := c.Err(); err != nil {
-		t.Errorf("Err = %v; an idle timeout is not an error", err)
+	if err := c.Err(); !errors.Is(err, ErrIdleTimeout) {
+		t.Errorf("Err = %v, want ErrIdleTimeout", err)
 	}
 	if n := pc.writes.Load() - before; n != 0 {
 		t.Errorf("%d datagrams written on idle expiry; it must send nothing", n)
@@ -326,7 +332,9 @@ func TestIdleTimeoutExpiresSilently(t *testing.T) {
 
 // The loss timer firing on its own, with no ACK to trigger it: the packet
 // an earlier ACK left too young to declare is declared once the timer
-// matures, resent, and the timer re-arms on the survivor.
+// matures, resent, and the timer re-arms on the survivor. The earlier ACK
+// covered packet 2, which makes 0 and 1 candidates (RFC 9002 §6.1: sent
+// before an acknowledged packet).
 func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 	c := newIdleServerConn(t)
 	now := time.Now()
@@ -335,7 +343,8 @@ func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 	old := []byte{framePing, 0xaa}
 	sp.sent.record(sentPacket{pn: 0, sentAt: now.Add(-time.Minute), size: 100, ackEliciting: true, payload: old})
 	sp.sent.record(sentPacket{pn: 1, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing, 0xbb}})
-	sp.nextPN = 2
+	sp.sent.largestAcked, sp.sent.hasLargestAcked = 2, true
+	sp.nextPN = 3
 	sp.lastElicit = now
 	sp.sent.lossTime = now.Add(-time.Millisecond)
 	c.mu.Unlock()
@@ -349,12 +358,12 @@ func TestLossTimerDeclaresWithoutAnAck(t *testing.T) {
 			t.Fatal("packet 0 is still in flight after its loss timer matured")
 		}
 	}
-	if sp.nextPN != 3 {
-		t.Errorf("nextPN = %d, want the lost payload resent as packet 2", sp.nextPN)
+	if sp.nextPN != 4 {
+		t.Errorf("nextPN = %d, want the lost payload resent as packet 3", sp.nextPN)
 	}
 	resent := false
 	for _, p := range sp.sent.packets {
-		if p.pn == 2 && bytes.Contains(p.payload, old) {
+		if p.pn == 3 && bytes.Contains(p.payload, old) {
 			resent = true
 		}
 	}
@@ -409,7 +418,7 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 		sp.sent.record(sentPacket{pn: pn, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing, byte(pn)}})
 	}
 	sp.nextPN = 3
-	c.cc.inFlight = 300
+	c.reno().inFlight = 300
 
 	c.sendProbeLocked(spaceInitial)
 
@@ -429,8 +438,8 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	// 100 bytes of untouched packet 2, plus two probes that each left the
 	// record and re-entered at their sealed size.
 	want := 100 + sp.sent.packets[1].size + sp.sent.packets[2].size
-	if c.cc.inFlight != want {
-		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.cc.inFlight, want)
+	if c.reno().inFlight != want {
+		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.reno().inFlight, want)
 	}
 }
 
@@ -455,7 +464,7 @@ func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
 	chunk := make([]byte, 100)
 	var off uint64
 	send := func() error {
-		_, err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now())
+		err := c.frames(spaceApplication, streamFrameBytes(0, off, chunk), time.Now())
 		if err == nil {
 			off += uint64(len(chunk))
 		}

@@ -138,8 +138,23 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
+      # macOS has 127.0.0.1 alone on lo0; the packet-information test needs
+      # a second local address per family to tell a reply's source apart.
+      - name: Second loopback addresses
+        if: runner.os == 'macOS'
+        run: |
+          sudo ifconfig lo0 alias 127.0.0.2 up
+          sudo ifconfig lo0 inet6 fd00::2 prefixlen 128 alias
+      # Windows routes the whole of 127/8 to the loopback, so 127.0.0.2 can
+      # be bound and written to, but WSASendMsg takes as a source only an
+      # address assigned to the interface: 127.0.0.1 and ::1 alone.
+      - name: Second loopback addresses (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          netsh interface ipv4 add address "Loopback Pseudo-Interface 1" 127.0.0.2 255.0.0.0
+          netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
       - name: Test
-        run: go test -race -shuffle=on ./net/quic/udp/...
+        run: go test -race -shuffle=on -v ./net/quic/udp/...
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.
@@ -169,11 +184,17 @@ jobs:
   # unset, so this job is the only place they run.
   postgres:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 17 speaks protocol 3.0 only and negotiates a 3.2 request down; 18
+        # speaks 3.2, and with it the long cancellation key.
+        postgres: ["17", "18"]
     services:
       postgres:
-        # Pinned major: a new major changes catalogs and error texts, and that
-        # should arrive as a reviewed bump, not overnight.
-        image: postgres:17
+        # Pinned majors: a new major changes catalogs and error texts, and
+        # that should arrive as a reviewed bump, not overnight.
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -206,16 +227,48 @@ jobs:
           docker exec -i ${{ job.services.postgres.id }} \
             psql -U postgres -v ON_ERROR_STOP=1 < .devcontainer/postgres/init.sql
 
+      # TLS on the same server, so SCRAM-SHA-256-PLUS meets a server that
+      # hashes its own certificate. Plain TCP keeps working beside it.
+      - name: Turn TLS on, RSA certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa "$RUNNER_TEMP/pg-rsa"
+
       # A skipped integration test reads exactly like a passing one, so the
-      # skips that mean "no server" or "wrong role" fail the job.
+      # skips that mean "no server" or "wrong role" fail the job, and so does
+      # the protocol 3.2 test not passing on the server that is there to run it.
       - name: Integration tests
         shell: bash
+        env:
+          PG_MAJOR: ${{ matrix.postgres }}
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa/server.crt
+          SLUICE_PG_TLS_SIGALG: SHA256-RSA
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
-          if grep -E 'SLUICE_PG is not set|is a superuser' test.log; then
+          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
             exit 1
           fi
+          if [ "$PG_MAJOR" -ge 18 ] && ! grep -- '--- PASS: TestIntegrationProtocol32LongCancelKey' test.log; then
+            echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
+            exit 1
+          fi
+          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log; then
+            echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over TLS" >&2
+            exit 1
+          fi
+
+      # The binding hash of an RSA-PSS certificate comes from inside its
+      # signature parameters: SHA-384 here, where a reading that defaulted to
+      # SHA-256 would make the server's proof and the client's disagree.
+      - name: Turn TLS on, RSA-PSS SHA-384 certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa-pss "$RUNNER_TEMP/pg-rsa-pss"
+      - name: Channel binding, RSA-PSS SHA-384 certificate
+        shell: bash
+        env:
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa-pss/server.crt
+          SLUICE_PG_TLS_SIGALG: SHA384-RSAPSS
+        run: |
+          go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS' test.log
 
   # net/httpstream against clients it did not write: curl over HTTP/1.1 and
   # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server
@@ -294,9 +347,9 @@ jobs:
           # not requirements and would fail the job for the wrong reason.
           json=$(go mod edit -json)
           extra=$(jq -r '.Require[]?.Path' <<<"$json" \
-            | grep -vE '^golang\.org/x/(crypto|sys)$' || true)
+            | grep -vE '^golang\.org/x/(crypto|sys|text)$' || true)
           if [ -n "$extra" ]; then
-            echo "::error file=go.mod::modules outside the allowlist (golang.org/x/crypto and the x/sys it brings):" >&2
+            echo "::error file=go.mod::modules outside the allowlist (golang.org/x/crypto and the x/sys it brings, golang.org/x/text):" >&2
             echo "$extra" >&2
             exit 1
           fi
@@ -315,10 +368,20 @@ jobs:
           external=$(go list -deps ./... \
             | grep -E '^[^/]+\.[^/]+/' \
             | grep -v "^${module}\(/\|$\)" \
-            | grep -vE '^golang\.org/x/(crypto|sys)(/|$)' || true)
+            | grep -vE '^golang\.org/x/(crypto|sys|text)(/|$)' || true)
           if [ -n "$external" ]; then
             echo "::error::packages outside the allowlist in the dependency graph:" >&2
             echo "$external" >&2
+            exit 1
+          fi
+          # x/text entered for one package (ADR 0002): SASLprep's NFKC in
+          # database/postgres. Any other importer is a new decision.
+          text=$(go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./... \
+            | awk '{for (i = 2; i <= NF; i++) if ($i ~ /^golang\.org\/x\/text(\/|$)/) print $1}' \
+            | sort -u | grep -vx "${module}/database/postgres" || true)
+          if [ -n "$text" ]; then
+            echo "::error::golang.org/x/text imported outside database/postgres:" >&2
+            echo "$text" >&2
             exit 1
           fi
 
@@ -414,19 +477,73 @@ jobs:
   # round cannot swing a sign test. The gated set is curated to
   # single-goroutine hot paths; the concurrent operators are measured locally
   # where the core count means something (see gate.sh).
+  #
+  # It also runs on a push to main, against the commit main pointed at before
+  # the push: commits land there without a pull request, and a gate that ran
+  # on pull requests alone would never run. There it cannot block, only turn
+  # the run red after the fact. A push that creates the branch has no previous
+  # commit (all zeros) and is skipped.
   bench-gate:
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          # The gate builds the merge base too.
+          # The gate builds the base too.
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
           cache: false
 
-      - name: Paired regression gate against the merge base
-        run: internal/bench/scripts/gate.sh ${{ github.event.pull_request.base.sha }}
+      - name: Paired regression gate against the base
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: internal/bench/scripts/gate.sh "$BASE"
+
+  # The emulated-path benchmarks of net/quic measure the congestion controller
+  # on a timer-driven middlebox, which cannot run pinned to one core and does
+  # not move with the CPU: a separate script, not pinned, eight transfers a
+  # side, red when a median is 6% slower (see gate-path.sh). Its own job
+  # rather than a step of bench-gate: that job already takes five minutes,
+  # and this one takes about five more (eight profiles, 2026-10-14) that
+  # would otherwise be added to every pull request's critical path. It runs on
+  # a push to main for the same reason as bench-gate.
+  #
+  # One job per controller, in parallel: the benchmarks run the one
+  # SLUICE_QUIC_CC names, and a controller nobody gates is one whose
+  # regressions pass green. The controllers other than the default also run
+  # gate-cc.sh, the absolute criteria each is held to on one tree.
+  bench-path-gate:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [reno, cubic, bbr1, bbr]
+    env:
+      SLUICE_QUIC_CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # The gate builds the base too.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+
+      - name: Paired path gate against the base
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: internal/bench/scripts/gate-path.sh "$BASE"
+
+      - name: Criteria of the controller
+        if: matrix.cc != 'reno'
+        run: internal/bench/scripts/gate-cc.sh

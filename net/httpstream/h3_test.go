@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,7 +57,7 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 	if err != nil || batch.Len() == 0 {
 		return nil, nil, failed, err
 	}
-	res, err := apply(handle, batch)
+	res, err := apply(context.Background(), handle, batch)
 	if err != nil {
 		return nil, nil, failed, err
 	}
@@ -77,7 +79,7 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 // before this layer sees them. No pipelining to ask for, no multiplexing to
 // design around — the datagram was always a batch.
 func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	var frames []quic.Frame
 	for i := range 4 {
 		id := uint64(4 * i) // client-initiated bidirectional
@@ -85,7 +87,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 	}
 
 	var sizes []int
-	out, _, _, err := serveH3Datagram(a, frames, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	out, _, _, err := serveH3Datagram(a, frames, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		sizes = append(sizes, b.Len())
 		res := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
@@ -114,7 +116,7 @@ func TestH3RequestsFromOneDatagramAreOneBatch(t *testing.T) {
 // A QUIC stream is a byte stream, so a frame split across datagrams is
 // ordinary. The assembler must hold the remainder rather than refuse it.
 func TestH3FrameSplitAcrossDatagrams(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	whole := h3Request("POST", "/split")
 	cut := len(whole) / 2
 
@@ -140,7 +142,7 @@ func TestH3FrameSplitAcrossDatagrams(t *testing.T) {
 
 // A request with a body: HEADERS then DATA, ended by the stream's FIN.
 func TestH3AssemblesABody(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	stream := h3Request("POST", "/orders")
 	stream = appendH3Frame(stream, h3Data, []byte(`{"qty":2}`))
 
@@ -159,7 +161,7 @@ func TestH3AssemblesABody(t *testing.T) {
 // Unidirectional streams carry control, QPACK and push — never requests — so
 // they are skipped rather than misread.
 func TestH3IgnoresUnidirectionalStreams(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{
 		streamFrame(2, []byte{0x00}, false), // client-initiated unidirectional
 		streamFrame(3, []byte{0x00}, false), // server-initiated unidirectional
@@ -187,17 +189,20 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":path"), []byte("/a")},
 			{[]byte(":path"), []byte("/b")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a connection-specific field", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("connection"), []byte("keep-alive")},
 		}},
 		{"an uppercase field name", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("X-Bad"), []byte("v")},
 		}},
 		{"a pseudo-header after a regular field", []Header{
@@ -205,11 +210,13 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte("x-ok"), []byte("v")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :path that is not origin-form", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("http://elsewhere/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		// RFC 9114 §4.1.2/§10.3: QPACK can carry any byte, so the h1
 		// parser's octet rules apply to what it decoded — these are the
@@ -219,34 +226,40 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\r\nx-smuggled: b")},
 		}},
 		{"a NUL in a field value", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\x00b")},
 		}},
 		{"a field name that is not a token", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x note"), []byte("v")},
 		}},
 		{"a :method that is not a token", []Header{
 			{[]byte(":method"), []byte("GET T")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :scheme that is not a token", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("ht\rtps")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"a :path with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x\ry")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 		}},
 		{"an :authority with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
@@ -274,12 +287,13 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
 			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
 			{[]byte("x-note"), []byte("a\x0cb")},
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := newH3Assembler(Config{})
+			a := testAssembler(Config{})
 			stream := appendH3Frame(nil, h3Headers, appendQPACK(nil, tt.fields))
 			// A malformed request is one stream's failure, not the
 			// connection's: the peer is told on the stream it used, and
@@ -342,7 +356,7 @@ func TestH3IgnoresReservedFrameTypes(t *testing.T) {
 	stream := appendH3Frame(nil, 0x21, []byte("greasing"))
 	stream = append(stream, h3Request("GET", "/x")...)
 
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
 		t.Fatalf("a reserved frame type was refused: %v", err)
@@ -386,13 +400,13 @@ func TestH3OverARealConnection(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			sizes <- b.Len()
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
@@ -411,7 +425,7 @@ func TestH3OverARealConnection(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	s, err := conn.OpenStream()
+	s, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +606,7 @@ func TestQPACKDecodesNeverIndexedLiterals(t *testing.T) {
 // but by then the peer had bought a full decode — ~50× the advertised header
 // budget per attempt. The literal is all 0xff, thirty ones of which are EOS:
 // decoding it at all fails with an HPACK Huffman error, so a refusal that is
-// ErrH3Protocol and not that is what proves the budget check came first.
+// errHeadersTooLarge and not that is what proves the budget check came first.
 func TestQPACKRefusesOversizedLiteralsBeforeDecoding(t *testing.T) {
 	const maxList = 1 << 10
 	d := newQPACKDecoder(nil, maxList)
@@ -605,8 +619,8 @@ func TestQPACKRefusesOversizedLiteralsBeforeDecoding(t *testing.T) {
 	block = append(block, huge...)
 
 	_, err := d.Decode(nil, block)
-	if !errors.Is(err, ErrH3Protocol) {
-		t.Fatalf("Decode returned %v, want a refusal", err)
+	if !errors.Is(err, errHeadersTooLarge) {
+		t.Fatalf("Decode returned %v, want the headers-bound refusal", err)
 	}
 	if errors.Is(err, ErrHPACK) {
 		t.Fatalf("Decode returned %v: the literal was Huffman-decoded before the budget check", err)
@@ -692,13 +706,13 @@ func TestH3ResponseHonoursPeerFieldSectionLimit(t *testing.T) {
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("x-big"), Value: bytes.Repeat([]byte("v"), 100)},
 	}}
-	if _, err := appendH3Response(nil, res, nil, 64, &h3Scratch{}); err == nil {
+	if _, err := appendH3Response(nil, res, nil, 64, &h3Scratch{}, testDate); err == nil {
 		t.Error("a field section over the peer's limit was encoded")
 	}
-	if _, err := appendH3Response(nil, res, nil, 4096, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 4096, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a field section under the limit was refused: %v", err)
 	}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("no advertised limit still refused the response: %v", err)
 	}
 }
@@ -715,7 +729,7 @@ func TestH3RefusesABlockOfTooManyFields(t *testing.T) {
 	for i := range 70 {
 		fields = append(fields, Header{fmt.Appendf(nil, "x-f%d", i), []byte("v")})
 	}
-	a := newH3Assembler(Config{}) // default MaxHeaders: 64
+	a := testAssembler(Config{}) // default MaxHeaders: 64
 	stream := appendH3Frame(nil, h3Headers, appendQPACK(nil, fields))
 	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
 	if err != nil {
@@ -724,8 +738,8 @@ func TestH3RefusesABlockOfTooManyFields(t *testing.T) {
 	if len(failed) != 1 || !errors.Is(failed[0].Err, ErrTooLarge) {
 		t.Fatalf("Frames reported %v, want one stream error wrapping ErrTooLarge", failed)
 	}
-	if failed[0].Code != h3ExcessiveLoad {
-		t.Errorf("stream reset with code %#x, want H3_EXCESSIVE_LOAD (%#x)", failed[0].Code, h3ExcessiveLoad)
+	if failed[0].Status != 431 || failed[0].Code != h3NoError {
+		t.Errorf("stream refused with status %d, code %#x; want 431 then H3_NO_ERROR", failed[0].Status, failed[0].Code)
 	}
 }
 
@@ -735,11 +749,11 @@ func TestH3ResponseRefusesControlBytesInFieldValues(t *testing.T) {
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("x-note"), Value: []byte("a\x00b")},
 	}}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err == nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
 		t.Error("a response field value with a NUL was encoded")
 	}
 	res.Headers[0].Value = []byte("a\tb")
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a response field value with an HTAB was refused: %v", err)
 	}
 }
@@ -775,10 +789,10 @@ func TestParseH3SettingsRefusesARepeatedIdentifier(t *testing.T) {
 
 // And over HTTP/3, closing the set: the same Response, streamed, on all three.
 func TestH3StreamedResponse(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	frames := []quic.Frame{streamFrame(0, h3Request("GET", "/export"), true)}
 
-	heads, bodies, _, err := serveH3Datagram(a, frames, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	heads, bodies, _, err := serveH3Datagram(a, frames, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -848,7 +862,7 @@ func TestH3StreamedResponse(t *testing.T) {
 // regular list, so a handler had to know which transport it was talking to in
 // order to find the host — which is what taking a batch of requests was for.
 func TestH3DeliversTheAuthorityAsHost(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	batch, _, _, err := a.Frames([]quic.Frame{
 		streamFrame(0, h3Request("GET", "/a"), true),
 	})
@@ -869,7 +883,7 @@ func TestH3DeliversTheAuthorityAsHost(t *testing.T) {
 // Two hops reading a different host out of one request is how a request is
 // routed somewhere it was not addressed (RFC 9114 §4.3.1).
 func TestH3RefusesHostDisagreeingWithAuthority(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	_, _, failed, err := a.Frames([]quic.Frame{
 		streamFrame(0, h3Request("GET", "/a", [2]string{"host", "other.test"}), true),
 	})
@@ -927,13 +941,13 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
@@ -954,7 +968,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	// An uppercase field name, which RFC 9114 §4.2 makes malformed for the
 	// same reason HTTP/2 does: a name normalised rather than refused means one
 	// thing to this hop and another to the next.
-	bad, err := conn.OpenStream()
+	bad, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -965,7 +979,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	good, err := conn.OpenStream()
+	good, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,12 +1044,12 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 			served <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), params)
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), params)
 		if err != nil {
 			served <- err
 			return
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
 		})
 	}()
@@ -1057,8 +1071,8 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 	// The refusal reaches the client as a close, not as a server gone quiet.
 	select {
 	case <-conn.Done():
-		if code, _, ok := conn.PeerClosed(); !ok || code != h3InternalError {
-			t.Errorf("the client saw close code %#x (application close %v), want H3_INTERNAL_ERROR", code, ok)
+		if ce, ok := errors.AsType[*quic.ConnectionError](conn.Err()); !ok || !ce.Application || ce.Code != h3InternalError {
+			t.Errorf("the client saw %v, want the application close H3_INTERNAL_ERROR", conn.Err())
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("the refused connection was left open")
@@ -1072,7 +1086,7 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 // bytes plus what the assembler still retains, and a completed request's
 // body stays unreleased for the responder to settle.
 func TestH3AssemblerManualCreditBalances(t *testing.T) {
-	a := newH3Assembler(Config{})
+	a := testAssembler(Config{})
 	released := make(map[uint64]uint64)
 	var releasedTotal uint64
 	a.Credit = func(id, n uint64) {
@@ -1168,13 +1182,13 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/large" {
@@ -1204,7 +1218,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
-	large, err := conn.OpenStream()
+	large, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1223,7 +1237,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 		t.Fatal("the large request never reached the handler")
 	}
 
-	small, err := conn.OpenStream()
+	small, err := conn.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1292,13 +1306,13 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), Config{}.TransportParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), mustTransportParameters(Config{}))
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				select {
@@ -1325,7 +1339,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 	// byte of credit exists only because a finished body was released.
 	const bodyLen = 600 << 10
 	for i := range 8 {
-		s, err := conn.OpenStream()
+		s, err := conn.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1383,13 +1397,13 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		conn, err := quic.Accept(serverPC, peer, buf[:n], h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) != "/boom" {
@@ -1418,7 +1432,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 
 	ask := func(path string) *quic.Stream {
 		t.Helper()
-		s, err := conn.OpenStream()
+		s, err := conn.OpenStream(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1500,16 +1514,16 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 	for _, name := range []string{"x bad", "x:y", "x\x00", ""} {
 		r := Response{Status: 200, Headers: []Header{{Name: []byte(name), Value: []byte("v")}}}
-		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}); !errors.Is(err, ErrH3Protocol) {
+		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("h3, name %q: got %v, want ErrH3Protocol", name, err)
 		}
-		s := newBenchH2Server(H2Config{})
+		s := newBenchH2Server(Config{})
 		if _, err := s.appendHead(nil, 1, []byte("GET"), r, defaultMaxFrameSize); !errors.Is(err, ErrH2Protocol) {
 			t.Errorf("h2, name %q: got %v, want ErrH2Protocol", name, err)
 		}
 	}
 	ok := Response{Status: 200, Headers: []Header{{Name: []byte("x-ok"), Value: []byte("v")}}}
-	if _, err := appendH3Response(nil, ok, []byte("GET"), 0, &h3Scratch{}); err != nil {
+	if _, err := appendH3Response(nil, ok, []byte("GET"), 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("h3 refused a token name: %v", err)
 	}
 }
@@ -1548,7 +1562,7 @@ func TestQPACKMarksCredentialsNeverIndexed(t *testing.T) {
 // malformed message, whatever its type: a reserved GREASE type the assembler
 // would otherwise skip is refused with the same code as an oversized DATA.
 func TestH3OversizedGREASEFrameIsExcessiveLoad(t *testing.T) {
-	a := newH3Assembler(Config{MaxBodyBytes: 1 << 10})
+	a := testAssembler(Config{MaxBodyBytes: 1 << 10})
 	stream := quic.AppendVarint(nil, 0x21+0x1f) // a reserved frame type
 	stream = quic.AppendVarint(stream, 1<<20)
 	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, false)})
@@ -1624,4 +1638,417 @@ func TestQPACKCallerTableIsNotAliased(t *testing.T) {
 	if string(fields[0].Value) != "v1" {
 		t.Errorf("rewriting the caller's table changed a decoded field to %q", fields[0].Value)
 	}
+}
+
+// A connection that negotiated something other than "h3" is refused before
+// a byte of HTTP/3 leaves (RFC 9114 §3.1): ServeH3 returns the refusal and
+// closes the connection, which the client sees end.
+func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	serverCfg := h3ServerTLS(t)
+	serverCfg.NextProtos = []string{"h3-29"}
+	clientCfg := h3ClientTLS()
+	clientCfg.NextProtos = []string{"h3-29"}
+
+	served := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			served <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			served <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverCfg, quic.DefaultParameters())
+		if err != nil {
+			served <- err
+			return
+		}
+		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			t.Error("the handler ran on a connection that did not negotiate h3")
+			return sluice.Batch[Response]{}
+		})
+	}()
+
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), `"h3-29"`) {
+			t.Fatalf("ServeH3 returned %v, want the refusal naming h3-29", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH3 served a connection that negotiated h3-29")
+	}
+	select {
+	case <-conn.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client never saw the refused connection end")
+	}
+}
+
+// readH3GoAways reads the server's control stream until it has carried n
+// GOAWAY frames, and returns their identifiers in order.
+func readH3GoAways(t *testing.T, control *quic.Stream, n int) []uint64 {
+	t.Helper()
+	if err := control.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	tmp := make([]byte, 1024)
+	for {
+		m, err := control.Read(tmp)
+		raw = append(raw, tmp[:m]...)
+		if _, body, verr := quic.Varint(raw); verr == nil {
+			frames, _, perr := parseH3Frames(nil, body, 1<<20)
+			if perr != nil {
+				t.Fatalf("the control stream did not parse: %v", perr)
+			}
+			var ids []uint64
+			for i := range frames {
+				if frames[i].Type == h3GoAway {
+					id, _, err := quic.Varint(frames[i].Payload)
+					if err != nil {
+						t.Fatalf("GOAWAY payload: %v", err)
+					}
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) >= n {
+				return ids
+			}
+		}
+		if err != nil {
+			t.Fatalf("fewer than %d GOAWAY frames on the control stream before: %v", n, err)
+		}
+	}
+}
+
+// TestServeH3ShutdownDrainsRequest: the context is cancelled while a handler
+// is still working. The client reads two GOAWAY frames on the control
+// stream, 2^62−4 and then the one naming the stream after the one it opened;
+// a request opened from there on is rejected
+// REQUEST_REJECTED; the first response then arrives whole, and the connection
+// closes with an application code — H3_NO_ERROR or its grease — well before
+// the grace (RFC 9114 §5.2, ADR 0017 §5).
+func TestServeH3ShutdownDrainsRequest(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { <-serverDone })
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			serverUp <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		serverUp <- nil
+		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			close(entered)
+			<-release
+			res := make([]Response, 0, b.Len())
+			for _, r := range b.Items {
+				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	}()
+
+	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := <-serverUp; err != nil {
+		t.Fatalf("the server: %v", err)
+	}
+
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(h3Request("GET", "/slow")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the handler was never reached")
+	}
+	cancel()
+
+	// The server's control stream: its type, SETTINGS, then the GOAWAY
+	// pair — 2^62−4 first, then the stream after the request once the
+	// client's acknowledgement has measured the round trip.
+	control := h3StreamOf(t, conn, 3)
+	if ids := readH3GoAways(t, control, 2); ids[0] != h3MaxServerGoAway || ids[1] != 4 {
+		t.Fatalf("GOAWAY pair %v, want [%d 4]: the maximum, then the one after the request stream", ids, uint64(h3MaxServerGoAway))
+	}
+	tmp := make([]byte, 1024)
+
+	// A request from the named stream on is rejected, and the connection
+	// survives the rejection: the first answer is still owed.
+	late, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := late.Write(h3Request("GET", "/late")); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if err := late.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := late.Read(tmp); err == nil {
+		t.Fatalf("the late request was answered with %d bytes, want REQUEST_REJECTED", n)
+	}
+	if code, reset := late.WasReset(); !reset || code != h3RequestRejected {
+		t.Fatalf("the late request: reset %v with %#x, want H3_REQUEST_REJECTED", reset, code)
+	}
+
+	close(release)
+	if err := s.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var reply []byte
+	for {
+		n, err := s.Read(tmp)
+		reply = append(reply, tmp[:n]...)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading the answer: %v", err)
+		}
+	}
+	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	if err != nil {
+		t.Fatalf("the answer did not parse: %v", err)
+	}
+	var body string
+	for _, f := range frames {
+		if f.Type == h3Data {
+			body = string(f.Payload)
+		}
+	}
+	if body != "answering /slow" {
+		t.Fatalf("the answer carried %q, want it whole", body)
+	}
+
+	// Then the connection closes, with an application code, and ServeH3
+	// returns long before the grace.
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection stayed open after the last answer")
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application {
+		t.Fatalf("the connection ended with %v, want an application close", conn.Err())
+	}
+	if ce.Code != h3NoError && (ce.Code < 0x21 || (ce.Code-0x21)%0x1f != 0) {
+		t.Fatalf("closed with %#x, want H3_NO_ERROR or a grease code", ce.Code)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeH3 did not return once the request was drained")
+	}
+}
+
+// heldPC holds every datagram written while hold is set and sends them, in
+// order, at release: a client whose packets are still on their way.
+type heldPC struct {
+	net.PacketConn
+	mu   sync.Mutex
+	hold bool
+	held [][]byte
+	to   net.Addr
+}
+
+func (p *heldPC) WriteTo(b []byte, to net.Addr) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hold {
+		p.held, p.to = append(p.held, bytes.Clone(b)), to
+		return len(b), nil
+	}
+	return p.PacketConn.WriteTo(b, to)
+}
+
+func (p *heldPC) setHold() {
+	p.mu.Lock()
+	p.hold = true
+	p.mu.Unlock()
+}
+
+func (p *heldPC) release() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hold = false
+	for _, b := range p.held {
+		if _, err := p.PacketConn.WriteTo(b, p.to); err != nil {
+			return err
+		}
+	}
+	p.held = nil
+	return nil
+}
+
+// A request the client sent before it read the server's first GOAWAY is
+// served, not rejected (RFC 9114 §5.2, "without losing requests"): the
+// request's packets are held on the way while the server is cancelled and
+// sends its first GOAWAY, at 2^62−4, which the client reads; released, the
+// request arrives before the acknowledgement that lets the server name the
+// last stream it takes, and is answered. A single GOAWAY decided at the
+// cancellation named stream 0 and rejected it REQUEST_REJECTED.
+func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer func() { _ = serverPC.Close() }()
+	defer func() { _ = clientPC.Close() }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	serverUp := make(chan error, 1)
+	serverDone := make(chan struct{})
+	t.Cleanup(func() { <-serverDone })
+	go func() {
+		defer close(serverDone)
+		buf := make([]byte, 2048)
+		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			serverUp <- err
+			return
+		}
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		if err != nil {
+			serverUp <- err
+			return
+		}
+		serverUp <- nil
+		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, 0, b.Len())
+			for _, r := range b.Items {
+				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	}()
+
+	held := &heldPC{PacketConn: clientPC}
+	conn, err := quic.Dial(held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := <-serverUp; err != nil {
+		t.Fatalf("the server: %v", err)
+	}
+
+	held.setHold()
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(h3Request("GET", "/early")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if ids := readH3GoAways(t, h3StreamOf(t, conn, 3), 1); ids[0] != h3MaxServerGoAway {
+		t.Fatalf("first GOAWAY names %d, want %d: no stream is named before the round trip", ids[0], uint64(h3MaxServerGoAway))
+	}
+	if err := held.release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := io.ReadAll(s)
+	if err != nil {
+		code, reset := s.WasReset()
+		t.Fatalf("the early request: %v (reset %v, code %#x), want its answer", err, reset, code)
+	}
+	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	if err != nil {
+		t.Fatalf("the answer did not parse: %v", err)
+	}
+	var body string
+	for _, f := range frames {
+		if f.Type == h3Data {
+			body = string(f.Payload)
+		}
+	}
+	if body != "answering /early" {
+		t.Fatalf("the answer carried %q, want \"answering /early\"", body)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH3 did not return once the request was answered")
+	}
+}
+
+// A field section past the list bound is the request's fault, not the
+// connection's: the decoder reports it as the headers bound every protocol
+// maps to 431, not as a protocol error. There is no dynamic table to keep
+// consistent, so nothing past the crossing field is read.
+func TestQPACKListBoundIsAHeadersBound(t *testing.T) {
+	block := appendQPACK(nil, []Header{{Name: []byte("x-a"), Value: []byte("v")}})
+	block = append(block, 0xc0|31, 0xc0|31) // two static accept-encoding references, 64 bytes each
+	_, err := newQPACKDecoder(nil, 100).Decode(nil, block)
+	if !errors.Is(err, errHeadersTooLarge) || errors.Is(err, ErrH3Protocol) {
+		t.Fatalf("Decode returned %v, want errHeadersTooLarge and not ErrH3Protocol", err)
+	}
+}
+
+// h3StreamOf returns the stream with this identifier on c, failing the test
+// when the stream limits refuse it.
+func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
+	t.Helper()
+	s, err := c.Stream(id)
+	if err != nil {
+		t.Fatalf("stream %d: %v", id, err)
+	}
+	return s
 }

@@ -34,7 +34,7 @@ func TestScanners(t *testing.T) {
 		AppendTimestampTZ(nil, at),
 	}
 
-	rows := NewRows(len(values), 4)
+	rows := NewRows(len(values), 4, 0)
 	if err := rows.Append(dataRow(values...)); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestScanners(t *testing.T) {
 	}
 
 	t.Run("values come out in row order", func(t *testing.T) {
-		one := NewRows(len(values), 4)
+		one := NewRows(len(values), 4, 0)
 		if err := one.Append(dataRow(values...)); err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestScanners(t *testing.T) {
 	// disagree, and reading it anyway is how one bad row makes every later
 	// value plausible nonsense.
 	t.Run("a value of the wrong width is refused", func(t *testing.T) {
-		narrow := NewRows(1, 4)
+		narrow := NewRows(1, 4, 0)
 		if err := narrow.Append(dataRow([]byte{1, 2, 3})); err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,7 @@ func TestScanners(t *testing.T) {
 	// A float column carrying values a caller cannot compare with == still has
 	// to survive the scan.
 	t.Run("NaN survives a float scan", func(t *testing.T) {
-		one := NewRows(1, 4)
+		one := NewRows(1, 4, 0)
 		if err := one.Append(dataRow(AppendFloat8(nil, math.NaN()))); err != nil {
 			t.Fatal(err)
 		}
@@ -163,8 +163,8 @@ func TestScanners(t *testing.T) {
 // one row holding value.
 func described(t *testing.T, oid uint32, value []byte) *Rows {
 	t.Helper()
-	rows := NewRows(1, 4)
-	rows.Init([]Field{{Name: "c", TypeOID: oid}}, 4)
+	rows := NewRows(1, 4, 0)
+	rows.Init([]Field{{Name: "c", TypeOID: oid}}, 4, 0)
 	if err := rows.Append(dataRow(value)); err != nil {
 		t.Fatal(err)
 	}
@@ -252,8 +252,8 @@ func TestGenericScanners(t *testing.T) {
 		AppendUUID(nil, uuid), AppendNumeric(nil, price),
 		AppendTimestamp(nil, at), AppendDate(nil, day),
 	}
-	rows := NewRows(len(values), 4)
-	rows.Init(fields, 4)
+	rows := NewRows(len(values), 4, 0)
+	rows.Init(fields, 4, 0)
 	if err := rows.Append(dataRow(values...)); err != nil {
 		t.Fatal(err)
 	}
@@ -262,8 +262,8 @@ func TestGenericScanners(t *testing.T) {
 	}
 
 	t.Run("values come out in row order", func(t *testing.T) {
-		one := NewRows(len(values), 4)
-		one.Init(fields, 4)
+		one := NewRows(len(values), 4, 0)
+		one.Init(fields, 4, 0)
 		if err := one.Append(dataRow(values...)); err != nil {
 			t.Fatal(err)
 		}
@@ -317,7 +317,7 @@ func TestGenericScanners(t *testing.T) {
 	})
 
 	t.Run("a value of the wrong width is refused", func(t *testing.T) {
-		narrow := NewRows(1, 4)
+		narrow := NewRows(1, 4, 0)
 		if err := narrow.Append(dataRow([]byte{1, 2, 3})); err != nil {
 			t.Fatal(err)
 		}

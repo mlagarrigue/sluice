@@ -1,8 +1,12 @@
 package postgres_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"slices"
 	"testing"
@@ -167,4 +171,88 @@ func TestIntegrationPipelineCost(t *testing.T) {
 		t.Logf("principals=%2d  batch latency=%-12v  per call=%v",
 			principals, elapsed, elapsed/batch)
 	}
+}
+
+// Enough parameter bytes going out and result bytes coming back that both
+// sides' socket buffers fill before the server has read the last part: 16 MiB
+// out, 51 MB back. The client's buffers are shrunk to 16 KiB, so the
+// threshold no longer rides on the kernel's socket autotuning — 64 parts of
+// 16 KiB answering 200 KB hung on one machine and not on another — and the
+// server's own buffers, which autotuning grows to a few megabytes at most,
+// hold a fraction of either direction. A pipeline that reads while it sends
+// finishes in well under a second; one that flushes first never returns, so
+// it runs in a goroutine and its socket is closed to release it.
+func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	ctx := t.Context()
+	// The socket itself, closed to release a blocked pipeline: Conn.Close
+	// would flush a Terminate into the same full buffer and block with it.
+	var raw net.Conn
+	dialSmall := func(ctx context.Context) (io.ReadWriteCloser, error) {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		tc := c.(*net.TCPConn)
+		if err := tc.SetReadBuffer(16 << 10); err != nil {
+			return nil, errors.Join(err, c.Close())
+		}
+		if err := tc.SetWriteBuffer(16 << 10); err != nil {
+			return nil, errors.Join(err, c.Close())
+		}
+		raw = c
+		return c, nil
+	}
+	conn, err := postgres.Connect(ctx, dialSmall, cfg)
+	if err != nil {
+		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	const parts = 256
+	param := bytes.Repeat([]byte("p"), 64<<10)
+	ps := make([]postgres.Part, parts)
+	for i := range ps {
+		ps[i] = postgres.Part{
+			SQL:       `SELECT repeat('r', 200000), length($1)`,
+			Params:    [][]byte{param},
+			ParamOIDs: []uint32{postgres.OIDText},
+		}
+	}
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	answered := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- tx.Pipeline(ctx, ps, postgres.QueryConfig{}, func(i int, b sluice.Batch[postgres.Row]) bool {
+			for _, r := range b.Items {
+				v, _ := r.Value(0)
+				if len(v) != 200000 {
+					t.Errorf("part %d: result is %d bytes, want 200000", i, len(v))
+				}
+				answered++
+			}
+			return true
+		})
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		_ = raw.Close()
+		<-done
+		t.Fatalf("Pipeline still blocked after 10 s with %d of %d parts answered: "+
+			"send and read do not overlap", answered, parts)
+	}
+	if err != nil {
+		t.Fatalf("Pipeline: %v", err)
+	}
+	if answered != parts {
+		t.Fatalf("%d rows answered, want %d", answered, parts)
+	}
+	_ = tx.Rollback()
 }

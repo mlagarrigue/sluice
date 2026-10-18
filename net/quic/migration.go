@@ -213,7 +213,20 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // next packet's retransmittable payload, so a lost one is resent like any
 // other control frame. No-op before the handshake confirms (§5.1.1 wants
 // them in 1-RTT packets the peer is known able to read), or on a connection
-// a test built by hand with no registrar at all. Callers hold mu.
+// a test built by hand with no registrar at all.
+//
+// At most limit NEW_CONNECTION_ID frames wait on the queue at once. Each
+// RETIRE_CONNECTION_ID the peer sends costs it two bytes and would make
+// this end queue a 29-byte replacement, and the sequences are predictable,
+// so one 1200-byte packet could retire four hundred identifiers — the
+// control queue grew ten times faster than the peer's line. Once the queue
+// holds its limit, a retirement drops the identifier without a replacement
+// (§5.1.1 only asks that one SHOULD follow, and lets an endpoint limit
+// what it issues); nextLocalSeq stops growing, so the next invented
+// sequence is the §19.16 violation handleRetireConnectionID refuses, and a
+// conformant peer, which can only retire what it was sent, never meets the
+// bound. The deficit is made up when the queue drains: flushControlLocked
+// tops up after every processed packet. Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
 		return
@@ -225,7 +238,7 @@ func (c *Conn) issueLocalCIDsLocked() {
 	if limit > maxLocalActiveCIDs {
 		limit = maxLocalActiveCIDs
 	}
-	for uint64(len(c.localCIDs)) < limit {
+	for uint64(len(c.localCIDs)) < limit && uint64(c.controlNewCIDs) < limit { //nolint:gosec // G115: a count, never negative
 		cid, err := c.registrar.addLocalCID(c)
 		if err != nil {
 			return // a full table or a dying listener; the connection works without
@@ -242,12 +255,14 @@ func (c *Conn) issueLocalCIDsLocked() {
 		c.control = append(c.control, byte(len(cid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 		c.control = append(c.control, cid...)
 		c.control = append(c.control, token[:]...)
+		c.controlNewCIDs++
 	}
 }
 
 // handleRetireConnectionID acts on the peer retiring one of this end's
 // identifiers (§19.16): the entry is dropped from the demux table and a
-// replacement issued, keeping the active count. The two violations the
+// replacement issued, keeping the active count — within the bound
+// issueLocalCIDsLocked explains. The two violations the
 // section names are checked first — a sequence this end never issued, and
 // the identifier the frame's own packet arrived under (retiring the thing
 // you are using to say so proves the sender confused, and §5.1.2 forbids
@@ -447,6 +462,11 @@ func probingOnly(frames []Frame) bool {
 // sending there with it — no probe of its own, since the client's address
 // is unchanged and was validated long ago; §9.4's reset still applies,
 // because the path is new even if the peer is not.
+//
+// A server that announced disable_active_migration still follows: §9 lets
+// it either drop the packets from the new address or validate the path
+// and follow, and this is the second way. The announcement tells the
+// client not to try, not this server to refuse.
 func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -473,16 +493,30 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		c.adoptProbedCIDLocked()
 	}
 	c.migrations++
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 }
 
 // resetPathStateLocked is §9.4's bill for a new path: congestion window and
 // round-trip estimate restart from their initial state, because the old
 // path's measurements are not evidence about the new one. Callers hold mu.
-func (c *Conn) resetPathStateLocked() {
+// The datagram size restarts from 1200 with them: the old path's DPLPMTUD
+// proof is not evidence about the new one either (RFC 9000 §14.3), and the
+// probe leaves once the path is validated. The flight stays recorded — what
+// is unacknowledged is still owed — but dated: packets sent before now were
+// sent on the old path, and §9.4 says they "MUST NOT contribute to
+// congestion control or RTT estimation for the new path"
+// (sentTracker.pathStart).
+func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
-	c.cc = newNewReno(c.maxDatagram)
+	c.resetPMTULocked()
+	// ECN is validated per path (§13.4.2): the new one starts its test.
+	c.ecnRecv = ecnSocket(c.pc)
+	c.ecn.reset(c.ecnRecv)
+	c.cc = newController(c.params.Congestion, c.maxDatagram, &c.delivery)
 	c.ptoCount = 0
+	for i := range c.spaces {
+		c.spaces[i].sent.pathStart = now
+	}
 }
 
 // migrateLocked switches the send path to the peer's new address. Everything
@@ -506,7 +540,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// The peer is back on the path this end last validated while the
 		// new one is still unproven — the §9.3.3 outcome of a migration
 		// forged from copied packets, or a peer that never really left.
-		c.revertToValidatedLocked()
+		c.revertToValidatedLocked(now)
 		return
 	}
 	if !unvalidated {
@@ -527,7 +561,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.amplActive = true
 	c.amplRecv = int64(c.rxDatagramLen)
 	c.amplSent = 0
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.switchToFreshPeerCIDLocked()
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
@@ -563,7 +597,7 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 // adoptPreferredPathLocked completes a client's move to the server's
 // preferred address once its probe is answered: sends go there, under the
 // offered identifier, with the path state reset (§9.4). Callers hold mu.
-func (c *Conn) adoptPreferredPathLocked() {
+func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 	c.peer = c.pathProbe.target
 	for i := range c.peerCIDs {
 		e := &c.peerCIDs[i]
@@ -576,9 +610,14 @@ func (c *Conn) adoptPreferredPathLocked() {
 	}
 	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
 	c.migrations++
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.kickTimer()
 }
+
+// ErrMigrationDisabled is what [Conn.Rebind] returns when the server
+// announced disable_active_migration (RFC 9000 §18.2) and the connection
+// still sends to the address the handshake used.
+var ErrMigrationDisabled = errors.New("quic: the server announced disable_active_migration (RFC 9000 §18.2)")
 
 // Rebind moves the connection onto pc: client-initiated migration (RFC
 // 9000 §9), for a client whose network changed under it or that chooses to
@@ -604,6 +643,10 @@ func (c *Conn) adoptPreferredPathLocked() {
 //
 // Refused before the handshake is confirmed — §9 forbids migrating
 // earlier — on a server, which never migrates, and on a closed connection.
+// Refused with [ErrMigrationDisabled] when the server announced
+// disable_active_migration (§18.2), unless the connection has since moved
+// to the preferred address that server offered: the parameter forbids a
+// new local address only towards the address the handshake used.
 func (c *Conn) Rebind(pc net.PacketConn) error {
 	if pc == nil {
 		return errors.New("quic: Rebind to a nil socket")
@@ -619,21 +662,27 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		return errClosed
 	case !c.handshakeConfirmed:
 		return errors.New("quic: Rebind before the handshake is confirmed (RFC 9000 §9)")
+	case c.hasPeerParams && c.peerParams.DisableActiveMigration &&
+		(c.preferred == nil || !sameAddr(c.preferred, c.peer)):
+		// §18.2: "MUST NOT use a new local address when sending to the
+		// address that the peer used during the handshake" — and sending
+		// to the preferred address once the move is done (adoptPreferred-
+		// PathLocked set c.peer to it) is not sending to that address.
+		return ErrMigrationDisabled
 	}
 	select {
 	case <-c.closed:
 		return errClosed
 	default:
 	}
+	now := time.Now()
 	old := c.pc
 	c.pc = pc
 	c.migrations++
 	// The old path's measurements say nothing about the new one (§9.4).
-	c.rtt = rttEstimator{}
-	c.cc = newNewReno(c.maxDatagram)
-	c.ptoCount = 0
+	c.resetPathStateLocked(now)
 	c.switchToFreshPeerCIDLocked()
-	c.startPathChallengeLocked(time.Now())
+	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
 	c.kickTimer()
 	// Jolt the read loop out of the old socket: it re-reads c.pc on its
@@ -693,6 +742,52 @@ func (c *Conn) sendPathChallengeLocked() {
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
 		noRetrans: true, to: c.pathProbe.target, via: c.pathProbe.via, dcid: c.pathProbe.targetCID, padTo: 1200,
 	})
+}
+
+// answerPathChallengesLocked sends the PATH_RESPONSE frames one packet's
+// challenges earned — responses, already encoded back to back — in one
+// datagram to the address the packet came from (§9.3: back to the source,
+// which during a migration is not the path in use), exactly once: never
+// via loss recovery, since the peer retries with a fresh challenge and a
+// stale response proves nothing (§8.2.2). Hence a packet of its own,
+// noRetrans, with the control queue flushed first so no grant hitches a
+// ride out of loss recovery.
+//
+// §8.2.2: the datagram MUST be expanded to 1200 bytes — the probe is also
+// an MTU probe — except past the anti-amplification limit, which the
+// section itself says happens only when the challenge did not arrive
+// expanded. On the path in use the §8.1 books cover the send; toward any
+// other address the books are Conn.offPath, seeded by the challenge's own
+// datagram: a ≥1200-byte challenge earns a 1200-byte answer, a small one
+// gets a small one — never a 1200-byte reflection of a few spoofed-source
+// bytes — and writePacketLocked keeps the sum under three times what that
+// address sent. Nine bytes per response, so one packet answers a packet
+// full of challenges; a larger packet's responses take as many packets as
+// needed, the first one expanded. Callers hold mu.
+func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
+	c.flushControlLocked()
+	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
+	padTo := 0
+	if onPath || c.rxDatagramLen >= 1200 {
+		padTo = 1200
+	}
+	// A challenge that reached a server's preferred-address socket is
+	// answered with this end's own probe of that path in the same packet
+	// (§9.6.2), under the identifier that path gets.
+	probe, dcid := c.preferredPathChallengeLocked(now)
+	const responseLen = 1 + 8 // type, data
+	per := c.maxStreamChunk() / responseLen * responseLen
+	for len(responses) > 0 {
+		n := min(len(responses), per)
+		payload := responses[:n:n]
+		if len(probe) > 0 {
+			payload = append(payload, probe...)
+			probe = nil
+		}
+		_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: c.rxFrom, via: c.rxVia, dcid: dcid, padTo: padTo})
+		responses = responses[n:]
+		padTo = 0
+	}
 }
 
 // preferredPathChallengeLocked is the server half of §9.6.2, taken when a
@@ -813,7 +908,7 @@ func (c *Conn) sendOldPathChallengeLocked() {
 // short history polluted it. Not counted as a migration — it undoes one.
 // With no validated path to return to, §9.3.2 says to close silently.
 // Callers hold mu.
-func (c *Conn) revertToValidatedLocked() {
+func (c *Conn) revertToValidatedLocked(now time.Time) {
 	c.pathProbe.pending, c.pathProbe.oldPending = false, false
 	c.amplActive, c.amplRecv, c.amplSent = false, 0, 0
 	if c.lastValidatedPeer == nil {
@@ -836,7 +931,7 @@ func (c *Conn) revertToValidatedLocked() {
 	if !restored {
 		c.switchToFreshPeerCIDLocked()
 	}
-	c.resetPathStateLocked()
+	c.resetPathStateLocked(now)
 	c.kickTimer()
 }
 
@@ -846,7 +941,7 @@ func (c *Conn) revertToValidatedLocked() {
 // what validates a path is the challenge data coming back, not where from —
 // and a response that echoes nothing outstanding is ignored rather than
 // fatal: it may be the answer to a probe already given up on.
-func (c *Conn) handlePathResponse(f Frame) {
+func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 	c.mu.Lock()
 	if c.pathProbe.oldPending && bytes.Equal(f.Data, c.pathProbe.oldData[:]) {
 		// The old path is alive. Nothing moves on that alone: the peer's
@@ -860,7 +955,7 @@ func (c *Conn) handlePathResponse(f Frame) {
 		c.amplActive = false
 		switch {
 		case c.pathProbe.target != nil:
-			c.adoptPreferredPathLocked()
+			c.adoptPreferredPathLocked(now)
 		case !c.pathProbe.full:
 			// The address is validated, the path MTU is not: §8.2.1's
 			// second validation, now that no budget stands in the way.
@@ -900,7 +995,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 			// A migrated path that never validated, or validated its
 			// address but not 1200 bytes of MTU: either way not a path
 			// QUIC can use (§9.3.2, §14).
-			c.revertToValidatedLocked()
+			c.revertToValidatedLocked(now)
 			return time.Time{}
 		}
 		// A preferred address the server never answered at: the

@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,8 +38,13 @@ type h2client struct {
 	resetCount map[uint32]int
 	settings   map[uint16]uint32
 	pings      int
-	goAway     []byte
-	sawGoAway  bool
+	// pinged is the payload of each PING the server sent and this client
+	// has not acknowledged, oldest first.
+	pinged    [][]byte
+	goAway    []byte
+	sawGoAway bool
+	// goAways is every GOAWAY payload in order; goAway is the last of them.
+	goAways [][]byte
 	// maxData is the largest DATA payload seen, for the tests about the
 	// size frames leave at.
 	maxData int
@@ -77,12 +84,16 @@ func (c *h2client) frame(f h2Frame) {
 	c.buf = append(c.buf, b...)
 }
 
-// headBlock encodes a request's field section, without framing it.
+// headBlock encodes a request's field section, without framing it. The
+// authority is "h" unless extra names one.
 func headBlock(method, path string, extra ...[2]string) []byte {
 	var block []byte
 	block = literal(block, ":method", method)
 	block = literal(block, ":path", path)
 	block = literal(block, ":scheme", "http")
+	if !slices.ContainsFunc(extra, func(kv [2]string) bool { return kv[0] == ":authority" }) {
+		block = literal(block, ":authority", "h")
+	}
 	for _, kv := range extra {
 		block = literal(block, kv[0], kv[1])
 	}
@@ -152,9 +163,12 @@ func (c *h2client) parse() {
 		case framePing:
 			if flags&flagAck != 0 {
 				c.pings++
+			} else {
+				c.pinged = append(c.pinged, append([]byte(nil), payload...))
 			}
 		case frameGoAway:
 			c.goAway = append([]byte(nil), payload...)
+			c.goAways = append(c.goAways, c.goAway)
 			c.sawGoAway = true
 		}
 		c.in = c.in[9+length:]
@@ -170,6 +184,15 @@ func (c *h2client) waitGoAway() []byte {
 		c.t.Fatal("the connection did not end with GOAWAY")
 	}
 	return c.goAway
+}
+
+// goAwayLast is the last stream identifier out of a GOAWAY payload (RFC 9113
+// §6.8).
+func goAwayLast(payload []byte) uint32 {
+	if len(payload) < 8 {
+		return ^uint32(0)
+	}
+	return binary.BigEndian.Uint32(payload[:4]) & 0x7fffffff
 }
 
 // goAwayCode is the error code out of a GOAWAY payload (RFC 9113 §6.8).
@@ -248,7 +271,7 @@ func (c *h2client) request(id uint32, method, path string, extra ...[2]string) {
 		Type:     frameHeaders,
 		Flags:    flagEndHeaders | flagEndStream,
 		StreamID: id,
-		Payload:  headBlock(method, path, append([][2]string{{":authority", "h"}}, extra...)...),
+		Payload:  headBlock(method, path, extra...),
 	})
 }
 
@@ -320,12 +343,12 @@ func (c *h2client) bodies(want int) map[uint32]string {
 	return c.got
 }
 
-// serveH2 starts a prior-knowledge HTTP/2 server with its own [H2Config] —
+// serveH2 starts a prior-knowledge HTTP/2 server with its own [Config] —
 // for the tests whose subject is a knob [Serve]'s Config does not carry, such
 // as MaxConcurrentStreams. The handler is wrapped exactly as serveTest wraps
 // it, so batch sizes are read through the returned accessor rather than
 // through a shared slice the handler goroutine is still appending to.
-func serveH2(t *testing.T, cfg H2Config, h Handler) (addr string, sizes func() []int) {
+func serveH2(t *testing.T, cfg Config, h Handler) (addr string, sizes func() []int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -344,11 +367,11 @@ func serveH2(t *testing.T, cfg H2Config, h Handler) (addr string, sizes func() [
 			}
 			wg.Go(func() {
 				defer func() { _ = c.Close() }()
-				_ = ServeH2(ctx, c, cfg, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+				_ = ServeH2(ctx, c, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					mu.Lock()
 					seen = append(seen, b.Len())
 					mu.Unlock()
-					return h(b)
+					return h(ctx, b)
 				})
 			})
 		}
@@ -469,6 +492,7 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 			block = literal(block, ":method", "GET")
 			block = literal(block, ":path", "/x")
 			block = literal(block, ":scheme", "http")
+			block = literal(block, ":authority", "h")
 			block = tt.block(block)
 			f, _ := appendH2Frame(nil, h2Frame{
 				Type: frameHeaders, Flags: flagEndHeaders | flagEndStream,
@@ -500,7 +524,7 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 // others up — which is exactly what it does over HTTP/1.1, where order is
 // the only correlation there is.
 func TestH2StreamedResponse(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{
@@ -573,7 +597,7 @@ func TestH2HeaderBlockSplitInsideAFieldIsAccepted(t *testing.T) {
 	addr, _ := serveTest(t, Config{}, echoTarget)
 	c := dialH2(t, addr)
 
-	block := headBlock("GET", "/split", [2]string{":authority", "h"})
+	block := headBlock("GET", "/split")
 	head, rest := block[:5], block[5:]
 	// END_STREAM rides on HEADERS; the CONTINUATION that closes the block
 	// cannot carry it, which is the other half of what this exercises.
@@ -601,7 +625,7 @@ func TestH2HeaderBlockSplitInsideAFieldIsAccepted(t *testing.T) {
 // The client here honours its window, which is what makes the test fail
 // before the fix instead of passing by ignoring the protocol.
 func TestH2UploadPastTheInitialStreamWindow(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: fmt.Append(nil, len(r.Body))})
@@ -641,7 +665,7 @@ func TestH2UploadPastTheInitialStreamWindow(t *testing.T) {
 // visible only on a second SETTINGS, which is why it survives a first read.
 func TestH2SecondInitialWindowSizeAdjustsFromThePreviousValue(t *testing.T) {
 	const body = 1500
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -677,7 +701,7 @@ func TestH2SecondInitialWindowSizeAdjustsFromThePreviousValue(t *testing.T) {
 // writing the response.
 func TestH2WaitsForTheWindowInsteadOfRefusing(t *testing.T) {
 	const body = 200
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -739,7 +763,7 @@ func TestH2RefusesAWindowUpdateThatOverflows(t *testing.T) {
 // Trailers are legal — this server allows "TE: trailers" itself — and a
 // second header block after the body must not be read as a second request.
 func TestH2TrailersDoNotEndTheConnection(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Body...)})
@@ -761,6 +785,36 @@ func TestH2TrailersDoNotEndTheConnection(t *testing.T) {
 
 	if got := c.bodies(1)[1]; got != "hi" {
 		t.Errorf("stream 1 answered %q, want %q", got, "hi")
+	}
+}
+
+// RFC 9113 §8.1: a trailing HEADERS block reaches the handler in
+// Request.Trailers, apart from the head's fields — whether the head left
+// room behind its fields in their storage or not.
+func TestH2RequestTrailersReachTheHandler(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, fieldsEcho)
+	c := dialH2(t, addr)
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: headBlock("POST", "/t", [2]string{"te", "trailers"}),
+	})
+	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("hi")})
+	trailers := literal(nil, "x-sum", "1")
+	trailers = literal(trailers, "x-sig", "a b")
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders | flagEndStream,
+		StreamID: 1, Payload: trailers,
+	})
+	c.request(3, "GET", "/none")
+	c.flush()
+
+	bodies := c.bodies(2)
+	if got, want := bodies[1], "te host | x-sum=1 x-sig=a b"; got != want {
+		t.Errorf("stream 1 answered %q, want %q", got, want)
+	}
+	if got, want := bodies[3], "host |"; got != want {
+		t.Errorf("stream 3 answered %q, want %q", got, want)
 	}
 }
 
@@ -794,7 +848,7 @@ func TestH2RefusesDataAfterEndStream(t *testing.T) {
 // sends :authority and no Host — and the three protocols disagree about what
 // a request even looks like.
 func TestAuthorityReachesTheHandlerAsHost(t *testing.T) {
-	handler := func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	handler := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Get("host")...)})
@@ -864,7 +918,7 @@ func TestH2RapidResetBoundIsARateNotALifetimeCount(t *testing.T) {
 	cancel := func(c *h2client, id uint32) {
 		c.frame(h2Frame{
 			Type: frameHeaders, Flags: flagEndHeaders, StreamID: id,
-			Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+			Payload: headBlock("POST", "/upload"),
 		})
 		c.frame(h2Frame{
 			Type: frameRSTStream, StreamID: id,
@@ -993,7 +1047,7 @@ func TestH2RapidResetBoundIsARateNotALifetimeCount(t *testing.T) {
 // refused this from the first commit; HTTP/2 rendered it with an unsigned
 // helper that turns a negative code into an empty field.
 func TestH2RefusesAStatusThatIsNotOne(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 700})
@@ -1024,7 +1078,7 @@ func TestH2RefusesAStatusThatIsNotOne(t *testing.T) {
 // connection. It used to be a GOAWAY: one panic on one request cost every
 // other request in flight on that connection.
 func TestH2HandlerPanicAnswersOneStream(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		for _, r := range b.Items {
 			if string(r.Target) == "/boom" {
 				panic("SECRET-/var/run/keys")
@@ -1136,7 +1190,7 @@ const staticTableLen = 61
 // restored — which is what proves the table's bookkeeping, not just its
 // ceiling, survived the round trip.
 func TestH2HPACKTableShrinkToZeroThenRestore(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Get("x-custom")...)})
@@ -1268,8 +1322,9 @@ func TestH2AdvertisedMaxFrameSizeKeepsTheProtocolFloor(t *testing.T) {
 	})
 	c.flush()
 
-	if code := c.waitReset(1); code != 0xb {
-		t.Errorf("a 16 KiB frame against a 1000-byte body bound reset with %#x, want ENHANCE_YOUR_CALM (0xb)", code)
+	if code := c.waitReset(1); code != errNoError || h2Status(c.heads[1]) != 413 {
+		t.Errorf("a 16 KiB frame against a 1000-byte body bound got status %d and reset %#x, want 413 then NO_ERROR",
+			h2Status(c.heads[1]), code)
 	}
 	if c.sawGoAway {
 		t.Error("a frame at the protocol's mandatory size ended the connection")
@@ -1283,7 +1338,7 @@ func TestH2AdvertisedMaxFrameSizeKeepsTheProtocolFloor(t *testing.T) {
 // WriteTimeout resets it.
 func TestH2ServesInFlightResponsesAfterPeerGoAway(t *testing.T) {
 	const body = 200
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -1444,7 +1499,7 @@ func TestH2AssemblyDeadlineEndsAStalledUpload(t *testing.T) {
 func TestH2RepeatedSettingsEntriesMeanTheLastValue(t *testing.T) {
 	t.Run("the last duplicate wins", func(t *testing.T) {
 		const body = 300
-		addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for range b.Items {
 				out = append(out, Response{Status: 200, Body: bytes.Repeat([]byte{'y'}, body)})
@@ -1505,8 +1560,8 @@ func TestH2RepeatedSettingsEntriesMeanTheLastValue(t *testing.T) {
 // not one per CONTINUATION fragment.
 func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 	release := make(chan struct{})
-	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: 1},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/hold" {
@@ -1571,8 +1626,8 @@ func TestH2RefusedStreamBlockStillFeedsHPACK(t *testing.T) {
 // request a conformant client had in flight.
 func TestH2DataBehindARefusedStreamIsTolerated(t *testing.T) {
 	release := make(chan struct{})
-	addr, _ := serveH2(t, H2Config{MaxConcurrentStreams: 1},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: 1},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			out := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/hold" {
@@ -1794,7 +1849,7 @@ func TestH2RefusesTrailersWithoutEndStream(t *testing.T) {
 func TestH2RefusesConnectionSpecificResponseFields(t *testing.T) {
 	for _, field := range []string{"connection", "transfer-encoding", "keep-alive", "upgrade", "content-length"} {
 		t.Run(field, func(t *testing.T) {
-			addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+			addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 				out := make([]Response, 0, b.Len())
 				for range b.Items {
 					out = append(out, Response{Status: 200, Headers: []Header{
@@ -1834,7 +1889,7 @@ func TestH2PriorityOfTheWrongLengthResetsOnlyItsStream(t *testing.T) {
 	// to reset. On an idle one there is not (see the test below).
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
-		Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+		Payload: headBlock("POST", "/upload"),
 	})
 	c.frame(h2Frame{Type: framePriority, StreamID: 1, Payload: make([]byte, 4)})
 	c.flush()
@@ -1908,7 +1963,7 @@ func TestH2OversizedBlockOnAClosedStreamIsNotResetAgain(t *testing.T) {
 	// Open stream 1, then have the client reset it.
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
-		Payload: headBlock("POST", "/upload", [2]string{":authority", "h"}),
+		Payload: headBlock("POST", "/upload"),
 	})
 	c.frame(h2Frame{Type: frameRSTStream, StreamID: 1, Payload: []byte{0, 0, 0, 0x8}})
 	// A trailer section already in flight, over MaxHeaders.
@@ -2046,7 +2101,7 @@ func TestH2ContinuationPaddedFlagDoesNotCarveUpTheBlock(t *testing.T) {
 	addr, _ := serveTest(t, Config{}, echoTarget)
 	c := dialH2(t, addr)
 
-	block := headBlock("GET", "/padded", [2]string{":authority", "h"})
+	block := headBlock("GET", "/padded")
 	split := len(block) / 2
 	c.frame(h2Frame{
 		Type: frameHeaders, Flags: flagEndStream,
@@ -2065,7 +2120,7 @@ func TestH2ContinuationPaddedFlagDoesNotCarveUpTheBlock(t *testing.T) {
 	}
 }
 
-// H2Config.MaxHeaders bounds how many fields one block may decode to, the
+// Config.MaxHeaders bounds how many fields one block may decode to, the
 // same bound the HTTP/1.1 parser applies — the byte bound alone admits
 // hundreds of near-empty fields that cost a scan on every Request.Get. The
 // refusal costs the one stream, not the connection.
@@ -2079,14 +2134,14 @@ func TestH2RefusesABlockOfTooManyFields(t *testing.T) {
 	}
 	c.request(1, "GET", "/crowded", extra...)
 	c.flush()
-	if code := c.waitReset(1); code != 0xb {
-		t.Errorf("RST_STREAM carried code %#x, want ENHANCE_YOUR_CALM (0xb)", code)
+	if code := c.waitReset(1); code != errNoError || h2Status(c.heads[1]) != 431 {
+		t.Errorf("the crowded block got status %d and reset %#x, want 431 then NO_ERROR", h2Status(c.heads[1]), code)
 	}
 
 	// The connection survives, and a modest request is served.
 	c.request(3, "GET", "/modest")
 	c.flush()
-	if got := c.bodies(1)[3]; got != "/modest" {
+	if got := c.bodies(2)[3]; got != "/modest" {
 		t.Errorf("after the reset the request got %q, want %q", got, "/modest")
 	}
 }
@@ -2097,7 +2152,7 @@ func TestH2RefusesABlockOfTooManyFields(t *testing.T) {
 // served one request escaped IdleTimeout for good. And an idle close is the
 // graceful one: GOAWAY(NO_ERROR), not the INTERNAL_ERROR a failure carries.
 func TestH2IdleTimeoutRunsAgainAfterAnAnsweredRequest(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{IdleTimeout: 200 * time.Millisecond}, echoTarget)
+	addr, _ := serveH2(t, Config{IdleTimeout: 200 * time.Millisecond}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.request(1, "GET", "/once")
@@ -2135,7 +2190,7 @@ func TestH2IdleTimeoutRunsAgainAfterAnAnsweredRequest(t *testing.T) {
 // closed-stream ring, and used to keep a copy of it there — body and all — so
 // a live connection held MaxConcurrentStreams × MaxBodyBytes for nothing.
 func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, b.Len())
 		for i := range out {
 			out[i] = Response{Status: 204}
@@ -2150,7 +2205,7 @@ func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
 			Type:     frameHeaders,
 			Flags:    flagEndHeaders,
 			StreamID: id,
-			Payload:  headBlock("POST", "/upload", [2]string{":authority", "h"}),
+			Payload:  headBlock("POST", "/upload"),
 		})
 		c.data(id, body, true)
 		c.flush()
@@ -2193,7 +2248,7 @@ func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
 // there used to end the process; it costs its own stream, and the connection
 // keeps serving.
 func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, panickingProducer)
+	addr, _ := serveH2(t, Config{}, panickingProducer)
 	c := dialH2(t, addr)
 
 	c.request(1, "GET", "/boom")
@@ -2215,9 +2270,10 @@ func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
 
 // panickingProducer answers /boom with a stream that yields one chunk and
 // then panics, and anything else with its own target.
-func panickingProducer(b sluice.Batch[Request]) sluice.Batch[Response] {
+func panickingProducer(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		if string(r.Target) != "/boom" {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 			continue
@@ -2239,7 +2295,7 @@ func panickingProducer(b sluice.Batch[Request]) sluice.Batch[Response] {
 // for the connection's life — grew to match.
 func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 	const bodyLen = 4 << 20
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: bytes.Repeat([]byte("x"), bodyLen)}
@@ -2273,7 +2329,7 @@ func TestH2FramesLeaveAtOurMaxFrameSizeNotThePeers(t *testing.T) {
 // before the write received a HEADERS over its limit.
 func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 	big := bytes.Repeat([]byte("v"), 20000)
-	addr, _ := serveH2(t, H2Config{MaxFrameSize: 1 << 20}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{MaxFrameSize: 1 << 20}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Headers: []Header{{Name: []byte("x-big"), Value: big}}, Body: []byte("ok")}
@@ -2302,7 +2358,7 @@ func TestH2HeaderBlocksAreFramedAtTheProtocolFloor(t *testing.T) {
 // decoder that saw the setting shrink expects the update, and nghttp2 ends
 // the connection with COMPRESSION_ERROR when it is missing.
 func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i := range res {
 			res[i] = Response{Status: 200, Body: []byte("ok")}
@@ -2368,8 +2424,8 @@ func TestH2HeaderTableSizeChangeOpensTheNextBlock(t *testing.T) {
 // once WriteTimeout passes with nothing written: CANCEL, since this end is the
 // one that stopped waiting, and on that stream alone.
 func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
-	addr, _ := serveH2(t, H2Config{WriteTimeout: 300 * time.Millisecond},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{WriteTimeout: 300 * time.Millisecond},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, b.Len())
 			for i, r := range b.Items {
 				res[i] = Response{Status: 200}
@@ -2402,12 +2458,178 @@ func TestH2StalledResponseIsResetAfterWriteTimeout(t *testing.T) {
 	}
 }
 
+// A peer that grants its window one byte at a time, each grant just before
+// WriteTimeout would pass, makes one byte of progress per timeout — "data
+// dribble", CVE-2019-9511. The deadline is not refreshed by a write that
+// small: it advances only once a job has put a few KiB on the wire, so the
+// stream is reset within a few timeouts instead of being held, with its
+// responder, for as long as the peer cares to drip.
+func TestH2DribbleStreamIsResetWithinTheTimeout(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i := range res {
+				res[i] = Response{Status: 200, Body: bytes.Repeat([]byte{'d'}, 4096)}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 1})})
+	c.request(1, "GET", "/drip")
+	c.flush()
+
+	// One byte of credit every two thirds of the timeout, so the stream is
+	// never stalled for a whole timeout and only the progress rule can end
+	// it. pump is not used: its read deadline is longer than the drip.
+	start := time.Now()
+	tmp := make([]byte, 4096)
+	for time.Since(start) < 10*timeout {
+		c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: windowUpdatePayload(1)})
+		c.flush()
+		if err := c.conn.SetReadDeadline(time.Now().Add(2 * timeout / 3)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			n, err := c.conn.Read(tmp)
+			c.in = append(c.in, tmp[:n]...)
+			c.parse()
+			if err != nil {
+				break
+			}
+		}
+		if _, reset := c.resets[1]; reset || c.sawGoAway {
+			break
+		}
+	}
+	code, reset := c.resets[1]
+	if !reset {
+		t.Fatalf("after %v of one-byte grants the stream was still open with %d bytes written: "+
+			"every byte refreshed the deadline", time.Since(start).Round(time.Millisecond), len(c.got[1]))
+	}
+	if code != 0x8 {
+		t.Errorf("the dribbled stream was reset with %#x, want CANCEL (0x8)", code)
+	}
+	if elapsed := time.Since(start); elapsed > 3*timeout {
+		t.Errorf("the reset took %v, want under %v", elapsed.Round(time.Millisecond), 3*timeout)
+	}
+}
+
+// A stream waiting for its window holds no other stream behind it: the answer
+// to a later batch, which needs no credit, leaves while the first is still
+// parked. The batch queue used to be a call that waited for the wire, so the
+// second request was not even handed to the handler until the first stream
+// had been reset at WriteTimeout. The timeout is far past the bound the test
+// holds the second answer to, which is what makes the head-of-line block, and
+// nothing else, the reason for a late one.
+func TestH2StalledStreamDoesNotDelayTheNext(t *testing.T) {
+	const timeout = 5 * time.Second
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i, r := range b.Items {
+				res[i] = Response{Status: 200}
+				if string(r.Target) == "/stalled" {
+					res[i].Body = []byte("a payload the window never admits")
+				}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+	c.request(1, "GET", "/stalled")
+	c.flush()
+	// The head needs no credit: once it is out the stream is parked on its
+	// window, and the next request is a batch of its own.
+	c.pump(func() bool { _, seen := c.heads[1]; return seen || c.sawGoAway })
+	if _, seen := c.heads[1]; !seen {
+		t.Fatal("the head of the stalled stream never arrived")
+	}
+
+	start := time.Now()
+	c.request(3, "GET", "/after")
+	c.flush()
+	c.pump(func() bool { return c.ended[3] || c.sawGoAway || time.Since(start) > time.Second })
+	if !c.ended[3] {
+		t.Fatal("stream 3 was not answered within 1s of being asked, with stream 1 waiting for its window: " +
+			"the stalled stream holds the next batch")
+	}
+	if code, reset := c.resets[1]; reset {
+		t.Errorf("stream 1 was reset with %#x before its %v timeout", code, timeout)
+	}
+}
+
+// A peer that is reading, however slowly, is served to the end: WriteTimeout
+// is a time without progress, and a stream that has written
+// Config.WriteProgressBytes since its deadline last moved gets the whole
+// timeout again. The client grants 1500 bytes a stream every two thirds of the
+// timeout — over the 1024-byte floor, under the 4 KiB default, which is what
+// makes the field, and not the default, the reason the body arrives whole —
+// so the 8 KiB answer takes four timeouts.
+func TestH2SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		grant   = 1500
+	)
+	body := bytes.Repeat([]byte{'s'}, 8192)
+	addr, _ := serveH2(t, Config{WriteTimeout: timeout, WriteProgressBytes: 1024},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			res := make([]Response, b.Len())
+			for i := range res {
+				res[i] = Response{Status: 200, Body: body}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	c := dialH2(t, addr)
+	defer func() { _ = c.conn.Close() }()
+
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+	c.request(1, "GET", "/slow")
+	c.flush()
+
+	// pump is not used: its read deadline is longer than the pace.
+	start := time.Now()
+	tmp := make([]byte, 4096)
+	for time.Since(start) < 20*timeout {
+		c.frame(h2Frame{Type: frameWindowUpdate, StreamID: 1, Payload: windowUpdatePayload(grant)})
+		c.flush()
+		if err := c.conn.SetReadDeadline(time.Now().Add(2 * timeout / 3)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			n, err := c.conn.Read(tmp)
+			c.in = append(c.in, tmp[:n]...)
+			c.parse()
+			if err != nil {
+				break
+			}
+		}
+		if _, reset := c.resets[1]; reset || c.ended[1] || c.sawGoAway {
+			break
+		}
+	}
+	if code, reset := c.resets[1]; reset {
+		t.Fatalf("a client granting %d bytes per %v was reset with %#x after %d of %d bytes: "+
+			"the progress floor does not follow Config.WriteProgressBytes", grant, 2*timeout/3, code, len(c.got[1]), len(body))
+	}
+	if !c.ended[1] || c.got[1] != string(body) {
+		t.Errorf("the answer ended=%v with %d of %d bytes, want it whole", c.ended[1], len(c.got[1]), len(body))
+	}
+	if elapsed := time.Since(start); elapsed < 3*timeout {
+		t.Errorf("the answer took %v, under the three timeouts that make it a slow one", elapsed.Round(time.Millisecond))
+	}
+}
+
 // A producer of cadence ticks on a stream the peer resets learns it on its
 // next batch: an empty batch is never handed to the writer, so the writer's
 // refusal of a reset stream could not reach it.
 func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2429,7 +2651,7 @@ func TestH2StreamedEmptyBatchesStopOnReset(t *testing.T) {
 // what tells it, since nothing is ever written that could fail.
 func TestH2StreamedEmptyBatchesStopWhenTheConnectionCloses(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveH2(t, H2Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveH2(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -2468,7 +2690,7 @@ func TestServeAppliesMaxConcurrentStreamsToHTTP2(t *testing.T) {
 // answers 500 instead, as it does any response it will not put on the wire,
 // and a response under the limit is unaffected.
 func TestH2HonoursThePeersMaxHeaderListSize(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			res := Response{Status: 200}
@@ -2498,5 +2720,159 @@ func TestH2HonoursThePeersMaxHeaderListSize(t *testing.T) {
 	}
 	if c.sawGoAway {
 		t.Error("an over-limit response ended the connection")
+	}
+}
+
+// RFC 9113 §10.5.1 and §8.1: a request over one of the configured bounds is
+// answered on its own stream — 431 for its headers, 413 for its body — then
+// RST_STREAM NO_ERROR, and the connection survives with the request behind
+// it. A client behind a proxy acts on a status; a bare reset tells it nothing.
+func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
+	tests := []struct {
+		name   string
+		cfg    Config
+		stage  func(c *h2client)
+		status int
+	}{
+		{"a header list over MaxHeaderBytes", Config{MaxHeaderBytes: 4096}, func(c *h2client) {
+			// A small block that decodes large: each indexed reference to the
+			// static table's accept-encoding entry is one byte on the wire
+			// and 60 in the list, so the compressed bound is nowhere near.
+			block := headBlock("GET", "/x")
+			for range 4096/60 + 1 {
+				block = append(block, hpackIndexed(16)...)
+			}
+			c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+		}, 431},
+		{"more than MaxHeaders fields", Config{MaxHeaders: 8}, func(c *h2client) {
+			extra := make([][2]string, 12)
+			for i := range extra {
+				extra[i] = [2]string{fmt.Sprintf("x-%d", i), "v"}
+			}
+			c.request(1, "GET", "/x", extra...)
+		}, 431},
+		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func(c *h2client) {
+			c.frame(h2Frame{
+				Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+				Payload: headBlock("POST", "/x"),
+			})
+			c.data(1, bytes.Repeat([]byte{'b'}, 2048), true)
+		}, 413},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, sizes := serveTest(t, tt.cfg, echoTarget)
+			c := dialH2(t, addr)
+			tt.stage(c)
+			c.request(3, "GET", "/y")
+			c.flush()
+			c.pump(func() bool { _, reset := c.resets[1]; return reset && c.ended[3] || c.sawGoAway })
+
+			if c.sawGoAway {
+				t.Fatal("one oversized request ended the whole connection")
+			}
+			if got := h2Status(c.heads[1]); got != tt.status {
+				t.Errorf("stream 1 got status %d, want %d", got, tt.status)
+			}
+			if !c.ended[1] {
+				t.Error("the refusal did not end stream 1")
+			}
+			if code, reset := c.resets[1]; !reset || code != errNoError {
+				t.Errorf("stream 1 reset = %v %#x, want NO_ERROR after the status", reset, code)
+			}
+			if got := h2Status(c.heads[3]); got != 200 || !c.ended[3] {
+				t.Errorf("stream 3 got status %d, ended %v; want 200 after the refused stream", got, c.ended[3])
+			}
+			if got := sizes(); len(got) != 1 || got[0] != 1 {
+				t.Errorf("the handler saw batches %v, want the one healthy request", got)
+			}
+		})
+	}
+}
+
+// The field block of a refused request is still decoded to its end, as RFC
+// 9113 §10.5.1 requires: an entry it adds to the dynamic table after the list
+// passed the bound is there for the next request to name.
+func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxHeaderBytes: 4096}, echoTarget)
+	c := dialH2(t, addr)
+
+	block := headBlock("GET", "/x")
+	for range 4096/60 + 1 {
+		block = append(block, hpackIndexed(16)...)
+	}
+	block = append(block, hpackIncIndexed("x-kept", "v")...) // past the bound, indexed anyway
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: block})
+	// Stream 3 names that entry: the first dynamic index.
+	next := headBlock("GET", "/y")
+	next = append(next, hpackIndexed(staticTableLen+1)...)
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 3, Payload: next})
+	c.flush()
+	c.pump(func() bool { return c.ended[3] || c.sawGoAway })
+
+	if c.sawGoAway {
+		t.Fatal("the connection ended: the refused block left the table inconsistent")
+	}
+	if got := h2Status(c.heads[1]); got != 431 {
+		t.Errorf("stream 1 got status %d, want 431", got)
+	}
+	if got := h2Status(c.heads[3]); got != 200 {
+		t.Errorf("stream 3 got status %d, want 200 from an entry the refused block indexed", got)
+	}
+}
+
+// An HTTP/2 connection [Serve] accepts runs under the bounds Config names: a
+// Serve caller who raised MaxBodyBytes to 3 MiB has raised it for HTTP/2 as
+// well, and a 2 MiB upload is accepted rather than refused at the 1 MiB
+// default.
+func TestServeBoundsHTTP2ByConfig(t *testing.T) {
+	const size = 2 << 20
+	var seen atomic.Int64
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, 0, b.Len())
+		for _, r := range b.Items {
+			seen.Store(int64(len(r.Body)))
+			out = append(out, Response{Status: 200})
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	u := &rttUploader{t: t, conn: conn, stream: initialWindow, connW: initialWindow, initial: initialWindow}
+	u.cond = sync.NewCond(&u.mu)
+	var preface []byte
+	preface = append(preface, Preface...)
+	preface, _ = appendH2Frame(preface, h2Frame{Type: frameSettings})
+	u.write(preface)
+	go u.read()
+
+	head, _ := appendH2Frame(nil, h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock("POST", "/upload")})
+	u.write(head)
+	payload := make([]byte, defaultMaxFrameSize)
+	for sent := 0; sent < size; {
+		n := u.credit(min(len(payload), size-sent))
+		f := h2Frame{Type: frameData, StreamID: 1, Payload: payload[:n]}
+		if sent+n == size {
+			f.Flags = flagEndStream
+		}
+		b, _ := appendH2Frame(nil, f)
+		u.write(b)
+		sent += n
+	}
+	u.mu.Lock()
+	for !u.done && u.err == nil {
+		u.cond.Wait()
+	}
+	err = u.err
+	u.mu.Unlock()
+	if err != nil {
+		t.Fatalf("a %d-byte upload under a %d-byte Config.MaxBodyBytes was refused: %v", size, 3<<20, err)
+	}
+	if got := seen.Load(); got != size {
+		t.Errorf("the handler saw a %d-byte body, want %d", got, size)
 	}
 }

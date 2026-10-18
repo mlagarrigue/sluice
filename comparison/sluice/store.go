@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"time"
 
@@ -29,14 +28,26 @@ type store interface {
 	// unit fills found with the rows of ids, by id. A key the table does not
 	// hold is simply absent; the caller turns that into errNotFound.
 	unit(ctx context.Context, ids []int64, found map[int64]orderRow) error
-	// list returns up to limit rows above from, in key order.
-	list(ctx context.Context, from int64, limit int) ([]orderRow, error)
+	// listBatches yields up to limit rows above from, in key order, one
+	// batch at a time as the driver delivers them; the slice is the store's
+	// own and is reused between two calls. A false return stops the query.
+	listBatches(ctx context.Context, from int64, limit int, yield func([]orderRow) bool) error
 	// write inserts one row into comparison_writes.
 	write(ctx context.Context, key, total int64) error
 	// createWriteTable creates comparison_writes if it is missing and turns
 	// autovacuum off on it.
 	createWriteTable(ctx context.Context) error
 	Close() error
+}
+
+// listAll is the buffered list of R: every batch appended to one slice.
+func listAll(ctx context.Context, st store, from int64, limit int) ([]orderRow, error) {
+	items := make([]orderRow, 0, limit)
+	err := st.listBatches(ctx, from, limit, func(rows []orderRow) bool {
+		items = append(items, rows...)
+		return true
+	})
+	return items, err
 }
 
 func newStore(o options) (store, error) {
@@ -62,11 +73,9 @@ type sluiceStore struct {
 }
 
 func dial(cfg dbConfig) (*postgres.Conn, error) {
-	nc, err := net.DialTimeout("tcp", cfg.addr, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(cfg.addr), postgres.Config{
 		User: cfg.user, Database: cfg.database, Password: cfg.password,
 	})
 	if err != nil {
@@ -137,26 +146,39 @@ func (s *sluiceStore) unit(ctx context.Context, ids []int64, found map[int64]ord
 	return src.Err()
 }
 
-func (s *sluiceStore) list(ctx context.Context, from int64, limit int) ([]orderRow, error) {
+// listBatches decodes each batch of the connector as it arrives (BatchRows
+// 1024, the batch the study's list fits in) and hands it over before asking
+// for the next; the connection goes back to the pool once the stream ends.
+func (s *sluiceStore) listBatches(ctx context.Context, from int64, limit int, yield func([]orderRow) bool) error {
 	conn := <-s.pool
 	defer func() { s.pool <- conn }()
 
 	params := [][]byte{postgres.AppendInt8(nil, from), postgres.AppendInt8(nil, int64(limit))}
-	items := make([]orderRow, 0, limit)
+	rows := make([]orderRow, 0, listBatchRows)
 	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{
-		BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
+		BatchRows: listBatchRows, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
 	})
 	for b := range src.Stream() {
+		rows = rows[:0]
 		for _, r := range b.Items {
 			row, err := decodeOrder(r)
 			if err != nil {
-				return nil, errDecode
+				return errDecode
 			}
-			items = append(items, row)
+			rows = append(rows, row)
+		}
+		if !yield(rows) {
+			break
 		}
 	}
-	return items, src.Err()
+	return src.Err()
 }
+
+// listBatchRows is the batch both drivers deliver a list in: the
+// connector's BatchRows, and the size pgx's row-at-a-time cursor is grouped
+// to, so that a streamed answer writes the same number of fragments under
+// either driver.
+const listBatchRows = 1024
 
 func (s *sluiceStore) write(ctx context.Context, key, total int64) error {
 	conn := <-s.pool
@@ -199,7 +221,7 @@ type pgxStore struct {
 }
 
 func pgxURL(cfg dbConfig) string {
-	// The connector dials in clear text (postgres.Startup over TCP), so pgx
+	// The connector dials in clear text (postgres.DialTCP), so pgx
 	// must too, or axis B would be measuring TLS.
 	u := url.URL{
 		Scheme:   "postgres",
@@ -271,21 +293,33 @@ func (s *pgxStore) unit(ctx context.Context, ids []int64, found map[int64]orderR
 	return rows.Err()
 }
 
-func (s *pgxStore) list(ctx context.Context, from int64, limit int) ([]orderRow, error) {
+// listBatches groups pgx's row-at-a-time iteration into batches of
+// listBatchRows: pgx reads the wire in its own buffer and never holds the
+// whole result either, so the variant streams under both drivers.
+func (s *pgxStore) listBatches(ctx context.Context, from int64, limit int, yield func([]orderRow) bool) error {
 	rows, err := s.pool.Query(ctx, listQuery, from, int64(limit))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	items := make([]orderRow, 0, limit)
+	batch := make([]orderRow, 0, listBatchRows)
 	for rows.Next() {
 		var row orderRow
 		if err := rows.Scan(&row.ID, &row.Total, &row.Label); err != nil {
-			return nil, errDecode
+			return errDecode
 		}
-		items = append(items, row)
+		batch = append(batch, row)
+		if len(batch) == listBatchRows {
+			if !yield(batch) {
+				return nil
+			}
+			batch = batch[:0]
+		}
 	}
-	return items, rows.Err()
+	if len(batch) > 0 && !yield(batch) {
+		return nil
+	}
+	return rows.Err()
 }
 
 func (s *pgxStore) write(ctx context.Context, key, total int64) error {

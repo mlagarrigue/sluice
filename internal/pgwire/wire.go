@@ -71,6 +71,16 @@ type Reader struct {
 	buf []byte
 	max int
 
+	// win is the read-ahead window of a reader built by [NewReaderSize]; the
+	// unread bytes are win[lo:hi]. A message that fits is sliced out of it,
+	// header and body, with no copy; one larger than the window goes to buf.
+	// A reader built by [NewReader] has none and reads the transport directly.
+	win    []byte
+	lo, hi int
+	// err is a read's error that came with the bytes still in win, kept for
+	// the fill that needs more than them.
+	err error
+
 	// small counts consecutive messages that would have fit in
 	// [readerRetainBytes] while the buffer is larger than that. See
 	// readBody for why the buffer gives memory back.
@@ -87,6 +97,16 @@ func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r, max: DefaultMaxMessage}
 }
 
+// NewReaderSize returns a Reader over r that pulls up to size bytes of the
+// stream in one read and serves the messages in them from there: one read
+// per size bytes rather than two per message, the header and the body.
+//
+// It reads ahead, so nothing else may read r once it has: the bytes it took
+// belong to the messages after the one returned.
+func NewReaderSize(r io.Reader, size int) *Reader {
+	return &Reader{r: r, max: DefaultMaxMessage, win: make([]byte, size)}
+}
+
 // SetMaxMessage sets the largest message the reader will accept. A value of
 // zero or less restores [DefaultMaxMessage] rather than removing the limit:
 // there is no legitimate way to ask this package for an unbounded read.
@@ -97,11 +117,6 @@ func NewReader(r io.Reader) *Reader {
 // row costs its memory for a while rather than for the connection's life.
 // MaxMessage reports the limit [Reader.SetMaxMessage] set.
 func (rd *Reader) MaxMessage() int { return rd.max }
-
-// Underlying returns the reader messages are read from — a *bufio.Reader
-// when the transport is a socket, the transport itself otherwise. Tests use
-// it to check which; nothing else should.
-func (rd *Reader) Underlying() io.Reader { return rd.r }
 
 func (rd *Reader) SetMaxMessage(n int) {
 	if n <= 0 {
@@ -118,6 +133,9 @@ func (rd *Reader) SetMaxMessage(n int) {
 // [io.ErrUnexpectedEOF], because those are different facts about a connection
 // and collapsing them hides a truncated response.
 func (rd *Reader) Next() (Message, error) {
+	if rd.win != nil {
+		return rd.nextWindowed()
+	}
 	if _, err := io.ReadFull(rd.r, rd.hdr[:]); err != nil {
 		return Message{}, err
 	}
@@ -138,6 +156,9 @@ func (rd *Reader) Next() (Message, error) {
 // startup packet itself, and the SSL and GSSAPI requests. Every later message
 // has one, so this is called once per connection at most.
 func (rd *Reader) NextStartup() (Message, error) {
+	if rd.win != nil {
+		return Message{}, errors.New("pgwire: a startup message is read by a reader without a window")
+	}
 	if _, err := io.ReadFull(rd.r, rd.hdr[:LengthSize]); err != nil {
 		return Message{}, err
 	}
@@ -156,16 +177,121 @@ func (rd *Reader) NextStartup() (Message, error) {
 // buffer is grown, so a four-byte prefix claiming two gigabytes costs a
 // comparison and an error rather than two gigabytes.
 func (rd *Reader) readBody(length int) ([]byte, error) {
+	if err := rd.checkLength(length); err != nil {
+		return nil, err
+	}
+	n := length - LengthSize
+	body := rd.bodyBuffer(n)
+	if n == 0 {
+		return body, nil // a body-less message: Sync, Terminate, and friends
+	}
+	if _, err := io.ReadFull(rd.r, body); err != nil {
+		if errors.Is(err, io.EOF) {
+			// The header promised a body the stream did not deliver. That is a
+			// truncated message, not a clean end.
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	return body, nil
+}
+
+func (rd *Reader) checkLength(length int) error {
 	switch {
 	case length < LengthSize:
 		// The prefix counts itself, so anything below four — including the
 		// negative values a signed int32 can carry — describes nothing.
-		return nil, fmt.Errorf("%w: %d", ErrMalformedMessage, length)
+		return fmt.Errorf("%w: %d", ErrMalformedMessage, length)
 	case length > rd.max:
-		return nil, fmt.Errorf("%w: %d bytes, limit %d", ErrMessageTooLarge, length, rd.max)
+		return fmt.Errorf("%w: %d bytes, limit %d", ErrMessageTooLarge, length, rd.max)
 	}
+	return nil
+}
 
+// nextWindowed is Next for a reader with a window. The length is judged from
+// the header before the body is waited for, as in readBody, so a prefix
+// claiming two gigabytes still costs a comparison.
+func (rd *Reader) nextWindowed() (Message, error) {
+	const hdrLen = 1 + LengthSize
+	if err := rd.fill(hdrLen); err != nil {
+		if rd.lo == rd.hi && errors.Is(err, io.EOF) {
+			return Message{}, io.EOF // between two messages: a clean end
+		}
+		return Message{}, unexpected(err)
+	}
+	hdr := rd.win[rd.lo : rd.lo+hdrLen]
+	typ := hdr[0]
+	length := int(int32(binary.BigEndian.Uint32(hdr[1:]))) //nolint:gosec // G115: the protocol field is int32
+	if err := rd.checkLength(length); err != nil {
+		return Message{}, err
+	}
 	n := length - LengthSize
+	if hdrLen+n > len(rd.win) {
+		// Larger than the window: what of it is buffered is copied out, the
+		// rest read straight into the body.
+		rd.lo += hdrLen
+		body := rd.bodyBuffer(n)
+		k := copy(body, rd.win[rd.lo:rd.hi])
+		rd.lo += k
+		if k < n && rd.err != nil {
+			return Message{}, unexpected(rd.err)
+		}
+		if _, err := io.ReadFull(rd.r, body[k:]); err != nil {
+			return Message{}, unexpected(err)
+		}
+		return Message{Type: typ, Body: body}, nil
+	}
+	if err := rd.fill(hdrLen + n); err != nil {
+		return Message{}, unexpected(err)
+	}
+	start := rd.lo + hdrLen
+	rd.lo = start + n
+	return Message{Type: typ, Body: rd.win[start:rd.lo:rd.lo]}, nil
+}
+
+// fill reads until the window holds n unread bytes, n at most its size.
+//
+// The unread tail moves to the front before every read, not only when n
+// would not fit behind it: a read into the last few bytes of the window is a
+// system call for a few bytes, and the wide scan measured +16% when the tail
+// stayed put. The tail is shorter than a message, so the copy is too.
+func (rd *Reader) fill(n int) error {
+	if rd.hi-rd.lo >= n {
+		return nil
+	}
+	if rd.err != nil {
+		return rd.err
+	}
+	if rd.lo > 0 {
+		rd.hi = copy(rd.win, rd.win[rd.lo:rd.hi])
+		rd.lo = 0
+	}
+	for rd.hi-rd.lo < n {
+		k, err := rd.r.Read(rd.win[rd.hi:])
+		rd.hi += k
+		if err != nil {
+			rd.err = err
+			if rd.hi-rd.lo >= n {
+				return nil // the bytes first; the error with the next fill
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// unexpected turns the end of the stream inside a message into the
+// truncation it is.
+func unexpected(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// bodyBuffer returns rd.buf sized to n, grown or given back as the messages
+// it holds grow and shrink.
+func (rd *Reader) bodyBuffer(n int) []byte {
 	if cap(rd.buf) > readerRetainBytes {
 		// Only a reader that once met a large message pays this branch's
 		// body; the steady state is one comparison. A run of messages that
@@ -190,18 +316,7 @@ func (rd *Reader) readBody(length int) ([]byte, error) {
 		rd.buf = make([]byte, min(max(n, 2*cap(rd.buf)), rd.max-LengthSize))
 	}
 	rd.buf = rd.buf[:n]
-	if n == 0 {
-		return rd.buf, nil // a body-less message: Sync, Terminate, and friends
-	}
-	if _, err := io.ReadFull(rd.r, rd.buf); err != nil {
-		if errors.Is(err, io.EOF) {
-			// The header promised a body the stream did not deliver. That is a
-			// truncated message, not a clean end.
-			err = io.ErrUnexpectedEOF
-		}
-		return nil, err
-	}
-	return rd.buf, nil
+	return rd.buf
 }
 
 // Writer builds protocol messages into a reused buffer and writes them out.

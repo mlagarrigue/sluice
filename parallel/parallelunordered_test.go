@@ -2,7 +2,6 @@ package parallel
 
 import (
 	"fmt"
-	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -39,14 +38,12 @@ func TestParallelUnordered(t *testing.T) {
 // and agrees with Ordered.
 func TestParallelUnorderedOneIsInlineAndOrdered(t *testing.T) {
 	src := []int{5, 3, 8, 1}
-	before := runtime.NumGoroutine()
-	// The count is sampled from inside f, while the operator is running —
-	// the same probe as TestParallelOneIsInline: sampled after sluice.Collect
-	// returns, a worker pool would already have been joined and the
-	// assertion could never fail.
+	caller := goid()
+	// The same probe as TestParallelOneIsInline: f must run on the caller's
+	// goroutine, not on a worker.
 	double := func(b sluice.Batch[int]) sluice.Batch[int] {
-		if now := runtime.NumGoroutine(); now > before {
-			t.Errorf("the inline path spawned a goroutine: %d -> %d", before, now)
+		if g := goid(); g != caller {
+			t.Errorf("the inline path ran f on goroutine %s, want the caller's %s", g, caller)
 		}
 		out := make([]int, len(b.Items))
 		for i, v := range b.Items {
@@ -123,7 +120,6 @@ func TestParallelUnorderedReleasesOnEveryPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				before := runtime.NumGoroutine()
 				finalized := false
 				src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
 					defer func() { finalized = true }()
@@ -136,9 +132,6 @@ func TestParallelUnorderedReleasesOnEveryPath(t *testing.T) {
 				tt.run(src)
 				if !finalized {
 					t.Error("the source's deferred cleanup did not run")
-				}
-				if got := goroutinesSettle(t); got > before {
-					t.Errorf("%d goroutines before, %d after", before, got)
 				}
 			})
 		})

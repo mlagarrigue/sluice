@@ -7,7 +7,10 @@
 # HTTP/1.1 and HTTP/2, then runs h2spec (RFC 9113 conformance, 146 cases)
 # and fails on any red case that net/httpstream/testdata/h2spec-exclusions.txt
 # does not list — and on any listed case that passes, so the list stays
-# honest. CI runs this same script (job interop-http).
+# honest. Everything runs twice: in clear text, and behind the TLS
+# configuration docs/guide/experimental.md recommends (the server's -tls),
+# where ALPN rather than prior knowledge is what opens HTTP/2. CI runs this
+# same script (job interop-http).
 #
 # h2spec is built from a pinned commit of its repository into $TMPDIR
 # unless $H2SPEC names a binary already on the machine. Built rather than
@@ -20,9 +23,11 @@ H2SPEC_COMMIT=70ac2294010887f48b18e2d64f5cccd48421fad1 # v2.6.0
 EXCLUSIONS=net/httpstream/testdata/h2spec-exclusions.txt
 
 work=$(mktemp -d)
-server_pid=
+clear_pid=
+tls_pid=
 cleanup() {
-  [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
+  [ -n "$clear_pid" ] && kill "$clear_pid" 2>/dev/null
+  [ -n "$tls_pid" ] && kill "$tls_pid" 2>/dev/null
   rm -rf "$work"
 }
 trap cleanup EXIT INT TERM
@@ -52,17 +57,30 @@ fi
 
 echo "## building the server"
 go build -o "$work/interopserver" ./net/httpstream/internal/interopserver
-"$work/interopserver" >"$work/addr" 2>"$work/server.log" &
-server_pid=$!
-addr=
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  addr=$(head -n1 "$work/addr")
-  [ -n "$addr" ] && break
-  sleep 0.2
-done
-[ -n "$addr" ] || fail "the server printed no address: $(cat "$work/server.log")"
-port=${addr##*:}
-echo "server on $addr"
+
+# start <name> <server flags...>: starts one server and sets $pid and $addr,
+# the address read from its first line of output.
+start() {
+  name=$1
+  shift
+  "$work/interopserver" "$@" >"$work/$name.addr" 2>"$work/$name.log" &
+  pid=$!
+  addr=
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    addr=$(head -n1 "$work/$name.addr")
+    [ -n "$addr" ] && break
+    sleep 0.2
+  done
+  [ -n "$addr" ] || fail "the $name server printed no address: $(cat "$work/$name.log")"
+  echo "$name server on $addr"
+}
+
+start clear
+clear_pid=$pid
+clear_addr=$addr
+start tls -tls
+tls_pid=$pid
+tls_addr=$addr
 
 # --- curl -------------------------------------------------------------------
 
@@ -82,8 +100,10 @@ expect() {
 stream='batch 1
 batch 2
 batch 3'
+two_streams=$(printf '%s\n%s' "$stream" "$stream")
 
-echo "## curl"
+echo "## curl, clear text"
+addr=$clear_addr
 expect "HTTP/1.1 echo" "you asked for /hello" --http1.1 "http://$addr/hello"
 expect "HTTP/1.1 streamed body" "$stream" --http1.1 "http://$addr/stream"
 expect "HTTP/1.1 pipelined pair" "you asked for /ayou asked for /b" --http1.1 "http://$addr/a" "http://$addr/b"
@@ -96,8 +116,8 @@ expect "HTTP/2 streamed body" "$stream" --http2-prior-knowledge "http://$addr/st
 # framing layer", also against x/net's h2c server), so the case needs 8.0.
 curl_major=$(curl --version | sed -n '1s/^curl \([0-9]*\)\..*/\1/p')
 if [ "${curl_major:-0}" -ge 8 ]; then
-  expect "HTTP/2 two streamed bodies in parallel" "$stream
-$stream" --no-progress-meter --http2-prior-knowledge --parallel --parallel-max 2 \
+  expect "HTTP/2 two streamed bodies in parallel" "$two_streams" \
+    --no-progress-meter --http2-prior-knowledge --parallel --parallel-max 2 \
     "http://$addr/stream" "http://$addr/stream"
 else
   echo "--  HTTP/2 two streamed bodies in parallel: skipped, curl $curl_major cannot multiplex two transfers on a new h2c connection"
@@ -107,47 +127,65 @@ fi
 expect "HTTP/2 upgrade request answered as HTTP/1.1" "1.1 200" \
   --http2 -o /dev/null -w '%{http_version} %{http_code}' "http://$addr/hello"
 
+# Behind TLS there is no prior knowledge and no upgrade: curl offers h2 and
+# http/1.1 by ALPN, the server's order picks h2, and %{http_version} says
+# which one the connection actually spoke. -k: the certificate is the
+# server's own, signed at start-up.
+echo "## curl, TLS"
+addr=$tls_addr
+expect "HTTP/1.1 echo" "you asked for /hello" -k --http1.1 "https://$addr/hello"
+expect "HTTP/1.1 streamed body" "$stream" -k --http1.1 "https://$addr/stream"
+expect "HTTP/1.1 pipelined pair" "you asked for /ayou asked for /b" -k --http1.1 "https://$addr/a" "https://$addr/b"
+expect "HTTP/1.1 by ALPN" "1.1 200" \
+  -k --http1.1 -o /dev/null -w '%{http_version} %{http_code}' "https://$addr/hello"
+expect "HTTP/2 by ALPN" "2 200" \
+  -k --http2 -o /dev/null -w '%{http_version} %{http_code}' "https://$addr/hello"
+expect "HTTP/2 echo" "you asked for /hello" -k --http2 "https://$addr/hello"
+expect "HTTP/2 streamed body" "$stream" -k --http2 "https://$addr/stream"
+expect "HTTP/2 two streamed bodies in parallel" "$two_streams" \
+  --no-progress-meter -k --http2 --parallel --parallel-max 2 \
+  "https://$addr/stream" "https://$addr/stream"
+
 # --- h2spec -----------------------------------------------------------------
 
-echo "## h2spec"
-# The JUnit report of v2.6.0 records no failures, so the text output is
-# what gets parsed: the "Failures:" section at the end repeats every red
-# case under its section heading.
-set +e
-"$h2spec" -h 127.0.0.1 -p "$port" -o 5 >"$work/h2spec.txt" 2>&1
-set -e
-tail -n1 "$work/h2spec.txt"
+# run_h2spec <mode> <port> <h2spec flags...>: runs the whole suite against
+# one server and compares its red cases with the exclusion list. An entry
+# of the list applies to both modes unless it starts with "<mode>:".
+run_h2spec() {
+  mode=$1
+  port=$2
+  shift 2
+  echo "## h2spec, $mode"
+  set +e
+  "$h2spec" -h 127.0.0.1 -p "$port" -o 5 "$@" >"$work/h2spec-$mode.txt" 2>&1
+  set -e
+  tail -n1 "$work/h2spec-$mode.txt"
 
-awk '
-  /^Failures:/ { on = 1; next }
-  !on { next }
-  /^Generic tests/ { group = "generic"; next }
-  /^Hypertext Transfer/ { group = "http2"; next }
-  /^HPACK/ { group = "hpack"; next }
-  /^ +[0-9]+(\.[0-9]+)*\. / {
-    match($0, /[0-9]+(\.[0-9]+)*/); section = substr($0, RSTART, RLENGTH); next
-  }
-  index($0, "\303\227") {
-    match($0, /[0-9]+:/); print group "/" section "/" substr($0, RSTART, RLENGTH - 1)
-  }
-' "$work/h2spec.txt" | sort -u >"$work/failed"
-grep -v '^#' "$EXCLUSIONS" | grep -v '^$' | sort -u >"$work/excluded"
+  awk -f scripts/interop-h2spec.awk "$work/h2spec-$mode.txt" | sort -u >"$work/failed"
+  # Entries without a mode prefix, plus those of this mode with the prefix
+  # dropped.
+  grep -v '^#' "$EXCLUSIONS" | grep -v '^$' \
+    | sed -n -e '/^[a-z]*:/!p' -e "s/^$mode://p" | sort -u >"$work/excluded"
 
-status=0
-unexpected=$(comm -23 "$work/failed" "$work/excluded")
-if [ -n "$unexpected" ]; then
-  echo "interop-http: h2spec cases failing that $EXCLUSIONS does not list:" >&2
-  echo "$unexpected" >&2
-  status=1
-fi
-stale=$(comm -13 "$work/failed" "$work/excluded")
-if [ -n "$stale" ]; then
-  echo "interop-http: h2spec cases listed in $EXCLUSIONS that now pass; remove them:" >&2
-  echo "$stale" >&2
-  status=1
-fi
-if [ "$status" -ne 0 ]; then
-  sed -n '/^Failures:/,$p' "$work/h2spec.txt" >&2
-  exit "$status"
-fi
-echo "ok  h2spec: $(wc -l <"$work/failed" | tr -d ' ') expected failures, all listed in $EXCLUSIONS"
+  status=0
+  unexpected=$(comm -23 "$work/failed" "$work/excluded")
+  if [ -n "$unexpected" ]; then
+    echo "interop-http: h2spec cases failing in $mode that $EXCLUSIONS does not list:" >&2
+    echo "$unexpected" >&2
+    status=1
+  fi
+  stale=$(comm -13 "$work/failed" "$work/excluded")
+  if [ -n "$stale" ]; then
+    echo "interop-http: h2spec cases listed in $EXCLUSIONS that now pass in $mode; remove them:" >&2
+    echo "$stale" >&2
+    status=1
+  fi
+  if [ "$status" -ne 0 ]; then
+    sed -n '/^Failures:/,$p' "$work/h2spec-$mode.txt" >&2
+    exit "$status"
+  fi
+  echo "ok  h2spec, $mode: $(wc -l <"$work/failed" | tr -d ' ') expected failures, all listed in $EXCLUSIONS"
+}
+
+run_h2spec clear "${clear_addr##*:}"
+run_h2spec tls "${tls_addr##*:}" -t -k

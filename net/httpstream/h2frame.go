@@ -61,6 +61,10 @@ const frameHeaderSize = 9
 // a frame declaring more is refused before a byte of it is read.
 const defaultMaxFrameSize = 1 << 14 // 16384
 
+// maxFrameSize is the largest SETTINGS_MAX_FRAME_SIZE RFC 9113 §6.5.2 allows,
+// and the most the frame header's 24-bit length can express.
+const maxFrameSize = 1<<24 - 1
+
 // h2Frame is one HTTP/2 frame. Payload borrows the connection's read buffer,
 // like every other batch element in this library.
 type h2Frame struct {
@@ -85,170 +89,12 @@ func (f h2Frame) EndsHeaders() bool {
 	return false
 }
 
-// H2Config bounds an HTTP/2 connection. As everywhere here, a zero value takes
-// the modest defaults rather than the generous ones.
-type H2Config struct {
-	// MaxFrameSize is the largest frame payload accepted. Zero means 16384,
-	// the protocol's own initial value. It is capped at 1<<24-1, which is
-	// what the length field can express — and floored at 16384, because the
-	// value is advertised as SETTINGS_MAX_FRAME_SIZE and RFC 9113 §6.5.2
-	// bounds that to [2^14, 2^24-1]: a smaller value on the wire is an
-	// illegal setting a conformant client must treat as a connection error,
-	// and §4.2 obliges this end to receive 16384-byte frames regardless.
-	//
-	// It also caps the frames this end sends: a peer may advertise up to
-	// 16 MiB, and a frame that large is a buffer that large on this side.
-	MaxFrameSize int
-
-	// MaxFramesPerBatch bounds how many frames are handed over at once. Zero
-	// means 64.
-	MaxFramesPerBatch int
-
-	// MaxContinuationFrames bounds how many CONTINUATION frames may follow
-	// one HEADERS before END_HEADERS arrives. Zero means 16.
-	//
-	// This is not a tuning knob. A peer may legally split a header block
-	// across CONTINUATION frames, and a server that accepts an unbounded
-	// number of them can be made to read and buffer forever without ever
-	// completing a request — CVE-2024-27316's shape, and the reason the bound
-	// exists rather than the count being trusted.
-	MaxContinuationFrames int
-
-	// MaxHeaderBlockBytes bounds one header block, CONTINUATION frames
-	// included. Zero means 64 KiB.
-	MaxHeaderBlockBytes int
-
-	// MaxHeaders bounds how many fields one header block may decode to,
-	// pseudo-headers and trailers included. Zero means 64, as [Config]'s
-	// MaxHeaders does, and it exists for the same reason: the byte bound
-	// alone admits a block of hundreds of near-empty fields, which cost
-	// lookups — every [Request.Get] is a linear scan — rather than bytes.
-	MaxHeaders int
-
-	// MaxBodyBytes bounds one request body, assembled across DATA frames.
-	// Zero means 1 MiB, as [Config]'s does.
-	//
-	// Four times this value additionally bounds what one connection may hold
-	// across *all* bodies still assembling. The per-stream bound alone is not
-	// a connection bound: flow-control windows are replenished as DATA is
-	// buffered, so without the aggregate cap a peer could park
-	// MaxConcurrentStreams × MaxBodyBytes — 100 MiB at the defaults — by
-	// never finishing any of its uploads. The factor of four keeps several
-	// full-size concurrent uploads legal while bounding the parked memory to
-	// the same order as one window's worth of honest traffic.
-	MaxBodyBytes int
-
-	// MaxConcurrentStreams bounds how many requests one connection may have
-	// open or unanswered at once, and is what this server advertises as
-	// SETTINGS_MAX_CONCURRENT_STREAMS. Zero means 100.
-	//
-	// It bounds two things at once, which is why it is one number: the stream
-	// state the peer can make this end allocate, and the requests waiting for
-	// the handler. A stream occupies its slot from the moment it is admitted
-	// until its response has been written, so the queue between the read
-	// goroutine and the handler can never hold more than this many requests —
-	// which is what lets the read goroutine hand a batch over without ever
-	// blocking on it.
-	MaxConcurrentStreams int
-
-	// MaxPendingControlBytes bounds the control frames — SETTINGS and PING
-	// acknowledgements, WINDOW_UPDATE, RST_STREAM — waiting to be written.
-	// Zero means 16 KiB.
-	//
-	// It is the S1 bound on the one queue a peer fills directly: a client can
-	// send PING faster than this end can answer, and the answer to that is to
-	// stop reading until the queue drains, not to buffer without limit. The
-	// pressure then sits in the peer's send buffer, which is what TCP flow
-	// control is for.
-	MaxPendingControlBytes int
-
-	// MaxWriteBufferBytes is how much response payload the writer gathers
-	// before one write to the socket. Zero means 64 KiB, and it is raised to
-	// MaxFrameSize if that is larger.
-	//
-	// It is the round of the writer's round-robin: one stream on its own gets
-	// the whole of it and pays a single syscall for it, and several streams
-	// share it a frame at a time so that a large response does not hold a
-	// small one behind it.
-	MaxWriteBufferBytes int
-
-	// IdleTimeout, ReadTimeout and WriteTimeout are as [Config]'s, and answer
-	// the same slow-peer problem.
-	//
-	// IdleTimeout bounds a connection with nothing in flight. It does not run
-	// while this end owes the peer answers: a streamed response may take
-	// minutes during which a well-behaved client has nothing at all to send,
-	// and disconnecting it for silence would be this server refusing what it
-	// has just agreed to produce. Once the last answer is out the clock runs
-	// again, and the connection ends with GOAWAY(NO_ERROR) after between one
-	// and two IdleTimeouts of silence. A request that has begun and not
-	// finished is a different matter and stays on ReadTimeout, which is the
-	// bound that answers slowloris.
-	//
-	// WriteTimeout bounds two things: one write to the socket, and the wait
-	// for the flow-control credit one stream needs. A peer that grants
-	// nothing for that long has its stream reset rather than held forever.
-	//
-	// ReadTimeout also bounds one request's whole assembly, from its HEADERS
-	// to its END_STREAM, as it does on the HTTP/1.1 side. The frame-level
-	// clock alone is not that bound: it restarts on every frame consumed, so
-	// a peer that buffered most of a body and then sends one PING per
-	// interval would hold the memory forever. A stream still assembling when
-	// its deadline passes is reset, not the connection.
-	IdleTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-}
-
-func (c H2Config) withDefaults() H2Config {
-	if c.MaxFrameSize < defaultMaxFrameSize {
-		// The floor, not only the zero default: see the field's comment. A
-		// configured value below 16384 would be advertised as an illegal
-		// SETTINGS_MAX_FRAME_SIZE, so it is raised rather than honoured.
-		c.MaxFrameSize = defaultMaxFrameSize
-	}
-	if c.MaxFrameSize > 1<<24-1 {
-		c.MaxFrameSize = 1<<24 - 1
-	}
-	if c.MaxFramesPerBatch <= 0 {
-		c.MaxFramesPerBatch = 64
-	}
-	if c.MaxContinuationFrames <= 0 {
-		c.MaxContinuationFrames = 16
-	}
-	if c.MaxHeaderBlockBytes <= 0 {
-		c.MaxHeaderBlockBytes = 64 << 10
-	}
-	if c.MaxHeaders <= 0 {
-		c.MaxHeaders = 64
-	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = 30 * time.Second
-	}
-	if c.ReadTimeout <= 0 {
-		c.ReadTimeout = 10 * time.Second
-	}
-	if c.WriteTimeout <= 0 {
-		c.WriteTimeout = 10 * time.Second
-	}
-	if c.MaxBodyBytes <= 0 {
-		c.MaxBodyBytes = 1 << 20
-	}
-	if c.MaxConcurrentStreams <= 0 {
-		c.MaxConcurrentStreams = defaultMaxConcurrency
-	}
-	if c.MaxPendingControlBytes <= 0 {
-		c.MaxPendingControlBytes = 16 << 10
-	}
-	if c.MaxWriteBufferBytes <= 0 {
-		c.MaxWriteBufferBytes = 64 << 10
-	}
-	return c
-}
-
-// defaultMaxConcurrency is SETTINGS_MAX_CONCURRENT_STREAMS' default here. The
-// protocol has no initial value for it — a peer that is told nothing may open
-// as many as it likes — so saying a number is the bound, not a preference.
+// defaultMaxConcurrency is SETTINGS_MAX_CONCURRENT_STREAMS' default here, and
+// [Config.MaxConcurrentStreams]'s for HTTP/3 as well. The HTTP/2 protocol
+// has no initial value for it — a peer that is told nothing may open as many
+// as it likes — so saying a number is the bound, not a preference; 100 is
+// the floor RFC 9114 §6.1 recommends an HTTP/3 server grant, and what
+// [quic.DefaultParameters] grants, so one number serves both protocols.
 const defaultMaxConcurrency = 100
 
 // ErrH2Protocol reports a frame sequence this package will not accept. Like
@@ -266,24 +112,25 @@ var ErrH2Protocol = errors.New("httpstream: HTTP/2 protocol error")
 //
 // Payloads borrow the read buffer and are valid for the duration of the call
 // that received the batch.
-func h2Frames(c net.Conn, cfg H2Config) sluice.Source[h2Frame] {
+func h2Frames(c net.Conn, cfg Config) sluice.Source[h2Frame] {
 	return framesWith(c, cfg, nil)
 }
 
 // framesWith is Frames with the server's view of whether the connection is
 // idle. busy reports that this end owes the peer answers, in which case a
-// silent round does not end the connection — see [H2Config.IdleTimeout]. A nil busy is a
+// silent round does not end the connection — see [Config.IdleTimeout]. A nil busy is a
 // connection with nothing above it, which is what [h2Frames] gives a caller
 // composing operators directly, and it is idle whenever it is silent.
-func framesWith(c net.Conn, cfg H2Config, busy func() bool) sluice.Source[h2Frame] {
-	cfg = cfg.withDefaults()
+//
+// cfg is resolved: every caller has been through [Config.resolve].
+func framesWith(c net.Conn, cfg Config, busy func() bool) sluice.Source[h2Frame] {
 	r := &frameReader{conn: c, cfg: cfg, busy: busy}
 	return sluice.NewSource(sluice.Stream[h2Frame](r.stream), func() error { return r.err })
 }
 
 type frameReader struct {
 	conn net.Conn
-	cfg  H2Config
+	cfg  Config
 	busy func() bool
 	buf  []byte
 	n    int
@@ -372,7 +219,7 @@ func (r *frameReader) parseBuffered() (batch []h2Frame, used int, err error) {
 
 	r.batch = r.batch[:0]
 	for len(r.batch) < r.cfg.MaxFramesPerBatch {
-		f, n, err := parseFrame(r.buf[used:r.n], r.cfg)
+		f, n, err := parseFrame(r.buf[used:r.n], r.cfg.MaxFrameSize)
 		if errors.Is(err, errIncomplete) {
 			break
 		}
@@ -408,8 +255,8 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 			return fmt.Errorf("%w: over %d CONTINUATION frames in one header block",
 				ErrH2Protocol, r.cfg.MaxContinuationFrames)
 		}
-		if r.headerBlock > r.cfg.MaxHeaderBlockBytes {
-			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBlockBytes)
+		if r.headerBlock > r.cfg.MaxHeaderBytes {
+			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBytes)
 		}
 		if f.EndsHeaders() {
 			r.inHeaderBlock = false
@@ -422,8 +269,8 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 		return fmt.Errorf("%w: CONTINUATION with no open header block", ErrH2Protocol)
 	case frameHeaders:
 		r.headerBlock = len(f.Payload)
-		if r.headerBlock > r.cfg.MaxHeaderBlockBytes {
-			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBlockBytes)
+		if r.headerBlock > r.cfg.MaxHeaderBytes {
+			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBytes)
 		}
 		if !f.EndsHeaders() {
 			r.inHeaderBlock, r.openStream, r.continuations = true, f.StreamID, 0
@@ -494,17 +341,17 @@ func (r *frameReader) fill() error {
 // The length is checked against the negotiated maximum *before* the payload is
 // waited for, so a peer cannot make this buffer sixteen megabytes by writing
 // nine bytes.
-func parseFrame(buf []byte, cfg H2Config) (h2Frame, int, error) {
+func parseFrame(buf []byte, maxFrameSize int) (h2Frame, int, error) {
 	var f h2Frame
 	if len(buf) < frameHeaderSize {
 		return f, 0, errIncomplete
 	}
 	length := int(buf[0])<<16 | int(buf[1])<<8 | int(buf[2])
-	if length > cfg.MaxFrameSize {
+	if length > maxFrameSize {
 		// §4.2 mandates FRAME_SIZE_ERROR for a frame over the advertised
 		// maximum, which errFrameSize puts on the GOAWAY.
 		return f, 0, fmt.Errorf("%w: %w: a frame declares %d bytes, over the %d-byte maximum",
-			ErrH2Protocol, errFrameSize, length, cfg.MaxFrameSize)
+			ErrH2Protocol, errFrameSize, length, maxFrameSize)
 	}
 	f.Type, f.Flags = buf[3], buf[4]
 	// The top bit is reserved and must be ignored rather than rejected

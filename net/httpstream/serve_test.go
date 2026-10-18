@@ -2,11 +2,13 @@ package httpstream
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,11 +34,11 @@ func serveTest(t *testing.T, cfg Config, h Handler) (addr string, sizes func() [
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Serve(ctx, ln, cfg, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = Serve(ctx, ln, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			mu.Lock()
 			seen = append(seen, b.Len())
 			mu.Unlock()
-			return h(b)
+			return h(ctx, b)
 		})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
@@ -50,9 +52,10 @@ func serveTest(t *testing.T, cfg Config, h Handler) (addr string, sizes func() [
 
 // echoTarget answers each request with its own target, so a test can tell
 // which answer belongs to which request.
-func echoTarget(b sluice.Batch[Request]) sluice.Batch[Response] {
+func echoTarget(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 	}
 	return sluice.Batch[Response]{Items: out}
@@ -210,7 +213,7 @@ func TestConnectionCloseEndsTheStream(t *testing.T) {
 // A handler that answers the wrong number of requests would answer the wrong
 // caller, since position is the only correlation a pipelined connection has.
 func TestHandlerThatDropsARequestIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		// The mistake the gateway documents: filtering an element out of a
 		// pipeline that correlates by position.
 		return sluice.Batch[Response]{Items: nil}
@@ -227,7 +230,7 @@ func TestHandlerThatDropsARequestIsRefused(t *testing.T) {
 // A panic in the handler is the caller's bug and must not take the process
 // down with it — the same bargain web.Recover makes over net/http.
 func TestHandlerPanicBecomesA500(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] {
 		panic("the caller's own bug")
 	})
 	c := dial(t, addr)
@@ -242,7 +245,7 @@ func TestHandlerPanicBecomesA500(t *testing.T) {
 // A header value carrying CRLF would end the field early and let what follows
 // be read as another response. Refused at the only place it can be.
 func TestResponseSplittingIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Headers: []Header{{
@@ -271,6 +274,18 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 		{"no Host", "GET /x HTTP/1.1\r\n\r\n", "400"},
 		{"absolute-form", "GET http://elsewhere/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 		{"body over the bound", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 999999999\r\n\r\n", "413"},
+		// RFC 9112 §3: the request-target over the bound is 414, not 413.
+		{"request line over the bound", "GET /" + strings.Repeat("x", 9<<10) + " HTTP/1.1\r\nHost: h\r\n\r\n", "414"},
+		// RFC 6585 §5: header fields over the bound are 431, not 413.
+		{"headers over the bound", "GET /x HTTP/1.1\r\nHost: h\r\nX: " + strings.Repeat("y", 70<<10) + "\r\n\r\n", "431"},
+		{"too many header fields", "GET /x HTTP/1.1\r\nHost: h\r\n" + strings.Repeat("X: y\r\n", 200) + "\r\n", "431"},
+		// RFC 9110 §15.6.6: a well-formed version this server does not
+		// speak is 505; a version that is not one is still 400.
+		{"version not supported", "GET /x HTTP/3.0\r\nHost: h\r\n\r\n", "505"},
+		{"HTTP/2 on an HTTP/1 connection", "GET /x HTTP/2.0\r\nHost: h\r\n\r\n", "505"},
+		{"version that is not one", "GET /x HTTP/one\r\nHost: h\r\n\r\n", "400"},
+		// The grammar allows one digit each side of the dot.
+		{"two-digit minor version", "GET /x HTTP/1.10\r\nHost: h\r\n\r\n", "400"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -282,6 +297,48 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 				t.Errorf("status = %q, want %s", status, tt.want)
 			}
 		})
+	}
+}
+
+// A higher minor version of HTTP/1 is served as HTTP/1.1 rather than refused
+// (RFC 9110 §6.2): the answer says HTTP/1.1, the version this server speaks,
+// and the connection persists for a second request as a 1.1 one would
+// (RFC 9112 §9.3).
+func TestHigherMinorVersionIsServedAsHTTP11(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	r := bufio.NewReader(c)
+
+	for _, target := range []string{"/a", "/b"} {
+		fmt.Fprintf(c, "GET %s HTTP/1.2\r\nHost: h\r\n\r\n", target)
+		status, body := readResponse(t, r)
+		if !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("%s: status = %q, want HTTP/1.1 200", target, status)
+		}
+		if body != target {
+			t.Errorf("%s: body = %q", target, body)
+		}
+	}
+}
+
+// A client refused mid-upload reads its 413 rather than a reset. A server
+// that closes with unread bytes in its socket makes its TCP stack answer the
+// client's next segment with a reset, which fails the client's writes and can
+// erase the response before its parser reads it (RFC 9112 §9.6). This server
+// half-closes, reads the rest of the upload away, then closes: the client's
+// whole upload is accepted by the socket and its answer is readable after.
+func TestRefusedUploadReadsItsStatusInFull(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 1 << 10}, echoTarget)
+	c := dial(t, addr)
+
+	body := bytes.Repeat([]byte("u"), 8<<20)
+	fmt.Fprintf(c, "POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: %d\r\n\r\n", len(body))
+	if _, err := c.Write(body); err != nil {
+		t.Fatalf("upload: %v; the server closed with the upload unread and the stack reset the client", err)
+	}
+	status, _ := readResponse(t, bufio.NewReader(c))
+	if !strings.Contains(status, "413") {
+		t.Errorf("status = %q, want 413", status)
 	}
 }
 
@@ -312,7 +369,7 @@ func newReader(c net.Conn) *bufio.Reader { return bufio.NewReader(c) }
 // — which is why this test leaves one deliberately unfinished.
 func TestABatchIsNotOverwrittenByTheNextRead(t *testing.T) {
 	seen := make(chan []string, 4)
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		bodies := make([]string, 0, b.Len())
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
@@ -352,7 +409,7 @@ func TestABatchIsNotOverwrittenByTheNextRead(t *testing.T) {
 // them is unusual.
 func TestStreamedResponseOverHTTP11(t *testing.T) {
 	pulls := make(chan int, 8)
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -435,7 +492,7 @@ func TestStreamedResponseOverHTTP11(t *testing.T) {
 // get to desync a pipelined HEAD request behind it.
 func TestStreamedResponseCarriesNoBodyOnHEAD(t *testing.T) {
 	var headPulled atomic.Bool
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			method := string(req.Method)
@@ -487,7 +544,7 @@ func TestStreamedResponseCarriesNoBodyOnHEAD(t *testing.T) {
 
 // A response cannot say two things about its payload.
 func TestResponseWithBothBodyAndStreamIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Body:   []byte("here"),
@@ -512,7 +569,7 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 	var produced atomic.Int64
 	started, returned := make(chan struct{}), make(chan struct{})
 	addr, _ := serveTest(t, Config{WriteTimeout: 300 * time.Millisecond},
-		func(b sluice.Batch[Request]) sluice.Batch[Response] {
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: []Response{{
 				Status: 200,
 				Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -546,6 +603,99 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 	}
 }
 
+// slowPipeClient asks one request over the server end of a pipe and reads the
+// answer step bytes at a time, one step every pace, until the connection
+// ends, the answer is whole or bound passes. It returns what arrived, how
+// long it took and whether the server closed the connection. net.Pipe is what
+// makes the pace the server's whole write budget: a write returns only as
+// fast as the client reads, and a write that times out reports the bytes the
+// client took.
+func slowPipeClient(t *testing.T, cfg Config, bodyLen, step int, pace, bound time.Duration) (got []byte, took time.Duration, closed bool) {
+	t.Helper()
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	body := bytes.Repeat([]byte{'p'}, bodyLen)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = server.Close() }()
+		serveConn(t.Context(), &prefixConn{Conn: server}, nil, cfg.mustResolve(),
+			func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				out := make([]Response, b.Len())
+				for i := range out {
+					out[i] = Response{Status: 200, Body: body}
+				}
+				return sluice.Batch[Response]{Items: out}
+			})
+	}()
+	t.Cleanup(func() { _ = client.Close(); <-done })
+
+	if err := client.SetDeadline(time.Now().Add(bound + 5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(client, "GET /slow HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	buf := make([]byte, step)
+	for time.Since(start) < bound {
+		n, err := client.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			return got, time.Since(start), true
+		}
+		if i := bytes.Index(got, []byte("\r\n\r\n")); i >= 0 && len(got)-(i+4) >= bodyLen {
+			return got, time.Since(start), false
+		}
+		time.Sleep(pace)
+	}
+	return got, time.Since(start), false
+}
+
+// A client that reads slowly but steadily is served to the end over
+// HTTP/1.1: WriteTimeout is a time without progress, so a write that times
+// out having put the default 4 KiB on the wire gets the timeout again from
+// where it stopped. The client takes 6 KiB every 100ms, so the 64 KiB answer
+// takes four timeouts and no single deadline from the start of the write
+// would let it finish.
+func TestH1SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		bodyLen = 64 << 10
+	)
+	got, took, closed := slowPipeClient(t, Config{WriteTimeout: timeout}, bodyLen, 6<<10, 100*time.Millisecond, 20*timeout)
+	i := bytes.Index(got, []byte("\r\n\r\n"))
+	if closed || i < 0 || len(got)-(i+4) != bodyLen {
+		t.Fatalf("after %v the client had %d bytes of a %d-byte answer, closed by the server=%v: "+
+			"a client reading 6 KiB per 100ms was cut by a %v write timeout", took.Round(time.Millisecond), len(got), bodyLen, closed, timeout)
+	}
+	if took < 3*timeout {
+		t.Errorf("the answer took %v, under the three timeouts that make it a slow one", took.Round(time.Millisecond))
+	}
+}
+
+// A client that reads less than the progress floor per timeout is cut at
+// about the timeout over HTTP/1.1, the connection closed with the answer
+// incomplete: 64 bytes every two thirds of a timeout never moves the
+// deadline, however long the client keeps at it.
+func TestH1DribbleReaderIsCutWithinTheTimeout(t *testing.T) {
+	const (
+		timeout = 300 * time.Millisecond
+		bodyLen = 64 << 10
+	)
+	got, took, closed := slowPipeClient(t, Config{WriteTimeout: timeout}, bodyLen, 64, 2*timeout/3, 10*timeout)
+	if !closed {
+		t.Fatalf("after %v of 64-byte reads the connection was still open with %d bytes taken: "+
+			"every read moved the write deadline", took.Round(time.Millisecond), len(got))
+	}
+	if i := bytes.Index(got, []byte("\r\n\r\n")); i >= 0 && len(got)-(i+4) >= bodyLen {
+		t.Errorf("the whole %d-byte answer was served to a client under the progress floor", bodyLen)
+	}
+	if took > 3*timeout {
+		t.Errorf("the cut took %v, want under %v", took.Round(time.Millisecond), 3*timeout)
+	}
+}
+
 // A streamed response to an HTTP/1.0 client cannot be chunked: RFC 9112 §6.1
 // forbids Transfer-Encoding in a response unless the request was HTTP/1.1,
 // and a 1.0 client reads the chunk sizes as body bytes. The body is
@@ -553,7 +703,7 @@ func TestStreamedResponseStopsWhenTheClientLeaves(t *testing.T) {
 // when the client asked for keep-alive, since EOF is the only end such a
 // body has.
 func TestStreamedResponseToHTTP10IsCloseDelimited(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200,
 			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
@@ -601,7 +751,7 @@ func TestStreamedResponseToHTTP10IsCloseDelimited(t *testing.T) {
 // nothing said leaves the client to guess which request was at fault. The
 // responses already owed ahead of it still go out first.
 func TestStreamedBatchAnswers500WhenAResponseFailsBeforeItsFirstByte(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			if string(req.Target) == "/bad" {
@@ -650,7 +800,7 @@ func TestStreamedBatchAnswers500WhenAResponseFailsBeforeItsFirstByte(t *testing.
 // and in order — they are coalesced into shared writes around the stream, and
 // coalescing must not change what the client reads.
 func TestStreamedBatchKeepsBufferedNeighboursInOrder(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, req := range b.Items {
 			if string(req.Target) == "/stream" {
@@ -811,7 +961,7 @@ func waitStopped(t *testing.T, stopped <-chan struct{}) {
 // on a next write it may never make.
 func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		return sluice.Batch[Response]{Items: []Response{{
 			Status: 200, Stream: cadenceProducer(started, stopped, release),
 		}}}
@@ -838,7 +988,7 @@ func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 func TestWriteBatchRefusesConnectionSpecificFields(t *testing.T) {
 	for _, field := range []string{"Connection", "keep-alive", "Proxy-Connection", "Upgrade", "Trailer"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(field), Value: []byte("x")}}}
-		if _, err := WriteBatch(nil, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: got %v, want ErrMalformed", field, err)
 		}
 	}
@@ -883,7 +1033,7 @@ func TestSniffDeadlineCoversTheWholePreface(t *testing.T) {
 // Connection: close written by the server, and the connection ends — where
 // a refusal turned an ordinary HTTP/1.1 request to close into a 500.
 func TestHandlerConnectionCloseIsHonoured(t *testing.T) {
-	closer := func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	closer := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for i, r := range b.Items {
 			res := Response{Status: 200, Body: append([]byte(nil), r.Target...)}
@@ -920,8 +1070,427 @@ func TestHandlerConnectionCloseIsHonoured(t *testing.T) {
 func TestHandlerConnectionOtherThanCloseIsRefused(t *testing.T) {
 	for _, v := range []string{"keep-alive", "close, upgrade", "x"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte("Connection"), Value: []byte(v)}}}
-		if _, err := WriteBatch(nil, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("Connection: %s: got %v, want ErrMalformed", v, err)
+		}
+	}
+}
+
+// Config.MaxConns caps what Serve holds open at once: the connection over
+// the cap is closed as it is accepted, with nothing written, and a slot
+// freed by a connection that ended admits the next one.
+func TestServeRefusesConnectionsOverMaxConns(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxConns: 2}, echoTarget)
+
+	ask := func(c net.Conn) (string, error) {
+		if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+			return "", err
+		}
+		status, _ := readResponse(t, bufio.NewReader(c))
+		return status, nil
+	}
+	first, second := dial(t, addr), dial(t, addr)
+	for i, c := range []net.Conn{first, second} {
+		if status, err := ask(c); err != nil || !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("connection %d under the cap: status %q, err %v", i+1, status, err)
+		}
+	}
+
+	third := dial(t, addr)
+	if _, err := third.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err == nil {
+		n, err := third.Read(make([]byte, 1))
+		if n != 0 || err == nil {
+			t.Fatalf("the third connection read %d bytes, err %v: it was served over MaxConns 2", n, err)
+		}
+	}
+
+	// A slot frees when the server notices the close, which is a read on
+	// its side; the fourth connection is tried until it does.
+	_ = first.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetDeadline(time.Now().Add(time.Second))
+		status, err := askQuietly(c)
+		_ = c.Close()
+		if err == nil && strings.HasPrefix(status, "HTTP/1.1 200") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after one connection closed the next was still refused: status %q, err %v", status, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Config.MaxConnsPerIP caps what one remote IP holds open through Serve: the
+// third connection from the same address is closed as it is accepted, with
+// nothing written, while MaxConns alone would have admitted it.
+func TestServeRefusesConnectionsOverMaxConnsPerIP(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxConns: 10, MaxConnsPerIP: 2}, echoTarget)
+	for i := range 2 {
+		c := dial(t, addr)
+		if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := readResponse(t, bufio.NewReader(c)); !strings.HasPrefix(status, "HTTP/1.1 200") {
+			t.Fatalf("connection %d under the per-IP cap: status %q", i+1, status)
+		}
+	}
+	third := dial(t, addr)
+	if _, err := third.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err == nil {
+		n, err := third.Read(make([]byte, 1))
+		if n != 0 || err == nil {
+			t.Fatalf("the third connection read %d bytes, err %v: it was served over MaxConnsPerIP 2", n, err)
+		}
+	}
+}
+
+// addrConn is a net.Conn that only answers RemoteAddr, for the admission
+// arithmetic of connSet.
+type addrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *addrConn) RemoteAddr() net.Addr { return c.remote }
+
+// connSet counts MaxConnsPerIP by prefix: the port does not separate two
+// connections, an IPv4-mapped IPv6 address counts with its IPv4 form,
+// another address is admitted while one is at the cap, a removal frees its
+// slot, and a remote address that is not IP is bound by the total alone. At
+// the default lengths two IPv6 addresses of one /64 share a count and the
+// next /64 has its own.
+func TestConnSetBoundsEachIP(t *testing.T) {
+	tcp := func(ip string, port int) net.Conn {
+		return &addrConn{remote: &net.TCPAddr{IP: net.ParseIP(ip), Port: port}}
+	}
+	cfg, err := Config{MaxConnsPerIP: 2}.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newConnSet(cfg)
+	if s.add(tcp("2001:db8:0:1::1", 1000)) == nil || s.add(tcp("2001:db8:0:1::2", 1000)) == nil {
+		t.Fatal("the first two connections from 2001:db8:0:1::/64 were refused")
+	}
+	if s.add(tcp("2001:db8:0:1:ffff::1", 1000)) != nil {
+		t.Fatal("a third connection from 2001:db8:0:1::/64 was admitted over MaxConnsPerIP 2")
+	}
+	if s.add(tcp("2001:db8:0:2::1", 1000)) == nil {
+		t.Fatal("a connection from 2001:db8:0:2::/64 was refused while only its neighbour is at the cap")
+	}
+	a1, a2 := tcp("192.0.2.1", 1000), tcp("::ffff:192.0.2.1", 1001)
+	if s.add(a1) == nil || s.add(a2) == nil {
+		t.Fatal("the first two connections from 192.0.2.1 were refused")
+	}
+	if s.add(tcp("192.0.2.1", 1002)) != nil {
+		t.Fatal("a third connection from 192.0.2.1 was admitted over MaxConnsPerIP 2")
+	}
+	if s.add(tcp("192.0.2.2", 1000)) == nil {
+		t.Fatal("a connection from 192.0.2.2 was refused while only 192.0.2.1 is at the cap")
+	}
+	s.remove(a2)
+	if s.add(tcp("192.0.2.1", 1003)) == nil {
+		t.Fatal("192.0.2.1 was refused after one of its connections was removed")
+	}
+	for i := range 3 {
+		if s.add(&addrConn{remote: &net.UnixAddr{Net: "unix"}}) == nil {
+			t.Fatalf("Unix connection %d was refused: no per-IP bound applies to it", i+1)
+		}
+	}
+	if got := s.byIP[netip.MustParsePrefix("192.0.2.1/32")]; got != 2 {
+		t.Fatalf("192.0.2.1 counts %d connections, want 2", got)
+	}
+}
+
+// askQuietly sends one request and returns its status line, with every
+// failure reported as an error rather than ending the test, for the callers
+// that retry.
+func askQuietly(c net.Conn) (string, error) {
+	if _, err := c.Write([]byte("GET /x HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
+		return "", err
+	}
+	return bufio.NewReader(c).ReadString('\n')
+}
+
+// RFC 9112 §3.2: a Host that is not an authority is answered 400, by the same
+// rule HTTP/2 and HTTP/3 apply to :authority — and the asterisk-form target is
+// OPTIONS' alone.
+func TestHostIsAnAuthorityOnHTTP1(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"an empty Host", "GET /x HTTP/1.1\r\nHost:\r\n\r\n", "400"},
+		{"userinfo in Host", "GET /x HTTP/1.1\r\nHost: u@h\r\n\r\n", "400"},
+		{"a path and a space in Host", "GET /x HTTP/1.1\r\nHost: evil.com/x y@z\r\n\r\n", "400"},
+		{"a port that is not digits", "GET /x HTTP/1.1\r\nHost: h:8a\r\n\r\n", "400"},
+		{"an unclosed IPv6 literal", "GET /x HTTP/1.1\r\nHost: [::1\r\n\r\n", "400"},
+		{"an IPv6 literal with a port", "GET /x HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n", "200"},
+		{"brackets holding no address", "GET /x HTTP/1.1\r\nHost: [zz]\r\n\r\n", "400"},
+		{"a percent not followed by hex", "GET /x HTTP/1.1\r\nHost: h%zz\r\n\r\n", "400"},
+		{"an IPvFuture", "GET /x HTTP/1.1\r\nHost: [v1.x]\r\n\r\n", "200"},
+		{"OPTIONS *", "OPTIONS * HTTP/1.1\r\nHost: h\r\n\r\n", "200"},
+		{"GET *", "GET * HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, _ := serveTest(t, Config{}, echoTarget)
+			c := dial(t, addr)
+			fmt.Fprint(c, tt.raw)
+			status, _ := readResponse(t, bufio.NewReader(c))
+			if !strings.Contains(status, tt.want) {
+				t.Errorf("status = %q, want %s", status, tt.want)
+			}
+		})
+	}
+}
+
+// A parse error costs the request that carries it, not the valid ones parsed
+// ahead of it in the same read: those are served, in order, and the 400
+// closes the connection after them (RFC 9112 §9.3 orders the responses).
+func TestRequestsParsedBeforeAnErrorAreServed(t *testing.T) {
+	addr, sizes := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\nGET * HTTP/1.1\r\nHost: h\r\n\r\n")
+	br := bufio.NewReader(c)
+	if status, body := readResponse(t, br); !strings.Contains(status, "200") || body != "/a" {
+		t.Fatalf("first response %q %q, want 200 /a", status, body)
+	}
+	if status, _ := readResponse(t, br); !strings.Contains(status, "400") {
+		t.Fatalf("second response %q, want 400", status)
+	}
+	if got := sizes(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("batch sizes %v, want the one valid request alone", got)
+	}
+}
+
+// RFC 9112 §2.2: a server SHOULD ignore at least one empty line before a
+// request-line — the CRLF some clients send after a body.
+func TestAnEmptyLineBeforeARequestLineIsIgnored(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\n\r\nGET /b HTTP/1.1\r\nHost: h\r\n\r\n")
+	br := bufio.NewReader(c)
+	for _, want := range []string{"/a", "/b"} {
+		if status, body := readResponse(t, br); !strings.Contains(status, "200") || body != want {
+			t.Fatalf("response %q %q, want 200 %s", status, body, want)
+		}
+	}
+}
+
+// RFC 9110 §15.2: a server MUST NOT send a 1xx to an HTTP/1.0 client, and
+// §10.1.1 says Expect is ignored there; the request is otherwise served.
+func TestNo100ContinueToAnHTTP10Client(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dial(t, addr)
+	fmt.Fprint(c, "POST /x HTTP/1.0\r\nHost: h\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")
+	if err := c.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var one [1]byte
+	if n, err := c.Read(one[:]); err == nil {
+		t.Fatalf("%d byte(s) arrived before the body was sent: an interim response to an HTTP/1.0 client", n)
+	}
+	if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(c, "ab")
+	if status, body := readResponse(t, bufio.NewReader(c)); !strings.Contains(status, "200") || body != "/x" {
+		t.Fatalf("response %q %q, want 200 /x", status, body)
+	}
+}
+
+// readFields reads one response's status line, header lines and body — the
+// body by its Content-Length, as readResponse does — and returns the header
+// lines, for a test about what a response says rather than what it carries.
+func readFields(t *testing.T, br *bufio.Reader) []string {
+	t.Helper()
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("reading the status line: %v", err)
+	}
+	var head []string
+	length := 0
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading headers: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+		head = append(head, line)
+		if name, value, ok := strings.Cut(line, ": "); ok && strings.EqualFold(name, "content-length") {
+			if _, err := fmt.Sscanf(value, "%d", &length); err != nil {
+				t.Fatalf("Content-Length %q: %v", value, err)
+			}
+		}
+	}
+	if _, err := readFull(br, make([]byte, length)); err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+	return head
+}
+
+// wantLine checks whether one exact header line is among head.
+func wantLine(t *testing.T, head []string, line string, want bool) {
+	t.Helper()
+	got := false
+	for _, h := range head {
+		got = got || h == line
+	}
+	if got != want {
+		t.Errorf("%q present = %v, want %v, in %q", line, got, want, head)
+	}
+}
+
+// The idle timeout is announced on every HTTP/1.1 response that keeps the
+// connection, named in Connection as RFC 9110 §7.6.1 requires of a
+// hop-by-hop field, so a proxy in front with a longer idle timeout of its
+// own closes first rather than reuse a connection this server is closing.
+// The response that closes says only that. An HTTP/1.0 client asking for
+// keep-alive gets the option back, which is what persists its connection
+// (RFC 9112 §9.3). WriteBatch on its own describes no connection and
+// announces nothing.
+func TestKeepAliveAnnouncesIdleTimeout(t *testing.T) {
+	addr, _ := serveTest(t, Config{IdleTimeout: 7 * time.Second}, echoTarget)
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+
+	fmt.Fprint(c, "GET /a HTTP/1.1\r\nHost: h\r\n\r\n")
+	head := readFields(t, br)
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+	wantLine(t, head, "Connection: close", false)
+
+	fmt.Fprint(c, "GET /b HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n")
+	head = readFields(t, br)
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+
+	fmt.Fprint(c, "GET /c HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+	head = readFields(t, br)
+	wantLine(t, head, "Connection: close", true)
+	wantLine(t, head, "Connection: keep-alive", false)
+	wantLine(t, head, "Keep-Alive: timeout=7", false)
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Errorf("after Connection: close, read %v, want EOF", err)
+	}
+}
+
+// A caller serving the connection itself answers as Serve would: WriteBatch
+// announces the configured idle timeout on every response that does not
+// close, and nothing but Connection: close on the one that does.
+func TestWriteBatchAnnouncesKeepAliveAsServe(t *testing.T) {
+	requests := []Request{
+		{Method: []byte("GET"), KeepAlive: true},
+		{Method: []byte("GET"), KeepAlive: false, http10: true}, // an HTTP/1.0 request that did not ask to stay
+	}
+	responses := []Response{{Status: 200}, {Status: 200}}
+	out, err := WriteBatch(nil, Config{IdleTimeout: 7 * time.Second}, requests, responses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, last, ok := strings.Cut(string(out), "\r\n\r\n")
+	if !ok {
+		t.Fatalf("no end of header in %q", out)
+	}
+	head, tail := strings.Split(first, "\r\n"), strings.Split(last, "\r\n")
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=7", true)
+	wantLine(t, tail, "Connection: close", true)
+	wantLine(t, tail, "Keep-Alive: timeout=7", false)
+
+	// The zero Config is Serve's: the default idle timeout is announced.
+	out, err = WriteBatch(nil, Config{}, requests[:1], responses[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine(t, strings.Split(string(out), "\r\n"), "Keep-Alive: timeout=30", true)
+
+	// A negative field is refused as Serve refuses it, naming the field.
+	if _, err := WriteBatch(nil, Config{IdleTimeout: -time.Second}, requests, responses); err == nil || !strings.Contains(err.Error(), "Config.IdleTimeout") {
+		t.Errorf("negative IdleTimeout: err = %v, want a refusal naming the field", err)
+	}
+}
+
+// A streamed response keeps the connection too, and says so the same way.
+func TestStreamedResponseAnnouncesKeepAlive(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		return sluice.Batch[Response]{Items: []Response{{
+			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+				yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("part")}})
+			},
+		}}}
+	})
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+	fmt.Fprint(c, "GET /report HTTP/1.1\r\nHost: h\r\n\r\n")
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	var head []string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line = strings.TrimRight(line, "\r\n"); line == "" {
+			break
+		}
+		head = append(head, line)
+	}
+	wantLine(t, head, "Connection: keep-alive", true)
+	wantLine(t, head, "Keep-Alive: timeout=30", true)
+	wantLine(t, head, "Transfer-Encoding: chunked", true)
+}
+
+// fieldsEcho answers each request with its header names, then its trailers
+// as name=value, so a test reads where one section ends and the other
+// begins.
+func fieldsEcho(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	out := make([]Response, 0, b.Len())
+	for i := range b.Items {
+		r := &b.Items[i]
+		var body []byte
+		for _, h := range r.Headers {
+			body = append(append(body, h.Name...), ' ')
+		}
+		body = append(body, '|')
+		for _, h := range r.Trailers {
+			body = append(append(append(append(body, ' '), h.Name...), '='), h.Value...)
+		}
+		out = append(out, Response{Status: 200, Body: body})
+	}
+	return sluice.Batch[Response]{Items: out}
+}
+
+// RFC 9112 §7.1.2 and RFC 9110 §6.5: the trailer section of a chunked
+// request reaches the handler in Request.Trailers, apart from its headers.
+// Two requests pipelined in one write share the batch's field arena, so
+// each must see its own trailers and nothing of its neighbour's fields.
+func TestRequestTrailersReachTheHandler(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, fieldsEcho)
+	c := dial(t, addr)
+
+	fmt.Fprint(c, "POST /a HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n"+
+		"2\r\nhi\r\n0\r\nX-Sum: 1\r\nX-Sig: a b\r\n\r\n"+
+		"POST /b HTTP/1.1\r\nHost: h\r\nX-Extra: e\r\nTransfer-Encoding: chunked\r\n\r\n"+
+		"0\r\nX-Sum: 2\r\n\r\n"+
+		"POST /c HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+	br := bufio.NewReader(c)
+	for _, want := range []string{
+		"Host Transfer-Encoding | X-Sum=1 X-Sig=a b",
+		"Host X-Extra Transfer-Encoding | X-Sum=2",
+		"Host Transfer-Encoding |",
+	} {
+		if _, body := readResponse(t, br); body != want {
+			t.Errorf("answered %q, want %q", body, want)
 		}
 	}
 }

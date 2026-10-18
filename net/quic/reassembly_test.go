@@ -80,7 +80,7 @@ func TestReassemblyAdjacentRunsMerge(t *testing.T) {
 func TestReassemblyBoundsFragmentCount(t *testing.T) {
 	var r reassembly
 	var lastErr error
-	for i := range maxReassemblyChunks + 2 {
+	for i := range reassemblyChunkFloor + 2 {
 		lastErr = r.add(uint64(2*i+2), []byte{0xaa})
 		if lastErr != nil {
 			break
@@ -88,6 +88,24 @@ func TestReassemblyBoundsFragmentCount(t *testing.T) {
 	}
 	if !errors.Is(lastErr, ErrQUIC) {
 		t.Fatalf("unbounded fragmentation was absorbed: %v", lastErr)
+	}
+}
+
+// Every other packet of a flight lost is a conformant sender's pattern on a
+// drop-tail queue that overflows: full packets with holes between them,
+// more than the floor allows slivers, are held — up to the ceiling.
+func TestReassemblyHoldsEveryOtherPacket(t *testing.T) {
+	const packet = 1200
+	var r reassembly
+	data := make([]byte, packet)
+	for i := range reassemblyChunkCeiling + 1 {
+		err := r.add(uint64(2*i+1)*packet, data)
+		if i < reassemblyChunkCeiling && err != nil {
+			t.Fatalf("packet %d of every other one refused: %v", i, err)
+		}
+		if i == reassemblyChunkCeiling && !errors.Is(err, ErrQUIC) {
+			t.Fatalf("%d chunks held past the ceiling: %v", len(r.chunks), err)
+		}
 	}
 }
 

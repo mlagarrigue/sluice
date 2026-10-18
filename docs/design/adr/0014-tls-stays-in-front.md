@@ -1,7 +1,7 @@
 # ADR 0014 — TLS stays in front of the experimental transport
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered)
+- **Revised:** 2026-10-15 (recommended configuration documented)
 - **Theme:** quic
 
 ## Problem
@@ -30,4 +30,7 @@ whole posture is "put something you trust in front of this". What this does
 not provide is protocol selection *by* ALPN — the sniff decides, ALPN
 merely makes the client cooperate — which is fine while the two agree and
 would need revisiting only if a protocol without a distinguishing preface
-ever joined.
+ever joined. The configuration to put in front — TLS 1.2 floor, AEAD
+suites, ALPN — lives in `docs/guide/experimental.md`, "Supported
+deployments", and `scripts/interop-http.sh` replays curl and h2spec
+through it.

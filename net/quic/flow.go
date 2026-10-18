@@ -60,7 +60,13 @@ func (q *recvQuota) receive(newHighest uint64) error {
 		return nil
 	}
 	if newHighest > q.max {
-		return fmt.Errorf("%w: the peer sent to offset %d of %d granted", errFlowControl, newHighest, q.max)
+		// RFC 9000 §4.1: a sender past the advertised stream or connection
+		// limit is FLOW_CONTROL_ERROR; the code is attached here, at the one
+		// place both levels share, and survives the context callers add.
+		return &transportError{
+			code: transportFlowControl,
+			err:  fmt.Errorf("%w: the peer sent to offset %d of %d granted", errFlowControl, newHighest, q.max),
+		}
 	}
 	q.highest = newHighest
 	return nil

@@ -30,6 +30,10 @@
 # the core count more than the code, so a 2-vCPU runner would gate on noise
 # rather than on regressions. They stay measured locally through the same
 # paired protocol, by compare.sh.
+#
+# Also not gated here: net/quic's emulated-path benchmarks, which cannot run
+# pinned and need a bound on the median rather than a sign test. They have
+# their own script, gate-path.sh, which CI runs as a job of its own.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BASE="${1:?usage: gate.sh <base-ref> [rounds]}"
@@ -84,6 +88,59 @@ if [ -n "$missing" ]; then
   echo "regression gate: these gated names match no benchmark:$missing"
   echo "a gate that matches nothing reports success, so this is a failure rather than a warning"
   exit 1
+fi
+
+# Only the benchmarks whose code the diff touches are measured.
+#
+# The test binary links every package internal/bench imports, net/quic and
+# net/httpstream included, so a change in any of them moves where the code of
+# every other package lands in the binary. That move is a figure of its own:
+# three commits touching net/quic alone were declared SLOWER on JoinTail
+# (+3.8%), DropWhile (+5.4%) and WindowNarrow (+19%), with 0 or 1 wins out of
+# 11 — the sign test reads a constant layout effect as a regression, and no
+# alternation of names or order (ab.sh) reaches inside the binary. A
+# benchmark is kept when a changed file sits in a package its own file
+# imports, or in one of their dependencies; a change to internal/bench, to
+# go.mod or to go.sum keeps them all. What stays exposed is the layout effect
+# of a diff to a package a benchmark does depend on: a SLOWER there is worth
+# reading before it is worth believing.
+if [ -z "$REPLAY" ]; then
+  changed="$({
+    git -C "$ROOT" diff --name-only "$BASE" --
+    git -C "$ROOT" ls-files --others --exclude-standard
+  } | grep -v '_test\.go$' || true)"
+  if ! grep -qE '^(go\.mod|go\.sum|internal/bench/)' <<<"$changed"; then
+    module="$(cd "$ROOT" && go list -m)"
+    kept=""
+    while IFS= read -r name; do
+      file="$(grep -l "^func $name(" "$ROOT"/internal/bench/*_test.go | head -1)"
+      imports="$(sed -n '/^import/,/^)/p' "$file" | grep -o "\"$module[^\"]*\"" | tr -d '"' | sort -u)"
+      touched=""
+      if [ -n "$imports" ]; then
+        while IFS= read -r pkg; do
+          dir="${pkg#"$module"}"
+          dir="${dir#/}"
+          if [ -z "$dir" ]; then
+            # The root package: the files at the top of the tree, not below.
+            grep -qvE '/' <<<"$changed" && touched=1
+          else
+            grep -q "^$dir/" <<<"$changed" && touched=1
+          fi
+          [ -n "$touched" ] && break
+        done < <(cd "$ROOT" && go list -deps $imports | grep "^$module")
+      fi
+      if [ -n "$touched" ]; then
+        kept="${kept:+$kept|}$name\$"
+      else
+        echo "$name: no package it measures changed since $BASE — not measured"
+      fi
+    done < <(tr '|' '\n' <<<"$GATED" | sed 's/\$$//')
+    if [ -z "$kept" ]; then
+      echo "regression gate: no gated benchmark measures a package changed since $BASE"
+      exit 0
+    fi
+    GATED="$kept"
+  fi
 fi
 
 # 3%: below this a verdict is not worth failing a pull request over, and above

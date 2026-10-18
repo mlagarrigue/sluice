@@ -1,6 +1,10 @@
 package distinct
 
-import "github.com/mlagarrigue/sluice"
+import (
+	"strconv"
+
+	"github.com/mlagarrigue/sluice"
+)
 
 // By drops elements whose key was among the last n distinct keys seen.
 //
@@ -61,7 +65,9 @@ import "github.com/mlagarrigue/sluice"
 // branch it removes is one the predictor already had right and the three
 // unrolled loops cost more instruction cache than they save.
 //
-// By panics if key is nil or if policy is not a declared [sluice.Overflow].
+// A window of zero remembers nothing and passes every element through; a
+// negative n panics. By also panics if key is nil or if policy is not a
+// declared [sluice.Overflow].
 func By[T any, K comparable](s sluice.Stream[T], n int, key func(T) K, policy sluice.Overflow) sluice.Stream[T] {
 	if key == nil {
 		panic("sluice: By requires a non-nil key function")
@@ -69,8 +75,11 @@ func By[T any, K comparable](s sluice.Stream[T], n int, key func(T) K, policy sl
 	if !policy.Valid() {
 		panic("sluice: By requires a declared Overflow policy")
 	}
+	if n < 0 {
+		panic("sluice: By window " + strconv.Itoa(n) + " is negative — zero means nothing remembered")
+	}
 	return func(yield func(sluice.Batch[T]) bool) {
-		if n <= 0 {
+		if n == 0 {
 			// A window of zero remembers nothing, so nothing is ever a
 			// duplicate. Passing everything through is the honest reading, and
 			// it keeps By(s, 0, ...) from silently becoming a filter that

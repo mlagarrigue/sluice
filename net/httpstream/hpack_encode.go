@@ -69,6 +69,12 @@ func appendHPACKStatus(dst []byte, status int) []byte {
 	return appendHPACK(dst, ":status", itoa(status))
 }
 
+// hpackDateIndex is the static table's entry for the date field name (RFC
+// 7541 Appendix A, entry 33), which every response the handler did not date
+// writes: spelled rather than looked up, since the scan below runs per field
+// and this field is the writer's own. TestHPACKDateIndex pins it to the table.
+const hpackDateIndex = 33
+
 // staticNameIndex returns the first static-table index whose name matches, or
 // zero. The table is small and this runs once per response header, so it is a
 // scan rather than a map nobody would see the benefit of.
@@ -121,10 +127,11 @@ func itoa(v int) string {
 }
 
 // lowerASCII reports whether a field name is already lowercase, which HTTP/2
-// requires (RFC 9113 §8.2.1). A name with an uppercase letter is malformed
-// rather than normalised: normalising is how a header means one thing to this
-// hop and another to the next. Generic so the hot paths hand it their []byte
-// names directly instead of converting per field.
+// and HTTP/3 require on the wire (RFC 9113 §8.2.1, RFC 9114 §4.2). On the
+// receiving side a name with an uppercase letter is malformed rather than
+// normalised: normalising is how a header means one thing to this hop and
+// another to the next. Generic so the hot paths hand it their []byte names
+// directly instead of converting per field.
 func lowerASCII[S ~string | ~[]byte](s S) bool {
 	for i := range len(s) {
 		if c := s[i]; 'A' <= c && c <= 'Z' {
@@ -132,4 +139,25 @@ func lowerASCII[S ~string | ~[]byte](s S) bool {
 		}
 	}
 	return true
+}
+
+// lowerName is the sending side's half of the same rule: field names are
+// case-insensitive (RFC 9110 §5.1), so a handler may spell one the HTTP/1.1
+// way and the writer owes the wire its lowercase form. A name already
+// lowercase is returned as it is, at the cost of the one pass lowerASCII
+// makes; any other is copied lowercased onto *scratch, which the caller
+// resets per response, so the handler's bytes are never written and the
+// copy allocates only until the scratch has grown to the response's need.
+func lowerName(name []byte, scratch *[]byte) []byte {
+	if lowerASCII(name) {
+		return name
+	}
+	start := len(*scratch)
+	for _, c := range name {
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		*scratch = append(*scratch, c)
+	}
+	return (*scratch)[start:]
 }

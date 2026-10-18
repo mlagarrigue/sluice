@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
+	"strconv"
 	"time"
 )
 
@@ -13,22 +15,23 @@ import (
 
 // Parameter identifiers this package writes and reads.
 const (
-	paramOriginalDCID          = 0x00
-	paramMaxIdleTimeout        = 0x01
-	paramStatelessResetToken   = 0x02
-	paramMaxUDPPayloadSize     = 0x03
-	paramInitialMaxData        = 0x04
-	paramInitialMaxStreamBidiL = 0x05
-	paramInitialMaxStreamBidiR = 0x06
-	paramInitialMaxStreamUni   = 0x07
-	paramInitialMaxStreamsBidi = 0x08
-	paramInitialMaxStreamsUni  = 0x09
-	paramAckDelayExponent      = 0x0a
-	paramMaxAckDelay           = 0x0b
-	paramPreferredAddress      = 0x0d
-	paramActiveConnIDLimit     = 0x0e
-	paramInitialSourceCID      = 0x0f
-	paramRetrySourceCID        = 0x10
+	paramOriginalDCID           = 0x00
+	paramMaxIdleTimeout         = 0x01
+	paramStatelessResetToken    = 0x02
+	paramMaxUDPPayloadSize      = 0x03
+	paramInitialMaxData         = 0x04
+	paramInitialMaxStreamBidiL  = 0x05
+	paramInitialMaxStreamBidiR  = 0x06
+	paramInitialMaxStreamUni    = 0x07
+	paramInitialMaxStreamsBidi  = 0x08
+	paramInitialMaxStreamsUni   = 0x09
+	paramAckDelayExponent       = 0x0a
+	paramMaxAckDelay            = 0x0b
+	paramDisableActiveMigration = 0x0c
+	paramPreferredAddress       = 0x0d
+	paramActiveConnIDLimit      = 0x0e
+	paramInitialSourceCID       = 0x0f
+	paramRetrySourceCID         = 0x10
 )
 
 // TransportParameters are the limits each endpoint imposes on the other.
@@ -45,6 +48,10 @@ type TransportParameters struct {
 	MaxIdleTimeout time.Duration
 
 	// MaxUDPPayloadSize is the largest datagram this endpoint will read.
+	// Announced, it also caps the size the peer probes the path for
+	// (RFC 9000 §14.3); what this endpoint sends is decided by its own
+	// probe of the path, never by the peer's announcement alone — see the
+	// package documentation.
 	MaxUDPPayloadSize uint64
 
 	// InitialMaxData bounds everything the peer may send on all streams
@@ -56,15 +63,25 @@ type TransportParameters struct {
 	InitialMaxStreamsBidi          uint64
 	InitialMaxStreamsUni           uint64
 
-	// AckDelayExponent scales the peer's ACK delay fields; zero means the
-	// protocol default of 3. Read so a peer that announces another value
-	// does not skew this end's round-trip estimate.
+	// AckDelayExponent scales the peer's ACK delay fields. Read so a peer
+	// that announces another value does not skew this end's round-trip
+	// estimate. RFC 9000 §18.2 gives the default of 3 to a peer that is
+	// *silent*, not to one that announces 0: sawAckDelayExponent tells the
+	// two apart, and the field here is whatever the peer wrote.
 	AckDelayExponent uint64
 
 	// MaxAckDelay is how long the peer may sit on an acknowledgement,
-	// which loss recovery adds to its probe timeout. Zero means the
-	// protocol default of 25.
+	// which loss recovery adds to its probe timeout. As above, the §18.2
+	// default of 25 ms is for an absent parameter (sawMaxAckDelay), and an
+	// announced 0 is read as 0.
 	MaxAckDelay time.Duration
+
+	// sawAckDelayExponent and sawMaxAckDelay record that the peer announced
+	// the parameter at all, since 0 is a legal value of both and not the
+	// default (RFC 9000 §18.2). Neither is announced by this package, so
+	// appendParameters has no use for them.
+	sawAckDelayExponent bool
+	sawMaxAckDelay      bool
 
 	// OriginalDCID is the connection identifier the client first used, echoed
 	// by the server. It is what ties the handshake to the packets that
@@ -88,6 +105,40 @@ type TransportParameters struct {
 	// for the peer to rotate into.
 	ActiveConnIDLimit uint64
 
+	// DisableActiveMigration announces that this endpoint cannot follow a
+	// peer that changes address (RFC 9000 §18.2, a zero-length value; §9
+	// says a deployment without connection continuity SHOULD announce it).
+	// A client that reads it from its server refuses [Conn.Rebind] with
+	// [ErrMigrationDisabled] until it has moved to a preferred_address the
+	// same server offered — §18.2 forbids a new local address only towards
+	// the address the handshake used. A server that announces it changes
+	// nothing in how this package behaves: §9 lets such a server either
+	// drop a client's packets from a new address or validate the path and
+	// follow, and it follows (see maybeMigrate); the announcement is for
+	// deployments whose load balancer, not this server, would lose the
+	// client.
+	DisableActiveMigration bool
+
+	// Congestion chooses the congestion controller this endpoint sends
+	// with. It is local: never encoded on the wire, never read from the
+	// peer, which runs whatever it likes (RFC 9002 §7 leaves the choice to
+	// each sender). Experimental: the default is NewReno until another
+	// algorithm has been measured against a real client, and the zero
+	// value is that default.
+	Congestion CongestionConfig
+
+	// MaxDatagramSize is the largest datagram this endpoint sends, once
+	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
+	// carries it. Local, like Congestion: never encoded on the wire. Zero
+	// means 1452, an Ethernet MTU less the IPv6 and UDP headers; above
+	// that, the search climbs towards it — 8952 for a 9000-byte jumbo
+	// path. What is probed is also bounded by the peer's announced
+	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
+	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
+	// largest UDP payload), [Dial], [Accept] and [NewListener] refuse it.
+	// The size reached is [Stats.DatagramSize].
+	MaxDatagramSize int
+
 	// sawStatelessResetToken and sawPreferredAddress record that the peer
 	// announced these server-only parameters (§18.2). A *client* announcing
 	// either is a protocol violation a server must refuse with
@@ -110,6 +161,112 @@ type TransportParameters struct {
 	// client reads it and migrates on its own (see [Conn.PreferredAddress]).
 	// Server-only: a client announcing one is refused.
 	preferredAddress *preferredAddress
+}
+
+// CongestionConfig is the congestion-control choice a connection is built
+// with ([TransportParameters.Congestion]): the algorithm, and the two
+// choices its RFCs leave to the sender. Every zero value is the
+// algorithm's default; the other parameters are the RFC's. Experimental.
+type CongestionConfig struct {
+	// Algorithm names the controller. Unknown values run the default.
+	Algorithm CongestionAlgorithm
+
+	// SlowStart chooses how a loss-based controller (NewReno, CUBIC) ends
+	// its initial slow start. The zero value is the algorithm's default:
+	// HyStart++ for CUBIC, the standard slow start for NewReno. BBR's
+	// Startup has its own exit and ignores it.
+	// Unknown values run the default.
+	SlowStart SlowStart
+
+	// DisableFastConvergence turns off CUBIC's fast convergence (RFC 9438
+	// §4.7): after a loss below the previous one, the flow remembers the
+	// window it lost at instead of less, and climbs back to it sooner. The
+	// RFC wants it on where flows share the path, the zero value, and off
+	// for a flow alone on it. Other algorithms ignore it.
+	DisableFastConvergence bool
+}
+
+// SlowStart names how the initial slow start ends ([CongestionConfig]).
+// Slow start doubles the window each round trip until something says the
+// path is full; the choice is what that something is.
+type SlowStart uint8
+
+const (
+	// SlowStartDefault is the algorithm's own choice.
+	SlowStartDefault SlowStart = iota
+
+	// SlowStartStandard ends the slow start on the first loss or
+	// congestion mark (RFC 9002 §7.3.1): the window overshoots the path by
+	// up to the bottleneck's buffer before it learns.
+	SlowStartStandard
+
+	// SlowStartHyStart is RFC 9406's HyStart++: the slow start ends when
+	// the round trip rises by a few milliseconds over the previous round's
+	// — the bottleneck's buffer starting to fill — after a few rounds of
+	// growth at a quarter of the rate to confirm the rise. A loss that
+	// comes first still ends it.
+	SlowStartHyStart
+)
+
+// CongestionAlgorithm names a congestion controller this package
+// implements. Each one answers the same questions from the sender (when a
+// packet may leave, how fast) and differs in how it reads loss.
+type CongestionAlgorithm uint8
+
+const (
+	// CongestionNewReno is RFC 9002 §7's controller: the window grows by
+	// one datagram per round trip and halves on each loss epoch. The
+	// default, and the one every benchmark figure of this package was
+	// measured with.
+	CongestionNewReno CongestionAlgorithm = iota
+
+	// CongestionCubic is RFC 9438's controller: after a loss the window
+	// shrinks to seven tenths and grows back along a cubic curve, flat
+	// around the size the loss happened at and steep away from it, so a
+	// long round trip no longer costs a window a datagram at a time.
+	// Experimental: measured on this package's emulated paths only.
+	CongestionCubic
+
+	// CongestionBBRv1 is BBR version 1
+	// (draft-cardwell-iccrg-bbr-congestion-control-00): the sender paces
+	// at the highest delivery rate measured over the last ten round trips
+	// and keeps about one bandwidth-delay product in flight, probing for
+	// more every eight round trips and draining the path for 200 ms every
+	// ten seconds to re-measure its propagation delay. Loss does not shrink
+	// its rate, so a path that drops a packet in a hundred is held at its
+	// bandwidth; the version has no bound on what it takes from a Reno or
+	// CUBIC flow sharing the link. Experimental: measured on this package's
+	// emulated paths only.
+	CongestionBBRv1
+
+	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr, the
+	// version Linux ships as BBRv3): the same model of the path as
+	// CongestionBBRv1 — the highest delivery rate and the lowest round trip
+	// seen recently — with loss read as evidence about how much the path
+	// holds. A round that loses more than 2% while probing bounds the
+	// volume in flight, 15% of which is then left free for other flows;
+	// a loss between probes cuts the rate and the volume to 0.7 of what
+	// they were, until the next probe, two to three seconds later or as
+	// soon as a Reno flow would have grown back. Startup also ends on
+	// loss, so a shallow buffer is not overrun for three round trips.
+	// Experimental: measured on this package's emulated paths only.
+	CongestionBBR
+)
+
+// String is the name the dashboard prints: "newreno", "cubic", "bbr1",
+// "bbr".
+func (a CongestionAlgorithm) String() string {
+	switch a {
+	case CongestionNewReno:
+		return "newreno"
+	case CongestionCubic:
+		return "cubic"
+	case CongestionBBRv1:
+		return "bbr1"
+	case CongestionBBR:
+		return "bbr"
+	}
+	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }
 
 // PreferredAddress is RFC 9000 §18.2's preferred_address: up to one
@@ -204,12 +361,15 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
 
 // check refuses the zero value, which would announce a connection that
-// cannot move.
+// cannot move, and a MaxDatagramSize no path can carry.
 func (p TransportParameters) check() error {
 	if p.MaxIdleTimeout == 0 && p.MaxUDPPayloadSize == 0 && p.InitialMaxData == 0 &&
 		p.InitialMaxStreamDataUni == 0 && p.InitialMaxStreamDataBidiLocal == 0 && p.InitialMaxStreamDataBidiRemote == 0 &&
 		p.InitialMaxStreamsBidi == 0 && p.InitialMaxStreamsUni == 0 && p.ActiveConnIDLimit == 0 {
 		return ErrZeroParameters
+	}
+	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
+		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
 	}
 	return nil
 }
@@ -264,6 +424,10 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 		// — the protocol floor is 2, and omission means the default.
 		num(paramActiveConnIDLimit, p.ActiveConnIDLimit)
 	}
+	if p.DisableActiveMigration {
+		dst = AppendVarint(dst, paramDisableActiveMigration)
+		dst = AppendVarint(dst, 0) // §18.2: a zero-length value
+	}
 	raw(paramOriginalDCID, p.originalDCID)
 	raw(paramInitialSourceCID, p.initialSourceCID)
 	raw(paramRetrySourceCID, p.retrySourceCID)
@@ -274,40 +438,68 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 	return dst
 }
 
-// ParseParameters decodes what a peer announced.
+// parameterError is how every refusal of what the peer announced leaves
+// the parser and handlePeerParameters: RFC 9000 §20.1 defines
+// TRANSPORT_PARAMETER_ERROR for parameters "badly formatted, included an
+// invalid value, omitted a mandatory transport parameter, included a
+// forbidden transport parameter" — a block cut mid-varint or mid-value is
+// the first case, §7.4 adds the duplicate, §18.2 each parameter's own
+// bounds and the server-only ones a client sends, and §7.3 offers it (or
+// PROTOCOL_VIOLATION) for identifiers that do not match the handshake's
+// packets. One code for the whole family, so a peer reads "your
+// parameters" rather than "my internals".
+func parameterError(err error) error {
+	return &transportError{code: transportParameterError, err: err}
+}
+
+// parseParameters decodes what a peer announced.
 //
 // An identifier this package does not know is skipped rather than refused:
 // the space is extensible on purpose, and a peer that refuses the unknown is
-// how a protocol stops being able to change. A *known* identifier repeated
-// is refused, though — RFC 9000 §7.4 makes it TRANSPORT_PARAMETER_ERROR,
-// because two values for one limit is a peer this end cannot reason about.
+// how a protocol stops being able to change. An identifier repeated is
+// refused, though, known or not — RFC 9000 §7.4 makes it
+// TRANSPORT_PARAMETER_ERROR, because two values for one limit is a peer
+// this end cannot reason about.
 func parseParameters(b []byte) (TransportParameters, error) {
 	var p TransportParameters
-	var seen uint64 // a bit per known identifier; they all sit below 0x10
+	// §7.4: no identifier twice, known or not — two values for one limit
+	// is a peer this end cannot reason about, and an unknown one that the
+	// peer itself repeats is the same malformed block. The defined
+	// identifiers all sit below 64 and take a bit each; anything above
+	// (extensions, §18.1's reserved values) goes in a slice no longer than
+	// the block has parameters.
+	var seen uint64
+	var seenHigh []uint64
 	for len(b) > 0 {
+		// A block that stops mid-varint or mid-value is a parameter
+		// "badly formatted" (§20.1), and TRANSPORT_PARAMETER_ERROR names it
+		// better than the INTERNAL_ERROR an unwrapped parse error would close
+		// with.
 		id, rest, err := Varint(b)
 		if err != nil {
-			return p, err
+			return p, parameterError(fmt.Errorf("%w: a transport parameter identifier cut short", ErrQUIC))
 		}
 		length, rest, err := Varint(rest)
 		if err != nil {
-			return p, err
+			return p, parameterError(fmt.Errorf("%w: transport parameter %#x has its length cut short", ErrQUIC, id))
 		}
 		if length > uint64(len(rest)) {
-			return p, fmt.Errorf("%w: a transport parameter of %d bytes, %d remain", ErrQUIC, length, len(rest))
+			return p, parameterError(fmt.Errorf("%w: a transport parameter of %d bytes, %d remain", ErrQUIC, length, len(rest)))
 		}
-		val, rest, err := bytesN(rest, int(length)) //nolint:gosec // G115: checked above
-		if err != nil {
-			return p, err
-		}
-		b = rest
+		val := rest[:length]
+		b = rest[length:]
 
 		if id < 64 {
 			bit := uint64(1) << id
-			if known(id) && seen&bit != 0 {
-				return p, fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id)
+			if seen&bit != 0 {
+				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
 			}
 			seen |= bit
+		} else {
+			if slices.Contains(seenHigh, id) {
+				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
+			}
+			seenHigh = append(seenHigh, id)
 		}
 
 		switch id {
@@ -320,7 +512,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 		case paramStatelessResetToken:
 			p.sawStatelessResetToken = true
 			if len(val) != 16 {
-				return p, fmt.Errorf("%w: a stateless_reset_token of %d bytes", ErrQUIC, len(val))
+				return p, parameterError(fmt.Errorf("%w: a stateless_reset_token of %d bytes", ErrQUIC, len(val)))
 			}
 			p.statelessResetToken = val
 		case paramPreferredAddress:
@@ -330,26 +522,31 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				return p, err
 			}
 			p.preferredAddress = pa
+		case paramDisableActiveMigration:
+			// §18.2: "a zero-length value" — a peer that puts bytes in it
+			// announced something this package cannot read, which §7.4
+			// makes an invalid value.
+			if len(val) != 0 {
+				return p, parameterError(fmt.Errorf("%w: a disable_active_migration of %d bytes", ErrQUIC, len(val)))
+			}
+			p.DisableActiveMigration = true
 		case paramActiveConnIDLimit:
 			// §18.2: active_connection_id_limit below 2 is
 			// TRANSPORT_PARAMETER_ERROR. The value caps how many identifiers
 			// this end issues for itself (quic/migration.go).
-			v, _, err := Varint(val)
+			v, err := integerParameter(id, val)
 			if err != nil {
 				return p, err
 			}
 			if v < 2 {
-				return p, &transportError{
-					code: transportParameterError,
-					err:  fmt.Errorf("%w: active_connection_id_limit %d is below the minimum of 2", ErrQUIC, v),
-				}
+				return p, parameterError(fmt.Errorf("%w: active_connection_id_limit %d is below the minimum of 2", ErrQUIC, v))
 			}
 			p.ActiveConnIDLimit = v
 		case paramMaxIdleTimeout, paramMaxUDPPayloadSize, paramInitialMaxData,
 			paramInitialMaxStreamBidiL, paramInitialMaxStreamBidiR, paramInitialMaxStreamUni,
 			paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni,
 			paramAckDelayExponent, paramMaxAckDelay:
-			v, _, err := Varint(val)
+			v, err := integerParameter(id, val)
 			if err != nil {
 				return p, err
 			}
@@ -366,30 +563,44 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				p.InitialMaxStreamDataBidiRemote = v
 			case paramInitialMaxStreamUni:
 				p.InitialMaxStreamDataUni = v
-			case paramInitialMaxStreamsBidi:
-				p.InitialMaxStreamsBidi = v
-			case paramInitialMaxStreamsUni:
-				p.InitialMaxStreamsUni = v
+			case paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni:
+				// §4.6: over 2^60 the limit names stream identifiers no
+				// varint can carry; in a parameter that is
+				// TRANSPORT_PARAMETER_ERROR (the frame's twin is
+				// FRAME_ENCODING_ERROR, parseFrame).
+				if v > maxStreamsLimit {
+					return p, parameterError(fmt.Errorf("%w: initial_max_streams %d is over 2^60", ErrQUIC, v))
+				}
+				if id == paramInitialMaxStreamsBidi {
+					p.InitialMaxStreamsBidi = v
+				} else {
+					p.InitialMaxStreamsUni = v
+				}
 			case paramAckDelayExponent:
 				p.AckDelayExponent = v
+				p.sawAckDelayExponent = true
 			case paramMaxAckDelay:
 				p.MaxAckDelay = idleDuration(v)
+				p.sawMaxAckDelay = true
 			}
 		}
 	}
 	return p, nil
 }
 
-// known reports whether an identifier is one this package decodes, which is
-// the set the duplicate check applies to.
-func known(id uint64) bool {
-	switch id {
-	case paramOriginalDCID, paramMaxIdleTimeout, paramMaxUDPPayloadSize,
-		paramInitialMaxData, paramInitialMaxStreamBidiL, paramInitialMaxStreamBidiR,
-		paramInitialMaxStreamUni, paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni,
-		paramAckDelayExponent, paramMaxAckDelay, paramInitialSourceCID, paramRetrySourceCID,
-		paramStatelessResetToken, paramPreferredAddress, paramActiveConnIDLimit:
-		return true
+// maxStreamsLimit is the largest stream count a MAX_STREAMS frame or an
+// initial_max_streams_* parameter may carry (RFC 9000 §4.6): 2^60 streams of
+// one type and direction reach stream identifier 2^62-1, the varint ceiling.
+const maxStreamsLimit = 1 << 60
+
+// integerParameter decodes a parameter whose whole value is one varint. The
+// value's announced length must match the integer's own, both ways: bytes
+// left after it, or a varint cut short by it, are a value this end cannot
+// read, which §7.4 makes TRANSPORT_PARAMETER_ERROR.
+func integerParameter(id uint64, val []byte) (uint64, error) {
+	v, rest, err := Varint(val)
+	if err != nil || len(rest) != 0 {
+		return 0, parameterError(fmt.Errorf("%w: transport parameter %#x is %d bytes, not one integer", ErrQUIC, id, len(val)))
 	}
-	return false
+	return v, nil
 }

@@ -40,6 +40,10 @@ type ackTracker struct {
 	// peer's loss detection learns about the reordering within one RTT
 	// instead of a delayed-ACK period later.
 	outOfOrder bool
+	// ecn counts the packets recorded by the ECN codepoint their datagram
+	// arrived with, indexed by codepoint (§13.4.1): each coalesced packet
+	// counts once, a duplicate never. Reported in every ACK (§19.3.2).
+	ecn [4]uint64
 }
 
 // record notes one received packet number and returns false when it is a
@@ -132,8 +136,27 @@ func (a *ackTracker) owes(now time.Time) bool {
 	return a.immediate || (!a.due.IsZero() && !now.Before(a.due))
 }
 
+// pending reports an ack-eliciting packet not yet acknowledged: owed now,
+// or waiting on the delayed-ACK timer. A packet leaving for another reason
+// carries it (sendPacketLocked); only owes decides when one leaves alone.
+func (a *ackTracker) pending() bool {
+	return len(a.ranges) > 0 && !a.due.IsZero()
+}
+
 // appendAck writes the ACK owed, if any, and clears the debt.
 func (a *ackTracker) appendAck(dst []byte, now time.Time) []byte {
+	if len(a.ranges) == 0 {
+		return dst
+	}
+	dst = a.encodeAck(dst, now)
+	a.settle()
+	return dst
+}
+
+// encodeAck writes the ACK owed without clearing the debt: the caller may
+// still find nothing to send and leave the debt for the next packet. settle
+// clears it once the frame is on its way.
+func (a *ackTracker) encodeAck(dst []byte, now time.Time) []byte {
 	if len(a.ranges) == 0 {
 		return dst
 	}
@@ -141,10 +164,13 @@ func (a *ackTracker) appendAck(dst []byte, now time.Time) []byte {
 	if !a.largestAt.IsZero() && now.After(a.largestAt) {
 		delay = uint64(now.Sub(a.largestAt).Microseconds()) //nolint:gosec // G115: positive, now is after largestAt
 	}
-	dst = appendAckFrame(dst, a.ranges, delay)
+	return appendAckFrame(dst, a.ranges, delay, [3]uint64{a.ecn[ecnECT0], a.ecn[ecnECT1], a.ecn[ecnCE]})
+}
+
+// settle clears the debt an encoded ACK paid.
+func (a *ackTracker) settle() {
 	a.elicitingSinceAck = 0
 	a.immediate = false
 	a.outOfOrder = false
 	a.due = time.Time{}
-	return dst
 }

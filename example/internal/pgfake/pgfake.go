@@ -1,8 +1,8 @@
 // Package pgfake is just enough of a PostgreSQL backend to run the examples'
 // stores without a server: simple-query statements, the extended protocol
-// with row limits and portal suspension, set_config, and errors — each
-// answered only when the client asks (Sync, Flush or a simple Query), as a
-// real backend answers.
+// with row limits and portal suspension, set_config, transaction blocks and
+// errors with their SQLSTATE — each answered only when the client asks (Sync,
+// Flush or a simple Query), as a real backend answers.
 //
 // What a statement returns is the caller's [Backend.Exec]; the fake is the
 // protocol around it. It is test support for the examples and nothing else.
@@ -27,8 +27,9 @@ type Result struct {
 	Columns []string
 	OIDs    []uint32
 	Rows    [][][]byte
-	Tag     string // CommandComplete tag; defaults to "SELECT <n>"
+	Tag     string // CommandComplete tag; defaults to the server's for the statement's verb
 	Err     string // non-empty answers the statement with an ErrorResponse
+	Code    string // SQLSTATE of Err; defaults to XX000, internal_error
 }
 
 // Backend answers statements. Exec sees the SQL text, the bound binary
@@ -37,8 +38,9 @@ type Result struct {
 type Backend struct {
 	Exec func(sql string, params [][]byte, settings map[string]string) Result
 
-	mu    sync.Mutex
-	execs []string
+	mu       sync.Mutex
+	execs    []string
+	executes int
 }
 
 // Statements returns the SQL of every statement executed, in order.
@@ -46,6 +48,15 @@ func (b *Backend) Statements() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]string(nil), b.execs...)
+}
+
+// Executes returns how many Execute messages the backend has answered: one
+// per batch a client asked for, plus the one that finds a portal suspended
+// at exactly its last row.
+func (b *Backend) Executes() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.executes
 }
 
 func (b *Backend) exec(sql string, params [][]byte, settings map[string]string) Result {
@@ -76,8 +87,10 @@ func (b *Backend) Conn(tb testing.TB) *postgres.Conn {
 }
 
 type portal struct {
+	sql  string
 	res  Result
 	next int
+	ran  bool // completed once
 }
 
 func (b *Backend) serve(nc net.Conn) {
@@ -92,16 +105,40 @@ func (b *Backend) serve(nc net.Conn) {
 		status   byte = 'I'
 		skipping bool // an error occurred; discard until Sync
 	)
-	write := func() bool {
-		_, err := nc.Write(out)
+	// A server's socket buffers what it sends and a net.Pipe does not: a
+	// client that asked for batches ahead writes its Sync before reading
+	// them, and on the bare pipe both ends would wait on the other.
+	sent := make(chan []byte, 64)
+	wrote := make(chan struct{})
+	go func() {
+		defer close(wrote)
+		for b := range sent {
+			_, _ = nc.Write(b) // after a failure, keep draining: the reader ends serve
+		}
+	}()
+	defer func() {
+		close(sent)
+		<-wrote
+	}()
+	write := func() {
+		sent <- bytes.Clone(out)
 		out = out[:0]
-		return err == nil
 	}
-	fail := func(m string) {
-		out = append(out, errorResponse(m)...)
+	fail := func(code, m string) {
+		out = append(out, errorResponse(code, m)...)
 		if status == 'T' {
 			status = 'E'
 		}
+	}
+	// In an aborted block a server runs only what leaves it — COMMIT,
+	// ROLLBACK, ROLLBACK TO, PREPARE TRANSACTION — and refuses the rest, at
+	// Parse and Bind as for a simple Query.
+	refused := func(sql string) bool {
+		if status != 'E' || endsBlock(verb(sql)) {
+			return false
+		}
+		fail("25P02", "current transaction is aborted, commands ignored until end of transaction block")
+		return true
 	}
 	endTx := func() {
 		status = 'I'
@@ -109,6 +146,34 @@ func (b *Backend) serve(nc net.Conn) {
 			delete(settings, k)
 		}
 		clear(local)
+	}
+	// complete applies what a statement that ran does to the transaction
+	// block and returns the tag the server reports for its n rows.
+	complete := func(sql string, res Result, n int) string {
+		v, next := verb(sql)
+		switch {
+		case v == "BEGIN" || v == "START":
+			status = 'T'
+		case v == "ROLLBACK" && next == "TO":
+			if status == 'E' {
+				status = 'T' // back to the savepoint, the block usable again
+			}
+		case endsBlock(v, next):
+			aborted := status == 'E'
+			endTx()
+			if aborted && v != "ROLLBACK" && v != "ABORT" {
+				// The server rolls back instead, and says so in the tag
+				// alone: no ErrorResponse (EndTransactionBlock in xact.c).
+				return "ROLLBACK"
+			}
+			if v == "PREPARE" {
+				return "PREPARE TRANSACTION"
+			}
+		}
+		if res.Tag != "" {
+			return res.Tag
+		}
+		return commandTag(v, n)
 	}
 	for {
 		m, err := rd.Next()
@@ -123,31 +188,32 @@ func (b *Backend) serve(nc net.Conn) {
 		switch m.Type {
 		case pgwire.FrontendQuery:
 			sql, _, _ := cut(m.Body)
-			tag := strings.ToUpper(strings.Fields(sql + " x")[0])
-			if res := b.exec(sql, nil, settings); res.Err != "" {
-				fail(res.Err)
-			} else {
-				switch tag {
-				case "BEGIN":
-					status = 'T'
-				case "ROLLBACK", "COMMIT", "END":
-					endTx()
+			if !refused(sql) {
+				if res := b.exec(sql, nil, settings); res.Err != "" {
+					fail(res.Code, res.Err)
+				} else {
+					out = append(out, commandComplete(complete(sql, res, len(res.Rows)))...)
 				}
-				out = append(out, msg(pgwire.BackendCommandComplete, append([]byte(tag), 0))...)
 			}
 			out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
-			if !write() {
-				return
-			}
+			write()
 		case pgwire.FrontendParse:
 			name, rest, _ := cut(m.Body)
 			sql, _, _ := cut(rest)
+			if refused(sql) {
+				skipping = true
+				continue
+			}
 			stmts[name] = sql
 			out = append(out, msg(pgwire.BackendParseComplete, nil)...)
 		case pgwire.FrontendBind:
 			_, rest, _ := cut(m.Body)
 			stmt, rest, _ := cut(rest)
 			sql := stmts[stmt]
+			if refused(sql) {
+				skipping = true
+				continue
+			}
 			params := bindParams(rest)
 			var res Result
 			if strings.Contains(sql, "set_config") && len(params) >= 2 {
@@ -159,11 +225,11 @@ func (b *Backend) serve(nc net.Conn) {
 				res = r
 			}
 			if res.Err != "" {
-				fail(res.Err)
+				fail(res.Code, res.Err)
 				skipping = true
 				continue
 			}
-			cur = &portal{res: res}
+			cur = &portal{sql: sql, res: res}
 			out = append(out, msg(pgwire.BackendBindComplete, nil)...)
 		case pgwire.FrontendDescribe:
 			if cur == nil || cur.res.Columns == nil {
@@ -172,8 +238,18 @@ func (b *Backend) serve(nc net.Conn) {
 			}
 			out = append(out, rowDescription(cur.res.Columns, cur.res.OIDs)...)
 		case pgwire.FrontendExecute:
+			b.mu.Lock()
+			b.executes++
+			b.mu.Unlock()
 			if cur == nil {
-				fail("no portal")
+				fail("34000", `portal "" does not exist`)
+				skipping = true
+				continue
+			}
+			if cur.ran && cur.res.Columns == nil {
+				// A statement without rows runs once; only a portal the
+				// server fetches from completes again (PortalRun in pquery.c).
+				fail("55000", `portal "" cannot be run`)
 				skipping = true
 				continue
 			}
@@ -183,29 +259,28 @@ func (b *Backend) serve(nc net.Conn) {
 				limit = int(binary.BigEndian.Uint32(rest))
 			}
 			rows := cur.res.Rows[cur.next:]
-			if limit > 0 && len(rows) > limit {
-				for _, r := range rows[:limit] {
-					out = append(out, dataRow(r)...)
-				}
-				cur.next += limit
-				out = append(out, msg(pgwire.BackendPortalSuspended, nil)...)
-				continue
+			// The server stops at the limit without looking ahead: with
+			// exactly limit rows left it suspends, and the next Execute
+			// finds the portal at its end and completes with none.
+			suspend := limit > 0 && len(rows) >= limit
+			if suspend {
+				rows = rows[:limit]
 			}
 			for _, r := range rows {
 				out = append(out, dataRow(r)...)
 			}
-			tag := cur.res.Tag
-			if tag == "" {
-				tag = "SELECT " + strconv.Itoa(len(cur.res.Rows))
+			cur.next += len(rows)
+			if suspend {
+				out = append(out, msg(pgwire.BackendPortalSuspended, nil)...)
+				continue
 			}
-			out = append(out, msg(pgwire.BackendCommandComplete, append([]byte(tag), 0))...)
-			cur.next = len(cur.res.Rows)
+			// The tag counts this Execute's rows, not the portal's.
+			out = append(out, commandComplete(complete(cur.sql, cur.res, len(rows)))...)
+			cur.ran = true
 		case pgwire.FrontendClose:
 			out = append(out, msg(pgwire.BackendCloseComplete, nil)...)
 		case pgwire.FrontendFlush:
-			if !write() {
-				return
-			}
+			write()
 		case pgwire.FrontendSync:
 			skipping = false
 			cur = nil
@@ -215,13 +290,60 @@ func (b *Backend) serve(nc net.Conn) {
 				endTx()
 			}
 			out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
-			if !write() {
-				return
-			}
+			write()
 		case pgwire.FrontendTerminate:
 			return
 		}
 	}
+}
+
+// verb returns a statement's first two words, upper-cased.
+func verb(sql string) (first, second string) {
+	f := strings.Fields(strings.ToUpper(sql))
+	if len(f) > 0 {
+		first = f[0]
+	}
+	if len(f) > 1 {
+		second = f[1]
+	}
+	return first, second
+}
+
+// endsBlock reports whether a statement leaves an aborted transaction
+// block, the only kind a server runs there (IsTransactionExitStmt in
+// postgres.c).
+func endsBlock(first, second string) bool {
+	switch first {
+	case "COMMIT", "END", "ROLLBACK", "ABORT":
+		return true
+	case "PREPARE":
+		return second == "TRANSACTION"
+	}
+	return false
+}
+
+// commandTag is the CommandComplete tag a server sends for a statement
+// starting with verb that produced n rows.
+func commandTag(verb string, n int) string {
+	switch verb {
+	case "SELECT", "VALUES", "TABLE", "WITH":
+		return "SELECT " + strconv.Itoa(n)
+	case "INSERT":
+		return "INSERT 0 " + strconv.Itoa(n)
+	case "UPDATE", "DELETE", "MERGE":
+		return verb + " " + strconv.Itoa(n)
+	case "END":
+		return "COMMIT"
+	case "ABORT":
+		return "ROLLBACK"
+	case "START":
+		return "START TRANSACTION"
+	}
+	return verb
+}
+
+func commandComplete(tag string) []byte {
+	return msg(pgwire.BackendCommandComplete, append([]byte(tag), 0))
 }
 
 func cut(b []byte) (field string, rest []byte, ok bool) {
@@ -293,9 +415,12 @@ func dataRow(values [][]byte) []byte {
 	return msg(pgwire.BackendDataRow, b)
 }
 
-func errorResponse(m string) []byte {
+func errorResponse(code, m string) []byte {
+	if code == "" {
+		code = "XX000"
+	}
 	var b []byte
-	for _, kv := range [][2]string{{"S", "ERROR"}, {"V", "ERROR"}, {"C", "XX000"}, {"M", m}} {
+	for _, kv := range [][2]string{{"S", "ERROR"}, {"V", "ERROR"}, {"C", code}, {"M", m}} {
 		b = append(b, kv[0][0])
 		b = append(b, kv[1]...)
 		b = append(b, 0)

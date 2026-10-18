@@ -252,7 +252,7 @@ func TestStreamHandler(t *testing.T) {
 		batch[i] = tc.req
 	}
 	// One transport batch: refusals keep their place among the served.
-	out := h(sluice.Batch[httpstream.Request]{Items: batch})
+	out := h(t.Context(), sluice.Batch[httpstream.Request]{Items: batch})
 	if out.Len() != len(tests) {
 		t.Fatalf("%d responses for %d requests", out.Len(), len(tests))
 	}

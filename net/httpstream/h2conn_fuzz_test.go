@@ -66,7 +66,7 @@ func FuzzH2Connection(f *testing.F) {
 		// that is legitimately waiting on flow-control credit or a peer
 		// that never arrives unwinds well within the deadline instead of
 		// racing it.
-		cfg := H2Config{
+		cfg := Config{
 			ReadTimeout:  200 * time.Millisecond,
 			WriteTimeout: 200 * time.Millisecond,
 			IdleTimeout:  200 * time.Millisecond,
@@ -114,9 +114,10 @@ func FuzzH2Connection(f *testing.F) {
 // fuzzH2Handler is a small, fast handler with nothing that could itself stall
 // a fuzz case: the property under test is the connection's own bookkeeping,
 // not a handler's behaviour.
-func fuzzH2Handler(b sluice.Batch[Request]) sluice.Batch[Response] {
+func fuzzH2Handler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, 0, b.Len())
-	for _, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Target...)})
 	}
 	return sluice.Batch[Response]{Items: out}
@@ -156,7 +157,7 @@ func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeH2(t.Context(), server, H2Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
+		done <- ServeH2(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
 	}()
 	go func() { _, _ = io.Copy(io.Discard, client) }()
 
@@ -203,6 +204,7 @@ func fuzzHeadBlock(method, path string) []byte {
 	block = fuzzLiteral(block, ":method", method)
 	block = fuzzLiteral(block, ":path", path)
 	block = fuzzLiteral(block, ":scheme", "http")
+	block = fuzzLiteral(block, ":authority", "h")
 	return block
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/mlagarrigue/sluice"
 )
@@ -14,8 +15,15 @@ type Response struct {
 	// Status is the HTTP status code. Zero means 200.
 	Status int
 
-	// Headers are sent as given. Content-Length is written by [WriteBatch]
-	// from the body and must not be set here.
+	// Headers are sent as given. Names are case-insensitive (RFC 9110
+	// §5.1): HTTP/1.1 writes them as spelled, HTTP/2 and HTTP/3 put them
+	// on the wire in lowercase, as those protocols require, without
+	// touching the handler's bytes. Content-Length is written by
+	// [WriteBatch] from the body, or from ContentLength for a Stream, and
+	// must not be set here. Date is added by the writer when the handler
+	// did not set one (RFC 9110 §6.6.1), on every final response, 5xx
+	// included, ahead of these fields; a handler's own Date stays where
+	// the handler put it.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
@@ -33,18 +41,126 @@ type Response struct {
 	// Setting both Stream and Body is a programming error and is refused: the
 	// two say different things about what the payload is.
 	//
-	// A streamed response cannot carry a Content-Length, because its length
-	// is not known when the headers go out. Each protocol says that its own
-	// way — HTTP/1.1 in chunks, HTTP/2 and HTTP/3 in DATA frames ended by a
-	// flag — and none of them needs the total in advance.
+	// A streamed response has no Content-Length unless ContentLength
+	// declares one. Each protocol ends the body its own way — HTTP/1.1 in
+	// chunks, HTTP/2 and HTTP/3 in DATA frames ended by a flag — and none of
+	// them needs the total in advance, nor do the proxies in front: a
+	// chunked answer crosses nginx and Envoy as it is. A handler that
+	// already holds the whole payload puts it in Body and gets its
+	// Content-Length from the writer.
 	//
 	// A yield that returns false means the stream or the connection is gone;
 	// the package documentation states what each protocol does then.
 	Stream sluice.Stream[[]byte]
+
+	// ContentLength, when positive, is the number of bytes Stream will
+	// produce, sent as the response's Content-Length: HTTP/1.1 then frames
+	// the body by it rather than in chunks, and the client can show how far
+	// along it is. Zero means the length is not known, which is how a
+	// streamed response goes out otherwise; an empty payload is a nil Body.
+	// It is refused beside a Body, whose length is its own, without a
+	// Stream, and when negative.
+	//
+	// The declared length is held to what the producer then yields, since a
+	// length the producer misses by a byte is the framing desynchronisation
+	// this package refuses everywhere else. A batch that would take the body
+	// past it is not written, and the pull stops there; a producer that
+	// ends short of it, or goes past it, ends the response unterminated —
+	// the connection closed on HTTP/1.1, the stream reset on HTTP/2 and
+	// HTTP/3 — so the client never reads a truncated answer as whole. On
+	// HTTP/1.1 a producer that yields more after the declared length went
+	// out whole only closes the connection: its client already holds the
+	// bytes it was promised, and the surplus never reaches it.
+	//
+	// HTTP/1.1 carries trailers only after a chunked body, so a response
+	// with Trailers is chunked there and its Content-Length not written —
+	// the two framings cannot be sent together (RFC 9112 §6.2) — though the
+	// length is still checked; HTTP/2 and HTTP/3 send both. A HEAD response
+	// states the length without pulling the producer, and a 204 or 304
+	// never states one, as for a Body.
+	ContentLength int64
+
+	// Trailers, when set, gives the fields sent after the payload: a
+	// checksum computed as the body went out, or gRPC's grpc-status, which
+	// a streamed answer only knows once its producer is done. It is a
+	// function rather than a list for that reason: it is called once the
+	// payload is complete — after Stream has returned, or straight away
+	// for a Body — so a producer can leave in a variable what the trailers
+	// then report.
+	//
+	// HTTP/1.1 sends them after the last chunk, which makes a Body response
+	// with trailers chunked rather than Content-Length framed; HTTP/2 and
+	// HTTP/3 in a HEADERS frame that ends the stream. They are held to the
+	// header rules, and refused when they name a field that frames the
+	// message or describes the connection (RFC 9110 §6.5.1): those were
+	// settled by the time the trailers arrive. Any other field is the
+	// handler's to know it may be sent there. A Trailer header naming
+	// them, which RFC 9110 §6.6.2 says a sender SHOULD send, is the
+	// handler's to set; HTTP/1.1 refuses it on a response without
+	// Trailers, as the promise of fields that never come.
+	//
+	// The function is not called for a response that carries no body —
+	// a HEAD answer, a 204 or 304 — nor for an HTTP/1.0 client, whose
+	// response has no chunked framing to put them in: those fields would
+	// have nowhere to go. A function that panics, or returns a field the
+	// rules refuse, fails the response as a refused header does when
+	// nothing is written yet (a 500), and otherwise ends it unterminated —
+	// the connection closed on HTTP/1.1, the stream reset on HTTP/2 and
+	// HTTP/3 — so the client never reads a truncated answer as whole.
+	Trailers func() []Header
 }
 
 // streamed reports whether the response produces its payload as it goes.
 func (r Response) streamed() bool { return r.Stream != nil }
+
+// trailers calls the response's Trailers function and checks what it
+// returns, turning a panic in it into an error, as pull does for the
+// producer: it runs on the writing goroutine too.
+func (r Response) trailers() (fields []Header, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("httpstream: the response trailers panicked: %v", p)
+		}
+	}()
+	fields = r.Trailers()
+	for _, h := range fields {
+		if err := checkTrailer(h); err != nil {
+			return nil, err
+		}
+	}
+	return fields, nil
+}
+
+// checkTrailer holds one response trailer to the octet rules every response
+// header is held to, and refuses the fields RFC 9110 §6.5.1 says cannot be
+// processed after the body: the framing, which was settled before it, and
+// the connection-specific fields, which no protocol carries end to end.
+// Trailer itself is among them — a trailer cannot announce more trailers.
+// The names are compared case-insensitively, so the one rule serves the
+// HTTP/1.1 spelling and the lowercase HTTP/2 and HTTP/3 put on the wire.
+func checkTrailer(h Header) error {
+	if !isToken(h.Name) {
+		return fmt.Errorf("%w: %q is not a trailer name", ErrMalformed, h.Name)
+	}
+	if hasCRLF(h.Value) {
+		return ErrHeaderInjection
+	}
+	if hasFieldControl(h.Value) {
+		return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrMalformed, h.Name)
+	}
+	for _, name := range refusedTrailers {
+		if equalFold(h.Name, name) {
+			return fmt.Errorf("%w: %s cannot be sent as a trailer", ErrMalformed, h.Name)
+		}
+	}
+	return nil
+}
+
+// refusedTrailers are the fields checkTrailer refuses.
+var refusedTrailers = [...]string{
+	"content-length", "transfer-encoding", "trailer", "te",
+	"connection", "keep-alive", "proxy-connection", "upgrade",
+}
 
 // pull runs a streamed response's producer, turning a panic in it into an
 // error the transport answers on that one response. The handler's own panics
@@ -61,12 +177,41 @@ func pull(stream sluice.Stream[[]byte], yield func(sluice.Batch[[]byte]) bool) (
 	return nil
 }
 
-// check refuses a response that says two things about its payload.
+// check refuses a response that says two things about its payload, or a
+// length that describes none.
 func (r Response) check() error {
 	if r.Stream != nil && len(r.Body) > 0 {
 		return fmt.Errorf("%w: a response with both a Body and a Stream", ErrMalformed)
 	}
+	if r.ContentLength < 0 {
+		return fmt.Errorf("%w: a negative ContentLength", ErrMalformed)
+	}
+	if r.ContentLength > 0 && r.Stream == nil {
+		return fmt.Errorf("%w: a ContentLength without a Stream", ErrMalformed)
+	}
 	return nil
+}
+
+// errLengthMismatch reports a streamed body that did not produce the
+// ContentLength it declared.
+var errLengthMismatch = fmt.Errorf("%w: the response producer did not yield its ContentLength", ErrMalformed)
+
+// overLength reports whether a batch of chunks would take a body past its
+// declared length want, zero for none, counting from sent, the bytes
+// already out; a batch that would not is added to sent.
+func overLength(sent *int64, want int64, chunks [][]byte) bool {
+	if want == 0 {
+		return false
+	}
+	n := *sent
+	for _, c := range chunks {
+		n += int64(len(c))
+	}
+	if n > want {
+		return true
+	}
+	*sent = n
+	return false
 }
 
 // ErrHeaderInjection reports a response header this package will not write.
@@ -100,20 +245,78 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 // to close under it. requests may be shorter than responses or nil; the
 // responses past its end are written as if a body were always allowed and
 // the connection always continued.
-func WriteBatch(dst []byte, requests []Request, responses []Response) ([]byte, error) {
+//
+// Every response that does not close says Connection: keep-alive and
+// Keep-Alive: timeout=<seconds>, from cfg's IdleTimeout, as [Serve] writes
+// them: a caller serving the connection itself answers the way Serve would
+// (see appendKeepAlive). IdleTimeout is the one field of cfg it reads, and it
+// is resolved as Serve resolves it: zero is the default, and a negative value
+// is refused with the same error. The other fields are not checked here —
+// resolving them all on every batch would cost more than writing one.
+func WriteBatch(dst []byte, cfg Config, requests []Request, responses []Response) ([]byte, error) {
+	idle := cfg.IdleTimeout
+	if err := orDefault("Config.IdleTimeout", &idle, defaultIdleTimeout); err != nil {
+		return nil, err
+	}
+	// Formatted once per call, on the stack, rather than once per response.
+	var field [keepAliveFieldMax]byte
+	keepAlive := appendKeepAlive(field[:0], idle)
 	closeAfter := asksToClose(responses)
+	date := dateFor(time.Now())
 	for i, res := range responses {
 		var method []byte
+		http10 := false
 		if i < len(requests) {
-			method = requests[i].Method
+			method, http10 = requests[i].Method, requests[i].http10
 		}
 		closing := i == len(responses)-1 && (closeAfter || i < len(requests) && !requests[i].KeepAlive)
 		var err error
-		if dst, err = appendResponse(dst, method, closing, res); err != nil {
+		if dst, err = appendResponse(dst, method, closing, http10, keepAlive, res, date); err != nil {
 			return nil, err
 		}
 	}
 	return dst, nil
+}
+
+// keepAliveFieldMax holds appendKeepAlive's longest output: the fixed text
+// and the 10 digits of the largest whole-second time.Duration.
+const keepAliveFieldMax = len("Connection: keep-alive\r\nKeep-Alive: timeout=\r\n") + 10
+
+// appendKeepAlive writes what an HTTP/1.1 response that does not close says
+// about the connection: Connection: keep-alive, then Keep-Alive:
+// timeout=<seconds> with idle, the connection's IdleTimeout, rounded down to
+// whole seconds.
+//
+// The timeout is for the proxy in front: nginx keeps an upstream connection
+// 60s by default and Envoy an hour, and one that outlives this server's idle
+// timeout gets reused the moment it is being closed — a reset on a request
+// that was never read, which the proxy reports as a 502. A proxy that reads
+// the field closes first (RFC 2068 §19.7.1.1 defines it; RFC 9110 §7.6.1
+// requires Connection to name it, since it is hop-by-hop). Neither of those
+// two does: nginx ignores it (ngx_http_upstream.c) and Envoy strips it, so
+// in front of them the proxy's own upstream idle timeout is what must be set
+// below this one, as docs/guide/experimental.md shows. The option also
+// answers an HTTP/1.0 client's Connection: keep-alive, which RFC 9112 §9.3
+// honours only when the response says keep-alive back; such a client was
+// served one request per connection before.
+//
+// Rounded down, never up: a timeout the server does not honour is the reset
+// again. Zero seconds is written as such — the socket closes within the
+// second, and the field says so.
+func appendKeepAlive(dst []byte, idle time.Duration) []byte {
+	dst = append(dst, "Connection: keep-alive\r\nKeep-Alive: timeout="...)
+	dst = strconv.AppendInt(dst, int64(idle/time.Second), 10)
+	return append(dst, '\r', '\n')
+}
+
+// appendConnection writes what the response says about the connection: the
+// writer's own Connection: close on the batch's last response when nothing
+// follows, else keepAlive, appendKeepAlive's announcement.
+func appendConnection(dst []byte, closing bool, keepAlive []byte) []byte {
+	if closing {
+		return append(dst, "Connection: close\r\n"...)
+	}
+	return append(dst, keepAlive...)
 }
 
 // appendChunked writes one chunk of a streamed HTTP/1.1 body: its length in
@@ -138,38 +341,76 @@ func appendLastChunk(dst []byte) []byte {
 	return append(dst, '0', '\r', '\n', '\r', '\n')
 }
 
-// appendStreamedHeader writes the status and headers of a response whose
-// length is not yet known. noBody is [noLengthAndBody]'s verdict on the
-// request it answers, which the caller already needs to skip the producer: a
-// HEAD or 204/304 response here must not announce a chunked body it will
-// never send, or a pipelined client reads the next response's bytes as this
-// one's body.
+// appendLastChunkTrailers closes a chunked body with a trailer section
+// (RFC 9112 §7.1.2): the last chunk, the fields as spelled, the empty line.
+// fields have passed checkTrailer.
+func appendLastChunkTrailers(dst []byte, fields []Header) []byte {
+	dst = append(dst, '0', '\r', '\n')
+	for _, h := range fields {
+		dst = append(dst, h.Name...)
+		dst = append(dst, ':', ' ')
+		dst = append(dst, h.Value...)
+		dst = append(dst, '\r', '\n')
+	}
+	return append(dst, '\r', '\n')
+}
+
+// appendStreamedHeader writes the status and headers of a produced response,
+// framed as [streamedFraming] decided: chunked, by a length of size bytes, or
+// neither. A HEAD or 204/304 response here must not announce a chunked body
+// it will never send, or a pipelined client reads the next response's bytes
+// as this one's body; a HEAD response still states the length its GET twin
+// would.
 //
-// http10 marks a request whose client never said it understands chunked:
-// RFC 9112 §6.1 forbids Transfer-Encoding in the response then, because a
-// 1.0 client reads the chunk sizes as body bytes. The body is close-delimited
-// instead — no framing header at all, the empty line to EOF — and the caller
-// has already marked the response closing, since EOF is the only end such a
-// body has.
-func appendStreamedHeader(dst []byte, closing, http10, noBody bool, res Response) ([]byte, error) {
-	dst, err := appendStatusAndHeaders(dst, res)
+// A response framed neither way is close-delimited — no framing header at
+// all, the empty line to EOF — and the caller has already marked it closing,
+// since EOF is the only end such a body has.
+//
+// keepAlive is the connection's announcement for a response that is not
+// closing, see [appendConnection].
+func appendStreamedHeader(dst []byte, closing, chunked bool, size int64, keepAlive []byte, res Response, date []byte) ([]byte, error) {
+	dst, err := appendStatusAndHeaders(dst, res, date)
 	if err != nil {
 		return nil, err
 	}
-	if closing {
-		dst = append(dst, "Connection: close\r\n"...)
-	}
-	if !noBody && !http10 {
+	dst = appendConnection(dst, closing, keepAlive)
+	switch {
+	case chunked:
 		dst = append(dst, "Transfer-Encoding: chunked\r\n"...)
+	case size > 0:
+		dst = append(dst, "Content-Length: "...)
+		dst = strconv.AppendInt(dst, size, 10)
+		dst = append(dst, '\r', '\n')
 	}
 	dst = append(dst, '\r', '\n')
 	return dst, nil
 }
 
+// streamedFraming decides how HTTP/1.1 frames a produced response. noLength
+// and noBody are [noLengthAndBody]'s verdict on the request it answers.
+//
+// chunked is the default for a body that has one, and the only framing that
+// carries trailers. size is the Content-Length to state, zero for none: the
+// response's ContentLength unless the body is chunked (RFC 9112 §6.2 forbids
+// both) or the status never states one. closeDelimited is the body with
+// neither, for an http10 request whose client never said it understands
+// chunked: RFC 9112 §6.1 forbids Transfer-Encoding in the response then,
+// because a 1.0 client reads the chunk sizes as body bytes — which is also
+// why a declared length is worth most there, keeping the connection open.
+func streamedFraming(res Response, http10, noLength, noBody bool) (chunked bool, size int64, closeDelimited bool) {
+	chunked = !noBody && !http10 && (res.ContentLength == 0 || res.Trailers != nil)
+	if !chunked && !noLength {
+		size = res.ContentLength
+	}
+	closeDelimited = !noBody && !chunked && size == 0
+	return chunked, size, closeDelimited
+}
+
 // appendStatusAndHeaders writes the status line and the caller's fields, and
 // refuses the two things a response must never carry from a caller: a header
 // that would split the response, and a framing header this package owns.
-func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
+// date is [dateFor]'s value for the batch, written when the caller set none.
+func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, error) {
 	status := res.Status
 	if status == 0 {
 		status = 200
@@ -182,7 +423,15 @@ func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
 	dst = append(dst, ' ')
 	dst = append(dst, reason(status)...)
 	dst = append(dst, '\r', '\n')
-
+	if !datedBy(res.Headers) {
+		// RFC 9110 §6.6.1: an origin server with a clock sends Date on every
+		// response. It leads the fields (§5.3: "Date on responses" first, so
+		// a recipient can decide early not to handle the message); see
+		// datedBy for one the handler set.
+		dst = append(dst, "Date: "...)
+		dst = append(dst, date...)
+		dst = append(dst, '\r', '\n')
+	}
 	for _, h := range res.Headers {
 		if !isToken(h.Name) {
 			return nil, fmt.Errorf("%w: %q is not a header name", ErrMalformed, h.Name)
@@ -207,11 +456,12 @@ func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
 		}
 		if equalFold(h.Name, "connection") || equalFold(h.Name, "keep-alive") ||
 			equalFold(h.Name, "proxy-connection") || equalFold(h.Name, "upgrade") ||
-			equalFold(h.Name, "trailer") {
+			equalFold(h.Name, "trailer") && res.Trailers == nil {
 			// So is the connection: a handler's Connection: keep-alive on a
-			// response the writer is closing after, or an Upgrade or Trailer
-			// promising what this server never does, is a client misled about
-			// the bytes that follow. HTTP/2 and HTTP/3 refuse the same fields.
+			// response the writer is closing after, or an Upgrade promising
+			// what this server never does, is a client misled about the
+			// bytes that follow. HTTP/2 and HTTP/3 refuse the same fields. A
+			// Trailer is the same promise on a response without Trailers.
 			return nil, fmt.Errorf("%w: %s is connection-specific, not the caller's", ErrMalformed, h.Name)
 		}
 		dst = append(dst, h.Name...)
@@ -220,6 +470,21 @@ func appendStatusAndHeaders(dst []byte, res Response) ([]byte, error) {
 		dst = append(dst, '\r', '\n')
 	}
 	return dst, nil
+}
+
+// datedBy says whether a handler set its own Date among headers. One that did
+// is believed — a cache in front of it may be dating the entry — and is
+// neither doubled nor moved: the three writers add theirs only when this is
+// false, ahead of the handler's fields, which needs this pass before the one
+// that writes them.
+func datedBy(headers []Header) bool {
+	for _, h := range headers {
+		// The length first, inline: most names are not four bytes long.
+		if len(h.Name) == len("date") && equalFold(h.Name, "date") {
+			return true
+		}
+	}
+	return false
 }
 
 // noLengthAndBody applies RFC 9110 §8.6 / §9.3.2's constraint on a
@@ -253,25 +518,43 @@ var headMethod = []byte("HEAD")
 // appendResponse writes one response. method is the request it answers, used
 // only to decide whether a body may follow — never to change the status or
 // headers a handler chose. closing marks the last response of a batch whose
-// last request will not be followed by another.
-func appendResponse(dst, method []byte, closing bool, res Response) ([]byte, error) {
+// last request will not be followed by another; keepAlive is what every
+// other response says instead, see [appendConnection]. http10 marks a
+// request that never said it reads chunked, whose response therefore
+// carries no trailers.
+func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, res Response, date []byte) ([]byte, error) {
 	if err := res.check(); err != nil {
 		return nil, err
 	}
-	dst, err := appendStatusAndHeaders(dst, res)
-	if err != nil {
-		return nil, err
-	}
-	if closing {
-		dst = append(dst, "Connection: close\r\n"...)
-	}
-
 	status := res.Status
 	if status == 0 {
 		status = 200
 	}
 	noLength, noBody := noLengthAndBody(status, method)
+	var trailers []Header
+	chunked := res.Trailers != nil && !noBody && !http10
+	if chunked {
+		// Called before a byte is appended, so a refusal leaves dst as the
+		// caller had it and the response can still be answered with a 500.
+		var err error
+		if trailers, err = res.trailers(); err != nil {
+			return nil, err
+		}
+	}
+	dst, err := appendStatusAndHeaders(dst, res, date)
+	if err != nil {
+		return nil, err
+	}
+	dst = appendConnection(dst, closing, keepAlive)
 
+	if chunked {
+		// Trailers only travel after a chunked body (RFC 9112 §7.1.2), so
+		// the payload in hand goes out as one chunk rather than with a
+		// Content-Length.
+		dst = append(dst, "Transfer-Encoding: chunked\r\n\r\n"...)
+		dst = appendChunk(dst, res.Body)
+		return appendLastChunkTrailers(dst, trailers), nil
+	}
 	if !noLength {
 		dst = append(dst, "Content-Length: "...)
 		dst = strconv.AppendInt(dst, int64(len(res.Body)), 10)

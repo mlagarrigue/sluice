@@ -550,8 +550,8 @@ N diagnostics, memory blows up.
 > drowns the signal.
 
 **`diagnostics.Collector`** is that ceiling, built by `NewCollector(limit)`, whose limit is a required argument —
-S1 says every bound is stated by the caller, and a limit nobody chose is a limit
-nobody owns. It keeps the first *n* in arrival order rather than the most severe:
+S1 requires a bound, and no default fits every use here, so the caller supplies
+it: a limit nobody chose is a limit nobody owns. It keeps the first *n* in arrival order rather than the most severe:
 stable ordering is what makes a report reproducible, and a collector that
 reshuffles under load answers differently for the same input depending on what
 came before. `Truncated()` reports what was dropped, because a truncation that is
@@ -1090,7 +1090,7 @@ Framing is trivial: ~20 useful message types, 1 type byte + an int32 length.
 
 Budget the codecs, not the parsing.
 
-> **The estimate held.** `postgres.Startup` is the startup packet
+> **The estimate held.** `postgres.Connect` is the startup packet
 > and the SASL exchange over `crypto/hmac`, `crypto/sha256`, `crypto/subtle`,
 > `crypto/rand` and `crypto/pbkdf2` — the last of which arrived in the standard
 > library in Go 1.24, so even the key derivation this section budgeted for did
@@ -1633,7 +1633,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 
 | # | Guarantee | Verification |
 |---|---|---|
-| S1 | No unbounded allocation. Every bound is a required parameter. | Overflow → error, not OOM |
+| S1 | No unbounded allocation. Every bound is mandatory: a zero field is its safe default, never its absence ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)). | Overflow → error, not OOM |
 | S2 | No `panic` crosses a public boundary, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzing of the parsers — `Path.JSONPointer` covered; every sentinel goes through one constructor |
 | S3 | Restrictive default limits. | Review of the defaults |
 | S4 | `unsafe` forbidden except under a named audit. | `go vet` + review |
@@ -1674,11 +1674,14 @@ credit; any unbounded buffer reintroduces this bug.
 production dependency is a recorded decision, and the graph is as small as
 the job allows. Today:
 
-- **Production: the standard library plus one module, `golang.org/x/crypto`.**
-  It supplies ChaCha20-Poly1305, which `crypto/tls` negotiates in TLS 1.3 and
-  cannot be deselected, but does not export; the QUIC transport needs the raw
-  AEAD and keystream to protect packets (RFC 9001 §5). Maintained by the Go
-  team, pinned in `go.sum`, watched by Dependabot and `govulncheck`. No other
+- **Production: the standard library plus two modules.**
+  `golang.org/x/crypto` supplies ChaCha20-Poly1305, which `crypto/tls`
+  negotiates in TLS 1.3 and cannot be deselected, but does not export; the
+  QUIC transport needs the raw AEAD and keystream to protect packets (RFC
+  9001 §5). `golang.org/x/text/unicode/norm` supplies the NFKC
+  normalisation SASLprep (RFC 4013) applies to a PostgreSQL password, and
+  only `database/postgres` imports it. Both are maintained by the Go team,
+  pinned in `go.sum`, watched by Dependabot and `govulncheck`. No other
   module enters the graph: CI checks the allowlist on every push.
 - **Tests/tooling: allowed** if they cannot end up in the final binary; tests
   that compare against other libraries live in the separate `benchmarks`

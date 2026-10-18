@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/mlagarrigue/sluice"
 )
 
 // Axis F of the internal study: the buffered body of every answer, encoded
@@ -17,8 +19,9 @@ import (
 //
 // What is deliberately simple: one encoder per level, reused through a
 // sync.Pool, the whole body written in one go and Close'd. A response is
-// buffered in R, so the variant is buffered too; flushing per batch belongs
-// to a streamed response, axis E.
+// buffered in R, so the variant is buffered too; under axis E the same
+// encoder is flushed once per batch (encodeStream, writeStream), which is
+// the "flush per batch" variant of the axis.
 
 const (
 	codecNone     = "none"
@@ -49,10 +52,67 @@ func lookupCodec(name string) *codec {
 }
 
 // resetWriter is what gzip.Writer and flate.Writer have in common: a reset
-// re-targets the encoder without rebuilding its tables.
+// re-targets the encoder without rebuilding its tables, and a flush ends the
+// current deflate block so that everything written so far can be decoded.
 type resetWriter interface {
 	io.WriteCloser
 	Reset(io.Writer)
+	Flush() error
+}
+
+// get takes an encoder from the pool, targeted at w; put returns it.
+func (c *codec) get(w io.Writer) resetWriter {
+	zw, _ := c.pool.Get().(resetWriter)
+	if zw == nil {
+		return c.newWriter(w)
+	}
+	zw.Reset(w)
+	return zw
+}
+
+func (c *codec) put(zw resetWriter) { c.pool.Put(zw) }
+
+// encodeStream is axis F over axis E: every batch of fragments of in comes
+// out as one compressed fragment, the encoder flushed so that the client
+// can decode what it has, and the final block closes the stream. The
+// encoder is taken when the transport starts pulling and returned when the
+// stream ends, on the transport's writing goroutine.
+func (c *codec) encodeStream(in sluice.Stream[[]byte]) sluice.Stream[[]byte] {
+	return func(yield func(sluice.Batch[[]byte]) bool) {
+		var buf bytes.Buffer
+		zw := c.get(&buf)
+		defer c.put(zw)
+		emit := func() bool {
+			if buf.Len() == 0 {
+				return true
+			}
+			out := bytes.Clone(buf.Bytes())
+			buf.Reset()
+			return yield(sluice.Batch[[]byte]{Items: [][]byte{out}})
+		}
+		ok := true
+		in(func(batch sluice.Batch[[]byte]) bool {
+			for _, frag := range batch.Items {
+				if _, err := zw.Write(frag); err != nil {
+					ok = false
+					return false
+				}
+			}
+			if err := zw.Flush(); err != nil {
+				ok = false
+				return false
+			}
+			ok = emit()
+			return ok
+		})
+		if !ok {
+			return
+		}
+		if err := zw.Close(); err != nil {
+			return
+		}
+		emit()
+	}
 }
 
 func (c *codec) newWriter(w io.Writer) resetWriter {
@@ -79,13 +139,8 @@ func (c *codec) newWriter(w io.Writer) resetWriter {
 func (c *codec) encode(body []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(len(body) / 4)
-	zw, _ := c.pool.Get().(resetWriter)
-	if zw == nil {
-		zw = c.newWriter(&buf)
-	} else {
-		zw.Reset(&buf)
-	}
-	defer c.pool.Put(zw)
+	zw := c.get(&buf)
+	defer c.put(zw)
 	if _, err := zw.Write(body); err != nil {
 		return nil, err
 	}

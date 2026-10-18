@@ -43,6 +43,9 @@ type options struct {
 	// Axis F — compression.
 	compression string
 
+	// Off the axes: how the list is encoded (§2.4, the optimised version).
+	json string
+
 	// The database behind every dynamic scenario.
 	db      dbConfig
 	dbConns int
@@ -65,6 +68,12 @@ const (
 	driverSluice = "sluice"
 	driverPgx    = "pgx"
 
+	responseBuffered = "buffered"
+	responseStream   = "stream"
+
+	jsonStd    = "std"
+	jsonAppend = "append"
+
 	// maxDBConns bounds -db-conns: PostgreSQL's own default ceiling is 100,
 	// and pgxpool counts in int32.
 	maxDBConns = 4096
@@ -79,7 +88,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&o.key, "key", "", "TLS key file (PEM), with -cert")
 
 	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
-		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (not implemented until axis A)")
+		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (QUIC, UDP)")
 	fs.StringVar(&o.driver, "driver", driverSluice,
 		"axis B: sluice (R, database/postgres), pgx (jackc/pgx v5; same gateway, same connections)")
 	fs.IntVar(&o.gatewaySize, "gateway-size", 64, "axis C: gateway Size, the largest batch of unit reads")
@@ -88,10 +97,13 @@ func parseOptions(args []string) (options, error) {
 		"axis D: httpstream Config.MaxRequestsPerBatch; 0 is the package default (64); httpstream transports only")
 	fs.IntVar(&o.maxRequestsPerConn, "max-requests-per-conn", 0,
 		"axis D: httpstream Config.MaxRequestsPerConn; 0 is the package default (1024), -1 is unbounded; httpstream transports only")
-	fs.StringVar(&o.response, "response", "buffered",
-		"axis E: buffered (R), stream (not implemented until axis E)")
+	fs.StringVar(&o.response, "response", responseBuffered,
+		"axis E: buffered (R), stream (the list is written and flushed batch by batch, chunked; with -compression, the encoder is flushed per batch too)")
 	fs.StringVar(&o.compression, "compression", "none",
 		"axis F: none (R), gzip1, gzip6, deflate6; the body is encoded when the client accepts it")
+
+	fs.StringVar(&o.json, "json", jsonStd,
+		"list encoder: std (R, encoding/json), append (a hand encoder of the list document, strconv.AppendInt; the other scenarios stay under encoding/json)")
 
 	fs.StringVar(&o.db.addr, "db", os.Getenv("SLUICE_PG"), "PostgreSQL host:port (default $SLUICE_PG)")
 	fs.StringVar(&o.db.user, "db-user", os.Getenv("SLUICE_PG_USER"), "PostgreSQL role (default $SLUICE_PG_USER)")
@@ -121,7 +133,9 @@ func (o options) validate() error {
 			return fmt.Errorf("-transport %s: %w without -tls (h2c is not a configuration of the study)", o.transport, errNotImplemented)
 		}
 	case transportHTTPStreamH3:
-		return fmt.Errorf("-transport %s: %w until axis A", o.transport, errNotImplemented)
+		if !o.tls {
+			return fmt.Errorf("-transport %s: QUIC is always TLS, -tls=false has no meaning", o.transport)
+		}
 	default:
 		return fmt.Errorf("-transport %q: unknown", o.transport)
 	}
@@ -140,9 +154,7 @@ func (o options) validate() error {
 		return errors.New("-max-requests-per-batch must be >= 0 and -max-requests-per-conn >= -1")
 	}
 	switch o.response {
-	case "buffered":
-	case "stream":
-		return fmt.Errorf("-response stream: %w until axis E", errNotImplemented)
+	case responseBuffered, responseStream:
 	default:
 		return fmt.Errorf("-response %q: unknown", o.response)
 	}
@@ -150,6 +162,11 @@ func (o options) validate() error {
 	case codecNone, codecGzip1, codecGzip6, codecDeflate6:
 	default:
 		return fmt.Errorf("-compression %q: unknown", o.compression)
+	}
+	switch o.json {
+	case jsonStd, jsonAppend:
+	default:
+		return fmt.Errorf("-json %q: unknown", o.json)
 	}
 	if o.db.addr == "" || o.db.user == "" {
 		return errors.New("-db and -db-user are required (or SLUICE_PG and SLUICE_PG_USER)")

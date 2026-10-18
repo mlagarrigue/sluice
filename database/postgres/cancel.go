@@ -1,10 +1,14 @@
 package postgres
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"reflect"
+	"time"
 )
 
 // cancelRequestCode goes where a startup packet carries its protocol version.
@@ -21,15 +25,29 @@ const cancelRequestCode = 1234<<16 | 5678
 // proof. Treat it the way a session token is treated — do not log it, do not
 // put it in an error message, do not hand it to anything that did not open
 // the connection.
+//
+// Secret holds the key's bytes as the server sent them. Under protocol 3.0
+// they are always four; under 3.2 ([Protocol32]) they are 4
+// to 256 — PostgreSQL 18 sends 32, and a pooler in between may send more. A
+// string rather than a []byte so that a CancelKey copied to another
+// goroutine shares nothing it could change under the connection, and stays
+// comparable with ==.
 type CancelKey struct {
 	PID    uint32
-	Secret uint32
+	Secret string
 }
+
+// The bounds the protocol puts on a secret: four bytes, the only length
+// before 3.2, up to the 256 a 3.2 message may carry.
+const (
+	minCancelSecret = 4
+	maxCancelSecret = 256
+)
 
 // Known reports whether a key was actually received. It is false for a [Conn]
 // built by [NewConn], which never saw the startup exchange, and for a server
 // that sent no pgwire.BackendKeyData.
-func (k CancelKey) Known() bool { return k.PID != 0 || k.Secret != 0 }
+func (k CancelKey) Known() bool { return k.PID != 0 || k.Secret != "" }
 
 // String deliberately hides the secret: a key that reaches a log is a key
 // anyone reading the log can cancel with.
@@ -39,6 +57,10 @@ func (k CancelKey) String() string {
 	}
 	return fmt.Sprintf("postgres.CancelKey{PID: %d, Secret: <redacted>}", k.PID)
 }
+
+// GoString hides the secret from %#v too, which would otherwise print the
+// fields one by one and the secret among them.
+func (k CancelKey) GoString() string { return k.String() }
 
 // CancelKey returns the cancellation key the server sent during startup, for
 // use with [CancelRequest]. It is zero — and [CancelKey.Known] is false — on a
@@ -75,10 +97,9 @@ func (c *Conn) CancelKey() CancelKey { return c.cancelKey }
 // the rest of the session. The main connection being a *tls.Conn changes
 // nothing here: rw is a separate connection, and it is only as protected as
 // the caller makes it. Where the main connection needed TLS, negotiate it on
-// this one the same way — SSLRequest, the server's 'S', then [crypto/tls] —
-// and pass the *tls.Conn; PostgreSQL accepts a CancelRequest inside TLS. This
-// package does not do it for you for the reason [Startup] does not: the
-// transport and its certificate decisions are the caller's.
+// this one the same way — [DialTLS] does: SSLRequest, the server's 'S', then
+// [crypto/tls] — and pass the *tls.Conn; PostgreSQL accepts a CancelRequest
+// inside TLS.
 //
 // # What a nil error means, and what it does not
 //
@@ -93,37 +114,223 @@ func (c *Conn) CancelKey() CancelKey { return c.cancelKey }
 // bound a query's cost are the context passed to [Conn.Query], which stops the
 // client pulling, and a server-side statement timeout, which stops the server
 // working. Reach for CancelRequest when a backend is stuck inside a statement
-// that neither of those will end.
+// that neither of those will end. A [Conn] opened by [Connect] sends it for
+// you the moment a context ends mid-statement, and waits for the server to
+// close the connection before it sends anything else.
 func CancelRequest(rw io.ReadWriteCloser, key CancelKey) error {
 	defer rw.Close() //nolint:errcheck // the socket is one-shot and the server closes it first
+	return writeCancel(rw, key)
+}
 
+// writeCancel is [CancelRequest] without the close, for the connection's own
+// cancellation, which goes on to wait for the server's.
+func writeCancel(rw io.Writer, key CancelKey) error {
 	if !key.Known() {
 		return errors.New("postgres: cannot cancel with an unknown key — the connection was built by NewConn, or the server sent no pgwire.BackendKeyData")
 	}
+	if n := len(key.Secret); n < minCancelSecret || n > maxCancelSecret {
+		// Refused rather than sent: the server matches the secret byte for
+		// byte, so a truncated or padded one cancels nothing, and the caller
+		// would read the nil error as a cancellation on its way.
+		return fmt.Errorf("postgres: cannot cancel with a %d-byte secret — the protocol carries %d to %d", n, minCancelSecret, maxCancelSecret)
+	}
 
-	// Sixteen bytes: the length itself, the code, the pid, the secret. Small
-	// enough to build on the stack rather than reach for a Writer, and the
-	// packet has no type byte for one to add.
-	var pkt [16]byte
-	binary.BigEndian.PutUint32(pkt[0:], 16)
+	// The length itself, the code, the pid, then the secret to the end of
+	// the packet: 16 bytes under protocol 3.0, at most 268 under 3.2. Built
+	// whole and written once, and the packet has no type byte for a Writer
+	// to add.
+	var buf [12 + maxCancelSecret]byte
+	n := 12 + len(key.Secret)
+	pkt := buf[:n]
+	binary.BigEndian.PutUint32(pkt[0:], uint32(n)) //nolint:gosec // G115: at most 268, bounded above
 	binary.BigEndian.PutUint32(pkt[4:], cancelRequestCode)
 	binary.BigEndian.PutUint32(pkt[8:], key.PID)
-	binary.BigEndian.PutUint32(pkt[12:], key.Secret)
+	copy(pkt[12:], key.Secret)
 
-	if _, err := rw.Write(pkt[:]); err != nil {
+	if _, err := rw.Write(pkt); err != nil {
 		return fmt.Errorf("postgres: sending the cancellation: %w", err)
 	}
 	return nil
 }
 
 // parseBackendKeyData reads the pid and secret the server sends once, during
-// startup.
-func parseBackendKeyData(body []byte) (CancelKey, error) {
-	if len(body) != 8 {
-		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes, want 8", ErrProtocol, len(body))
+// startup. version is the protocol version in force: before 3.2 the secret
+// is exactly four bytes, from 3.2 on it runs to the end of the message, 4 to
+// 256 bytes.
+func parseBackendKeyData(body []byte, version ProtocolVersion) (CancelKey, error) {
+	lo, hi := 4+minCancelSecret, 4+maxCancelSecret
+	if version < Protocol32 {
+		hi = lo
+	}
+	if len(body) < lo || len(body) > hi {
+		return CancelKey{}, fmt.Errorf("%w: pgwire.BackendKeyData is %d bytes under protocol %v, want %d to %d", ErrProtocol, len(body), version, lo, hi)
 	}
 	return CancelKey{
 		PID:    binary.BigEndian.Uint32(body[0:4]),
-		Secret: binary.BigEndian.Uint32(body[4:8]),
+		Secret: string(body[4:]),
 	}, nil
+}
+
+// sqlstateQueryCanceled is what the server answers a statement it interrupted
+// with, whether on a CancelRequest or on its own statement_timeout.
+const sqlstateQueryCanceled = "57014"
+
+// cancelWatch is the goroutine that answers a context ending while the
+// server is still executing a statement: it opens the second connection
+// with the recipe [Connect] was given, sends the [CancelRequest] and waits
+// for the server to close that connection. The statement's own goroutine
+// is blocked in a read all the while, and is released by the server's
+// query_canceled error — or, when the cancellation cannot be confirmed, by
+// the watch closing the connection under it.
+type cancelWatch struct {
+	stop func() bool
+	done chan struct{}
+	err  error // written by the goroutine before done is closed
+}
+
+// watchCancel arms the watch for one statement. It is nil, and costs
+// nothing, when there is no dialer to open the second connection with, no
+// key to name the backend by, or a context that can never end.
+func (c *Conn) watchCancel(ctx context.Context) *cancelWatch {
+	if c.cancelDial == nil || ctx.Done() == nil || !c.cancelKey.Known() {
+		return nil
+	}
+	w := &cancelWatch{done: make(chan struct{})}
+	w.stop = context.AfterFunc(ctx, func() {
+		defer close(w.done)
+		if w.err = c.sendCancel(ctx); w.err != nil {
+			// Closed here rather than when the statement settles: its
+			// goroutine may be blocked in a read the server will never
+			// answer, and only the close releases it.
+			_ = c.rw.Close()
+		}
+	})
+	return w
+}
+
+// end disarms the watch once the statement is over. A cancellation already
+// under way is waited for — to the server's confirmation or to
+// CancelTimeout — so that the next statement is not sent before the server
+// has acted on this one's request. It reports how the cancellation went:
+// nil when none was sent or when the server confirmed it.
+func (w *cancelWatch) end() error {
+	if w == nil || w.stop() {
+		return nil
+	}
+	<-w.done
+	return w.err
+}
+
+// disarm stops a watch that end will not reach — a consumer's panic
+// unwinding through the statement — so that the context ending later does
+// not cancel whatever the connection runs next. Deferred beside
+// watchCancel; a no-op once end has run.
+func (w *cancelWatch) disarm() {
+	if w != nil {
+		w.stop()
+	}
+}
+
+// sendCancel opens the second connection, sends the packet and waits for
+// the server to close that connection, all within CancelTimeout.
+//
+// The close is the confirmation. The server signals the backend before it
+// closes, and a backend that takes the signal while it waits for its next
+// command drops it: ProcessInterrupts in postgres.c ignores a cancel while
+// DoingCommandRead, and PostgresMain checks for interrupts once more before
+// it runs the command it read. So once the close is seen, the next
+// statement cannot be the one cancelled. Without it nothing says where the
+// request is — it may still be travelling — and the connection must not
+// carry another statement.
+//
+// The context that fired is kept for its values and nothing else: its
+// deadline is past.
+func (c *Conn) sendCancel(ctx context.Context) error {
+	timeout := c.cancelTimeout
+	if timeout == 0 {
+		timeout = defaultCancelTimeout
+	}
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	rw, err := c.cancelDial(dctx)
+	if err != nil {
+		return cancelErr(dctx, timeout, fmt.Errorf("opening the connection for the cancellation: %w", err))
+	}
+	if sameTransport(rw, c.rw) {
+		// Neither written nor closed here: it is the statement's own
+		// connection, where the packet would be read as a message. The
+		// watch closes it, as for any cancellation not confirmed.
+		return errors.New("the DialFunc returned the connection being cancelled — it must open a new one on every call")
+	}
+	defer rw.Close() //nolint:errcheck // the server has closed it, or the attempt is over
+	// The bound reaches the socket by closing it, as in [Connect]: a
+	// deadline would need a net.Conn, and the recipe returns less.
+	stop := context.AfterFunc(dctx, func() { _ = rw.Close() })
+	defer stop()
+	if err := writeCancel(rw, c.cancelKey); err != nil {
+		return cancelErr(dctx, timeout, fmt.Errorf("sending the cancellation: %w", err))
+	}
+	if _, err := io.Copy(io.Discard, rw); err != nil {
+		return cancelErr(dctx, timeout, fmt.Errorf("waiting for the server to close the cancellation connection: %w", err))
+	}
+	return nil
+}
+
+// cancelErr names CancelTimeout when it is what ended the attempt: a read
+// cut short by the close reports a closed connection, which says nothing
+// about why.
+func cancelErr(dctx context.Context, timeout time.Duration, err error) error {
+	if dctx.Err() != nil {
+		return fmt.Errorf("no confirmation within Config.CancelTimeout (%v): %w", timeout, err)
+	}
+	return err
+}
+
+// sameTransport reports whether a recipe handed back the connection it was
+// meant to open a second one beside. Only a comparable dynamic type is
+// compared: == on an interface panics otherwise, and a value of such a type
+// has no identity to compare.
+func sameTransport(a, b io.ReadWriteCloser) bool {
+	t := reflect.TypeOf(a)
+	return t != nil && t == reflect.TypeOf(b) && t.Comparable() && a == b
+}
+
+// settleCancel folds what the cancellation did into the error the statement
+// ends with. The server's query_canceled that answered our request becomes
+// ctx.Err(), wrapped, so errors.Is against the context errors answers the way
+// [Conn.Query] promises; the server's error stays reachable through
+// errors.As.
+//
+// A cancellation that was not confirmed has closed the connection. It is
+// broken for whatever comes next, a warning says why, and the statement's
+// own outcome decides what this call returns: nil when it completed before
+// the close — a statement reported failed after it committed is a
+// statement retried — and ctx.Err() with [ErrConnBroken] otherwise.
+func (c *Conn) settleCancel(ctx context.Context, w *cancelWatch, err error) error {
+	if cerr := w.end(); cerr != nil {
+		c.broken = fmt.Errorf("%w: the cancellation was not confirmed, so the connection was closed: %w", ErrConnBroken, cerr)
+		c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: cancellation not confirmed, connection closed",
+			slog.Uint64("pid", uint64(c.cancelKey.PID)),
+			slog.Bool("statement_completed", err == nil),
+			slog.String("error", cerr.Error()))
+		if err == nil {
+			return nil
+		}
+		return fmt.Errorf("abandoning the statement: %w (%w)", ctx.Err(), c.broken)
+	}
+	if ctx.Err() == nil || err == nil {
+		return err
+	}
+	if e, ok := errors.AsType[*Error](err); ok && e.Code == sqlstateQueryCanceled {
+		return fmt.Errorf("abandoning the statement: %w (the server cancelled it: %w)", ctx.Err(), err)
+	}
+	return err
+}
+
+// log is the connection's logger: [Config.Logger], or the default one.
+func (c *Conn) log() *slog.Logger {
+	if c.logger != nil {
+		return c.logger
+	}
+	return slog.Default()
 }

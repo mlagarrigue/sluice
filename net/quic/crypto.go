@@ -48,9 +48,9 @@ type secrets struct {
 // against tampering in flight, and hides nothing from an observer. Treating
 // it as confidentiality is the mistake this comment exists to prevent.
 func initialSecrets(dcid []byte) (secrets, error) {
-	initial, err := hkdf.Extract(sha256.New, dcid, initialSalt)
+	initial, err := extractInitial(dcid)
 	if err != nil {
-		return secrets{}, fmt.Errorf("quic: extracting the initial secret: %w", err)
+		return secrets{}, err
 	}
 	client, err := expandLabel(initial, "client in", 32)
 	if err != nil {
@@ -61,6 +61,19 @@ func initialSecrets(dcid []byte) (secrets, error) {
 		return secrets{}, err
 	}
 	return secrets{Client: client, Server: server}, nil
+}
+
+// extractInitial is the first half of initialSecrets: the secret both
+// directions expand from. A listener keeps it instead of both directions,
+// because most Initials it sees never need the server's — an answer sealed
+// under Retry's fixed key, or no answer at all — and the expansion is paid
+// only on the path that seals.
+func extractInitial(dcid []byte) ([]byte, error) {
+	initial, err := hkdf.Extract(sha256.New, dcid, initialSalt)
+	if err != nil {
+		return nil, fmt.Errorf("quic: extracting the initial secret: %w", err)
+	}
+	return initial, nil
 }
 
 // expandLabel is TLS 1.3's HKDF-Expand-Label (RFC 8446 §7.1) over SHA-256,
@@ -566,7 +579,30 @@ func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64)
 	if err != nil {
 		return nil, 0, usedCurrent, fmt.Errorf("%w: the packet did not authenticate", ErrQUIC)
 	}
+	// RFC 9000 §17.2 and §17.3.1: the reserved bits of the first byte —
+	// 0x0c under a long header, 0x18 under a short one — are zero once both
+	// protections are off, or the packet is PROTOCOL_VIOLATION. Checked
+	// here, after the AEAD and not before: refused on the unprotected
+	// header alone, a forgery nobody authenticated could end the
+	// connection, and the timing would tell the forger its mask guess was
+	// right (RFC 9001 §9.5). The one error openPhased returns for a packet
+	// that did authenticate, which is how the caller tells it apart.
+	if buf[0]&reservedBits(buf[0]) != 0 {
+		return nil, 0, used, &transportError{
+			code: transportProtocolViolation,
+			err:  fmt.Errorf("%w: reserved bits set in the first byte %#x", ErrQUIC, buf[0]),
+		}
+	}
 	return payload, pn, used, nil
+}
+
+// reservedBits is the mask of the first byte's reserved bits for the header
+// form the byte announces.
+func reservedBits(first byte) byte {
+	if first&0x80 != 0 {
+		return 0x0c
+	}
+	return 0x18
 }
 
 // maskFirstByte covers the bits of the first byte that are not needed to

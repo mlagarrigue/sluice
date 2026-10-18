@@ -182,7 +182,7 @@ func TestParseMechanisms(t *testing.T) {
 // A tampered signature must not authenticate, and it must say what it means:
 // the far end does not know this role's password.
 func TestSCRAMVerifyRejectsAWrongSignature(t *testing.T) {
-	s := &scram{sig: []byte("0123456789abcdef0123456789abcdef")}
+	s := &scram{step: scramAnswered, sig: []byte("0123456789abcdef0123456789abcdef")}
 
 	wrong := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdeg"))
 	err := s.verify([]byte("v=" + wrong))
@@ -192,8 +192,8 @@ func TestSCRAMVerifyRejectsAWrongSignature(t *testing.T) {
 	if !errors.Is(err, ErrAuth) {
 		t.Errorf("error = %v, want it to wrap ErrAuth", err)
 	}
-	if s.verified {
-		t.Error("verified is set after a failed verification")
+	if s.step == scramVerified {
+		t.Error("the exchange is verified after a failed verification")
 	}
 }
 
@@ -264,5 +264,84 @@ func TestParseServerFinalRefusesMalformedAttributes(t *testing.T) {
 		if _, err := parseServerFinal(msg); err == nil {
 			t.Errorf("parseServerFinal(%q) accepted it", msg)
 		}
+	}
+}
+
+// runSCRAM drives s through a complete exchange the way a server would,
+// signing its final message with the key the password derives, and returns
+// the server's three messages so a test can replay them out of order.
+func runSCRAM(t *testing.T, s *scram) (mechanisms, serverFirst, serverFinal []byte) {
+	t.Helper()
+	mechanisms = []byte(mechSCRAMSHA256 + "\x00\x00")
+	if _, _, err := s.begin(mechanisms, rfcPassword, nil); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	salt := []byte("0123456789abcdef")
+	serverFirst = []byte("r=" + s.nonce + "server,s=" + base64.StdEncoding.EncodeToString(salt) + ",i=4096")
+	clientFinal, err := s.respond(serverFirst, rfcPassword)
+	if err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	withoutProof, _, _ := strings.Cut(string(clientFinal), ",p=")
+	_, serverSig, err := scramProof(rfcPassword, salt, 4096,
+		"n=,r="+s.nonce+","+string(serverFirst)+","+withoutProof)
+	if err != nil {
+		t.Fatalf("scramProof: %v", err)
+	}
+	serverFinal = []byte("v=" + base64.StdEncoding.EncodeToString(serverSig))
+	if err := s.verify(serverFinal); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	return mechanisms, serverFirst, serverFinal
+}
+
+// RFC 5802 §5 fixes the conversation at four messages, one of each, in order.
+// Each server message arriving a second time, or after the step it answers,
+// is refused rather than computed on: a second challenge would be answered
+// with a second proof under the same password, and a second AuthenticationSASL
+// would restart an exchange whose verified signature the startup still holds.
+// libpq refuses the same sequences ("duplicate SASL authentication request").
+func TestSCRAMRefusesAMessageOutOfSequence(t *testing.T) {
+	tests := []struct {
+		name string
+		step func(s *scram, mechanisms, serverFirst, serverFinal []byte) error
+	}{
+		{"a second AuthenticationSASL", func(s *scram, mechanisms, _, _ []byte) error {
+			_, _, err := s.begin(mechanisms, rfcPassword, nil)
+			return err
+		}},
+		{"a second SASLContinue", func(s *scram, _, serverFirst, _ []byte) error {
+			_, err := s.respond(serverFirst, rfcPassword)
+			return err
+		}},
+		{"a second SASLFinal", func(s *scram, _, _, serverFinal []byte) error {
+			return s.verify(serverFinal)
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var s scram
+			mechanisms, serverFirst, serverFinal := runSCRAM(t, &s)
+			if err := tc.step(&s, mechanisms, serverFirst, serverFinal); !errors.Is(err, ErrProtocol) {
+				t.Errorf("err = %v, want ErrProtocol", err)
+			}
+		})
+	}
+}
+
+// A second SASLContinue before the SASLFinal is the same refusal: the
+// challenge has been answered once, and the signature it fixed is the one the
+// server must show.
+func TestSCRAMRefusesASecondChallenge(t *testing.T) {
+	var s scram
+	if _, _, err := s.begin([]byte(mechSCRAMSHA256+"\x00\x00"), rfcPassword, nil); err != nil {
+		t.Fatal(err)
+	}
+	serverFirst := []byte("r=" + s.nonce + "server,s=" + base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")) + ",i=4096")
+	if _, err := s.respond(serverFirst, rfcPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.respond(serverFirst, rfcPassword); !errors.Is(err, ErrProtocol) {
+		t.Errorf("second respond = %v, want ErrProtocol", err)
 	}
 }

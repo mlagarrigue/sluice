@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -115,7 +116,7 @@ func TestIdleConnectionClosesWithoutAStatus(t *testing.T) {
 // handler answers both — but never the bytes: a client that read them would
 // be reading the start of the next response.
 func TestHEADResponseCarriesNoBody(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: []byte("hello")})
@@ -160,7 +161,7 @@ func TestHEADResponseCarriesNoBody(t *testing.T) {
 // handler put in Response.Body — the same handler answers GET and HEAD and
 // may legitimately set one.
 func TestNoContentResponseCarriesNoLengthOrBody(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 204, Body: []byte("should never be sent")})
@@ -364,7 +365,7 @@ func TestMaxRequestsPerConnCapsAnExactMultipleOfBatches(t *testing.T) {
 // together because that is where a per-response bug in the write loop would
 // actually show.
 func TestPipelinedHeadNoContentNotModifiedFramingStaysSynced(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			switch string(r.Target) {
@@ -437,7 +438,7 @@ func TestPipelinedHeadNoContentNotModifiedFramingStaysSynced(t *testing.T) {
 // on it just like 204/304, and unlike those there is no sense in which a
 // handler's 101 is a real answer to frame.
 func TestInformationalStatusIsRefused(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 101})
@@ -458,7 +459,7 @@ func TestInformationalStatusIsRefused(t *testing.T) {
 // sent a Content-Length with no bytes behind it, and the client read the
 // next response's head as this one's body.
 func TestLowercaseHeadMethodGetsItsBody(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for range b.Items {
 			out = append(out, Response{Status: 200, Body: []byte("hello")})
@@ -533,7 +534,7 @@ func TestExpectContinueInsideAListGetsTheInterim(t *testing.T) {
 // reaches the handler decoded, and the request pipelined behind it is still
 // found where the encoding ended.
 func TestChunkedRequestBodyReachesTheHandler(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			body := append(append([]byte(nil), r.Target...), ':')
@@ -566,7 +567,7 @@ func TestChunkedRequestBodyReachesTheHandler(t *testing.T) {
 func TestHTTP10StreamedResponseIsTheLastHandled(t *testing.T) {
 	var mu sync.Mutex
 	var handled []string
-	addr, _ := serveTest(t, Config{}, func(b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		res := make([]Response, b.Len())
 		for i, r := range b.Items {
 			mu.Lock()

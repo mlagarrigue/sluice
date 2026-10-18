@@ -9,7 +9,7 @@ const (
 	framePing               = 0x01
 	frameACK                = 0x02 // 0x02..0x03, the high bit adding ECN counts
 	FrameResetStream        = 0x04
-	frameStopSending        = 0x05
+	FrameStopSending        = 0x05
 	frameCrypto             = 0x06
 	frameNewToken           = 0x07
 	FrameStream             = 0x08 // 0x08..0x0f, the low bits being OFF/LEN/FIN
@@ -40,8 +40,8 @@ const (
 //
 // A caller meets frames through [Conn.OnStreamFrames], which delivers the
 // stream frames of a packet together: Type is then [FrameStream] (test it
-// with [Frame.IsStream]) or [FrameResetStream], and StreamID, Data and Fin
-// are what it carries. The transport's own frames are parsed into the same
+// with [Frame.IsStream]), [FrameResetStream] or [FrameStopSending], and
+// StreamID, Data and Fin are what it carries. The transport's own frames are parsed into the same
 // type but never leave it, and their fields are not exported.
 type Frame struct {
 	Type byte
@@ -141,7 +141,7 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		rest, err = takeVarints(rest, &f.StreamID, &f.value, &f.offset)
 		return f, rest, err
 
-	case f.Type == frameStopSending:
+	case f.Type == FrameStopSending:
 		rest, err = takeVarints(rest, &f.StreamID, &f.value)
 		return f, rest, err
 
@@ -160,9 +160,18 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		f.Data, rest, err = bytesN(rest, 8)
 		return f, rest, err
 
+	case f.Type == frameMaxStreams, f.Type == frameMaxStreams|1,
+		f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1:
+		// §19.11 and §19.14: a count over 2^60 names stream identifiers no
+		// varint can carry, and the frame is FRAME_ENCODING_ERROR — the
+		// code the caller maps every parse failure here to.
+		rest, err = takeVarints(rest, &f.value)
+		if err == nil && f.value > maxStreamsLimit {
+			return f, nil, fmt.Errorf("%w: a stream count of %d, over 2^60", ErrQUIC, f.value)
+		}
+		return f, rest, err
+
 	case f.Type == frameMaxData, f.Type == frameDataBlocked,
-		f.Type == frameMaxStreams, f.Type == frameMaxStreams|1,
-		f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1,
 		f.Type == frameRetireConnectionID:
 		rest, err = takeVarints(rest, &f.value)
 		return f, rest, err
@@ -267,13 +276,16 @@ func parseACK(f Frame, b []byte) (Frame, []byte, error) {
 		}
 		low = low - gap - 2 - length
 	}
-	f.Data = ranges[:len(ranges)-len(b)]
-	if f.Type&1 != 0 { // ECN counts
+	if f.Type&1 != 0 {
+		// ECN counts (§19.3.2), kept encoded in Data after the ranges —
+		// ackECNCounts reads them; one more ACK field is not worth
+		// three words on every frame.
 		var ect0, ect1, ce uint64
 		if b, err = takeVarints(b, &ect0, &ect1, &ce); err != nil {
 			return f, nil, err
 		}
 	}
+	f.Data = ranges[:len(ranges)-len(b)]
 	return f, b, nil
 }
 
@@ -309,9 +321,16 @@ func decodeAckRanges(largest uint64, data []byte, visit func(lo, hi uint64)) err
 // appendAckFrame writes an ACK for the given received ranges, highest first,
 // as [ackTracker.ranges] maintains them. delay is in microseconds and is
 // scaled by this endpoint's ack_delay_exponent, which this package leaves at
-// the protocol default of 3.
-func appendAckFrame(dst []byte, ranges []pnRange, delayMicros uint64) []byte {
-	dst = AppendVarint(dst, frameACK)
+// the protocol default of 3. ecn is the ECT(0), ECT(1) and CE counts of the
+// space (§13.4.1); when any is non-zero the frame is type 0x03 and carries
+// them (§19.3.2).
+func appendAckFrame(dst []byte, ranges []pnRange, delayMicros uint64, ecn [3]uint64) []byte {
+	withECN := ecn != [3]uint64{}
+	if withECN {
+		dst = AppendVarint(dst, frameACK|1)
+	} else {
+		dst = AppendVarint(dst, frameACK)
+	}
 	top := ranges[0]
 	dst = AppendVarint(dst, top.hi)
 	dst = AppendVarint(dst, delayMicros>>3)
@@ -322,6 +341,11 @@ func appendAckFrame(dst []byte, ranges []pnRange, delayMicros uint64) []byte {
 		dst = AppendVarint(dst, prev-r.hi-2)
 		dst = AppendVarint(dst, r.hi-r.lo)
 		prev = r.lo
+	}
+	if withECN {
+		dst = AppendVarint(dst, ecn[0])
+		dst = AppendVarint(dst, ecn[1])
+		dst = AppendVarint(dst, ecn[2])
 	}
 	return dst
 }

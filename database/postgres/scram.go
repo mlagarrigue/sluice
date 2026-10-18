@@ -62,12 +62,25 @@ const nonceBytes = 18
 // Production never assigns it.
 var randRead = rand.Read
 
+// scramStep is how far an exchange has gone. RFC 5802 §5 fixes the
+// conversation at one message of each kind, in order, so the step is a single
+// value that only moves forward: a server message is accepted at exactly one
+// step, and arriving at any other is a sequence the protocol forbids. Two
+// flags could disagree; one step cannot.
+type scramStep uint8
+
+const (
+	scramIdle     scramStep = iota // no AuthenticationSASL yet
+	scramStarted                   // client-first sent, awaiting SASLContinue
+	scramAnswered                  // client-final sent, awaiting SASLFinal
+	scramVerified                  // the server's signature checked out
+)
+
 // scram holds one exchange's state. It lives for the duration of a startup and
 // is then discarded — nothing here belongs on a Conn, and a password-derived
 // key kept past its use is a key that can leak.
 type scram struct {
-	started  bool
-	verified bool
+	step scramStep
 
 	// nonce is this client's half of the nonce.
 	nonce string
@@ -97,8 +110,14 @@ type scram struct {
 // different certificate cannot relay the exchange even if the client was
 // persuaded to trust it.
 func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionState) (mech string, first []byte, err error) {
+	if s.step != scramIdle {
+		// One exchange per startup. A second AuthenticationSASL would restart
+		// it over a state that already holds a verified signature, which is
+		// what the startup's exit trusts; libpq refuses it the same way.
+		return "", nil, fmt.Errorf("%w: a second AuthenticationSASL arrived during the same startup", ErrProtocol)
+	}
 	if password == "" {
-		return "", nil, fmt.Errorf("%w: the server asked for SCRAM and StartupConfig.Password is empty", ErrAuth)
+		return "", nil, fmt.Errorf("%w: the server asked for SCRAM and Config.Password is empty", ErrAuth)
 	}
 	names, err := parseMechanisms(mechanisms)
 	if err != nil {
@@ -142,7 +161,7 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 	// for the same reason.
 	clientFirstBare := "n=,r=" + s.nonce
 	s.auth = clientFirstBare
-	s.started = true
+	s.step = scramStarted
 	return mech, []byte(s.gs2 + clientFirstBare), nil
 }
 
@@ -150,6 +169,10 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 // the hash of the server's certificate, with the hash its signature
 // algorithm uses — SHA-256 where that is MD5 or SHA-1. An algorithm with no
 // such hash (Ed25519) has no defined binding, and PostgreSQL refuses it too.
+// For RSASSA-PSS the hash is the one inside the signature parameters, as
+// PostgreSQL takes it from X509_get_signature_info; CI checks the two agree
+// against a real server on an RSA-PSS SHA-384 certificate
+// (TestIntegrationChannelBindingOverTLS).
 func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 	var h hash.Hash
 	switch cert.SignatureAlgorithm {
@@ -171,8 +194,14 @@ func tlsServerEndPoint(cert *x509.Certificate) ([]byte, error) {
 // respond answers AuthenticationSASLContinue with the client's final message,
 // and records the server signature that must come back.
 func (s *scram) respond(serverFirst []byte, password string) ([]byte, error) {
-	if !s.started {
+	switch s.step {
+	case scramIdle:
 		return nil, fmt.Errorf("%w: a SASLContinue arrived before any SASL exchange was started", ErrProtocol)
+	case scramAnswered, scramVerified:
+		// The challenge is answered once. A second one would be answered
+		// with a second proof under the same password, and would replace
+		// the signature the server has yet to show.
+		return nil, fmt.Errorf("%w: a second SASLContinue arrived after the challenge was answered", ErrProtocol)
 	}
 	msg := string(serverFirst) // copied: the reader's buffer is about to be reused
 	nonce, salt, iter, err := parseServerFirst(msg, s.nonce)
@@ -196,14 +225,17 @@ func (s *scram) respond(serverFirst []byte, password string) ([]byte, error) {
 		// and because the function's contract is its own.
 		return nil, err
 	}
-	s.sig = serverSig
+	s.sig, s.step = serverSig, scramAnswered
 	return []byte(clientFinalBare + ",p=" + base64.StdEncoding.EncodeToString(proof)), nil
 }
 
 // verify checks AuthenticationSASLFinal against the signature respond computed.
 func (s *scram) verify(serverFinal []byte) error {
-	if s.sig == nil {
+	switch s.step {
+	case scramIdle, scramStarted:
 		return fmt.Errorf("%w: a SASLFinal arrived before the challenge was answered", ErrProtocol)
+	case scramVerified:
+		return fmt.Errorf("%w: a second SASLFinal arrived after the exchange completed", ErrProtocol)
 	}
 	got, err := parseServerFinal(string(serverFinal))
 	if err != nil {
@@ -215,7 +247,7 @@ func (s *scram) verify(serverFinal []byte) error {
 	if subtle.ConstantTimeCompare(got, s.sig) != 1 {
 		return fmt.Errorf("%w: the server's signature does not verify. It does not know this role's password, whatever else it may be", ErrAuth)
 	}
-	s.verified = true
+	s.step = scramVerified
 	return nil
 }
 
@@ -227,22 +259,15 @@ func (s *scram) verify(serverFinal []byte) error {
 // are not the ones this client sends, and a function that assembled them
 // itself could only ever be tested against its own assembly.
 func scramProof(password string, salt []byte, iter int, authMessage string) (proof, serverSig []byte, err error) {
-	// SASLprep (RFC 4013) is not applied. It requires Unicode NFKC
-	// normalisation, which the standard library does not carry and which this
-	// repository will not take a dependency for. For a password of printable
-	// ASCII — every one this will meet in practice — SASLprep is the identity
-	// function, so the two agree exactly. For a password containing
-	// non-ASCII characters, a server that stored it normalised will compute a
-	// different SaltedPassword and authentication will fail: a clear failure,
-	// not a weakened one. libpq falls back to the same raw bytes when its
-	// SASLprep cannot run.
 	if len(salt) < minSaltLen {
 		// Reached only by a caller other than the exchange, which has already
 		// judged the salt. It is checked again rather than assumed, because
 		// this function is what a future codepath will reuse.
 		return nil, nil, fmt.Errorf("%w: a %d-byte salt is below the %d this client accepts", ErrAuth, len(salt), minSaltLen)
 	}
-	salted, err := pbkdf2.Key(sha256.New, password, salt, iter, sha256.Size)
+	// The password is prepared by SASLprep (RFC 4013) first, as libpq's
+	// scram_init does and as the server did when it stored the role's key.
+	salted, err := pbkdf2.Key(sha256.New, saslprep(password), salt, iter, sha256.Size)
 	if err != nil {
 		// crypto/pbkdf2 rejects the arguments only under GOFIPS140=only, and
 		// the two things it objects to there — a short salt and an

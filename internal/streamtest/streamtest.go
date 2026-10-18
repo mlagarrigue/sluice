@@ -10,9 +10,7 @@ package streamtest
 
 import (
 	"errors"
-	"runtime"
 	"testing"
-	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
 )
@@ -96,13 +94,4 @@ func Chunks[T any](src []T, maxBatch int, rng *Rand) sluice.Stream[T] {
 			prev = c
 		}
 	}
-}
-
-// GoroutinesSettle waits for every goroutine in the current synctest bubble
-// to block, then reports how many goroutines exist: the count a test compares
-// before and after an operator ran, to prove none outlived it.
-func GoroutinesSettle(t *testing.T) int {
-	t.Helper()
-	synctest.Wait()
-	return runtime.NumGoroutine()
 }

@@ -39,11 +39,9 @@ func dial(t *testing.T) *postgres.Conn {
 	if db == "" {
 		db = user
 	}
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), postgres.Config{
 		User: user, Database: db, Password: os.Getenv("SLUICE_PG_PASSWORD"),
 	})
 	if err != nil {

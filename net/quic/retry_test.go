@@ -3,6 +3,7 @@ package quic
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -68,6 +69,45 @@ func TestRetryTokenExpires(t *testing.T) {
 	fresh := appendRetryTokenAt(nil, key, time.Now(), peer, []byte("odcid"), []byte("scid"))
 	if _, err := verifyRetryToken(fresh, key, peer); err != nil {
 		t.Fatalf("a fresh token built the same way did not verify: %v", err)
+	}
+}
+
+// A spent token stays spent for its TTL, then forgets itself; past the cap
+// the oldest admission is dropped first, so memory stays bounded and a
+// replay is only limited, never a leak.
+func TestSpentTokensExpireAndStayBounded(t *testing.T) {
+	var s spentTokens
+	now := time.Now()
+	first := []byte("first-id")
+	if !s.consume(first, now) {
+		t.Fatal("a fresh token counted as spent")
+	}
+	if s.consume(first, now.Add(retryTokenTTL/2)) {
+		t.Error("a token consumed half a TTL ago was accepted again")
+	}
+	if !s.consume(first, now.Add(retryTokenTTL)) {
+		t.Error("a token past its TTL is still remembered; the entry should have been swept")
+	}
+	if len(s.byID) != 1 || len(s.order) != 1 {
+		t.Errorf("the sweep left %d entries and %d keys, want 1 and 1", len(s.byID), len(s.order))
+	}
+
+	s = spentTokens{}
+	for i := range spentTokensCap {
+		s.consume([]byte(fmt.Sprintf("id-%d", i)), now)
+	}
+	if s.consume([]byte("id-0"), now) {
+		t.Fatal("the oldest entry was dropped before the cap was reached")
+	}
+	s.consume([]byte("one-more"), now)
+	if len(s.byID) != spentTokensCap || len(s.order) != spentTokensCap {
+		t.Errorf("past the cap the set holds %d entries and %d keys, want %d", len(s.byID), len(s.order), spentTokensCap)
+	}
+	if s.consume([]byte("id-1"), now) {
+		t.Error("an entry younger than the oldest was dropped with it")
+	}
+	if !s.consume([]byte("id-0"), now) {
+		t.Error("the oldest entry survived the cap; the replay window is unbounded in memory")
 	}
 }
 

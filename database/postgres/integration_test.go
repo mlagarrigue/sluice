@@ -5,10 +5,11 @@ import (
 	"context"
 	"errors"
 	"math"
-	"net"
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ import (
 // this package's reading of RFC 7677 is an implementation that did not read it
 // with the same eyes. Set SLUICE_PG_PASSWORD where the server asks for one.
 
-func pgTarget(t *testing.T) (addr string, cfg postgres.StartupConfig) {
+func pgTarget(t *testing.T) (addr string, cfg postgres.Config) {
 	t.Helper()
 	addr = os.Getenv("SLUICE_PG")
 	if addr == "" {
@@ -64,18 +65,15 @@ func pgTarget(t *testing.T) (addr string, cfg postgres.StartupConfig) {
 func dial(t *testing.T) *postgres.Conn {
 	t.Helper()
 	addr, cfg := pgTarget(t)
+	return dialWith(t, addr, cfg)
+}
 
-	nc, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dialling %s: %v", addr, err)
-	}
-	// The deadline is set here rather than inside the package: this is the one
-	// place that knows how long a handshake is allowed to take.
-	if err := nc.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-
-	conn, err := postgres.Startup(nc, cfg)
+// dialWith is dial with the Config the test chose.
+func dialWith(t *testing.T, addr string, cfg postgres.Config) *postgres.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
 	if err != nil {
 		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
 	}
@@ -89,6 +87,52 @@ func dial(t *testing.T) *postgres.Conn {
 		t.Logf("connected to PostgreSQL %s as %s", v, cfg.User)
 	}
 	return conn
+}
+
+// A value over the default message bound — PostgreSQL allows 1 GiB per
+// field, the reader 64 MiB per message — is refused unread and breaks the
+// connection, with an error that names the field to raise; raised, the same
+// value is read whole. One message of 70 MB, not more: the runner's memory
+// is not the subject.
+func TestIntegrationMaxMessageLiftsTheDefaultBound(t *testing.T) {
+	const size = 70_000_000
+	const query = "SELECT repeat('x', 70000000)"
+	addr, cfg := pgTarget(t)
+
+	without := dialWith(t, addr, cfg)
+	src := without.Query(t.Context(), query, nil, postgres.QueryConfig{})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	err := src.Err()
+	if !errors.Is(err, postgres.ErrMessageTooLarge) {
+		t.Fatalf("a %d-byte value under the default bound: %v, want ErrMessageTooLarge", size, err)
+	}
+	if !strings.Contains(err.Error(), "Config.MaxMessage") {
+		t.Errorf("the error does not name the field that raises the bound: %v", err)
+	}
+	if err := without.Err(); !errors.Is(err, postgres.ErrConnBroken) {
+		t.Errorf("the connection after the refusal: %v, want ErrConnBroken", err)
+	}
+
+	cfg.MaxMessage = 128 << 20
+	with := dialWith(t, addr, cfg)
+	got := -1
+	src = with.Query(t.Context(), query, nil, postgres.QueryConfig{})
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			v, _ := row.Value(0)
+			got = len(v)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the same value with MaxMessage raised: %v", err)
+	}
+	if got != size {
+		t.Errorf("read a value of %d bytes, want %d", got, size)
+	}
+	if err := with.Err(); err != nil {
+		t.Errorf("the connection after the large value: %v", err)
+	}
 }
 
 // The claim the whole connector is built around, against a server that can
@@ -291,7 +335,8 @@ func TestIntegrationCopy(t *testing.T) {
 func TestIntegrationServerError(t *testing.T) {
 	conn := dial(t)
 
-	src := conn.Query(t.Context(), "SELECT * FROM a_table_that_does_not_exist", nil, postgres.QueryConfig{})
+	const sql = "SELECT * FROM a_table_that_does_not_exist"
+	src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{})
 	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
 
 	var pgErr *postgres.Error
@@ -300,6 +345,11 @@ func TestIntegrationServerError(t *testing.T) {
 	}
 	if pgErr.Code != "42P01" {
 		t.Errorf("SQLSTATE = %q, want 42P01 (undefined_table)", pgErr.Code)
+	}
+	// The parser points at the token it failed on, counted in characters
+	// from 1; the text is ASCII, so the byte index is the same.
+	if want := strings.Index(sql, "a_table") + 1; pgErr.Position != want {
+		t.Errorf("Position = %d, want %d — the start of the missing table's name", pgErr.Position, want)
 	}
 	// And the connection survives a query error, which is the distinction the
 	// connector makes between a failed statement and a broken stream.
@@ -311,10 +361,88 @@ func TestIntegrationServerError(t *testing.T) {
 	}
 }
 
+// A wrong password is refused by the server, and the error says so: a 28P01
+// a caller can find with errors.As, in a text that reads as a refusal rather
+// than as a protocol fault.
+func TestIntegrationWrongPassword(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	if cfg.Password == "" {
+		t.Skip("SLUICE_PG_PASSWORD is not set: the server is reached without a password")
+	}
+	cfg.Password += "-wrong"
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
+	if err == nil {
+		_ = conn.Close()
+		t.Skip("the server accepted a wrong password: pg_hba.conf trusts this connection")
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "28P01" {
+		t.Fatalf("error = %v, want a *postgres.Error with SQLSTATE 28P01 (invalid_password)", err)
+	}
+	if strings.Contains(err.Error(), "out of sync") {
+		t.Errorf("error = %q reads as a protocol fault, not as the server's refusal", err)
+	}
+}
+
+// A password outside NFKC authenticates: the server ran SASLprep on it when
+// it stored the role's key, and the client must derive its proof from the
+// same prepared string. Its NFKC form is then the same password, which shows
+// the preparation happened on both ends rather than on neither.
+func TestIntegrationSASLprepPassword(t *testing.T) {
+	const role = "sluice_saslprep_test"
+	const password = "Ⅸ-ｐａｓｓ" //nolint:gosec // G101: a throwaway role's password; "Ⅸ" and fullwidth letters
+	addr, cfg := pgTarget(t)
+	admin := dial(t)
+	// The cleanup runs after t.Context() is cancelled, so it drops the role
+	// under a context of its own.
+	drop := func(ctx context.Context) error {
+		return execContext(ctx, admin, "DROP ROLE IF EXISTS "+role)
+	}
+	if err := drop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "SET password_encryption = 'scram-sha-256'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"'"); err != nil {
+		var pgErr *postgres.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+			t.Skipf("%s may not create roles: %v", cfg.User, err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := drop(ctx); err != nil {
+			t.Errorf("drop role %s: %v", role, err)
+		}
+	})
+
+	for _, p := range []string{password, "IX-pass"} {
+		c := cfg
+		c.User, c.Password = role, p
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), c)
+		cancel()
+		if err != nil {
+			t.Errorf("password %+q: %v", p, err)
+			continue
+		}
+		_ = conn.Close()
+	}
+}
+
 // exec runs a statement for its effect, draining whatever it returns.
 func exec(t *testing.T, conn *postgres.Conn, sql string) error {
 	t.Helper()
-	src := conn.Query(t.Context(), sql, nil, postgres.QueryConfig{BatchRows: 16})
+	return execContext(t.Context(), conn, sql)
+}
+
+func execContext(ctx context.Context, conn *postgres.Conn, sql string) error {
+	src := conn.Query(ctx, sql, nil, postgres.QueryConfig{BatchRows: 16})
 	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
 	return src.Err()
 }
@@ -1209,4 +1337,385 @@ func mustParseNumeric(s string) postgres.Numeric {
 		panic(err)
 	}
 	return n
+}
+
+// Connect's context bounds the handshake and nothing after it. Until
+// 2026-10-15 the handshake was bounded by a SetDeadline the caller set and
+// had to lift, and every program that copied the guide without lifting it
+// lost its connection to an i/o timeout at the 30 s mark. Connect sets no
+// deadline on the socket, so a query run after its context has expired is
+// bounded by its own context alone.
+func TestIntegrationConnectLeavesNoDeadline(t *testing.T) {
+	addr, cfg := pgTarget(t)
+
+	const handshake = time.Second
+	ctx, cancel := context.WithTimeout(t.Context(), handshake)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
+	if err != nil {
+		t.Fatalf("connecting to %s as %s: %v", addr, cfg.User, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Outlive the handshake's context, then ask for something.
+	time.Sleep(handshake + handshake/2)
+	src := conn.Query(t.Context(), "SELECT 1", nil, postgres.QueryConfig{})
+	rows := 0
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		rows += len(b.Items)
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("a query after the handshake deadline: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("SELECT 1 returned %d rows", rows)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken after the query: %v", err)
+	}
+}
+
+// A context that ends while the server is still executing the statement
+// reaches the server through the recipe Connect keeps: pg_sleep(5) under a
+// 300 ms deadline ends well inside a second, with the deadline as the error
+// and the server's 57014 behind it, and the connection serves the next
+// query. Only a real server can prove this one — it is the server's
+// cancellation handling that the scripted tests cannot disagree with.
+func TestIntegrationCancelInterruptsTheRunningStatement(t *testing.T) {
+	cancelInterrupts(t, dialCancellable(t, postgres.Protocol30))
+}
+
+// Protocol 3.2 against the server in front of it. Before 18 the server
+// negotiates down and the key stays four bytes — checked, then the rest is
+// skipped by name. From 18 on the secret is longer, and the CancelRequest
+// that carries it whole is the one that interrupts pg_sleep.
+func TestIntegrationProtocol32LongCancelKey(t *testing.T) {
+	conn := dialCancellable(t, postgres.Protocol32)
+	secret := len(conn.CancelKey().Secret)
+	version := conn.Parameter("server_version")
+	major, _, _ := strings.Cut(version, ".")
+	if n, err := strconv.Atoi(major); err == nil && n < 18 {
+		if secret != 4 {
+			t.Fatalf("PostgreSQL %s negotiated down from 3.2, and the secret is %d bytes, want 4", version, secret)
+		}
+		t.Skipf("PostgreSQL %s speaks protocol 3.0: the long key needs 18", version)
+	}
+	if secret <= 4 {
+		t.Fatalf("PostgreSQL %s under protocol 3.2 sent a %d-byte secret, want more than 4", version, secret)
+	}
+	t.Logf("PostgreSQL %s sent a %d-byte secret", version, secret)
+	cancelInterrupts(t, conn)
+}
+
+// The default asks for 3.2 and Protocol reports what the server settled on:
+// 3.0 from a server before 18, which negotiates down, 3.2 from 18 on. CI runs
+// both majors; the container here has one of them.
+func TestIntegrationProtocolNegotiated(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	conn := dialWith(t, addr, cfg)
+	version := conn.Parameter("server_version")
+	want := postgres.Protocol32
+	if serverMajor(t, version) < 18 {
+		want = postgres.Protocol30
+	}
+	if got := conn.Protocol(); got != want {
+		t.Fatalf("PostgreSQL %s: Protocol() = %v, want %v", version, got, want)
+	}
+	cfg.MaxProtocol = postgres.Protocol30
+	if got := dialWith(t, addr, cfg).Protocol(); got != postgres.Protocol30 {
+		t.Errorf("PostgreSQL %s, MaxProtocol 3.0: Protocol() = %v, want 3.0", version, got)
+	}
+}
+
+// MinProtocol 3.2 refuses a server before 18 with the named error, and is
+// satisfied from 18 on.
+func TestIntegrationMinProtocolRefusesAnOlderServer(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	version := dialWith(t, addr, cfg).Parameter("server_version")
+	cfg.MinProtocol = postgres.Protocol32
+	if serverMajor(t, version) >= 18 {
+		if got := dialWith(t, addr, cfg).Protocol(); got != postgres.Protocol32 {
+			t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Protocol() = %v, want 3.2", version, got)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := postgres.Connect(ctx, postgres.DialTCP(addr), cfg)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Connect succeeded under %v", version, conn.Protocol())
+	}
+	if !errors.Is(err, postgres.ErrProtocolVersion) {
+		t.Fatalf("PostgreSQL %s, MinProtocol 3.2: Connect returned %v, want ErrProtocolVersion", version, err)
+	}
+	t.Logf("PostgreSQL %s refused: %v", version, err)
+}
+
+// serverMajor reads the major version out of server_version, "17.2" or
+// "18beta1".
+func serverMajor(t *testing.T, version string) int {
+	t.Helper()
+	end := 0
+	for end < len(version) && version[end] >= '0' && version[end] <= '9' {
+		end++
+	}
+	n, err := strconv.Atoi(version[:end])
+	if err != nil {
+		t.Fatalf("server_version %q has no major version", version)
+	}
+	return n
+}
+
+// A protocol option the server does not know comes back in
+// NegotiateProtocolVersion, and the connection goes on without it.
+func TestIntegrationDeclinedProtocolOption(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	cfg.Params = map[string]string{"_pq_.sluice_unknown": "on"}
+	_ = dialWith(t, addr, cfg)
+}
+
+// dialCancellable opens a connection asking for protocol version; the
+// recipe it was opened with is the one each cancellation dials.
+func dialCancellable(t *testing.T, version postgres.ProtocolVersion) *postgres.Conn {
+	t.Helper()
+	addr, cfg := pgTarget(t)
+	cfg.MaxProtocol = version
+	conn := dialWith(t, addr, cfg)
+	if !conn.CancelKey().Known() {
+		t.Fatal("the server sent no cancellation key")
+	}
+	return conn
+}
+
+// cancelInterrupts runs pg_sleep(5) under a 300 ms deadline on conn and
+// checks the server cut it short, then that conn serves the next query.
+func cancelInterrupts(t *testing.T, conn *postgres.Conn) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	src := conn.Query(ctx, "SELECT pg_sleep(5)", nil, postgres.QueryConfig{})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	took := time.Since(start)
+	err := src.Err()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pg_sleep(5) under a 300ms deadline ended after %v with %v, want context.DeadlineExceeded", took, err)
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		t.Errorf("Err = %v, want the server's 57014 reachable through errors.As", err)
+	}
+	if took > time.Second {
+		t.Errorf("the cancellation took %v to end the statement, want well under a second", took)
+	}
+	t.Logf("pg_sleep(5) cancelled after %v", took)
+
+	src = conn.Query(t.Context(), "SELECT 1", nil, postgres.QueryConfig{})
+	rows := 0
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		rows += len(b.Items)
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("the query after the cancellation: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("SELECT 1 after the cancellation returned %d rows", rows)
+	}
+	if err := conn.Err(); err != nil {
+		t.Errorf("the connection is broken after the cancellation: %v", err)
+	}
+}
+
+// Exec waits on the server the way Query does, and the same deadline reaches
+// it through the same recipe.
+func TestIntegrationCancelInterruptsExec(t *testing.T) {
+	conn := dialCancellable(t, postgres.Protocol30)
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		return conn.Exec(ctx, "SELECT pg_sleep(5)")
+	})
+}
+
+// A COPY's commit is where the server runs what the rows set off: here a
+// trigger sleeping five seconds per row. The deadline reaches it, the
+// transaction is rolled back, and the connection serves the next query.
+func TestIntegrationCancelInterruptsCopy(t *testing.T) {
+	conn := dialCancellable(t, postgres.Protocol30)
+	for _, sql := range []string{
+		"CREATE TEMP TABLE sluice_cancel_copy (id bigint)",
+		"CREATE FUNCTION pg_temp.sluice_slow_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(5); RETURN NEW; END $$",
+		"CREATE TRIGGER sluice_slow BEFORE INSERT ON sluice_cancel_copy FOR EACH ROW EXECUTE FUNCTION pg_temp.sluice_slow_row()",
+	} {
+		if err := exec(t, conn, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		cp, err := conn.CopyFrom(ctx, "COPY sluice_cancel_copy (id) FROM STDIN WITH (FORMAT BINARY)",
+			postgres.CopyConfig{RowsPerTx: 1})
+		if err != nil {
+			return err
+		}
+		row := postgres.AppendField(postgres.AppendTupleHeader(nil, 1), postgres.AppendInt8(nil, 1))
+		return cp.WriteTuples(row, 1)
+	})
+}
+
+// A pipeline runs its parts without a pause the client could stop at, so
+// the cancellation is what ends a part that sleeps.
+func TestIntegrationCancelInterruptsPipeline(t *testing.T) {
+	conn := dialCancellable(t, postgres.Protocol30)
+	cancelEnds(t, conn, func(ctx context.Context) error {
+		tx, err := conn.Begin(t.Context(), postgres.TxConfig{})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback() //nolint:errcheck // the pipeline's error is the one checked
+		return tx.Pipeline(ctx, []postgres.Part{{SQL: "SELECT 1"}, {SQL: "SELECT pg_sleep(5)"}, {SQL: "SELECT 2"}},
+			postgres.QueryConfig{}, func(int, sluice.Batch[postgres.Row]) bool { return true })
+	})
+}
+
+// cancelEnds runs a call that waits five seconds on the server under a
+// 300 ms deadline, checks the server cut it short, then that conn serves
+// the next query.
+func cancelEnds(t *testing.T, conn *postgres.Conn, run func(context.Context) error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := run(ctx)
+	took := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ended after %v with %v, want context.DeadlineExceeded", took, err)
+	}
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		t.Errorf("err = %v, want the server's 57014 reachable through errors.As", err)
+	}
+	if took > time.Second {
+		t.Errorf("the cancellation took %v to end the call, want well under a second", took)
+	}
+	t.Logf("cancelled after %v", took)
+	if err := exec(t, conn, "SELECT 1"); err != nil {
+		t.Fatalf("the statement after the cancellation: %v", err)
+	}
+}
+
+// A SET client_encoding is announced by the server mid-session. Unasked for,
+// it ends the connection, since every text decoder here reads UTF-8; with the
+// encoding chosen at startup, the caller decodes and the connection stays.
+func TestIntegrationAnUnaskedEncodingBreaksTheConnection(t *testing.T) {
+	conn := dial(t)
+	if err := exec(t, conn, "SET client_encoding = 'LATIN1'"); !errors.Is(err, postgres.ErrConnBroken) {
+		t.Fatalf("SET client_encoding = 'LATIN1' returned %v, want ErrConnBroken", err)
+	}
+	if !errors.Is(conn.Err(), postgres.ErrConnBroken) {
+		t.Errorf("conn.Err() = %v after the encoding changed, want ErrConnBroken", conn.Err())
+	}
+
+	addr, cfg := pgTarget(t)
+	cfg.Params = map[string]string{"client_encoding": "UTF8"}
+	conn = dialWith(t, addr, cfg)
+	if err := exec(t, conn, "SET client_encoding = 'LATIN1'"); err != nil {
+		t.Fatalf("SET client_encoding with the encoding chosen at startup = %v", err)
+	}
+	if err := exec(t, conn, "SELECT 1"); err != nil {
+		t.Errorf("the connection was unusable after a chosen encoding change: %v", err)
+	}
+	if got := conn.Parameter("client_encoding"); got != "LATIN1" {
+		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
+	}
+}
+
+// ExecParams against a real server: the tag of each command is the server's,
+// RowsAffected reads its count, and a statement without one says so. A
+// temporary table, so no other suite's table is touched.
+func TestIntegrationExecParamsRowsAffected(t *testing.T) {
+	conn := dial(t)
+	ctx := t.Context()
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_exec_params (x int8, v text)"); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err := conn.ExecParams(ctx, "INSERT INTO sluice_exec_params SELECT $1, 'a' FROM generate_series(1, 3)",
+		[][]byte{postgres.AppendInt8(nil, 7)}, []uint32{postgres.OIDInt8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "INSERT 0 3" || n != 3 || !ok {
+		t.Errorf("INSERT: tag %q, RowsAffected() = %d, %v; want INSERT 0 3, 3, true", tag, n, ok)
+	}
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	tag, err = tx.ExecParams(ctx, "UPDATE sluice_exec_params SET v = $2 WHERE x = $1",
+		[][]byte{postgres.AppendInt8(nil, 7), postgres.AppendText(nil, "b'; DROP TABLE x; --")},
+		[]uint32{postgres.OIDInt8, postgres.OIDText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "UPDATE 3" || n != 3 || !ok {
+		t.Errorf("UPDATE: tag %q, RowsAffected() = %d, %v; want UPDATE 3, 3, true", tag, n, ok)
+	}
+	tag, err = tx.ExecParams(ctx, "DELETE FROM sluice_exec_params WHERE x = $1",
+		[][]byte{postgres.AppendInt8(nil, 8)}, []uint32{postgres.OIDInt8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "DELETE 0" || n != 0 || !ok {
+		t.Errorf("DELETE: tag %q, RowsAffected() = %d, %v; want DELETE 0, 0, true", tag, n, ok)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	tag, err = conn.ExecParams(ctx, "SET application_name = 'sluice_exec_params'", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "SET" || ok {
+		t.Errorf("SET: tag %q, RowsAffected() = %d, %v; want SET and no count", tag, n, ok)
+	}
+}
+
+// An UPDATE ... RETURNING read as a stream, in batches smaller than its
+// result: the tag reaches QueryConfig.Tag and counts the rows delivered.
+func TestIntegrationQueryTagOfAStreamedUpdate(t *testing.T) {
+	conn := dial(t)
+	ctx := t.Context()
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_query_tag AS SELECT i AS x FROM generate_series(1, 5) AS i"); err != nil {
+		t.Fatal(err)
+	}
+
+	var tag postgres.CommandTag
+	src := conn.Query(ctx, "UPDATE sluice_query_tag SET x = x + $1 RETURNING x",
+		[][]byte{postgres.AppendInt8(nil, 10)},
+		postgres.QueryConfig{BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8}, Tag: &tag})
+	var rows int64
+	for b := range src.Stream() {
+		rows += int64(len(b.Items))
+	}
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := tag.RowsAffected(); tag != "UPDATE 5" || n != rows || !ok {
+		t.Errorf("tag %q, RowsAffected() = %d, %v; want UPDATE 5 and the %d rows delivered", tag, n, ok, rows)
+	}
+
+	// A SELECT in batches: the server's tag counts the last one, here too.
+	src = conn.Query(ctx, "SELECT x FROM sluice_query_tag", nil,
+		postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchBatches, Tag: &tag})
+	src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if tag != "SELECT 5" {
+		t.Errorf("tag %q, want SELECT 5", tag)
+	}
 }

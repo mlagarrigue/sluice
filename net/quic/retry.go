@@ -29,6 +29,56 @@ import (
 // after.
 const retryTokenTTL = 10 * time.Second
 
+// spentTokens remembers each Retry token that already admitted a connection,
+// keyed by the identifier the token bound (the connection's first DCID), for
+// the rest of the token's life. RFC 9000 §8.1.4 asks that replay be
+// prevented or limited, and the TTL alone only limits it: while the
+// connection lives a replay routes to it (byDCID), but a handshake that
+// fails in a millisecond frees the identifier with most of the TTL left,
+// and the same token would then open a second connection from the same
+// address without the round trip that validated the first. One entry per
+// Retry-born connection for at most retryTokenTTL; past spentTokensCap the
+// oldest is dropped, which bounds the memory at the price of a replay
+// becoming possible again for a token older than the cap's worth of
+// admissions — limited, as §8.1.4 allows, under a load the per-address and
+// pending-table limits already cap elsewhere. Every method is called with
+// the listener's mu held.
+type spentTokens struct {
+	byID  map[string]time.Time // newSCID → when the token can no longer verify
+	order []string             // byID's keys, oldest expiry first
+}
+
+// spentTokensCap bounds spentTokens: an entry is a key of listenerCIDLen
+// bytes and a time, under 100 bytes with the map's own overhead, so the
+// cap is about 1.6 MB at worst — and reaching it takes that many Retry
+// tokens consumed by connections within one retryTokenTTL.
+const spentTokensCap = 1 << 14
+
+// consume records newSCID's token as spent until expiry and reports whether
+// it was still unspent — false is a replay. now is the caller's clock, so
+// expiries stay in insertion order and the sweep below stops at the first
+// live one.
+func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
+	if s.byID == nil {
+		s.byID = make(map[string]time.Time)
+	}
+	id := string(newSCID)
+	if exp, spent := s.byID[id]; spent && now.Before(exp) {
+		return false
+	}
+	for len(s.order) > 0 && !now.Before(s.byID[s.order[0]]) {
+		delete(s.byID, s.order[0])
+		s.order = s.order[1:]
+	}
+	if len(s.order) >= spentTokensCap {
+		delete(s.byID, s.order[0])
+		s.order = s.order[1:]
+	}
+	s.byID[id] = now.Add(retryTokenTTL)
+	s.order = append(s.order, id)
+	return true
+}
+
 // AppendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
 // identifier to address it to (the client's own SCID from the Initial it
 // answers), newSCID is the identifier the client should use as its DCID
@@ -38,9 +88,13 @@ const retryTokenTTL = 10 * time.Second
 func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	start := len(dst)
 	// Long header, fixed bit set, type 11 (Retry). The four low bits are
-	// unused: RFC 9000 §17.2.5 lets the server set them to an arbitrary
-	// value and has the client ignore them, so zero is as valid as any.
-	dst = append(dst, 0xf0, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
+	// unused: RFC 9000 §17.2.5 has the server set them "to an arbitrary
+	// value" and the client "MUST ignore these bits". Drawn rather than
+	// zero, as appendVersionNegotiation draws its own, so no client comes
+	// to depend on one value.
+	var unused [1]byte
+	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
+	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
 	dst = append(dst, dcid...)
 	dst = append(dst, byte(len(newSCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, newSCID...)
@@ -93,22 +147,32 @@ type retryToken struct {
 	odcid, newSCID []byte
 }
 
+// errForeignToken is verifyRetryToken's answer to a token this listener's
+// key did not sign: too short to carry its MAC, or a MAC under another key.
+// Nothing proves it was ever a Retry token — a client may be presenting a
+// NEW_TOKEN from another server of the same name, or a token from a listener
+// since restarted — so RFC 9000 §8.1.3 has the server treat the client as
+// unvalidated, not as an error; INVALID_TOKEN (§8.1.2) is for a token
+// this listener provably issued and cannot accept.
+var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQUIC)
+
 // VerifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
 // the peer address it is arriving from. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,
 // which is everything [newServerConn] needs beyond what the Initial itself
-// carries.
+// carries. A token the HMAC does not recognise is [errForeignToken]; any
+// other error is a token this listener issued and will not honour.
 func verifyRetryToken(token []byte, key retryTokenKey, peer net.Addr) (retryToken, error) {
 	const macLen = sha256.Size
 	if len(token) < macLen {
-		return retryToken{}, fmt.Errorf("%w: a Retry token shorter than its own MAC", ErrQUIC)
+		return retryToken{}, errForeignToken
 	}
 	body, mac := token[:len(token)-macLen], token[len(token)-macLen:]
 	want := hmac.New(sha256.New, key[:])
 	want.Write(body)
 	if subtle.ConstantTimeCompare(want.Sum(nil), mac) != 1 {
-		return retryToken{}, fmt.Errorf("%w: a Retry token that does not verify", ErrQUIC)
+		return retryToken{}, errForeignToken
 	}
 
 	issued, rest, err := Varint(body)

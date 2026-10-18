@@ -1,6 +1,9 @@
 package httpstream
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // benchResponse is the response shape the encode benchmarks share: a handful
 // of regular fields and a small body — the common case an API handler
@@ -23,10 +26,11 @@ func benchResponse() Response {
 // response header round-tripped through string(h.Name) / string(h.Value) on
 // its way into the block.
 func BenchmarkH2Encode(b *testing.B) {
-	s := newBenchH2Server(H2Config{})
+	s := newBenchH2Server(Config{})
 	r := benchResponse()
 	method := []byte("GET")
 	maxFrame := s.cfg.MaxFrameSize
+	s.date = dateFor(time.Now()) // read once per batch, as answer does
 	var dst []byte
 
 	b.ReportAllocs()
@@ -46,11 +50,12 @@ func BenchmarkH2Encode(b *testing.B) {
 func BenchmarkH3Encode(b *testing.B) {
 	r := benchResponse()
 	method := []byte("GET")
-	sc := &h3Scratch{} // one per responder goroutine, as ServeH3 holds it
+	sc := &h3Scratch{}          // one per responder goroutine, as ServeH3 holds it
+	date := dateFor(time.Now()) // read once per batch, as answerH3 does
 
 	b.ReportAllocs()
 	for b.Loop() {
-		head, err := appendH3Response(sc.head[:0], r, method, 0, sc)
+		head, err := appendH3Response(sc.head[:0], r, method, 0, sc, date)
 		if err != nil {
 			b.Fatal(err)
 		}

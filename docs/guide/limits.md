@@ -29,7 +29,8 @@ Three reasons come up, and the difference matters:
   not built: its state must live with you, not in the library. It is the
   first item on the ETL side of the roadmap.
 - **Dependencies are decided case by case.** Today, the standard library
-  plus `golang.org/x/crypto`, and nothing enters without a written decision
+  plus `golang.org/x/crypto` and `golang.org/x/text`, and nothing enters
+  without a written decision
   that says why and what it brings along. The criterion is the least
   useless code, not a count: a maintained compressor (zstd, brotli) beats a
   home-made one, and it will enter when the measurement says it pays. What
@@ -66,11 +67,6 @@ Three reasons come up, and the difference matters:
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on
   the server.
-- **SASLprep is not applied to the password.** That Unicode normalisation
-  needs tables the standard library does not have. For a password in
-  printable ASCII there is no difference; beyond that, a password the
-  server normalised fails cleanly rather than authenticating with a
-  weakened version.
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,
@@ -84,12 +80,49 @@ Three reasons come up, and the difference matters:
   types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
   `macaddr`, `bit`) — on demand, as no use has asked for them yet. Each
   addition needs vectors taken from a real server.
-- **TLS is yours.** The connector dials nothing and negotiates no TLS: you
-  hand it an already open connection, encrypted or not. On purpose: which
-  host, which certificate, which timeout are deployment decisions.
+- **Certificates are yours.** The connector opens the connection with
+  the recipe you give it: `DialTCP`, `DialTLS` (which performs the
+  SSLRequest peculiar to PostgreSQL), or your own (direct TLS since 17, a
+  UNIX socket, a proxy). Which certificates to trust stays your decision,
+  in the `tls.Config` you pass: see the
+  [PostgreSQL guide](postgres.md#encrypting-the-connection).
+- **An RSA-PSS certificate whose salt is not the hash length is refused**
+  by `crypto/x509`, Go's standard library, in the TLS handshake, before
+  any authentication; libpq accepts it. It is OpenSSL's default when signing with
+  PSS: re-sign with `-sigopt rsa_pss_saltlen:digest`.
+- **No LISTEN/NOTIFY, no notices.** A `LISTEN` goes through `Exec`, but
+  the notifications that arrive afterwards are discarded, for want of an
+  API to receive them; the server's notices (`RAISE NOTICE`, warnings) are
+  too.
+- **No COPY TO STDOUT.** Only loading (`COPY ... FROM STDIN`) has an API;
+  a `COPY ... TO STDOUT` fails with an error that says so. To read in bulk,
+  `Query` on a `SELECT` already delivers batches.
+- **Everything is read in binary, with no per-column text fallback.** A
+  type with no binary send function (some extension types) fails the whole
+  query; the workaround is in SQL: `column::text`.
+- **No replication connection.** `Params["replication"]` is refused before
+  anything is sent: a server in replication mode speaks only the simple
+  query protocol, and what it sends next (`CopyBoth`) nothing here reads.
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
+- **A COPY learns of a server error only when its transaction ends.** A
+  row refused early (a duplicate key) does not stop the sending: the rest
+  of the transaction's rows still go out, and the server drops them
+  before it answers. The waste is bounded by `CopyConfig.RowsPerTx`; lower
+  it if your loads fail often and cross a slow link.
+- **A message from the server is bounded at 64 MiB** — a row with all its
+  values, a COPY chunk. Over it, the message is refused unread and the
+  connection is broken (`ErrMessageTooLarge`, then `ErrConnBroken`).
+  `Config.MaxMessage` raises the bound, up to the 1 GiB PostgreSQL
+  itself allows per field; the handshake keeps its own 64 KiB bound.
+- **A batch is bounded at 64 MiB of values** as well as at `BatchRows` rows.
+  A batch whose values reach it is delivered with the row that crossed it,
+  and the next row opens the next batch: nothing fails, the consumer sees
+  more and smaller batches, and `Config.Logger` gets one warning per result.
+  `QueryConfig.BatchBytes` sets it, up to 1 GiB; past it, or below zero, the
+  query is refused. A single row wider than the bound travels alone, so
+  memory per batch is the bound plus one row.
 - **`pushdown` pushes the limit and the key bound, not the column set**:
   the SQL is the caller's and its select list is not rewritten.
 
@@ -115,6 +148,13 @@ Three reasons come up, and the difference matters:
   path. gzip and deflate will come from the standard library, zstd and
   brotli from a maintained module, the day the measurement says what each
   brings.
+- **Request trailers arrive apart from the headers** — identically over
+  HTTP/1.1, 2 and 3: parsed, held to the same bounds as the headers
+  (`MaxHeaders`, `MaxHeaderBytes`), refused when malformed, then handed to
+  the handler in `Request.Trailers`, never merged into `Request.Headers`.
+  A trailer is a field that arrived after the body (a checksum, a
+  signature); RFC 9110 §6.5 keeps it apart because the request was
+  already framed and routed by then, so nothing in the package reads it.
 
 ## Experimental: the exit conditions
 
@@ -181,7 +221,7 @@ to a separate module before a v1.
   own client probes the same way, `conn_write_path_challenge`). The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
-  resumption, ECN, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
+  resumption, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
   restrict the cipher suites), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
@@ -196,8 +236,30 @@ to a separate module before a v1.
   Go scheduler: on two cores (`GOMAXPROCS=2`), the same response reaches
   167 MB/s over HTTP/3 against 157 over HTTP/2, because a request crosses
   several goroutines and each hand-off wakes one, often on another core.
-- **`net/quic/udp`**: follows `quic`; packet information on Darwin and
-  Windows the day a deployment there needs it.
+- **`net/quic` datagram size**: datagrams start at 1200 bytes, the
+  smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
+  rise by a search (DPLPMTUD, §14.3, RFC 8899): a probe — one PING+PADDING
+  datagram — of 1452 bytes first (an Ethernet MTU less the IPv6 and UDP
+  headers), then, while nothing is lost, the ceiling itself; after the
+  first size lost, each probe halves the range between the last size
+  confirmed and the smallest lost, down to 20 bytes. A size is lost after
+  three unanswered probes. A tunnel with an MTU of 1420 settles within
+  20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
+  or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
+  1452; 8952 for a 9000-byte jumbo path), bounded by the
+  `MaxUDPPayloadSize` the peer announces; the size reached reads in
+  `Stats.DatagramSize`. The search starts over at 1200 after each
+  migration. A path that shrinks under a connection (a "black hole",
+  RFC 8899 §4.3) shows as three probe timeouts in a row, or three
+  full-size packets lost while only smaller ones are acknowledged: the size
+  falls back to 1200, what was lost is resent cut to that size, the search
+  runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
+  outage of three probe timeouts counts too, and costs one probe once the
+  path is back. A completed search is not run again on a path that might
+  have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
+  require them, and `net.PacketConn` does not deliver them). A lost probe
+  is not a congestion event (§14.4).
+- **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
   client in continuous integration, fuzzed parsers, the per-batch cost of a

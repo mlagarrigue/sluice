@@ -3,8 +3,8 @@ package sluice
 // Coalesce regroups batches until they hold size elements.
 //
 // Place it after a selective operator — [Filter], a join — to keep sparse
-// batches from propagating across several stages. A size of zero or less means
-// [DefaultBatchSize].
+// batches from propagating across several stages. A size of zero means
+// [DefaultBatchSize]; a negative size panics.
 //
 // Coalesce accumulates into an internal buffer, so it costs O(size) memory, and
 // the batch it produces is valid only for the duration of the call. The buffer
@@ -23,7 +23,10 @@ package sluice
 // — up to size-1 of them. They are not flushed, because the consumer asked to
 // stop.
 func Coalesce[T any](s Stream[T], size int) Stream[T] {
-	if size <= 0 {
+	if size < 0 {
+		panic(negativeArg{"Coalesce size", size, "DefaultBatchSize"})
+	}
+	if size == 0 {
 		size = DefaultBatchSize
 	}
 	return func(yield func(Batch[T]) bool) {

@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire)
 - **Theme:** httpstream
 
 ## Problem
@@ -31,13 +31,17 @@ together.
 
 Every hand-off is bounded and the bound is stated: reader → responder is a
 channel of `MaxConcurrentStreams` batches that cannot block (a request
-holds its stream slot until its response is written); reader → writer for
-control frames is bounded by `MaxPendingControlBytes` and the reader blocks
-when full, which is the prescribed back-pressure; responder → writer for
-payloads is not a queue — the responder blocks until the bytes are on the
-wire, which keeps borrowed payloads safe (S14) and runs the producer at the
-socket's pace. Flow control waits instead of refusing, bounded by
-`WriteTimeout`; scheduling is round-robin per byte-budget round, control
+holds its stream slot until its response has left the writer); reader →
+writer for control frames is bounded by `MaxPendingControlBytes` and the
+reader blocks when full, which is the prescribed back-pressure; responder →
+writer for buffered bodies is a queue bounded by the same stream slot — the
+responder queues a batch and moves on to the next, so a stream waiting for
+its window no longer holds the others, and the writer hands the batch's
+buffer back once each of its answers is written, dropped or expired. A
+streamed body is still pulled by the responder, at the socket's pace, once
+its head is out. Flow control waits instead of refusing, bounded by
+`WriteTimeout` read as a time without progress (`WriteProgressBytes`, 4 KiB
+by default); scheduling is round-robin per byte-budget round, control
 frames first; failures are classified (stream error resets one stream,
 connection error is reserved for framing and HPACK state); closed streams
 are remembered so late `DATA` is tolerated and still counted; the idle

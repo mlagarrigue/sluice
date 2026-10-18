@@ -17,7 +17,7 @@ func TestPrefixTableUpdateReframesAMultiFrameHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &h2Writer{maxFrame: defaultMaxFrameSize, tableMin: 0, tableFinal: 2048}
-	out, err := w.prefixTableUpdate(&h2Job{id: 7, head: head})
+	out, err := w.prefixTableUpdate(7, head)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -212,7 +212,7 @@ func TestAEADLimitRotatesTheApplicationKeys(t *testing.T) {
 // side echoing whatever it accepts.
 func echoRoundTrip(t *testing.T, client *Conn, payload string) {
 	t.Helper()
-	st, err := client.OpenStream()
+	st, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 		}
 		accepted <- c
 		for {
-			st, err := c.AcceptStream()
+			st, err := c.AcceptStream(t.Context())
 			if err != nil {
 				return
 			}

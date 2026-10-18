@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mlagarrigue/sluice/internal/ipkey"
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
@@ -59,8 +60,52 @@ type ListenerConfig struct {
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
-	// overload. Zero means [defaultMaxPendingConns].
+	// overload. Zero means 1024; a negative value is refused by
+	// [NewListener]. Accepted connections are not counted here: MaxConns
+	// bounds the total.
 	MaxPendingConns int
+
+	// HandshakeTimeout bounds how long one handshake may hold a pending
+	// slot: a connection that has not completed its handshake by then is
+	// closed and its slot given back. The slots are what MaxPendingConns
+	// counts, so this is the other half of that bound — the first says how
+	// many peers may be mid-handshake at once, this one says for how long,
+	// and together they cap what a slow or stalled peer can occupy. Lower
+	// it under load; a few seconds is plenty on any path a handshake can
+	// succeed on. Zero means [DefaultHandshakeTimeout], the client's
+	// figure; a negative value is refused by [NewListener].
+	HandshakeTimeout time.Duration
+
+	// MaxConns bounds every connection the listener carries — mid-handshake,
+	// parked for [Listener.Accept], or accepted and in use — where
+	// MaxPendingConns bounds only the first two. Beyond it a new Initial is
+	// refused with a stateless CONNECTION_REFUSED (RFC 9000 §5.2.2), the
+	// same answer as a full pending table; a connection counts until it is
+	// closed on this end or the peer's close is heard. Zero means no bound:
+	// unlike MaxPendingConns, a total has no figure that suits every
+	// deployment, so an unset one limits nothing. Negative is refused by
+	// [NewListener].
+	MaxConns int
+
+	// MaxConnsPerIP is the same bound applied per source address, so that
+	// one peer cannot hold the whole MaxConns on its own. The port is
+	// ignored and an address is counted by its prefix, IPv4PrefixBits or
+	// IPv6PrefixBits long; an IPv4-mapped IPv6 address counts as IPv4. The
+	// address is the one the first Initial came from: a peer that later
+	// migrates to another address keeps its count on the first, since the
+	// bound is on admission. Zero means no bound: a figure that is fair
+	// to a home connection starves a carrier-grade NAT, so the operator
+	// chooses. Negative is refused by [NewListener].
+	MaxConnsPerIP int
+
+	// IPv4PrefixBits and IPv6PrefixBits are how much of a source address
+	// MaxConnsPerIP counts by: two addresses that share that many leading
+	// bits share one count. Zero means 32 and 64. An IPv6 host is handed a
+	// whole /64 (RFC 6177), so a count by the full 128 bits is one it steps
+	// around by changing address; an IPv4 host rarely holds more than one.
+	// A value outside 1..32 or 1..128 is refused by [NewListener].
+	IPv4PrefixBits int
+	IPv6PrefixBits int
 
 	// PreferredAddress is a second socket, bound to the address clients
 	// should move to once their handshake confirms (RFC 9000 §9.6): a
@@ -143,11 +188,21 @@ type Listener struct {
 	// pendingConns is only the connections that have not yet reached the
 	// accept queue — handshakes in progress, and completed ones waiting
 	// for room in a full queue (see MaxPendingConns for why those still
-	// count) — the subset Close ends. An entry here is always also in
-	// byDCID; the reverse is not true once a connection is accepted.
+	// count) — the subset the pending table's limit bounds. An entry here
+	// is always also in byDCID; the reverse is not true once a connection
+	// is accepted.
 	pendingConns map[*Conn]struct{}
-	closed       bool
-	discarded    uint64
+	// connsByIP counts the connections in keysOf by the source address
+	// their first Initial came from (connKey), what MaxConnsPerIP bounds;
+	// ipOf remembers each connection's key so forget can give the count
+	// back without the address. MaxConns itself reads len(keysOf).
+	connsByIP map[string]int
+	ipOf      map[*Conn]string
+	// spent is the Retry tokens that already admitted a connection, which a
+	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
+	spent     spentTokens
+	closed    bool
+	discarded uint64
 	// resetKey derives stateless reset tokens (resetTokenFor); resetWindow
 	// and resetsSent are the one-second budget maybeSendStatelessReset
 	// spends, and resetsTo its per-source share of it. resetsTo only gains
@@ -162,6 +217,37 @@ type Listener struct {
 	done     chan struct{} // closed when every read loop has returned
 }
 
+// resolve applies the defaults zero stands for and returns an error naming
+// every field whose value is negative or out of range: a negative bound is the caller's
+// mistake, said at start rather than quietly turned into the default
+// (docs/design/adr/0018).
+func (c ListenerConfig) resolve() (ListenerConfig, error) {
+	var err error
+	if c.MaxPendingConns < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxPendingConns %d is negative — zero means %d", c.MaxPendingConns, defaultMaxPendingConns))
+	}
+	if c.HandshakeTimeout < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.HandshakeTimeout %v is negative — zero means %v", c.HandshakeTimeout, DefaultHandshakeTimeout))
+	}
+	if c.MaxConns < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConns %d is negative — zero means no bound", c.MaxConns))
+	}
+	if c.MaxConnsPerIP < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxConnsPerIP %d is negative — zero means no bound", c.MaxConnsPerIP))
+	}
+	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
+	if err != nil {
+		return ListenerConfig{}, err
+	}
+	if c.MaxPendingConns == 0 {
+		c.MaxPendingConns = defaultMaxPendingConns
+	}
+	if c.HandshakeTimeout == 0 {
+		c.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	return c, nil
+}
+
 // NewListener starts demultiplexing pc. cfg and params are what every
 // accepted connection's handshake uses — the same arguments [Accept] takes,
 // since a Listener is [Accept] generalised to a shared socket rather than a
@@ -174,8 +260,9 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err := requireALPN(cfg); err != nil {
 		return nil, err
 	}
-	if lcfg.MaxPendingConns <= 0 {
-		lcfg.MaxPendingConns = defaultMaxPendingConns
+	lcfg, err := lcfg.resolve()
+	if err != nil {
+		return nil, err
 	}
 	key, err := newRetryTokenKey()
 	if err != nil {
@@ -199,6 +286,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		byDCID:       make(map[string]*Conn),
 		keysOf:       make(map[*Conn][]string),
 		pendingConns: make(map[*Conn]struct{}),
+		connsByIP:    make(map[string]int),
+		ipOf:         make(map[*Conn]string),
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -258,16 +347,18 @@ func (l *Listener) Accept() (*Conn, error) {
 	}
 }
 
-// Close stops the dispatch loop and ends every connection whose handshake
-// has not completed, and every completed one still queued for Accept —
-// nobody can Accept it any more, and left alone it would hold its
-// goroutines until its idle timeout. A connection already handed out by
-// Accept is the caller's to manage from here — untouched, exactly as
-// [net.Listener.Close] leaves an already-accepted [net.Conn] alone.
-//
-// The connections end before the sockets close, so their CONNECTION_CLOSE
-// still leaves and their peers stop now rather than at their own idle
-// timeout.
+// Close stops the dispatch loop and ends every connection this listener
+// routes — handshakes in progress, completed ones still queued for Accept,
+// and the ones Accept already handed out — each with a CONNECTION_CLOSE
+// (NO_ERROR, RFC 9000 §10.2) sent before the shared sockets close. This is
+// where the [net.Listener] analogy stops: a TCP connection owns its socket
+// and outlives its listener, but every connection here reads and writes
+// through the listener's socket and can neither send nor receive once that
+// socket is gone. Left alone, an accepted connection would hold its
+// goroutines until its own idle timeout, and its peer would wait out its
+// idle timeout too without ever hearing why. Close does not wait for
+// anything in flight: a caller that wants its responses delivered first
+// ends its connections itself before closing the listener.
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	if l.closed {
@@ -275,8 +366,11 @@ func (l *Listener) Close() error {
 		return nil
 	}
 	l.closed = true
-	toClose := make([]*Conn, 0, len(l.pendingConns))
-	for c := range l.pendingConns {
+	// keysOf lists every connection still routed, accepted or not; a
+	// connection that ended forgot itself already. Ended after mu is
+	// released: Conn.Close takes the connection's own lock.
+	toClose := make([]*Conn, 0, len(l.keysOf))
+	for c := range l.keysOf {
 		toClose = append(toClose, c)
 	}
 	l.mu.Unlock()
@@ -310,6 +404,12 @@ func (l *Listener) closeQueued() {
 	}
 }
 
+// Addr reports the address of the socket this listener reads: what
+// [NewListener] was given, as [net.PacketConn.LocalAddr] reports it — a
+// port chosen by the kernel shows up here, which is how a test or a
+// supervisor learns where to dial.
+func (l *Listener) Addr() net.Addr { return l.pc.LocalAddr() }
+
 // DiscardedPackets reports how many datagrams this listener's own front
 // door refused to route — unroutable or malformed, or addressed to a
 // connection too far behind to take them — and failed socket reads, which
@@ -335,9 +435,11 @@ func (l *Listener) noteDiscard() {
 // configured; both feed the same demux table.
 func (l *Listener) readLoop(pc net.PacketConn) {
 	buf := make([]byte, max(int(l.params.MaxUDPPayloadSize), minRecvBuf)) //nolint:gosec // G115: the endpoint's own configuration, not peer input
+	oob := make([]byte, udp.PacketInfoLen)
+	ecnOK := ecnSocket(pc) // the kernel reports each datagram's ECN field (§13.4.1)
 	var sv *sourcedVias
 	if l.sourced != nil && pc == net.PacketConn(l.sourced) {
-		sv = &sourcedVias{uc: l.sourced, oob: make([]byte, udp.PacketInfoLen), byLocal: make(map[localKey]*sourcedConn)}
+		sv = &sourcedVias{uc: l.sourced, oob: oob, byLocal: make(map[localKey]*sourcedConn)}
 	}
 	readFails := 0 // consecutive read errors, for the backoff
 	for {
@@ -351,11 +453,12 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 			from net.Addr
 			err  error
 			via  = pc
+			ecn  uint8
 		)
 		if sv != nil {
-			n, from, via, err = sv.read(buf)
+			n, from, via, ecn, err = sv.read(buf)
 		} else {
-			n, from, err = pc.ReadFrom(buf)
+			n, from, ecn, err = readDatagram(pc, ecnOK, buf, oob)
 		}
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
@@ -374,7 +477,7 @@ func (l *Listener) readLoop(pc net.PacketConn) {
 			continue
 		}
 		readFails = 0
-		l.dispatch(append([]byte(nil), buf[:n]...), from, via)
+		l.dispatch(append([]byte(nil), buf[:n]...), from, via, ecn)
 	}
 }
 
@@ -404,14 +507,16 @@ type sourcedVias struct {
 	byLocal map[localKey]*sourcedConn
 }
 
-func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
-	n, oobn, _, from, err := s.uc.ReadMsgUDP(buf, s.oob)
+func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn, ecn uint8, err error) {
+	var oobn int
+	n, oobn, _, from, err = s.uc.ReadMsgUDP(buf, s.oob)
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, nil, 0, err
 	}
+	ecn, _ = udp.PacketECN(s.oob[:oobn])
 	dst, ifindex, ok := udp.PacketDestination(s.oob[:oobn])
 	if !ok || dst.IsMulticast() || dst.IsUnspecified() {
-		return n, from, s.uc, nil
+		return n, from, s.uc, ecn, nil
 	}
 	if !dst.Is6() || dst.Is4In6() || !dst.IsLinkLocalUnicast() {
 		ifindex = 0 // let routing pick the interface, as it would anyway
@@ -420,7 +525,7 @@ func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
 	v := s.byLocal[k]
 	if v == nil {
 		if len(s.byLocal) >= maxSourcedVias {
-			return n, from, s.uc, nil
+			return n, from, s.uc, ecn, nil
 		}
 		v = &sourcedConn{
 			UDPConn: s.uc,
@@ -429,7 +534,7 @@ func (s *sourcedVias) read(buf []byte) (int, net.Addr, net.PacketConn, error) {
 		}
 		s.byLocal[k] = v
 	}
-	return n, from, v, nil
+	return n, from, v, ecn, nil
 }
 
 // sourcedConn is the listener's unspecified-address socket seen from one
@@ -461,7 +566,7 @@ func (s *sourcedConn) LocalAddr() net.Addr { return s.local }
 // once per destination) to the connection it names, or treats it as a new
 // connection attempt if nothing claims its identifier yet. via is the
 // socket it arrived on, which is where any answer leaves from.
-func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) {
+func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn, ecn uint8) {
 	dcid := peekDCID(datagram)
 	if dcid == nil {
 		// Not a packet this listener can route — possibly a long header in a
@@ -475,6 +580,14 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 	c := l.byDCID[string(dcid)]
 	l.mu.Unlock()
 	if c != nil {
+		// A connection whose CONNECTION_CLOSE has left stays routed for
+		// its closing period (RFC 9000 §10.2.1) and answers from here, on
+		// this loop — its own read loop is gone — with the close again:
+		// a peer that missed the first hears the code instead of the
+		// stateless reset an unknown identifier would earn below.
+		if c.answerClosing(datagram, from) {
+			return
+		}
 		// Never block here: this loop serves every connection on the socket,
 		// and a connection whose consumer lags (a full accept queue, a
 		// stream callback applying back-pressure) legitimately stops
@@ -483,7 +596,7 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 		// what the network would do; loss recovery retransmits, and
 		// back-pressure stays per connection, through flow control.
 		select {
-		case c.incoming <- rawDatagram{data: datagram, from: from, via: via}:
+		case c.incoming <- rawDatagram{data: datagram, from: from, via: via, ecn: ecn}:
 		default:
 			l.noteDiscard()
 		}
@@ -509,7 +622,7 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn) 
 		l.noteDiscard()
 		return
 	}
-	l.handleNewInitial(datagram, from, h, via)
+	l.handleNewInitial(datagram, from, h, via, ecn)
 }
 
 // peekDCID reads just enough of a datagram to learn which connection it
@@ -585,7 +698,7 @@ func foreignVersionCIDs(datagram []byte) (dcid, scid []byte, ok bool) {
 // identifier this listener has never routed before — a genuinely new
 // attempt, or (if [ListenerConfig.AlwaysRetry] is on) one still proving its
 // address before a Conn is even created.
-func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader, via net.PacketConn) {
+func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader, via net.PacketConn, ecn uint8) {
 	// RFC 9000 §14.1: a server MUST discard an Initial carried in a
 	// datagram under 1200 bytes. A real client always pads; what arrives
 	// smaller is a forgery economising on bandwidth — and answering it
@@ -618,15 +731,21 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 
 	l.mu.Lock()
 	pending := len(l.pendingConns)
+	total, fromIP := len(l.keysOf), l.connsByIP[l.connKey(from)]
 	l.mu.Unlock()
-	if pending >= l.lcfg.MaxPendingConns {
+	// The three bounds refuse the same way; only the pending table's
+	// high-water mark below turns the Retry flow on, since Retry defends
+	// that table's slots, not the total.
+	if pending >= l.lcfg.MaxPendingConns ||
+		(l.lcfg.MaxConns > 0 && total >= l.lcfg.MaxConns) ||
+		(l.lcfg.MaxConnsPerIP > 0 && fromIP >= l.lcfg.MaxConnsPerIP) {
 		// RFC 9000 §5.2.2: a server with no room SHOULD say so — a
 		// stateless CONNECTION_REFUSED close costs one sealed packet
 		// against a decrypted ≥1200-byte Initial and spares the client its
 		// whole handshake timeout. (This used to be a silent drop, argued
 		// as "no different from a listen backlog dropping a SYN" — but TCP
 		// has RST for the loud variant, and QUIC's equivalent is this.)
-		l.sendStatelessClose(from, h, keys.secrets, transportConnectionRefused, via)
+		l.sendStatelessClose(from, h, &keys, transportConnectionRefused, via)
 		return
 	}
 
@@ -635,40 +754,61 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// handing out stateless Retries is how the remaining slots are kept
 	// for addresses that prove themselves; and an Initial already carrying
 	// a token, which only the Retry flow can verify — a token must never
-	// reach the direct path, where the handshake it starts would not echo
-	// retry_source_connection_id and the client would refuse it.
-	if len(h.Token) > 0 || l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2 {
-		l.handleRetryFlow(datagram, from, h, &keys, via)
+	// reach the direct path unexamined, where the handshake it starts
+	// would not echo retry_source_connection_id and the client would
+	// refuse it.
+	retry := l.lcfg.AlwaysRetry || pending >= l.lcfg.MaxPendingConns/2
+	if len(h.Token) > 0 || retry {
+		l.handleRetryFlow(datagram, from, h, &keys, via, ecn, retry)
 		return
 	}
-	l.bootstrapConn(datagram, from, h, nil, &keys, via)
+	l.bootstrapConn(datagram, from, h, nil, &keys, via, ecn)
 }
 
 // initialKeys is what checking a client's first Initial derived: the
-// secrets, and the opener that just authenticated it. Handed on so the
-// answer — a stateless close or the connection's own Initial keys — does
-// not run the key schedule a second time for the same identifier.
+// extracted Initial secret, the client's direction expanded from it, and
+// the opener that just authenticated the packet. Handed on so the answer —
+// a stateless close or the connection's own Initial keys — does not run
+// the key schedule a second time for the same identifier. The server's
+// direction is not derived here: an Initial answered with a Retry, or
+// refused outright, never seals anything under it, and the listener's cost
+// per unauthenticated datagram is what a flood multiplies.
 type initialKeys struct {
-	secrets secrets
+	initial []byte // hkdf.Extract's output, both directions' parent
+	client  []byte
 	opener  *packetOpener // the client's direction, which a server opens
+}
+
+// secrets expands the server's direction and returns both, for the paths
+// that seal: a stateless close, or the connection being set up.
+func (k *initialKeys) secrets() (secrets, error) {
+	server, err := expandLabel(k.initial, "server in", 32)
+	if err != nil {
+		return secrets{}, err
+	}
+	return secrets{Client: k.client, Server: server}, nil
 }
 
 // initialPacketDecrypts checks an Initial against the keys its destination
 // identifier derives (RFC 9001 §5.2) — the cheapest possible proof that the
 // sender is a QUIC client and not noise shaped like one.
 func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
-	s, err := initialSecrets(h.DCID)
+	initial, err := extractInitial(h.DCID)
 	if err != nil {
 		return initialKeys{}, false
 	}
-	opener, err := newPacketOpener(s.Client)
+	client, err := expandLabel(initial, "client in", 32)
+	if err != nil {
+		return initialKeys{}, false
+	}
+	opener, err := newPacketOpener(client)
 	if err != nil {
 		return initialKeys{}, false
 	}
 	if _, _, err = opener.Open(h.Raw, h.PNOffset, 0); err != nil {
 		return initialKeys{}, false
 	}
-	return initialKeys{secrets: s, opener: opener}, true
+	return initialKeys{initial: initial, client: client, opener: opener}, true
 }
 
 // handleRetryFlow implements RFC 9000 §8.1.2 statelessly: a first Initial
@@ -676,39 +816,71 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 // resource an attacker spends by sending one of these and walking away. A
 // second Initial carrying a valid token proves the address and continues
 // exactly like handleNewInitial would have without AlwaysRetry, except
-// already validated.
-func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn) {
-	if len(h.Token) == 0 {
-		newSCID, err := randomID(listenerCIDLen)
-		if err != nil {
-			return // nothing to send; the client's own retransmission tries again
+// already validated. retry says whether an Initial that proves nothing is
+// answered with a Retry or admitted on the direct path, the choice the
+// dispatcher made for a tokenless one.
+func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader, keys *initialKeys, via net.PacketConn, ecn uint8, retry bool) {
+	if len(h.Token) > 0 {
+		rt, err := verifyRetryToken(h.Token, l.key, from)
+		switch {
+		case errors.Is(err, errForeignToken):
+			// RFC 9000 §8.1.3: a token the server cannot validate — here,
+			// one its key never signed, so a NEW_TOKEN from another server
+			// of the same name or a token from a listener since restarted —
+			// makes the client unvalidated, not wrong: it continues below
+			// as if it had sent no token, "including potentially sending a
+			// Retry packet". INVALID_TOKEN is kept for the token this
+			// listener provably issued (§8.1.2), where the client is known
+			// to hold a Retry token it will not replace.
+		case err != nil:
+			// RFC 9000 §8.1.2: an Initial whose Retry token cannot be
+			// validated — expired, or issued to another address — SHOULD
+			// be answered with an immediate INVALID_TOKEN close, so the
+			// client learns now instead of eating its whole handshake
+			// timeout. The answer is stateless — no Conn, no table entry —
+			// and small against the ≥1200-byte datagram that provably
+			// arrived (§8.1's limit allows three times that).
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
+		case !bytes.Equal(h.DCID, rt.newSCID):
+			// This Initial's own destination identifier must be the one
+			// the Retry offered — anything else is a token replayed onto
+			// an attempt it was never issued for: equally impossible to
+			// validate, equally worth telling the client about now.
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
+		case !l.consumeRetryToken(h.DCID):
+			// RFC 9000 §8.1.4: a token admits one connection. The same one
+			// echoed again — after that connection's identifiers came free,
+			// since while it lives dispatch routes the replay to it — is a
+			// Retry token this listener issued and will not honour twice,
+			// and the client holding it accepts no other (§8.1.2).
+			l.sendStatelessClose(from, h, keys, transportInvalidToken, via)
+			return
+		default:
+			l.bootstrapConn(datagram, from, h, &rt, keys, via, ecn)
+			return
 		}
-		token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
-		pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
-		_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
+	}
+	if !retry {
+		l.bootstrapConn(datagram, from, h, nil, keys, via, ecn)
 		return
 	}
-
-	rt, err := verifyRetryToken(h.Token, l.key, from)
+	newSCID, err := randomID(listenerCIDLen)
 	if err != nil {
-		// RFC 9000 §8.1.2: an Initial whose token cannot be validated SHOULD
-		// be answered with an immediate INVALID_TOKEN close, so the client
-		// learns now instead of eating its whole handshake timeout. The
-		// answer is stateless — no Conn, no table entry — and small against
-		// the ≥1200-byte datagram that provably arrived (§8.1's limit allows
-		// three times that).
-		l.sendStatelessClose(from, h, keys.secrets, transportInvalidToken, via)
-		return
+		return // nothing to send; the client's own retransmission tries again
 	}
-	// This Initial's own destination identifier must be the one the Retry
-	// offered — anything else is a token replayed onto an attempt it was
-	// never issued for: equally impossible to validate, equally worth
-	// telling the client about now.
-	if !bytes.Equal(h.DCID, rt.newSCID) {
-		l.sendStatelessClose(from, h, keys.secrets, transportInvalidToken, via)
-		return
-	}
-	l.bootstrapConn(datagram, from, h, &rt, keys, via)
+	token := appendRetryToken(nil, l.key, from, h.DCID, newSCID)
+	pkt := appendRetryPacket(nil, h.SCID, newSCID, h.DCID, token)
+	_, _ = via.WriteTo(pkt, from) // best effort; a lost Retry just looks like a lost Initial to the client
+}
+
+// consumeRetryToken marks the token bound to newSCID as spent and reports
+// whether it was still unspent — see spentTokens.
+func (l *Listener) consumeRetryToken(newSCID []byte) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.spent.consume(newSCID, time.Now())
 }
 
 // sendStatelessClose answers one Initial with a stateless Initial-level
@@ -717,10 +889,15 @@ func (l *Listener) handleRetryFlow(datagram []byte, from net.Addr, h longHeader,
 // pending table (§5.2.2). The keys are the ones the client derived from its
 // own destination identifier (RFC 9001 §5.2), so only the endpoint that
 // sent — or saw — that Initial can read the answer; the identifiers are
-// echoed swapped, exactly as a server's first genuine packet would. s is
-// what the decrypt check already derived from h.DCID.
-func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, s secrets, code uint64, via net.PacketConn) {
+// echoed swapped, exactly as a server's first genuine packet would. keys is
+// what the decrypt check already derived from h.DCID; the server's
+// direction is expanded here, on the one refusal that seals.
+func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initialKeys, code uint64, via net.PacketConn) {
 	l.noteDiscard() // the Initial itself is still refused, and still counted
+	s, err := keys.secrets()
+	if err != nil {
+		return
+	}
 	sealer, err := newPacketSealer(s.Server)
 	if err != nil {
 		return
@@ -754,7 +931,7 @@ func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, s secrets, co
 // incoming channel instead of exclusive socket ownership, and — for a
 // direct (non-Retry) attempt — the same anti-amplification accounting the
 // standalone [Accept] applies to its own unvalidated peer.
-func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, rt *retryToken, keys *initialKeys, via net.PacketConn) {
+func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, rt *retryToken, keys *initialKeys, via net.PacketConn, ecn uint8) {
 	c, err := newServerConn(via, from, h, l.cfg, l.params, rt, keys, l.prepareConn)
 	if err != nil {
 		return
@@ -763,8 +940,12 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 		// An address that has proved nothing yet pays the RFC 9000 §8.1
 		// amplification limit until its first Handshake-level packet
 		// decrypts. The Retry path proved itself across that round trip,
-		// so no accounting is needed there.
+		// so no accounting is needed there. Under the connection's lock:
+		// its timer loop is already running and reads the flag
+		// (ptoDeadlineLocked).
+		c.mu.Lock()
 		c.amplActive = true
+		c.mu.Unlock()
 	}
 
 	firstKey := string(h.DCID)
@@ -778,9 +959,12 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	l.routeLocked(string(c.scid), c)
 	l.routeLocked(firstKey, c)
 	l.pendingConns[c] = struct{}{}
+	ip := l.connKey(from)
+	l.ipOf[c] = ip
+	l.connsByIP[ip]++
 	l.mu.Unlock()
 
-	go l.runHandshake(c, datagram, from)
+	go l.runHandshake(c, datagram, from, ecn)
 }
 
 // connQueueLen is how many datagrams the listener queues for one connection
@@ -867,7 +1051,7 @@ func preferredAnnouncements(local net.Addr, ips []net.IP) (v4, v6 *net.UDPAddr, 
 // goroutine, never on the shared dispatch loop: a slow or deliberately
 // stalled handshake must not head-of-line block every other connection's
 // datagrams behind it.
-func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
+func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8) {
 	accepted := false
 	defer func() {
 		l.mu.Lock()
@@ -879,15 +1063,27 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr) {
 		}
 	}()
 
-	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc}); err != nil {
+	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc, ecn: ecn}); err != nil {
 		return // an authenticated violation on its own first packet; abort already closed it
 	}
-	if err := c.handshake(context.Background()); err != nil {
+	// The handshake runs under HandshakeTimeout. Cancelling the context
+	// afterwards is inert: handshake stops its own AfterFunc before it
+	// returns, so an accepted connection is not killed by the cancel.
+	ctx, cancel := context.WithTimeout(context.Background(), l.lcfg.HandshakeTimeout)
+	err := c.handshake(ctx)
+	cancel()
+	if err != nil {
 		return // the handshake path closes on every failure, same as Accept's
 	}
 
+	// Forgotten once its closing state ends (gone), not when it closes:
+	// a connection that sent a CONNECTION_CLOSE stays routable for three
+	// probe timeouts so that dispatch can repeat the close to a peer that
+	// missed it (§10.2.1), and only then do its identifiers — and the
+	// MaxConns slot they hold — come free. §10.2 asks a server that keeps
+	// its socket open not to cut this short.
 	go func() {
-		<-c.closed
+		<-c.gone
 		l.forget(c)
 	}()
 
@@ -936,6 +1132,16 @@ func (l *Listener) forget(c *Conn) {
 		}
 	}
 	delete(l.keysOf, c)
+	// The per-address count follows ipOf, not keysOf: a connection the
+	// closing listener turned away before registering (above) has keys but
+	// no address, and a second forget of the same one finds neither.
+	if ip, counted := l.ipOf[c]; counted {
+		delete(l.ipOf, c)
+		l.connsByIP[ip]--
+		if l.connsByIP[ip] <= 0 {
+			delete(l.connsByIP, ip)
+		}
+	}
 	l.mu.Unlock()
 }
 
@@ -1030,7 +1236,7 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 		l.resetWindow, l.resetsSent = now, 0
 		clear(l.resetsTo)
 	}
-	src := resetSource(from)
+	src := sourceIP(from)
 	if l.resetsSent >= maxResetsPerSecond || l.resetsTo[src] >= maxResetsPerSourcePerSecond {
 		l.mu.Unlock()
 		l.noteDiscard()
@@ -1055,12 +1261,28 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	_, _ = via.WriteTo(pkt, from)
 }
 
-// resetSource is the per-source key of the stateless reset budget: the IP
-// address without its port, or the whole address where it is not IP.
-func resetSource(from net.Addr) string {
+// sourceIP is the per-source key of the stateless reset budget: the IP
+// address without its port, an IPv4-mapped IPv6 address reduced to its IPv4
+// form, or the whole address where it is not IP. The budget keys on the
+// whole address, not on MaxConnsPerIP's prefix: it bounds what a forged
+// source reflects to one victim, and a victim is an address.
+func sourceIP(from net.Addr) string {
 	if ua, ok := from.(*net.UDPAddr); ok {
 		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
 			return string(ip.Unmap().AsSlice())
+		}
+	}
+	return from.String()
+}
+
+// connKey is the key MaxConnsPerIP counts from under: its address's prefix
+// (ipkey.Of), or the whole address where it is not IP. Every IP key of one
+// listener has the same length per family, so the masked address alone —
+// 4 or 16 bytes — tells two prefixes apart.
+func (l *Listener) connKey(from net.Addr) string {
+	if ua, ok := from.(*net.UDPAddr); ok {
+		if ip, ok := netip.AddrFromSlice(ua.IP); ok {
+			return string(ipkey.Of(ip, l.lcfg.IPv4PrefixBits, l.lcfg.IPv6PrefixBits).Addr().AsSlice())
 		}
 	}
 	return from.String()

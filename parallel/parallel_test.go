@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"bytes"
 	"runtime"
 	"slices"
 	"sync/atomic"
@@ -11,15 +12,14 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// goroutinesSettle waits for every other goroutine in the test's synctest
-// bubble to exit or block, then returns the goroutine count. Workers exit
-// asynchronously after wg.Wait returns to their caller; synctest.Wait is what
-// makes the count exact rather than a poll that hopes the scheduler has
-// caught up. It must be called inside synctest.Test.
-func goroutinesSettle(t *testing.T) int {
-	t.Helper()
-	synctest.Wait()
-	return runtime.NumGoroutine()
+// goid is the calling goroutine's id, read from the header of its own stack
+// trace ("goroutine 7 [running]:"). An inline path runs f on the caller's
+// goroutine and a pool of one does not, which is what the inline tests
+// compare: runtime.NumGoroutine counts the whole process, so a goroutine
+// another test or the runtime starts meanwhile reads as a spawned worker.
+func goid() string {
+	buf := make([]byte, 64)
+	return string(bytes.Fields(buf[:runtime.Stack(buf, false)])[1])
 }
 
 func TestParallel(t *testing.T) {
@@ -36,7 +36,6 @@ func TestParallel(t *testing.T) {
 		{"empty stream", 4, nil, 2, nil},
 		{"workers = 1 is the no-op path", 1, []int{1, 2, 3}, 2, []int{10, 20, 30}},
 		{"workers = 0 is the no-op path", 0, []int{1, 2, 3}, 2, []int{10, 20, 30}},
-		{"negative workers is the no-op path", -5, []int{1, 2, 3}, 2, []int{10, 20, 30}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,12 +166,11 @@ func TestParallelWaitsForWorkers(t *testing.T) {
 func TestParallelLeavesNoGoroutines(t *testing.T) {
 	run := func(t *testing.T, call func()) {
 		t.Helper()
+		// The bubble is the check: synctest.Test fails the test when one of
+		// its goroutines is still blocked once call has returned, and counts
+		// none outside it, as runtime.NumGoroutine would.
 		synctest.Test(t, func(t *testing.T) {
-			before := runtime.NumGoroutine()
 			call()
-			if after := goroutinesSettle(t); after > before {
-				t.Errorf("goroutines: %d before, %d after — workers outlived the call", before, after)
-			}
 		})
 	}
 
@@ -304,13 +302,13 @@ func TestParallelNilFunction(t *testing.T) {
 
 // Ordered(1) must be the inline path: no goroutine at all, not a pool of one.
 func TestParallelOneIsInline(t *testing.T) {
-	before := runtime.NumGoroutine()
+	caller := goid()
 
 	var ran bool
 	sluice.Collect(Ordered(sluice.Of([]int{1, 2, 3}, 1), 1, func(b sluice.Batch[int]) sluice.Batch[int] {
 		ran = true
-		if got := runtime.NumGoroutine(); got > before {
-			t.Errorf("Ordered(1) started %d goroutines, want none", got-before)
+		if g := goid(); g != caller {
+			t.Errorf("Ordered(1) ran f on goroutine %s, want the caller's %s", g, caller)
 		}
 		return b
 	}))
@@ -506,9 +504,3 @@ func TestParallelEarlyStopStillRaisesInFlightPanic(t *testing.T) {
 		})
 	}
 }
-
-// The first garbage collection of the process starts the runtime's mark
-// worker goroutines, which runtime.NumGoroutine counts. Running one up
-// front keeps the goroutine baselines in this package from blaming a leak
-// on the runtime when that first cycle happens to land inside a test.
-func init() { runtime.GC() }

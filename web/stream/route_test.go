@@ -129,7 +129,7 @@ func TestRouteHeadSendsNoBody(t *testing.T) {
 	ex := []Exchange{exchangeFor("HEAD", "/health")}
 	rt.Route(ex)
 	out := Render(ex, func(int) (int, any) { return 200, map[string]any{"ok": true} })
-	wire, err := httpstream.WriteBatch(nil, []httpstream.Request{ex[0].Request}, out.Items)
+	wire, err := httpstream.WriteBatch(nil, httpstream.Config{}, []httpstream.Request{ex[0].Request}, out.Items)
 	if err != nil {
 		t.Fatal(err)
 	}

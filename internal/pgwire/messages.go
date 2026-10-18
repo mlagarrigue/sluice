@@ -17,21 +17,22 @@ import (
 // backend, Describe from the frontend — is a bug waiting for a tired reader.
 const (
 	// Backend.
-	BackendErrorResponse   = 'E'
-	BackendNoticeResponse  = 'N'
-	BackendRowDescription  = 'T'
-	BackendDataRow         = 'D'
-	BackendCommandComplete = 'C'
-	BackendReadyForQuery   = 'Z'
-	BackendParseComplete   = '1'
-	BackendBindComplete    = '2'
-	BackendNoData          = 'n'
-	BackendPortalSuspended = 's'
-	BackendEmptyQuery      = 'I'
-	BackendAuthentication  = 'R'
-	BackendParameterStatus = 'S'
-	BackendBackendKeyData  = 'K'
-	BackendCloseComplete   = '3'
+	BackendErrorResponse            = 'E'
+	BackendNoticeResponse           = 'N'
+	BackendRowDescription           = 'T'
+	BackendDataRow                  = 'D'
+	BackendCommandComplete          = 'C'
+	BackendReadyForQuery            = 'Z'
+	BackendParseComplete            = '1'
+	BackendBindComplete             = '2'
+	BackendNoData                   = 'n'
+	BackendPortalSuspended          = 's'
+	BackendEmptyQuery               = 'I'
+	BackendAuthentication           = 'R'
+	BackendParameterStatus          = 'S'
+	BackendBackendKeyData           = 'K'
+	BackendNegotiateProtocolVersion = 'v'
+	BackendCloseComplete            = '3'
 
 	// BackendNotificationResponse is asynchronous by design: the docs say to
 	// accept it at any point in the protocol, including just before
@@ -227,7 +228,7 @@ func (wr *Writer) Terminate() { wr.Message(FrontendTerminate, nil) }
 // Cleartext means cleartext: the bytes on the wire are the credential. That is
 // the caller's transport decision, taken when it chose whether to hand this
 // package a *tls.Conn or a plain socket. It is reached only through
-// [StartupConfig.AllowCleartextPassword]'s opt-in, which is why it is not
+// [Config.AllowCleartextPassword]'s opt-in, which is why it is not
 // exported: nothing outside [Startup] should be able to put a credential on
 // the wire in the clear by accident.
 func (wr *Writer) PasswordMessage(password string) {

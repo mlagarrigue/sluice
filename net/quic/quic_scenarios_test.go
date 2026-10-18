@@ -50,7 +50,7 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	// peer would.
 	for i := range limit {
 		id := i * 4
-		if _, err := c.frames(spaceApplication, streamFrame(id), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrame(id), time.Now()); err != nil {
 			t.Fatalf("stream %d (within the %d-stream limit): %v", i, limit, err)
 		}
 	}
@@ -58,7 +58,7 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	// The next stream (ordinal limit+1) is past what this end granted and
 	// none has been retired to earn a slot back.
 	overID := limit * 4
-	_, err := c.frames(spaceApplication, streamFrame(overID), time.Now())
+	err := c.frames(spaceApplication, streamFrame(overID), time.Now())
 	if err == nil {
 		t.Fatalf("stream ordinal %d, past the %d-stream limit, was accepted", limit+1, limit)
 	}
@@ -91,13 +91,13 @@ func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 	// Client-initiated unidirectional stream identifiers are 2, 6, 10, ...
 	for i := range limit {
 		id := i*4 + 2
-		if _, err := c.frames(spaceApplication, streamFrame(id), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, streamFrame(id), time.Now()); err != nil {
 			t.Fatalf("uni stream %d (within the %d-stream limit): %v", i, limit, err)
 		}
 	}
 
 	overID := limit*4 + 2
-	_, err := c.frames(spaceApplication, streamFrame(overID), time.Now())
+	err := c.frames(spaceApplication, streamFrame(overID), time.Now())
 	var te *transportError
 	if !errors.As(err, &te) {
 		t.Fatalf("the refusal was %v (%T), want a *transportError", err, err)
