@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"slices"
@@ -74,11 +75,8 @@ func sluiceConn(b testing.TB) *postgres.Conn {
 	if !ok {
 		b.Skip("SLUICE_PG is not set")
 	}
-	nc, err := dialCount(context.Background(), "tcp", addr)
-	if err != nil {
-		b.Fatal(err)
-	}
-	conn, err := postgres.Startup(nc, postgres.StartupConfig{User: user, Database: db, Password: pass})
+	dial := func(ctx context.Context) (io.ReadWriteCloser, error) { return dialCount(ctx, "tcp", addr) }
+	conn, err := postgres.Connect(context.Background(), dial, postgres.Config{User: user, Database: db, Password: pass})
 	if err != nil {
 		b.Fatal(err)
 	}
