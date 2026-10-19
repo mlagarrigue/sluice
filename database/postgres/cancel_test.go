@@ -872,6 +872,12 @@ func streamRows(t *testing.T, srv *pipeServer, packets <-chan []byte, limit int)
 	srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
 		beRowDescription([]string{"n"}, []uint32{OIDInt8}))
 	for sent < limit {
+		// Every other goroutine of the bubble goes as far as it can before
+		// the next row: a cancellation already decided has reached packets,
+		// so the count is the reader's doing, not the scheduler's. Without
+		// it the client drained 743 rows on one run while the dial waited
+		// for a turn.
+		synctest.Wait()
 		select {
 		case <-packets:
 			srv.write(t, beErrorResponse("57014", "canceling statement due to user request"), beReadyForQuery())
