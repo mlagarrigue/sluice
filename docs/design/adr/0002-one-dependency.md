@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07 (the rule predates the record; this writes it down)
-- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push)
+- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories)
 - **Theme:** ci
 
 ## Problem
@@ -43,26 +43,43 @@ changes: SASLprep's tables (RFC 3454) are frozen by the RFC at Unicode 3.2
 and generated from its text in this repository; NFKC follows every Unicode
 version and comes from the module.
 
-**Tests that compare against other libraries live in a separate module**,
-which depends on this one and not the reverse. A test-only import in the
-root module would still put the library in `go.mod` and in every consumer's
-module graph; a nested module is excluded from the root's `./...`, so
-nothing it requires reaches a user's binary or `go.mod`, and CI's `deps`
-job keeps it that way. Two such modules exist, both nested on `main` and
-both replacing the root with the working tree: `benchmarks/`, where `pgx`,
-`gin` or `echo` are compared — and `TestPGContendersAgree` asserts that the
-connector reads the same rows as `pgx` — and `interop/`, where `net/quic`
-is confronted with `quic-go` on every push (since 2026-10-10). Neither runs
-in `scripts/check.sh` or in the root's `go test ./...`. The comparison
+**Tests and tools that confront the library with others live in separate
+modules**, which depend on this one and never the reverse. A test-only
+import in the root module would still put the library in `go.mod` and in
+every consumer's module graph; a nested module (a `go.mod` in a
+subdirectory) is excluded from the root's `./...`, so nothing it requires
+reaches a user's binary or `go.mod`, and CI's `deps` job keeps it that way.
+Four such modules exist, all on `main`:
+
+- `benchmarks/`, where `pgx`, `gin` or `echo` are compared — and
+  `TestPGContendersAgree` asserts that the connector reads the same rows as
+  `pgx`;
+- `interop/`, where `net/quic` is confronted with `quic-go` on every push
+  (since 2026-10-10);
+- `comparison/sluice` and `comparison/loadgen`, the server and the load
+  generator of the comparison study.
+
+`benchmarks/` and `comparison/sluice` replace the root with the working
+tree. None runs in `scripts/check.sh` or in the root's `go test ./...`. The comparison
 module moved to `main` on 2026-10-19: on its own branch it had fallen 201
 commits behind, and a measurement of code that is no longer the code proves
 nothing about it — the very argument that had put interop on `main`. The
 measurements are still taken on purpose, not on every push; what runs on
 every push is `go vet` and one pass of every benchmark in the
-`benchmarks-module` job, and `TestPGContendersAgree` against PostgreSQL 17
-and 18 in the `postgres` job, so an API change that breaks the module, a
+`benchmarks-module` job, `go vet` and `go mod tidy -diff` of the study's two
+modules in the same job, and `TestPGContendersAgree` against PostgreSQL 17
+and 18 in the `postgres` job, so an API change that breaks a module, a
 benchmark that hangs, or a connector that reads other rows than `pgx` goes
 red the day it lands.
+
+**The nested modules never ship, but they are watched.** They run on the
+project's machines and pin `quic-go`, `pgx`, `gin` and the `x/` modules
+they bring. `govulncheck` (the Go team's tool, which reports a
+vulnerability only when the code reaches it) runs in each of them daily and
+on every push, as it does for the root. Dependabot opens a security update
+in any of them; its version updates target only the root and `interop/`: in
+`benchmarks/` and `comparison/`, a version bump would move what the study
+measures, and the compared versions change only by decision.
 
 ## Rationale
 
