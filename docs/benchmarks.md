@@ -266,6 +266,25 @@ opens the window for the next batch. The scheduler remains the other item
 (a quarter of the samples, both sides together); taking the system call
 out of the lock is the first one the server can change on its own.
 
+**Taking the system call out of the lock (measured 2026-10-19).** It was
+tried: the batches sealed under `mu` went into an ordered queue that one
+goroutine at a time wrote with the lock released, the others queuing
+behind it so that datagrams left in the order of their packet numbers. The
+mutex profile changed as expected: the process's total wait on
+`sync.Mutex` fell from 1.02 s to 0.26 s over one pass of `-benchtime 3s`,
+and `Stream.Write`'s share from 49% to 16%; the read loop waited a third as
+long, the timer loop hardly at all. Throughput did not follow: in a paired
+A/B (`internal/bench/scripts/ab.sh`, ten rounds of `-benchtime 2s`, every
+core), the version outside the lock was 2.2% slower in geometric mean, and
+slower in nine rounds of ten. The waiting left the connection's lock for
+the runtime's internal locks (352 ms → 623 ms in the same profile),
+`sendmsg` kept its share of the CPU (20%, then 22%) and the scheduler its
+own (a quarter of the samples). `bulk` sends its requests one at a time,
+with one writer per connection: what bounds its throughput is the round
+trip between goroutines, not mutual exclusion. The change was not kept;
+contention on `mu` is no longer an item to treat until a benchmark with
+several writers per connection shows it.
+
 **First and last byte (measured 2026-10-13).** ns/op is a mean, and it
 only counts the last byte. The benchmark also records, request by request,
 two delays counted from the moment the request is sent: the first byte of
