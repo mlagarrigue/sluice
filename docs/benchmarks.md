@@ -697,6 +697,21 @@ within 0.993–1.019; its `RTT80` (1.151) and `Loss1pct` (0.855) leave its
 gate only: one transfer there spreads over 1.26–1.68 s and 314–390 ms on
 a single binary.
 
+Under CUBIC, two rows still turned the job red on CI on commits that
+touched no Go code: `Bottleneck` (1.076) and `TwoFlows` (1.083). Eighty
+interleaved rounds on an identical tree, on four cores, cut into ten passes
+of eight (2026-10-19), show why: `Bottleneck` holds within 0.948–1.059, one
+transfer landing anywhere between 797 and 954 ms; `TwoFlows` holds within
+0.992–1.015 but is bimodal — four transfers in five near 1.46 s, the rest
+at 1.53–1.64 s — and the median of eight changes mode when four land high.
+Resampled from those 160 transfers, the chance that one pass reads more
+than 6% slower is 3.9% for `Bottleneck` and 1.1% for `TwoFlows`; at 10%,
+0.03% and 0.01%. Those two rows are therefore judged at 10% under CUBIC,
+the others stay at 6%. Sixteen rounds at 6% would have left 1.2% and
+doubled the job. The initial window halved still turns the cubic job red,
+on rows that keep 6% (`Clean` 1.140, `RTT80` 1.077, `BurstLoss` 1.069);
+under CUBIC it moves neither `Bottleneck` (0.957) nor `TwoFlows` (1.038).
+
 A second script, `gate-cc.sh`, holds the three controllers other than
 Reno to their own criteria, on one tree and without a base: the median of
 `share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
@@ -720,8 +735,9 @@ from `gate.sh` in the three ways these rows require: it builds
 binaries unpinned, with the runtime's own `GOMAXPROCS`, since the emulation
 sleeps on timers in several goroutines; and it rules on the median of
 eight transfers a side, interleaved before/after so drift cancels, red
-when the median after is more than 6% above the median before rather than
-on a 3% effect by sign test. Ten passes on an identical tree kept every
+when the median after is more than 6% above the median before (10% for
+`Bottleneck` and `TwoFlows` under CUBIC, above) rather than on a 3% effect
+by sign test. Ten passes on an identical tree kept every
 ratio within 0.970–1.015; an initial window halved put four rows 11–24%
 above. One transfer per round (`-benchtime=1x`): the figure is a
 transfer's wall clock, not a rate the harness scales. `Reorder` stays out of the gate:

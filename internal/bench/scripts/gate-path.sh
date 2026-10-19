@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CI regression gate for the emulated-path benchmarks of net/quic: paired A/B
 # of the working tree against a base ref, failing on any benchmark whose
-# median transfer is more than 6% slower.
+# median transfer is more than 6% slower (10% for the few a controller
+# spreads wider, listed below).
 #
 #   SLUICE_QUIC_CC=<reno|cubic|bbr1|bbr> internal/bench/scripts/gate-path.sh <base-ref> [rounds]
 #
@@ -79,7 +80,28 @@ GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | 
 # that injection. A runner whose identical-tree spread reaches 1.04 is the signal
 # to raise it.
 PATHEFFECT="${PATHEFFECT:-0.06}"
-PCT="$(awk -v e="$PATHEFFECT" 'BEGIN { printf "%d%%", e * 100 }')"
+
+# A name that holds within 5% on a short run can still cross 6% on CI: under
+# CUBIC, Bottleneck (1.076, d9cefc6) and TwoFlows (1.083, c119d13) turned the
+# job red on commits that touched no Go file. Measured 2026-10-19, CUBIC, an
+# identical tree, 80 interleaved rounds on four cores cut into ten passes of
+# eight: Bottleneck 0.948-1.059, one transfer anywhere in 797-954 ms (the
+# likely reading, not traced: where HyStart++ exits); TwoFlows 0.992-1.015,
+# but bimodal — four transfers in five at 1453-1497 ms, the rest at
+# 1527-1640 — so the median of eight jumps a mode when four land high. The
+# other six held within 0.982-1.020. Resampled from those 160 transfers, the
+# chance that one pass reads more than 6% slower is 3.9% for Bottleneck and
+# 1.1% for TwoFlows; at 10% it is 0.03% and 0.01%. Sixteen rounds at 6%
+# would still leave 1.2% and double the job. So these two get WIDEEFFECT
+# under CUBIC. Nothing is lost on the injection above: under CUBIC the
+# initial window halved moves neither (Bottleneck 0.957, TwoFlows 1.038) and
+# turns the job red on the rows that keep 6% — Clean 1.140, RTT80 1.077,
+# BurstLoss 1.069 — while the restored tree passes.
+case "$CC" in
+  cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
+  *) WIDE='' ;;
+esac
+WIDEEFFECT="${WIDEEFFECT:-0.10}"
 
 # Every gated name must name a benchmark that exists — see gate.sh for why a
 # gate that matches nothing must fail rather than pass.
@@ -119,7 +141,8 @@ rows="$(BINDIR="$BINDIR" CORE='' BENCHTIME=1x "$ROOT/internal/bench/scripts/ab.s
 
 # Medians per side, then the verdict. The name is printed without its -N
 # suffix, which is GOMAXPROCS and differs between machines.
-out="$(awk -v EFFECT="$PATHEFFECT" -v ROUNDS="$ROUNDS" '
+out="$(awk -v EFFECT="$PATHEFFECT" -v WIDEEFFECT="$WIDEEFFECT" -v WIDE="${WIDE//\$/}" -v ROUNDS="$ROUNDS" '
+  BEGIN { nw = split(WIDE, w, "|"); for (i = 1; i <= nw; i++) wide[w[i]] = 1 }
   {
     name = $3; sub(/-[0-9]+$/, "", name)
     n[$1, name]++
@@ -141,10 +164,11 @@ out="$(awk -v EFFECT="$PATHEFFECT" -v ROUNDS="$ROUNDS" '
       }
       b = median("before", name); a = median("after", name)
       ratio = a / b
+      e = (name in wide) ? WIDEEFFECT : EFFECT
       verdict = "ok"
-      if (ratio > 1 + EFFECT) verdict = "SLOWER"
-      else if (ratio < 1 - EFFECT) verdict = "faster"
-      printf "%s: median before %.1f ms, after %.1f ms, ratio %.3f — %s\n", name, b / 1e6, a / 1e6, ratio, verdict
+      if (ratio > 1 + e) verdict = "SLOWER"
+      else if (ratio < 1 - e) verdict = "faster"
+      printf "%s: median before %.1f ms, after %.1f ms, ratio %.3f, bound %d%% — %s\n", name, b / 1e6, a / 1e6, ratio, e * 100 + 0.5, verdict
     }
   }' <<<"$rows" | sort)"
 echo "$out"
@@ -165,7 +189,7 @@ if grep -q "MISSING" <<<"$out"; then
   exit 1
 fi
 if grep -q "SLOWER" <<<"$out"; then
-  echo "path gate ($CC): at least one transfer median is more than $PCT slower than $BASE"
+  echo "path gate ($CC): at least one transfer median is slower than $BASE by more than its bound"
   exit 1
 fi
-echo "path gate ($CC): no transfer median more than $PCT slower than $BASE"
+echo "path gate ($CC): no transfer median slower than $BASE by more than its bound"
