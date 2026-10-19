@@ -175,13 +175,21 @@ func TestIntegrationPipelineCost(t *testing.T) {
 
 // Enough parameter bytes going out and result bytes coming back that both
 // sides' socket buffers fill before the server has read the last part: 16 MiB
-// out, 51 MB back. The client's buffers are shrunk to 16 KiB, so the
-// threshold no longer rides on the kernel's socket autotuning — 64 parts of
-// 16 KiB answering 200 KB hung on one machine and not on another — and the
-// server's own buffers, which autotuning grows to a few megabytes at most,
-// hold a fraction of either direction. A pipeline that reads while it sends
-// finishes in well under a second; one that flushes first never returns, so
-// it runs in a goroutine and its socket is closed to release it.
+// out, 51 MB back. The client's buffers are shrunk, 16 KiB to send and
+// 256 KiB to receive, so the threshold no longer rides on the kernel's socket
+// autotuning (64 parts of 16 KiB answering 200 KB hung on one machine and not
+// on another), and the server's own buffers, which autotuning grows to a few
+// megabytes at most, hold a fraction of either direction.
+//
+// The receive buffer stays well above the loopback's maximum segment, about
+// 64 KiB. CI reaches the server through a proxy on 127.0.0.1, and a 16 KiB
+// receive buffer there stalled the connection itself: the client waiting in a
+// read, the server in a write, the bytes between them held by the proxy,
+// whichever way the pipeline read. The direct address passed in 0.3 s.
+//
+// A pipeline that reads while it sends finishes in well under a second; one
+// that flushes first never returns, so it runs in a goroutine and its socket
+// is closed to release it.
 func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
 	addr, cfg := pgTarget(t)
 	ctx := t.Context()
@@ -195,7 +203,7 @@ func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
 			return nil, err
 		}
 		tc := c.(*net.TCPConn)
-		if err := tc.SetReadBuffer(16 << 10); err != nil {
+		if err := tc.SetReadBuffer(256 << 10); err != nil {
 			return nil, errors.Join(err, c.Close())
 		}
 		if err := tc.SetWriteBuffer(16 << 10); err != nil {
