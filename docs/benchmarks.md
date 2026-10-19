@@ -110,7 +110,8 @@ Windows; `autoMemoryReclaim=disabled` and `pageReporting=false` in
 - `distinct.By`'s map, 90% of a saturated window: only another data
   structure moves it.
 - An end-to-end round trip with a real remote client: this document's
-  network figures are over loopback.
+  network figures are over loopback, and [Remote reads](#remote-reads)
+  emulates the latency alone.
 - The comparison with ecosystems other than Go, framed separately and
   published with its scenarios and method.
 
@@ -974,6 +975,49 @@ compare with it; the ratios within a round do:
 
 `SLUICE_PG_COUNT=1` adds the socket counts to the output of the wide reads,
 `SLUICE_PG_SPIN=300us` the consumer's work per batch.
+
+## Remote reads
+
+**Measured on 2026-10-19**, in the conditions of the "Connector" re-measure
+above (the same PostgreSQL 17.11 container, core 14, `GOMAXPROCS=1`), with a
+round trip — the time a message takes to reach the server and come back —
+added by a proxy. The proxy is `TestPGDelayProxy`
+(`benchmarks/pgdelay_test.go`): a process of its own, pinned to cores 0-5,
+that holds every segment half the round trip in each direction. It emulates
+latency alone; the bandwidth stays loopback's.
+
+Wide read (`bench_wide`, 20,000 rows of eleven columns, batches of 1,024),
+paired A/B by `ab.sh`, 14 rounds of 1 s, medians in ms. Before is 180fa89
+(the adaptive ask-ahead depth); after is the end-of-read `ReadyForQuery`
+read behind the next query. `FetchAll` and pgx do not run the changed code:
+they are the controls.
+
+| benchmark | loopback | 1 ms | 10 ms |
+|---|---|---|---|
+| `PGWideSluice` (default) | 10.21 → 10.06 | 15.24 → 14.90 (−2.5%, 11/13) | 34.04 → 22.97 (−32.2%, 13/13) |
+| `PGWideSluiceFetchAll` | 10.13 → 9.86 | 14.22 → 14.21 (noise) | 21.83 → 21.75 (noise) |
+| `PGWidePgx` | 10.09 → 10.04 (noise) | 13.63 → 13.66 (noise) | 21.22 → 21.24 (noise) |
+| `PGWideSluiceDemand` | 13.90 → 14.10 (noise) | 38.07 → 36.70 (−3.2%, 12/13) | 230.96 → 221.04 (−4.4%, 13/13) |
+
+- On loopback, the default and `FetchAll` both gain 2.6 to 2.7% (12/13).
+  `FetchAll` does not run the changed code, so that is a bias the two
+  binaries share, not a gain; a second pass puts the default at noise
+  (7/13). `Demand` read `SLOWER` +2.3% (1/13) on the first pass and noise
+  on the second (+1.4%, 8/13); the table gives the second.
+- At a distance, the default's gap to `FetchAll` goes from 7.2% to 4.8% at
+  1 ms and from 56% to 5.6% at 10 ms. No structural round trip is left
+  between the two: the closing `Sync` leaves without being waited for, and
+  a statement already seen sends its Executes ahead with the query. The
+  1.2 ms left at 10 ms is not explained; the depth (⌈RTT / T₁⌉ + 1) is the
+  first suspect.
+- `Demand` keeps one request per batch, after delivery: twenty round trips
+  per read, ten times `FetchAll` at 10 ms. That is the price of not asking
+  ahead; see `QueryConfig.Demand`.
+- What the change lets through: a SELECT, VALUES or TABLE read outside a
+  transaction block is reported complete at its last row, before its
+  commit, and a commit that fails then — a function it calls that writes,
+  a deferred constraint — is logged, not returned. A read inside a block
+  and a statement that may write still wait for their `ReadyForQuery`.
 
 ## Codec, in isolation
 
