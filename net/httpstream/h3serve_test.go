@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -296,6 +297,39 @@ func TestH3StreamedBodyOverARealConnection(t *testing.T) {
 	}
 	if contentLength {
 		t.Error("a streamed response stated a content-length")
+	}
+}
+
+// A request that arrives while the handler is busy with an earlier batch on
+// the same connection is not held behind it: each batch is its own call, as
+// on HTTP/2. It used to wait — one responder per connection called the
+// handler batch after batch — so a slow call delayed every stream that
+// arrived during it.
+func TestH3RequestDuringABusyCallIsNotHeldBehindIt(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	conn, _, _ := startH3(t, quic.DefaultParameters(), func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		if string(b.Items[0].Target) == "/held" {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		return echoTarget(ctx, b)
+	})
+	// Registered after startH3's cleanups, so it runs before them: a held
+	// call would otherwise keep the server goroutine they wait for.
+	var released sync.Once
+	unblock := func() { released.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+
+	held := askH3(t, conn, h3Request("GET", "/held"))
+	<-entered
+	if body, _ := readH3Body(t, askH3(t, conn, h3Request("GET", "/next"))); body != "/next" {
+		t.Fatalf("the second stream answered %q while the first call was held, want %q", body, "/next")
+	}
+	unblock()
+	if body, _ := readH3Body(t, held); body != "/held" {
+		t.Errorf("the held stream answered %q, want %q", body, "/held")
 	}
 }
 

@@ -84,8 +84,8 @@ type h3Assembler struct {
 	// decoding, dropped with a failed or forgotten stream, carried on a
 	// unidirectional stream past its parse — is released here, the moment
 	// it stops being retained. Request bodies handed to the handler are the
-	// one exception: the responder releases those when the response
-	// retires. Nil means the transport credits on delivery, as before.
+	// one exception: the handler call releases those once the handler
+	// returns. Nil means the transport credits on delivery, as before.
 	Credit func(streamID, n uint64)
 
 	// The peer's unidirectional streams (RFC 9114 §6.2): the control stream
@@ -404,7 +404,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		a.assembling += len(st.buf) + len(st.req.Body) - before
 		// What drain consumed outright — header blocks decoded, frame
 		// headers parsed — stopped being retained now; the body bytes it
-		// kept are released by fail, Forget, or the responder, whichever
+		// kept are released by fail, Forget, or the handler call, whichever
 		// ends the request. (The credit arithmetic: delivered = released
 		// here + Δretained, every path, so the windows always balance.)
 		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body))
@@ -1109,9 +1109,9 @@ func appendH3ResponseBasic(dst []byte, r Response) ([]byte, error) {
 	return appendH3Response(dst, r, nil, 0, &h3Scratch{}, dateFor(time.Now()))
 }
 
-// h3Scratch is one responder's reusable per-response state: the field list
+// h3Scratch is one writer's reusable per-response state: the field list
 // and QPACK block appendH3Response builds, and the digits of the two numeric
-// values it writes. One of these per responder goroutine is what makes the
+// values it writes. Drawn from h3ScratchPool for one response, it is what makes the
 // response path allocation-free — safe because [quic.Stream.Write] copies into its own frame before returning.
 type h3Scratch struct {
 	head   []byte

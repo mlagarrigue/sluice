@@ -26,13 +26,14 @@ import (
 // are handed over together, so requests that arrived together are served
 // together, with nothing waited for.
 //
-// # Two goroutines, and why the second one exists
+// # Why the handler runs off the read goroutine
 //
 // [quic.Conn.OnStreamFrames] runs on the connection's read goroutine — the one
 // that decrypts packets, drives the handshake and files stream data. What runs
 // there is assembly and nothing else: the frames of a datagram are folded into
-// requests, and the completed ones are handed to a **responder** goroutine
-// that runs the handler, writes the answers and pulls the streamed bodies.
+// requests, and each batch of completed ones is handed to a goroutine of its
+// own that calls the handler, writes the answers and pulls the streamed
+// bodies.
 //
 // Everything about that split is forced. Running the handler on the read
 // goroutine stops every packet from being processed while it runs, CRYPTO
@@ -42,12 +43,12 @@ import (
 // side makes, and this transport makes it more sharply because the read loop
 // is also the handshake.
 //
-// The hand-off is one bounded channel and the bound is
-// [Config.MaxConcurrentStreams] batches. When it fills, the read callback
-// blocks, the read loop stops, and the pressure arrives back at the peer
-// through QUIC's own flow control — which is what a transport's flow control
-// is for. Nothing is dropped, because a dropped request is a caller with no
-// answer.
+// The hand-off never blocks the read loop, and needs no queue to bound it: a
+// request holds a stream slot from admission until its response retires it,
+// so the goroutines a connection runs are bounded by the streams the
+// transport admits, and a peer that wants more waits on QUIC's own stream
+// limit — which is what a transport's flow control is for. Nothing is
+// dropped, because a dropped request is a caller with no answer.
 //
 // # Concurrency, stated rather than guarded
 //
@@ -112,17 +113,16 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 // the cancellation of drain is the normal stop, that of forced the forced
 // one, and forced is also the handler's context. cfg is resolved.
 func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
-	// The hand-off to the responder below is provably non-blocking only while
-	// the transport admits no more request streams than the channel can hold,
-	// and h3MaxServeStreams is where that proof is capped. A connection whose
-	// announced stream limit exceeds it is refused outright: serving it would
-	// carry a latent read-loop deadlock instead of a visible error. The
+	// The goroutines a connection runs are bounded by the request streams
+	// the transport admits, and h3MaxServeStreams is where that bound is
+	// capped. A connection whose announced stream limit exceeds it is
+	// refused outright rather than served with a bound nobody chose. The
 	// connection is closed with the refusal, as on every other way out of
 	// ServeH3: left open, the client would wait on a server nobody runs.
 	if lim := c.LocalParameters().InitialMaxStreamsBidi; lim > h3MaxServeStreams {
 		_ = c.CloseWithError(h3InternalError)
 		return fmt.Errorf(
-			"httpstream: InitialMaxStreamsBidi %d is over the %d ServeH3 can serve without deadlock",
+			"httpstream: InitialMaxStreamsBidi %d is over the %d streams ServeH3 serves on one connection",
 			lim, h3MaxServeStreams)
 	}
 	// RFC 9114 §3.1: HTTP/3 is the protocol identified by the ALPN token
@@ -235,49 +235,49 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	})
 	defer stop()
 
-	// The channel is never closed, and both ends select on the connection
-	// instead. Closing it would be the natural thing and it is a panic waiting
-	// to happen: the callback runs on the connection's read goroutine, which
-	// can still be inside a datagram when the connection ends, and a send on a
-	// closed channel takes the process down. Selecting on Done gives both ends
-	// a way out that does not depend on which of them notices first.
+	// Each batch is one call to the handler on a goroutine of its own,
+	// launched from the read callback: a request that arrives while the
+	// handler is busy with an earlier batch is not held behind it — the
+	// head-of-line block one responder per connection used to impose, which
+	// HTTP/2 lifted the same way (ADR 0008). The handler is called
+	// concurrently on one connection, as [Handler] states. Launching never
+	// blocks, and that matters more than it looks: the read goroutine is the
+	// goroutine that delivers the flow-control credit a stalled response is
+	// waiting for, so a read loop that waited on the handler would be a
+	// deadlock, not a slowdown. The calls are bounded because a request
+	// occupies a stream slot from admission until its response retires the
+	// stream — so unfinished calls can never outnumber the streams the
+	// transport admits, capped at h3MaxServeStreams. Starting the goroutine
+	// costs 1.7% of a request answered alone (BenchmarkH3FromQuicGo/plain,
+	// interop module), against a p99 under load that went from 1.48-2.32
+	// times HTTP/1.1's to 1.13-1.57 (ADR 0008).
 	//
-	// The capacity is the transport's own stream limit, and that it can never
-	// block matters more than it looks: the read goroutine sending here is
-	// the goroutine that delivers the flow-control credit a stalled response
-	// is waiting for, so a read loop blocked on the responder would be a
-	// deadlock, not a slowdown. The bound holds because a request occupies a
-	// stream slot from admission until its response retires the stream — so
-	// batches queued here can never outnumber the streams the transport
-	// admits. The same invariant, with the same proof, sizes the HTTP/2
-	// hand-off (ADR 0004). The cap guards a caller who announced an
-	// astronomical stream limit; past it, admission control is theirs.
-	streamLimit := min(c.LocalParameters().InitialMaxStreamsBidi, h3MaxServeStreams)
-	in := make(chan h3Batch, max(uint64(cfg.MaxConcurrentStreams), streamLimit)) //nolint:gosec // G115: positive config, set by withDefaults
-	answered := make(chan struct{})
-	// One responder runs the handler, batch by batch, in order — handlers
-	// are not asked to be concurrency-safe. The *writes* fan out: each
-	// response leaves on its own goroutine, so a response stalled on
-	// stream flow control — a client withholding MAX_STREAM_DATA for one
-	// stream — stalls that stream alone, bounded by the idle timeout,
-	// instead of every answer behind it on the connection (the
-	// head-of-line block this responder used to accept). Writer goroutines
-	// are bounded by the same invariant that sizes the channel: one
+	// Within a call the *writes* fan out: each response leaves on its own
+	// goroutine, so a response stalled on stream flow control — a client
+	// withholding MAX_STREAM_DATA for one stream — stalls that stream alone,
+	// bounded by the write timeout, instead of every answer behind it on the
+	// connection. Writer goroutines are bounded by the same invariant: one
 	// unfinished response per admitted stream. quic.Stream.Write is safe
 	// across streams (the connection lock serialises packets), and one
 	// goroutine per stream keeps that stream's own writes ordered.
-	var writers sync.WaitGroup
-	go func() {
-		defer close(answered)
-		for {
-			select {
-			case b := <-in:
-				answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers)
-			case <-c.Done():
-				return
-			}
+	//
+	// launch starts f counted in wg unless the connection has ended. The
+	// callback runs on the connection's read goroutine, which can still be
+	// inside a datagram when the connection ends; a WaitGroup that gains a
+	// goroutine once its Wait has begun at zero is a misuse, and the wait
+	// below must not miss a call that started after it looked.
+	var (
+		calls, writers sync.WaitGroup
+		launchMu       sync.Mutex
+		ended          bool
+	)
+	launch := func(wg *sync.WaitGroup, f func()) {
+		launchMu.Lock()
+		defer launchMu.Unlock()
+		if !ended {
+			wg.Go(f)
 		}
-	}()
+	}
 
 	c.OnStreamFrames(func(frames []quic.Frame) error {
 		// RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender
@@ -329,12 +329,11 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 				if err := s.StopSending(h3NoError); err != nil {
 					return err
 				}
-				writers.Add(1)
-				go func(id uint64, status int, fieldSection uint64) {
-					defer writers.Done()
+				id, status, fieldSection := se.StreamID, se.Status, a.peerMaxFieldSection()
+				launch(&writers, func() {
 					defer a.retire()
 					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
-				}(se.StreamID, se.Status, a.peerMaxFieldSection())
+				})
 				continue
 			}
 			// RESET_STREAM abandons the answer and STOP_SENDING tells the
@@ -354,25 +353,23 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// bytes it was assembled from. Copying the slice — not the requests —
 		// is what makes the hand-off safe, and it is one small copy per
 		// datagram rather than one per request.
-		select {
-		case in <- h3Batch{
+		b := h3Batch{
 			reqs: append([]Request(nil), batch.Items...),
 			ids:  append([]uint64(nil), ids...),
 			// The peer's MAX_FIELD_SECTION_SIZE, snapshotted here because
-			// the assembler belongs to this goroutine and the responder
-			// must not reach into it.
+			// the assembler belongs to this goroutine and the call must not
+			// reach into it.
 			fieldSection: a.peerMaxFieldSection(),
 			credit:       a.Credit,
 			retire:       a.retire,
-		}:
-		case <-c.Done():
 		}
+		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
 	})
 
 	<-c.Done()
-	// The responder exits at its next select, and every writer that is
-	// writing exits once the connection is done: its writes fail. A writer
+	// No call starts once the connection is done, and every writer that is
+	// writing exits then: its writes fail. A writer
 	// inside a streamed producer is not waited for — the producer is the
 	// caller's code, and one blocked on something other than its yield
 	// would hold this return forever. It learns the connection is gone at
@@ -385,7 +382,11 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// server is cancelled, which arms one.
 	finished := make(chan struct{})
 	go func() {
-		<-answered
+		launchMu.Lock()
+		ended = true
+		launchMu.Unlock()
+		// Every writer is counted before its call returns.
+		calls.Wait()
 		writers.Wait()
 		close(finished)
 	}()
@@ -431,7 +432,7 @@ func h3CloseErr(err error) error {
 // can count what this layer gives back to the transport.
 var h3ReleaseStreamBytes = (*quic.Conn).ReleaseStreamBytes
 
-// h3Batch is what the read goroutine hands the responder: the requests one
+// h3Batch is what the read goroutine hands a handler call: the requests one
 // datagram completed, and the stream each arrived on. HTTP/3 correlates by
 // stream rather than by order, which is the one thing it does not inherit
 // from HTTP/1.1's pipelining.
@@ -439,7 +440,7 @@ type h3Batch struct {
 	reqs []Request
 	ids  []uint64
 	// fieldSection is the peer's SETTINGS_MAX_FIELD_SECTION_SIZE at hand-off
-	// time, zero for unbounded; the responder holds every response's field
+	// time, zero for unbounded; the call holds every response's field
 	// section under it (RFC 9114 §4.2.2).
 	fieldSection uint64
 	// credit is the assembler's manual-credit release, nil when the
@@ -489,10 +490,10 @@ func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	return p, nil
 }
 
-// h3MaxServeStreams caps the stream limit ServeH3 will serve: the responder
-// hand-off channel holds this many batches, which is what makes the read
-// loop's send on it provably non-blocking (see the capacity comment in
-// ServeH3). Past it the proof fails, so ServeH3 refuses the connection.
+// h3MaxServeStreams caps the stream limit ServeH3 will serve. One connection
+// runs up to a handler call and a writer goroutine per admitted stream (see
+// the hand-off comment in ServeH3); past this cap ServeH3 refuses the
+// connection rather than let one stream limit pin that many goroutines.
 const h3MaxServeStreams = 4096
 
 // h3GracefulCode is H3_NO_ERROR — except, one close in eight, a code from the

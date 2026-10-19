@@ -34,8 +34,8 @@ import (
 // a call out of a pipeline.
 //
 // A handler is called concurrently: across connections, and on one HTTP/2
-// connection for a batch that arrives while an earlier one is still being
-// answered. It is never called twice for the same request.
+// or HTTP/3 connection for a batch that arrives while an earlier one is
+// still being answered. It is never called twice for the same request.
 //
 // # What a request looks like, whichever protocol carried it
 //

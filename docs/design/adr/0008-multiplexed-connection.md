@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2 handler call on a goroutine of its own)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own)
 - **Theme:** httpstream
 
 ## Problem
@@ -28,9 +28,10 @@ hands each batch to a `Handler` call on a goroutine of its own, which it
 never waits for, and the responder frames what the calls return: a batch
 that arrives while another is being answered does not wait for it. Each
 call holds stream slots, so the calls in flight are bounded by
-`MaxConcurrentStreams`. HTTP/3 has a
-responder per request stream since 2026-10-04, so a slow body holds only
-its stream. Concurrency is per batch, not per request: a batch that arrived
+`MaxConcurrentStreams`. HTTP/3 has no responder: its read callback hands
+each batch to a call on a goroutine of its own, which writes each answer on
+a goroutine per request stream (since 2026-10-04), so a slow call holds only
+its batch and a slow body only its stream. Concurrency is per batch, not per request: a batch that arrived
 together is still handed to the handler together, in one call.
 
 Every hand-off is bounded and the bound is stated: reader → responder is a
@@ -71,7 +72,13 @@ queued behind a busy call, without parallel calls, changed nothing there.
 Starting the goroutine costs 2.3% of a request answered alone
 (`BenchmarkH2FromNetHTTP/plain` on one core, about half a microsecond);
 reusing call goroutines is the known way down if a handler that waits on
-nothing ever makes that the larger cost.
+nothing ever makes that the larger cost. HTTP/3 had the same serialisation
+and lost it the same day: at the same point its p99 went from 1.48-2.32
+times the HTTP/1.1 figure to 1.13-1.57, and its p50 from 1.19-1.35 to
+1.07-1.18; what remains of the p99 gap no longer comes from the calls. The
+goroutine costs 1.7% of a request answered alone
+(`BenchmarkH3FromQuicGo/plain`, median of twelve paired rounds, within the
+noise of a sign test).
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies

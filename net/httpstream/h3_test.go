@@ -1019,12 +1019,10 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	}
 }
 
-// ServeH3's responder hand-off is provably deadlock-free only while the
-// transport admits no more request streams than the hand-off channel holds.
-// A connection whose announced stream limit exceeds that cap is refused
-// outright, because serving it would trade a visible error for a latent
-// read-loop deadlock.
-func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
+// ServeH3 runs up to a handler call and a writer goroutine per admitted
+// stream. A connection whose announced stream limit exceeds the cap on that
+// bound is refused outright, with a close the client sees.
+func TestServeH3RefusesAStreamLimitPastItsCap(t *testing.T) {
 	serverPC, clientPC := dgram.Pair()
 	defer func() { _ = serverPC.Close() }()
 	defer func() { _ = clientPC.Close() }()
@@ -1066,7 +1064,7 @@ func TestServeH3RefusesAStreamLimitPastTheHandoffCap(t *testing.T) {
 			t.Fatalf("ServeH3 returned %v, want a refusal naming InitialMaxStreamsBidi", err)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("ServeH3 accepted a stream limit that breaks the hand-off proof")
+		t.Fatal("ServeH3 accepted a stream limit past its cap")
 	}
 	// The refusal reaches the client as a close, not as a server gone quiet.
 	select {
