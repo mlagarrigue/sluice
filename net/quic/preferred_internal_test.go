@@ -123,6 +123,7 @@ func TestClientMovesToTheServersPreferredAddress(t *testing.T) {
 		t.Fatalf("PreferredAddress() = %v, want %v", got, pref)
 	}
 
+	sentBefore := len(pc.recorded())
 	c.mu.Lock()
 	c.confirmLocked()
 	before := c.peer
@@ -131,10 +132,16 @@ func TestClientMovesToTheServersPreferredAddress(t *testing.T) {
 		t.Fatalf("the path in use moved to %v before any validation", before)
 	}
 	var probe *recordedWrite
-	for i := range pc.recorded() {
-		w := pc.recorded()[i]
+	for i, w := range pc.recorded() {
 		if sameAddr(w.to, pref) {
 			probe = &w
+		}
+		// §8.2.2: an answer validates the path its challenge went on, and
+		// says nothing of which that was. The same challenge on the path in
+		// use, answered there, moved the client to an address the server
+		// had not answered at.
+		if i >= sentBefore && sameAddr(w.to, before) && len(w.data) >= 1200 {
+			t.Errorf("a %d-byte datagram, the challenge's size, went to the path in use on confirmation", len(w.data))
 		}
 	}
 	if probe == nil {

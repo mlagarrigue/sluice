@@ -584,15 +584,20 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 	if cid == nil {
 		return // the pool lost sequence 1 to a Retire Prior To; nothing to probe under
 	}
-	c.startPathChallengeLocked(now)
-	if !c.pathProbe.pending {
-		return
+	data, err := randomID(8)
+	if err != nil {
+		return // no entropy to challenge with; the connection stays where it is
 	}
+	// The challenge goes to the target only. §8.2.2: a PATH_RESPONSE
+	// "validates the path on which the PATH_CHALLENGE was sent", and the
+	// answer does not say which path that was. The same data sent on the
+	// path in use too was answered there whenever the server could not yet
+	// probe from its preferred socket (no identifier of ours had reached
+	// it), and that answer moved this client to an address the server never
+	// answered at: the client sent from there, the server stayed behind.
+	c.startPathChallengeData(data, now)
 	c.pathProbe.target = c.preferred
 	c.pathProbe.targetCID = cid
-	// startPathChallengeLocked already sent one challenge on the path in
-	// use, which is harmless (the peer answers it there) but is not the
-	// probe this is about; the one that matters goes to the target now.
 	c.sendPathChallengeLocked()
 	c.kickTimer()
 }
