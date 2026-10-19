@@ -169,7 +169,8 @@ go generate ./...        # generated files are committed; drift fails a test
 failure, then `scripts/check-hygiene.sh`, which refuses personal tool
 configuration and attributions in tracked files and commits. CI runs the
 same scripts, plus `scripts/check-api.sh`, which compares the exported API
-with the last tag.
+of each commit with its parent's and refuses a break whose commit subject
+carries no `!`.
 
 The PostgreSQL integration tests run whenever `SLUICE_PG` is set and skip
 otherwise. In the devcontainer the `sluice-postgres` server is there and the
@@ -331,9 +332,11 @@ In review, comments follow
   conventional commits, opens the release pull request and writes the
   CHANGELOG. The CHANGELOG is never edited by hand. In v0 a `feat!` bumps the
   minor, not the major.
-- [gorelease](https://pkg.go.dev/golang.org/x/exp/cmd/gorelease) compares
-  the exported API to the last tag on every pull request; a detected break
-  without a `!` in one of the request's commits blocks.
+- `scripts/check-api.sh` compares, with
+  [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff), the exported
+  API of each commit with its parent's, on every pull request and every push
+  to `main`; a commit that breaks the API without a `!` in its own subject
+  blocks.
 - A published tag never moves: the module proxy has frozen it. A version
   published by mistake is withdrawn with the `retract` directive in `go.mod`.
 - Deprecating: `// Deprecated: use X instead.` on the symbol, kept at least

@@ -419,7 +419,7 @@ jobs:
           fi
 
   # Nothing personal enters the repository (scripts/check-hygiene.sh), and
-  # the exported API does not break without a commit saying so
+  # the exported API does not break without the commit doing it saying so
   # (scripts/check-api.sh). Both read the history, hence the full fetch.
   hygiene:
     runs-on: ubuntu-latest
@@ -436,9 +436,14 @@ jobs:
         run: scripts/check-hygiene.sh
       - name: Commit messages, links, decision records
         run: go test -run 'TestCommitMessages|TestDocumentationLinks|TestDecisionRecords|TestScopeList' .
-      - name: Exported API against the last tag
-        if: github.event_name == 'pull_request'
-        run: scripts/check-api.sh
+      # Each commit of the event's range against its parent: the pull
+      # request's base..head, or the push's before..after.
+      - name: Exported API, commit by commit
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: scripts/check-api.sh "$BASE" "$HEAD"
 
   # Formatting and linting run on the floor toolchain, not the latest: the
   # pinned gofumpt and golangci-lint are built with it, and a linter built
