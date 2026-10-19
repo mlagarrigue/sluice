@@ -234,7 +234,8 @@ func (a *app) handler() httpstream.Handler {
 		out := make([]httpstream.Response, batch.Len())
 		var unitIdx []int
 		var unitKeys []int64
-		for i, req := range batch.Items {
+		for i := range batch.Items {
+			req := &batch.Items[i]
 			if key, ok := unitTarget(req); ok {
 				unitIdx = append(unitIdx, i)
 				unitKeys = append(unitKeys, key)
@@ -245,7 +246,7 @@ func (a *app) handler() httpstream.Handler {
 		}
 		if len(unitIdx) > 0 {
 			for j, oc := range a.gw.DoBatch(context.Background(), unitKeys) {
-				out[unitIdx[j]] = a.encode(unitAnswer(unitKeys[j], oc.Out, oc.Err), batch.Items[unitIdx[j]])
+				out[unitIdx[j]] = a.encode(unitAnswer(unitKeys[j], oc.Out, oc.Err), &batch.Items[unitIdx[j]])
 			}
 		}
 		return sluice.Batch[httpstream.Response]{Items: out}
@@ -253,7 +254,7 @@ func (a *app) handler() httpstream.Handler {
 }
 
 // unitTarget recognises GET /orders/{id} with a well-formed key.
-func unitTarget(req httpstream.Request) (int64, bool) {
+func unitTarget(req *httpstream.Request) (int64, bool) {
 	const prefix = "/orders/"
 	if string(req.Method) != "GET" || len(req.Target) <= len(prefix) || string(req.Target[:len(prefix)]) != prefix {
 		return 0, false
@@ -271,7 +272,7 @@ func unitTarget(req httpstream.Request) (int64, bool) {
 // encode marshals the answer and, under axis F, compresses it when the
 // request accepts the codec. The headers of a compressed answer are built
 // per response: the slice is read during the write and not retained.
-func (a *app) encode(ans answer, req httpstream.Request) httpstream.Response {
+func (a *app) encode(ans answer, req *httpstream.Request) httpstream.Response {
 	if ans.stream != nil {
 		// Axis E: Response.Stream, the transport pulls the fragments and
 		// frames them itself; under axis F the codec is flushed per batch.
