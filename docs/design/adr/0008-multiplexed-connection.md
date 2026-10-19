@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2 handler call on a goroutine of its own)
 - **Theme:** httpstream
 
 ## Problem
@@ -22,12 +22,16 @@ to make requests independent.
 
 Three goroutines per HTTP/2 connection, each owning one piece of state:
 a **reader** (frame parsing, stream states, receive windows, the HPACK
-decoder), a **responder** (the `Handler` call, response framing, pulling
-streamed bodies), a **writer** (the socket's write side, send windows,
-scheduling). HTTP/3 has a responder per request stream since 2026-10-04,
-so a slow body holds only its stream. Concurrency is per connection, not
-per request: a batch that arrived together is still handed to the handler
-together.
+decoder), a **responder** (response framing, pulling streamed bodies), a
+**writer** (the socket's write side, send windows, scheduling). The reader
+hands each batch to a `Handler` call on a goroutine of its own, which it
+never waits for, and the responder frames what the calls return: a batch
+that arrives while another is being answered does not wait for it. Each
+call holds stream slots, so the calls in flight are bounded by
+`MaxConcurrentStreams`. HTTP/3 has a
+responder per request stream since 2026-10-04, so a slow body holds only
+its stream. Concurrency is per batch, not per request: a batch that arrived
+together is still handed to the handler together, in one call.
 
 Every hand-off is bounded and the bound is stated: reader → responder is a
 channel of `MaxConcurrentStreams` batches that cannot block (a request
@@ -52,14 +56,27 @@ starts at 1 MiB.
 
 Streamed responses of any size, a connection that stays responsive, one
 request's failure costing one request, and cancellation that reaches the
-handler. The cost is three goroutines per connection and their
-synchronisation — per connection, not per request, which
-`TestH2ConnectionsLeaveNoGoroutines` keeps honest.
+handler. The cost is three goroutines per connection plus one per call in
+flight, and their synchronisation, which
+`TestH2ConnectionsLeaveNoGoroutines` keeps honest. The calls were serialised
+per connection until 2026-10-19: a handler that waits on something per
+call — a gateway's window, a round trip — made a stream that arrived during
+a call wait twice, for that call and then for its own, where HTTP/1.1
+carries the same request on a connection of its own and waits once.
+Measured on the comparison study's unit scenario (a 2 ms gateway window,
+8,000 requests per second, 256 and 1,024 connections, three paired
+rounds), the HTTP/2 p99 went from 1.35-1.63 times the HTTP/1.1 figure to
+0.96-1.06, and the p50 from 1.12-1.22 to 0.96-1.00. Merging the batches
+queued behind a busy call, without parallel calls, changed nothing there.
+Starting the goroutine costs 2.3% of a request answered alone
+(`BenchmarkH2FromNetHTTP/plain` on one core, about half a microsecond);
+reusing call goroutines is the known way down if a handler that waits on
+nothing ever makes that the larger cost.
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies
-on one HTTP/2 connection — while a producer is pulled, the responder runs
-no handler, so other requests on that connection wait. Accepted because the
+on one HTTP/2 connection — while a producer is pulled, the responder frames
+no other answer, so other requests on that connection wait for theirs. Accepted because the
 alternative is a goroutine or a chunk copy per streamed response; a client
 with an event feed opens a second connection or uses HTTP/3. A consumer
 with an SSE workload on HTTP/2 is the signal to revisit, with per-stream

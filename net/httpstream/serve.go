@@ -33,6 +33,10 @@ import (
 // caller — the same failure the gateway documents when it says not to filter
 // a call out of a pipeline.
 //
+// A handler is called concurrently: across connections, and on one HTTP/2
+// connection for a batch that arrives while an earlier one is still being
+// answered. It is never called twice for the same request.
+//
 // # What a request looks like, whichever protocol carried it
 //
 // A handler is not told which protocol a request arrived on, and this is the

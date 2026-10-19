@@ -434,6 +434,48 @@ func TestH2MultiplexedRequestsArriveAsOneBatch(t *testing.T) {
 	t.Logf("batch sizes seen: %v", got)
 }
 
+// A request that arrives while the handler is busy with another is not held
+// behind it. A handler that waits on something per call — a gateway's
+// window — otherwise makes every stream that lands during a call wait for
+// that call and then for its own, where HTTP/1.1 carries it on a connection
+// of its own. Here the first call is held until the second request has been
+// answered.
+func TestH2RequestDuringABusyCallIsNotHeldBehindIt(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	addr, sizes := serveTest(t, Config{}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		if string(b.Items[0].Target) == "/held" {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		return echoTarget(ctx, b)
+	})
+	c := dialH2(t, addr)
+
+	c.request(1, "GET", "/held")
+	c.flush()
+	<-entered
+	c.request(3, "GET", "/next")
+	c.flush()
+
+	c.pump(func() bool { return c.ended[3] })
+	ended1, got3 := c.ended[1], c.got[3]
+	close(release)
+	if got3 != "/next" {
+		t.Fatalf("stream 3 answered %q while the first call was held, want %q", got3, "/next")
+	}
+	if ended1 {
+		t.Fatal("stream 1 was answered before its call was released")
+	}
+	if got := c.bodies(2)[1]; got != "/held" {
+		t.Errorf("stream 1 answered %q, want %q", got, "/held")
+	}
+	if got := sizes(); !slices.Equal(got, []int{1, 1}) {
+		t.Errorf("batch sizes %v, want [1 1]", got)
+	}
+}
+
 // One Serve, two protocols. The client that speaks HTTP/1.1 and the one that
 // speaks HTTP/2 reach the same handler, because prior-knowledge HTTP/2 opens
 // with a preface no HTTP/1.1 request can begin with.

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,9 +25,9 @@ import (
 //
 // # Three goroutines, and what each one owns
 //
-// A connection runs a reader, a responder and a writer, and no more: the
-// concurrency is per connection, not per request, so a batch that arrived
-// together is still served together.
+// A connection runs a reader, a responder and a writer, plus one goroutine
+// per handler call in flight. A batch that arrived together is one call, and
+// is served together.
 //
 //   - The **reader** is this goroutine. It parses frames, owns the receive
 //     side — stream states, the receive windows, the HPACK decoder — and
@@ -34,19 +35,21 @@ import (
 //     on one, because it is the goroutine that must stay free to answer PING,
 //     ACK SETTINGS, and read the WINDOW_UPDATE a stalled response is waiting
 //     for.
-//   - The **responder** runs the handler and frames what it returns. See
-//     [h2Server.answer].
+//   - Each **call** runs the handler over one batch, on a goroutine the
+//     reader starts and never waits for. See [h2Server.call].
+//   - The **responder** frames what the calls return. See [h2Server.answer].
 //   - The **writer** owns the socket's write side, the send windows and the
 //     scheduling. See [h2Writer].
 //
 // Everything between them is bounded, and the bounds are stated in
 // [Config]. The one that is not a setting is the batch queue: it holds at
-// most [Config.MaxConcurrentStreams] batches, which it can never exceed
-// because every batch carries at least one request and a request occupies a
-// stream slot from the moment it is admitted until its response is written.
-// That is why the reader can hand a batch over without ever blocking — and it
-// must never block, since it is the goroutine carrying the credit the writer
-// is waiting for.
+// most [Config.MaxConcurrentStreams] answered batches, which it can never
+// exceed because every batch carries at least one request and a request
+// occupies a stream slot from the moment it is admitted until its response is
+// written. The same count bounds the calls in flight. That is why the reader
+// can start a call without ever blocking, and the call hand its batch over
+// likewise — and the reader must never block, since it is the goroutine
+// carrying the credit the writer is waiting for.
 
 // SETTINGS identifiers this server reads and sends (RFC 9113 §6.5.2).
 const (
@@ -453,17 +456,18 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 
 	// Capacity MaxConcurrentStreams: see the package note above for why a
 	// send on this channel can never block, and why it must not.
-	in := make(chan h2Batch, cfg.MaxConcurrentStreams)
+	in := make(chan h2Applied, cfg.MaxConcurrentStreams)
+	var calls sync.WaitGroup
 	answered := make(chan struct{})
 	go func() {
 		defer close(answered)
 		for {
 			select {
-			case b, ok := <-in:
+			case a, ok := <-in:
 				if !ok {
 					return
 				}
-				s.answer(b)
+				s.answer(a)
 			case <-s.settled:
 			}
 			// The last answer of a drained connection closes it, whether the
@@ -498,7 +502,8 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			return false
 		}
 		if len(ready) > 0 {
-			in <- h2Batch{reqs: ready, ids: ids}
+			b := h2Batch{reqs: ready, ids: ids}
+			calls.Go(func() { s.call(b, in) })
 		}
 		live := s.open.Load() > 0 || s.inFlight.Load() > 0
 		if live {
@@ -530,6 +535,9 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	})
 	s.readEnded.Store(true)
 
+	// The calls still running are answered before the responder goes, so
+	// that every request is answered once, as ever.
+	calls.Wait()
 	close(in)
 	<-answered
 
@@ -1379,9 +1387,39 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 	return table, haveTable, nil
 }
 
-// answer runs the handler over one batch and hands what it returned to the
-// writer. It is the responder goroutine, and the only one that calls the
-// caller's code.
+// h2Applied is a batch the handler has answered, on its way back to the
+// responder to be framed.
+type h2Applied struct {
+	b   h2Batch
+	res []Response
+	err error
+}
+
+// call runs the handler over one batch and sends what it returned to the
+// responder. The reader starts it on a goroutine of its own, so that a batch
+// that arrives while the handler is busy with another is not held behind it. A handler
+// that waits on something per call — a gateway's window, a round trip —
+// otherwise paid that wait once per batch, in sequence: a stream that
+// arrived during a call waited for that call, then for its own, where
+// HTTP/1.1 carries the same request on a connection of its own and waits
+// once. Measured on the comparison study's unit scenario (a 2 ms gateway
+// window, 8,000 requests per second, 256 and 1,024 connections), the HTTP/2
+// p99 went from 1.35-1.63 times the HTTP/1.1 figure to 0.96-1.06, and the
+// p50 from 1.12-1.22 to 0.96-1.00.
+//
+// The calls in flight on a connection are bounded by
+// [Config.MaxConcurrentStreams], since each holds a stream slot; the send on
+// out never blocks. Starting the goroutine costs 2.3% of a request answered
+// alone, about half a microsecond on one core (BenchmarkH2FromNetHTTP/plain);
+// reusing call goroutines is the known way down if that ever matters more
+// than the p99 above.
+func (s *h2Server) call(b h2Batch, out chan<- h2Applied) {
+	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
+	out <- h2Applied{b: b, res: res, err: err}
+}
+
+// answer hands what the handler returned for one batch to the writer. It is
+// the responder goroutine.
 //
 // The heads of a batch are framed into one buffer and queued together, so the
 // writer can interleave their bodies rather than serve them in order — a
@@ -1393,8 +1431,8 @@ func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, 
 // Every request of b is answered once: by the writer, for a buffered answer,
 // when its job leaves its hands; here for the others — a stream reset
 // because nothing could be framed, a streamed body once it has ended.
-func (s *h2Server) answer(b h2Batch) {
-	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
+func (s *h2Server) answer(got h2Applied) {
+	b, res, err := got.b, got.res, got.err
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Neither is the peer's doing and

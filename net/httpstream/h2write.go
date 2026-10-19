@@ -45,7 +45,7 @@ import (
 // The buffered bodies of every batch the writer holds interleave: a batch is
 // queued whole and the responder moves on to the next without waiting for
 // the wire, so a stream waiting for its window holds nobody else behind it.
-// A streamed body does not interleave with another streamed body: its producer is pulled by the handler goroutine, one at a time, and
+// A streamed body does not interleave with another streamed body: its producer is pulled by the responder, one at a time, and
 // a batch's buffers may not be retained past the call that received them (S14).
 // The ADR records that trade and what would reverse it.
 
