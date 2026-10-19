@@ -214,9 +214,31 @@ rounds alternated back to back, `-benchtime 2s`, medians:
 `bulk` also loses 27 allocations per request (867 to 840). The session ran
 slower than the one of the table above (`bulk` at 45 MB/s before the change
 against 56): in the same session, `BenchmarkH2FromNetHTTP/bulk` measured
-97 MB/s, so HTTP/3 went from under half of HTTP/2 to six tenths. Windows and
-macOS keep one write per datagram, as does a kernel that refuses the option
-(the first refusal turns batching into a loop of writes for the connection).
+97 MB/s, so HTTP/3 went from under half of HTTP/2 to six tenths. macOS
+keeps one write per datagram — it offers no public interface for
+segmentation —, as does a system that refuses the option (the first refusal
+turns batching into a loop of writes for the connection).
+
+**The same batching on Windows (measured 2026-10-19).** Since the commit
+`perf(quic): segment UDP sends on Windows`, the one call carries
+`UDP_SEND_MSG_SIZE`, the Windows counterpart of `UDP_SEGMENT` (UDP
+segmentation offload: the system cuts the buffer into datagrams of the
+given size). Before the first send, sluice asks the system, once per
+process, whether it knows the option (`getsockopt`, as msquic does); if it
+does not, each datagram stays its own write. A laptop under Linux cannot
+measure this path: the figure comes from a GitHub `windows-latest` runner
+(4 cores, Go 1.27.2), through the hand-started `ab` workflow, with the
+protocol of the local A/B runs (`ab.sh`, two binary names, alternated
+order, sign test). `BenchmarkStreamWriteBurst` is one 16 KiB `Stream.Write`
+on a loopback socket, fourteen datagrams; twelve rounds of 2 s, medians:
+
+| benchmark | before | after | rounds won |
+|---|---|---|---|
+| `BenchmarkStreamWriteBurst` (Windows) | 169 µs · 97 MB/s | 97 µs · 169 MB/s | 11 of 11 |
+
+The benchmark measures the cost of sending one flight, not an HTTP/3
+exchange: the benchmarks against a third-party client
+(`BenchmarkH3FromQuicGo`) run under Linux only.
 
 **Where the rest goes (measured 2026-10-13).** Two causes, neither of them
 the QUIC protocol.
