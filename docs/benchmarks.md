@@ -818,25 +818,38 @@ ignores that measures pooling. The `…SluiceFetchAll` benchmarks were named
 `…SluiceAllRows` up to v0.2.2, after the `QueryConfig.AllRows` field that
 `Fetch: FetchAll` replaced.
 
+**Re-measured on 2026-10-19, outside the session above.** The conditions
+differ from the "Conditions" table: Go 1.26.9, kernel
+6.18.54.1-microsoft-standard-WSL2, the same CPU (AMD Ryzen AI 9 465),
+PostgreSQL 17.11 in the devcontainer's `postgres` container (a Docker
+bridge, not loopback; data on a 512 MB tmpfs, `fsync` off). Same protocol:
+1 s × 3, median, core 14, `GOMAXPROCS=1`. The absolute values in this table
+do not compare with the other sections of this file; the ratios within it
+do. `bench_copy` is now `UNLOGGED` and emptied after every COPY, outside the
+timer: the two COPY rows no longer measure the server writing the WAL, which
+is the same work for both clients. The tables are loaded by
+`go run ./internal/bench/cmd/pgfixtures`, which reads `SLUICE_PG*`.
+
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGAnyPgxSQL` | 763743 ns | ±0% | 96170 B | 3486 |
-| `BenchmarkPGAnyPgx` | 741611 ns | ±2% | 114322 B | 2770 |
-| `BenchmarkPGAnySluiceFetchAll` | 697092 ns | ±1% | 102703 B | 37 |
-| `BenchmarkPGAnySluiceCached` | 800525 ns | ±1% | 102704 B | 37 |
-| `BenchmarkPGAnySluice` | 1011804 ns | ±4% | 102698 B | 36 |
-| `BenchmarkPGCopyPgx` | 12871464 ns | ±7% | 3492658 B | 99799 |
-| `BenchmarkPGCopySluice` | 11484811 ns | ±1% | 2370686 B | 5 |
-| `BenchmarkPGPointLibPQ` | 308396 ns | ±1% | 944 B | 26 |
-| `BenchmarkPGPointPgxSQL` | 146960 ns | ±5% | 872 B | 19 |
-| `BenchmarkPGPointPgx` | 139916 ns | ±6% | 664 B | 10 |
-| `BenchmarkPGPointSluiceFetchAll` | 138623 ns | ±2% | 248 B | 11 |
-| `BenchmarkPGPointSluiceCached` | 241789 ns | ±1% | 248 B | 11 |
-| `BenchmarkPGPointSluice` | 291786 ns | ±3% | 240 B | 10 |
-| `BenchmarkPGWideLibPQ` | 15820111 ns | ±2% | 5819627 B | 478505 |
-| `BenchmarkPGWidePgxSQL` | 13901578 ns | ±2% | 5820000 B | 478513 |
-| `BenchmarkPGWidePgx` | 9091637 ns | ±2% | 6740547 B | 280008 |
-| `BenchmarkPGWideSluice` | 13609370 ns | ±2% | 601564 B | 60 |
+| `BenchmarkPGAnyPgxSQL` | 326525 ns | ±3% | 96169 B | 3486 |
+| `BenchmarkPGAnyPgx` | 362928 ns | ±8% | 114321 B | 2770 |
+| `BenchmarkPGAnySluiceFetchAll` | 347519 ns | ±2% | 471 B | 12 |
+| `BenchmarkPGAnySluiceCached` | 345199 ns | ±1% | 471 B | 12 |
+| `BenchmarkPGAnySluice` | 348790 ns | ±1% | 473 B | 12 |
+| `BenchmarkPGCopyPgx` | 8344756 ns | ±3% | 3492470 B | 99800 |
+| `BenchmarkPGCopySluice` | 7322436 ns | ±1% | 2367172 B | 14 |
+| `BenchmarkPGPointLibPQ` | 302271 ns | ±1% | 944 B | 26 |
+| `BenchmarkPGPointPgxSQL` | 146520 ns | ±5% | 872 B | 19 |
+| `BenchmarkPGPointPgx` | 141672 ns | ±4% | 664 B | 10 |
+| `BenchmarkPGPointSluiceFetchAll` | 146497 ns | ±11% | 424 B | 12 |
+| `BenchmarkPGPointSluiceCached` | 155305 ns | ±5% | 424 B | 12 |
+| `BenchmarkPGPointSluice` | 154913 ns | ±1% | 424 B | 12 |
+| `BenchmarkPGWideLibPQ` | 14126229 ns | ±1% | 5819629 B | 478505 |
+| `BenchmarkPGWidePgxSQL` | 12990871 ns | ±2% | 5819996 B | 478513 |
+| `BenchmarkPGWidePgx` | 9382291 ns | ±2% | 6740578 B | 280008 |
+| `BenchmarkPGWideSluiceFetchAll` | 9777159 ns | ±3% | 6394 B | 23 |
+| `BenchmarkPGWideSluice` | 10178372 ns | ±3% | 6711 B | 23 |
 
 **Point read with no option (measured 2026-10-13).** A connection now keeps
 its prepared statements by default (up to 512) and asks for the whole result
@@ -852,10 +865,10 @@ trip from its second execution on: one write and one read per query
 - Against the former default (two round trips), paired over 8 rounds:
   184 µs against 367 µs (−50%), faster in 8 rounds of 8.
 
-Server: the `postgres` container (PostgreSQL 17.11, Docker bridge), not the
-loopback of the table above; absolute values do not compare with its rows,
-ratios do. The table's `BenchmarkPGPointSluice` row measures the former
-default.
+Server: the `postgres` container (PostgreSQL 17.11, Docker bridge). The
+table above, re-measured on 2026-10-19 against the same server, measures the
+new default (155 µs against 142 for pgx in that unpaired run; the paired
+verdict above is the one to read).
 
 **First and last batch of a wide read (measured 2026-10-13).** The table
 above gives a mean per complete read. The wide read (`bench_wide`, 20,000
@@ -871,7 +884,7 @@ decodes, and the caller receives the same batches of 1,024 rows.
 Fifteen paired rounds (the first one dropped), the three benchmarks back to
 back in one process each round, `-benchtime 2s`, core 6, `GOMAXPROCS=1`.
 Server: PostgreSQL 17.11 in the container next to the development container
-(a Docker bridge, not the loopback of the table above). Median of the
+(a Docker bridge, as for the table above, on another day). Median of the
 rounds, in µs; a round counts 150 to 200 reads, so its p99.9 is the slowest
 one:
 

@@ -53,7 +53,7 @@ is run from, and the root's `go test ./...` never sees it.
 
 ```
 export SLUICE_PG=host:5432 SLUICE_PG_USER=sluice SLUICE_PG_DB=sluice SLUICE_PG_PASSWORD=…
-internal/bench/scripts/pgdev.sh fixtures      # bench_orders, 100 000 rows
+go run ./internal/bench/cmd/pgfixtures        # bench_orders, 100 000 rows
 go run ./comparison/sluice -h                 # every flag, R as the default
 go run ./comparison/sluice -listen 127.0.0.1:8443
 curl -k https://127.0.0.1:8443/orders/42

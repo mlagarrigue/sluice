@@ -50,8 +50,8 @@ comparisons build on any toolchain the framework itself supports.
 
 ## Where the numbers live
 
-**[`docs/BENCHMARK-CONSOLIDATED.md`](../docs/BENCHMARK-CONSOLIDATED.md) is the
-table of record.** It is produced by `internal/bench/scripts/consolidate.sh` in
+**[Measured in one session](../docs/benchmarks.md#measured-in-one-session), in
+`docs/benchmarks.md`, is the table of record.** It is produced by `internal/bench/scripts/consolidate.sh` in
 one session, on one machine, with the conditions printed at the top — Go
 version, CPU, kernel, PostgreSQL, benchtime, what was pinned.
 
@@ -60,15 +60,19 @@ separate runs over several hours. Every figure was honestly obtained and no two
 of them were comparable, which is precisely what this repository's own rule
 about absolute numbers says not to do. The sections below keep the *reasoning*
 — what each comparison means, where the harness was wrong, which caveat
-attaches to which figure — and the consolidated file keeps the figures.
+attaches to which figure — and the consolidated sections keep the figures.
 
 Regenerate it with:
 
 ```
 eval "$(internal/bench/scripts/pgdev.sh start)"
-internal/bench/scripts/pgdev.sh fixtures
-internal/bench/scripts/consolidate.sh > docs/BENCHMARK-CONSOLIDATED.md
+go run ./internal/bench/cmd/pgfixtures
+internal/bench/scripts/consolidate.sh > consolidated.md
 ```
+
+Its sections replace those under "Measured in one session" in
+`docs/benchmarks.md`. In the devcontainer, `SLUICE_PG` and its neighbours are already set: skip the
+first line.
 
 ## What is measured, and what each figure means
 
@@ -295,8 +299,9 @@ types, and `TestPGContendersAgree` asserts sluice and pgx read identical rows
 before any figure is believed. A loopback round trip measures **130 µs** on this
 machine, which is the unit every figure below is really counting.
 
-Figures from [`docs/BENCHMARK-CONSOLIDATED.md`](../docs/BENCHMARK-CONSOLIDATED.md)
-(2026-08-21, one session, medians of three 1 s runs):
+Figures from [Measured in one session](../docs/benchmarks.md#measured-in-one-session)
+(2026-08-21, one session, medians of three 1 s runs; the connector table there
+was re-measured on 2026-10-19, after the point read changed default):
 
 | | sluice | pgx v5.10.0 | pgx/`database/sql` | lib/pq |
 |---|---|---|---|---|
@@ -360,7 +365,7 @@ so.
 ### Compression, which the study measures before `web` offers it
 
 Axis F of the internal study: the list-1000 document (50 037 bytes of
-JSON, the rows `pgdev.sh fixtures` writes) encoded in process by the
+JSON, the rows `internal/bench/cmd/pgfixtures` writes) encoded in process by the
 standard library's `compress/gzip` and `compress/flate`, one writer per
 level reset per response, the whole buffered body in one write — the way
 the study's server does it under `-compression` (`comparison/sluice` on
