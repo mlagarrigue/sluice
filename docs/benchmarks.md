@@ -1010,14 +1010,40 @@ they are the controls.
   a statement already seen sends its Executes ahead with the query. The
   1.2 ms left at 10 ms is not explained; the depth (⌈RTT / T₁⌉ + 1) is the
   first suspect.
-- `Demand` keeps one request per batch, after delivery: twenty round trips
-  per read, ten times `FetchAll` at 10 ms. That is the price of not asking
-  ahead; see `QueryConfig.Demand`.
+- `Demand` still kept one request per batch here, after delivery: twenty
+  round trips per read, ten times `FetchAll` at 10 ms. The next section
+  measures the fix.
 - What the change lets through: a SELECT, VALUES or TABLE read outside a
   transaction block is reported complete at its last row, before its
   commit, and a commit that fails then — a function it calls that writes,
   a deferred constraint — is logged, not returned. A read inside a block
   and a statement that may write still wait for their `ReadyForQuery`.
+
+### Under a demand that holds
+
+**Measured on 2026-10-19**, same conditions, same proxy. Before is 278a91e;
+after is 272d694, where a demand whose bound does not move and that has no
+limit asks ahead like a query without one. The default does not run the
+changed code: it is each series' control.
+
+| benchmark | loopback | 1 ms | 10 ms |
+|---|---|---|---|
+| `PGWideSluiceDemand` | 13.68 → 10.81 (−20.8%, 13/13) | 38.92 → 16.01 (−58.6%, 13/13) | 220.87 → 24.60 (−88.8%, 13/13) |
+| `PGWideSluice` (default, control) | 10.68 → 10.65 (noise) | 16.29 → 16.36 (noise) | 23.99 → 24.81 (noise) |
+
+- The demand is now within 2% of the default at all three distances. The
+  1 ms and 10 ms series are slower than the table above for both
+  benchmarks (the default at 24.81 against 22.97): that is the machine's
+  state on the day, which the control carries too.
+- The top-up leaves before the batch is delivered, as without a demand.
+  Sent after delivery, a first version stayed 15% behind the default on
+  loopback with as many Executes in flight; sent before, the gap is gone.
+- What the demand pays: a bound that moves while batches are asked ahead
+  makes them worthless (they continue the old portal), so they are read
+  and dropped up to the re-bind's `BindComplete` — about one round trip of
+  the server's work. After a move nothing is asked ahead until the bound
+  holds for a batch: `AdvanceBy`, which moves on every batch, pays that
+  once per read. A limit asks for one batch at a time, sized to it.
 
 ## Codec, in isolation
 
