@@ -25,24 +25,25 @@ import (
 //
 //	cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
 
-// startH2Server runs Serve behind a TLS listener that offers h2 by ALPN:
-// the standard library's client then speaks HTTP/2 from the first byte,
-// with no upgrade dance, and Serve routes the connection to ServeH2 on its
-// preface. Serve returns when ctx ends.
-func startH2Server(tb testing.TB) (base string) {
+// startTLSServer runs Serve behind a TLS listener that offers proto by
+// ALPN. Offered "h2", the standard library's client speaks HTTP/2 from the
+// first byte, with no upgrade dance, and Serve routes the connection to
+// ServeH2 on its preface; offered "http/1.1", it speaks HTTP/1.1 over the
+// same TLS. Serve returns when ctx ends.
+func startTLSServer(tb testing.TB, proto string, handle httpstream.Handler) (base string) {
 	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		tb.Fatal(err)
 	}
 	tlsCfg := serverTLS(tb)
-	tlsCfg.NextProtos = []string{"h2"}
+	tlsCfg.NextProtos = []string{proto}
 	tlsLn := tls.NewListener(ln, tlsCfg)
 	tb.Cleanup(func() { _ = tlsLn.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	tb.Cleanup(cancel)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
-	go func() { _ = httpstream.Serve(ctx, tlsLn, cfg, h3Handle) }()
+	go func() { _ = httpstream.Serve(ctx, tlsLn, cfg, handle) }()
 	return "https://" + ln.Addr().String()
 }
 
@@ -57,6 +58,19 @@ func h2Client(tb testing.TB) *http.Client {
 	return &http.Client{Transport: tr, Timeout: timeout}
 }
 
+// h1Client is net/http's transport pinned to HTTP/1.1 over TLS: the TLS
+// config offers only http/1.1, and a custom TLS config already keeps the
+// transport off HTTP/2. Keep-alive holds one connection across requests
+// until the server's MaxRequestsPerConn ends it.
+func h1Client(tb testing.TB) *http.Client {
+	tb.Helper()
+	tlsCfg := clientTLS()
+	tlsCfg.NextProtos = []string{"http/1.1"}
+	tr := &http.Transport{TLSClientConfig: tlsCfg}
+	tb.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr, Timeout: timeout}
+}
+
 // benchGet runs b.N sequential requests on one connection and checks each
 // body's length, which is what a client-side latency figure is: one round
 // trip, request to last body byte, with nothing else in flight. Besides the
@@ -64,13 +78,21 @@ func h2Client(tb testing.TB) *http.Client {
 // counted from the request: the first body byte (TTFB, the moment the
 // client sees the response start) and the last (TTLB, the moment it has it
 // all). A streamed response that keeps its first batch until the last one
-// is ready shows a TTFB close to its TTLB.
-func benchGet(b *testing.B, client *http.Client, url string, proto int, want int) {
+// is ready shows a TTFB close to its TTLB. header, when not nil, goes out
+// on every request; nil makes each request what client.Get sends.
+func benchGet(b *testing.B, client *http.Client, url string, header http.Header, proto int, want int) {
 	b.Helper()
 	buf := make([]byte, 32<<10)
 	get := func() (ttfb, ttlb time.Duration) {
 		start := time.Now()
-		resp, err := client.Get(url)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if header != nil {
+			req.Header = header
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			b.Fatalf("GET %s: %v", url, err)
 		}
@@ -144,10 +166,10 @@ var routes = []struct {
 }
 
 func BenchmarkH2FromNetHTTP(b *testing.B) {
-	base := startH2Server(b)
+	base := startTLSServer(b, "h2", h3Handle)
 	client := h2Client(b)
 	for _, r := range routes {
-		b.Run(r.name, func(b *testing.B) { benchGet(b, client, base+r.path, 2, r.want) })
+		b.Run(r.name, func(b *testing.B) { benchGet(b, client, base+r.path, nil, 2, r.want) })
 	}
 }
 
@@ -158,12 +180,12 @@ func BenchmarkH2FromNetHTTP(b *testing.B) {
 // fails the benchmark, since a dropped datagram costs the request a client
 // PTO that the mean would quietly absorb.
 func BenchmarkH3FromQuicGo(b *testing.B) {
-	base, ln, _ := startH3Server(b)
+	base, ln, _ := startH3Server(b, h3Handle)
 	client := h3Client(b)
 	for _, r := range routes {
 		b.Run(r.name, func(b *testing.B) {
 			before := ln.DiscardedPackets()
-			benchGet(b, client, base+r.path, 3, r.want)
+			benchGet(b, client, base+r.path, nil, 3, r.want)
 			n := ln.DiscardedPackets() - before
 			b.ReportMetric(float64(n), "discarded")
 			if r.name == "bulk" && n != 0 {

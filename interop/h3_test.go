@@ -100,11 +100,11 @@ func h3Paced(yield func(sluice.Batch[[]byte]) bool) {
 	}
 }
 
-// startH3Server runs ServeH3 behind a quic.Listener and returns the URL
-// prefix to reach it, and the listener for its counters. Every accepted
+// startH3Server runs ServeH3 with handle behind a quic.Listener and returns
+// the URL prefix to reach it, and the listener for its counters. Every accepted
 // connection is served until the test ends; what ServeH3 returned is
 // reported through served.
-func startH3Server(tb testing.TB) (base string, ln *quic.Listener, served <-chan error) {
+func startH3Server(tb testing.TB, handle httpstream.Handler) (base string, ln *quic.Listener, served <-chan error) {
 	tb.Helper()
 	pc := listenUDP(tb)
 	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
@@ -126,7 +126,7 @@ func startH3Server(tb testing.TB) (base string, ln *quic.Listener, served <-chan
 			if err != nil {
 				return
 			}
-			go func() { out <- httpstream.ServeH3(ctx, c, cfg, h3Handle) }()
+			go func() { out <- httpstream.ServeH3(ctx, c, cfg, handle) }()
 		}
 	}()
 	return "https://" + pc.LocalAddr().String(), ln, out
@@ -168,7 +168,7 @@ func h3Get(tb testing.TB, client *http.Client, url string) string {
 // plain response, a streamed one, and several requests on one connection —
 // sequentially, then two streamed bodies at once.
 func TestQuicGoHTTP3ClientAgainstServeH3(t *testing.T) {
-	base, _, served := startH3Server(t)
+	base, _, served := startH3Server(t, h3Handle)
 	client := h3Client(t)
 
 	if got := h3Get(t, client, base+"/hello"); got != "you asked for /hello" {
