@@ -412,7 +412,12 @@ func newPipeServer(t *testing.T) (*pipeServer, *Conn) {
 			}
 		}
 	}()
-	return s, NewConn(client)
+	conn := NewConn(client)
+	// Run before the close above: a read that ended the test with its
+	// ReadyForQuery owed leaves the script writing it on a pipe, which waits
+	// for a reader.
+	t.Cleanup(func() { _ = conn.settleReady() })
+	return s, conn
 }
 
 func (s *pipeServer) write(t *testing.T, msgs ...[]byte) {
@@ -520,6 +525,9 @@ func TestQueryCancelsTheRunningStatementThroughTheRecipe(t *testing.T) {
 		}
 		if len(got) != 1 || !bytes.Equal(got[0], int8Val(2)) {
 			t.Errorf("the query after the cancellation returned % x, want [2]", got)
+		}
+		if err := conn.settleReady(); err != nil {
+			t.Errorf("reading the owed ReadyForQuery: %v", err)
 		}
 		if err := conn.Err(); err != nil {
 			t.Errorf("the connection is broken: %v", err)

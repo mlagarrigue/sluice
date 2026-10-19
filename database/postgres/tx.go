@@ -358,10 +358,11 @@ func asksToCommit(sql string) bool {
 
 // readsOnly reports whether sql opens with a verb that only reads — SELECT,
 // VALUES or TABLE — so that cancelling it in a transaction of its own rolls
-// back nothing that reading it to the end would have committed. WITH is not
-// one: its clauses may insert, update or delete. A SELECT that calls a
-// function which writes is, and loses those writes on an early stop — see
-// [FetchAll].
+// back nothing that reading it to the end would have committed, and so that
+// its commit, after its last row, has nothing to report a later statement
+// depends on: see [query.oweReady]. WITH is not one: its clauses may insert,
+// update or delete. A SELECT that calls a function which writes is, and loses
+// those writes on an early stop — see [FetchAll].
 func readsOnly(sql string) bool {
 	word, _ := leadingKeyword(sql)
 	return strings.EqualFold(word, "select") || strings.EqualFold(word, "values") || strings.EqualFold(word, "table")

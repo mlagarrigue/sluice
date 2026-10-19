@@ -73,10 +73,16 @@ func executesAfterFirstBatch(t *testing.T, rtt, batch time.Duration) (executes i
 			read() // Sync
 			write(beReadyForQuery())
 		}()
-		src := NewConn(client).Query(t.Context(), "SELECT n", nil, QueryConfig{BatchRows: 2})
+		conn := NewConn(client)
+		src := conn.Query(t.Context(), "SELECT n", nil, QueryConfig{BatchRows: 2})
 		src.Stream()(func(sluice.Batch[Row]) bool { return true })
 		if err := src.Err(); err != nil {
 			t.Errorf("query: %v", err)
+		}
+		// The read left its ReadyForQuery owed, and the scripted server
+		// writes it on a pipe, which waits for a reader.
+		if err := conn.settleReady(); err != nil {
+			t.Errorf("reading the owed ReadyForQuery: %v", err)
 		}
 		<-done
 	})

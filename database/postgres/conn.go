@@ -180,6 +180,14 @@ type Conn struct {
 	// sets how many batches the next ones keep asked for: see [depth].
 	rtt time.Duration
 
+	// readyOwed says a batched read ended with its Sync sent and the
+	// ReadyForQuery that answers it still unread: see [query.oweReady]. The
+	// next entry point reads it, and query.run does so after writing its own
+	// query. It never changes the transaction state the connection knows:
+	// only a read in a transaction of its own leaves it owed, and its
+	// ReadyForQuery says 'I' whatever else comes before it.
+	readyOwed bool
+
 	// copier is the [Copier] whose COPY is open, nil when none is: from its
 	// CopyInResponse to the ReadyForQuery that ends it, the copier's reader
 	// goroutine owns r, and every other entry point is refused. See
@@ -229,7 +237,23 @@ var errCopyOpen = fmt.Errorf("%w: a COPY is open on this connection — Close or
 // copy-in mode does not run — the server takes it for a broken COPY and
 // aborts the transaction — and its reply would be read by the copy's reader
 // goroutine, which owns the connection's Reader until the COPY ends.
+//
+// A ReadyForQuery a batched read left owed is read here, before the caller
+// writes anything; query.run alone reserves instead and reads it once its own
+// query has left.
 func (c *Conn) claim(owner *Copier) error {
+	if err := c.reserve(owner); err != nil {
+		return err
+	}
+	if err := c.settleReady(); err != nil {
+		c.busy = false
+		return err
+	}
+	return nil
+}
+
+// reserve is claim leaving an owed ReadyForQuery unread.
+func (c *Conn) reserve(owner *Copier) error {
 	// Every wire-touching entry point comes through here, so this is the one
 	// place a broken connection is refused before a byte is written or read.
 	if c.broken != nil {
@@ -246,6 +270,26 @@ func (c *Conn) claim(owner *Copier) error {
 }
 
 func (c *Conn) endBusy() { c.busy = false }
+
+// settleReady reads the ReadyForQuery a batched read left owed, and does
+// nothing when none is. What comes before it is the empty answer of the
+// Executes asked for past the end, and rarely an error: the read's
+// transaction of its own failing after its last row — a function the
+// SELECT called whose deferred constraint fails at commit, or a statement
+// timeout landing between the result and the Sync. It belongs to a read
+// already reported complete, and not to the statement this connection runs
+// next, so it is logged rather than returned. Only a lost connection is.
+func (c *Conn) settleReady() error {
+	if !c.readyOwed {
+		return nil
+	}
+	c.readyOwed = false
+	if err := c.drainToReady(); err != nil && c.broken == nil {
+		c.log().LogAttrs(context.Background(), slog.LevelWarn, "postgres: a read reported complete failed after its last row",
+			slog.String("error", err.Error()))
+	}
+	return c.broken
+}
 
 // execBusy is exec behind the busy guard, for the simple-statement entry
 // points. The guard covers every entry point, not only query.run and
@@ -381,7 +425,15 @@ func (c *Conn) Err() error { return c.broken }
 // These are the server describing itself, and the values the binary codecs are
 // decoded against: a client that assumes UTF-8 and microsecond timestamps can
 // check here rather than assume. A Conn from [NewConn] has none of them.
-func (c *Conn) Parameter(name string) string { return c.params[name] }
+//
+// A parameter a statement changed is reported as the server last announced
+// it. The server announces just before the ReadyForQuery that ends the
+// statement, so a read that left that ReadyForQuery owed has it read here
+// first: a SELECT that calls set_config is seen as soon as it returns.
+func (c *Conn) Parameter(name string) string {
+	_ = c.settleReady() // a lost connection is reported by Err and every later call
+	return c.params[name]
+}
 
 // Protocol returns the protocol version the server settled on during
 // startup: [Config.MaxProtocol], or the older version a
@@ -430,6 +482,13 @@ const (
 	// on loopback, where a round trip is 130 µs, a point read cost 280 µs in
 	// batches and 155 µs all at once — the difference is exactly one trip.
 	//
+	// A batched read of SELECT, VALUES or TABLE outside a transaction block
+	// no longer waits for that trip: it sends its Sync and returns, and the
+	// answer is read behind whatever the connection sends next. A statement
+	// that may write, and any read inside a block, still pays it, because
+	// an error can follow the last row there: see the function-that-writes
+	// case below.
+	//
 	// # What it costs
 	//
 	// An early stop costs more. With a row limit, a consumer that stops
@@ -456,7 +515,10 @@ const (
 	//
 	// A SELECT that calls a function which writes is cancelled like any
 	// SELECT, and its writes are rolled back with it where a drain would
-	// have committed them: fetch such a statement with FetchBatches.
+	// have committed them. Fetched in batches outside a block, it is
+	// reported complete at its last row, before its commit: a commit that
+	// fails then — a deferred constraint — is logged, not returned. Run such
+	// a statement in a [Tx], whose Commit reports it.
 	//
 	// Client memory is still bounded by BatchRows either way, because rows are
 	// decoded and handed on a batch at a time and TCP stops the server when
@@ -813,6 +875,7 @@ type query struct {
 	fetch      Fetch
 	allRows    bool // decided in run: every row asked for at once
 	synced     bool // the Sync went out with the query, so resync must not send another
+	mayOwe     bool // read to its end, the query may leave its ReadyForQuery owed: see [query.oweReady]
 	stopped    bool // the consumer stopped before the end of the result
 	rows       *Rows
 	items      []Row // reused: one Row view per row of the current batch
@@ -891,7 +954,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	if q.demand != nil && q.demand.Exhausted() {
 		return nil
 	}
-	if err := c.beginBusy(); err != nil {
+	if err := c.reserve(nil); err != nil {
 		return err
 	}
 	defer c.endBusy()
@@ -944,6 +1007,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	} else {
 		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		q.asked = 1
+		q.mayOwe = !c.inTx && readsOnly(sql)
 		if q.demand == nil {
 			// Asking ahead is safe only for a portal that suspends — see the
 			// PortalSuspended case of readChunk — and a statement whose
@@ -965,6 +1029,13 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	if err := c.w.Flush(); err != nil {
 		return c.breakConn(fmt.Errorf("sending the query: %w", err))
 	}
+	// The previous read's ReadyForQuery, if it left one owed, is read behind
+	// this query rather than in front of it: it was on its way while this
+	// query travelled, so the round trip it would have cost overlaps this
+	// one's.
+	if err := c.settleReady(); err != nil {
+		return err
+	}
 
 	// resync runs on every path out, including an early stop and a panic in
 	// the consumer: a connection left mid-result would hand the next query
@@ -975,6 +1046,13 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	// statement the server rolled back.
 	defer func() {
 		if c.broken != nil {
+			return
+		}
+		// A context that has ended takes the long way: its watch may be
+		// cancelling, and the paths that settle a cancellation read to the
+		// ReadyForQuery.
+		if err == nil && q.complete && q.mayOwe && q.ctx.Err() == nil {
+			err = q.oweReady()
 			return
 		}
 		if rerr := q.resync(); rerr != nil && err == nil {
@@ -1457,6 +1535,35 @@ func (q *query) resync() error {
 			}
 		}
 	}
+}
+
+// oweReady ends a read that reached its CommandComplete: the Sync goes out,
+// and the ReadyForQuery that answers it is left for whatever the connection
+// does next — see [Conn.settleReady]. Reading it here cost a round trip at the
+// end of every batched read, the one [FetchAll] saves by sending its Sync
+// with the query: measured on a wide read through a delay proxy, batched
+// reads were that round trip behind FetchAll at 1 and 10 ms.
+//
+// Only a read whose verb only reads, in a transaction of its own, ends this
+// way. What can still fail after its CommandComplete is that transaction's
+// commit, and it holds nothing a later statement depends on. In a
+// transaction block, an error there would abort the block under the next
+// statement with nothing on it to say why; a statement that may write would
+// report success for writes its commit rolled back. Both read to the
+// ReadyForQuery, as before. A SELECT that calls a function which writes is
+// the case this lets through, and its commit failing is logged.
+//
+// The Sync is flushed now rather than with the next query: until it arrives,
+// the server holds the read's transaction open, and with it its snapshot and
+// its locks.
+func (q *query) oweReady() error {
+	c := q.conn
+	c.w.Sync()
+	if err := c.w.Flush(); err != nil {
+		return c.breakConn(fmt.Errorf("resynchronising: %w", err))
+	}
+	c.readyOwed = true
+	return nil
 }
 
 // cancelRest sends the cancellation for the rest of a result the consumer
