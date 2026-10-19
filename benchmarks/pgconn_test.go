@@ -178,11 +178,10 @@ func BenchmarkPGPointSluiceCached(b *testing.B) {
 	sink = int(acc)
 }
 
-// The same read with FetchAll, named for the AllRows field it replaced: one
-// round trip from the first execution on, which was the entire gap against pgx
-// before FetchAuto. What it gives up is a cheap early stop, and a point read is
-// never abandoned half way.
-func BenchmarkPGPointSluiceAllRows(b *testing.B) {
+// The same read with FetchAll: one round trip from the first execution on,
+// which was the entire gap against pgx before FetchAuto. What it gives up is a
+// cheap early stop, and a point read is never abandoned half way.
+func BenchmarkPGPointSluiceFetchAll(b *testing.B) {
 	conn := sluiceConn(b)
 	if err := conn.PrepareStatements(16); err != nil {
 		b.Fatal(err)
@@ -209,7 +208,7 @@ func BenchmarkPGPointSluiceAllRows(b *testing.B) {
 	sink = int(acc)
 }
 
-func BenchmarkPGAnySluiceAllRows(b *testing.B) {
+func BenchmarkPGAnySluiceFetchAll(b *testing.B) {
 	conn := sluiceConn(b)
 	if err := conn.PrepareStatements(16); err != nil {
 		b.Fatal(err)
@@ -396,7 +395,7 @@ func BenchmarkPGWideSluice(b *testing.B) {
 // batches the consumer sees are the same size. Against BenchmarkPGWideSluice
 // this isolates the cost of asking for each batch after the previous one has
 // been delivered.
-func BenchmarkPGWideSluiceAllRows(b *testing.B) {
+func BenchmarkPGWideSluiceFetchAll(b *testing.B) {
 	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 }
 

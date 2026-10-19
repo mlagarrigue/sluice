@@ -814,13 +814,15 @@ and settled at 285-298 µs across five runs of 1s.
 ## Connector, against pgx / lib/pq / database/sql
 
 One connection each, since this connector has no pool and a comparison that
-ignores that measures pooling.
+ignores that measures pooling. The `…SluiceFetchAll` benchmarks were named
+`…SluiceAllRows` up to v0.2.2, after the `QueryConfig.AllRows` field that
+`Fetch: FetchAll` replaced.
 
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkPGAnyPgxSQL` | 763743 ns | ±0% | 96170 B | 3486 |
 | `BenchmarkPGAnyPgx` | 741611 ns | ±2% | 114322 B | 2770 |
-| `BenchmarkPGAnySluiceAllRows` | 697092 ns | ±1% | 102703 B | 37 |
+| `BenchmarkPGAnySluiceFetchAll` | 697092 ns | ±1% | 102703 B | 37 |
 | `BenchmarkPGAnySluiceCached` | 800525 ns | ±1% | 102704 B | 37 |
 | `BenchmarkPGAnySluice` | 1011804 ns | ±4% | 102698 B | 36 |
 | `BenchmarkPGCopyPgx` | 12871464 ns | ±7% | 3492658 B | 99799 |
@@ -828,7 +830,7 @@ ignores that measures pooling.
 | `BenchmarkPGPointLibPQ` | 308396 ns | ±1% | 944 B | 26 |
 | `BenchmarkPGPointPgxSQL` | 146960 ns | ±5% | 872 B | 19 |
 | `BenchmarkPGPointPgx` | 139916 ns | ±6% | 664 B | 10 |
-| `BenchmarkPGPointSluiceAllRows` | 138623 ns | ±2% | 248 B | 11 |
+| `BenchmarkPGPointSluiceFetchAll` | 138623 ns | ±2% | 248 B | 11 |
 | `BenchmarkPGPointSluiceCached` | 241789 ns | ±1% | 248 B | 11 |
 | `BenchmarkPGPointSluice` | 291786 ns | ±3% | 240 B | 10 |
 | `BenchmarkPGWideLibPQ` | 15820111 ns | ±2% | 5819627 B | 478505 |
@@ -862,7 +864,7 @@ query, two delays counted from the call: the first batch in the caller's
 hands (TTFB, *time to first batch*) and the end of the result (TTLB, *time
 to last batch*). pgx hands over one row at a time: its first batch is its
 first row. sluice hands over batches of 1,024 rows.
-`BenchmarkPGWideSluiceAllRows` is the same read with `AllRows`: one
+`BenchmarkPGWideSluiceFetchAll` is the same read with `FetchAll`: one
 `Execute` for the whole result, the server sends every row while the client
 decodes, and the caller receives the same batches of 1,024 rows.
 
@@ -877,18 +879,18 @@ one:
 |---|---|---|---|---|---|---|---|---|---|
 | `BenchmarkPGWidePgx` | 9.97 ms | 255 | 419 | 730 | 1,033 | 9,927 | 11,058 | 13,202 | 14,087 |
 | `BenchmarkPGWideSluice` | 13.45 ms | 711 | 818 | 1,331 | 1,428 | 13,275 | 14,335 | 18,132 | 19,474 |
-| `BenchmarkPGWideSluiceAllRows` | 10.42 ms | 724 | 846 | 1,408 | 1,723 | 10,334 | 10,931 | 13,821 | 16,616 |
+| `BenchmarkPGWideSluiceFetchAll` | 10.42 ms | 724 | 846 | 1,408 | 1,723 | 10,334 | 10,931 | 13,821 | 16,616 |
 
 Sign-test verdicts, 14 rounds:
 
-- `AllRows` against the default: −22.5% in ns/op, 14 rounds of 14; TTLB
+- `FetchAll` against the default: −22.5% in ns/op, 14 rounds of 14; TTLB
   p50 −22.4%, 14 of 14; TTFB unchanged (noise). The 3.5 ms gap with pgx is
   therefore first the round trip per batch: at the time, sluice sent the
   `Execute` for the next batch only after delivering the previous one
   (`database/postgres/conn.go`), and the server waited while the client
   decoded. Twenty batches, twenty waits: 3.0 ms of the 3.5. Fixed since:
   see the next paragraph.
-- `AllRows` against pgx: +4.2% in ns/op (13 rounds of 14), TTLB p50 +4.1%
+- `FetchAll` against pgx: +4.2% in ns/op (13 rounds of 14), TTLB p50 +4.1%
   (12 of 14). 0.4 ms remain. It is not decoding: on a CPU profile, the
   sluice client spends 31% of the read idle, waiting on the socket, and
   decoding is a quarter of its busy time; pgx is busy throughout, mostly
@@ -900,7 +902,7 @@ Sign-test verdicts, 14 rounds:
   arrives sooner; that is what `BatchRows` sets.
 
 ```
-cd benchmarks && go test -run '^$' -bench 'PGWide(Sluice|SluiceAllRows|Pgx)$' -benchtime 2s
+cd benchmarks && go test -run '^$' -bench 'PGWide(Sluice|SluiceFetchAll|Pgx)$' -benchtime 2s
 ```
 
 **Two batches asked for ahead (measured 2026-10-13).** The default read now
@@ -917,19 +919,19 @@ compare with it; the ratios within a round do:
 | `BenchmarkPGWidePgx` | 13.11 ms | 359 | 545 | 951 | 1,236 | 12,764 | 14,953 | 20,811 | 23,249 |
 | `BenchmarkPGWideSluice`, before | 18.53 ms | 973 | 1,288 | 1,836 | 1,965 | 17,914 | 21,431 | 27,440 | 28,609 |
 | `BenchmarkPGWideSluice`, after | 14.64 ms | 1,044 | 1,437 | 1,904 | 2,001 | 14,192 | 16,698 | 21,153 | 23,748 |
-| `BenchmarkPGWideSluiceAllRows` | 13.85 ms | 1,009 | 1,299 | 1,946 | 2,171 | 13,380 | 15,195 | 22,990 | 24,138 |
+| `BenchmarkPGWideSluiceFetchAll` | 13.85 ms | 1,009 | 1,299 | 1,946 | 2,171 | 13,380 | 15,195 | 22,990 | 24,138 |
 
 - After against before: −22.9% in ns/op, 15 rounds of 15; TTLB p50
   −21.9%, 15 of 15. The round trip per batch is gone.
 - The first batch pays for it: TTFB p50 +5.6% (worse in 14 rounds of 15),
   about 70 µs, the write of the two `Execute` messages, which now goes out
   before the first batch is handed over.
-- After against `AllRows`: +6.1% in ns/op (worse in 13 of 15). The cause is
-  the write once per batch, where `AllRows` writes once per query. Counted
+- After against `FetchAll`: +6.1% in ns/op (worse in 13 of 15). The cause is
+  the write once per batch, where `FetchAll` writes once per query. Counted
   on the socket (a `net.Conn` that reads and writes through
   `syscall.RawConn` and counts every call and every `EAGAIN`, the "not
   ready, wait" answer of a non-blocking socket): the default makes 21
-  writes per query and spends 365 µs inside them, `AllRows` one write and
+  writes per query and spends 365 µs inside them, `FetchAll` one write and
   41 µs; a write costs about 16 µs on this machine (a Docker bridge under
   WSL2). Everything else is equal: 157 parked reads per query on both
   sides, 7.5 ms waiting for the server on both, so the server is no slower
@@ -938,7 +940,7 @@ compare with it; the ratios within a round do:
   six rounds), within the 3% the writes cost. Asking for batches two at a
   time would halve the writes (about 160 µs, 1.5%) and lengthen an early
   stop's drain to three batches; not done.
-- `AllRows` against pgx: sluice waits for the server, pgx does not. sluice
+- `FetchAll` against pgx: sluice waits for the server, pgx does not. sluice
   decodes faster than the server sends, empties the socket and parks its
   read 157 times per query (7.5 ms waiting, 5.3 ms of system CPU); pgx,
   busy allocating, parks 15 times (0.95 ms). Each park puts the core to

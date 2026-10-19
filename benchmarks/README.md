@@ -302,9 +302,9 @@ Figures from [`docs/BENCHMARK-CONSOLIDATED.md`](../docs/BENCHMARK-CONSOLIDATED.m
 |---|---|---|---|---|
 | point read | 292 µs · 10 allocs | 140 µs · 10 | 147 µs · 19 | 308 µs · 26 |
 | point read, cache on | 242 µs · 11 | — | — | — |
-| point read, cache + `AllRows` | **139 µs** · 11 · 248 B | 140 µs · 10 · 664 B | — | — |
+| point read, cache + `FetchAll` | **139 µs** · 11 · 248 B | 140 µs · 10 · 664 B | — | — |
 | 1000-key `= ANY` | 1.01 ms · **36 allocs** | 742 µs · 2 770 | 764 µs · 3 486 | — |
-| 1000-key `= ANY`, `AllRows` | **697 µs** · **37 allocs** | — | — | — |
+| 1000-key `= ANY`, `FetchAll` | **697 µs** · **37 allocs** | — | — | — |
 | wide scan, 20k×11 | 13.6 ms · **60 allocs** | **9.1 ms** · 280 008 | 13.9 ms · 478 513 | 15.8 ms · 478 505 |
 | bulk COPY, 50k rows | **11.5 ms** · **5 allocs** | 12.9 ms · 99 799 | — | — |
 
@@ -314,12 +314,12 @@ explanation rather than an excuse.
 *The point read used to cost two round trips where pgx costs one*, and now it
 does not. The default sequence is Execute-with-a-row-limit, Flush to deliver
 without closing the portal, then a Sync to end it — and on a result that fit in
-one batch that Sync is a pure round trip. `QueryConfig.AllRows` sends the Sync
+one batch that Sync is a pure round trip. `Fetch: FetchAll` sends the Sync
 with the query instead: **139 µs against pgx's 140**, at parity, with 248 B
 against 664.
 
 What it gives up is a cheap early stop. With a row limit an abandoned result
-costs at most BatchRows to drain; with AllRows the server was told to produce
+costs at most BatchRows to drain; with FetchAll the server was told to produce
 everything, so abandoning a ten-million-row scan drains ten million rows. It is
 for reads that are small and always consumed whole, which a point read is and a
 scan is not — so it is an option rather than the new default.
