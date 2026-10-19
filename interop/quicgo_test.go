@@ -217,7 +217,7 @@ func TestQuicGoClientAgainstSluiceServer(t *testing.T) {
 			}
 			<-c.Done()
 			if ce, ok := errors.AsType[*quic.ConnectionError](c.Err()); !ok || !ce.Application || ce.Code != closeCode {
-				return fmt.Errorf("sluice did not see quic-go's CONNECTION_CLOSE: %v", c.Err())
+				return fmt.Errorf("sluice did not see quic-go's CONNECTION_CLOSE: %w", c.Err())
 			}
 			return nil
 		}()

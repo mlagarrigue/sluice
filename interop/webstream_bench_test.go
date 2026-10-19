@@ -41,12 +41,15 @@ func BenchmarkWebStream(b *testing.B) {
 		start  func(testing.TB, httpstream.Handler) string
 	}{
 		{"h1", 1, h1Client, func(tb testing.TB, h httpstream.Handler) string {
+			tb.Helper()
 			return startTLSServer(tb, "http/1.1", h)
 		}},
 		{"h2", 2, h2Client, func(tb testing.TB, h httpstream.Handler) string {
+			tb.Helper()
 			return startTLSServer(tb, "h2", h)
 		}},
 		{"h3", 3, h3Client, func(tb testing.TB, h httpstream.Handler) string {
+			tb.Helper()
 			base, _, _ := startH3Server(tb, h)
 			return base
 		}},
