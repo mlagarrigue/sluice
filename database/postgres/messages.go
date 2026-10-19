@@ -408,6 +408,22 @@ func (r *Rows) Append(body []byte) error {
 	return nil
 }
 
+// truncate keeps the first n rows and drops the rest, as if they had never
+// been appended. Cold: a query under a demand calls it on the one batch that
+// crosses the consumer's limit.
+func (r *Rows) truncate(n int) {
+	if n >= r.rows {
+		return
+	}
+	k, end := n*r.fields, int32(0)
+	if k > 0 {
+		if end = r.ends[k-1]; end < 0 {
+			end = ^end
+		}
+	}
+	r.buf, r.ends, r.rows = r.buf[:end], r.ends[:k], n
+}
+
 // Value returns the bytes of one field, and whether it is NULL. The slice
 // borrows the accumulator's buffer and is valid until the next [Rows.Reset].
 //

@@ -114,10 +114,10 @@ func waitUntil(t time.Time) {
 	}
 }
 
-// The wide read under a demand nothing advances: one Execute per batch, sent
-// after the batch is delivered, because the request depends on what the
-// consumer says once it has it. Against BenchmarkPGWideSluice this is the
-// price of not asking ahead.
+// The wide read under a demand nothing advances. A demand that holds asks
+// ahead like a query without one, so against BenchmarkPGWideSluice this is
+// the price of reading the demand once per batch; it was ten times slower at
+// 10 ms while a demand asked for one batch at a time.
 func BenchmarkPGWideSluiceDemand(b *testing.B) {
 	benchWideSluice(b, postgres.QueryConfig{BatchRows: 1024, Demand: new(pushdown.Demand)})
 }

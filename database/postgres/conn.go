@@ -650,10 +650,12 @@ type QueryConfig struct {
 	//     server produces exactly what is still wanted and the stream ends
 	//     without draining a batch nobody asked for. The figure is the
 	//     consumer's: it says how many rows it still wants, republished as it
-	//     takes them, and this query never subtracts what it delivered from
-	//     it. A demand with nothing left to want ends the query at the next
-	//     batch boundary; one that wants nothing from the start sends
-	//     nothing to the server at all.
+	//     takes them. Since a limit only falls, this query also counts the
+	//     rows it delivers against the last figure, and never delivers past
+	//     it: a batch asked for before the limit appeared is cut to it, and
+	//     the query ends where the count runs out. A demand with nothing
+	//     left to want ends the query at the next batch boundary; one that
+	//     wants nothing from the start sends nothing to the server at all.
 	//   - The **lower bound** is bound, as it is, to the parameter KeyParam
 	//     names, and the portal is re-bound: `WHERE id > $1 ORDER BY id`
 	//     then resumes from the bound instead of walking the rows below it.
@@ -687,6 +689,15 @@ type QueryConfig struct {
 	// therefore re-binds on every batch; that is cheap, and what makes the
 	// skip real when the bound jumps ahead, but a demand nothing advances
 	// costs nothing beyond the atomic load.
+	//
+	// While nothing moves and no limit is set, the next batches are asked
+	// for ahead, as without a demand, so a distant server is not left idle
+	// for a round trip per batch. A bound that moves while they are on their
+	// way makes them worthless — they continue the old portal — and they are
+	// read and dropped: about one round trip of the server's work, what an
+	// early stop drains. A moved bound then asks for one batch, so a
+	// publisher that advances on every batch pays that once per query. A
+	// limit asks for one batch at a time, sized to what it still allows.
 	//
 	// A demand always fetches in batches, whatever [FetchAuto] knows of the
 	// statement. Demand and [FetchAll] are exclusive: FetchAll asks for every
@@ -828,7 +839,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	if err != nil {
 		return err
 	}
-	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag, ahead: minAhead}
+	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag, ahead: minAhead, allowed: -1}
 	if cfg.Demand != nil {
 		if cfg.Fetch == FetchAll {
 			return errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
@@ -889,17 +900,32 @@ type query struct {
 	// The pushdown side, nil without a QueryConfig.Demand. stmt and params
 	// are kept so a bound can re-bind the portal; bound is the one last
 	// bound, so a demand whose generation moved for its limit alone does not
-	// re-plan. rowsWanted is the row count the next Execute asks for.
+	// re-plan. rowsWanted is the row count the next Execute asks for, and
+	// allowed how many rows the limit still lets through, counted down as
+	// they are delivered: -1 without a limit.
 	demand     *pushdown.Reader
 	keyParam   int
 	stmt       string
 	params     [][]byte
 	bound      []byte
 	rowsWanted int
+	allowed    int64
+
+	// stale says the rows arriving belong to a portal a re-bind destroyed:
+	// the batches asked ahead of it, which are read and dropped until the
+	// re-bind's BindComplete. held keeps the accumulator meanwhile, so the
+	// DataRow case tells them apart by its nil check alone. See [query.run].
+	stale bool
+	held  *Rows
+
+	// moved says the bound moved at the last batch boundary: until it holds
+	// again, nothing is asked ahead before delivery, where the next move
+	// would make it worthless.
+	moved bool
 
 	// asked counts the Executes sent whose batch has not ended yet; ahead is
-	// how many a query without a demand keeps asked for, set by [depth] at
-	// its first PortalSuspended. sentAt and boundAt time the round trip and
+	// how many a query keeps asked for, set by [depth] at its first
+	// PortalSuspended. sentAt and boundAt time the round trip and
 	// the first batch it is set from: the write, then the BindComplete; each
 	// is zero once read, and both are for a query that times nothing.
 	asked, ahead    int
@@ -1008,19 +1034,18 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		q.asked = 1
 		q.mayOwe = !c.inTx && readsOnly(sql)
-		if q.demand == nil {
-			// Asking ahead is safe only for a portal that suspends — see the
-			// PortalSuspended case of readChunk — and a statement whose
-			// portal suspended before is one: the kind of portal is fixed by
-			// the statement. So its Executes leave with the query, and the
-			// second batch is not a round trip behind the first.
-			if entry >= 0 {
-				if n := c.stmts.entries[entry].ahead; n > 0 {
-					q.askAhead(n)
-				}
+		// Asking ahead is safe only for a portal that suspends — see the
+		// PortalSuspended case of readChunk — and a statement whose portal
+		// suspended before is one: the kind of portal is fixed by the
+		// statement. So its Executes leave with the query, and the second
+		// batch is not a round trip behind the first. A demand's limit asks
+		// for nothing ahead: see [query.run].
+		if entry >= 0 && q.allowed < 0 {
+			if n := c.stmts.entries[entry].ahead; n > 0 {
+				q.askAhead(n)
 			}
-			q.sentAt = time.Now()
 		}
+		q.sentAt = time.Now()
 		// Without this the backend holds everything it has produced until a
 		// Sync, and a Sync would close the portal the next Execute needs. See
 		// [Writer.FlushMessage].
@@ -1083,22 +1108,58 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		// The demand is read here, once per batch: the consumer that has
 		// just taken a batch may have said it wants nothing more — the
 		// query ends, the deferred resync drains the portal — or that it
-		// wants less, or from further on.
-		if q.demand.Exhausted() {
+		// wants less, or from further on. A limit the delivered rows used
+		// up ends the query too: the limit only falls, so nothing past it
+		// can be wanted.
+		if q.demand.Exhausted() || q.allowed == 0 {
 			return nil
 		}
-		if q.replan() {
+		n := 1
+		switch {
+		case q.replan():
 			// The bound moved: the unnamed portal is bound again, which
 			// the protocol says destroys the suspended one, so no Sync
 			// and no round trip sit between the two. The statement is
 			// the same, so no Describe either — the rows keep the shape
 			// the first one announced.
+			//
+			// The Executes already sent reach the old portal before the
+			// Bind, and their rows start where it stood, below the bound
+			// or ahead of where the new one starts again: either way
+			// rows the consumer must not see twice or at all. They are
+			// dropped whole up to the re-bind's BindComplete, which is
+			// the server's own marker of where the new portal begins —
+			// no row is decoded to decide, and none can slip through.
+			// What that costs is the batches asked ahead, the bound an
+			// early stop drains; a publisher that advances on every
+			// batch pays it once, since a moved bound asks for one batch
+			// and asks ahead again only once it holds.
+			if q.asked > 0 {
+				q.stale, q.held, q.rows = true, q.rows, nil
+			}
+			q.moved = true
 			c.w.BindBinary("", q.stmt, q.params)
+		case q.allowed >= 0:
+			// A limit asks for one batch at a time, sized to what is still
+			// wanted, so the server produces no row past it. Batches asked
+			// before the limit appeared are still on their way; emit cuts
+			// them to it, and nothing more is asked until they are in.
+			if q.asked > 0 {
+				continue
+			}
+		default:
+			// Nothing moved: the demand asks ahead like a query without
+			// one. After a move, this is where asking ahead resumes; from
+			// then on readChunk tops up before delivery.
+			q.moved = false
+			if n = q.ahead - q.asked; n <= 0 {
+				continue
+			}
 		}
 		// The portal suspended with rows still to come, and the consumer is
-		// still taking them: ask for the next batch. This is the pull
+		// still taking them: ask for the next batches. This is the pull
 		// reaching the server.
-		if err := q.askNext(1); err != nil {
+		if err := q.askNext(n); err != nil {
 			return err
 		}
 	}
@@ -1169,16 +1230,20 @@ func (q *query) askNext(n int) error {
 // where the consumer will; a snapshot is taken only when the demand's
 // generation moved, so the common batch costs the atomic load and nothing
 // else.
+//
+// The published limit counts from the consumer's position, which is never
+// past the rows delivered, so it and the count [query.emit] keeps down are
+// both ceilings on what is still wanted: the lower one is kept.
 func (q *query) replan() (rebind bool) {
 	snap, changed := q.demand.Current()
 	if !changed {
 		return false
 	}
-	q.rowsWanted = q.batchRows
-	if snap.Limit != pushdown.Unlimited && snap.Limit < int64(q.rowsWanted) {
+	if snap.Limit != pushdown.Unlimited && (q.allowed < 0 || snap.Limit < q.allowed) {
 		// Limit 0 never reaches here: Exhausted was checked first, and a
 		// zero would make Execute ask for every row.
-		q.rowsWanted = int(snap.Limit)
+		q.allowed = snap.Limit
+		q.rowsWanted = int(min(int64(q.batchRows), q.allowed))
 	}
 	if q.keyParam == 0 || snap.LowerBound == nil || bytes.Equal(snap.LowerBound, q.bound) {
 		return false
@@ -1221,6 +1286,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 
 		case pgwire.BackendDataRow:
 			if q.rows == nil {
+				if q.stale {
+					continue // a row of the portal a re-bind destroyed
+				}
 				// A row before its description means the stream is being read
 				// at the wrong offset, not that the server forgot.
 				return false, c.breakConn(fmt.Errorf("%w: DataRow before any RowDescription", ErrProtocol))
@@ -1254,6 +1322,9 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 		case pgwire.BackendPortalSuspended:
 			// Exactly batchRows rows arrived and more remain.
 			q.asked--
+			if q.stale {
+				continue // a batch of the portal a re-bind destroyed
+			}
 			// Without a demand, the next batches are asked for now, before
 			// this one reaches the consumer, and at least two are kept asked
 			// for: the server produces batch k+1 while the consumer works
@@ -1278,20 +1349,25 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// ahead is safe from the first PortalSuspended on, and never
 			// before it.
 			//
-			// A demand keeps the request after delivery, because the request
-			// is shaped by what the consumer says once it has the batch. Sent
-			// ahead, it could only carry the bound published after batch
-			// k-1, and AdvanceBy, which publishes the last key delivered,
-			// would re-bind the portal to start again at batch k.
-			if q.demand == nil {
-				if !q.boundAt.IsZero() {
-					q.ahead = depth(c.rtt, time.Since(q.boundAt))
-					q.boundAt = time.Time{}
-					if q.entry >= 0 && c.stmts != nil {
-						c.stmts.entries[q.entry].ahead = q.ahead
-					}
+			// A demand is timed the same way while it has no limit — a
+			// limit sizes the batch below BatchRows, and a depth timed on a
+			// short batch would be too deep for every full one after — and
+			// tops up here too while its bound holds. Topped up after
+			// delivery instead, in run, the same Executes in flight left a
+			// wide read on loopback 15% behind the same read without a
+			// demand, measured; topped up here, level with it. Right after
+			// a move it waits for run: Executes sent now would continue a
+			// portal the next move destroys, and AdvanceBy, publishing the
+			// last key delivered, moves on every batch.
+			if !q.boundAt.IsZero() && q.allowed < 0 {
+				q.ahead = depth(c.rtt, time.Since(q.boundAt))
+				if q.entry >= 0 && c.stmts != nil {
+					c.stmts.entries[q.entry].ahead = q.ahead
 				}
-				// Executes sent with the query may already cover the depth.
+			}
+			q.boundAt = time.Time{}
+			// Executes sent with the query may already cover the depth.
+			if q.demand == nil || (!q.moved && q.allowed < 0) {
 				if n := q.ahead - q.asked; n > 0 {
 					if err := q.askNext(n); err != nil {
 						return false, err
@@ -1307,6 +1383,12 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			return false, nil
 
 		case pgwire.BackendCommandComplete, pgwire.BackendEmptyQuery:
+			if q.stale {
+				// The portal a re-bind destroyed reached its end first; the
+				// Executes after this one are answered the same way.
+				q.asked--
+				continue
+			}
 			// The result is finished; what is held is the last batch. Read to
 			// the end, its row count is now the statement's to remember.
 			q.complete = true
@@ -1359,6 +1441,10 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			c.closeCompleted()
 
 		case pgwire.BackendBindComplete:
+			if q.stale {
+				// The re-bind's: what follows is the new portal's.
+				q.stale, q.rows, q.held = false, q.held, nil
+			}
 			// Expected, and the end of the round trip a batched read times.
 			// The first batch is timed from here too, rather than from its
 			// first DataRow, which would put a branch on every row: only the
@@ -1413,8 +1499,19 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 
 // emit hands the accumulated rows to the consumer as one batch and resets the
 // accumulator. It reports whether the consumer wants more.
+//
+// Under a demand's limit, the batch is cut to the rows the limit still allows:
+// batches asked ahead before the limit appeared may hold more.
 func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 	if q.rows != nil {
+		if q.allowed >= 0 {
+			if int64(q.rows.Len()) > q.allowed {
+				q.rows.truncate(int(q.allowed))
+			}
+			if q.allowed -= int64(q.rows.Len()); q.allowed > 0 {
+				q.rowsWanted = int(min(int64(q.batchRows), q.allowed))
+			}
+		}
 		q.rowsRead += q.rows.Len()
 	}
 	items, ok := q.conn.emitRows(q.ctx, q.rows, q.items, yield)

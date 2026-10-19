@@ -166,6 +166,32 @@ func TestIntegrationPushdownAdvanceBy(t *testing.T) {
 	assertConnUsable(t, conn)
 }
 
+// Without a limit, a demand asks ahead from its first batch while it holds,
+// and the second run of the statement sends its batches ahead with the query.
+// AdvanceBy moves the bound after the first batch, so those batches continue
+// a portal the re-bind destroys: the server must agree that dropping them up
+// to the re-bind's BindComplete leaves every key once, in order.
+func TestIntegrationPushdownAdvanceByAhead(t *testing.T) {
+	conn := dial(t)
+	for run := range 2 {
+		var d pushdown.Demand
+		src := pushdownQuery(t, conn, &d)
+		rows := pushdown.AdvanceBy(src.Stream(), &d, func(r postgres.Row) []byte {
+			v, _ := r.Value(0)
+			return v
+		})
+		keys, _ := readKeys(t, sluice.NewSource(rows, src.Err), nil)
+		if len(keys) != 10000 {
+			t.Fatalf("run %d: got %d keys, want 10000", run, len(keys))
+		}
+		expectRange(t, keys, 1, 10000)
+		if v := d.Violations(); v != 0 {
+			t.Errorf("run %d: Violations = %d, want 0", run, v)
+		}
+	}
+	assertConnUsable(t, conn)
+}
+
 // A demand that wants nothing before the query starts sends nothing: no
 // rows, no error, and a connection that was never made busy.
 func TestIntegrationPushdownNothingWanted(t *testing.T) {
