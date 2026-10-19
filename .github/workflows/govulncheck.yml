@@ -6,9 +6,9 @@ on:
   pull_request:
   schedule:
     # Daily: an advisory is published against code that has not changed, so
-    # waiting for the next commit would leave it unreported. The standard
-    # library and golang.org/x/crypto (with the x/sys it brings) are the whole
-    # attack surface, and both get advisories.
+    # waiting for the next commit would leave it unreported. For the root
+    # module, the standard library and the x/ modules ADR 0002 lists are the
+    # whole attack surface, and all of them get advisories.
     - cron: '17 5 * * *'
   workflow_dispatch:
 
@@ -29,9 +29,35 @@ jobs:
           # .0 floor would report every one of them forever. What matters is
           # whether the toolchain a user installs today is affected.
           go-version: 'stable'
-      # The root module only. The comparison module in benchmarks/
-      # pins competitors; it never ships, and its advisories are theirs.
+      # The root module: what a user's binary links.
       - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # The nested modules never ship, but they run on this repository's
+  # machines and pin quic-go, pgx, gin and the x/ modules they bring.
+  # govulncheck fails only on a vulnerability the module's code reaches, and
+  # the fix is a bump in that module's go.mod; nothing waits on this
+  # workflow, so a red run here reports without holding a commit back.
+  nested:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [interop, benchmarks, comparison/sluice, comparison/loadgen]
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 'stable'
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: govulncheck
+        working-directory: ${{ matrix.module }}
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...

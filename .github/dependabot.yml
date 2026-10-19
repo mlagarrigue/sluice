@@ -18,6 +18,17 @@ updates:
       interval: weekly
     commit-message:
       prefix: "build"
+  # The comparison modules pin the competitors at the versions the study
+  # compares: a version bump would move what is measured, so version updates
+  # are off (a limit of zero). Security updates, enabled on the repository,
+  # still open a pull request when an advisory names a module they require.
+  - package-ecosystem: gomod
+    directories: ["/benchmarks", "/comparison/sluice", "/comparison/loadgen"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "build"
   # The base images are pinned by digest (TestDockerImagesArePinned); these
   # entries move the digests, the interop endpoint's and the devcontainer's.
   - package-ecosystem: docker
