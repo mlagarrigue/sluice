@@ -138,7 +138,8 @@ func check(rq request, body []byte) error {
 
 // validate is the full validation of §4 against the document the dataset
 // predicts: bench_orders holds id g, total 7·g, label "order-g" (the
-// fixtures of pgdev.sh), and a write answers with its key alone.
+// fixtures of internal/bench/cmd/pgfixtures), and a write answers with its
+// key alone.
 func validate(rq request, body []byte) error {
 	var want any
 	switch rq.kind {

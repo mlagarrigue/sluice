@@ -22,7 +22,7 @@ import (
 //
 //	internal/bench/scripts/versus.sh 'BenchmarkListCompress/none' 'BenchmarkListCompress/gzip6' 15
 
-// listRow is the row of bench_orders as pgdev.sh fixtures writes it:
+// listRow is the row of bench_orders as internal/bench/cmd/pgfixtures writes it:
 // id g, total g*7, label "order-g".
 type listRow struct {
 	ID    int64  `json:"id"`

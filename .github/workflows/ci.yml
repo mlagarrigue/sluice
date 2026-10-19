@@ -299,10 +299,11 @@ jobs:
           grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log
           grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
 
-      # The tables the comparison benchmarks read, from the script a
-      # developer runs, so the two cannot drift. The runner's psql is enough.
+      # The tables the comparison benchmarks read, by the program a developer
+      # runs, so the two cannot drift. It speaks through this repository's
+      # connector: no psql on either side.
       - name: Load the benchmark fixtures
-        run: PGBIN=/usr/bin PGPORT=5432 internal/bench/scripts/pgdev.sh fixtures
+        run: go run ./internal/bench/cmd/pgfixtures
 
       # sluice and pgx read the same 1,000 rows and must agree. The comparison
       # module is outside the root's ./..., so it runs here on its own.

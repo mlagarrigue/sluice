@@ -145,7 +145,7 @@ func BenchmarkListDecode(b *testing.B) {
 	})
 }
 
-// syntheticRows are n rows shaped like pgdev.sh fixtures writes
+// syntheticRows are n rows shaped like the ones pgfixtures writes into
 // bench_orders: ids from 1, a total, a label of about twenty bytes.
 func syntheticRows(n int) []orderRow {
 	rows := make([]orderRow, n)

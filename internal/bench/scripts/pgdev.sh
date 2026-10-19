@@ -12,6 +12,9 @@
 #   go test ./database/postgres/ -run TestIntegration
 #   internal/bench/scripts/pgdev.sh stop
 #
+# The benchmark tables are loaded by go run ./internal/bench/cmd/pgfixtures,
+# which reads the variables start prints.
+#
 # The data directory lives under ${TMPDIR:-/tmp}. Unix sockets are disabled
 # rather than relocated: their path is capped at 107 bytes and a temporary
 # directory blows past it, which fails with a message about socket paths rather
@@ -63,26 +66,8 @@ destroy)
   "$PGBIN/pg_ctl" -D "$DATA" -m immediate stop >/dev/null 2>&1 || true
   rm -rf "$ROOT"
   ;;
-fixtures)
-  # The tables the comparison benchmarks read. Separate from start, because
-  # loading 120 000 rows is not something a unit-test run should pay for.
-  PGPASSWORD=sluicepass "$PGBIN/psql" -h 127.0.0.1 -p "$PGPORT" -U sluice -d sluice -q -v ON_ERROR_STOP=1 <<'SQL'
-DROP TABLE IF EXISTS bench_orders, bench_wide, bench_copy;
-CREATE TABLE bench_orders (id bigint PRIMARY KEY, total bigint NOT NULL,
-  label text NOT NULL, created timestamptz NOT NULL DEFAULT now());
-INSERT INTO bench_orders (id, total, label)
-  SELECT g, g * 7, 'order-' || g FROM generate_series(1, 100000) g;
-CREATE TABLE bench_wide (id bigint PRIMARY KEY,
-  c1 bigint, c2 bigint, c3 bigint, c4 bigint, c5 bigint,
-  t1 text, t2 text, t3 text, t4 text, t5 text);
-INSERT INTO bench_wide SELECT g, g, g+1, g+2, g+3, g+4,
-  'a'||g, 'b'||g, 'c'||g, 'd'||g, 'e'||g FROM generate_series(1, 20000) g;
-CREATE TABLE bench_copy (id bigint, label text);
-ANALYZE bench_orders; ANALYZE bench_wide;
-SQL
-  ;;
 *)
-  echo "usage: pgdev.sh {start|stop|destroy|fixtures}" >&2
+  echo "usage: pgdev.sh {start|stop|destroy}" >&2
   exit 1
   ;;
 esac

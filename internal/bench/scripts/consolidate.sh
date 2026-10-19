@@ -15,7 +15,7 @@
 # conditions, all of it stated.
 #
 # Requires a server. `eval "$(internal/bench/scripts/pgdev.sh start)"` first,
-# then `internal/bench/scripts/pgdev.sh fixtures`.
+# then `go run ./internal/bench/cmd/pgfixtures`.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BENCHTIME="${BENCHTIME:-1s}"

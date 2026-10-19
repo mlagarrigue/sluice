@@ -35,7 +35,7 @@ import (
 // a grouping bug returns one caller's row to another.
 //
 // It needs the postgres container (SLUICE_PG and friends, the tables of
-// internal/bench/scripts/pgdev.sh fixtures) and skips without it.
+// go run ./internal/bench/cmd/pgfixtures) and skips without it.
 
 const (
 	keySpace    = 100000 // bench_orders holds ids 1..100000
