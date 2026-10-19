@@ -1008,8 +1008,8 @@ they are the controls.
   1 ms and from 56% to 5.6% at 10 ms. No structural round trip is left
   between the two: the closing `Sync` leaves without being waited for, and
   a statement already seen sends its Executes ahead with the query. The
-  1.2 ms left at 10 ms is not explained; the depth (⌈RTT / T₁⌉ + 1) is the
-  first suspect.
+  1.2 ms left at 10 ms came from the depth: see "Asking ahead by the
+  shortest batch" below.
 - `Demand` still kept one request per batch here, after delivery: twenty
   round trips per read, ten times `FetchAll` at 10 ms. The next section
   measures the fix.
@@ -1044,6 +1044,53 @@ changed code: it is each series' control.
   the server's work. After a move nothing is asked ahead until the bound
   holds for a batch: `AdvanceBy`, which moves on every batch, pays that
   once per read. A limit asks for one batch at a time, sized to it.
+
+### Asking ahead by the shortest batch
+
+**Measured on 2026-10-19**, same conditions, same proxy. Before is e42743b;
+after is c00111a, where a statement's depth (⌈RTT / T₁⌉ + 1, the number of
+batches asked ahead) comes from the shortest first batch the statement has
+timed rather than from its latest. T₁ is the time of the first batch, from
+the `BindComplete` to the `PortalSuspended`: the server's work plus
+whatever delayed this side, and only the second varies. Timed on its latest
+read alone, the same statement was given depths from 11 to 31 at 10 ms for
+one result of 20 batches.
+
+The long read (`PGLongSluice`) is the wide read five times over: 100,000
+rows, 98 batches, more than one depth covers at 10 ms; the 20-batch read
+fits whole in one depth and hides the steady state. `PGStopSluiceBatched`
+stops at the first batch of the long read: the batches asked ahead are read
+and dropped, then the closing `Sync`'s `ReadyForQuery`; that is what the
+depth costs a consumer that stops. `FetchAll` and pgx are the controls.
+
+| benchmark | loopback | 1 ms | 10 ms |
+|---|---|---|---|
+| `PGWideSluice` (default) | 10.66 → 10.65 (noise) | 14.90 → 14.23 (−5.5%, 13/13) | 23.55 → 22.68 (−3.0%, 13/13) |
+| `PGWideSluiceFetchAll` | 10.50 → 10.62 (+1.3%, 0/13) | 14.57 → 14.31 (noise) | 21.89 → 21.84 (noise) |
+| `PGWidePgx` | — | 13.71 → 13.73 (noise) | 21.40 → 21.53 (noise) |
+| `PGLongSluice` | 60.34 → 61.54 (noise) | 73.60 → 71.76 (noise) | 91.55 → 82.34 (−9.3%, 11/11) |
+| `PGLongSluiceFetchAll` | — | 75.24 → 75.38 (noise) | 81.75 → 81.65 (noise) |
+| `PGStopSluiceBatched` | 2.36 → 2.36 (noise) | 5.07 → 6.46 (+27.6%, 0/13) | 28.08 → 33.29 (+19.6%, 0/13) |
+
+- The default's gap to `FetchAll` on the wide read goes from 7.6% to 3.9%
+  at 10 ms, and from 2.3% to none at 1 ms. On the long read at 10 ms, from
+  12% to 0.8%: with the previous depth, the server waited for part of every
+  round trip. At 1 ms the batched long read is already ahead of `FetchAll`.
+- The long read on loopback and at 10 ms ran under the `PGTmpLong…` names
+  of a temporary file with the same code; the 10 ms series has 12 rounds
+  (11 pairs judged), the others 14. At 10 ms each row comes from its own
+  series, paired within itself. `FetchAll`'s +1.3% on
+  loopback is a bias the two binaries share: it does not run the changed
+  code.
+- What the change costs: a consumer that stops at the first batch waits
+  1.4 ms longer at 1 ms and 5.2 ms longer at 10 ms, the extra batches it
+  drains. That is the round trip of the server's work a stop was meant to
+  cost (see `depth` in `database/postgres`); the previous depth undercut
+  it. On loopback nothing moves.
+- A margin on the formula (×1.5 or ×2 on ⌈RTT / T₁⌉) was measured first:
+  ×2 brought the wide read to 4.0% of `FetchAll` at 10 ms, as close as the
+  shortest batch, but by asking for two round trips of the server's work,
+  which every stop would drain, instead of correcting the estimate.
 
 ## Codec, in isolation
 
