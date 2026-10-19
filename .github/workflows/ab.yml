@@ -1,0 +1,78 @@
+name: ab
+
+# A paired A/B between two commits, on the runner the change is about. Some
+# changes act on one platform only — UDP segmentation offload on Windows, say
+# — and a laptop under Linux cannot measure them. This builds the package's
+# test binary at both commits and runs internal/bench/scripts/ab.sh, the same
+# protocol as a local A/B: interleaved rounds, two binary names, alternated
+# order, a sign test over the paired ratios (paired.awk). Started by hand;
+# nothing gates on it.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'Runner (windows-latest, macos-latest, ubuntu-latest)'
+        default: 'windows-latest'
+      before:
+        description: 'Commit measured as before'
+        required: true
+      after:
+        description: 'Commit measured as after'
+        required: true
+      package:
+        description: 'Package holding the benchmark'
+        default: './net/quic'
+      bench:
+        description: 'Benchmark regex'
+        required: true
+      rounds:
+        description: 'Paired rounds (paired.awk judges from 11)'
+        default: '12'
+      benchtime:
+        description: 'go test -benchtime per side and round'
+        default: '2s'
+
+permissions:
+  contents: read
+
+env:
+  GO_LATEST: 'stable'
+
+jobs:
+  ab:
+    runs-on: ${{ inputs.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache: false
+      # The inputs reach the script as environment variables, never spliced
+      # into it. CORE is empty: taskset is Linux's, and an unpinned run is the
+      # only one every runner offers.
+      - name: Paired rounds
+        env:
+          BEFORE: ${{ inputs.before }}
+          AFTER: ${{ inputs.after }}
+          PKG: ${{ inputs.package }}
+          BENCH: ${{ inputs.bench }}
+          ROUNDS: ${{ inputs.rounds }}
+          BENCHTIME: ${{ inputs.benchtime }}
+          CORE: ''
+        run: |
+          BINDIR="$(mktemp -d)"
+          for side in before after; do
+            if [ "$side" = before ]; then ref="$BEFORE"; else ref="$AFTER"; fi
+            wt="$(mktemp -d)"
+            git worktree add -q --detach "$wt" "$ref"
+            ( cd "$wt" && go test -c -o "$BINDIR/bench.$side" "$PKG" )
+          done
+          BINDIR="$BINDIR" internal/bench/scripts/ab.sh "$BENCH" "$ROUNDS" | tee rounds.txt
+          echo "--- sign test"
+          awk -f internal/bench/scripts/paired.awk rounds.txt | sort
