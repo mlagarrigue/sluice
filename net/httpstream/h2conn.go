@@ -144,7 +144,7 @@ const (
 	// rather than a body that keeps growing.
 	stateHalfClosed
 	// stateClosed: reset, or answered. The state is kept for a grace period
-	// rather than deleted — see closedRing.
+	// rather than deleted — see retire.
 	stateClosed
 )
 
@@ -235,11 +235,11 @@ type h2Server struct {
 	dec *hpackDecoder
 	w   *h2Writer
 
+	// streams is the open streams, the ones still being assembled.
 	streams map[uint32]*h2Stream
-	// open counts the streams the peer may still send on. It is not
-	// len(streams), which also holds the ones kept for the closed-stream
-	// grace period. Written by the reader; the responder reads it to know
-	// whether a drained connection is finished, hence the atomic.
+	// open counts them: written by the reader, read by the responder to know
+	// whether a drained connection is finished, hence the atomic rather than
+	// len(streams).
 	open atomic.Int32
 	// inFlight counts requests handed to the responder whose answer has not
 	// yet left the writer's hands — written, dropped or given up on. open +
@@ -261,9 +261,15 @@ type h2Server struct {
 	// until it sends one (the initial value is unlimited). Written by the
 	// reader, read by the responder.
 	peerMaxHeaderList atomic.Uint32
-	// closedRing is the closed streams in the order they closed, oldest
-	// first. See closeStream.
+	// closed is the streams retired from streams and still remembered,
+	// half-closed or closed; closedRing is their identifiers in the order
+	// they were retired, oldest first. See retire.
+	closed     map[uint32]h2State
 	closedRing []uint32
+	// late is the stream a header block on a retired stream is assembled
+	// in. One is enough: a header block is never interleaved with another
+	// (§6.10), so only one is ever arriving.
+	late h2Stream
 
 	// connWind is the connection window this end grants, connWindow(cfg);
 	// recvWind is how much of it the peer has not yet spent.
@@ -436,6 +442,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		ctx:      ctx,
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
+		closed:   make(map[uint32]h2State),
 		connWind: connWindow(cfg),
 		recvWind: connWindow(cfg),
 		w:        newH2Writer(c, cfg),
@@ -455,8 +462,11 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	}
 
 	// Capacity MaxConcurrentStreams: see the package note above for why a
-	// send on this channel can never block, and why it must not.
-	in := make(chan h2Applied, cfg.MaxConcurrentStreams)
+	// send on this channel can never block, and why it must not. Pointers,
+	// because the buffer is allocated whole with every connection and an
+	// h2Applied is 88 bytes: 8.8 KB at the default, most of what an idle
+	// HTTP/2 connection held beyond an HTTP/1.1 one.
+	in := make(chan *h2Applied, cfg.MaxConcurrentStreams)
 	var calls sync.WaitGroup
 	answered := make(chan struct{})
 	go func() {
@@ -658,12 +668,10 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 			return nil, nil, err
 		}
 		if st != nil {
+			// The request is the responder's now; the stream was retired
+			// by finish, and nothing here keeps it.
 			ready = append(ready, st.req)
 			ids = append(ids, st.id)
-			// The request is the responder's now. The stream outlives it in
-			// the closed-stream ring, and a copy left here would pin its
-			// body and headers there for MaxConcurrentStreams more closes.
-			st.req = Request{}
 		}
 	}
 	if err := s.expireAssembly(); err != nil {
@@ -687,7 +695,7 @@ func (s *h2Server) expireAssembly() error {
 	now := time.Now()
 	s.expired = s.expired[:0]
 	for id, st := range s.streams {
-		if st.state == stateOpen && now.After(st.deadline) {
+		if now.After(st.deadline) {
 			s.expired = append(s.expired, id)
 		}
 	}
@@ -760,37 +768,63 @@ func (s *h2Server) idle(id uint32) bool {
 // there; a server that quietly drops it stalls the connection a few resets
 // later with nothing in the logs to say why.
 //
+// What is kept is the state alone, an identifier and a byte, because that is
+// all a late frame needs: the stream's own fields are an open stream's, and a
+// connection that has served MaxConcurrentStreams requests holds that many
+// retired streams for as long as it lives. A header block still arriving when
+// the stream is retired is handed to late, where its remaining fragments land.
+//
 // The memory is bounded to MaxConcurrentStreams entries, oldest evicted first.
 func (s *h2Server) retire(id uint32, state h2State) {
 	st := s.streams[id]
-	if st == nil || st.state == stateClosed {
+	if st == nil {
+		// Half-closed to closed; a stream already closed, or forgotten,
+		// stays as it is.
+		if s.closed[id] == stateHalfClosed {
+			s.closed[id] = state
+		}
 		return
 	}
-	if st.state == stateOpen {
-		s.open.Add(-1)
-		s.closedRing = append(s.closedRing, id)
-		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
-			delete(s.streams, s.closedRing[0])
-			s.closedRing = s.closedRing[1:]
-		}
-	}
-	st.state = state
+	delete(s.streams, id)
+	s.open.Add(-1)
 	// The body stops counting against the aggregate assembly bound here,
 	// whichever way the stream left the open state: completed, it is the
 	// handler's and bounded by the concurrency limit; reset, it is freed.
 	s.assembling -= len(st.body)
-	// Dropping these does not free a completed request's memory — st.req
-	// holds the same backing arrays until consume hands it over and clears
-	// it — but it is the last reference a reset stream had. block goes too,
-	// unless it holds fragments of a block still arriving: those must reach
-	// the HPACK decoder whole, or every later block mis-decodes.
-	st.body, st.headers = nil, nil
-	if len(st.block) == 0 {
-		st.block = nil
+	if len(st.block) > 0 {
+		// Fragments of a block still arriving: they must reach the HPACK
+		// decoder whole, or every later block mis-decodes.
+		s.late = h2Stream{id: id, block: st.block, declared: -1}
 	}
-	if state == stateClosed {
-		st.req = Request{}
+	s.remember(id, state)
+}
+
+// remember records a retired stream, evicting the oldest past the bound.
+func (s *h2Server) remember(id uint32, state h2State) {
+	s.closed[id] = state
+	s.closedRing = append(s.closedRing, id)
+	for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
+		delete(s.closed, s.closedRing[0])
+		s.closedRing = s.closedRing[1:]
 	}
+}
+
+// lookup returns what this end knows of a stream the client opened: the
+// stream itself while it is open, late standing in for it once it is
+// retired, nil once it is forgotten.
+func (s *h2Server) lookup(id uint32) *h2Stream {
+	if st := s.streams[id]; st != nil {
+		return st
+	}
+	state, ok := s.closed[id]
+	if !ok {
+		return nil
+	}
+	if s.late.id != id {
+		s.late = h2Stream{id: id, declared: -1}
+	}
+	s.late.state = state
+	return &s.late
 }
 
 func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
@@ -870,7 +904,7 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 		if s.idle(f.StreamID) {
 			return nil, fmt.Errorf("%w: RST_STREAM on stream %d, which is idle", ErrH2Protocol, f.StreamID)
 		}
-		if st := s.streams[f.StreamID]; st != nil && st.state == stateHalfClosed {
+		if s.closed[f.StreamID] == stateHalfClosed {
 			s.served--
 		}
 		if err := s.countReset(); err != nil {
@@ -1078,7 +1112,7 @@ func (s *h2Server) blockRefused(st *h2Stream, err error) error {
 }
 
 func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
-	st := s.streams[f.StreamID]
+	st := s.lookup(f.StreamID)
 	if st == nil {
 		// An even identifier can never have been opened: those are the
 		// server's to open (§5.1.1) and this server opens none, so DATA on
@@ -1234,7 +1268,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		// connection. A client using either is not addressing a request.
 		return nil, fmt.Errorf("%w: a client opened stream %d", ErrH2Protocol, id)
 	}
-	if st := s.streams[id]; st != nil {
+	if st := s.lookup(id); st != nil {
 		return st, nil
 	}
 	if id <= s.lastID {
@@ -1270,17 +1304,11 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 			return nil, err
 		}
 		s.lastID = id
-		st := &h2Stream{id: id, state: stateClosed, declared: -1, recvWind: int32(s.cfg.InitialWindowSize)} //nolint:gosec // G115: capped by withDefaults
-		s.streams[id] = st
-		s.closedRing = append(s.closedRing, id)
-		for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
-			delete(s.streams, s.closedRing[0])
-			s.closedRing = s.closedRing[1:]
-		}
+		s.remember(id, stateClosed)
 		if err := s.w.control32(frameRSTStream, id, errRefusedStream); err != nil {
 			return nil, err
 		}
-		return st, nil
+		return s.lookup(id), nil
 	}
 	s.lastID = id
 	st := &h2Stream{
@@ -1413,9 +1441,9 @@ type h2Applied struct {
 // alone, about half a microsecond on one core (BenchmarkH2FromNetHTTP/plain);
 // reusing call goroutines is the known way down if that ever matters more
 // than the p99 above.
-func (s *h2Server) call(b h2Batch, out chan<- h2Applied) {
+func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
-	out <- h2Applied{b: b, res: res, err: err}
+	out <- &h2Applied{b: b, res: res, err: err}
 }
 
 // answer hands what the handler returned for one batch to the writer. It is
@@ -1431,7 +1459,7 @@ func (s *h2Server) call(b h2Batch, out chan<- h2Applied) {
 // Every request of b is answered once: by the writer, for a buffered answer,
 // when its job leaves its hands; here for the others — a stream reset
 // because nothing could be framed, a streamed body once it has ended.
-func (s *h2Server) answer(got h2Applied) {
+func (s *h2Server) answer(got *h2Applied) {
 	b, res, err := got.b, got.res, got.err
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does

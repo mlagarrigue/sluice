@@ -1,0 +1,187 @@
+package httpstream
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"io"
+	"net"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/mlagarrigue/sluice"
+)
+
+// liveHeap is the heap still reachable after a collection. Twice, because the
+// first only moves sync.Pool contents to their victim cache.
+func liveHeap() uint64 {
+	runtime.GC()
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapAlloc
+}
+
+// A stream outlives its request for the late frames RFC 9113 §5.1 asks this
+// end to tolerate or refuse, and every connection that has served
+// MaxConcurrentStreams requests holds that many. What those frames need is the
+// stream's state; holding the whole assembly state instead made a full ring
+// most of an idle connection's heap.
+func TestH2ClosedStreamsAreCompact(t *testing.T) {
+	const n = 1000
+	s := newBenchH2Server(Config{MaxConcurrentStreams: n})
+	frames := make([]h2Frame, n)
+	for i := range frames {
+		raw := h2HeadersFrame(uint32(2*i+1), "/") //nolint:gosec // G115: i < n
+		frames[i] = h2Frame{
+			Type:     raw[3],
+			Flags:    raw[4],
+			StreamID: binary.BigEndian.Uint32(raw[5:9]),
+			Payload:  raw[9:],
+		}
+	}
+
+	before := liveHeap()
+	// One request at a time, each answered before the next, as a client
+	// served in sequence: the writer's own per-stream state, released with
+	// the answer, never grows. The requests go nowhere, so what stays
+	// reachable is what the server keeps.
+	for i := range frames {
+		ready, ids, err := s.consume(frames[i : i+1])
+		if err != nil || len(ready) != 1 {
+			t.Fatalf("stream %d: %d requests, %v", frames[i].StreamID, len(ready), err)
+		}
+		s.w.forget(ids[0])
+		s.inFlight.Add(-1)
+	}
+	after := liveHeap()
+	runtime.KeepAlive(s)
+	runtime.KeepAlive(frames)
+
+	per := (int64(after) - int64(before)) / n
+	t.Logf("%d bytes held per answered stream", per)
+	// An *h2Stream alone is 256 bytes. An identifier and a state are five,
+	// which a map slot and a ring entry make about thirty.
+	if per > 48 {
+		t.Errorf("each closed stream holds %d bytes: more than its identifier and state", per)
+	}
+}
+
+// The steady state of a connection that has served MaxConcurrentStreams
+// requests is the point the server's memory is compared at: HTTP/2 against
+// HTTP/1.1, the same requests, the same handler, the same number of
+// connections — and clients that keep nothing but their socket, so the heap
+// measured is the server's.
+func TestH2ConnectionHeapNearH1(t *testing.T) {
+	if testing.Short() {
+		t.Skip("opens 512 connections")
+	}
+	const conns, requests = 256, defaultMaxConcurrency
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, b.Len())
+		for i := range out {
+			out[i] = Response{Status: 204}
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+
+	h1 := []byte("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+	h2Settings, _ := appendH2Frame(nil, h2Frame{Type: frameSettings})
+	h2Ack, _ := appendH2Frame(nil, h2Frame{Type: frameSettings, Flags: flagAck})
+
+	measure := func(name string, depth int, open func(c net.Conn, depth int) error) uint64 {
+		held := make([]net.Conn, 0, conns)
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		before := liveHeap()
+		for range conns {
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held = append(held, c)
+			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+			if err := open(c, depth); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		per := (liveHeap() - before) / conns
+		t.Logf("%s, %d at a time: %d bytes of live heap per connection", name, depth, per)
+		return per
+	}
+
+	http1 := func(c net.Conn, depth int) error {
+		r := bufio.NewReader(c)
+		for sent := 0; sent < requests; sent += depth {
+			if _, err := c.Write(bytes.Repeat(h1, depth)); err != nil {
+				return err
+			}
+			for answered := 0; answered < depth; {
+				line, err := r.ReadSlice('\n')
+				if err != nil {
+					return err
+				}
+				if bytes.HasPrefix(line, []byte("HTTP/1.1 204")) {
+					answered++
+				}
+			}
+		}
+		return nil
+	}
+	http2 := func(c net.Conn, depth int) error {
+		out := append([]byte(Preface), h2Settings...)
+		var head [9]byte
+		payload := make([]byte, 1<<14)
+		for sent := 0; sent < requests; sent += depth {
+			for i := range depth {
+				out = append(out, h2HeadersFrame(uint32(2*(sent+i)+1), "/")...) //nolint:gosec // G115: under requests
+			}
+			if _, err := c.Write(out); err != nil {
+				return err
+			}
+			out = out[:0]
+			for answered := 0; answered < depth; {
+				if _, err := io.ReadFull(c, head[:]); err != nil {
+					return err
+				}
+				size := int(head[0])<<16 | int(head[1])<<8 | int(head[2])
+				if size > len(payload) {
+					payload = make([]byte, size)
+				}
+				if _, err := io.ReadFull(c, payload[:size]); err != nil {
+					return err
+				}
+				switch {
+				case head[3] == frameSettings && head[4]&flagAck == 0:
+					if _, err := c.Write(h2Ack); err != nil {
+						return err
+					}
+				case head[3] == frameHeaders && head[4]&flagEndStream != 0:
+					answered++
+				}
+			}
+		}
+		return nil
+	}
+
+	// One at a time is a connection under ordinary load, the point the two
+	// protocols are held to. All at once is a burst, which leaves each
+	// side's scratch at its high-water mark; HTTP/2's responder keeps more of
+	// it, and the bound only holds the line.
+	for _, tc := range []struct {
+		depth int
+		ratio float64
+	}{{1, 1.3}, {requests, 1.8}} {
+		one := measure("HTTP/1.1", tc.depth, http1)
+		two := measure("HTTP/2", tc.depth, http2)
+		if r := float64(two) / float64(one); r > tc.ratio {
+			t.Errorf("%d at a time: an HTTP/2 connection holds %d bytes of live heap, %.2f× the %d of an HTTP/1.1 one, over %.1f×",
+				tc.depth, two, r, one, tc.ratio)
+		}
+	}
+}

@@ -23,6 +23,7 @@ func newBenchH2Server(cfg Config) *h2Server {
 		},
 		dec:      newHPACKDecoder(4096, cfg.MaxHeaderBytes),
 		streams:  make(map[uint32]*h2Stream),
+		closed:   make(map[uint32]h2State),
 		connWind: connWindow(cfg),
 		recvWind: connWindow(cfg),
 		w:        newH2Writer(&memConn{}, cfg),
@@ -36,6 +37,7 @@ func newBenchH2Server(cfg Config) *h2Server {
 // leaves no dynamic-table state behind.
 func resetBenchH2Server(s *h2Server) {
 	clear(s.streams)
+	clear(s.closed)
 	s.open.Store(0)
 	s.inFlight.Store(0)
 	s.lastID = 0
