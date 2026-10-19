@@ -101,23 +101,23 @@ func newKeyedConn(t *testing.T) (c *Conn, peer *packetSealer) {
 
 // newKeyedConnOn is newKeyedConn over sockets the caller holds, for a test
 // that reads what the Conn writes.
-func newKeyedConnOn(t *testing.T, pcA, pcB net.PacketConn) (c *Conn, peer *packetSealer) {
-	t.Helper()
+func newKeyedConnOn(tb testing.TB, pcA, pcB net.PacketConn) (c *Conn, peer *packetSealer) {
+	tb.Helper()
 	c = newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
-	t.Cleanup(func() { _ = c.Close() })
+	tb.Cleanup(func() { _ = c.Close() })
 	sec, err := initialSecrets([]byte("app-secrets"))
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, sec.Server, true); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, sec.Client, false); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	peer, err = newSealerSuite(sec.Client, aes128Suite)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	c.mu.Lock()
 	c.handshakeConfirmed = true

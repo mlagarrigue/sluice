@@ -570,17 +570,17 @@ func TestListenerValidatesTheAddressDuringTheHandshake(t *testing.T) {
 
 // newLoopbackPair gives two real UDP sockets addressed at each other, for
 // internal tests that need a Conn without a full handshake.
-func newLoopbackPair(t *testing.T) (a, b net.PacketConn) {
-	t.Helper()
+func newLoopbackPair(tb testing.TB) (a, b net.PacketConn) {
+	tb.Helper()
 	pa, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	pb, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
+	tb.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 	return pa, pb
 }
 
