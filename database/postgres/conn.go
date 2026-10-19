@@ -1187,6 +1187,17 @@ const (
 // of the server's work, which is also what a stop drains. The ceiling bounds
 // what a slow network and a cheap batch would otherwise ask for.
 //
+// The batch is the shortest first batch the statement has timed, as the round
+// trip is the shortest the connection has: one sample is the server's work
+// plus whatever delayed this side, and only the second varies. Timed on its
+// latest read alone, the same statement on a 10 ms link was given depths
+// from 11 to 31 for one result of 20 batches; a read of 98 batches was 12%
+// behind FetchAll, the server idle for part of every round trip, and within
+// 1% of it timed by the shortest, measured. The same depth makes a consumer
+// that stops at the first batch wait 20% longer at 10 ms and 28% at 1 ms, the
+// extra batches it drains: that is the round trip of the server's work it was
+// meant to cost, which the shallower depth undercut.
+//
 // A clock that did not move — a round trip of zero — gives the floor: there
 // is nothing to scale by. A batch of zero under a round trip that is not
 // gives the ceiling.
@@ -1360,9 +1371,18 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// portal the next move destroys, and AdvanceBy, publishing the
 			// last key delivered, moves on every batch.
 			if !q.boundAt.IsZero() && q.allowed < 0 {
-				q.ahead = depth(c.rtt, time.Since(q.boundAt))
+				batch := time.Since(q.boundAt)
+				var e *stmtEntry
 				if q.entry >= 0 && c.stmts != nil {
-					c.stmts.entries[q.entry].ahead = q.ahead
+					e = &c.stmts.entries[q.entry]
+					if e.batch == 0 || batch < e.batch {
+						e.batch = batch
+					}
+					batch = e.batch
+				}
+				q.ahead = depth(c.rtt, batch)
+				if e != nil {
+					e.ahead = q.ahead
 				}
 			}
 			q.boundAt = time.Time{}

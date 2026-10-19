@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // ErrStalePlan reports a prepared statement the server refused because the
@@ -74,6 +75,11 @@ type stmtEntry struct {
 	// next execution sends that many Executes with the query itself rather
 	// than a round trip later: see [query.run].
 	ahead int
+
+	// batch is the shortest time a batched read of the statement took to
+	// produce its first batch, from the BindComplete; zero until one did.
+	// ahead is set from it: see [depth].
+	batch time.Duration
 }
 
 // defaultStatementCacheBound is the cache a connection starts with — the

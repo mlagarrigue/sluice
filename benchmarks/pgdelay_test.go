@@ -153,3 +153,57 @@ func BenchmarkPGStopSluice(b *testing.B) {
 		b.Fatal(err)
 	}
 }
+
+// longSQL is the wide read five times over: 100,000 rows, 98 batches of
+// 1,024, which the server streams as it produces them — more batches than a
+// 10 ms round trip asks ahead, where the wide read's 20 fit in one depth.
+const longSQL = `SELECT id, c1, c2, c3, c4, c5, t1, t2, t3, t4, t5 FROM bench_wide, generate_series(1, 5)`
+
+// The long read is where the ask-ahead depth shows: the read outlasts it, so
+// a depth short of a round trip leaves the server idle for the rest of every
+// round trip, which FetchAll, one Execute for everything, never does.
+func BenchmarkPGLongSluice(b *testing.B) {
+	benchLongSluice(b, postgres.QueryConfig{BatchRows: 1024})
+}
+
+func BenchmarkPGLongSluiceFetchAll(b *testing.B) {
+	benchLongSluice(b, postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
+}
+
+func benchLongSluice(b *testing.B, cfg postgres.QueryConfig) {
+	conn := sluiceConn(b)
+	for b.Loop() {
+		src := conn.Query(b.Context(), longSQL, nil, cfg)
+		src.Stream()(func(sluice.Batch[postgres.Row]) bool {
+			spinBatch()
+			return true
+		})
+		if err := src.Err(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A consumer that stops at the first batch of the long read. Nothing is
+// cancelled: the batches asked ahead are read and dropped, then the closing
+// Sync's ReadyForQuery, so stop-ns is what asking ahead costs a consumer that
+// stops — about one round trip of the server's work, see the depth of a
+// batched read in database/postgres.
+func BenchmarkPGStopSluiceBatched(b *testing.B) {
+	conn := sluiceConn(b)
+	var stops []time.Duration
+	b.ReportAllocs()
+	for b.Loop() {
+		var stoppedAt time.Time
+		src := conn.Query(b.Context(), longSQL, nil, postgres.QueryConfig{BatchRows: 1024})
+		src.Stream()(func(sluice.Batch[postgres.Row]) bool {
+			stoppedAt = time.Now()
+			return false
+		})
+		if err := src.Err(); err != nil {
+			b.Fatal(err)
+		}
+		stops = append(stops, time.Since(stoppedAt))
+	}
+	reportPercentiles(b, "stop", stops)
+}
