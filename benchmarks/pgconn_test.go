@@ -517,6 +517,9 @@ func benchWideSQL(b *testing.B, driver string) {
 
 // --- bulk COPY -----------------------------------------------------------------
 
+// copyRows is one COPY. The table is emptied after every one, outside the
+// timer: a second of COPY is a few hundred megabytes, which fills the
+// devcontainer's 512 MB tmpfs if it is kept until the end of the run.
 const copyRows = 50_000
 
 func BenchmarkPGCopySluice(b *testing.B) {
@@ -543,9 +546,10 @@ func BenchmarkPGCopySluice(b *testing.B) {
 		if err := cp.Close(); err != nil {
 			b.Fatal(err)
 		}
+		b.StopTimer()
+		truncate(b, conn)
+		b.StartTimer()
 	}
-	b.StopTimer()
-	truncate(b, conn)
 }
 
 func BenchmarkPGCopyPgx(b *testing.B) {
@@ -561,10 +565,11 @@ func BenchmarkPGCopyPgx(b *testing.B) {
 			[]string{"id", "label"}, pgx.CopyFromRows(rows)); err != nil {
 			b.Fatal(err)
 		}
-	}
-	b.StopTimer()
-	if _, err := conn.Exec(ctx, "TRUNCATE bench_copy"); err != nil {
-		b.Fatal(err)
+		b.StopTimer()
+		if _, err := conn.Exec(ctx, "TRUNCATE bench_copy"); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
 	}
 }
 
