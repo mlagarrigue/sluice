@@ -83,14 +83,19 @@ func fiberURL(b testing.TB) string {
 
 // client keeps connections alive, so what is measured is request handling
 // rather than connection setup.
-func client() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost: 128,
-			DisableCompression:  true,
-		},
+//
+// Its idle connections are closed at cleanup, which runs before the server's
+// own since cleanups run last-registered first: fasthttp's Shutdown waits
+// without a deadline for every connection to close, and 32 kept-alive ones
+// held the concurrent fiber benchmark there forever.
+func client(tb testing.TB) *http.Client {
+	tb.Helper()
+	tr := &http.Transport{
+		MaxIdleConnsPerHost: 128,
+		DisableCompression:  true,
 	}
+	tb.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Timeout: 10 * time.Second, Transport: tr}
 }
 
 // fire reports failures with b.Error rather than b.Fatal: the concurrent
@@ -123,7 +128,7 @@ func fire(b *testing.B, c *http.Client, url string, qty int64) {
 
 func benchOverSocket(b *testing.B, url string) {
 	b.Helper()
-	c := client()
+	c := client(b)
 	// Warm the connection pool, so the first iteration does not pay for a
 	// handshake the others do not.
 	for range 20 {
@@ -147,7 +152,7 @@ func BenchmarkSocketFiberFasthttp(b *testing.B) { benchOverSocket(b, fiberURL(b)
 // Concurrent, which is the shape a server actually sees.
 func benchOverSocketConcurrent(b *testing.B, url string, n int) {
 	b.Helper()
-	c := client()
+	c := client(b)
 	for range 20 {
 		fire(b, c, url, 9)
 	}
@@ -181,7 +186,7 @@ func BenchmarkSocketConcurrentFiberFasthttp(b *testing.B) {
 // as a labelled one.
 func TestFiberAgreesWithTheRest(t *testing.T) {
 	url := fiberURL(t)
-	c := client()
+	c := client(t)
 
 	for _, qty := range []int64{9, 0} {
 		body := `{"saleQty":` + strconv.FormatInt(qty, 10) + `}`
@@ -266,7 +271,7 @@ func TestSocketHarnessIsNotTheBottleneck(t *testing.T) {
 		t.Skip("the race detector instruments every memory access: timings measure it, not the code")
 	}
 	url := listenAndServe(t, netHTTPHandler())
-	c := client()
+	c := client(t)
 
 	body := `{"saleQty":9}`
 	warm := func() {
