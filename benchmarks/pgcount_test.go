@@ -117,6 +117,7 @@ func (c *countConn) Write(p []byte) (int, error) {
 // stand for wakeups: with GOMAXPROCS=1 a parked read puts the only P's thread
 // to sleep in epoll_wait, and its return is one switch.
 func countReport(b *testing.B) func() {
+	b.Helper()
 	if !countingEnabled() || lastCount == nil {
 		return func() {}
 	}

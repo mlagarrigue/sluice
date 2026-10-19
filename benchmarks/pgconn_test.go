@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/lib/pq"
+
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
 )
@@ -41,7 +42,7 @@ import (
 // between drivers shrink accordingly. Read the *shape*: where a driver spends
 // allocations, and whether a batched read costs one round trip or a thousand.
 
-func pgTarget(b testing.TB) (addr, user, db, password string, ok bool) {
+func pgTarget() (addr, user, db, password string, ok bool) {
 	addr = os.Getenv("SLUICE_PG")
 	if addr == "" {
 		return "", "", "", "", false
@@ -56,62 +57,62 @@ func pgTarget(b testing.TB) (addr, user, db, password string, ok bool) {
 	return addr, user, db, os.Getenv("SLUICE_PG_PASSWORD"), true
 }
 
-func dsn(b testing.TB) string {
-	b.Helper()
-	addr, user, db, pass, ok := pgTarget(b)
+func dsn(tb testing.TB) string {
+	tb.Helper()
+	addr, user, db, pass, ok := pgTarget()
 	if !ok {
-		b.Skip("SLUICE_PG is not set")
+		tb.Skip("SLUICE_PG is not set")
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port, db)
 }
 
-func sluiceConn(b testing.TB) *postgres.Conn {
-	b.Helper()
-	addr, user, db, pass, ok := pgTarget(b)
+func sluiceConn(tb testing.TB) *postgres.Conn {
+	tb.Helper()
+	addr, user, db, pass, ok := pgTarget()
 	if !ok {
-		b.Skip("SLUICE_PG is not set")
+		tb.Skip("SLUICE_PG is not set")
 	}
 	dial := func(ctx context.Context) (io.ReadWriteCloser, error) { return dialCount(ctx, "tcp", addr) }
 	conn, err := postgres.Connect(context.Background(), dial, postgres.Config{User: user, Database: db, Password: pass})
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	b.Cleanup(func() { _ = conn.Close() })
+	tb.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
 
-func pgxConn(b testing.TB) *pgx.Conn {
-	b.Helper()
-	pcfg, err := pgx.ParseConfig(dsn(b))
+func pgxConn(tb testing.TB) *pgx.Conn {
+	tb.Helper()
+	pcfg, err := pgx.ParseConfig(dsn(tb))
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	pcfg.DialFunc = dialCount
 	conn, err := pgx.ConnectConfig(context.Background(), pcfg)
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	b.Cleanup(func() { _ = conn.Close(context.Background()) })
+	tb.Cleanup(func() { _ = conn.Close(context.Background()) })
 	return conn
 }
 
-func sqlDB(b testing.TB, driver string) *sql.DB {
-	b.Helper()
-	db, err := sql.Open(driver, dsn(b))
+func sqlDB(tb testing.TB, driver string) *sql.DB {
+	tb.Helper()
+	db, err := sql.Open(driver, dsn(tb))
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	// One connection, so this measures the driver rather than the pool.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	if err := db.Ping(); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	b.Cleanup(func() { _ = db.Close() })
+	tb.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -253,6 +254,7 @@ func BenchmarkPGPointLibPQ(b *testing.B)  { benchPointSQL(b, "postgres") }
 func BenchmarkPGPointPgxSQL(b *testing.B) { benchPointSQL(b, "pgx") }
 
 func benchPointSQL(b *testing.B, driver string) {
+	b.Helper()
 	db := sqlDB(b, driver)
 	// lib/pq numbers its parameters the same way, so the text is identical.
 	var acc int64
@@ -352,6 +354,7 @@ func BenchmarkPGAnyPgx(b *testing.B) {
 func BenchmarkPGAnyPgxSQL(b *testing.B) { benchAnySQL(b, "pgx") }
 
 func benchAnySQL(b *testing.B, driver string) {
+	b.Helper()
 	db := sqlDB(b, driver)
 	keys := thousandKeys()
 	var seen int
@@ -400,6 +403,7 @@ func BenchmarkPGWideSluiceFetchAll(b *testing.B) {
 }
 
 func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
+	b.Helper()
 	conn := sluiceConn(b)
 	var acc int64
 	var first, last []time.Duration
@@ -490,6 +494,7 @@ func BenchmarkPGWidePgxSQL(b *testing.B) { benchWideSQL(b, "pgx") }
 func BenchmarkPGWideLibPQ(b *testing.B)  { benchWideSQL(b, "postgres") }
 
 func benchWideSQL(b *testing.B, driver string) {
+	b.Helper()
 	db := sqlDB(b, driver)
 	var acc int64
 	b.ReportAllocs()
@@ -573,17 +578,17 @@ func BenchmarkPGCopyPgx(b *testing.B) {
 	}
 }
 
-func truncate(b testing.TB, conn *postgres.Conn) {
-	b.Helper()
+func truncate(tb testing.TB, conn *postgres.Conn) {
+	tb.Helper()
 	if err := conn.Exec(context.Background(), "TRUNCATE bench_copy"); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 }
 
 // Every contender must read the same rows, or the figures beside each other
 // mean nothing. This runs before the benchmarks are believed.
 func TestPGContendersAgree(t *testing.T) {
-	if _, _, _, _, ok := pgTarget(t); !ok {
+	if _, _, _, _, ok := pgTarget(); !ok {
 		t.Skip("SLUICE_PG is not set")
 	}
 

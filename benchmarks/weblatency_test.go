@@ -129,7 +129,8 @@ func TestWebLatencyDistribution(t *testing.T) {
 // hand-off to another goroutine, and a batch that usually holds one element.
 // The number this produces is the cost of the mechanism, and it is published
 // because a comparison that only showed the wins would not be believed.
-func gatewayHandler(t testing.TB) http.Handler {
+func gatewayHandler(tb testing.TB) http.Handler {
+	tb.Helper()
 	gw := gateway.New(
 		gateway.Config{Size: 64, Within: 200 * time.Microsecond},
 		func(calls sluice.Stream[*gateway.Call[amendRequest, amendResult]]) {
@@ -150,7 +151,7 @@ func gatewayHandler(t testing.TB) http.Handler {
 				return true
 			})
 		})
-	t.Cleanup(func() { _ = gw.Close() })
+	tb.Cleanup(func() { _ = gw.Close() })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter, r *http.Request) {

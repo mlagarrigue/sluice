@@ -38,22 +38,22 @@ import (
 // reported as a different thing — which is also why it is the row this project
 // is most likely to lose.
 
-func listenAndServe(b testing.TB, h http.Handler) string {
-	b.Helper()
+func listenAndServe(tb testing.TB, h http.Handler) string {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
-	b.Cleanup(func() { _ = srv.Close() })
+	tb.Cleanup(func() { _ = srv.Close() })
 	return "http://" + ln.Addr().String()
 }
 
 // fiberURL starts a fiber app on its own listener. Written the way fiber's own
 // documentation writes it.
-func fiberURL(b testing.TB) string {
-	b.Helper()
+func fiberURL(tb testing.TB) string {
+	tb.Helper()
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Patch("/orders/:order/lines/:line", func(c *fiber.Ctx) error {
 		order, err := strconv.ParseInt(c.Params("order"), 10, 64)
@@ -74,10 +74,10 @@ func fiberURL(b testing.TB) string {
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	go func() { _ = app.Listener(ln) }()
-	b.Cleanup(func() { _ = app.Shutdown() })
+	tb.Cleanup(func() { _ = app.Shutdown() })
 	return "http://" + ln.Addr().String()
 }
 

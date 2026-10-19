@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/mlagarrigue/sluice/database/postgres"
 )
 

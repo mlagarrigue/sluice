@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-chi/chi/v5"
 	"github.com/labstack/echo/v4"
+
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/web"
 )

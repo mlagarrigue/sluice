@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/gateway"
@@ -57,20 +58,22 @@ type order struct {
 
 // --- sluice: one connection, one gateway, one query per batch -----------------
 
-func sluiceDBHandler(b testing.TB) http.Handler {
-	h, _ := sluiceDBHandlerCounted(b)
+func sluiceDBHandler(tb testing.TB) http.Handler {
+	tb.Helper()
+	h, _ := sluiceDBHandlerCounted(tb)
 	return h
 }
 
 // sluiceDBHandlerCounted also returns how many queries the pipeline has issued,
 // which is the claim itself: sixty-four requests must reach the database as one.
-func sluiceDBHandlerCounted(b testing.TB) (http.Handler, *atomic.Int64) {
-	conn := sluiceConn(b)
+func sluiceDBHandlerCounted(tb testing.TB) (http.Handler, *atomic.Int64) {
+	tb.Helper()
+	conn := sluiceConn(tb)
 	if err := conn.PrepareStatements(8); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	buf := make([]byte, 0, 64*12+64)
-	return dbGatewayHandler(b, func(ids []int64, found map[int64]int64) error {
+	return dbGatewayHandler(tb, func(ids []int64, found map[int64]int64) error {
 		// The whole thesis, in one statement: every id in the batch leaves
 		// as one array parameter and comes back in one result.
 		buf = postgres.AppendInt8Array(buf[:0], ids)
@@ -98,9 +101,10 @@ func sluiceDBHandlerCounted(b testing.TB) (http.Handler, *atomic.Int64) {
 // gateway and the socket instead of database/postgres. Against
 // sluiceDBHandlerCounted it isolates the driver — the comparison above, pgx
 // one query per request, mixes the driver with the grouping.
-func pgxGatewayHandler(b testing.TB) (http.Handler, *atomic.Int64) {
-	conn := pgxConn(b)
-	return dbGatewayHandler(b, func(ids []int64, found map[int64]int64) error {
+func pgxGatewayHandler(tb testing.TB) (http.Handler, *atomic.Int64) {
+	tb.Helper()
+	conn := pgxConn(tb)
+	return dbGatewayHandler(tb, func(ids []int64, found map[int64]int64) error {
 		rows, err := conn.Query(context.Background(), dbQuery, ids)
 		if err != nil {
 			return err
@@ -120,7 +124,8 @@ func pgxGatewayHandler(b testing.TB) (http.Handler, *atomic.Int64) {
 // dbGatewayHandler is the gateway and the handler both drivers share; fetch
 // fills found with the rows of one batch, in one round trip. The counter is
 // the claim itself: sixty-four requests must reach the database as one.
-func dbGatewayHandler(b testing.TB, fetch func(ids []int64, found map[int64]int64) error) (http.Handler, *atomic.Int64) {
+func dbGatewayHandler(tb testing.TB, fetch func(ids []int64, found map[int64]int64) error) (http.Handler, *atomic.Int64) {
+	tb.Helper()
 	var queries atomic.Int64
 	gw := gateway.New(
 		gateway.Config{Size: 64, Within: 2 * time.Millisecond},
@@ -147,7 +152,7 @@ func dbGatewayHandler(b testing.TB, fetch func(ids []int64, found map[int64]int6
 				return true
 			})
 		})
-	b.Cleanup(func() { _ = gw.Close() })
+	tb.Cleanup(func() { _ = gw.Close() })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -168,21 +173,22 @@ func dbGatewayHandler(b testing.TB, fetch func(ids []int64, found map[int64]int6
 
 // --- pgx: one query per request, over a pool of a chosen size -----------------
 
-func pgxDBHandler(b testing.TB, poolSize int32) http.Handler {
-	cfg, err := pgxpool.ParseConfig(dsn(b))
+func pgxDBHandler(tb testing.TB, poolSize int32) http.Handler {
+	tb.Helper()
+	cfg, err := pgxpool.ParseConfig(dsn(tb))
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	cfg.MaxConns = poolSize
 	cfg.MinConns = poolSize
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := pool.Ping(context.Background()); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	b.Cleanup(pool.Close)
+	tb.Cleanup(pool.Close)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -209,17 +215,18 @@ func writeOrder(w http.ResponseWriter, o order) error {
 
 // --- database/sql, one connection, for the like-for-like row -------------------
 
-func sqlDBHandler(b testing.TB, driver string, conns int) http.Handler {
-	db, err := sql.Open(driver, dsn(b))
+func sqlDBHandler(tb testing.TB, driver string, conns int) http.Handler {
+	tb.Helper()
+	db, err := sql.Open(driver, dsn(tb))
 	if err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
 	db.SetMaxOpenConns(conns)
 	db.SetMaxIdleConns(conns)
 	if err := db.Ping(); err != nil {
-		b.Fatal(err)
+		tb.Fatal(err)
 	}
-	b.Cleanup(func() { _ = db.Close() })
+	tb.Cleanup(func() { _ = db.Close() })
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +314,7 @@ func BenchmarkWebDBPgxPool64(b *testing.B) {
 // Both sides must answer the same thing, or the figures beside each other mean
 // nothing.
 func TestWebDBContendersAgree(t *testing.T) {
-	if _, _, _, _, ok := pgTarget(t); !ok {
+	if _, _, _, _, ok := pgTarget(); !ok {
 		t.Skip("SLUICE_PG is not set")
 	}
 
@@ -356,7 +363,7 @@ func TestWebDBContendersAgree(t *testing.T) {
 // a check that reported "0 queries for 64 requests" and passed, which is worse
 // than no check at all.
 func TestGatewayIssuesOneQueryPerBatch(t *testing.T) {
-	if _, _, _, _, ok := pgTarget(t); !ok {
+	if _, _, _, _, ok := pgTarget(); !ok {
 		t.Skip("SLUICE_PG is not set")
 	}
 	h, queries := sluiceDBHandlerCounted(t)

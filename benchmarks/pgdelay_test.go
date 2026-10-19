@@ -171,6 +171,7 @@ func BenchmarkPGLongSluiceFetchAll(b *testing.B) {
 }
 
 func benchLongSluice(b *testing.B, cfg postgres.QueryConfig) {
+	b.Helper()
 	conn := sluiceConn(b)
 	for b.Loop() {
 		src := conn.Query(b.Context(), longSQL, nil, cfg)
