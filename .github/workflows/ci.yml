@@ -179,6 +179,12 @@ jobs:
       - name: Vet
         working-directory: benchmarks
         run: go vet ./...
+      # Once each, not for figures: a benchmark that hangs or fails goes red
+      # here. Without SLUICE_PG the connector benchmarks skip; the postgres
+      # job checks that the contenders agree against a real server.
+      - name: Bench once
+        working-directory: benchmarks
+        run: go test -run '^$' -bench . -benchtime 1x ./...
 
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about
@@ -251,6 +257,25 @@ jobs:
           fi
           if [ "$PG_MAJOR" -ge 18 ] && ! grep -- '--- PASS: TestIntegrationProtocol32LongCancelKey' test.log; then
             echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
+            exit 1
+          fi
+
+      # The tables the comparison benchmarks read, from the script a
+      # developer runs, so the two cannot drift. The runner's psql is enough.
+      - name: Load the benchmark fixtures
+        run: PGBIN=/usr/bin PGPORT=5432 internal/bench/scripts/pgdev.sh fixtures
+
+      # sluice and pgx read the same 1,000 rows and must agree. The comparison
+      # module is outside the root's ./..., so it runs here on its own.
+      - name: Contenders agree
+        shell: bash
+        working-directory: benchmarks
+        env:
+          GOWORK: off
+        run: |
+          go test -count=1 -v -run '^TestPGContendersAgree$' ./... | tee test.log
+          if grep 'SLUICE_PG is not set' test.log || ! grep -- '--- PASS: TestPGContendersAgree' test.log; then
+            echo "::error::TestPGContendersAgree did not pass against PostgreSQL" >&2
             exit 1
           fi
           if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
