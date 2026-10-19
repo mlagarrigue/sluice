@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07 (the rule predates the record; this writes it down)
-- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`)
+- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main`)
 - **Theme:** ci
 
 ## Problem
@@ -48,14 +48,18 @@ which depends on this one and not the reverse. A test-only import in the
 root module would still put the library in `go.mod` and in every consumer's
 module graph; a nested module is excluded from the root's `./...`, so
 nothing it requires reaches a user's binary or `go.mod`, and CI's `deps`
-job keeps it that way. Two such modules exist: `benchmarks/`, on the
-`benchmarks` branch, where `pgx`, `gin` or `echo` are compared — and
-`TestPGContendersAgree` asserts that the connector reads the same rows as
-`pgx` — and `interop/`, on `main`, where `net/quic` is confronted with
-`quic-go` on every push (since 2026-10-10). The interop module is on `main`
-because a conformance test that does not run on the code being changed
-proves nothing about it; the comparison module is on its own branch because
-a measurement is taken on purpose, not on every push.
+job keeps it that way. Two such modules exist, both nested on `main` and
+both replacing the root with the working tree: `benchmarks/`, where `pgx`,
+`gin` or `echo` are compared — and `TestPGContendersAgree` asserts that the
+connector reads the same rows as `pgx` — and `interop/`, where `net/quic`
+is confronted with `quic-go` on every push (since 2026-10-10). Neither runs
+in `scripts/check.sh` or in the root's `go test ./...`. The comparison
+module moved to `main` on 2026-10-19: on its own branch it had fallen 201
+commits behind, and a measurement of code that is no longer the code proves
+nothing about it — the very argument that had put interop on `main`. The
+measurements are still taken on purpose, not on every push; what runs on
+every push is `go vet` in the `benchmarks-module` job, so an API change
+that breaks the module goes red the day it lands.
 
 ## Rationale
 

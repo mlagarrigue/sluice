@@ -27,8 +27,9 @@ against the design, not work around it.
    an ADR that states its reason and its transitive graph, never through a
    `go get` on the side. The criterion is the least useless code, not a
    count: a maintained compressor beats a home-made one. Tests that compare
-   against other libraries (`pgx`, `gin`…) live in a separate module on the
-   `benchmarks` branch, so that nothing reaches a user's `go.mod`.
+   against other libraries (`pgx`, `gin`…) live in a separate module,
+   `benchmarks/`, nested beside the root one, so that nothing reaches a
+   user's `go.mod`.
 2. **The batch is the unit of transport.** Not the element. A function that
    handles N elements handles 1 without effort; the converse is false.
 3. **No unbounded allocation.** Every operator that retains state takes its

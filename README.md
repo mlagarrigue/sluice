@@ -242,9 +242,9 @@ Against what Go developers already use, measured on the same machine:
 
 Sluice.go is not faster per request: it does the same work with far fewer
 connections. Detail and method: [measurements](docs/benchmarks.md). The
-comparisons against other libraries come from a separate module on the
-`benchmarks` branch, which depends on this one and never the reverse, so
-none of them enters this module's dependencies.
+comparisons against other libraries come from a separate module,
+`benchmarks/`, nested in this repository: it depends on this one and never
+the reverse, so none of them enters this module's dependencies.
 
 **A full comparison, with other languages and other approaches, is in
 preparation** — scenarios, method and results will be published together.

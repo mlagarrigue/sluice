@@ -48,8 +48,7 @@ truncates it between repetitions.
 
 ### Running it
 
-It is its own Go module, like `benchmarks/` on the `benchmarks` branch:
-it replaces the root with the working tree, so a run measures the commit it
+It is its own Go module, like `benchmarks/`: it replaces the root with the working tree, so a run measures the commit it
 is run from, and the root's `go test ./...` never sees it.
 
 ```
