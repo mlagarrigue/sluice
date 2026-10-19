@@ -48,97 +48,103 @@ func TestQueryRefusesACancelledContextWithoutSpeaking(t *testing.T) {
 // connection survives it. A cancelled query that broke the connection would
 // make a request deadline cost the caller their connection too.
 func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
-	// One row, then the portal suspends with more to come — which is where
-	// the context is checked.
-	var suspended []byte
-	suspended = append(suspended, beSimple(pgwire.BackendParseComplete)...)
-	suspended = append(suspended, beSimple(pgwire.BackendBindComplete)...)
-	suspended = append(suspended, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
-	suspended = append(suspended, beDataRow(int8Val(1))...)
-	suspended = append(suspended, beSimple(pgwire.BackendPortalSuspended)...)
+	// The clock stands still in a bubble, so the round trip and the first
+	// batch time to zero and the client keeps the floor of two batches ahead.
+	synctest.Test(t, func(t *testing.T) {
+		// One row, then the portal suspends with more to come — which is where
+		// the context is checked.
+		var suspended []byte
+		suspended = append(suspended, beSimple(pgwire.BackendParseComplete)...)
+		suspended = append(suspended, beSimple(pgwire.BackendBindComplete)...)
+		suspended = append(suspended, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		suspended = append(suspended, beDataRow(int8Val(1))...)
+		suspended = append(suspended, beSimple(pgwire.BackendPortalSuspended)...)
 
-	// A whole second query, to prove the connection is still usable.
-	var second []byte
-	second = append(second, beSimple(pgwire.BackendParseComplete)...)
-	second = append(second, beSimple(pgwire.BackendBindComplete)...)
-	second = append(second, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
-	second = append(second, beDataRow(int8Val(2))...)
-	second = append(second, beCommandComplete("SELECT 1")...)
+		// A whole second query, to prove the connection is still usable.
+		var second []byte
+		second = append(second, beSimple(pgwire.BackendParseComplete)...)
+		second = append(second, beSimple(pgwire.BackendBindComplete)...)
+		second = append(second, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		second = append(second, beDataRow(int8Val(2))...)
+		second = append(second, beCommandComplete("SELECT 1")...)
 
-	// The answer to the two Executes sent ahead of the first batch's
-	// delivery, which the resync drains.
-	var ahead []byte
-	ahead = append(ahead, beDataRow(int8Val(98))...)
-	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
-	ahead = append(ahead, beDataRow(int8Val(99))...)
-	ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+		// The answer to the two Executes sent ahead of the first batch's
+		// delivery, which the resync drains.
+		var ahead []byte
+		ahead = append(ahead, beDataRow(int8Val(98))...)
+		ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
+		ahead = append(ahead, beDataRow(int8Val(99))...)
+		ahead = append(ahead, beSimple(pgwire.BackendPortalSuspended)...)
 
-	srv := &fakeServer{responses: [][]byte{
-		suspended,
-		ahead,
-		beReadyForQuery(), // answers the resync's Sync
-		second,
-		beReadyForQuery(),
-	}}
-	conn := NewConn(srv)
+		srv := &fakeServer{responses: [][]byte{
+			suspended,
+			ahead,
+			beReadyForQuery(), // answers the resync's Sync
+			second,
+			beReadyForQuery(),
+		}}
+		conn := NewConn(srv)
 
-	ctx, cancel := context.WithCancel(t.Context())
-	src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 1})
+		ctx, cancel := context.WithCancel(t.Context())
+		src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 1})
 
-	var seen []int64
-	src.Stream()(func(b sluice.Batch[Row]) bool {
-		for _, r := range b.Items {
-			v, _ := r.Value(0)
-			id, _ := DecodeInt8(v)
-			seen = append(seen, id)
+		var seen []int64
+		src.Stream()(func(b sluice.Batch[Row]) bool {
+			for _, r := range b.Items {
+				v, _ := r.Value(0)
+				id, _ := DecodeInt8(v)
+				seen = append(seen, id)
+			}
+			cancel() // the caller gives up with the portal still suspended
+			return true
+		})
+
+		if !slices.Equal(seen, []int64{1}) {
+			t.Errorf("rows before the cancellation = %v, want [1]", seen)
 		}
-		cancel() // the caller gives up with the portal still suspended
-		return true
-	})
-
-	if !slices.Equal(seen, []int64{1}) {
-		t.Errorf("rows before the cancellation = %v, want [1]", seen)
-	}
-	if err := src.Err(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Err = %v, want it to wrap context.Canceled", err)
-	}
-	if err := conn.Err(); err != nil {
-		t.Fatalf("the connection was broken by a cancellation: %v", err)
-	}
-
-	// The proof: another query runs on the same connection.
-	again := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
-	var after []int64
-	again.Stream()(func(b sluice.Batch[Row]) bool {
-		for _, r := range b.Items {
-			v, _ := r.Value(0)
-			id, _ := DecodeInt8(v)
-			after = append(after, id)
+		if err := src.Err(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Err = %v, want it to wrap context.Canceled", err)
 		}
-		return true
-	})
-	if err := again.Err(); err != nil {
-		t.Fatalf("the query after a cancellation returned %v", err)
-	}
-	if !slices.Equal(after, []int64{2}) {
-		t.Errorf("rows after the cancellation = %v, want [2]", after)
-	}
+		if err := conn.Err(); err != nil {
+			t.Fatalf("the connection was broken by a cancellation: %v", err)
+		}
 
-	// And the client must have resynchronised rather than left the portal
-	// hanging: a Sync after the Executes sent ahead, and before the next query.
-	// The next query binds the cached statement, and is fetched in batches:
-	// a cancelled execution says nothing about the statement's size.
-	sent := srv.clientMessages(t)
-	wantSent := []byte{
-		pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
-		pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush,
-		pgwire.FrontendSync,
-		pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
-		pgwire.FrontendSync,
-	}
-	if !slices.Equal(sent, wantSent) {
-		t.Errorf("client sent %q, want %q", sent, wantSent)
-	}
+		// The proof: another query runs on the same connection.
+		again := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
+		var after []int64
+		again.Stream()(func(b sluice.Batch[Row]) bool {
+			for _, r := range b.Items {
+				v, _ := r.Value(0)
+				id, _ := DecodeInt8(v)
+				after = append(after, id)
+			}
+			return true
+		})
+		if err := again.Err(); err != nil {
+			t.Fatalf("the query after a cancellation returned %v", err)
+		}
+		if !slices.Equal(after, []int64{2}) {
+			t.Errorf("rows after the cancellation = %v, want [2]", after)
+		}
+
+		// And the client must have resynchronised rather than left the portal
+		// hanging: a Sync after the Executes sent ahead, and before the next query.
+		// The next query binds the cached statement, and is fetched in batches:
+		// a cancelled execution says nothing about the statement's size. Its
+		// portal suspended, though, so the two Executes ahead leave with it.
+		sent := srv.clientMessages(t)
+		wantSent := []byte{
+			pgwire.FrontendParse, pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute, pgwire.FrontendFlush,
+			pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush,
+			pgwire.FrontendSync,
+			pgwire.FrontendBind, pgwire.FrontendDescribe,
+			pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush,
+			pgwire.FrontendSync,
+		}
+		if !slices.Equal(sent, wantSent) {
+			t.Errorf("client sent %q, want %q", sent, wantSent)
+		}
+	})
 }
 
 // The context is checked once per batch, so a query whose every row fits in

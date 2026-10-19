@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -80,46 +81,56 @@ func TestFetchAutoReadsAKnownSmallStatementInOneWrite(t *testing.T) {
 // a smaller one after it makes the one after whole: the cache remembers the
 // last execution, not the first.
 func TestFetchAutoFollowsTheLastResult(t *testing.T) {
-	// Three rows in batches of two: the portal suspends after two, the two
-	// Executes asked ahead bring the third and an empty end, the Sync the
-	// ReadyForQuery.
-	var first []byte
-	first = append(first, beSimple(pgwire.BackendParseComplete)...)
-	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
-	first = append(first, beDataRow(int8Val(1))...)
-	first = append(first, beDataRow(int8Val(2))...)
-	first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
-	var rest []byte
-	rest = append(rest, beDataRow(int8Val(3))...)
-	rest = append(rest, beCommandComplete("SELECT 3")...)
-	rest = append(rest, beCommandComplete("SELECT 0")...)
+	// The clock stands still in a bubble, so the client keeps the floor of
+	// two batches ahead.
+	synctest.Test(t, func(t *testing.T) {
+		// Three rows in batches of two: the portal suspends after two, the two
+		// Executes asked ahead bring the third and an empty end, the Sync the
+		// ReadyForQuery.
+		var first []byte
+		first = append(first, beSimple(pgwire.BackendParseComplete)...)
+		first = append(first, beSimple(pgwire.BackendBindComplete)...)
+		first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		first = append(first, beDataRow(int8Val(1))...)
+		first = append(first, beDataRow(int8Val(2))...)
+		first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
+		var rest []byte
+		rest = append(rest, beDataRow(int8Val(3))...)
+		rest = append(rest, beCommandComplete("SELECT 3")...)
+		rest = append(rest, beCommandComplete("SELECT 0")...)
 
-	srv := &fakeServer{responses: slices.Concat(
-		[][]byte{first, rest, beReadyForQuery()},
-		oneRowCached(),
-		oneRowWhole(),
-	)}
-	conn := NewConn(srv)
-	cfg := QueryConfig{BatchRows: 2}
+		srv := &fakeServer{responses: slices.Concat(
+			[][]byte{first, rest, beReadyForQuery()},
+			oneRowCached(),
+			oneRowWhole(),
+		)}
+		conn := NewConn(srv)
+		cfg := QueryConfig{BatchRows: 2}
 
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
-		t.Fatal(err)
-	}
-	n := len(srv.clientMessages(t))
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
-		t.Fatal(err)
-	}
-	if got := sentSince(t, srv, n); !slices.Equal(got, batchedRead) {
-		t.Errorf("after three rows in batches of two, sent %q, want %q", got, batchedRead)
-	}
-	n = len(srv.clientMessages(t))
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
-		t.Fatal(err)
-	}
-	if got := sentSince(t, srv, n); !slices.Equal(got, wholeRead) {
-		t.Errorf("after one row, sent %q, want %q", got, wholeRead)
-	}
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
+			t.Fatal(err)
+		}
+		n := len(srv.clientMessages(t))
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
+			t.Fatal(err)
+		}
+		// Batched again, and the two Executes ahead leave with the query: the
+		// portal suspended last time, so it is one the backend fetches from.
+		aheadRead := []byte{
+			pgwire.FrontendBind, pgwire.FrontendDescribe, pgwire.FrontendExecute,
+			pgwire.FrontendExecute, pgwire.FrontendExecute, pgwire.FrontendFlush, pgwire.FrontendSync,
+		}
+		if got := sentSince(t, srv, n); !slices.Equal(got, aheadRead) {
+			t.Errorf("after three rows in batches of two, sent %q, want %q", got, aheadRead)
+		}
+		n = len(srv.clientMessages(t))
+		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, cfg)); err != nil {
+			t.Fatal(err)
+		}
+		if got := sentSince(t, srv, n); !slices.Equal(got, wholeRead) {
+			t.Errorf("after one row, sent %q, want %q", got, wholeRead)
+		}
+	})
 }
 
 // An execution that fails says nothing about the statement's size: the next

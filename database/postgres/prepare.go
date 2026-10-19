@@ -67,6 +67,13 @@ type stmtEntry struct {
 	// that fits in one batch ask for every row and pay one round trip: see
 	// [FetchAuto].
 	lastRows int
+
+	// ahead is how many batches a batched read of the statement kept asked
+	// for, set at its first PortalSuspended; zero until one suspended. A
+	// portal that suspended once is one the backend fetches from, so the
+	// next execution sends that many Executes with the query itself rather
+	// than a round trip later: see [query.run].
+	ahead int
 }
 
 // defaultStatementCacheBound is the cache a connection starts with — the

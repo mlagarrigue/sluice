@@ -175,6 +175,11 @@ type Conn struct {
 	// outer query's delivered rows point into. See [Conn.beginBusy].
 	busy bool
 
+	// rtt is the shortest round trip a batched read on this connection
+	// timed, from its write to its BindComplete; zero until one did. It
+	// sets how many batches the next ones keep asked for: see [depth].
+	rtt time.Duration
+
 	// copier is the [Copier] whose COPY is open, nil when none is: from its
 	// CopyInResponse to the ReadyForQuery that ends it, the copier's reader
 	// goroutine owns r, and every other entry point is refused. See
@@ -428,13 +433,13 @@ const (
 	// # What it costs
 	//
 	// An early stop costs more. With a row limit, a consumer that stops
-	// pulling leaves at most two batches to drain — the ones asked for ahead,
-	// see BatchRows. With FetchAll the server has been told to produce
+	// pulling leaves the batches asked for ahead to drain — two on loopback,
+	// about one round trip of the server's work further away, see BatchRows. With FetchAll the server has been told to produce
 	// everything, and has to be told to stop.
 	//
 	// When the statement opens with SELECT, VALUES or TABLE and no
 	// transaction block is open, the rest is cancelled: two batches are read
-	// past the stop, then a [CancelRequest] goes out by the recipe [Connect]
+	// past the stop, the floor a batched read drains, then a [CancelRequest] goes out by the recipe [Connect]
 	// was given while the read goes on to the server's query_canceled, which
 	// is not reported. The stop costs those two batches, the cancellation's
 	// round trips and what was in flight, not the rest of the result. A
@@ -508,14 +513,20 @@ type QueryConfig struct {
 	// asked for exactly that many at a time — what bounds the rows in flight.
 	// Zero means [sluice.DefaultBatchSize]; a negative value is refused.
 	//
-	// # Two batches in flight
+	// # Batches in flight
 	//
-	// The next two batches are asked for before the current one reaches the
+	// The next batches are asked for before the current one reaches the
 	// consumer, so the server keeps producing while the consumer works:
 	// without that, every batch waited one round trip, measured at 3.0 ms of
-	// a wide read's 3.5 ms gap with pgx. So up to three batches are in
-	// flight — the one the consumer holds and the two on their way — and a
-	// consumer that stops early leaves up to twice BatchRows rows to drain.
+	// a wide read's 3.5 ms gap with pgx. How many is set once per query, at
+	// the end of its first batch: enough to cover one round trip of the
+	// connection — the shortest it measured — in batches the size of the
+	// first, plus one, and never fewer than two or more than 64. On loopback
+	// that is two; at a 10 ms round trip, a wide read of 1,024-row batches
+	// keeps about twenty. A statement whose portal suspended before sends
+	// that many with the query itself, so its second batch is not a round
+	// trip behind its first. A consumer that stops early leaves that many
+	// batches to drain, about one round trip of the server's work.
 	//
 	// The drained batches are executed like any other: a server error in
 	// them — a division by zero further down the scan — is reported by the
@@ -691,10 +702,11 @@ type QueryConfig struct {
 //
 // Rows are asked for a batch at a time — Execute names the count, the server
 // sends that many and suspends — so a consumer that stops pulling stops the
-// server, two batches later, and memory is bounded by BatchRows rather than
+// server a few batches later, and memory is bounded by BatchRows rather than
 // by the size of the result. A statement known to fit in one batch is the
-// exception: it is asked for whole, in one round trip ([FetchAuto]). The next two batches are asked for before the
-// current one is delivered, so the server keeps producing while the consumer
+// exception: it is asked for whole, in one round trip ([FetchAuto]). The next
+// batches are asked for before the current one is delivered — as many as
+// cover one round trip — so the server keeps producing while the consumer
 // works and the read pays no round trip per batch (see
 // [QueryConfig.BatchRows]). That is the deliberate trade: a result of ten
 // million rows is readable at all, and back-pressure is real rather than a
@@ -709,7 +721,7 @@ type QueryConfig struct {
 //
 // An early stop is safe: the connection is resynchronised to the next
 // ReadyForQuery before Query's stream returns, so the connection stays usable.
-// That drain is bounded by two batches — the rows already asked for — which
+// That drain is bounded by the batches already asked for, which
 // is the other reason the server is asked a batch at a time. A query fetched
 // whole drains the rest of its result instead; [FetchAuto] says when that
 // happens without being asked.
@@ -754,7 +766,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	if err != nil {
 		return err
 	}
-	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag}
+	q := &query{conn: c, ctx: ctx, batchRows: batchRows, batchBytes: batchBytes, fetch: cfg.Fetch, entry: -1, tag: cfg.Tag, ahead: minAhead}
 	if cfg.Demand != nil {
 		if cfg.Fetch == FetchAll {
 			return errors.New("postgres: QueryConfig.Demand and FetchAll are exclusive")
@@ -822,8 +834,13 @@ type query struct {
 	bound      []byte
 	rowsWanted int
 
-	// asked counts the Executes sent whose batch has not ended yet.
-	asked int
+	// asked counts the Executes sent whose batch has not ended yet; ahead is
+	// how many a query without a demand keeps asked for, set by [depth] at
+	// its first PortalSuspended. sentAt and boundAt time the round trip and
+	// the first batch it is set from: the write, then the BindComplete; each
+	// is zero once read, and both are for a query that times nothing.
+	asked, ahead    int
+	sentAt, boundAt time.Time
 
 	// entry is the statement's place in the cache, -1 without one; rowsRead
 	// counts the rows of the result and complete says it was read to its
@@ -927,6 +944,19 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	} else {
 		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
 		q.asked = 1
+		if q.demand == nil {
+			// Asking ahead is safe only for a portal that suspends — see the
+			// PortalSuspended case of readChunk — and a statement whose
+			// portal suspended before is one: the kind of portal is fixed by
+			// the statement. So its Executes leave with the query, and the
+			// second batch is not a round trip behind the first.
+			if entry >= 0 {
+				if n := c.stmts.entries[entry].ahead; n > 0 {
+					q.askAhead(n)
+				}
+			}
+			q.sentAt = time.Now()
+		}
 		// Without this the backend holds everything it has produced until a
 		// Sync, and a Sync would close the portal the next Execute needs. See
 		// [Writer.FlushMessage].
@@ -996,17 +1026,54 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	}
 }
 
-// executesAhead is how many batches a query without a demand keeps asked for
-// beyond the one being delivered.
-const executesAhead = 2
+// minAhead and maxAhead bound how many batches a query without a demand keeps
+// asked for beyond the one being delivered: see [depth].
+const (
+	minAhead = 2
+	maxAhead = 64
+)
+
+// depth is how many batches a query without a demand keeps asked for, from
+// the connection's round trip and the time its first batch took to arrive:
+// enough Executes that, while one travels, the server still has work queued,
+// so it never idles waiting to hear of the next batch. That is one round
+// trip's worth of batches, rounded up, plus the one being produced.
+//
+// Two was a constant, and it is still the floor: measured on a wide read
+// through a delay proxy, it matched FetchAll on loopback but was 1.6 times
+// slower at a 1 ms round trip and 6.3 times at 10 ms, where the server spent
+// most of each round trip waiting. A constant large enough for 10 ms would
+// make every early stop on loopback drain that many batches for nothing;
+// scaled by the round trip, the batches in flight stay about one round trip
+// of the server's work, which is also what a stop drains. The ceiling bounds
+// what a slow network and a cheap batch would otherwise ask for.
+//
+// A clock that did not move — a round trip of zero — gives the floor: there
+// is nothing to scale by. A batch of zero under a round trip that is not
+// gives the ceiling.
+func depth(rtt, batch time.Duration) int {
+	switch {
+	case rtt <= 0:
+		return minAhead
+	case batch <= 0:
+		return maxAhead
+	}
+	n := int((rtt+batch-1)/batch) + 1
+	return min(max(n, minAhead), maxAhead)
+}
+
+// askAhead buffers n Executes for the next n batches.
+func (q *query) askAhead(n int) {
+	for range n {
+		q.conn.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
+	}
+	q.asked += n
+}
 
 // askNext asks the suspended portal for the next n batches, in one write.
 func (q *query) askNext(n int) error {
 	c := q.conn
-	for range n {
-		c.w.Execute("", uint32(q.rowsWanted)) //nolint:gosec // G115: a caller's batch size
-	}
-	q.asked += n
+	q.askAhead(n)
 	c.w.FlushMessage()
 	if err := c.w.Flush(); err != nil {
 		return c.breakConn(fmt.Errorf("asking for the next batch: %w", err))
@@ -1110,17 +1177,19 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// Exactly batchRows rows arrived and more remain.
 			q.asked--
 			// Without a demand, the next batches are asked for now, before
-			// this one reaches the consumer, and two are kept asked for: the
-			// server produces batch k+1 while the consumer works through
-			// batch k, and finds the Execute for k+2 waiting when it is done,
-			// so it never idles for a round trip. Asking after delivery put
+			// this one reaches the consumer, and at least two are kept asked
+			// for: the server produces batch k+1 while the consumer works
+			// through batch k, and finds the Execute for k+2 waiting when it
+			// is done, so it never idles for a round trip. When a round trip
+			// outlasts a batch, two are not enough for that, and the first
+			// PortalSuspended sets how many: see [depth]. Asking after delivery put
 			// that round trip on every batch, 3.0 ms of a 3.5 ms gap with pgx
 			// on a wide read, measured; one batch ahead took back a fifth of
 			// it, because the server still waited for k+1 to be read before
 			// it heard of k+2, and two kept asked for but topped up after
 			// delivery took back three fifths. The price is a first batch
 			// that arrives one write later — 5% on its p50, measured — and
-			// an early stop that drains up to two batches.
+			// an early stop that drains the batches asked for.
 			//
 			// An Execute that reaches a portal already at its end is answered
 			// with no rows and a CommandComplete, which the resync discards:
@@ -1137,8 +1206,18 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// k-1, and AdvanceBy, which publishes the last key delivered,
 			// would re-bind the portal to start again at batch k.
 			if q.demand == nil {
-				if err := q.askNext(executesAhead - q.asked); err != nil {
-					return false, err
+				if !q.boundAt.IsZero() {
+					q.ahead = depth(c.rtt, time.Since(q.boundAt))
+					q.boundAt = time.Time{}
+					if q.entry >= 0 && c.stmts != nil {
+						c.stmts.entries[q.entry].ahead = q.ahead
+					}
+				}
+				// Executes sent with the query may already cover the depth.
+				if n := q.ahead - q.asked; n > 0 {
+					if err := q.askNext(n); err != nil {
+						return false, err
+					}
 				}
 			}
 			more := q.emit(yield)
@@ -1201,8 +1280,21 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// An eviction pipelined in front of this query's Parse.
 			c.closeCompleted()
 
-		case pgwire.BackendBindComplete, pgwire.BackendNoData:
-			// Expected acknowledgements.
+		case pgwire.BackendBindComplete:
+			// Expected, and the end of the round trip a batched read times.
+			// The first batch is timed from here too, rather than from its
+			// first DataRow, which would put a branch on every row: only the
+			// description, which costs the server nothing, comes between.
+			if !q.sentAt.IsZero() {
+				now := time.Now()
+				if d := now.Sub(q.sentAt); c.rtt == 0 || d < c.rtt {
+					c.rtt = d
+				}
+				q.sentAt, q.boundAt = time.Time{}, now
+			}
+
+		case pgwire.BackendNoData:
+			// Expected acknowledgement.
 
 		case pgwire.BackendReadyForQuery:
 			// Can only appear here if a Sync was already outstanding, and
@@ -1258,14 +1350,15 @@ func (q *query) emit(yield func(sluice.Batch[Row]) bool) bool {
 // Everything in between is discarded, including rows the consumer never asked
 // for: they were already on their way when it stopped — the batches asked
 // for ahead of delivery, and the empty answer of an Execute that reached the
-// portal after its end. That is bounded by two batches, which is the second
+// portal after its end. That is bounded by the batches asked for ahead —
+// about one round trip of the server's work, see [depth] — which is the second
 // reason the server is asked for a batch at a time rather than for the whole
 // result.
 //
 // A result asked for whole has no such bound: the server was told to
 // produce everything. When the consumer stopped early, the statement only
 // reads and no transaction block is open, the rest is cancelled instead of
-// read — once two batches' worth have been read past the stop, the bound a
+// read — once two batches' worth have been read past the stop, the floor a
 // batched read drains, so a short rest costs no cancellation. The
 // cancellation goes out by the recipe [Connect] was given, beside this read:
 // a server blocked writing to a socket nobody reads takes no cancel, so the
@@ -1292,7 +1385,7 @@ func (q *query) resync() error {
 	// nothing client-side to explain why.
 	var serverErr error
 	var cancel *cancelWatch
-	aheadRows, aheadBytes := executesAhead*q.batchRows, executesAhead*q.batchBytes
+	aheadRows, aheadBytes := q.ahead*q.batchRows, q.ahead*q.batchBytes
 	for {
 		m, err := c.r.Next()
 		if err != nil {
