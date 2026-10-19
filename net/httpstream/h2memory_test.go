@@ -177,8 +177,13 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 		depth int
 		ratio float64
 	}{{1, 1.3}, {requests, 1.8}} {
+		// Twice each, alternating, keeping the smaller: a goroutine's
+		// descriptor is heap, and whether one is reused from an earlier
+		// test or allocated anew moved a single pass by 1.5 KB a connection.
 		one := measure("HTTP/1.1", tc.depth, http1)
 		two := measure("HTTP/2", tc.depth, http2)
+		one = min(one, measure("HTTP/1.1", tc.depth, http1))
+		two = min(two, measure("HTTP/2", tc.depth, http2))
 		if r := float64(two) / float64(one); r > tc.ratio {
 			t.Errorf("%d at a time: an HTTP/2 connection holds %d bytes of live heap, %.2f× the %d of an HTTP/1.1 one, over %.1f×",
 				tc.depth, two, r, one, tc.ratio)
