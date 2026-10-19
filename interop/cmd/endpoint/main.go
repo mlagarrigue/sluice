@@ -18,12 +18,15 @@
 //
 // What is refused here, and why, is one table (supported); the cases it
 // refuses are the features net/quic documents as not there (0-RTT, session
-// resumption, ECN, QUIC v2) or that crypto/tls offers no knob for (an
-// endpoint that offers only ChaCha20 — Go does not let a TLS 1.3 cipher
-// suite list be restricted — and a key update forced inside the first
-// megabyte, which net/quic performs at the AEAD's confidentiality limit
-// and not before). The HTTP/3 case is served, by net/httpstream, but not
-// fetched: the module has no HTTP/3 client.
+// resumption, QUIC v2) or that crypto/tls offers no knob for (a client
+// that offers only ChaCha20 — Go does not let a TLS 1.3 cipher suite list
+// be restricted — and a key update forced inside the first megabyte, which
+// net/quic performs at the AEAD's confidentiality limit and not before).
+// The chacha20 case is served: the runner checks the client's offer only,
+// and crypto/tls picks the one suite offered. The ecn case is a transfer
+// on both sides: net/quic marks its packets ECT(0) and reports the marks
+// it reads in its ACK frames (RFC 9000 §13.4). The HTTP/3 case is served,
+// by net/httpstream, but not fetched: the module has no HTTP/3 client.
 package main
 
 import (
@@ -87,11 +90,11 @@ var errUnsupported = errors.New("unsupported test case")
 var supported = map[string]map[string]bool{
 	"server": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
-		"http3": true, "connectionmigration": true,
+		"http3": true, "connectionmigration": true, "chacha20": true, "ecn": true,
 	},
 	"client": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
-		"ipv6": true,
+		"ipv6": true, "ecn": true,
 	},
 }
 
