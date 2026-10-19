@@ -36,9 +36,20 @@ format() {
   fi
 }
 
+# nested <dir>: vet and lint a module beside the root one, which the root's
+# ./... skips. Their tests want PostgreSQL, a quic-go peer or a load campaign
+# and stay in CI; compiling, vet and lint are what a push would otherwise
+# learn from CI first.
+nested() {
+  (cd "$1" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./...)
+}
+
 step vet go vet ./...
 step format format
 step lint golangci-lint run ./...
 step test go test -race -shuffle=on ./...
+for m in interop benchmarks comparison/sluice comparison/loadgen; do
+  step "nested $m" nested "$m"
+done
 step hygiene scripts/check-hygiene.sh
 echo "ok"

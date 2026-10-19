@@ -83,9 +83,23 @@ linters:
       # there surfaces as the assertion that follows. Only those calls are
       # excused; any other dropped error in a test is still reported.
       - path: _test\.go
-        text: "Error return value of `[^`]*\\.(Close|Fprint|Fprintf|SetReadDeadline)` is not checked"
+        text: "Error return value of `[^`]*\\.(Close|CloseWithError|Fprint|Fprintf|SetReadDeadline)` is not checked"
         linters:
           - errcheck
+
+      # The QUIC Interop Runner's endpoint (interop/cmd/endpoint) reads the
+      # runner's own configuration from the environment: the key log file is
+      # the one SSLKEYLOGFILE names, the files it serves are /www confined by
+      # wwwPath, and what it logs is the role, test case and addresses the
+      # runner chose. Nothing there comes from a peer it does not control, so
+      # the file-inclusion, path-traversal and log-injection checks (G304,
+      # G703, G706) report the shape of the call. The key log is written 0644
+      # (G302) because the runner reads it from the host, as a user other than
+      # the container's. The library keeps all four.
+      - path: cmd/endpoint/
+        text: "G302|G304|G703|G706"
+        linters:
+          - gosec
 
       # gosec's G104 is errcheck again, without the narrowing above; errcheck
       # keeps reporting every other dropped error in tests.

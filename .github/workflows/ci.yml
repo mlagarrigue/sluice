@@ -501,8 +501,13 @@ jobs:
             exit 1
           fi
 
+  # The nested modules (interop/, benchmarks/, comparison/*) are linted with
+  # the root's configuration, which golangci-lint finds by walking up from
+  # each working directory; scripts/check.sh runs the same five.
   lint:
     runs-on: ubuntu-latest
+    env:
+      GOWORK: off
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -514,6 +519,26 @@ jobs:
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.12.2
+      - name: Lint (interop)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: interop
+      - name: Lint (benchmarks)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: benchmarks
+      - name: Lint (comparison/sluice)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: comparison/sluice
+      - name: Lint (comparison/loadgen)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: comparison/loadgen
 
   bench:
     runs-on: ubuntu-latest
