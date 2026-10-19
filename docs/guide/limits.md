@@ -182,7 +182,13 @@ to a separate module before a v1.
   path while the transfer itself completes. As a client it passes handshake,
   transfer, longrtt, multiplexing, retry, blackhole, transferloss,
   transfercorruption, ipv6, handshakeloss, handshakecorruption,
-  amplificationlimit, rebind-port and rebind-addr. The two
+  amplificationlimit, rebind-port and rebind-addr. Since 2026-10-19 the
+  server also passes chacha20 against both peers — the client offers
+  ChaCha20-Poly1305 alone (`0x1303`) and the server picks it, read in the
+  capture — and ecn passes on each side against ngtcp2: every packet
+  sluice sends leaves marked ECT(0), and each side reports its counts in
+  its ACK frames. quic-go refuses that case itself: its image exits 127 in
+  both roles. The two
   handshake cases under 30 % loss or corruption passed on both sides once
   a probe timeout resent the two oldest unacknowledged packets instead of
   copying the first again; amplificationlimit passed on the client side
@@ -233,8 +239,8 @@ to a separate module before a v1.
   runner's at revision `ab039a4`. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
-  resumption, QUIC v2 — plus chacha20 (Go's TLS 1.3 offers no way to
-  restrict the cipher suites), a forced key update and HTTP/3 on the client
+  resumption, QUIC v2 — plus chacha20 on the client side (Go's TLS 1.3
+  offers no way to restrict the cipher suites it offers), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
