@@ -247,10 +247,11 @@ to a separate module before a v1.
   the same response over HTTP/2 with every core available, and catches up
   on two; the figures, their date and the machine that measured them are
   in [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client),
-  the one place that keeps them current. On Linux, the datagrams one
-  `Stream.Write` produces leave in one system call (UDP segmentation
-  offload); on other systems, or on a kernel that refuses the option, each
-  datagram is still its own write. The QUIC windows are not the cause —
+  the one place that keeps them current. On Linux and Windows, the
+  datagrams one `Stream.Write` produces leave in one system call (UDP
+  segmentation offload); on macOS, which offers no public interface for
+  it, or on a system that refuses the option, each datagram is still its
+  own write. The QUIC windows are not the cause —
   scaled from 1 to 16 times, on either side, they move nothing — so sizing
   them will not buy the gap back. The gap is the Go scheduler: a request
   crosses several goroutines, and each hand-off wakes one, often on another

@@ -120,11 +120,12 @@ jobs:
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" badges
 
-  # net/quic/udp is the one package whose code differs per operating system:
+  # net/quic/udp is the package whose code differs per operating system:
   # socket options with a different name and errno on each, which a Linux
-  # run never executes. This job runs that package, and only it, on the two
-  # other platforms. Not the whole suite: PostgreSQL is not there, and the
-  # rest of the module is covered by the Linux job above.
+  # run never executes. This job runs that package on the two other
+  # platforms, and from net/quic the tests of its one other per-system file,
+  # the segmented send (gso_windows.go). Not the whole suite: PostgreSQL is
+  # not there, and the rest of the module is covered by the Linux job above.
   test-udp:
     strategy:
       fail-fast: false
@@ -155,6 +156,8 @@ jobs:
           netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
       - name: Test
         run: go test -race -shuffle=on -v ./net/quic/udp/...
+      - name: Test segmented send
+        run: go test -race -shuffle=on -v -run 'Segment' ./net/quic
 
   # The comparison module lives on the benchmarks branch, beside the root
   # module as benchmarks/, and is excluded from the root's ./... on purpose.
