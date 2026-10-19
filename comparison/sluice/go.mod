@@ -1,5 +1,5 @@
-// The study's server lives in its own module, like benchmarks/ on the
-// benchmarks branch: it is a program, not a package, and the root module
+// The study's server lives in its own module, like benchmarks/: it is a
+// program, not a package, and the root module
 // must not see it in ./... — a main with flags and an integration test that
 // needs a PostgreSQL server has no place in a library's own test run.
 //

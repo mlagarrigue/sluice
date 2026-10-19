@@ -29,7 +29,7 @@ jobs:
           # .0 floor would report every one of them forever. What matters is
           # whether the toolchain a user installs today is affected.
           go-version: 'stable'
-      # The root module only. The comparison module on the benchmarks branch
+      # The root module only. The comparison module in benchmarks/
       # pins competitors; it never ships, and its advisories are theirs.
       - name: govulncheck
         run: |

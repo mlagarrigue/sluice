@@ -16,7 +16,7 @@ import (
 // finding no package from anywhere else in the graph.
 //
 // This test is the third way, and it exists because of the second module. The
-// comparative benchmarks on the benchmarks branch pin pgx, gin, echo, chi and fiber —
+// comparative benchmarks in benchmarks/ pin pgx, gin, echo, chi and fiber —
 // fifty-odd modules of transitive graph — and the whole arrangement rests on
 // that graph never crossing into this one. CI catches the crossing on push;
 // this catches it on `go test`, which is where someone actually is when they
@@ -61,7 +61,7 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 				"the recorded dependencies are golang.org/x/crypto (and the x/sys it brings) "+
 				"and golang.org/x/text. "+
 				"If this came from measuring against another library, the measurement "+
-				"belongs in the comparison module on the benchmarks branch, which depends on this one and is "+
+				"belongs in the comparison module in benchmarks/, which depends on this one and is "+
 				"never depended on by it.", lineNo, mod)
 		}
 	}
@@ -70,17 +70,18 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 	}
 }
 
-// The nested modules — the comparison module (benchmarks/, on the benchmarks
-// branch) and the interop module (interop/, on main) — have to keep pointing
-// at this tree by a replace directive rather than at a published version.
-// Without it the comparison silently measures whatever was last tagged, and
-// the interop test silently proves a quic-go handshake against it, which is
-// not what the person running either is trying to find out.
+// The nested modules — the comparison module (benchmarks/) and the interop
+// module (interop/) — have to keep pointing at this tree by a replace
+// directive rather than at a published version. Without it the comparison
+// silently measures whatever was last tagged, and the interop test silently
+// proves a quic-go handshake against it, which is not what the person running
+// either is trying to find out. A missing module is a failure, not a skip: a
+// skip would turn green the day one of them moved away.
 func TestNestedModulesReplaceThisOne(t *testing.T) {
 	for _, dir := range []string{"benchmarks", "interop"} {
 		src, err := os.ReadFile(dir + "/go.mod") //nolint:gosec // G304: the two paths are the literals above
 		if err != nil {
-			t.Logf("no %s module here: %v", dir, err)
+			t.Errorf("no %s module here: %v", dir, err)
 			continue
 		}
 		if !strings.Contains(string(src), "replace github.com/mlagarrigue/sluice => ../") {

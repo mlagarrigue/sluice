@@ -159,14 +159,11 @@ jobs:
       - name: Test segmented send
         run: go test -race -shuffle=on -v -run 'Segment' ./net/quic
 
-  # The comparison module lives on the benchmarks branch, beside the root
-  # module as benchmarks/, and is excluded from the root's ./... on purpose.
-  # One workflow serves both branches, so the file never diverges between
-  # them. On the branch, the module is vetted as committed. Anywhere else, it
-  # is taken from the branch and vetted against this tree — its go.mod
-  # replaces the root by ../ — so an API break here goes red the day it
-  # lands, not the day someone next merges into the branch. Tidy runs first
-  # in that case: a dependency bump here is not a break there.
+  # The comparison module lives beside the root module as benchmarks/ and is
+  # excluded from the root's ./... on purpose: it pins pgx, gin, echo, chi and
+  # fiber. Its go.mod replaces the root by ../, so it is vetted against this
+  # tree and an API break here goes red the day it lands, not the day someone
+  # next runs a comparison.
   benchmarks-module:
     runs-on: ubuntu-latest
     env:
@@ -175,20 +172,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Take the module from the benchmarks branch
-        id: fetch
-        if: hashFiles('benchmarks/go.mod') == ''
-        run: |
-          git fetch --depth=1 origin benchmarks
-          git checkout FETCH_HEAD -- benchmarks
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
           cache-dependency-path: benchmarks/go.sum
-      - name: Tidy against this tree
-        if: steps.fetch.outcome == 'success'
-        working-directory: benchmarks
-        run: go mod tidy
       - name: Vet
         working-directory: benchmarks
         run: go vet ./...
@@ -360,9 +347,8 @@ jobs:
     runs-on: ubuntu-latest
     # A go.work at the root would make `go list -deps ./...` resolve through
     # the workspace rather than through this module's go.mod — pulling in the
-    # comparison module of the benchmarks branch and every competitor it pins
-    # — and this job would go
-    # green while the isolation it exists to check was gone.
+    # comparison module in benchmarks/ and every competitor it pins — and this
+    # job would go green while the isolation it exists to check was gone.
     env:
       GOWORK: off
     steps:
