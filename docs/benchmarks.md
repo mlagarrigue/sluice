@@ -322,6 +322,76 @@ sizes their batches, and `docs/guide/limits.md` no longer carries an exit
 condition on `net/httpstream`. A bigger batch still divides the cost by as
 much.
 
+## Web pipeline, from a real client
+
+This is one of the two exit conditions of the "experimental" label on
+`web/stream`; the other is a first real consumer. A client that shares no
+code with sluice — `net/http` over HTTP/1.1 and HTTP/2, quic-go over
+HTTP/3 — requests one order (`GET /orders/42`, with a bearer token) from two
+handlers that answer the same bytes:
+
+- `stages` is the handler the package documentation sketches, filled in:
+  routing (`Router`), authentication (`Authenticate`), authorization
+  (`Authorize`), the path parameter (`PathInt`), the JSON render (`Render`);
+- `bare` is a plain `httpstream` handler doing the same work by hand: a
+  prefix cut for the route, a byte comparison for the token, the body
+  appended byte by byte.
+
+The gap between the two is what the stages cost on a real round trip;
+everything else — TLS, framing, the client — is common to both. The verifier
+compares the token with a constant: the stages are measured, not a signature
+check, which a real verifier would add to both sides. Before measuring, each
+benchmark reads the response once and compares status, `Content-Type` and
+body byte for byte: two handlers that answered differently would compare
+nothing.
+
+> **In plain words.** A round trip over loopback costs about 160 to 235 µs.
+> The `web/stream` stages cost 0.28 µs of it. They do not show over the
+> network, so they are read from a second benchmark, with no network, that
+> calls both handlers directly.
+
+```
+cd interop && go test -run '^$' -bench 'WebStream' -count 6
+```
+
+On 2026-10-19, on the same machine as the rest of this document (laptop, AMD
+Ryzen AI 9 465, WSL2, `GOMAXPROCS` 15, not pinned: a socket bench cannot be
+pinned), six passes of `-benchtime 1s`, one connection, requests in sequence.
+Median and spread (fastest to slowest, over the median) are computed as in
+`internal/bench/scripts/consolidate.sh`. `bare` and `stages` run back to back
+on each protocol, so that a machine drifting during the series moves both
+figures of a pair together.
+
+| benchmark | median | spread | p99 (TTLB) | B/op | allocs/op |
+|---|---|---|---|---|---|
+| `BenchmarkWebStream/h1/bare` | 165 µs | ±8% | 328 µs | 5.4 KB | 68 |
+| `BenchmarkWebStream/h1/stages` | 162 µs | ±4% | 338 µs | 5.8 KB | 71 |
+| `BenchmarkWebStream/h2/bare` | 170 µs | ±4% | 355 µs | 6.5 KB | 62 |
+| `BenchmarkWebStream/h2/stages` | 163 µs | ±6% | 376 µs | 6.9 KB | 65 |
+| `BenchmarkWebStream/h3/bare` | 227 µs | ±4% | 512 µs | 11 KB | 151 |
+| `BenchmarkWebStream/h3/stages` | 235 µs | ±3% | 515 µs | 12 KB | 154 |
+| `BenchmarkWebStreamHandler/bare` | 84 ns | ±4% | — | 136 B | 4 |
+| `BenchmarkWebStreamHandler/stages` | 363 ns | ±2% | — | 568 B | 7 |
+
+B/op and allocs/op of the socket benchmarks count both sides, the
+third-party client included: read them as an order of magnitude, not as the
+cost of the server. Their difference, though, is the server's alone, since
+the client does the same thing in both cases.
+
+**What the figures say.** Over a socket, the gap between `bare` and `stages`
+is smaller than the gap from one pass to the next, on all three protocols:
+`stages` is even faster over HTTP/1.1 and HTTP/2, which is only noise. The
+difference that does not move is the allocations: three more and 430 to 470
+bytes per request, on all three protocols. With no network, the stages cost
+279 ns, 432 bytes and three allocations more than the bare handler. Against
+the shortest round trip measured here (162 µs), that is 0.17%. Nothing to
+optimise at this point: the cost of a request is the transport's, not the
+stages'.
+
+**What remains for the exit from experimental.** This measurement was one of
+the two conditions; the other, a first real consumer building its request
+path on these stages, stays open (`docs/guide/limits.md`).
+
 ## QUIC, on an emulated path
 
 `net/quic`'s path benchmarks (`net/quic/netem_bench_test.go`) move one
