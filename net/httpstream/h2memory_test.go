@@ -169,14 +169,16 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 		return nil
 	}
 
-	// One at a time is a connection under ordinary load, the point the two
-	// protocols are held to. All at once is a burst, which leaves each
-	// side's scratch at its high-water mark; HTTP/2's responder keeps more of
-	// it, and the bound only holds the line.
+	// One at a time is a connection under ordinary load: 1.17-1.24× on a
+	// quiet machine, 2.02× when every closed stream was kept whole. All at
+	// once is a burst, which leaves each side's scratch at its high-water
+	// mark: 1.69-1.74×, 2.93× before. A CI runner moves a figure by up to
+	// 12%, so the bounds sit between the two rather than on the figure: they
+	// catch a return of what was removed, not a few hundred bytes.
 	for _, tc := range []struct {
 		depth int
 		ratio float64
-	}{{1, 1.3}, {requests, 1.8}} {
+	}{{1, 1.6}, {requests, 2.4}} {
 		// Twice each, alternating, keeping the smaller: a goroutine's
 		// descriptor is heap, and whether one is reused from an earlier
 		// test or allocated anew moved a single pass by 1.5 KB a connection.
