@@ -159,11 +159,12 @@ jobs:
       - name: Test segmented send
         run: go test -race -shuffle=on -v -run 'Segment' ./net/quic
 
-  # The comparison module lives beside the root module as benchmarks/ and is
-  # excluded from the root's ./... on purpose: it pins pgx, gin, echo, chi and
-  # fiber. Its go.mod replaces the root by ../, so it is vetted against this
-  # tree and an API break here goes red the day it lands, not the day someone
-  # next runs a comparison.
+  # The comparison modules live beside the root module and are excluded from
+  # the root's ./... on purpose: benchmarks/ pins pgx, gin, echo, chi and
+  # fiber; comparison/sluice and comparison/loadgen pin pgx and quic-go. The
+  # go.mod of benchmarks/ and comparison/sluice replaces the root by the
+  # working tree, so they are vetted against this tree and an API break here
+  # goes red the day it lands, not the day someone next runs a comparison.
   benchmarks-module:
     runs-on: ubuntu-latest
     env:
@@ -175,7 +176,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
-          cache-dependency-path: benchmarks/go.sum
+          cache-dependency-path: |
+            benchmarks/go.sum
+            comparison/sluice/go.sum
+            comparison/loadgen/go.sum
       - name: Vet
         working-directory: benchmarks
         run: go vet ./...
@@ -185,6 +189,15 @@ jobs:
       - name: Bench once
         working-directory: benchmarks
         run: go test -run '^$' -bench . -benchtime 1x ./...
+      # The study's modules run nothing here: a campaign needs a server, a
+      # database and a load generator. A requirement left untidy, or code that
+      # no longer builds, goes red instead of waiting for the next campaign.
+      - name: Vet and tidy (comparison/sluice)
+        working-directory: comparison/sluice
+        run: go vet ./... && go mod tidy -diff
+      - name: Vet and tidy (comparison/loadgen)
+        working-directory: comparison/loadgen
+        run: go vet ./... && go mod tidy -diff
 
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about
