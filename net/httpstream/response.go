@@ -23,7 +23,25 @@ type Response struct {
 	// must not be set here. Date is added by the writer when the handler
 	// did not set one (RFC 9110 §6.6.1), on every final response, 5xx
 	// included, ahead of these fields; a handler's own Date stays where
-	// the handler put it.
+	// the handler put it, and must be an IMF-fixdate (§5.6.7), the one
+	// form a sender may generate.
+	//
+	// The three writers refuse, with [ErrMalformed] or the protocol's
+	// error, what no response may carry whatever the field: a name that is
+	// not a token, a value holding CR, LF or another control octet
+	// ([ErrHeaderInjection]), the framing and connection fields this
+	// package states itself (Content-Length, Transfer-Encoding,
+	// Connection, Keep-Alive, Proxy-Connection, Upgrade, a Trailer without
+	// Trailers), the fields only a request may carry (Host, TE, Expect:
+	// §2.2 forbids a sender the elements of another role), and a Date that
+	// is not an IMF-fixdate. The rest of RFC 9110's sender rules is the
+	// handler's, because it turns on each field's definition, which the
+	// writer does not know: the grammar of a value (§2.2 — a Vary with an
+	// empty member, a Content-Type without a subtype, go out as given) and
+	// one line per field unless its definition makes it a list (§5.3 —
+	// two Content-Type lines go out as two). A writer that checked these
+	// would carry a catalogue of every field, and be wrong about the ones
+	// defined after it.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
@@ -103,10 +121,14 @@ type Response struct {
 	// HTTP/1.1 sends them after the last chunk, which makes a Body response
 	// with trailers chunked rather than Content-Length framed; HTTP/2 and
 	// HTTP/3 in a HEADERS frame that ends the stream. They are held to the
-	// header rules, and refused when they name a field that frames the
-	// message or describes the connection (RFC 9110 §6.5.1): those were
-	// settled by the time the trailers arrive. Any other field is the
-	// handler's to know it may be sent there. A Trailer header naming
+	// header rules, and refused when they name a field RFC 9110 §6.5.1
+	// says cannot be processed after the content — the ones of its own
+	// that frame the message, describe the connection, route it,
+	// authenticate it, control the response or describe the content's
+	// format (see refusedTrailers): those were settled by the time the
+	// trailers arrive. Any other field is the handler's to know it may be
+	// sent there, a field from another specification (Set-Cookie, a
+	// Cache-Control of RFC 9111) included. A Trailer header naming
 	// them, which RFC 9110 §6.6.2 says a sender SHOULD send, is the
 	// handler's to set; HTTP/1.1 refuses it on a response without
 	// Trailers, as the promise of fields that never come.
@@ -145,11 +167,10 @@ func (r Response) trailers() (fields []Header, err error) {
 
 // checkTrailer holds one response trailer to the octet rules every response
 // header is held to, and refuses the fields RFC 9110 §6.5.1 says cannot be
-// processed after the body: the framing, which was settled before it, and
-// the connection-specific fields, which no protocol carries end to end.
-// Trailer itself is among them — a trailer cannot announce more trailers.
-// The names are compared case-insensitively, so the one rule serves the
-// HTTP/1.1 spelling and the lowercase HTTP/2 and HTTP/3 put on the wire.
+// processed after the body (refusedTrailers), the request's own fields
+// among them. The names are compared case-insensitively, so the one rule
+// serves the HTTP/1.1 spelling and the lowercase HTTP/2 and HTTP/3 put on
+// the wire.
 func checkTrailer(h Header) error {
 	if !isToken(h.Name) {
 		return fmt.Errorf("%w: %q is not a trailer name", ErrMalformed, h.Name)
@@ -160,6 +181,9 @@ func checkTrailer(h Header) error {
 	if hasFieldControl(h.Value) {
 		return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrMalformed, h.Name)
 	}
+	if err := checkResponseField(h.Name); err != nil {
+		return err
+	}
 	for _, name := range refusedTrailers {
 		if equalFold(h.Name, name) {
 			return fmt.Errorf("%w: %s cannot be sent as a trailer", ErrMalformed, h.Name)
@@ -168,10 +192,43 @@ func checkTrailer(h Header) error {
 	return nil
 }
 
-// refusedTrailers are the fields checkTrailer refuses.
+// refusedTrailers are the fields checkTrailer refuses: RFC 9110 §6.5.1
+// names the kinds of field whose "evaluation is necessary prior to
+// receiving the content", and these are the fields RFC 9110 itself defines
+// in each kind. Framing and the connection first, settled before the body
+// and carried end to end by no protocol — Trailer among them, since a
+// trailer cannot announce more trailers; then routing (§7.2), authentication
+// (§11), the response controls (§10.2) and the content's format (§8.3 to
+// §8.7). Validators (§8.8) stay allowed: an ETag computed as the body went
+// out is what trailers are for. A field of another specification is not
+// here: this package does not keep that catalogue, and the handler knows
+// its own fields. The request's own fields are refused before this list,
+// by checkResponseField.
 var refusedTrailers = [...]string{
 	"content-length", "transfer-encoding", "trailer", "te",
 	"connection", "keep-alive", "proxy-connection", "upgrade",
+	"host",
+	"authorization", "proxy-authorization", "www-authenticate", "proxy-authenticate",
+	"authentication-info", "proxy-authentication-info",
+	"accept-ranges", "age", "location", "retry-after", "server", "vary",
+	"content-type", "content-encoding", "content-language", "content-location", "content-range",
+}
+
+// checkResponseField refuses a field only a request may carry. RFC 9110
+// §2.2 forbids a sender "protocol elements or syntax alternatives that are
+// only allowed to be generated by participants in other roles", and a
+// response is not the role of Host (§7.2, the request's routing), TE
+// (§10.1.4, what the client accepts) or Expect (§10.1.1, what the client
+// expects of the server). Each would tell a recipient something about a
+// request it is not reading. One point for the three writers and the
+// trailers; the other request fields (Accept, Range, If-Match…) are not
+// listed: they mislead no one about the message, and a catalogue of every
+// request field is a mirror this package would keep wrong.
+func checkResponseField(name []byte) error {
+	if equalFold(name, "host") || equalFold(name, "te") || equalFold(name, "expect") {
+		return fmt.Errorf("%w: %s is a request field, not a response's", ErrMalformed, name)
+	}
+	return nil
 }
 
 // pull runs a streamed response's producer, turning a panic in it into an
@@ -435,7 +492,11 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 	dst = append(dst, ' ')
 	dst = append(dst, reason(status)...)
 	dst = append(dst, '\r', '\n')
-	if !datedBy(res.Headers) {
+	dated, err := datedBy(res.Headers)
+	if err != nil {
+		return nil, err
+	}
+	if !dated {
 		// RFC 9110 §6.6.1: an origin server with a clock sends Date on every
 		// response. It leads the fields (§5.3: "Date on responses" first, so
 		// a recipient can decide early not to handle the message); see
@@ -453,6 +514,9 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 		}
 		if hasFieldControl(h.Value) {
 			return nil, fmt.Errorf("%w: the value of %q holds a control character", ErrMalformed, h.Name)
+		}
+		if err := checkResponseField(h.Name); err != nil {
+			return nil, err
 		}
 		if equalFold(h.Name, "content-length") || equalFold(h.Name, "transfer-encoding") {
 			// Framing is this package's to state, and a second opinion on it
@@ -488,15 +552,22 @@ func appendStatusAndHeaders(dst []byte, res Response, date []byte) ([]byte, erro
 // is believed — a cache in front of it may be dating the entry — and is
 // neither doubled nor moved: the three writers add theirs only when this is
 // false, ahead of the handler's fields, which needs this pass before the one
-// that writes them.
-func datedBy(headers []Header) bool {
+// that writes them. Believed, but read: a Date a sender generates MUST be an
+// IMF-fixdate (RFC 9110 §5.6.7), and one the writer could not parse is
+// refused rather than sent for a cache to misdate the entry by. The parse
+// costs only the handler that dates its own responses; the common path
+// compares four bytes per field.
+func datedBy(headers []Header) (dated bool, err error) {
 	for _, h := range headers {
 		// The length first, inline: most names are not four bytes long.
 		if len(h.Name) == len("date") && equalFold(h.Name, "date") {
-			return true
+			if _, err := time.Parse(dateLayout, string(h.Value)); err != nil {
+				return true, fmt.Errorf("%w: the Date %q is not an IMF-fixdate", ErrMalformed, h.Value)
+			}
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // noLengthAndBody applies RFC 9110 §8.6 / §9.3.2's constraint on a

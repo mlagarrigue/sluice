@@ -1578,3 +1578,51 @@ func TestRequestTrailersReachTheHandler(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9110 §2.2 forbids a sender the elements of another role: Host, TE and
+// Expect belong to a request, and a response carrying one tells its reader
+// about a request it is not reading. A handler's own Date is believed but
+// must be the IMF-fixdate §5.6.7 lets a sender generate: one a cache cannot
+// read would misdate the entry. The one check serves the three writers;
+// this is the HTTP/1.1 side of it.
+func TestWriteBatchRefusesRequestFieldsAndAMalformedDate(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"Host", "example.test"},
+		{"te", "trailers"},
+		{"Expect", "100-continue"},
+		{"Date", "yesterday"},
+		{"Date", "Tue, 20 Oct 2026 20:58:44 +0000"},
+	} {
+		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{res}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
+		}
+	}
+	dated := Response{Status: 200, Headers: []Header{{Name: []byte("Date"), Value: []byte("Tue, 20 Oct 2026 20:58:44 GMT")}}}
+	if _, err := WriteBatch(nil, Config{}, nil, []Response{dated}); err != nil {
+		t.Errorf("an IMF-fixdate Date was refused: %v", err)
+	}
+}
+
+// RFC 9110 §6.5.1: a trailer cannot carry a field whose evaluation had to
+// precede the content. The fields RFC 9110 defines in the kinds it names —
+// routing, authentication, response controls, content format — are refused
+// with the framing and connection fields already were, and the request's
+// own fields with them; a validator is not, trailers being what an ETag
+// computed on the way out is for. checkTrailer is the one point the three
+// protocols' trailers go through.
+func TestCheckTrailerRefusesFieldsSettledBeforeTheContent(t *testing.T) {
+	for _, name := range []string{
+		"content-length", "Trailer", "host", "Authorization", "www-authenticate",
+		"location", "vary", "Content-Type", "content-range", "expect", "te",
+	} {
+		if err := checkTrailer(Header{Name: []byte(name), Value: []byte("x")}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: got %v, want ErrMalformed", name, err)
+		}
+	}
+	for _, name := range []string{"etag", "grpc-status", "x-checksum"} {
+		if err := checkTrailer(Header{Name: []byte(name), Value: []byte("x")}); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
+	}
+}

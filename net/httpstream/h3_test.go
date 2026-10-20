@@ -2050,3 +2050,17 @@ func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
 	}
 	return s
 }
+
+// The request-only fields and the malformed Date the other two writers
+// refuse (RFC 9110 §2.2, §5.6.7) are refused on HTTP/3 too, from the same
+// check.
+func TestH3RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
+	} {
+		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
+		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
+		}
+	}
+}

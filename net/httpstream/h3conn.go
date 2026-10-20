@@ -1142,7 +1142,11 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 	}
 	noLength, noBody := noLengthAndBody(status, method)
 	fields := append(sc.fields[:0], Header{Name: h3StatusName, Value: appendDigits(sc.status[:0], status)})
-	if !datedBy(r.Headers) {
+	dated, err := datedBy(r.Headers)
+	if err != nil {
+		return nil, err
+	}
+	if !dated {
 		// RFC 9110 §6.6.1's Date, as the other two writers add it and
 		// where: on every final response the handler did not date itself,
 		// first after :status. The value is the batch's, formatted once and
@@ -1168,6 +1172,9 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		}
 		if hasFieldControl(h.Value) {
 			return nil, fmt.Errorf("%w: the value of %q holds a control character", ErrH3Protocol, h.Name)
+		}
+		if err := checkResponseField(name); err != nil {
+			return nil, err
 		}
 		// The HTTP/2 writer's refusals, for the same reasons: a
 		// connection-specific field makes the response malformed (RFC 9114

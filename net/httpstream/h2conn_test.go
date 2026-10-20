@@ -3069,3 +3069,18 @@ func TestServeBoundsHTTP2ByConfig(t *testing.T) {
 		t.Errorf("the handler saw a %d-byte body, want %d", got, size)
 	}
 }
+
+// The request-only fields and the malformed Date the HTTP/1.1 writer refuses
+// (RFC 9110 §2.2, §5.6.7) are refused by the HTTP/2 head too, from the same
+// check, so a handler's bug fails its own stream rather than reaching the
+// client as a response about a request it never sent.
+func TestH2RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
+	} {
+		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
+		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
+		}
+	}
+}

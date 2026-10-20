@@ -1698,7 +1698,11 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 	// listSize is RFC 9113 §6.5.2's measure — names and values uncompressed,
 	// plus 32 per field — of what this block decodes to at the peer.
 	listSize := uint64(len(":status") + 3 + 32)
-	if !datedBy(r.Headers) {
+	dated, err := datedBy(r.Headers)
+	if err != nil {
+		return nil, err
+	}
+	if !dated {
 		// RFC 9110 §6.6.1's Date, as the h1 writer adds it and where: on
 		// every final response the handler did not date itself, first after
 		// :status. The static table names the field (entry 33); the value
@@ -1727,6 +1731,9 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		}
 		if hasFieldControl(h.Value) {
 			return nil, fmt.Errorf("%w: the value of %q holds a control character", ErrH2Protocol, h.Name)
+		}
+		if err := checkResponseField(name); err != nil {
+			return nil, err
 		}
 		// The output half of §8.2.2's rule, mirrored on the input half
 		// above: a response generated with a connection-specific field is
