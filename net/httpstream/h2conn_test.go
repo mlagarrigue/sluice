@@ -2977,6 +2977,43 @@ func TestH2ForgetsOpenedStreamsPastTheWindow(t *testing.T) {
 	}
 }
 
+// A request head that carries "expect: 100-continue" and no END_STREAM gets
+// an interim 100 before its body (RFC 9110 §10.1.1: the origin server MUST
+// send an immediate final status or an immediate 100, and MUST NOT wait for
+// the content before sending the 100), as the HTTP/1.1 reader sends one; the
+// final response follows the body on the same stream.
+func TestH2AnswersExpectContinueWithAnInterim100(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+		Payload: headBlock("POST", "/x", [2]string{"content-length", "2"}, [2]string{"expect", "100-continue"}),
+	})
+	c.flush()
+
+	// pump's own bound is the guard: five seconds without a HEADERS frame
+	// is the server waiting for the body.
+	c.pump(func() bool { _, seen := c.heads[1]; return seen || c.sawGoAway })
+	head, seen := c.heads[1]
+	if !seen {
+		t.Fatal("no interim 100 and no final status arrived before the body on an expect: 100-continue request")
+	}
+	if status := h2Status(head); status != 100 {
+		t.Fatalf("the first HEADERS on stream 1 carries :status %d, want 100", status)
+	}
+
+	c.data(1, []byte("hi"), true)
+	c.flush()
+	c.pump(func() bool { return c.ended[1] || c.sawGoAway })
+	if c.sawGoAway {
+		t.Fatalf("GOAWAY code %#x after the body that followed the 100", goAwayCode(c.goAway))
+	}
+	if got := c.got[1]; got != "/x" {
+		t.Fatalf("stream 1 answered %q after its body, want /x", got)
+	}
+}
+
 // An HTTP/2 connection [Serve] accepts runs under the bounds Config names: a
 // Serve caller who raised MaxBodyBytes to 3 MiB has raised it for HTTP/2 as
 // well, and a 2 MiB upload is accepted rather than refused at the 1 MiB

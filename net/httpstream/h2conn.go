@@ -1133,6 +1133,17 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	if st.endStream {
 		return s.finish(st)
 	}
+	if expectsContinue(st.req) {
+		// The body is yet to come and the client is waiting to be told to
+		// send it: the interim 100 goes out now, RFC 9110 §10.1.1, as the
+		// HTTP/1.1 reader sends it the moment a head is complete. Not
+		// omitted when DATA is already behind the HEADERS in the same read
+		// (the MAY of §10.1.1): that is not known here, and a 100 the client
+		// did not wait for costs it a few bytes.
+		if err := s.w.interim(st.id, 100); err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
 }
 

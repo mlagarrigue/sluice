@@ -699,11 +699,8 @@ func (w *h2Writer) control(f h2Frame) error {
 }
 
 func (w *h2Writer) controlLocked(f h2Frame) error {
-	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
-		w.cond.Wait()
-	}
-	if w.err != nil {
-		return w.err
+	if err := w.waitCtrlLocked(); err != nil {
+		return err
 	}
 	if err := w.appendCtrl(f); err != nil {
 		return err
@@ -777,19 +774,11 @@ func (w *h2Writer) appendTableUpdate(block []byte) []byte {
 func (w *h2Writer) refuse(id uint32, status int) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
-		w.cond.Wait()
-	}
-	if w.err != nil {
-		return w.err
+	if err := w.waitCtrlLocked(); err != nil {
+		return err
 	}
 	var buf [64]byte // a size update, :status and date fit without the heap
-	block := buf[:0]
-	if w.tableUpdate {
-		block = w.appendTableUpdate(block)
-		w.tableUpdate = false
-	}
-	block = appendHPACKStatus(block, status)
+	block := w.bareHeadLocked(buf[:0], status)
 	block = appendHPACK(block, "date", dateFor(time.Now()))
 	err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: id, Payload: block})
 	if err != nil {
@@ -800,6 +789,48 @@ func (w *h2Writer) refuse(id uint32, status int) error {
 	}
 	w.cond.Broadcast()
 	return nil
+}
+
+// interim answers a request head that expects a 100 (Continue) before its
+// body, RFC 9110 §10.1.1: the client is waiting for this before it sends
+// the body, and this end is waiting for the body. One HEADERS without
+// END_STREAM (RFC 9113 §8.1: an interim response precedes the final one on
+// the same stream; §8.8.5), :status alone — a 1xx owes no date (§6.6.1 of
+// RFC 9110). Queued as control, so that it leaves ahead of the final head
+// the responder builds once the body is in, and built like refuse's head.
+func (w *h2Writer) interim(id uint32, status int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.waitCtrlLocked(); err != nil {
+		return err
+	}
+	var buf [16]byte // a size update and :status fit without the heap
+	block := w.bareHeadLocked(buf[:0], status)
+	if err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: id, Payload: block}); err != nil {
+		return err
+	}
+	w.cond.Broadcast()
+	return nil
+}
+
+// bareHeadLocked starts a head built outside appendHead: the table size
+// update the peer is owed, if any, then :status. Nothing in it is indexed,
+// so the encoder's table — always empty — is untouched.
+func (w *h2Writer) bareHeadLocked(block []byte, status int) []byte {
+	if w.tableUpdate {
+		block = w.appendTableUpdate(block)
+		w.tableUpdate = false
+	}
+	return appendHPACKStatus(block, status)
+}
+
+// waitCtrlLocked blocks while the control queue is at its bound, and reports
+// the writer's failure if it has one.
+func (w *h2Writer) waitCtrlLocked() error {
+	for len(w.ctrl) >= w.cfg.MaxPendingControlBytes && w.err == nil && !w.stopping {
+		w.cond.Wait()
+	}
+	return w.err
 }
 
 // control32 and appendCtrl32 queue a control frame whose payload is one
