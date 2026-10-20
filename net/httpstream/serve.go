@@ -3,6 +3,7 @@ package httpstream
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -209,6 +210,12 @@ type connState struct {
 	phase atomic.Int32
 	drain context.Context
 	ip    netip.Prefix // the connection's key in connSet.byIP; invalid when it has none
+	// bodyToEOF is set while a close-delimited body — an HTTP/1.0 client's
+	// streamed response, see streamedFraming — is on the wire and not yet
+	// complete. A close in that state must not carry TLS's close_notify:
+	// RFC 9112 §9.8 makes the closure alert that body's only end marker, so
+	// a valid alert after a cut body would pass the cut off as the end.
+	bodyToEOF atomic.Bool
 }
 
 // The phases a connection moves through, as the shutdown sees them.
@@ -234,6 +241,19 @@ func (st *connState) set(phase int32) {
 // drainingNow reports whether the shutdown has begun; never, for a nil state.
 func (st *connState) drainingNow() bool {
 	return st != nil && st.drain.Err() != nil
+}
+
+// setBodyToEOF records whether a close-delimited body is on the wire and
+// incomplete; a nil state takes no note.
+func (st *connState) setBodyToEOF(on bool) {
+	if st != nil {
+		st.bodyToEOF.Store(on)
+	}
+}
+
+// cutBody reports whether closing now would cut a close-delimited body short.
+func (st *connState) cutBody() bool {
+	return st != nil && st.bodyToEOF.Load()
 }
 
 // add registers a connection, returning nil if it is not admitted — the set
@@ -313,9 +333,28 @@ func (s *connSet) drain() {
 func (s *connSet) closeAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for c := range s.conns {
+	for c, st := range s.conns {
+		if st.cutBody() {
+			closeCut(c)
+			continue
+		}
 		_ = c.Close()
 	}
+}
+
+// closeCut closes a connection whose close-delimited body is incomplete. On
+// TLS the transport is closed under the record layer, so no close_notify goes
+// out and the client reads the cut as an incomplete close (crypto/tls returns
+// io.ErrUnexpectedEOF) rather than the valid closure alert that RFC 9112
+// §9.8 makes the body's end marker. On a plain socket a FIN is all there is:
+// cleartext HTTP/1.0 cannot tell a cut body from a complete one, which is the
+// weakness §9.8 names. Close on the TLS connection afterwards finds the
+// socket gone and sends nothing.
+func closeCut(c net.Conn) {
+	if tc, ok := c.(*tls.Conn); ok {
+		_ = tc.NetConn().Close()
+	}
+	_ = c.Close()
 }
 
 // serveConn runs one connection to its end, answering whatever it can and
@@ -356,7 +395,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		if streamedIn(res) {
 			var closed bool
 			var werr error
-			if out, closed, werr = writeStreamedBatch(c, cfg, b.Items, res, out); werr != nil || closed || asksToClose(res) {
+			if out, closed, werr = writeStreamedBatch(c, st, cfg, b.Items, res, out); werr != nil || closed || asksToClose(res) {
 				// closed without error is a close-delimited body: EOF is its
 				// end marker, so the close *is* the last byte of the answer.
 				stopped = true
@@ -391,6 +430,14 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 				_ = writeStatus(c, cfg, nil, status)
 			}
 		}
+	}
+	if st.cutBody() {
+		// A close-delimited body ended short of its producer's end — the
+		// producer failed, or the client left. The two-stage close would
+		// send close_notify over TLS, and the client would take the cut
+		// body for complete (RFC 9112 §9.8).
+		closeCut(c.Conn)
+		return
 	}
 	tearDown(c, cfg)
 }
@@ -795,7 +842,7 @@ func streamedIn(res []Response) bool {
 // no such repair: a 500 appended to a half-written body would be read as
 // body bytes, so a mid-stream write failure closes the connection with
 // nothing more said.
-func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
+func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
 	var field [keepAliveFieldMax]byte
 	keepAlive := appendKeepAlive(field[:0], cfg.IdleTimeout)
 	buf = buf[:0]
@@ -863,6 +910,12 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 			return buf, false, err
 		}
 		buf = buf[:0]
+		if closeDelimited && !noBody {
+			// From here until the producer ends, a close cuts the body:
+			// the connection's closer reads this (serveConn, closeAll) and
+			// closes without close_notify.
+			st.setBodyToEOF(true)
+		}
 		if noBody {
 			// A HEAD or 204/304 response states no body and sends none —
 			// the producer is never pulled, the same way the buffered path
@@ -920,6 +973,9 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 			return buf, false, werr
 		}
 		if closeDelimited {
+			// The producer ended: the close that follows is the body's end,
+			// and close_notify says so.
+			st.setBodyToEOF(false)
 			return buf, true, nil
 		}
 		if !chunked {

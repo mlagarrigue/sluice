@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,11 +10,171 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
+	"io"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice"
 )
+
+// wireListener hands out connections that keep a copy of every byte the
+// server writes, so a test can read the TLS records under the client's view.
+type wireListener struct {
+	net.Listener
+	mu   sync.Mutex
+	sent []byte
+}
+
+func (l *wireListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &wireConn{Conn: c, l: l}, nil
+}
+
+// recordTypes is the content type of each TLS record written so far, in
+// order: 20 change_cipher_spec, 21 alert, 22 handshake, 23 application_data.
+func (l *wireListener) recordTypes() []byte {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var types []byte
+	for b := l.sent; len(b) >= 5; {
+		n := int(b[3])<<8 | int(b[4])
+		types = append(types, b[0])
+		if len(b) < 5+n {
+			break
+		}
+		b = b[5+n:]
+	}
+	return types
+}
+
+type wireConn struct {
+	net.Conn
+	l *wireListener
+}
+
+// Write records what the socket took, not what was offered: an alert
+// attempted on a socket already closed under the record layer never reaches
+// the wire, and must not count.
+func (c *wireConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	c.l.mu.Lock()
+	c.l.sent = append(c.l.sent, p[:n]...)
+	c.l.mu.Unlock()
+	return n, err
+}
+
+const tlsAlert = 21
+
+// serveTLS10 serves one recording TLS 1.2 listener with a handler and returns
+// a connected HTTP/1.1-only TLS client; the close-delimited tests below drive
+// it with an HTTP/1.0 request. TLS 1.2 because its record header shows the
+// content type in clear, so an alert can be told from application data on
+// the wire; TLS 1.3 encrypts it. The wire is the judge rather than the Go
+// client: crypto/tls reads an EOF without close_notify at a record boundary
+// as a clean io.EOF on purpose, so the client cannot tell the two closes
+// apart — stricter clients (OpenSSL 3) do.
+func serveTLS10(t *testing.T, h Handler) (*tls.Conn, *wireListener) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &wireListener{Listener: ln}
+	tlsLn := tls.NewListener(rec, &tls.Config{ //nolint:gosec // G402: TLS 1.2 so the record type shows on the wire, see above
+		Certificates: []tls.Certificate{selfSigned(t)},
+		NextProtos:   []string{"http/1.1"},
+		MaxVersion:   tls.VersionTLS12,
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = Serve(ctx, tlsLn, Config{}, h) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // G402: the certificate above is the test's own
+		NextProtos:         []string{"http/1.1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if err := c.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	return c, rec
+}
+
+// A close-delimited body (HTTP/1.0 client, streamed response without
+// ContentLength) whose producer fails mid-way has no end marker but the
+// close. RFC 9112 §9.8: such a body "is complete only if a valid closure
+// alert has been received" — so the close must not send close_notify, or the
+// client takes the cut body for whole. No alert record may follow the body.
+func TestTruncatedCloseDelimitedBodyClosesWithoutCloseNotify(t *testing.T) {
+	c, rec := serveTLS10(t, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		return sluice.Batch[Response]{Items: []Response{{
+			Status: 200,
+			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+				if !yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("part0 ")}}) {
+					return
+				}
+				panic("the producer failed after its first batch")
+			},
+		}}}
+	})
+	if _, err := c.Write([]byte("GET /report HTTP/1.0\r\nHost: h\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(c)
+	head, body, ok := bytes.Cut(got, []byte("\r\n\r\n"))
+	if !ok || !bytes.HasPrefix(head, []byte("HTTP/1.1 200")) {
+		t.Fatalf("response head = %q (err %v)", head, err)
+	}
+	if bytes.Contains(head, []byte("Content-Length")) || bytes.Contains(head, []byte("chunked")) {
+		t.Fatalf("not a close-delimited body: %q", head)
+	}
+	if string(body) != "part0 " {
+		t.Fatalf("body = %q, want the part that went out before the failure", body)
+	}
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("the client read %v, want a clean or an unexpected EOF", err)
+	}
+	if types := rec.recordTypes(); bytes.IndexByte(types, tlsAlert) >= 0 {
+		t.Fatalf("the truncated close-delimited body was followed by a closure alert (record types %v): the client takes it for complete", types)
+	}
+}
+
+// The complete close-delimited body keeps its closure alert: the producer
+// ended, the close is the body's end, and close_notify says so.
+func TestCompleteCloseDelimitedBodyEndsWithCloseNotify(t *testing.T) {
+	c, rec := serveTLS10(t, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		return sluice.Batch[Response]{Items: []Response{{
+			Status: 200,
+			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+				yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("whole")}})
+			},
+		}}}
+	})
+	if _, err := c.Write([]byte("GET /report HTTP/1.0\r\nHost: h\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("a complete close-delimited body ended with %v, want a clean close (close_notify then EOF)", err)
+	}
+	if _, body, ok := bytes.Cut(got, []byte("\r\n\r\n")); !ok || string(body) != "whole" {
+		t.Fatalf("body = %q, want %q", body, "whole")
+	}
+	if types := rec.recordTypes(); len(types) == 0 || types[len(types)-1] != tlsAlert {
+		t.Fatalf("the complete close-delimited body did not end with a closure alert (record types %v)", types)
+	}
+}
 
 // selfSigned builds the throwaway certificate the TLS test terminates with.
 func selfSigned(t *testing.T) tls.Certificate {
