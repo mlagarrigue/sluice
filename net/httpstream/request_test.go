@@ -46,9 +46,9 @@ func TestParseRefusals(t *testing.T) {
 			errUnsupportedCoding,
 		},
 		{
-			"chunked stacked on itself",
+			"chunked stacked on itself — chunked is not the final coding",
 			req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: chunked, chunked"),
-			errUnsupportedCoding,
+			ErrMalformed,
 		},
 		{
 			"Transfer-Encoding on HTTP/1.0",
@@ -231,6 +231,51 @@ func TestChunkedBodyIsDecoded(t *testing.T) {
 	}
 	if string(r.Body) != "hello world" {
 		t.Errorf("body = %q, want %q", r.Body, "hello world")
+	}
+}
+
+// Transfer-Encoding is the list RFC 9110 §5.6.1.2 describes — empty elements
+// ignored, OWS tolerated, case ignored — read across every line of the field.
+// Three outcomes: chunked alone is chunked; chunked anywhere but last is a
+// body whose length cannot be known, 400 (RFC 9112 §6.3); a final coding this
+// server has no decoder for is 501 (§6.1).
+func TestTransferEncodingIsReadAsAList(t *testing.T) {
+	body := "5\r\nhello\r\n0\r\n\r\n"
+	tests := []struct {
+		name  string
+		lines []string
+		want  error
+	}{
+		{"leading empty element", []string{"Transfer-Encoding: , chunked"}, nil},
+		{"trailing empty element", []string{"Transfer-Encoding: chunked, "}, nil},
+		{"trailing empty element after OWS", []string{"Transfer-Encoding: chunked ,"}, nil},
+		{"upper case", []string{"Transfer-Encoding: CHUNKED"}, nil},
+		{"empty lines around it", []string{"Transfer-Encoding: ", "Transfer-Encoding: chunked", "Transfer-Encoding: ,"}, nil},
+		{"chunked not final", []string{"Transfer-Encoding: chunked, gzip"}, ErrMalformed},
+		{"chunked not final across two lines", []string{"Transfer-Encoding: chunked", "Transfer-Encoding: gzip"}, ErrMalformed},
+		{"chunked stacked on itself", []string{"Transfer-Encoding: chunked, chunked"}, ErrMalformed},
+		{"no coding at all", []string{"Transfer-Encoding: ,"}, ErrMalformed},
+		{"a coding this server does not implement, chunked final", []string{"Transfer-Encoding: gzip, chunked"}, errUnsupportedCoding},
+		{"a coding this server does not implement, alone", []string{"Transfer-Encoding: gzip"}, errUnsupportedCoding},
+		{"chunked with a parameter", []string{"Transfer-Encoding: chunked;q=1"}, errUnsupportedCoding},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := append(req(append([]string{"POST /x HTTP/1.1", "Host: h"}, tt.lines...)...), body...)
+			r, used, err := parse(t, raw)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if tt.want != nil {
+				return
+			}
+			if used != len(raw) {
+				t.Errorf("consumed %d of %d bytes", used, len(raw))
+			}
+			if string(r.Body) != "hello" {
+				t.Errorf("body = %q, want %q", r.Body, "hello")
+			}
+		})
 	}
 }
 

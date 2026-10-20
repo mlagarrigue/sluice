@@ -271,6 +271,8 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 	}{
 		{"smuggling pair", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n", "400"},
 		{"transfer coding not implemented", "POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip\r\n\r\n", "501"},
+		// RFC 9112 §6.3: chunked anywhere but last is 400, not 501.
+		{"chunked not the final coding", "POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked, gzip\r\n\r\n", "400"},
 		{"no Host", "GET /x HTTP/1.1\r\n\r\n", "400"},
 		{"absolute-form", "GET http://elsewhere/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 		{"body over the bound", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 999999999\r\n\r\n", "413"},

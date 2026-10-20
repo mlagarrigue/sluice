@@ -760,21 +760,47 @@ func parseHeaderLine(line []byte) (Header, error) {
 // Everything refused here is refused because leaving it to a later hop is the
 // request-smuggling family.
 //
-// Transfer-Encoding is accepted in exactly one form: "chunked" alone, on an
-// HTTP/1.1 request, with no Content-Length beside it. That shape leaves one
-// framing and nothing for two hops to disagree about. Every other shape is
-// refused: beside Content-Length it is the smuggling pair itself; on HTTP/1.0
-// the sender cannot know the coding is understood, so RFC 9112 §6.1 calls the
-// framing faulty; and a coding this server does not implement is a feature
-// gap, not a malformed request — answered 501, as the same section asks.
+// Transfer-Encoding is read as the list RFC 9110 §5.6.1.2 describes: every
+// line of the field, members cut by cutMember, empty members ignored (a
+// recipient MUST), names compared without case. The body is accepted in
+// exactly one form: "chunked" as the only coding, on an HTTP/1.1 request, with
+// no Content-Length beside it. That shape leaves one framing and nothing for
+// two hops to disagree about. Every other shape is refused, and the status
+// says why:
+//
+//   - beside Content-Length it is the smuggling pair itself, 400;
+//   - on HTTP/1.0 the sender cannot know the coding is understood, so RFC
+//     9112 §6.1 calls the framing faulty, 400;
+//   - chunked anywhere but last ("chunked, gzip", "chunked, chunked") is a
+//     body whose length cannot be determined, 400 and the connection closed
+//     (RFC 9112 §6.3), as is a field that names no coding at all;
+//   - a final coding this server does not implement ("gzip", "gzip, chunked",
+//     "chunked;q=1") is a feature gap, not a malformed request — 501, as §6.1
+//     asks. The connection closes there too: no framing was established.
 func checkFraming(req Request, http11 bool) (chunked bool, err error) {
-	hosts, codings, lengths := 0, 0, 0
-	var coding []byte
+	hosts, lengths := 0, 0
+	// unknown is the first coding this server has no decoder for; chunkedThen
+	// is true once a chunked member is followed by any other member.
+	var unknown []byte
+	declared, lastChunked, chunkedThen := false, false, false
 	for _, h := range req.Headers {
 		switch {
 		case equalFold(h.Name, "transfer-encoding"):
-			codings++
-			coding = h.Value
+			declared = true
+			for v := h.Value; len(v) > 0; {
+				var member []byte
+				member, v = cutMember(v)
+				if len(member) == 0 {
+					continue
+				}
+				if lastChunked {
+					chunkedThen = true
+				}
+				lastChunked = equalFold(member, "chunked")
+				if !lastChunked && unknown == nil {
+					unknown = member
+				}
+			}
 		case equalFold(h.Name, "content-length"):
 			lengths++
 		case equalFold(h.Name, "host"):
@@ -792,7 +818,7 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 	if hosts > 1 {
 		return false, fmt.Errorf("%w: %d Host headers", ErrMalformed, hosts)
 	}
-	if codings == 0 {
+	if !declared {
 		return false, nil
 	}
 	switch {
@@ -800,11 +826,12 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 		return false, fmt.Errorf("%w: Transfer-Encoding beside Content-Length", ErrMalformed)
 	case !http11:
 		return false, fmt.Errorf("%w: Transfer-Encoding on an HTTP/1.0 request", ErrMalformed)
-	case codings > 1 || !equalFold(coding, "chunked"):
-		// "chunked, chunked" and "gzip, chunked" land here too: the first is
-		// nonsense this server will not guess at, the second needs a decoder
-		// it does not have. 501 fits both — the request may be well-formed.
-		return false, fmt.Errorf("%w: %q", errUnsupportedCoding, coding)
+	case chunkedThen:
+		return false, fmt.Errorf("%w: chunked is not the final transfer coding", ErrMalformed)
+	case !lastChunked && unknown == nil:
+		return false, fmt.Errorf("%w: Transfer-Encoding names no coding", ErrMalformed)
+	case unknown != nil:
+		return false, fmt.Errorf("%w: %q", errUnsupportedCoding, unknown)
 	}
 	return true, nil
 }
