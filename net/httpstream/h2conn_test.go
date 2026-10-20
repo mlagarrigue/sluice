@@ -2863,6 +2863,120 @@ func TestH2KeepsHPACKStateAcrossA431(t *testing.T) {
 	}
 }
 
+// A trailer block for a stream this server reset, arriving after
+// MaxConcurrentStreams later streams were retired, names a stream the
+// closed-stream ring has forgotten. RFC 9113 §5.1 (closed) makes it the
+// client's right: the server reset stream 1 with a 413 while its trailers
+// were already on the wire behind the other requests. The block is decoded —
+// the request after it indexes the entry the trailers added — and the
+// connection goes on serving.
+func TestH2ToleratesTrailersOnAForgottenStream(t *testing.T) {
+	const ring = 4
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: ring, MaxBodyBytes: 1024}, echoTarget)
+	c := dialH2(t, addr)
+
+	// Stream 1: a POST whose body is over the bound — the server resets it
+	// with a 413 and remembers it in the ring.
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
+		Payload: headBlock("POST", "/up"),
+	})
+	c.data(1, make([]byte, 2048), false)
+	c.flush()
+	c.waitReset(1)
+
+	// More streams than the ring holds, each complete on its HEADERS, so
+	// each one is retired on arrival and pushes stream 1 out of the ring.
+	id := uint32(3)
+	for range ring + 2 {
+		id = c.admitted(id, func(id uint32) { c.request(id, "GET", "/g") })
+		id += 2
+	}
+
+	// The trailers of stream 1, which a conformant client may still have
+	// on the wire: it has not necessarily read the RST_STREAM yet. The
+	// field is added to the dynamic table, the first entry there.
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1,
+		Payload: hpackIncIndexed("x-checksum", "abc"),
+	})
+	// A request behind it proves the connection survived, and names that
+	// entry: a block left undecoded would make this a COMPRESSION_ERROR.
+	last := id
+	block := headBlock("GET", "/after")
+	block = append(block, hpackIndexed(staticTableLen+1)...)
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: last, Payload: block})
+	c.flush()
+
+	c.pump(func() bool { return c.ended[last] || c.sawGoAway })
+	if c.sawGoAway {
+		t.Fatalf("the connection ended with GOAWAY code %#x (last stream %d) on a late trailer block for stream 1",
+			goAwayCode(c.goAway), goAwayLast(c.goAway))
+	}
+	if got := c.got[last]; got != "/after" {
+		t.Fatalf("stream %d answered %q, want /after", last, got)
+	}
+}
+
+// A stream identifier that goes backwards onto a stream the client never
+// opened is the connection error RFC 9113 §5.1.1 asks for: the stream was
+// closed the moment a higher one opened, and no frame of the client's can
+// legitimately be on the wire for it.
+func TestH2RefusesAStreamIdentifierGoingBackwards(t *testing.T) {
+	addr, _ := serveH2(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+	c.request(5, "GET", "/five")
+	c.request(3, "GET", "/three")
+	c.flush()
+	c.pump(func() bool { return c.sawGoAway })
+	if code := goAwayCode(c.goAway); code != 0x1 {
+		t.Fatalf("GOAWAY code %#x for a stream identifier going backwards, want PROTOCOL_ERROR (0x1)", code)
+	}
+}
+
+// Beyond the h2OpenedWindow most recent identifiers, the server no longer
+// knows which streams the client opened and which it skipped, and reads
+// every one of them as opened: a frame on one is tolerated, as §5.1 asks for
+// a closed stream, never refused. Inside the window the distinction holds.
+func TestH2ForgetsOpenedStreamsPastTheWindow(t *testing.T) {
+	const ring = 2
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: ring}, echoTarget)
+	c := dialH2(t, addr)
+
+	// Stream 1 served and pushed out of the ring, then a jump of more than
+	// the window: stream 1 is now too old to tell apart from a skipped one.
+	id := uint32(1)
+	for range ring + 1 {
+		id = c.admitted(id, func(id uint32) { c.request(id, "GET", "/g") })
+		id += 2
+	}
+	far := id + 2*h2OpenedWindow
+	far = c.admitted(far, func(id uint32) { c.request(id, "GET", "/far") })
+
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1,
+		Payload: literal(nil, "x-late", "1"),
+	})
+	after := far + 2
+	c.request(after, "GET", "/after")
+	c.flush()
+	c.pump(func() bool { return c.ended[after] || c.sawGoAway })
+	if c.sawGoAway {
+		t.Fatalf("GOAWAY code %#x on a late block for stream 1, %d streams back", goAwayCode(c.goAway), (after-1)/2)
+	}
+	if got := c.got[after]; got != "/after" {
+		t.Fatalf("stream %d answered %q, want /after", after, got)
+	}
+
+	// An identifier the jump skipped, inside the window: never opened.
+	c.request(far-2, "GET", "/skipped")
+	c.flush()
+	c.pump(func() bool { return c.sawGoAway })
+	if code := goAwayCode(c.goAway); code != 0x1 {
+		t.Fatalf("GOAWAY code %#x for a skipped stream identifier, want PROTOCOL_ERROR (0x1)", code)
+	}
+}
+
 // An HTTP/2 connection [Serve] accepts runs under the bounds Config names: a
 // Serve caller who raised MaxBodyBytes to 3 MiB has raised it for HTTP/2 as
 // well, and a 2 MiB upload is accepted rather than refused at the 1 MiB

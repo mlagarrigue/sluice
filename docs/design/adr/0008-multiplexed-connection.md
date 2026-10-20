@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped)
 - **Theme:** httpstream
 
 ## Problem
@@ -49,7 +49,10 @@ its head is out. Flow control waits instead of refusing, bounded by
 by default); scheduling is round-robin per byte-budget round, control
 frames first; failures are classified (stream error resets one stream,
 connection error is reserved for framing and HPACK state); closed streams
-are remembered so late `DATA` is tolerated and still counted; the idle
+are remembered so late `DATA` is tolerated and still counted, and a late
+header block on one, or on a closed stream the bounded memory has since
+forgotten, is decoded and dropped rather than refused — only a block on a
+stream the client never opened is the connection error; the idle
 clock does not run while answers are owed; the connection receive window
 starts at 1 MiB.
 

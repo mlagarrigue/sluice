@@ -257,6 +257,13 @@ type h2Server struct {
 	// must increase, and one that goes backwards is a client reusing a
 	// closed stream rather than opening a new one.
 	lastID uint32
+	// opened is one bit per odd identifier, for the h2OpenedWindow most
+	// recent ones: set for a stream the client opened, clear for one it
+	// skipped. It is what tells a frame on a stream this end reset and has
+	// since forgotten (tolerated, §5.1 "closed") from a frame on a stream
+	// the client never opened (a connection error, §5.1.1), once the
+	// closed-stream ring no longer knows. See stream.
+	opened [h2OpenedWords]uint64
 	// peerMaxHeaderList is the peer's SETTINGS_MAX_HEADER_LIST_SIZE, zero
 	// until it sends one (the initial value is unlimited). Written by the
 	// reader, read by the responder.
@@ -812,6 +819,40 @@ func (s *h2Server) remember(id uint32, state h2State) {
 // lookup returns what this end knows of a stream the client opened: the
 // stream itself while it is open, late standing in for it once it is
 // retired, nil once it is forgotten.
+// h2OpenedWindow is how many of the most recent odd identifiers h2Server
+// remembers as opened or skipped (h2OpenedWords words of 64 bits). Past it,
+// an identifier is taken as opened: the tolerant answer, which costs the
+// decode of one block and nothing else. 256 bytes a connection.
+const (
+	h2OpenedWords  = 32
+	h2OpenedWindow = 64 * h2OpenedWords
+)
+
+// openID records that the client opened id, which must be odd and above
+// lastID, and advances lastID. The odd identifiers skipped on the way are
+// marked as never opened, so that a frame on one of them is refused as
+// §5.1.1 asks rather than tolerated as a late frame.
+func (s *h2Server) openID(id uint32) {
+	if (id-s.lastID)/2 > h2OpenedWindow {
+		clear(s.opened[:])
+	} else {
+		for skipped := s.lastID + 1 + s.lastID%2; skipped < id; skipped += 2 {
+			s.opened[(skipped>>1)%h2OpenedWindow/64] &^= 1 << ((skipped >> 1) % 64)
+		}
+	}
+	s.opened[(id>>1)%h2OpenedWindow/64] |= 1 << ((id >> 1) % 64)
+	s.lastID = id
+}
+
+// wasOpened reports whether the client opened id, an odd identifier at or
+// below lastID — or whether it is too old to tell, which reads as opened.
+func (s *h2Server) wasOpened(id uint32) bool {
+	if (s.lastID-id)/2 >= h2OpenedWindow {
+		return true
+	}
+	return s.opened[(id>>1)%h2OpenedWindow/64]&(1<<((id>>1)%64)) != 0
+}
+
 func (s *h2Server) lookup(id uint32) *h2Stream {
 	if st := s.streams[id]; st != nil {
 		return st
@@ -1272,15 +1313,42 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		return st, nil
 	}
 	if id <= s.lastID {
-		// This also catches a trailer block for a stream that has fallen out
-		// of the closed-stream ring, which is a connection error rather than
-		// the tolerance §5.1 asks for. Left that way deliberately: telling the
-		// two apart needs state this end has by then forgotten, and decoding a
-		// header block for a stream it knows nothing about would put the HPACK
-		// table at the mercy of a peer naming any old identifier. The ring
-		// holds MaxConcurrentStreams entries, so reaching here means the peer
-		// opened that many more streams before its trailers arrived.
-		return nil, fmt.Errorf("%w: stream %d reopens one already used", ErrH2Protocol, id)
+		// An identifier the client has already passed, on a stream neither
+		// open nor in the closed-stream ring. Two streams look like this,
+		// and §5.1 wants them answered in opposite ways. One the client
+		// never opened — a stream identifier going backwards — is a
+		// connection error (§5.1.1). One the client opened, this end
+		// retired, and MaxConcurrentStreams later retirements pushed out of
+		// the ring is a closed stream that may still have frames on the
+		// wire: the trailers of a request this end reset with a 413 while
+		// the client was already sending them behind a hundred other
+		// requests. §5.1 "closed" makes those frames the peer's right, to
+		// be minimally processed and discarded. The opened bitmap tells the
+		// two apart for the h2OpenedWindow most recent identifiers.
+		if !s.wasOpened(id) {
+			return nil, fmt.Errorf("%w: stream %d goes backwards past stream %d",
+				ErrH2Protocol, id, s.lastID)
+		}
+		// Decoded and dropped, as DATA on a forgotten stream is counted and
+		// dropped (data). The other answers are each wrong somewhere: a
+		// connection error loses every other stream to one late block from
+		// a conformant client; a STREAM_CLOSED reset is a frame on a stream
+		// that may well be closed, which §5.1 forbids, and a reset charged
+		// against the rapid-reset allowance for a stream that is gone.
+		// Decoding costs what the peer can already demand of any stream it
+		// opens. §5.1 does allow a connection error once a signal shows the
+		// peer received the RST_STREAM; the ring filling is not that signal,
+		// since the peer may have enqueued all those streams before it did.
+		//
+		// The block lands in late, as a ring-held stream's does, and in the
+		// closed state: headers decodes it into discard and keeps nothing.
+		// lastID is left alone — nothing opened — and the stream is not
+		// remembered again, which would evict a stream the ring still needs.
+		if s.late.id != id {
+			s.late = h2Stream{id: id, declared: -1}
+		}
+		s.late.state = stateClosed
+		return &s.late, nil
 	}
 	if s.goingAway || int(s.open.Load())+int(s.inFlight.Load()) >= s.cfg.MaxConcurrentStreams {
 		// §5.1.2 makes this a stream error, and REFUSED_STREAM is the code
@@ -1303,14 +1371,14 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		if err := s.countReset(); err != nil {
 			return nil, err
 		}
-		s.lastID = id
+		s.openID(id)
 		s.remember(id, stateClosed)
 		if err := s.w.control32(frameRSTStream, id, errRefusedStream); err != nil {
 			return nil, err
 		}
 		return s.lookup(id), nil
 	}
-	s.lastID = id
+	s.openID(id)
 	st := &h2Stream{
 		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by withDefaults
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
