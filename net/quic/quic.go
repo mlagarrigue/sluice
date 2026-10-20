@@ -177,6 +177,10 @@ var ErrQUIC = errors.New("quic: malformed")
 // prefix of a stream would merely be incomplete.
 var ErrTruncated = fmt.Errorf("%w: the buffer ends mid-field", ErrQUIC)
 
+// errPacketNumberPastCeiling refuses a packet whose decoded number is past
+// 2^62-1 (RFC 9000 §12.3); see decodePacketNumber.
+var errPacketNumberPastCeiling = fmt.Errorf("%w: the packet number is past 2^62-1", ErrQUIC)
+
 // MaxVarint is the largest value a variable-length integer can carry: the
 // encoding spends two bits of the first byte on the length, so 62 bits are
 // left (RFC 9000 §16).

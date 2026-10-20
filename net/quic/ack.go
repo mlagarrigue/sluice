@@ -49,6 +49,16 @@ type ackTracker struct {
 // record notes one received packet number and returns false when it is a
 // duplicate — already covered — which the caller drops without processing.
 func (a *ackTracker) record(pn uint64, now time.Time) bool {
+	if pn > MaxVarint {
+		// RFC 9000 §12.3: a packet number has to be "representable in
+		// whole in the Largest Acknowledged field of an ACK frame". The
+		// receive path refuses such a number before the AEAD
+		// (decodePacketNumber); this is the tracker's own invariant, kept
+		// here so that appendAckFrame can never meet a number AppendVarint
+		// would panic on. Refused as "not recorded": nothing is held,
+		// nothing is owed.
+		return false
+	}
 	// In order means exactly one past the largest seen; anything else that
 	// still records is either reordered (below the largest) or opens a gap
 	// (more than one past it). The flag is set only for packets actually

@@ -335,16 +335,20 @@ func TestDecodePacketNumber(t *testing.T) {
 		largest, truncated uint64
 		pnLen              int
 		want               uint64
+		ok                 bool
 	}{
-		{0, 1, 1, 1},
-		{0xa82f30ea, 0x9b32, 2, 0xa82f9b32}, // the RFC's own example
-		{255, 0, 1, 256},                    // the window rolled over
-		{256, 255, 1, 255},                  // and the one just before it
+		{0, 1, 1, 1, true},
+		{0xa82f30ea, 0x9b32, 2, 0xa82f9b32, true}, // the RFC's own example
+		{255, 0, 1, 256, true},                    // the window rolled over
+		{256, 255, 1, 255, true},                  // and the one just before it
+		{1<<62 - 2, 0xffffffff, 4, 1<<62 - 1, true},
+		{1<<62 - 1, 0, 4, 0, false}, // §12.3: 2^62 is past the ceiling
 	}
 	for _, tt := range tests {
-		if got := decodePacketNumber(tt.largest, tt.truncated, tt.pnLen); got != tt.want {
-			t.Errorf("decode(largest=%d, truncated=%#x, len=%d) = %d, want %d",
-				tt.largest, tt.truncated, tt.pnLen, got, tt.want)
+		got, ok := decodePacketNumber(tt.largest, tt.truncated, tt.pnLen)
+		if ok != tt.ok || (ok && got != tt.want) {
+			t.Errorf("decode(largest=%d, truncated=%#x, len=%d) = %d, %t, want %d, %t",
+				tt.largest, tt.truncated, tt.pnLen, got, ok, tt.want, tt.ok)
 		}
 	}
 }

@@ -571,7 +571,12 @@ func (o *packetOpener) openPhased(packet []byte, pnOffset int, largestPN uint64)
 	for i := range pnLen {
 		truncated = truncated<<8 | uint64(buf[pnOffset+i])
 	}
-	pn = decodePacketNumber(largestPN, truncated, pnLen)
+	pn, ok := decodePacketNumber(largestPN, truncated, pnLen)
+	if !ok {
+		// Refused before the AEAD, like a truncated packet: bytes nobody
+		// proved they sent, counted as discarded by the caller.
+		return nil, 0, usedCurrent, errPacketNumberPastCeiling
+	}
 
 	k := o.k
 	if p := o.phase; p != nil && buf[0]&0x80 == 0 && buf[0]&keyPhaseBit != p.bit {
@@ -636,21 +641,37 @@ func maskPacketNumber(buf []byte, mask [16]byte, pnOffset, pnLen int) {
 
 // decodePacketNumber recovers the full number from the truncated one on the
 // wire, choosing the candidate closest to what is expected (RFC 9000 §A.3).
+// ok is false when that candidate is past the ceiling, and pn is then
+// meaningless.
 //
 // The wire carries one to four bytes of a sixty-two-bit number, so the
 // receiver has to guess the rest — and guessing wrong is not a wrong number,
 // it is a wrong nonce and a packet that will not authenticate.
-func decodePacketNumber(largest, truncated uint64, pnLen int) uint64 {
+//
+// RFC 9000 §12.3: "The packet number is an integer in the range 0 to
+// 2^62-1 [...] because they need to be representable in whole in the
+// Largest Acknowledged field of an ACK frame". The +window branch already
+// stops short of 2^62; the bare candidate does not, because once the largest
+// number received is 2^62-1 the expected one is 2^62 and its high bits are
+// the candidate's. A peer that sealed a packet with that nonce has already
+// broken §12.3 ("MUST close the connection without sending a
+// CONNECTION_CLOSE frame" when its sending number reaches 2^62-1); accepted,
+// the number would be recorded for acknowledgement and AppendVarint would
+// panic on it, on the reading goroutine, ending the process. So the number
+// is refused here, before any key is used on the packet.
+func decodePacketNumber(largest, truncated uint64, pnLen int) (pn uint64, ok bool) {
 	bits := uint(pnLen * 8)
 	window := uint64(1) << bits
 	halfWindow := window / 2
 	expected := largest + 1
 	candidate := (expected &^ (window - 1)) | truncated
-	if candidate+halfWindow <= expected && candidate+window < 1<<62 {
-		return candidate + window
+	switch {
+	case candidate+halfWindow <= expected && candidate+window < 1<<62:
+		pn = candidate + window
+	case candidate > expected+halfWindow && candidate >= window:
+		pn = candidate - window
+	default:
+		pn = candidate
 	}
-	if candidate > expected+halfWindow && candidate >= window {
-		return candidate - window
-	}
-	return candidate
+	return pn, pn <= MaxVarint
 }
