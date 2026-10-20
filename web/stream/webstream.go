@@ -54,8 +54,10 @@
 // among the open ones instead of rebuilding that count itself.
 //
 // Each stage refuses with the status that names its boundary: no route is
-// 404, a method the path exists under is 405, credentials are 401, a grant is
-// 403, an unreadable body is 400 or 413. What a *served* exchange's business
+// 404, a method the path exists under is 405, a method no route declares is
+// 501, credentials are 401, a grant is 403, an unreadable body is 400 or
+// 413; an OPTIONS the table has no route for is answered 204 with Allow by
+// the router itself. What a *served* exchange's business
 // diagnostics map to is the caller's decision, made visibly in the render
 // callback — [web.Status] is that mapping when the caller wants the default.
 //
@@ -84,6 +86,10 @@ const (
 
 	// CodeMethodNotAllowed reports a target that exists under other methods.
 	CodeMethodNotAllowed = "Transport.Request.MethodNotAllowed"
+
+	// CodeMethodNotImplemented reports a method no route in the table
+	// declares, which the server therefore supports for no resource.
+	CodeMethodNotImplemented = "Transport.Request.MethodNotImplemented"
 )
 
 // RouteNone is [Exchange.Route] before routing has run or matched.

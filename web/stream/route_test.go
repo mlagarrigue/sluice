@@ -72,6 +72,12 @@ func TestRouteRefusals(t *testing.T) {
 		{"a wildcard does not match an empty segment", "GET", "/orders/", 404, CodeNoRoute},
 		{"a percent-encoded literal does not match", "GET", "/%68ealth", 404, CodeNoRoute},
 		{"wrong method on an existing path", "DELETE", "/orders/12", 405, CodeMethodNotAllowed},
+		{"a standard method the table lacks, on no path", "PUT", "/nothing", 404, CodeNoRoute},
+		{"a method neither the table nor the standard names", "BREW", "/orders/12", 501, CodeMethodNotImplemented},
+		{"the same, on no path", "BREW", "/nothing", 501, CodeMethodNotImplemented},
+		{"TRACE is not reflected", "TRACE", "/orders/12", 501, CodeMethodNotImplemented},
+		{"CONNECT has no tunnel", "CONNECT", "/orders/12", 501, CodeMethodNotImplemented},
+		{"OPTIONS on no path", "OPTIONS", "/nothing", 404, CodeNoRoute},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,9 +109,44 @@ func TestRouteMethodNotAllowedCarriesAllow(t *testing.T) {
 			allow = string(h.Value)
 		}
 	}
-	if allow != "GET, HEAD" {
-		t.Errorf("allow = %q, want GET, HEAD", allow)
+	if allow != "GET, HEAD, OPTIONS" {
+		t.Errorf("allow = %q, want GET, HEAD, OPTIONS", allow)
 	}
+}
+
+// RFC 9110 §9.3.7: OPTIONS asks what the resource supports. Without an
+// OPTIONS route of its own, a known path is answered 204 with the Allow a
+// 405 would carry, before any stage runs; "*" asks about the server and
+// lists every method of the table. A declared OPTIONS route keeps the
+// request, as a HEAD route does beside GET.
+func TestRouteOptionsAnswersWithAllow(t *testing.T) {
+	rt := table(t)
+	ex := []Exchange{exchangeFor("OPTIONS", "/orders/12"), exchangeFor("OPTIONS", "*"), exchangeFor("OPTIONS", "/orders/12?x=1")}
+	rt.Route(ex)
+	for i, want := range []string{"GET, HEAD, OPTIONS", "PATCH, GET, HEAD, OPTIONS", "GET, HEAD, OPTIONS"} {
+		e := &ex[i]
+		if e.Status != 204 || len(e.Diagnostics) != 0 || e.Route != RouteNone {
+			t.Errorf("OPTIONS %s: status %d, diagnostics %v, route %d; want a bare 204", e.Request.Target, e.Status, e.Diagnostics, e.Route)
+		}
+		if got := allowOf(e); got != want {
+			t.Errorf("OPTIONS %s: allow = %q, want %q", e.Request.Target, got, want)
+		}
+	}
+	own := NewRouter(Route{Method: "OPTIONS", Pattern: "/orders/{order}"}, Route{Method: "GET", Pattern: "/orders/{order}"})
+	ex = []Exchange{exchangeFor("OPTIONS", "/orders/12")}
+	own.Route(ex)
+	if e := &ex[0]; e.Refused() || e.Route != 0 {
+		t.Errorf("OPTIONS with its own route: status %d, route %d; want route 0", e.Status, e.Route)
+	}
+}
+
+func allowOf(e *Exchange) string {
+	for _, h := range e.Headers {
+		if string(h.Name) == "allow" {
+			return string(h.Value)
+		}
+	}
+	return ""
 }
 
 // RFC 9110 §9.1: a server that supports GET on a resource MUST support HEAD

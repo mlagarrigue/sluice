@@ -33,6 +33,10 @@ type Route struct {
 // wins in table order, and nothing registers into it afterwards.
 type Router struct {
 	routes []compiledRoute
+	// methods is every method the table declares, once each in table
+	// order: what the server implements, for the 501 / 405 line and for
+	// the Allow of an OPTIONS *.
+	methods []string
 }
 
 type compiledRoute struct {
@@ -113,6 +117,7 @@ func compile(routes []Route) (*Router, error) {
 			}
 		}
 		rt.routes = append(rt.routes, c)
+		rt.methods = appendMethod(rt.methods, c.method)
 	}
 	return rt, nil
 }
@@ -138,14 +143,36 @@ func (c compiledRoute) covers(later compiledRoute) bool {
 }
 
 // Route resolves every open exchange against the table, filling
-// [Exchange.Route] and [Exchange.Params] or refusing: 404 when no pattern
-// matches the target's path, 405 — with the Allow field RFC 9110 §10.2.1
-// requires — when patterns match under other methods.
+// [Exchange.Route] and [Exchange.Params] or refusing: 501 when the method
+// is one neither the table nor the standard names, which the server then
+// recognises for no resource (RFC 9110 §9.1, §15.6.2); 404 when no pattern
+// matches the target's path; 405 — with the Allow field RFC 9110 §10.2.1
+// requires — when patterns match under other methods (§15.5.6: a method
+// the server knows, the resource does not). The standard's methods — GET,
+// HEAD, POST, PUT, DELETE, OPTIONS (§9.3) and PATCH (RFC 5789) — are known
+// to every table, since a client sending one is not mistaken about HTTP;
+// a table of POST routes answers GET with 405 or 404, not 501.
 //
 // A HEAD request matches a HEAD route when the table has one, and otherwise
 // the first GET route for its path, as RFC 9110 §9.1 requires; the handler
 // sees the method as HEAD and answers as for GET, and the transport drops
-// the body. Every Allow listing GET lists HEAD with it.
+// the body. Every Allow listing GET lists HEAD with it, and every Allow
+// lists OPTIONS, since the router answers it on every path the table knows.
+//
+// An OPTIONS request matches an OPTIONS route when the table has one, and
+// is otherwise answered here, before any later stage: 204 with the Allow a
+// 405 on that path would carry (§9.3.7), the 204 saying there is no
+// representation of the options beyond the fields. OPTIONS * asks about
+// the server rather than a resource and lists every method of the table.
+// Allow discloses nothing a client cannot learn from a 405, and nothing
+// Authenticate would hide, so answering ahead of it costs no secret.
+//
+// A TRACE request is not reflected (§9.3.8 SHOULD): the reflection would
+// carry whatever the client sent — the cookies and Authorization §9.3.8
+// warns about — and the router cannot tell a handler's sensitive field from
+// another. TRACE is answered 501 like any method the table does not name,
+// and CONNECT with it, the transport having no tunnel to offer; a table
+// that declares a TRACE route serves it as it serves any route.
 //
 // Matching is on the raw bytes of the target, before the query, and nothing
 // is percent-decoded. That is a stated rule, not a shortcut: decoding before
@@ -165,9 +192,16 @@ func (rt *Router) Route(exchanges []Exchange) {
 			path = path[:q]
 		}
 
+		method := string(e.Request.Method)
+		if method == "OPTIONS" && string(path) == "*" {
+			e.Status = 204
+			e.Headers = append(e.Headers, allowField(rt.methods))
+			continue
+		}
+
 		var allowed []string
 		matched := false
-		head := string(e.Request.Method) == "HEAD"
+		head := method == "HEAD"
 		// A HEAD request with no HEAD route of its own is served by the
 		// first GET route that matches: RFC 9110 §9.1 makes HEAD support
 		// mandatory wherever GET is supported, and §9.3.2 defines HEAD as
@@ -178,7 +212,7 @@ func (rt *Router) Route(exchanges []Exchange) {
 			if !ok {
 				continue
 			}
-			if string(e.Request.Method) == rt.routes[r].method {
+			if method == rt.routes[r].method {
 				e.Route, e.Params = r, params
 				matched = true
 				break
@@ -187,9 +221,6 @@ func (rt *Router) Route(exchanges []Exchange) {
 				getRoute, getParams = r, params
 			}
 			allowed = appendMethod(allowed, rt.routes[r].method)
-			if rt.routes[r].method == "GET" {
-				allowed = appendMethod(allowed, "HEAD")
-			}
 		}
 		if !matched && getRoute >= 0 {
 			e.Route, e.Params = getRoute, getParams
@@ -197,12 +228,26 @@ func (rt *Router) Route(exchanges []Exchange) {
 		}
 		switch {
 		case matched:
+		case method == "OPTIONS" && allowed != nil:
+			// Settled here with nothing to report: Status is set the way a
+			// refusal sets it, so the later stages step over the exchange
+			// and RenderOpen writes the 204 with its fields and no body.
+			e.Status = 204
+			e.Headers = append(e.Headers, allowField(allowed))
+		case !slices.Contains(rt.methods, method) && !slices.Contains(standardMethods, method):
+			// A method neither the table nor the standard names is one the
+			// server supports for no resource, whatever the path (§15.6.2);
+			// a standard one the table lacks is known and refused per path,
+			// 405 or 404, as §15.5.6 words it.
+			e.Refuse(501, diagnostics.NewDiagnostic(diagnostics.Error, CodeMethodNotImplemented, diagnostics.Path{}).
+				WithMessage("MethodNotImplemented", map[string]any{"method": method}).
+				WithOrigin(diagnostics.OriginProtocol))
 		case allowed != nil:
-			allow := strings.Join(allowed, ", ")
-			e.Headers = append(e.Headers, httpstream.Header{Name: allowFieldName, Value: []byte(allow)})
+			allow := allowField(allowed)
+			e.Headers = append(e.Headers, allow)
 			e.Refuse(405, diagnostics.NewDiagnostic(diagnostics.Error, CodeMethodNotAllowed, diagnostics.Path{}).
 				WithMessage("MethodNotAllowed", map[string]any{
-					"method": string(e.Request.Method), "allow": allow,
+					"method": method, "allow": string(allow.Value),
 				}).
 				WithOrigin(diagnostics.OriginProtocol))
 		default:
@@ -213,9 +258,34 @@ func (rt *Router) Route(exchanges []Exchange) {
 	}
 }
 
+// standardMethods are the methods RFC 9110 §9.3 and RFC 5789 define that
+// this router implements or knows how to refuse per resource; TRACE and
+// CONNECT are left out on purpose, see [Router.Route].
+var standardMethods = []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+
 // allowFieldName is shared: the name is a constant, the value is built per
-// refusal.
+// answer.
 var allowFieldName = []byte("allow")
+
+// allowField builds the one Allow a 405 and an OPTIONS answer share for a
+// path: the methods its routes declare, HEAD beside a GET when no route
+// declares it, then OPTIONS, which the router answers on every known path.
+// One builder, so the two answers can never disagree about a resource.
+func allowField(allowed []string) httpstream.Header {
+	v := make([]byte, 0, len("HEAD, OPTIONS")+2+16*len(allowed))
+	for _, m := range allowed {
+		if m == "OPTIONS" {
+			continue
+		}
+		v = append(v, m...)
+		v = append(v, ", "...)
+		if m == "GET" && !slices.Contains(allowed, "HEAD") {
+			v = append(v, "HEAD, "...)
+		}
+	}
+	v = append(v, "OPTIONS"...)
+	return httpstream.Header{Name: allowFieldName, Value: v}
+}
 
 func appendMethod(allowed []string, method string) []string {
 	if slices.Contains(allowed, method) {
