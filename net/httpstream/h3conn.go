@@ -119,6 +119,14 @@ type h3Assembler struct {
 	batch  []Request
 	ids    []uint64
 	failed []h3StreamError
+	// after runs parallel to ids: the gate each completed request's final
+	// response waits on, nil for a request that was owed no interim 100.
+	after []<-chan struct{}
+	// continues lists the request streams whose head completed in this
+	// delivery with Expect: 100-continue and without the FIN: each is owed
+	// an interim 100 now (RFC 9110 §10.1.1), which ServeH3 writes and whose
+	// gate it closes.
+	continues []h3Continue
 
 	// frames is drain's scratch for ParseH3Frames, reused across streams and
 	// calls: nothing drain does retains the slice past its own use, so there
@@ -148,6 +156,22 @@ type h3Stream struct {
 	// byte. Without it a trickling peer parks buffers for as long as it
 	// keeps the connection's idle timer alive.
 	deadline time.Time
+	// interim, when set, is the gate behind the interim 100 this stream was
+	// owed: closed by the writer that wrote the 100, or gave up on it. The
+	// final response — the handler's, or a status refusal — waits on it
+	// before its first write, because the two leave on goroutines of their
+	// own and RFC 9114 §4.1 has the interim precede the final HEADERS on
+	// the stream. It travels with the stream to the batch (after) or to the
+	// refusal (h3StreamError.After) when the stream leaves the assembler.
+	interim chan struct{}
+}
+
+// h3Continue is one request stream owed an interim 100 by this delivery:
+// ServeH3 writes the 100 on it and closes Done, whether or not the write
+// went through.
+type h3Continue struct {
+	StreamID uint64
+	Done     chan struct{}
 }
 
 // h3Uni is one client unidirectional stream: untyped until its first varint
@@ -202,6 +226,10 @@ type h3StreamError struct {
 	// Method is the refused request's when it was read before the refusal,
 	// nil otherwise; the status is framed by it (a HEAD carries no body).
 	Method []byte
+	// After, when set, is the gate behind an interim 100 the stream was
+	// owed: a Status is written only once it is closed, so the final
+	// HEADERS follows the interim one on the stream (RFC 9114 §4.1).
+	After <-chan struct{}
 }
 
 // Error returns the underlying error's message; the stream and code are
@@ -332,6 +360,7 @@ func (e h3ConnectionError) Unwrap() error { return e.Err }
 // quic/reassembly_test.go, not duplicated at this layer.
 func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint64, []h3StreamError, error) {
 	a.batch, a.ids, a.failed = a.batch[:0], a.ids[:0], a.failed[:0]
+	a.after, a.continues = a.after[:0], a.continues[:0]
 	now := time.Now() // one clock read per delivery, not per new stream
 	a.expire(now)
 	for _, f := range frames {
@@ -436,6 +465,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			continue
 		}
 		before := len(st.buf) + len(st.req.Body)
+		headBefore := st.gotHead
 		st.buf = append(st.buf, f.Data...)
 
 		err := a.drain(st)
@@ -473,6 +503,14 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			a.fail(f.StreamID, code, err)
 			continue
 		}
+		if st.gotHead && !headBefore && expectsContinue(st.req) {
+			// The head is complete and the client says it waits to be told
+			// to send the body: a candidate for the interim 100 of RFC 9110
+			// §10.1.1, decided at the end of the delivery (below) — a FIN
+			// later in the same datagram, on a STREAM frame of its own,
+			// means there is no content to wait for.
+			a.continues = append(a.continues, h3Continue{StreamID: f.StreamID})
+		}
 		if f.Fin {
 			if !st.gotHead {
 				a.fail(f.StreamID, h3MessageError, fmt.Errorf("%w: a stream ended before its HEADERS", ErrH3Protocol))
@@ -498,6 +536,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			st.req.Body = st.req.Body[:len(st.req.Body):len(st.req.Body)]
 			a.batch = append(a.batch, st.req)
 			a.ids = append(a.ids, f.StreamID)
+			a.after = append(a.after, st.interim)
 			// The body stops counting against the aggregate bound here: it
 			// is the handler's now, bounded by the admission limit.
 			a.assembling -= len(st.req.Body)
@@ -509,6 +548,22 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// datagram was folded in as usual, and none of it is handed over.
 		return sluice.Batch[Request]{}, nil, a.failed, a.excess
 	}
+	// The interim 100s this delivery owes: a candidate head whose stream is
+	// still assembling once the whole datagram is in — not completed by a
+	// FIN, not refused. Those are owed the 100 now, as the h2 reader sends
+	// it the moment a head without END_STREAM is in; the ones that left
+	// were answered or refused outright, the "immediate final status" of
+	// §10.1.1. Not omitted when DATA already follows the head in the same
+	// datagram (the MAY of §10.1.1): the client did not wait, and a 100 it
+	// did not wait for costs it a few bytes.
+	owed := a.continues[:0]
+	for _, ct := range a.continues {
+		if st := a.streams[ct.StreamID]; st != nil && st.interim == nil {
+			st.interim = make(chan struct{})
+			owed = append(owed, h3Continue{StreamID: ct.StreamID, Done: st.interim})
+		}
+	}
+	a.continues = owed
 	return sluice.Batch[Request]{Items: a.batch}, a.ids, a.failed, nil
 }
 
@@ -578,7 +633,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // connection open indefinitely for the cost of one refusal each, the
 // rapid-reset shape with the roles swapped.
 func (a *h3Assembler) fail(id, code uint64, err error) {
-	if a.drop(id) {
+	if a.drop(id) != nil {
 		a.retire()
 	}
 	a.countCancel()
@@ -591,9 +646,12 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 // connection waits for the refusal to be written and acknowledged like any
 // other answer.
 func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
-	a.drop(id)
+	var after <-chan struct{}
+	if st := a.drop(id); st != nil && st.interim != nil {
+		after = st.interim // the status follows the 100 the head was owed
+	}
 	a.countCancel()
-	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method})
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method, After: after})
 }
 
 // countCancel charges one request stream ended short of its answer — by the
@@ -630,9 +688,9 @@ func (a *h3Assembler) countCancel() {
 func (a *h3Assembler) answered() { a.served.Add(1) }
 
 // drop discards a stream's assembly state, releasing what it retained, and
-// leaves a tombstone. It reports whether the stream was being assembled —
-// admitted, so owed a retire.
-func (a *h3Assembler) drop(id uint64) bool {
+// leaves a tombstone. It returns the state dropped — the stream was being
+// assembled, so admitted and owed a retire — or nil.
+func (a *h3Assembler) drop(id uint64) *h3Stream {
 	st := a.streams[id]
 	if st != nil {
 		a.assembling -= len(st.buf) + len(st.req.Body)
@@ -640,7 +698,7 @@ func (a *h3Assembler) drop(id uint64) bool {
 		delete(a.streams, id)
 	}
 	a.tombstone(id)
-	return st != nil
+	return st
 }
 
 // tombstone remembers a stream as dead so later frames on it are dropped
@@ -665,7 +723,7 @@ func (a *h3Assembler) tombstone(id uint64) {
 // future frame can ever complete — each one a permanently burnt admission
 // slot.
 func (a *h3Assembler) Forget(id uint64) {
-	if a.drop(id) {
+	if a.drop(id) != nil {
 		a.retire()
 	}
 }

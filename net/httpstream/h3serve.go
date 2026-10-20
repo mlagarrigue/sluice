@@ -277,12 +277,16 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		launchMu       sync.Mutex
 		ended          bool
 	)
-	launch := func(wg *sync.WaitGroup, f func()) {
+	// launch runs f on wg unless the connection has ended, and reports
+	// whether it did: a caller that owes a signal from f sends it itself
+	// when f never runs.
+	launch := func(wg *sync.WaitGroup, f func()) bool {
 		launchMu.Lock()
 		defer launchMu.Unlock()
 		if !ended {
 			wg.Go(f)
 		}
+		return !ended
 	}
 
 	c.OnStreamFrames(func(frames []quic.Frame) error {
@@ -316,6 +320,23 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			}
 			return err
 		}
+		for _, ct := range a.continues {
+			// A head with Expect: 100-continue and no FIN yet: the interim
+			// 100 leaves now, RFC 9110 §10.1.1, on a writer goroutine like
+			// any response, since a Write waits on the peer's credit. The
+			// gate is closed whatever became of the write — the final
+			// response waits on it, not on the write's success — and here
+			// when nothing runs, the connection having ended. Before this,
+			// the assembler wrote nothing before the FIN, and a conformant
+			// client waited out its own timer before sending the body.
+			id, done, fieldSection, wb := ct.StreamID, ct.Done, a.peerMaxFieldSection(), writeBoundOf(cfg)
+			if !launch(&writers, func() {
+				defer close(done)
+				writeH3Interim(c, id, fieldSection, wb)
+			}) {
+				close(done)
+			}
+		}
 		for _, se := range failed {
 			// One stream's refusal, on that stream. The connection and
 			// every other request the datagram carried are untouched, which
@@ -336,9 +357,12 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 				if err := s.StopSending(h3NoError); err != nil {
 					return err
 				}
-				id, status, method, fieldSection := se.StreamID, se.Status, se.Method, a.peerMaxFieldSection()
+				id, status, method, fieldSection, after := se.StreamID, se.Status, se.Method, a.peerMaxFieldSection(), se.After
 				launch(&writers, func() {
 					defer a.retire()
+					if after != nil {
+						<-after // the interim 100 the head was owed leaves first
+					}
 					writeH3Response(c, id, transportError(status), method, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
 				})
 				continue
@@ -361,8 +385,9 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// is what makes the hand-off safe, and it is one small copy per
 		// datagram rather than one per request.
 		b := h3Batch{
-			reqs: append([]Request(nil), batch.Items...),
-			ids:  append([]uint64(nil), ids...),
+			reqs:  append([]Request(nil), batch.Items...),
+			ids:   append([]uint64(nil), ids...),
+			after: append([]<-chan struct{}(nil), a.after...),
 			// The peer's MAX_FIELD_SECTION_SIZE, snapshotted here because
 			// the assembler belongs to this goroutine and the call must not
 			// reach into it.
@@ -447,6 +472,12 @@ var h3ReleaseStreamBytes = (*quic.Conn).ReleaseStreamBytes
 type h3Batch struct {
 	reqs []Request
 	ids  []uint64
+	// after runs parallel to ids: the gate behind the interim 100 each
+	// request's head was owed, nil for none. A response is written only
+	// once its gate is closed, so the final HEADERS follows the interim one
+	// on the stream (RFC 9114 §4.1); the gate closes when the 100 has left
+	// or its writer gave up, so the wait is bounded as that write is.
+	after []<-chan struct{}
 	// fieldSection is the peer's SETTINGS_MAX_FIELD_SECTION_SIZE at hand-off
 	// time, zero for unbounded; the call holds every response's field
 	// section under it (RFC 9114 §4.2.2).
@@ -552,7 +583,10 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 	date := dateFor(time.Now())
 	for i, id := range b.ids {
 		writers.Add(1)
-		go func(id uint64, r Response, method []byte) {
+		go func(id uint64, r Response, method []byte, after <-chan struct{}) {
+			if after != nil {
+				<-after // the interim 100 the head was owed leaves first
+			}
 			detached := false
 			defer func() {
 				if !detached {
@@ -572,8 +606,37 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 			if whole && b.answered != nil {
 				b.answered()
 			}
-		}(id, res[i], b.reqs[i].Method)
+		}(id, res[i], b.reqs[i].Method, b.after[i])
 	}
+}
+
+// h3Interim100 is the HEADERS frame of an interim 100 (Continue): :status
+// alone, as the HTTP/2 writer's interim has it — a 1xx owes no date
+// (RFC 9110 §6.6.1) and carries no content (RFC 9114 §4.1). Built once;
+// nothing in it is per connection.
+var h3Interim100 = appendH3Frame(nil, h3Headers, appendQPACK(nil, h3Interim100Fields))
+
+// h3Interim100Fields is the field section h3Interim100 encodes, kept for the
+// size check against the peer's SETTINGS_MAX_FIELD_SECTION_SIZE.
+var h3Interim100Fields = []Header{{Name: h3StatusName, Value: []byte("100")}}
+
+// writeH3Interim writes the interim 100 a request head with Expect:
+// 100-continue is owed on its stream, without a FIN: the final response
+// follows on the same stream (RFC 9114 §4.1). It is bounded as every write
+// is, and gives up without a word when the peer's field-section limit is
+// under the 100's own 42 bytes — no final response fits such a peer either,
+// and writeH3Response answers that case. A write that fails has nothing to
+// report: the stream is reset or gone, and the final response's writer
+// meets the same end.
+func writeH3Interim(c *quic.Conn, id, fieldSection uint64, wb writeBound) {
+	if checkH3FieldSection(h3Interim100Fields, fieldSection) != nil {
+		return
+	}
+	s, err := c.Stream(id)
+	if err != nil {
+		return // unreachable: the head arrived on it, within the limit
+	}
+	writeH3Bounded(s, h3Interim100, false, wb)
 }
 
 // h3ScratchPool recycles the per-response framing scratch across writer

@@ -842,3 +842,107 @@ func TestH3AnsweredRequestsEarnCancellations(t *testing.T) {
 	default:
 	}
 }
+
+// readH3Frame reads exactly one HTTP/3 frame from s — its two varints, then
+// its payload — leaving whatever follows unread, under a bound: a server
+// that waits for the body before answering an Expect: 100-continue request
+// is what the bound catches.
+func readH3Frame(t *testing.T, s *quic.Stream) h3Frame {
+	t.Helper()
+	_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = s.SetReadDeadline(time.Time{}) }()
+	var prefix []byte
+	for {
+		var b [1]byte
+		if _, err := io.ReadFull(s, b[:]); err != nil {
+			t.Fatalf("no frame arrived on the stream: %v", err)
+		}
+		prefix = append(prefix, b[0])
+		typ, after, err := quic.Varint(prefix)
+		if err != nil {
+			continue
+		}
+		length, _, err := quic.Varint(after)
+		if err != nil {
+			continue
+		}
+		payload := make([]byte, length)
+		if _, err := io.ReadFull(s, payload); err != nil {
+			t.Fatalf("the frame's payload did not arrive: %v", err)
+		}
+		return h3Frame{Type: typ, Payload: payload}
+	}
+}
+
+// h3Status decodes a HEADERS frame's :status, as the peer would.
+func h3Status(t *testing.T, f h3Frame) string {
+	t.Helper()
+	if f.Type != h3Headers {
+		t.Fatalf("frame type %#x, want HEADERS", f.Type)
+	}
+	fields, err := newQPACKDecoder(nil, 0).Decode(nil, f.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range fields {
+		if string(h.Name) == ":status" {
+			return string(h.Value)
+		}
+	}
+	t.Fatal("a HEADERS frame without :status")
+	return ""
+}
+
+// An HTTP/3 request whose head carries Expect: 100-continue and whose
+// stream is not yet closed gets an interim 100 on its stream as soon as the
+// head is complete, before any of the body has arrived — RFC 9110 §10.1.1's
+// MUST ("an immediate final status or an immediate 100", "MUST NOT wait for
+// the content"), carried in HTTP/3 as a HEADERS frame ahead of the final
+// one (RFC 9114 §4.1). The body then follows and the final response comes
+// after the 100, never before it. Before this, the assembler completed a
+// request at its FIN only and nothing was written before that: a conformant
+// client waited out its own timer.
+func TestH3AnswersExpectContinueWithAnInterim100(t *testing.T) {
+	conn, _, _ := startH3(t, quic.DefaultParameters(), echoTarget)
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(h3Request("POST", "/x", [2]string{"content-length", "2"}, [2]string{"expect", "100-continue"})); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := h3Status(t, readH3Frame(t, s)); got != "100" {
+		t.Fatalf("the first HEADERS on the stream carries :status %s, want 100 before the body", got)
+	}
+
+	if _, err := s.WriteClose(appendH3Frame(nil, h3Data, []byte("hi"))); err != nil {
+		t.Fatal(err)
+	}
+	fields, body := readH3FieldsAndBody(t, s)
+	if fields[":status"] != "200" || body != "/x" {
+		t.Fatalf("after the body: :status %q body %q, want 200 and /x", fields[":status"], body)
+	}
+}
+
+// The twin: a head that carries Expect: 100-continue and the FIN with it has
+// no content to wait for, so no 100 is sent (RFC 9110 §10.1.1: the server
+// MAY omit the 100 "if the framing indicates that there is no content"; a
+// 100 the client is not waiting for is noise ahead of the only response it
+// reads). The stream carries one HEADERS frame, the final one. The FIN is
+// on the head's own STREAM frame, as a client that has no body sends it; a
+// FIN that arrives in a later datagram is not told apart from a body to
+// come, and the 100 then precedes the final response, which the MAY allows.
+func TestH3SendsNoInterim100WhenTheHeadEndsTheStream(t *testing.T) {
+	conn, _, _ := startH3(t, quic.DefaultParameters(), echoTarget)
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteClose(h3Request("POST", "/x", [2]string{"expect", "100-continue"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := readH3Fields(t, s)[":status"]; len(got) != 1 || got[0] != "200" {
+		t.Fatalf("the stream carried :status %q, want 200 once and no 100", got)
+	}
+}
