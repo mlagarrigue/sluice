@@ -1752,20 +1752,11 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		block = appendHPACK(block, name, h.Value)
 		listSize += uint64(len(name)+len(h.Value)) + 32
 	}
-	if !noLength && (!r.streamed() || r.ContentLength > 0) {
-		// A streamed response states the length it declared, or none, which
-		// is what the DATA frame's END_STREAM says instead. A 204/304 never
-		// states one either (RFC 9110 §8.6).
-		if r.streamed() {
-			var digits [20]byte
-			v := strconv.AppendInt(digits[:0], r.ContentLength, 10)
-			block = appendHPACK(block, "content-length", v)
-			listSize += uint64(len("content-length")+len(v)) + 32
-		} else {
-			v := itoa(len(r.Body))
-			block = appendHPACK(block, "content-length", v)
-			listSize += uint64(len("content-length")+len(v)) + 32
-		}
+	if n, ok := statedLength(r, noLength, noBody); ok {
+		var digits [20]byte
+		v := strconv.AppendInt(digits[:0], n, 10)
+		block = appendHPACK(block, "content-length", v)
+		listSize += uint64(len("content-length")+len(v)) + 32
 	}
 	s.block = block
 	// The peer's SETTINGS_MAX_HEADER_LIST_SIZE is advisory (§6.5.2), but a

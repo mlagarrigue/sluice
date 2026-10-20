@@ -51,6 +51,14 @@ type Response struct {
 
 	// Body is the payload, sent verbatim. Use it for an answer that is
 	// already in hand, which is most of them.
+	//
+	// A HEAD request is answered like its GET: the writer states the
+	// length of Body and sends none of its bytes, so a handler builds the
+	// same response for both, as the [web/stream] router makes it do. A
+	// HEAD answered with neither a Body nor a Stream states no
+	// Content-Length at all, because RFC 9110 §8.6 allows one on a HEAD
+	// response only when it is the GET twin's, which such a handler never
+	// said; a GET answered the same way states Content-Length: 0.
 	Body []byte
 
 	// Stream produces the payload as it goes, for an answer that is not.
@@ -475,17 +483,17 @@ func appendStreamedHeader(dst []byte, closing, chunked bool, size int64, keepAli
 // and noBody are [noLengthAndBody]'s verdict on the request it answers.
 //
 // chunked is the default for a body that has one, and the only framing that
-// carries trailers. size is the Content-Length to state, zero for none: the
-// response's ContentLength unless the body is chunked (RFC 9112 §6.2 forbids
-// both) or the status never states one. closeDelimited is the body with
+// carries trailers. size is the Content-Length to state, zero for none: what
+// [statedLength] says unless the body is chunked (RFC 9112 §6.2 forbids
+// both). closeDelimited is the body with
 // neither, for an http10 request whose client never said it understands
 // chunked: RFC 9112 §6.1 forbids Transfer-Encoding in the response then,
 // because a 1.0 client reads the chunk sizes as body bytes — which is also
 // why a declared length is worth most there, keeping the connection open.
 func streamedFraming(res Response, http10, noLength, noBody bool) (chunked bool, size int64, closeDelimited bool) {
 	chunked = !noBody && !http10 && (res.ContentLength == 0 || res.Trailers != nil)
-	if !chunked && !noLength {
-		size = res.ContentLength
+	if !chunked {
+		size, _ = statedLength(res, noLength, noBody)
 	}
 	closeDelimited = !noBody && !chunked && size == 0
 	return chunked, size, closeDelimited
@@ -592,11 +600,12 @@ func datedBy(headers []Header) (dated bool, err error) {
 // is a framing lie two hops can disagree about, the same class this package
 // refuses everywhere else — and neither it nor a HEAD response ever carries
 // body bytes on the wire, even if the handler set some. A HEAD response
-// still states the Content-Length its GET twin would (the same handler
-// answers both, naturally with a body), which is why noLength and noBody are
-// not the same bit: a client that read the bytes anyway would be reading the
-// start of the next response, desynchronising the connection exactly as
-// Transfer-Encoding smuggling does.
+// still states the Content-Length its GET twin would when the handler gave
+// it one (the same handler answers both, naturally with a body; see
+// [statedLength] for the HEAD answered without), which is why noLength and
+// noBody are not the same bit: a client that read the bytes anyway would be
+// reading the start of the next response, desynchronising the connection
+// exactly as Transfer-Encoding smuggling does.
 //
 // The method is matched byte-for-byte: methods are case-sensitive tokens
 // (RFC 9110 §9.1), so "head" is some other method whose response carries its
@@ -613,6 +622,31 @@ func noLengthAndBody(status int, method []byte) (noLength, noBody bool) {
 // headMethod is the one method whose response framing differs from every
 // other's, shared so the comparison above does not rebuild it per response.
 var headMethod = []byte("HEAD")
+
+// statedLength is the Content-Length a response states, and whether it
+// states one, decided once for the three writers; noLength and noBody are
+// [noLengthAndBody]'s verdict on the request it answers. A 204 or 304
+// states none. A streamed response states the length it declared, or none:
+// the end of its body is what the chunked framing, the DATA frame's
+// END_STREAM and the stream's FIN say instead. Any other response states
+// len(Body), zero included — except a HEAD answered with neither a Body nor
+// a Stream. RFC 9110 §8.6 lets a HEAD response carry a Content-Length only
+// when it equals the GET twin's, and a handler that answered HEAD with the
+// metadata alone said nothing about that length: "0" would be a lie a
+// cache then holds against the GET. A HEAD with a Body states len(Body),
+// since the handler that serves both GET and HEAD built the body it would
+// have sent; with a Stream, the length it declared.
+func statedLength(res Response, noLength, noBody bool) (int64, bool) {
+	switch {
+	case noLength:
+		return 0, false
+	case res.streamed():
+		return res.ContentLength, res.ContentLength > 0
+	case noBody && len(res.Body) == 0:
+		return 0, false
+	}
+	return int64(len(res.Body)), true
+}
 
 // appendResponse writes one response. method is the request it answers, used
 // only to decide whether a body may follow — never to change the status or
@@ -654,9 +688,9 @@ func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, 
 		dst = appendChunk(dst, res.Body)
 		return appendLastChunkTrailers(dst, trailers), nil
 	}
-	if !noLength {
+	if n, ok := statedLength(res, noLength, noBody); ok {
 		dst = append(dst, "Content-Length: "...)
-		dst = strconv.AppendInt(dst, int64(len(res.Body)), 10)
+		dst = strconv.AppendInt(dst, n, 10)
 		dst = append(dst, '\r', '\n')
 	}
 	dst = append(dst, '\r', '\n')

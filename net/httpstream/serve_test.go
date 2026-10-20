@@ -1672,3 +1672,91 @@ func TestCheckTrailerRefusesFieldsSettledBeforeTheContent(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9110 §8.6: a HEAD response carries a Content-Length only when it is
+// the GET twin's. The writer knows that length when the handler gave one —
+// a Body, or ContentLength beside a Stream — and states none for a HEAD
+// answered with the metadata alone, where "0" would be a lie about the GET.
+// A bare GET still states 0, and no HEAD response carries body bytes, on the
+// three protocols alike.
+func TestBareHeadResponseStatesNoContentLength(t *testing.T) {
+	stream := func(yield func(sluice.Batch[[]byte]) bool) {
+		t.Error("the producer was pulled for a HEAD answer")
+	}
+	cases := []struct {
+		name   string
+		method string
+		res    Response
+		length string // the Content-Length stated, "" for none
+	}{
+		{"bare HEAD", "HEAD", Response{Status: 200}, ""},
+		{"HEAD with a Body", "HEAD", Response{Status: 200, Body: []byte("abcde")}, "5"},
+		{"HEAD with a Stream and a length", "HEAD", Response{Status: 200, Stream: stream, ContentLength: 7}, "7"},
+		{"HEAD with a Stream and no length", "HEAD", Response{Status: 200, Stream: stream}, ""},
+		{"bare GET", "GET", Response{Status: 200}, "0"},
+	}
+	for _, tc := range cases {
+		method := []byte(tc.method)
+		noLength, noBody := noLengthAndBody(200, method)
+
+		// HTTP/1.1: the in-hand path through WriteBatch, the streamed one
+		// through the framing decision Serve makes.
+		var out []byte
+		var err error
+		if tc.res.streamed() {
+			chunked, size, _ := streamedFraming(tc.res, false, noLength, noBody)
+			out, err = appendStreamedHeader(nil, true, chunked, size, nil, tc.res, dateFor(time.Now()))
+		} else {
+			out, err = WriteBatch(nil, Config{}, []Request{{Method: method}}, []Response{tc.res})
+		}
+		if err != nil {
+			t.Fatalf("h1: %s: %v", tc.name, err)
+		}
+		head, body, _ := strings.Cut(string(out), "\r\n\r\n")
+		h1 := map[string]string{}
+		for _, line := range strings.Split(head, "\r\n")[1:] {
+			name, value, _ := strings.Cut(line, ": ")
+			h1[strings.ToLower(name)] = value
+		}
+		if h1["content-length"] != tc.length || h1["transfer-encoding"] != "" || body != "" {
+			t.Errorf("h1: %s: Content-Length %q, Transfer-Encoding %q, body %q; want %q, none, none",
+				tc.name, h1["content-length"], h1["transfer-encoding"], body, tc.length)
+		}
+
+		// HTTP/2: one HEADERS frame, and nothing after it for a HEAD.
+		out, err = (&h2Server{}).appendHead(nil, 1, method, tc.res, 16384)
+		if err != nil {
+			t.Fatalf("h2: %s: %v", tc.name, err)
+		}
+		f, n, err := parseFrame(out, 16384)
+		if err != nil || f.Type != frameHeaders || n != len(out) {
+			t.Fatalf("h2: %s: frames %x: %v", tc.name, out, err)
+		}
+		if got := h2Fields(t, f.Payload)["content-length"]; strings.Join(got, ",") != tc.length {
+			t.Errorf("h2: %s: content-length %q, want %q", tc.name, got, tc.length)
+		}
+
+		// HTTP/3: one HEADERS frame, no DATA.
+		out, err = appendH3Response(nil, tc.res, method, 0, &h3Scratch{}, dateFor(time.Now()))
+		if err != nil {
+			t.Fatalf("h3: %s: %v", tc.name, err)
+		}
+		frames, rest, err := parseH3Frames(nil, out, 1<<24)
+		if err != nil || len(frames) != 1 || frames[0].Type != h3Headers || len(rest) != 0 {
+			t.Fatalf("h3: %s: %d frames, %d bytes left, %v; want one HEADERS", tc.name, len(frames), len(rest), err)
+		}
+		fields, err := newQPACKDecoder(nil, 0).Decode(nil, frames[0].Payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ""
+		for _, h := range fields {
+			if string(h.Name) == "content-length" {
+				got = string(h.Value)
+			}
+		}
+		if got != tc.length {
+			t.Errorf("h3: %s: content-length %q, want %q", tc.name, got, tc.length)
+		}
+	}
+}

@@ -1187,16 +1187,8 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		}
 		fields = append(fields, Header{Name: name, Value: h.Value})
 	}
-	if !noLength && (!r.streamed() || r.ContentLength > 0) {
-		// A streamed response states the length it declared, or none, which
-		// is what the stream's FIN says instead. A 204/304 never states one
-		// either.
-		var v []byte
-		if r.streamed() {
-			v = strconv.AppendInt(sc.clen[:0], r.ContentLength, 10)
-		} else {
-			v = appendDigits(sc.clen[:0], len(r.Body))
-		}
+	if n, ok := statedLength(r, noLength, noBody); ok {
+		v := strconv.AppendInt(sc.clen[:0], n, 10)
 		fields = append(fields, Header{Name: h3ContentLengthName, Value: v})
 	}
 	if err := checkH3FieldSection(fields, peerFieldSection); err != nil {
