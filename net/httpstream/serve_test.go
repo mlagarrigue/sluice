@@ -1606,6 +1606,50 @@ func TestWriteBatchRefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 	}
 }
 
+// Two statuses carry a constraint the transport must hold for the handler:
+// a 426 MUST carry Upgrade (RFC 9110 §15.5.22), which this server never
+// sends, so the status is refused outright; a 205 MUST NOT carry content
+// (§15.3.6), so a Body or a Stream on it is refused and a bare 205 leaves
+// with Content-Length: 0, framed like any 2xx (RFC 9112 §6.3). The three
+// writers go through the same two checks.
+func TestWritersHoldThe205And426Constraints(t *testing.T) {
+	stream := func(yield func(sluice.Batch[[]byte]) bool) {}
+	refused := []struct {
+		name string
+		res  Response
+	}{
+		{"426 bare", Response{Status: 426}},
+		{"426 with Upgrade", Response{Status: 426, Headers: []Header{{Name: []byte("Upgrade"), Value: []byte("HTTP/3.0")}}}},
+		{"205 with a Body", Response{Status: 205, Body: []byte("x")}},
+		{"205 with a Stream", Response{Status: 205, Stream: stream}},
+	}
+	for _, tc := range refused {
+		if _, err := WriteBatch(nil, Config{}, nil, []Response{tc.res}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("h1: %s: got %v, want ErrMalformed", tc.name, err)
+		}
+		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), tc.res, 16384); !errors.Is(err, ErrMalformed) {
+			t.Errorf("h2: %s: got %v, want ErrMalformed", tc.name, err)
+		}
+		if _, err := appendH3ResponseBasic(nil, tc.res); !errors.Is(err, ErrMalformed) {
+			t.Errorf("h3: %s: got %v, want ErrMalformed", tc.name, err)
+		}
+	}
+	bare := Response{Status: 205}
+	out, err := WriteBatch(nil, Config{}, nil, []Response{bare})
+	if err != nil {
+		t.Fatalf("h1: a bare 205 was refused: %v", err)
+	}
+	if !strings.HasPrefix(string(out), "HTTP/1.1 205 ") || !strings.HasSuffix(string(out), "Content-Length: 0\r\n\r\n") {
+		t.Errorf("h1: a bare 205 is framed as %q, want a 205 ending in Content-Length: 0 and no body", out)
+	}
+	if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), bare, 16384); err != nil {
+		t.Errorf("h2: a bare 205 was refused: %v", err)
+	}
+	if _, err := appendH3ResponseBasic(nil, bare); err != nil {
+		t.Errorf("h3: a bare 205 was refused: %v", err)
+	}
+}
+
 // RFC 9110 §6.5.1: a trailer cannot carry a field whose evaluation had to
 // precede the content. The fields RFC 9110 defines in the kinds it names —
 // routing, authentication, response controls, content format — are refused

@@ -12,7 +12,12 @@ import (
 // Response is what goes back for one request. Its fields are read during the
 // write and not retained, so they may borrow whatever the pipeline had.
 type Response struct {
-	// Status is the HTTP status code. Zero means 200.
+	// Status is the HTTP status code. Zero means 200. The writers refuse,
+	// with [ErrMalformed], a code outside 200..599 (a 1xx is never a final
+	// answer), a 426 (RFC 9110 §15.5.22 demands an Upgrade field, and this
+	// server never switches protocols; advertise one with Alt-Svc instead)
+	// and a 205 carrying a Body or a Stream (§15.3.6: no content on a
+	// "reset the form" answer; a bare 205 leaves with Content-Length: 0).
 	Status int
 
 	// Headers are sent as given. Names are case-insensitive (RFC 9110
@@ -246,11 +251,22 @@ func pull(stream sluice.Stream[[]byte], yield func(sluice.Batch[[]byte]) bool) (
 	return nil
 }
 
-// check refuses a response that says two things about its payload, or a
-// length that describes none.
+// check refuses a response that says two things about its payload, a
+// length that describes none, or content on a 205.
+//
+// A 205 with a Body or a Stream is refused rather than sent empty the way a
+// 204 or 304 is: RFC 9110 §15.3.6 forbids generating content on it, and a
+// handler that built content for a "reset the form" answer has mixed up two
+// statuses — silently dropping it would hide that. A 205 without content
+// leaves as every other 2xx does, with Content-Length: 0 — RFC 9112 §6.3
+// frames a 205 like any response, so the length is what keeps the
+// connection in step. This is the one point the three writers go through.
 func (r Response) check() error {
 	if r.Stream != nil && len(r.Body) > 0 {
 		return fmt.Errorf("%w: a response with both a Body and a Stream", ErrMalformed)
+	}
+	if r.Status == 205 && (r.Stream != nil || len(r.Body) > 0) {
+		return fmt.Errorf("%w: content on a 205 response", ErrMalformed)
 	}
 	if r.ContentLength < 0 {
 		return fmt.Errorf("%w: a negative ContentLength", ErrMalformed)
@@ -650,8 +666,17 @@ func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, 
 	return dst, nil
 }
 
-// checkStatus refuses a status code no version of HTTP can carry, and a 1xx
-// as a final one.
+// checkStatus refuses a status code no version of HTTP can carry, a 1xx as
+// a final one, and a 426.
+//
+// A 426 is refused because this transport cannot send one that is conformant:
+// RFC 9110 §15.5.22 requires an Upgrade field on it, naming the protocols
+// the server would switch to, and this server never switches protocols on a
+// connection — the three writers refuse a handler's Upgrade for that reason
+// (and HTTP/2 and HTTP/3 forbid the field outright). A 426 without Upgrade
+// is a MUST violation; a 426 with it is a promise this package will not keep.
+// A handler that wants a client on another protocol advertises it with
+// Alt-Svc. Revisit if an upgrade is ever implemented.
 //
 // It is shared by the three protocols rather than written once: HTTP/1.1 puts
 // the number in a status line, HTTP/2 and HTTP/3 in a :status field, and a
@@ -667,6 +692,9 @@ func appendResponse(dst, method []byte, closing, http10 bool, keepAlive []byte, 
 func checkStatus(status int) error {
 	if status < 200 || status > 599 {
 		return fmt.Errorf("%w: status %d is not a final status code", ErrMalformed, status)
+	}
+	if status == 426 {
+		return fmt.Errorf("%w: a 426 needs an Upgrade this server never performs", ErrMalformed)
 	}
 	return nil
 }
