@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"testing"
@@ -211,6 +212,57 @@ func TestAuthenticateRefusesDuplicateAuthorization(t *testing.T) {
 			}
 			if ex[0].Principal.Subject != "" {
 				t.Errorf("a principal was established from one of two competing credentials: %q", ex[0].Principal.Subject)
+			}
+		})
+	}
+}
+
+// A 401 without a challenge is one the client cannot act on (RFC 9110
+// §11.6.1): every refusal of this stage puts the Bearer challenge of RFC 6750
+// §3 on the exchange, and RenderOpen carries it onto the answer. The error
+// code says no more than the client can see for itself: none when it sent
+// no token, invalid_request when the token it sent was unusable,
+// invalid_token when the verifier said no.
+func TestAuthenticateChallengesWithBearer(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers []httpstream.Header
+		want    string
+	}{
+		{"absent", nil, "Bearer"},
+		{"another scheme", []httpstream.Header{
+			{Name: []byte("authorization"), Value: []byte("Basic good")},
+		}, "Bearer"},
+		{"malformed", []httpstream.Header{
+			{Name: []byte("authorization"), Value: []byte("Bearer go od")},
+		}, `Bearer error="invalid_request"`},
+		{"duplicated", []httpstream.Header{
+			{Name: []byte("authorization"), Value: []byte("Bearer good")},
+			{Name: []byte("authorization"), Value: []byte("Bearer good")},
+		}, `Bearer error="invalid_request"`},
+		{"rejected", []httpstream.Header{
+			{Name: []byte("authorization"), Value: []byte("Bearer forged")},
+		}, `Bearer error="invalid_token"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := exchangeFor("GET", "/health")
+			e.Request.Headers = tc.headers
+			ex := []Exchange{e}
+			Authenticate(acceptToken{}, ex)
+			out := RenderOpen(ex, func(_, _ int) (int, any) { return 200, nil })
+			r := out.Items[0]
+			if r.Status != 401 {
+				t.Fatalf("status = %d, want 401", r.Status)
+			}
+			var got []string
+			for _, h := range r.Headers {
+				if bytes.EqualFold(h.Name, []byte("www-authenticate")) {
+					got = append(got, string(h.Value))
+				}
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Errorf("www-authenticate = %q, want exactly one %q", got, tc.want)
 			}
 		})
 	}

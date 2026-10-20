@@ -10,7 +10,8 @@ import (
 
 // Authenticate establishes every open exchange's principal from its bearer
 // token, refusing with 401 the ones whose credentials are absent, malformed
-// or rejected.
+// or rejected. Every 401 carries the WWW-Authenticate challenge RFC 9110
+// §11.6.1 requires, the one [web.BearerChallenge] names for the diagnostic.
 //
 // It is [web.Authenticate] made batch-shaped and protocol-neutral: the token
 // comes off the authorization field through [httpstream.Request.Get], so the
@@ -37,17 +38,17 @@ func Authenticate(v web.Verifier, exchanges []Exchange) {
 			// on its way through. Refused outright, the way the transport
 			// refuses a Host/:authority disagreement, rather than resolved
 			// in favour of either.
-			e.Refuse(401, unauthenticated("CredentialsDuplicated"))
+			refuseUnauthenticated(e, "CredentialsDuplicated")
 			continue
 		}
 		token, messageID := bearer(raw)
 		if messageID != "" {
-			e.Refuse(401, unauthenticated(messageID))
+			refuseUnauthenticated(e, messageID)
 			continue
 		}
 		p, err := v.Verify(token)
 		if err != nil {
-			e.Refuse(401, unauthenticated("CredentialsRejected"))
+			refuseUnauthenticated(e, "CredentialsRejected")
 			continue
 		}
 		e.Principal = p
@@ -91,11 +92,22 @@ func bearer(raw []byte) (token, messageID string) {
 	return string(t), ""
 }
 
-func unauthenticated(messageID string) diagnostics.Diagnostic {
-	return diagnostics.NewDiagnostic(diagnostics.Error, web.CodeUnauthenticated, diagnostics.Path{}).
+// refuseUnauthenticated is the one place a 401 leaves this stage: the
+// diagnostic and the challenge it calls for go on the exchange together, so
+// no refusal can forget the header (RFC 9110 §11.6.1). The field name is
+// lowercase, as every response header this package writes.
+func refuseUnauthenticated(e *Exchange, messageID string) {
+	d := diagnostics.NewDiagnostic(diagnostics.Error, web.CodeUnauthenticated, diagnostics.Path{}).
 		WithMessage(messageID, nil).
 		WithOrigin(diagnostics.OriginProtocol)
+	e.Headers = append(e.Headers, httpstream.Header{
+		Name:  wwwAuthenticateName,
+		Value: []byte(web.BearerChallenge(d)),
+	})
+	e.Refuse(401, d)
 }
+
+var wwwAuthenticateName = []byte("www-authenticate")
 
 // Authorize establishes every open exchange's grant from its principal,
 // refusing with 403 the ones the authorizer declines. It is [web.Authorize]

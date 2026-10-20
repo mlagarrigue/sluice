@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/web"
 )
 
@@ -589,5 +590,46 @@ func TestNewHMACVerifierRefusesANegativeMaxTokenBytes(t *testing.T) {
 	}
 	if _, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret}); err != nil {
 		t.Errorf("a zero MaxTokenBytes was refused: %v", err)
+	}
+}
+
+// The challenge a 401 carries is fixed text per refusal, shared with
+// web/stream: a bare scheme when no token was offered (RFC 6750 §3 wants no
+// error code for a client that did not know it had to authenticate),
+// invalid_request for a token that was there but unusable, invalid_token
+// for one the verifier rejected.
+func TestBearerChallenge(t *testing.T) {
+	rejecting := verifierFunc(func(string) (web.Principal, error) {
+		return web.Principal{}, errors.New("no")
+	})
+	tests := []struct {
+		name string
+		set  func(h http.Header)
+		want string
+	}{
+		{"absent", func(http.Header) {}, "Bearer"},
+		{"another scheme", func(h http.Header) { h.Set("Authorization", "Basic x") }, "Bearer"},
+		{"malformed", func(h http.Header) { h.Set("Authorization", "Bearer a b") }, `Bearer error="invalid_request"`},
+		{"duplicated", func(h http.Header) {
+			h.Add("Authorization", "Bearer a")
+			h.Add("Authorization", "Bearer a")
+		}, `Bearer error="invalid_request"`},
+		{"rejected", func(h http.Header) { h.Set("Authorization", "Bearer a") }, `Bearer error="invalid_token"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+			tc.set(r.Header)
+			_, d, err := web.Authenticate(r, rejecting)
+			if err == nil {
+				t.Fatal("authenticated")
+			}
+			if got := web.BearerChallenge(d); got != tc.want {
+				t.Errorf("BearerChallenge = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := web.BearerChallenge(diagnostics.Diagnostic{}); got != "Bearer" {
+		t.Errorf("a foreign diagnostic gets %q, want the bare scheme", got)
 	}
 }

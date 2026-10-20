@@ -162,6 +162,7 @@ verifier, err := web.NewHMACVerifier(web.HMACConfig{
 principal, d, err := web.Authenticate(r, verifier) // reads the Bearer, checks signature and claims
 if err != nil {
     log.Println(err)                                              // "expired", "bad signature": for you
+    w.Header().Set("WWW-Authenticate", web.BearerChallenge(d))    // a 401 must say which scheme (RFC 9110)
     web.WriteJSON(w, http.StatusUnauthorized, web.ReportOf(d))   // for the client: "refused", no detail
     return
 }

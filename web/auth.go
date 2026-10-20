@@ -494,6 +494,11 @@ func Bearer(r *http.Request) (string, diagnostics.Diagnostic, bool) {
 // [ErrCredentialsMissing] and the verifier was not called; a route that
 // admits anonymous callers tells that case apart with errors.Is. Any other
 // error came from the verifier.
+//
+// The 401 the caller then writes must carry a challenge (RFC 9110 §11.6.1),
+// and the diagnostic knows which one:
+//
+//	w.Header().Set("WWW-Authenticate", web.BearerChallenge(d))
 func Authenticate(r *http.Request, v Verifier) (Principal, diagnostics.Diagnostic, error) {
 	token, d, ok := Bearer(r)
 	if !ok {
@@ -504,6 +509,47 @@ func Authenticate(r *http.Request, v Verifier) (Principal, diagnostics.Diagnosti
 		return Principal{}, unauthenticated("CredentialsRejected", nil), err
 	}
 	return p, diagnostics.Diagnostic{}, nil
+}
+
+// BearerChallenge is the WWW-Authenticate value a 401 refusing d must carry.
+//
+// RFC 9110 §11.6.1 says a 401 without a challenge is not a 401 a client can
+// act on: it has to learn the scheme somewhere. The challenge is the Bearer
+// one of RFC 6750 §3, and its error code follows the diagnostic's message:
+// none when the request brought no token at all — absent, or under another
+// scheme — because §3 says a client that did not know it had to authenticate
+// should get the scheme and nothing else; "invalid_request" when a token was
+// there but unusable (malformed, or two of them); "invalid_token" when the
+// verifier rejected it.
+//
+// No realm. RFC 6750 §3 says the scheme "MUST be followed by one or more
+// auth-param values" and, for a request that brought no token, that the
+// error attribute is not the one to send; its own example fills the gap
+// with realm. This package does not know a realm — it is the protection
+// space, which in a token system is the audience the verifier checks, and
+// [Verifier] does not expose it — so the bare scheme goes out, valid under
+// the RFC 9110 §11.3 grammar, short of RFC 6750 on that one point. The
+// realm joins the next breaking change of this API rather than breaking it
+// twice.
+//
+// The code says no more than the client can see for itself. Malformed is
+// visible in its own request, rejected is the one word [Authenticate] already
+// says; which half of a rejected token was wrong stays out, as everywhere
+// else at this boundary. RFC 6750 §3.1 would rather see a 400 behind
+// "invalid_request"; the status stays 401 because the request did lack
+// valid credentials (RFC 9110 §15.5.2), and one status for every refusal of
+// this stage is what the batch-shaped version relies on.
+//
+// A diagnostic that is not one of [Authenticate]'s gets the bare challenge:
+// it is always a correct one.
+func BearerChallenge(d diagnostics.Diagnostic) string {
+	switch d.MessageID {
+	case "CredentialsDuplicated", "CredentialsMalformed":
+		return `Bearer error="invalid_request"`
+	case "CredentialsRejected":
+		return `Bearer error="invalid_token"`
+	}
+	return "Bearer"
 }
 
 func unauthenticated(messageID string, args map[string]any) diagnostics.Diagnostic {
