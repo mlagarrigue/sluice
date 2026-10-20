@@ -244,10 +244,16 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// blocks, and that matters more than it looks: the read goroutine is the
 	// goroutine that delivers the flow-control credit a stalled response is
 	// waiting for, so a read loop that waited on the handler would be a
-	// deadlock, not a slowdown. The calls are bounded because a request
-	// occupies a stream slot from admission until its response retires the
-	// stream — so unfinished calls can never outnumber the streams the
-	// transport admits, capped at h3MaxServeStreams. Starting the goroutine
+	// deadlock, not a slowdown. The calls are bounded because a request is
+	// in flight, in the assembler's own count, from its first frame until
+	// its response has been written and the stream retired — so the
+	// requests held by unfinished calls never outnumber MaxConcurrentStreams.
+	// The transport's stream slot is not that bound: it is given back once
+	// both directions are done, which a client's STOP_SENDING on a complete
+	// request does at once (RFC 9114 §4.1.1), the call still running; the
+	// assembler refuses the stream over its own count, and closes a
+	// connection that cancels more than it lets complete
+	// (h3Assembler.countCancel). Starting the goroutine
 	// costs 1.7% of a request answered alone (BenchmarkH3FromQuicGo/plain,
 	// interop module), against a p99 under load that went from 1.48-2.32
 	// times HTTP/1.1's to 1.13-1.57 (ADR 0008).
@@ -286,8 +292,9 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// STOP_SENDING already (RESET_STREAM, RFC 9000 §3.5) and hands it up
 		// in the datagram that carried it; the connection ends before any
 		// request beside it is admitted. A STOP_SENDING on a request stream
-		// needs nothing here: the transport abandoned the response, whose
-		// writer fails on its next write.
+		// is the assembler's: the transport abandoned the response, whose
+		// writer fails on its next write, and Frames charges the
+		// cancellation against the rapid-reset allowance.
 		for _, f := range frames {
 			if f.Type == quic.FrameStopSending && f.StreamID == control.ID() {
 				_ = c.CloseWithError(h3ClosedCriticalStream)
@@ -362,6 +369,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			fieldSection: a.peerMaxFieldSection(),
 			credit:       a.Credit,
 			retire:       a.retire,
+			answered:     a.answered,
 		}
 		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
@@ -452,6 +460,9 @@ type h3Batch struct {
 	// left — or its writer has given up — which is how a draining connection
 	// learns it owes nothing more.
 	retire func()
+	// answered, when set, is called once per response written in full,
+	// before retire: what the rapid-reset allowance grows with.
+	answered func()
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
@@ -554,10 +565,13 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 					b.retire()
 				}
 			}()
-			writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
+			whole := writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
 				detached = true
 				writers.Done()
 			})
+			if whole && b.answered != nil {
+				b.answered()
+			}
 		}(id, res[i], b.reqs[i].Method)
 	}
 }
@@ -580,10 +594,15 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
 // caller's code, which ServeH3 does not wait for.
-func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) {
+//
+// It reports whether the whole response left, FIN included — a request
+// answered, in the rapid-reset allowance's terms. A stream the peer reset or
+// starved, a producer that stopped short and a response that could not be
+// framed are not.
+func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSection uint64, wb writeBound, date []byte, detach func()) bool {
 	s, err := c.Stream(id)
 	if err != nil {
-		return // unreachable: the request arrived on it, within the limit
+		return false // unreachable: the request arrived on it, within the limit
 	}
 	sc := h3ScratchPool.Get().(*h3Scratch)
 	defer h3ScratchPool.Put(sc)
@@ -603,7 +622,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 			// the stream is reset rather than sent a section §4.2.2 says it
 			// will refuse.
 			_ = s.Reset(h3InternalError)
-			return
+			return false
 		}
 	}
 	sc.head = head
@@ -617,11 +636,10 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		// one datagram for a response that fits one, where a write and then
 		// CloseWrite sent the FIN in a datagram of its own — one more per
 		// request, measured at 1.0 per request over 20,000 small responses.
-		_ = writeH3Bounded(s, head, true, wb)
-		return
+		return writeH3Bounded(s, head, true, wb)
 	}
 	if !writeH3Bounded(s, head, false, wb) {
-		return // the stream is gone or given up on; its neighbours are not
+		return false // the stream is gone or given up on; its neighbours are not
 	}
 	// The payload follows as DATA frames on the same stream, at the pace the
 	// producer supplies them — off the read goroutine, so packets and the
@@ -631,11 +649,10 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	// never do for these.
 	detach()
 	if !streamH3Body(c, s, r.Stream, r.ContentLength, wb) {
-		return
+		return false
 	}
 	if r.Trailers == nil {
-		_ = s.CloseWrite()
-		return
+		return s.CloseWrite() == nil
 	}
 	tail, err := appendH3Trailers(sc.head[:0], r, fieldSection, sc)
 	if err != nil {
@@ -643,12 +660,12 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 		// producer that panicked does, so the client never reads the
 		// answer as whole.
 		_ = s.Reset(h3InternalError)
-		return
+		return false
 	}
 	sc.head = tail
 	// The trailer section and the FIN leave in one write, as a buffered
 	// response's last frame and its FIN do.
-	_ = writeH3Bounded(s, tail, true, wb)
+	return writeH3Bounded(s, tail, true, wb)
 }
 
 // writeH3Bounded writes p on s under [Config.WriteTimeout], read as a time

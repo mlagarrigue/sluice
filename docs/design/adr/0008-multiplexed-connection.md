@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed)
 - **Theme:** httpstream
 
 ## Problem
@@ -31,8 +31,20 @@ call holds stream slots, so the calls in flight are bounded by
 `MaxConcurrentStreams`. HTTP/3 has no responder: its read callback hands
 each batch to a call on a goroutine of its own, which writes each answer on
 a goroutine per request stream (since 2026-10-04), so a slow call holds only
-its batch and a slow body only its stream. Concurrency is per batch, not per request: a batch that arrived
-together is still handed to the handler together, in one call.
+its batch and a slow body only its stream. Its bound is the assembler's own
+count of requests in flight — from a stream's first frame until its response
+is written — not the transport's stream slot, which QUIC gives back as soon
+as both directions are done: a client's STOP_SENDING on a complete request
+(RFC 9114 §4.1.1) frees the slot at once, with the handler call still
+running, and counting slots let one call run per cancellation (fixed
+2026-10-20). Both servers close a connection whose cancellations and refusals
+outrun a flat allowance plus two per request answered — four batches of
+frames on HTTP/2, four times `MaxConcurrentStreams` on HTTP/3 — with
+ENHANCE_YOUR_CALM or H3_EXCESSIVE_LOAD: the rapid-reset bound
+(CVE-2023-44487), measured against work done rather than a clock so that it
+holds on a stalled connection. Concurrency is per batch, not per request: a
+batch that arrived together is still handed to the handler together, in one
+call.
 
 Every hand-off is bounded and the bound is stated: reader → responder is a
 channel of `MaxConcurrentStreams` batches that cannot block (a request

@@ -30,6 +30,10 @@ func BenchmarkH3Assemble(b *testing.B) {
 			a := testAssembler(Config{})
 			b.ReportAllocs()
 			for b.Loop() {
+				// The writer's retire, in one store: the requests of the
+				// previous iteration were answered, as the h2 bench resets
+				// its server's count.
+				a.inFlight.Store(0)
 				batch, _, failed, err := a.Frames(frames)
 				if err != nil {
 					b.Fatal(err)

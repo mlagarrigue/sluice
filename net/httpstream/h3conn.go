@@ -52,6 +52,16 @@ type h3Assembler struct {
 	// answered. The assembler retires a stream that leaves without a
 	// request (failed, forgotten); the response writer retires the rest.
 	inFlight atomic.Int64
+	// served counts the requests this connection answered in full — the
+	// response written to its FIN — raised by the writer that wrote it.
+	// cancelled counts the request streams that ended any other way: the
+	// peer's STOP_SENDING or RESET_STREAM, or a refusal of this end's. The
+	// two are the rapid-reset bound; countCancel states what it means, and
+	// excess is the connection error it decided, returned by Frames at the
+	// end of the delivery that crossed the line.
+	served    atomic.Int64
+	cancelled int
+	excess    error
 	// Finish, when set, is called by retire when the last in-flight stream
 	// of a draining connection retires: nothing more is owed, the
 	// connection may close. It must not block — it runs on the read
@@ -331,6 +341,19 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			}
 			continue
 		}
+		if f.Type == quic.FrameStopSending {
+			// The peer stopped reading a response: a request this end
+			// still holds — assembling, in the handler's hands or being
+			// written — is cancelled (§4.1.1), and charged as one. The
+			// transport hands the frame up only for a stream whose sending
+			// side it had not already abandoned, so a refusal and a
+			// cancellation that cross are one charge, not two. Stream 3 is
+			// ServeH3's own: it ended the connection before this ran.
+			if f.StreamID&0x03 == 0 {
+				a.countCancel()
+			}
+			continue
+		}
 		if !f.IsStream() {
 			continue
 		}
@@ -366,11 +389,20 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				a.release(f.StreamID, len(f.Data))
 				continue
 			}
-			if len(a.streams) >= a.cfg.MaxConcurrentStreams {
+			if a.inFlight.Load() >= int64(a.cfg.MaxConcurrentStreams) {
 				// §5.2 wants a request refused rather than a connection lost
 				// when a server is at its limit, and REQUEST_REJECTED tells
 				// the client nothing was processed so it may retry elsewhere.
-				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: over %d open request streams",
+				// The count is this layer's, not the transport's: a request
+				// is in flight from its first frame until its response is
+				// written and the stream retired, where the transport gives
+				// a stream's slot back as soon as both directions are done
+				// — which a client's STOP_SENDING on a complete request
+				// does at once (§4.1.1), with the handler call still
+				// running. Counting the streams still assembling, as this
+				// did before 2026-10-20, let a client run one call per
+				// cancellation: the rapid-reset shape (CVE-2023-44487).
+				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: over %d unanswered request streams",
 					ErrH3Protocol, a.cfg.MaxConcurrentStreams))
 				a.release(f.StreamID, len(f.Data))
 				continue
@@ -472,6 +504,11 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			delete(a.streams, f.StreamID)
 		}
 	}
+	if a.excess != nil {
+		// Decided by a charge somewhere in this delivery; the rest of the
+		// datagram was folded in as usual, and none of it is handed over.
+		return sluice.Batch[Request]{}, nil, a.failed, a.excess
+	}
 	return sluice.Batch[Request]{Items: a.batch}, a.ids, a.failed, nil
 }
 
@@ -496,7 +533,11 @@ func (a *h3Assembler) expire(now time.Time) {
 func (a *h3Assembler) reset(id uint64) error {
 	switch id & 0x03 {
 	case 0:
+		// The peer abandoned its request (§4.1.1): what arrived for it is
+		// dropped, and it is charged as a cancellation whether the request
+		// was complete or not — a complete one is in the handler's hands.
 		a.Forget(id)
+		a.countCancel()
 	case 2:
 		if u := a.unis[id]; u != nil {
 			a.release(id, len(u.buf))
@@ -532,22 +573,61 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // re-opening assembly. The peer is *told* to stop with STOP_SENDING — ServeH3
 // sends it alongside the reset — but frames already in flight arrive anyway,
 // and a tombstone is what keeps them from re-accumulating state for a
-// request nobody will answer.
+// request nobody will answer. A refusal is charged like a cancellation: a
+// peer that only ever sends what gets refused would otherwise hold the
+// connection open indefinitely for the cost of one refusal each, the
+// rapid-reset shape with the roles swapped.
 func (a *h3Assembler) fail(id, code uint64, err error) {
 	if a.drop(id) {
 		a.retire()
 	}
+	a.countCancel()
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
 }
 
 // answer records a stream refused with a status: dropped and tombstoned as
-// fail does, but not retired — ServeH3 retires it once the status has left,
-// as it does a handler's response, so a draining connection waits for the
-// refusal to be written and acknowledged like any other answer.
+// fail does, and charged as fail does, but not retired — ServeH3 retires it
+// once the status has left, as it does a handler's response, so a draining
+// connection waits for the refusal to be written and acknowledged like any
+// other answer.
 func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 	a.drop(id)
+	a.countCancel()
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method})
 }
+
+// countCancel charges one request stream ended short of its answer — by the
+// peer's STOP_SENDING or RESET_STREAM, or by a refusal of this end's —
+// against the rapid-reset allowance: four times MaxConcurrentStreams flat,
+// plus two for every request this connection has answered in full. Past it
+// the connection is closed with H3_EXCESSIVE_LOAD (RFC 9114 §10.5), at the
+// end of the delivery that crossed the line.
+//
+// The HTTP/2 side keeps the same rule (h2Server.countReset): a long-lived
+// connection that serves requests may go on cancelling; one that only
+// cancels runs out. It is expressed against work done rather than against a
+// clock, so it holds while a connection is stalled and it can be tested
+// without one. "Answered" is the response written to its FIN, which the
+// writer reports: a request cancelled while the handler works for it — the
+// CVE-2023-44487 pattern, HEADERS and FIN followed at once by the
+// cancellation — earns nothing, so the pattern spends the flat allowance and
+// nothing else. The flat part is in this layer's own unit where HTTP/2's is
+// four batches of frames: a peer may fill the limit and cancel it all four
+// times over before it has let one answer through.
+func (a *h3Assembler) countCancel() {
+	a.cancelled++
+	if a.excess != nil || int64(a.cancelled) <= int64(4*a.cfg.MaxConcurrentStreams)+2*a.served.Load() {
+		return
+	}
+	a.excess = h3ConnectionError{Code: h3ExcessiveLoad, Err: fmt.Errorf(
+		"%w: %w: %d request streams cancelled or refused against %d answered",
+		ErrH3Protocol, errCalm, a.cancelled, a.served.Load())}
+}
+
+// answered records one request answered in full, which earns the
+// rapid-reset allowance two more charges. Called by the writer that wrote
+// the response, before it retires the stream.
+func (a *h3Assembler) answered() { a.served.Add(1) }
 
 // drop discards a stream's assembly state, releasing what it retained, and
 // leaves a tombstone. It reports whether the stream was being assembled —

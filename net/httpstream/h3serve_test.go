@@ -650,3 +650,195 @@ func readH3FieldsAndBody(t *testing.T, s *quic.Stream) (fields map[string]string
 	}
 	return fields, body
 }
+
+// heldCalls is a handler that holds every call for /held until unblock and
+// records the most requests it ever had in flight at once; exceeded is
+// closed the first time that count passes limit. Any other target is echoed
+// at once.
+type heldCalls struct {
+	limit    int64
+	release  chan struct{}
+	exceeded chan struct{}
+	once     sync.Once
+	released sync.Once
+	running  atomic.Int64
+	peak     atomic.Int64
+}
+
+func newHeldCalls(limit int) *heldCalls {
+	return &heldCalls{limit: int64(limit), release: make(chan struct{}), exceeded: make(chan struct{})}
+}
+
+func (h *heldCalls) handle(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	if string(b.Items[0].Target) != "/held" {
+		return echoTarget(ctx, b)
+	}
+	n := h.running.Add(int64(b.Len()))
+	for p := h.peak.Load(); n > p && !h.peak.CompareAndSwap(p, n); p = h.peak.Load() {
+	}
+	if n > h.limit {
+		h.once.Do(func() { close(h.exceeded) })
+	}
+	<-h.release
+	h.running.Add(-int64(b.Len()))
+	return echoTarget(ctx, b)
+}
+
+func (h *heldCalls) unblock() { h.released.Do(func() { close(h.release) }) }
+
+// sendH3 opens a request stream and sends a complete GET on it, FIN
+// included. A write that fails is not the test's failure: the server may
+// have refused the stream, or closed the connection, before the bytes left —
+// which is what the caller then reads. A connection already closed yields
+// no stream.
+func sendH3(t *testing.T, conn *quic.Conn, target string) *quic.Stream {
+	t.Helper()
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		return nil
+	}
+	if _, err := s.Write(h3Request("GET", target)); err == nil {
+		_ = s.CloseWrite()
+	}
+	return s
+}
+
+// h3CancelBurst sends n complete GET requests for /held, each cancelled at
+// once with STOP_SENDING, as RFC 9114 §4.1.1 has a client do once its request
+// is out. It stops early on a connection the server has closed.
+func h3CancelBurst(t *testing.T, conn *quic.Conn, n int) {
+	t.Helper()
+	for range n {
+		s := sendH3(t, conn, "/held")
+		if s == nil {
+			return
+		}
+		_ = s.StopSending(h3RequestCancelled)
+	}
+}
+
+// settledH3 reads a stream on a goroutine and reports how it ended: the
+// error of the Read that failed. A response that ends cleanly is io.EOF.
+func settledH3(s *quic.Stream) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		var buf [4096]byte
+		for {
+			if _, err := s.Read(buf[:]); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	return done
+}
+
+// RFC 9114 §4.1.1 has a client cancel a request whose HEADERS and FIN are out
+// with STOP_SENDING alone, and the transport gives the stream's slot back the
+// moment both directions are done (RFC 9000 §3.2) — before the handler called
+// for that request has returned. The calls in flight on one connection are
+// bounded by this layer's own count, not by the transport's streams: past
+// MaxConcurrentStreams unfinished requests, cancelled or not, a new stream is
+// refused with H3_REQUEST_REJECTED. Before 2026-10-20 the limit was read on
+// the streams still assembling, and sixteen cancelled requests ran sixteen
+// handler calls on a limit of eight: the rapid-reset shape (CVE-2023-44487)
+// on HTTP/3.
+func TestH3CancelledRequestsDoNotOutrunTheLimit(t *testing.T) {
+	const limit = 8
+	h := newHeldCalls(limit)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	t.Cleanup(h.unblock)
+
+	h3CancelBurst(t, conn, 2*limit)
+	probe := sendH3(t, conn, "/held")
+	if probe == nil {
+		t.Fatalf("the connection closed with %v after %d cancelled requests on a limit of %d", conn.Err(), 2*limit, limit)
+	}
+	select {
+	case err := <-settledH3(probe):
+		if code, reset := probe.WasReset(); !reset || code != h3RequestRejected {
+			t.Fatalf("the stream over the limit ended with %v (reset %v, code %#x), want H3_REQUEST_REJECTED (%#x)",
+				err, reset, code, h3RequestRejected)
+		}
+	case <-h.exceeded:
+		t.Fatalf("%d requests in flight in handler calls on a limit of %d", h.peak.Load(), limit)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the stream over the limit was neither refused nor answered; %d requests in flight", h.running.Load())
+	}
+	h.unblock()
+	if p := h.peak.Load(); p > limit {
+		t.Fatalf("%d requests in flight in handler calls at once, want at most %d", p, limit)
+	}
+	select {
+	case <-conn.Done():
+		t.Fatalf("the connection closed with %v; a client under the allowance keeps it", conn.Err())
+	default:
+	}
+}
+
+// A connection that only cancels is closed: each cancellation of a request
+// this layer still holds, and each refusal, charges a flat allowance of four
+// times MaxConcurrentStreams plus two per request the connection let the
+// server answer — the HTTP/2 rapid-reset bound, with H3_EXCESSIVE_LOAD
+// (RFC 9114 §8.1, §10.5) as its code. Forty cancelled requests on a limit of
+// eight are forty charges against a flat thirty-two.
+func TestH3AConnectionThatOnlyCancelsIsClosed(t *testing.T) {
+	const limit = 8
+	h := newHeldCalls(limit)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	t.Cleanup(h.unblock)
+
+	h3CancelBurst(t, conn, 5*limit)
+	select {
+	case <-conn.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the connection stayed open after %d cancelled requests on a limit of %d", 5*limit, limit)
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application {
+		t.Fatalf("the connection ended with %v, want an application close", conn.Err())
+	}
+	if ce.Code != h3ExcessiveLoad {
+		t.Fatalf("closed with %#x, want H3_EXCESSIVE_LOAD (%#x)", ce.Code, h3ExcessiveLoad)
+	}
+	h.unblock()
+	if p := h.peak.Load(); p > limit {
+		t.Fatalf("%d requests in flight in handler calls at once, want at most %d", p, limit)
+	}
+}
+
+// Answered requests earn cancellations: two each, on top of the flat
+// allowance. On a limit of two the flat part is eight; twelve requests
+// answered in full raise it to thirty-two, and sixteen cancellations — which
+// would have closed the connection alone — leave it open, the stream over
+// the limit refused as usual.
+func TestH3AnsweredRequestsEarnCancellations(t *testing.T) {
+	const limit = 2
+	h := newHeldCalls(limit)
+	conn, _, _ := startH3With(t, Config{MaxConcurrentStreams: limit}, quic.DefaultParameters(), quic.DefaultParameters(), h.handle)
+	t.Cleanup(h.unblock)
+
+	for range 12 {
+		if body, _ := readH3Body(t, askH3(t, conn, h3Request("GET", "/ok"))); body != "/ok" {
+			t.Fatalf("answered %q, want %q", body, "/ok")
+		}
+	}
+	h3CancelBurst(t, conn, 16)
+	probe := sendH3(t, conn, "/held")
+	if probe == nil {
+		t.Fatalf("the connection closed with %v after 16 cancellations on 12 answered requests", conn.Err())
+	}
+	select {
+	case <-settledH3(probe):
+		if code, reset := probe.WasReset(); !reset || code != h3RequestRejected {
+			t.Fatalf("the stream over the limit ended with reset %v, code %#x, want H3_REQUEST_REJECTED (%#x)", reset, code, h3RequestRejected)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the stream over the limit was neither refused nor answered; the connection: %v", conn.Err())
+	}
+	select {
+	case <-conn.Done():
+		t.Fatalf("the connection closed with %v; 12 answered requests allow 32 cancellations", conn.Err())
+	default:
+	}
+}

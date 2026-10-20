@@ -353,6 +353,16 @@ type Config struct {
 	// until its response has been written, so the queue between the read
 	// goroutine and the handler never holds more than this many requests —
 	// which is what lets the reader hand a batch over without blocking on it.
+	// Over HTTP/3 the count is this layer's rather than the transport's: a
+	// request is in flight from its first frame until its response has been
+	// written, and a client that cancels a request (STOP_SENDING, RFC 9114
+	// §4.1.1) frees its QUIC stream at once but not its place here, so the
+	// handler calls on one connection never hold more than this many
+	// requests either. On both, a connection whose cancellations and
+	// refusals outrun a flat allowance plus two per request answered — four
+	// batches of frames over HTTP/2, four times this bound over HTTP/3 — is
+	// closed (ENHANCE_YOUR_CALM, H3_EXCESSIVE_LOAD): the rapid-reset bound,
+	// CVE-2023-44487.
 	// It exists beside MaxRequestsPerBatch because the two bound different
 	// things — one is how many requests ride one hand-off, the other how
 	// much assembly state a peer may park — and tuning the batch size must

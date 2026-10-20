@@ -895,3 +895,28 @@ func TestH3QPACKDecoderStreamIsRead(t *testing.T) {
 		})
 	}
 }
+
+// A request leaves the assembler when its FIN arrives, not the connection:
+// it is the handler's until its response is written and the stream retired,
+// and the limit counts it there too. Before 2026-10-20 the limit was read on
+// the streams still assembling, so a request the peer completed — then
+// cancelled, RFC 9114 §4.1.1 — freed a slot its handler call still used.
+func TestH3ACompletedRequestHoldsItsSlotUntilRetired(t *testing.T) {
+	a := testAssembler(Config{MaxConcurrentStreams: 2})
+	batch, _, failed, err := a.Frames([]quic.Frame{
+		streamFrame(0, h3Request("GET", "/a"), true),
+		streamFrame(4, h3Request("GET", "/b"), true),
+	})
+	if err != nil || batch.Len() != 2 || len(failed) != 0 {
+		t.Fatalf("two complete requests on a limit of two: batch=%d failed=%v err=%v", batch.Len(), failed, err)
+	}
+	batch, _, failed, err = a.Frames([]quic.Frame{streamFrame(8, h3Request("GET", "/c"), true)})
+	if err != nil || batch.Len() != 0 || len(failed) != 1 || failed[0].Code != h3RequestRejected {
+		t.Fatalf("the third request, with two unanswered: batch=%d failed=%v err=%v, want one H3_REQUEST_REJECTED", batch.Len(), failed, err)
+	}
+	a.retire() // one response written
+	batch, _, failed, err = a.Frames([]quic.Frame{streamFrame(12, h3Request("GET", "/d"), true)})
+	if err != nil || batch.Len() != 1 || len(failed) != 0 {
+		t.Fatalf("the request after a retire: batch=%d failed=%v err=%v, want it assembled", batch.Len(), failed, err)
+	}
+}
