@@ -293,6 +293,40 @@ func TestMaxRequestsPerConnCapsAWholeBatch(t *testing.T) {
 	}
 }
 
+// The request that exhausts MaxRequestsPerConn is told Connection: close
+// whatever its version. An HTTP/1.0 keep-alive client cuts the batch at one
+// request, which must not skip the budget check: the server closes after this
+// response, and RFC 9112 §9.6 says to send "close" when it intends to.
+func TestMaxRequestsPerConnSaysCloseToHTTP10KeepAlive(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxRequestsPerConn: 2}, echoTarget)
+	c := dial(t, addr)
+	if err := c.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(c)
+
+	fmt.Fprint(c, "GET /a HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n")
+	status, headers, body := readResponseWithHeaders(t, br)
+	if !strings.HasPrefix(status, "HTTP/1.1 200") || body != "/a" {
+		t.Fatalf("first response %q %q", status, body)
+	}
+	if !strings.EqualFold(headers["connection"], "keep-alive") {
+		t.Fatalf("first response Connection = %q, want keep-alive (budget not yet spent)", headers["connection"])
+	}
+
+	fmt.Fprint(c, "GET /b HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n")
+	status, headers, body = readResponseWithHeaders(t, br)
+	if !strings.HasPrefix(status, "HTTP/1.1 200") || body != "/b" {
+		t.Fatalf("second response %q %q", status, body)
+	}
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("after the second response: %v, want EOF (the budget is spent)", err)
+	}
+	if !strings.EqualFold(headers["connection"], "close") {
+		t.Fatalf("the last response of an HTTP/1.0 keep-alive connection says Connection: %q, then the server closes; want close", headers["connection"])
+	}
+}
+
 // The cap-reached marking must fire even when MaxRequestsPerConn is an exact
 // multiple of MaxRequestsPerBatch — the case the defaults (1024 and 64) put
 // every deployment in by default. Checking "this batch was cut short of

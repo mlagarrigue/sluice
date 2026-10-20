@@ -233,6 +233,20 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			// anything buffered behind it would get an answer nobody reads.
 			break
 		}
+		if (req.http10 || len(r.batch) == limit) && r.served+len(r.batch) >= r.cfg.MaxRequestsPerConn {
+			// The connection's own request budget ended this batch, whether
+			// or not it also happened to fill it: tell the client so it does
+			// not pipeline into a socket that is about to close. Checking
+			// limit < MaxRequestsPerBatch here would miss exactly the batches
+			// that run full — the common case whenever MaxRequestsPerConn is
+			// a multiple of MaxRequestsPerBatch, which the defaults are.
+			// An HTTP/1.0 request ends its batch below whatever the limit,
+			// so it takes the same test before it does: the response that
+			// spends the budget says close whatever its version (RFC 9112
+			// §9.6), rather than keep-alive followed by the server closing.
+			r.batch[len(r.batch)-1].KeepAlive = false
+			break
+		}
 		if req.http10 {
 			// An HTTP/1.0 response that is streamed has no chunked coding to
 			// end it, so its body runs to the connection's close (see
@@ -242,16 +256,6 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			// answers would be dropped after it acted on them. Pipelining
 			// HTTP/1.0 keep-alive clients get batches of one, which is all
 			// that is lost.
-			break
-		}
-		if len(r.batch) == limit && r.served+len(r.batch) >= r.cfg.MaxRequestsPerConn {
-			// The connection's own request budget ended this batch, whether
-			// or not it also happened to fill it: tell the client so it does
-			// not pipeline into a socket that is about to close. Checking
-			// limit < MaxRequestsPerBatch here would miss exactly the batches
-			// that run full — the common case whenever MaxRequestsPerConn is
-			// a multiple of MaxRequestsPerBatch, which the defaults are.
-			r.batch[len(r.batch)-1].KeepAlive = false
 			break
 		}
 	}
