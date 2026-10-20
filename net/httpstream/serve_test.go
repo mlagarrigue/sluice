@@ -958,7 +958,10 @@ func waitStopped(t *testing.T, stopped <-chan struct{}) {
 }
 
 // A producer of cadence ticks learns the client left on its next batch, not
-// on a next write it may never make.
+// on a next write it may never make. The client leaves with a reset, which
+// is what a departure looks like from the server: a plain close sends the
+// same FIN as a half-close, and a half-closed client is still there (RFC
+// 9112 §9.6, tested below).
 func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
@@ -976,8 +979,89 @@ func TestStreamedResponseOfEmptyBatchesStopsWhenTheClientLeaves(t *testing.T) {
 		t.Fatal(err) // the status line: the response is streaming
 	}
 	<-started
-	_ = c.Close()
+	if err := c.(*net.TCPConn).SetLinger(0); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close() // a reset, not a FIN
 
+	waitStopped(t, stopped)
+}
+
+// A client that half-closes once its request is sent still wants the answer
+// (RFC 9112 §9.6: a half-close neither delimits the request nor says the
+// client lost interest): netcat and the simplest HTTP/1.0 clients do this.
+// The streamed body goes out whole, down to its last chunk.
+func TestStreamedResponseSurvivesAClientHalfClose(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		return sluice.Batch[Response]{Items: []Response{{
+			Status: 200,
+			Stream: func(yield func(sluice.Batch[[]byte]) bool) {
+				for i := range 3 {
+					if !yield(sluice.Batch[[]byte]{Items: [][]byte{fmt.Appendf(nil, "part%d ", i)}}) {
+						return
+					}
+					// Pacing, not a measurement: lets the half-close reach
+					// the peer watch between two batches.
+					time.Sleep(50 * time.Millisecond)
+				}
+			},
+		}}}
+	})
+
+	c := dial(t, addr).(*net.TCPConn)
+	fmt.Fprint(c, "GET /report HTTP/1.1\r\nHost: h\r\n\r\n")
+	if err := c.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("reading the response after a half-close: %v (got %d bytes)", err, len(got))
+	}
+	head, body, ok := bytes.Cut(got, []byte("\r\n\r\n"))
+	if !ok || !bytes.HasPrefix(head, []byte("HTTP/1.1 200")) {
+		t.Fatalf("response head = %q", head)
+	}
+	if !bytes.HasSuffix(body, []byte("0\r\n\r\n")) {
+		t.Fatalf("the chunked body is unterminated after the client's half-close: %q", body)
+	}
+	for i := range 3 {
+		if !bytes.Contains(body, fmt.Appendf(nil, "part%d ", i)) {
+			t.Errorf("part%d missing from the streamed body %q", i, body)
+		}
+	}
+}
+
+// Past a half-close the producer is no longer watched by a blocked read, yet
+// it still learns that the connection was closed under it: a producer of
+// cadence ticks runs on after the half-close and stops when the shutdown
+// closes the connection, without a write to fail.
+func TestStreamedResponseOfEmptyBatchesSurvivesAHalfCloseUntilShutdown(t *testing.T) {
+	started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	addr, cancel, _ := serveUntilCancelled(t, Config{ShutdownGrace: 100 * time.Millisecond},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{Items: []Response{{
+				Status: 200, Stream: cadenceProducer(started, stopped, release),
+			}}}
+		})
+	t.Cleanup(func() { close(release) })
+
+	c := dial(t, addr).(*net.TCPConn)
+	fmt.Fprint(c, "GET /feed HTTP/1.1\r\nHost: h\r\n\r\n")
+	if err := c.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(c).ReadString('\n'); err != nil {
+		t.Fatal(err) // the status line: the response is streaming
+	}
+	<-started
+	select {
+	case <-stopped:
+		t.Fatal("the producer was stopped by the client's half-close")
+	case <-time.After(200 * time.Millisecond):
+		// Still running: a bound on how long the half-close had to be
+		// mistaken for a departure, not a measurement.
+	}
+	cancel() // the shutdown closes the connection once the grace is spent
 	waitStopped(t, stopped)
 }
 

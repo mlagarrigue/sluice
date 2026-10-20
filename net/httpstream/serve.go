@@ -643,7 +643,7 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-// errPeerGone ends a streamed HTTP/1.1 response whose client closed the
+// errPeerGone ends a streamed HTTP/1.1 response whose client reset the
 // connection, or whose connection was closed under it by Serve's shutdown.
 var errPeerGone = errors.New("httpstream: the client left during a streamed response")
 
@@ -651,10 +651,21 @@ var errPeerGone = errors.New("httpstream: the client left during a streamed resp
 // how a producer learns the client left without a write failing first.
 //
 // Nothing else reads an HTTP/1.1 connection while a response streams — the
-// serving goroutine is the producer's — so a client that closes is invisible
+// serving goroutine is the producer's — so a client that resets is invisible
 // until a write fails, and a producer that only yields empty batches never
 // writes. The watch is one goroutine and one blocked read per streamed
 // response, not per batch: the producer's check is an atomic load.
+//
+// EOF is not the client leaving. A client that half-closes after its
+// request — shutdown(SHUT_WR), what netcat and the simplest HTTP/1.0
+// clients do — still reads the answer, and RFC 9112 §9.6 says so in as many
+// words: a half-close neither delimits the request nor means the client lost
+// interest. So EOF ends the read and nothing else; gone is for a reset, the
+// socket closed by Serve's shutdown, and a TLS connection cut without its
+// close_notify, which [crypto/tls] reports as [io.ErrUnexpectedEOF]. Past
+// the half-close the peer has nothing more to say, so the producer's check
+// becomes one read per batch (see left), which returns at once: EOF again,
+// or the reset or close that ends the response.
 //
 // What it reads is not lost. A client that pipelines its next request while
 // this one streams has those bytes kept, up to limit, and put back in front
@@ -662,11 +673,35 @@ var errPeerGone = errors.New("httpstream: the client left during a streamed resp
 // where it would have read them. Past limit the watch stops reading and the
 // client is not watched for the rest of this response.
 type peerWatch struct {
-	c        *prefixConn
-	gone     atomic.Bool
-	stopping atomic.Bool
-	done     chan struct{}
-	got      []byte
+	c          *prefixConn
+	gone       atomic.Bool
+	halfClosed atomic.Bool
+	stopping   atomic.Bool
+	done       chan struct{}
+	got        []byte
+}
+
+// left reports whether the client is gone. Asked on every batch, empty ones
+// included: an empty batch writes nothing, so no write failure would ever
+// tell a producer of cadence ticks that the client left.
+func (w *peerWatch) left() bool {
+	if w.gone.Load() {
+		return true
+	}
+	if !w.halfClosed.Load() {
+		return false
+	}
+	// The watching goroutine is done and the read side drained: a read here
+	// does not block. A client that half-closed and then went away is told
+	// apart from one still reading only by a segment it answers with a
+	// reset, which only a write provokes; until then its EOF is all there is.
+	var scratch [1]byte
+	_, err := w.c.Conn.Read(scratch[:])
+	if err == nil || errors.Is(err, io.EOF) {
+		return false
+	}
+	w.gone.Store(true)
+	return true
 }
 
 func watchPeer(c *prefixConn, limit int) *peerWatch {
@@ -689,9 +724,13 @@ func watchPeer(c *prefixConn, limit int) *peerWatch {
 			n, err := c.Conn.Read(scratch[:min(len(scratch), limit-len(w.got))])
 			w.got = append(w.got, scratch[:n]...)
 			if err != nil {
-				// EOF, a reset, or the socket closed by Serve's shutdown —
-				// unless stop's own deadline is what ended the read.
-				if !w.stopping.Load() {
+				switch {
+				case errors.Is(err, io.EOF):
+					// The client half-closed: it is still reading.
+					w.halfClosed.Store(true)
+				case !w.stopping.Load():
+					// A reset, or the socket closed by Serve's shutdown —
+					// unless stop's own deadline is what ended the read.
 					w.gone.Store(true)
 				}
 				return
@@ -840,10 +879,7 @@ func writeStreamedBatch(c *prefixConn, cfg Config, requests []Request, res []Res
 		// connection closes with the body unterminated, which a client reads
 		// as the failure it is.
 		perr := pull(r.Stream, func(b sluice.Batch[[]byte]) bool {
-			// Asked on every batch, empty ones included: an empty batch
-			// writes nothing, so no write failure would ever tell a producer
-			// of cadence ticks that the client left.
-			if watch.gone.Load() {
+			if watch.left() {
 				werr = errPeerGone
 				return false
 			}

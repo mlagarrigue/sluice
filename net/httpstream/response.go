@@ -51,6 +51,18 @@ type Response struct {
 	//
 	// A yield that returns false means the stream or the connection is gone;
 	// the package documentation states what each protocol does then.
+	//
+	// Over HTTP/1.1, a client that half-closes its connection once its
+	// request is sent — shutdown(SHUT_WR), as netcat and the simplest
+	// HTTP/1.0 clients do — is still reading, and gets the whole answer
+	// (RFC 9112 §9.6). Its EOF is not its departure: past it, the client
+	// shows it left only by resetting the connection, which it does when a
+	// write reaches it. A producer that yields nothing to write after the
+	// half-close — empty batches, cadence — is therefore stopped by Serve's
+	// shutdown or by its own end, not by the client going away, and
+	// [Config.WriteTimeout] does not bound it either, since no write is under
+	// way. A time bound was weighed and refused: it would cut, after
+	// WriteTimeout of silence, the very client the RFC says is still there.
 	Stream sluice.Stream[[]byte]
 
 	// ContentLength, when positive, is the number of bytes Stream will
