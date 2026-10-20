@@ -1132,6 +1132,12 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	st.gotHead = true
 	req, declared, err := buildRequest(fields, ErrH2Protocol)
 	if err != nil {
+		if errors.Is(err, errConnect) {
+			// Well formed and not served: a status on the stream, as the
+			// bounds get one, where a reset would call a conforming
+			// request malformed (RFC 9110 §15.6.2).
+			return nil, statusFail(st.id, 501, nil, "%w", err)
+		}
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
 		// costs that one.

@@ -2064,3 +2064,55 @@ func TestH3RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9114 §4.4: a CONNECT carries :method and :authority and omits :scheme
+// and :path; one that does not is malformed. Well formed, it asks for a
+// tunnel this server does not open and is answered 501 on its stream (RFC
+// 9110 §15.6.2), never delivered. Until 2026-10-20 the well-formed one was
+// reset H3_MESSAGE_ERROR as a request without :path, and the one with
+// :scheme and :path reached the handler.
+func TestH3ConnectIsAnsweredOrMalformed(t *testing.T) {
+	connect := func(extra ...[2]string) []byte {
+		fields := []Header{{Name: []byte(":method"), Value: []byte("CONNECT")}}
+		for _, kv := range extra {
+			fields = append(fields, Header{Name: []byte(kv[0]), Value: []byte(kv[1])})
+		}
+		return appendH3Frame(nil, h3Headers, appendQPACK(nil, fields))
+	}
+	tests := []struct {
+		name   string
+		stream []byte
+		status int // 0: malformed, H3_MESSAGE_ERROR without a status
+	}{
+		{"with :authority alone", connect([2]string{":authority", "h:443"}), 501},
+		{"with :scheme and :path", connect([2]string{":authority", "h:443"}, [2]string{":scheme", "https"}, [2]string{":path", "/x"}), 0},
+		{"with :path alone", connect([2]string{":authority", "h:443"}, [2]string{":path", "/x"}), 0},
+		{"without :authority", connect(), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{})
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tt.stream, true)})
+			if err != nil {
+				t.Fatalf("Frames failed the connection over one stream: %v", err)
+			}
+			if batch.Len() != 0 {
+				t.Fatal("the CONNECT was delivered to the handler")
+			}
+			if len(failed) != 1 {
+				t.Fatalf("Frames reported %v, want one stream error", failed)
+			}
+			f := failed[0]
+			if tt.status == 0 {
+				if f.Code != h3MessageError || f.Status != 0 {
+					t.Errorf("refused with code %#x and status %d, want H3_MESSAGE_ERROR without a status", f.Code, f.Status)
+				}
+				return
+			}
+			if f.Status != tt.status || f.Code != h3NoError || !errors.Is(f.Err, errConnect) {
+				t.Errorf("refused with status %d, code %#x, %v; want %d then H3_NO_ERROR wrapping errConnect",
+					f.Status, f.Code, f.Err, tt.status)
+			}
+		})
+	}
+}

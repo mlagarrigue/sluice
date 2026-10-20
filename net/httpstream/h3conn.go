@@ -1150,6 +1150,12 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			}
 			req, declared, err := buildRequest(st.headers, ErrH3Protocol)
 			if err != nil {
+				if errors.Is(err, errConnect) {
+					// Well formed and not served: a status on the stream,
+					// as the bounds get one, where H3_MESSAGE_ERROR would
+					// call a conforming request malformed.
+					return h3StatusFail(501, nil, "%w", err)
+				}
 				return err
 			}
 			st.headers, st.declared, st.req = req.Headers, declared, req

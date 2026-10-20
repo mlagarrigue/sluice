@@ -261,6 +261,21 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		}
 		regular = append(regular, h)
 	}
+	if string(method) == "CONNECT" {
+		// RFC 9113 §8.5, RFC 9114 §4.4: a CONNECT carries :method and
+		// :authority and omits :scheme and :path; one that does not is
+		// malformed. Well formed, it is a request for a tunnel, which is
+		// answered 501 like the router answers it (see errConnect) — until
+		// 2026-10-20 the rule below reset it as a request without :path,
+		// and a CONNECT with :path and :scheme reached the handler.
+		if scheme != nil || path != nil {
+			return req, 0, fmt.Errorf("%w: a CONNECT with :scheme or :path", protocolErr)
+		}
+		if authority == nil {
+			return req, 0, fmt.Errorf("%w: a CONNECT without :authority", protocolErr)
+		}
+		return req, 0, fmt.Errorf("%w: a tunnel to %q", errConnect, authority)
+	}
 	if method == nil || path == nil || scheme == nil {
 		return req, 0, fmt.Errorf("%w: a request without :method, :path and :scheme", protocolErr)
 	}
@@ -301,9 +316,10 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 // server itself, which only OPTIONS may ask about, and any other method with
 // it is a request for no resource. HTTP/1.1's absolute-form has been taken
 // apart by absoluteForm before this, its authority bound for the Host; what
-// is left is origin-form. The authority-form is CONNECT's alone and is
-// refused with the method: a server that routed a CONNECT on a path would
-// tunnel to somewhere its authority said it would not.
+// is left is origin-form. The authority-form is CONNECT's alone, and a
+// CONNECT is answered 501 before any target is looked at (errConnect): a
+// server that routed a CONNECT on a path would tunnel to somewhere its
+// authority said it would not.
 //
 // The octets are checked too: the target composes the request line of any
 // downstream HTTP/1.1 hop (RFC 9113 §10.3, RFC 9114 §10.3), and HPACK or
@@ -333,8 +349,9 @@ func checkTarget(method, target []byte, protocolErr error) error {
 // that is already origin-form or asterisk-form is returned as it is, with no
 // authority. The scheme is "http" or "https" without regard to case (RFC
 // 9110 §4.2.3); any other scheme, or a target that is neither form, is
-// refused — the authority-form among them, which checkTarget names with
-// the method. The authority is not judged here: it replaces the Host, and
+// refused — the authority-form among them, on a method other than CONNECT,
+// which was answered before this. The authority is not judged here: it
+// replaces the Host, and
 // checkFraming holds it to the one rule a Host is held to, which refuses it
 // empty (RFC 9110 §4.2.1) and with a userinfo (§4.2.4).
 //
@@ -737,6 +754,15 @@ func splitRequestLine(line []byte) (method, target, version, authority []byte, e
 	}
 	if !isToken(method) {
 		return nil, nil, nil, nil, fmt.Errorf("%w: the method is not a token", ErrMalformed)
+	}
+	if string(method) == "CONNECT" {
+		// The authority-form target is CONNECT's alone (RFC 9112 §3.2.3) and
+		// a tunnel is what it asks for: 501 whatever the target, as on
+		// HTTP/2 and HTTP/3 (errConnect), where this was 400 "neither
+		// origin-form nor absolute-form" until 2026-10-20. The target is not
+		// parsed: an empty or invalid port is rejected with the rest
+		// (RFC 9110 §9.3.6 asks for the rejection, not the status).
+		return nil, nil, nil, nil, fmt.Errorf("%w: a tunnel to %q", errConnect, target)
 	}
 	if authority, target, err = absoluteForm(target); err != nil {
 		return nil, nil, nil, nil, err

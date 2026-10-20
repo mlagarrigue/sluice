@@ -191,8 +191,9 @@
 //   - **Authority-form targets** — origin-form, a target starting with "/",
 //     is what the handler sees; an absolute-form target is accepted as RFC
 //     9112 §3.2.2 requires, its authority replacing the Host and its path
-//     delivered as origin-form. The authority-form is CONNECT's, which this
-//     server does not tunnel.
+//     delivered as origin-form. The authority-form is CONNECT's, and a
+//     CONNECT is answered 501 on every protocol: this server opens no
+//     tunnel, and the handler never sees the request.
 //   - **A missing or repeated Host**, answered 400, as HTTP/1.1 requires.
 //   - **Whitespace between a header name and its colon**, answered 400: RFC
 //     9112 §5.1 requires rejection precisely because tolerating it is how two
@@ -258,6 +259,16 @@ var errVersionUnsupported = fmt.Errorf("%w: HTTP version", ErrMalformed)
 // for a server that has the decoder. The connection still closes: the body's
 // framing was never established, so there is no reading past it.
 var errUnsupportedCoding = errors.New("httpstream: unsupported transfer coding")
+
+// errConnect is internal: a well-formed CONNECT request, which asks for a
+// tunnel (RFC 9110 §9.3.6). This server is an origin, not a proxy, and opens
+// none, so the request is answered 501 on all three protocols (§15.6.2) —
+// the status the web/stream router gives a CONNECT as well — and never
+// reaches the handler: a [Request] has no shape for it, its target being an
+// authority rather than a path. Distinct from [ErrMalformed] because the
+// request is well formed; a reset or a 400 would tell a conforming client
+// its request was wrong when the server is the one without the feature.
+var errConnect = errors.New("httpstream: CONNECT is not implemented")
 
 // errIncomplete is internal: the buffer holds the start of a request and not
 // yet all of it. It is not a failure, it is a read that has not finished.

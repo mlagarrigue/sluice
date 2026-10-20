@@ -538,6 +538,11 @@ func statusFor(err error) int {
 	case errors.Is(err, errVersionUnsupported):
 		// RFC 9110 §15.6.6: a version this server does not speak is 505.
 		return 505
+	case errors.Is(err, errConnect):
+		// RFC 9110 §15.6.2: a tunnel this server does not open is 501, the
+		// request being well formed. The connection closes with the
+		// refusal: the client meant to switch it to a tunnel.
+		return 501
 	case errors.Is(err, ErrMalformed):
 		return 400
 	}

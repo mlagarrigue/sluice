@@ -92,7 +92,7 @@ func TestParseRefusals(t *testing.T) {
 		{"an absolute-form target with an empty authority", req("GET http:///x HTTP/1.1", "Host: h"), ErrMalformed},
 		{"an absolute-form target with a userinfo", req("GET http://u@h/x HTTP/1.1", "Host: h"), ErrMalformed},
 		{"an absolute-form target with no Host", req("GET http://h/x HTTP/1.1"), ErrMalformed},
-		{"authority-form target", req("CONNECT h:443 HTTP/1.1", "Host: h"), ErrMalformed},
+		{"a CONNECT request", req("CONNECT h:443 HTTP/1.1", "Host: h"), errConnect},
 		{"a version nobody speaks", req("GET /x HTTP/3.0", "Host: h"), ErrMalformed},
 		{"four fields on the request line", req("GET /x HTTP/1.1 extra", "Host: h"), ErrMalformed},
 		{"a method that is not a token", req("G(ET /x HTTP/1.1", "Host: h"), ErrMalformed},

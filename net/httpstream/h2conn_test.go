@@ -3127,3 +3127,60 @@ func TestH2RefusalBodyFollowsMethodAndCredit(t *testing.T) {
 		t.Errorf("no credit: content-length %q, body %q; want the status alone", got, c.got[1])
 	}
 }
+
+// RFC 9113 §8.5: a CONNECT carries :method and :authority and nothing else.
+// Well formed, it asks for a tunnel this server does not open and is answered
+// 501 on its stream (RFC 9110 §15.6.2), never delivered; with :scheme or
+// :path, or without :authority, it is malformed and reset. Until 2026-10-20
+// the well-formed one was reset PROTOCOL_ERROR as a request without :path,
+// and the one with :scheme and :path reached the handler.
+func TestH2AnswersAWellFormedConnectWith501(t *testing.T) {
+	tests := []struct {
+		name   string
+		block  []byte
+		status int // 0: malformed, reset PROTOCOL_ERROR without a status
+	}{
+		{"with :authority alone", literal(literal(nil, ":method", "CONNECT"), ":authority", "h:443"), 501},
+		{"with :scheme and :path", headBlock("CONNECT", "/x", [2]string{":authority", "h:443"}), 0},
+		{"without :authority", literal(nil, ":method", "CONNECT"), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, sizes := serveTest(t, Config{}, echoTarget)
+			c := dialH2(t, addr)
+			c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: tt.block})
+			c.request(3, "GET", "/y")
+			c.flush()
+			c.pump(func() bool { _, reset := c.resets[1]; return reset && c.ended[3] || c.sawGoAway })
+
+			if c.sawGoAway {
+				t.Fatal("one CONNECT ended the whole connection")
+			}
+			code, reset := c.resets[1]
+			if tt.status == 0 {
+				if !reset || code != errProtocolError {
+					t.Errorf("stream 1 reset = %v %#x, want PROTOCOL_ERROR for a malformed CONNECT", reset, code)
+				}
+				if _, answered := c.heads[1]; answered {
+					t.Error("a malformed CONNECT got a response head")
+				}
+			} else {
+				if got := h2Status(c.heads[1]); got != tt.status {
+					t.Errorf("stream 1 got status %d, want %d", got, tt.status)
+				}
+				if want := fmt.Sprintf("%d %s\n", tt.status, reason(tt.status)); c.got[1] != want {
+					t.Errorf("stream 1 body = %q, want %q", c.got[1], want)
+				}
+				if !reset || code != errNoError {
+					t.Errorf("stream 1 reset = %v %#x, want NO_ERROR after the status", reset, code)
+				}
+			}
+			if got := h2Status(c.heads[3]); got != 200 || !c.ended[3] {
+				t.Errorf("stream 3 got status %d, ended %v; want 200 beside the CONNECT", got, c.ended[3])
+			}
+			if got := sizes(); len(got) != 1 || got[0] != 1 {
+				t.Errorf("the handler saw batches %v, want the one GET and never the CONNECT", got)
+			}
+		})
+	}
+}

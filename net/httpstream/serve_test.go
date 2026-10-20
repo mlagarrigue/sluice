@@ -276,7 +276,10 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 		{"no Host", "GET /x HTTP/1.1\r\n\r\n", "400"},
 		// RFC 9112 §3.2: a Host is required even with an absolute-form target.
 		{"absolute-form without a Host", "GET http://h/x HTTP/1.1\r\n\r\n", "400"},
-		{"authority-form", "CONNECT h:443 HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
+		// RFC 9110 §15.6.2: a tunnel this server does not open is 501, whatever
+		// the target — the request is well formed, the feature is missing.
+		{"CONNECT on an authority-form target", "CONNECT h:443 HTTP/1.1\r\nHost: h\r\n\r\n", "501"},
+		{"CONNECT on an origin-form target", "CONNECT /x HTTP/1.1\r\nHost: h\r\n\r\n", "501"},
 		{"a scheme that is not http", "GET ftp://h/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 		{"body over the bound", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 999999999\r\n\r\n", "413"},
 		// RFC 9112 §3: the request-target over the bound is 414, not 413.

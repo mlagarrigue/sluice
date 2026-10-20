@@ -946,3 +946,43 @@ func TestH3SendsNoInterim100WhenTheHeadEndsTheStream(t *testing.T) {
 		t.Fatalf("the stream carried :status %q, want 200 once and no 100", got)
 	}
 }
+
+// The 501 of a well-formed CONNECT on the wire (RFC 9114 §4.4, RFC 9110
+// §15.6.2): a status with its one line of text and a clean FIN after
+// STOP_SENDING H3_NO_ERROR, the connection and the request beside it
+// unharmed, the handler never called.
+func TestH3AnswersAWellFormedConnectWith501(t *testing.T) {
+	var served atomic.Int32
+	conn, _, _ := startH3With(t, Config{}, quic.DefaultParameters(), quic.DefaultParameters(),
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			served.Add(int32(b.Len())) //nolint:gosec // G115: a test's batch size
+			res := make([]Response, b.Len())
+			for i := range res {
+				res[i] = Response{Status: 200}
+			}
+			return sluice.Batch[Response]{Items: res}
+		})
+	connect := appendH3Frame(nil, h3Headers, appendQPACK(nil, []Header{
+		{Name: []byte(":method"), Value: []byte("CONNECT")},
+		{Name: []byte(":authority"), Value: []byte("h:443")},
+	}))
+	refused := askH3(t, conn, connect)
+	healthy := askH3(t, conn, h3Request("GET", "/y"))
+
+	fields, body := readH3FieldsAndBody(t, refused)
+	if fields[":status"] != "501" {
+		t.Errorf("the CONNECT got :status %q, want 501", fields[":status"])
+	}
+	if want := fmt.Sprintf("%d %s\n", 501, reason(501)); body != want {
+		t.Errorf("the CONNECT's body = %q, want %q", body, want)
+	}
+	if code, reset := refused.WasReset(); !reset || code != h3NoError {
+		t.Errorf("the CONNECT's stream: stop-sending %v with %#x, want H3_NO_ERROR", reset, code)
+	}
+	if got := readH3Fields(t, healthy)[":status"]; len(got) != 1 || got[0] != "200" {
+		t.Errorf("the request beside it got :status %q, want 200", got)
+	}
+	if got := served.Load(); got != 1 {
+		t.Errorf("the handler saw %d requests, want the one GET and never the CONNECT", got)
+	}
+}

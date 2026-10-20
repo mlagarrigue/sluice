@@ -169,6 +169,15 @@ Three reasons come up, and the difference matters:
   delivers the letter, reading what it asks is yours; if your resource has
   a state, set `ETag` or `Last-Modified` and answer the `If-*` fields; if
   not, refuse with 400 any PUT that carries `Content-Range`.
+- **No CONNECT tunnel.** A CONNECT request is answered 501 by the transport
+  on HTTP/1.1, 2 and 3 (RFC 9110 §9.3.6, §15.6.2) and never reaches the
+  handler: this is an origin server, not a proxy, and the request has no
+  shape a handler could serve — its target is a host and port, not a path.
+  On HTTP/2 and HTTP/3 a CONNECT that carries `:scheme` or `:path`, or
+  omits `:authority`, is malformed (RFC 9113 §8.5, RFC 9114 §4.4) and its
+  stream is reset as such. In plain words: a client that asks this server
+  to open a connection to somewhere else is told, with a status, that the
+  server does not do that; it is not told its request was wrong.
 
 ## Experimental: the exit conditions
 
