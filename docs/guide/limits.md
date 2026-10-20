@@ -154,6 +154,21 @@ Three reasons come up, and the difference matters:
   A trailer is a field that arrived after the body (a checksum, a
   signature); RFC 9110 §6.5 keeps it apart because the request was
   already framed and routed by then, so nothing in the package reads it.
+- **Preconditions, ranges and validators are the handler's.** Neither the
+  transport nor `web/stream` reads `If-Match`, `If-None-Match`,
+  `If-Modified-Since`, `If-Unmodified-Since` or `If-Range` (RFC 9110
+  §13.1), nor `Range` and `Content-Range` (§14); `RenderOpen` sets neither
+  `ETag` nor `Last-Modified` (§8.8, §15.3.1); and the transport answers no
+  417: an `Expect` member other than `100-continue` reaches the handler
+  like any other field (§10.1.1, a MAY). The fields arrive untouched in
+  `Request.Headers`; evaluating them takes the representation — its tag,
+  its date, its length — which only the handler holds. Two concrete
+  effects: a conditional GET gets a full 200 instead of a 304, and a PUT
+  carrying `Content-Range` that a handler ignores replaces the whole
+  resource, where §14.5 says to answer 400. In plain words: the transport
+  delivers the letter, reading what it asks is yours; if your resource has
+  a state, set `ETag` or `Last-Modified` and answer the `If-*` fields; if
+  not, refuse with 400 any PUT that carries `Content-Range`.
 
 ## Experimental: the exit conditions
 
