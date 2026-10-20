@@ -274,7 +274,10 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 		// RFC 9112 §6.3: chunked anywhere but last is 400, not 501.
 		{"chunked not the final coding", "POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked, gzip\r\n\r\n", "400"},
 		{"no Host", "GET /x HTTP/1.1\r\n\r\n", "400"},
-		{"absolute-form", "GET http://elsewhere/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
+		// RFC 9112 §3.2: a Host is required even with an absolute-form target.
+		{"absolute-form without a Host", "GET http://h/x HTTP/1.1\r\n\r\n", "400"},
+		{"authority-form", "CONNECT h:443 HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
+		{"a scheme that is not http", "GET ftp://h/x HTTP/1.1\r\nHost: h\r\n\r\n", "400"},
 		{"body over the bound", "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 999999999\r\n\r\n", "413"},
 		// RFC 9112 §3: the request-target over the bound is 414, not 413.
 		{"request line over the bound", "GET /" + strings.Repeat("x", 9<<10) + " HTTP/1.1\r\nHost: h\r\n\r\n", "414"},
@@ -299,6 +302,33 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 				t.Errorf("status = %q, want %s", status, tt.want)
 			}
 		})
+	}
+}
+
+// RFC 9112 §3.2.2: an absolute-form target is served as the origin-form it
+// holds, and the handler's Host is the target's authority, not the field the
+// client sent beside it. The connection persists like any other.
+func TestAbsoluteFormIsServedAsOriginForm(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, 0, b.Len())
+		for i := range b.Items {
+			r := &b.Items[i]
+			out = append(out, Response{Status: 200, Body: []byte(string(r.Get("Host")) + " " + string(r.Target))})
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+	c := dial(t, addr)
+	br := bufio.NewReader(c)
+	for _, tt := range []struct{ raw, want string }{
+		{"GET http://h:8080/x?q=1 HTTP/1.1\r\nHost: other\r\n\r\n", "h:8080 /x?q=1"},
+		{"GET HTTP://H HTTP/1.1\r\nHost: h\r\n\r\n", "H /"},
+		{"GET /y HTTP/1.1\r\nHost: h\r\n\r\n", "h /y"},
+	} {
+		fmt.Fprint(c, tt.raw)
+		status, body := readResponse(t, br)
+		if !strings.HasPrefix(status, "HTTP/1.1 200") || body != tt.want {
+			t.Errorf("%q: status %q, body %q; want 200 and %q", tt.raw, status, body, tt.want)
+		}
 	}
 }
 

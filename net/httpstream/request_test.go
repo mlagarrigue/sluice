@@ -88,7 +88,10 @@ func TestParseRefusals(t *testing.T) {
 		{"two Hosts", req("GET /x HTTP/1.1", "Host: a", "Host: b"), ErrMalformed},
 		{"a space before the colon", req("GET /x HTTP/1.1", "Host: h", "X-Y : v"), ErrMalformed},
 		{"obsolete line folding", req("GET /x HTTP/1.1", "Host: h", "X: a", "  continued"), ErrMalformed},
-		{"absolute-form target", req("GET http://elsewhere/x HTTP/1.1", "Host: h"), ErrMalformed},
+		{"a scheme that is not http", req("GET ftp://h/x HTTP/1.1", "Host: h"), ErrMalformed},
+		{"an absolute-form target with an empty authority", req("GET http:///x HTTP/1.1", "Host: h"), ErrMalformed},
+		{"an absolute-form target with a userinfo", req("GET http://u@h/x HTTP/1.1", "Host: h"), ErrMalformed},
+		{"an absolute-form target with no Host", req("GET http://h/x HTTP/1.1"), ErrMalformed},
 		{"authority-form target", req("CONNECT h:443 HTTP/1.1", "Host: h"), ErrMalformed},
 		{"a version nobody speaks", req("GET /x HTTP/3.0", "Host: h"), ErrMalformed},
 		{"four fields on the request line", req("GET /x HTTP/1.1 extra", "Host: h"), ErrMalformed},
@@ -500,5 +503,42 @@ func TestRequestBodyKeepsItsContentEncoding(t *testing.T) {
 	}
 	if got := string(r.Get("content-encoding")); got != "gzip" {
 		t.Errorf("Content-Encoding = %q, want it kept for the handler", got)
+	}
+}
+
+// RFC 9112 §3.2.2: a server MUST accept the absolute-form, and an origin
+// server MUST ignore the received Host for the target's authority. The
+// handler sees the origin-form [Request.Target] promises and one Host, the
+// authority — the scheme without regard to case, an empty path as "/" (RFC
+// 9110 §4.2.1), the query kept.
+func TestAbsoluteFormTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    []byte
+		target string
+		host   string
+	}{
+		{"the Host it names", req("GET http://h/x HTTP/1.1", "Host: h"), "/x", "h"},
+		{"another Host, a port and a query", req("GET http://h:8080/x?q=1 HTTP/1.1", "Host: other"), "/x?q=1", "h:8080"},
+		{"an upper-case scheme", req("GET HTTP://H/ HTTP/1.1", "Host: h"), "/", "H"},
+		{"https", req("GET https://h/x HTTP/1.1", "Host: h"), "/x", "h"},
+		{"an empty path", req("GET http://h HTTP/1.1", "Host: h"), "/", "h"},
+		{"an empty path before a query", req("GET http://h?q=1 HTTP/1.1", "Host: h"), "/?q=1", "h"},
+		{"an IPv6 literal", req("GET http://[::1]:8443/x HTTP/1.1", "Host: h"), "/x", "[::1]:8443"},
+		{"origin-form, untouched", req("GET /x HTTP/1.1", "Host: h"), "/x", "h"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, _, err := parse(t, tt.raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if string(r.Target) != tt.target {
+				t.Errorf("Target = %q, want %q", r.Target, tt.target)
+			}
+			if got := r.Get("Host"); string(got) != tt.host {
+				t.Errorf("Host = %q, want %q", got, tt.host)
+			}
+		})
 	}
 }

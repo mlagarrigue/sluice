@@ -299,9 +299,11 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 // origin-form (RFC 9112 §3.2.1, RFC 9113 §8.3.1, RFC 9114 §4.3.1), or the
 // asterisk-form on an OPTIONS request alone (RFC 9112 §3.2.4) — "*" names the
 // server itself, which only OPTIONS may ask about, and any other method with
-// it is a request for no resource. Absolute-form and authority-form exist for
-// proxies, and a server that accepts them while routing on the path is how a
-// request reaches somewhere its authority said it would not.
+// it is a request for no resource. HTTP/1.1's absolute-form has been taken
+// apart by absoluteForm before this, its authority bound for the Host; what
+// is left is origin-form. The authority-form is CONNECT's alone and is
+// refused with the method: a server that routed a CONNECT on a path would
+// tunnel to somewhere its authority said it would not.
 //
 // The octets are checked too: the target composes the request line of any
 // downstream HTTP/1.1 hop (RFC 9113 §10.3, RFC 9114 §10.3), and HPACK or
@@ -314,7 +316,7 @@ func checkTarget(method, target []byte, protocolErr error) error {
 		return nil
 	}
 	if len(target) == 0 || target[0] != '/' {
-		return fmt.Errorf("%w: the target is not origin-form", protocolErr)
+		return fmt.Errorf("%w: the target is neither origin-form nor absolute-form", protocolErr)
 	}
 	for _, c := range target {
 		if c <= 0x20 || c == 0x7f {
@@ -322,6 +324,53 @@ func checkTarget(method, target []byte, protocolErr error) error {
 		}
 	}
 	return nil
+}
+
+// absoluteForm takes an HTTP/1.1 absolute-form target apart (RFC 9112
+// §3.2.2: a server MUST accept it, though most clients send it to a proxy
+// only): "http://h:8080/x?q=1" yields the authority "h:8080" and the
+// origin-form "/x?q=1", which is what [Request.Target] promises. A target
+// that is already origin-form or asterisk-form is returned as it is, with no
+// authority. The scheme is "http" or "https" without regard to case (RFC
+// 9110 §4.2.3); any other scheme, or a target that is neither form, is
+// refused — the authority-form among them, which checkTarget names with
+// the method. The authority is not judged here: it replaces the Host, and
+// checkFraming holds it to the one rule a Host is held to, which refuses it
+// empty (RFC 9110 §4.2.1) and with a userinfo (§4.2.4).
+//
+// An empty path is "/" (RFC 9110 §4.2.1); "http://h" points at the "/" of
+// its own "://", so no byte is written or allocated for it. "http://h?q=1"
+// is the one shape with nothing contiguous to point at — the "/" has to be
+// put in front of the query — and it allocates. Nothing in the buffer is
+// rewritten: the parser is run again over the same bytes when a request
+// arrives in pieces, and must read them the same way each time.
+func absoluteForm(target []byte) (authority, path []byte, err error) {
+	if len(target) == 0 || target[0] == '/' || target[0] == '*' {
+		return nil, target, nil
+	}
+	sep := indexByte(target, ':')
+	if sep < 0 || len(target) < sep+3 || target[sep+1] != '/' || target[sep+2] != '/' {
+		return nil, nil, fmt.Errorf("%w: the target is neither origin-form nor absolute-form", ErrMalformed)
+	}
+	if scheme := target[:sep]; !equalFold(scheme, "http") && !equalFold(scheme, "https") {
+		return nil, nil, fmt.Errorf("%w: the target's scheme %q is not http or https", ErrMalformed, scheme)
+	}
+	rest := target[sep+3:]
+	end := len(rest)
+	for i, c := range rest {
+		if c == '/' || c == '?' {
+			end = i
+			break
+		}
+	}
+	authority, path = rest[:end], rest[end:]
+	switch {
+	case len(path) == 0:
+		path = target[sep+2 : sep+3]
+	case path[0] == '?':
+		path = append(append(make([]byte, 0, 1+len(path)), '/'), path...)
+	}
+	return authority, path, nil
 }
 
 // authorityChar is RFC 3986 §3.2.2's reg-name alphabet: unreserved and
@@ -521,7 +570,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	}
 	consumed = skipped + len(buf) - len(rest)
 
-	method, target, version, err := splitRequestLine(line)
+	method, target, version, authority, err := splitRequestLine(line)
 	if err != nil {
 		return req, 0, out, err
 	}
@@ -548,6 +597,20 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	headersEnd := len(out)
 	consumed += n
 	rest = rest[n:]
+
+	// RFC 9112 §3.2.2: an origin server that receives an absolute-form
+	// target MUST ignore the received Host and use the target's authority.
+	// It is substituted here, before checkFraming judges the Host, so the
+	// handler reads one host under one name whatever form the client chose,
+	// and a missing Host on HTTP/1.1 is still the 400 §3.2 asks for. An
+	// HTTP/1.0 request without a Host keeps none, as it did in origin-form.
+	if authority != nil {
+		for i := range req.Headers {
+			if equalFold(req.Headers[i].Name, "host") {
+				req.Headers[i].Value = authority
+			}
+		}
+	}
 
 	chunked, err := checkFraming(req, http11)
 	if err != nil {
@@ -657,26 +720,29 @@ func cutMember(v []byte) (member, rest []byte) {
 
 // splitRequestLine takes the line apart on exactly two spaces, and refuses
 // everything a server that is not a proxy has no business accepting.
-func splitRequestLine(line []byte) (method, target, version []byte, err error) {
+func splitRequestLine(line []byte) (method, target, version, authority []byte, err error) {
 	first := indexByte(line, ' ')
 	if first < 0 {
-		return nil, nil, nil, fmt.Errorf("%w: the request line has no method", ErrMalformed)
+		return nil, nil, nil, nil, fmt.Errorf("%w: the request line has no method", ErrMalformed)
 	}
 	second := indexByte(line[first+1:], ' ')
 	if second < 0 {
-		return nil, nil, nil, fmt.Errorf("%w: the request line has no version", ErrMalformed)
+		return nil, nil, nil, nil, fmt.Errorf("%w: the request line has no version", ErrMalformed)
 	}
 	second += first + 1
 
 	method, target, version = line[:first], line[first+1:second], line[second+1:]
 	if indexByte(version, ' ') >= 0 {
-		return nil, nil, nil, fmt.Errorf("%w: the request line has more than three fields", ErrMalformed)
+		return nil, nil, nil, nil, fmt.Errorf("%w: the request line has more than three fields", ErrMalformed)
 	}
 	if !isToken(method) {
-		return nil, nil, nil, fmt.Errorf("%w: the method is not a token", ErrMalformed)
+		return nil, nil, nil, nil, fmt.Errorf("%w: the method is not a token", ErrMalformed)
+	}
+	if authority, target, err = absoluteForm(target); err != nil {
+		return nil, nil, nil, nil, err
 	}
 	if err := checkTarget(method, target, ErrMalformed); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3): anything of
 	// another shape is not a request line. Of that shape, 505 refuses a major
@@ -684,12 +750,12 @@ func splitRequestLine(line []byte) (method, target, version []byte, err error) {
 	// any minor of 1 is served.
 	v := string(version)
 	if len(v) != 8 || v[:5] != "HTTP/" || v[5] < '0' || v[5] > '9' || v[6] != '.' || v[7] < '0' || v[7] > '9' {
-		return nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
+		return nil, nil, nil, nil, fmt.Errorf("%w: %q is not an HTTP version", ErrMalformed, version)
 	}
 	if v[5] != '1' {
-		return nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
+		return nil, nil, nil, nil, fmt.Errorf("%w: %q", errVersionUnsupported, version)
 	}
-	return method, target, version, nil
+	return method, target, version, authority, nil
 }
 
 // parseHeaders reads fields up to the blank line, returning what it consumed

@@ -188,9 +188,11 @@
 //     Transfer-Encoding beside Content-Length — the request-smuggling pair
 //     in its entirety — or on an HTTP/1.0 request is answered 400.
 //   - **A repeated or non-numeric Content-Length**, answered 400.
-//   - **Absolute-form and authority-form targets** — only origin-form, a
-//     target starting with "/", is accepted. The others exist for proxies and
-//     are a routing hazard in a server that is not one.
+//   - **Authority-form targets** — origin-form, a target starting with "/",
+//     is what the handler sees; an absolute-form target is accepted as RFC
+//     9112 §3.2.2 requires, its authority replacing the Host and its path
+//     delivered as origin-form. The authority-form is CONNECT's, which this
+//     server does not tunnel.
 //   - **A missing or repeated Host**, answered 400, as HTTP/1.1 requires.
 //   - **Whitespace between a header name and its colon**, answered 400: RFC
 //     9112 §5.1 requires rejection precisely because tolerating it is how two
