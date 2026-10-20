@@ -1888,3 +1888,58 @@ func TestIntegrationFetchAllEarlyStopCancelsTheRest(t *testing.T) {
 		t.Errorf("the statement after the cancelled stop returned %d, want 4242", got)
 	}
 }
+
+// A COPY ... FROM STDIN reached through ExecParams — or any FetchAll read,
+// which is the same wire sequence — is refused at once and leaves the
+// connection usable. The query's Sync left with the query and the backend
+// ignored it while it waited for CopyData (§53.2.6), so the CopyFail must
+// carry a Sync of its own: without it the server discards everything until a
+// Sync that never comes, and the call only returns when the context expires.
+func TestIntegrationCopyFromStdinThroughExecParamsReturnsAtOnce(t *testing.T) {
+	conn := dial(t)
+	if err := exec(t, conn, "CREATE TEMP TABLE sluice_copy_execparams (a int)"); err != nil {
+		t.Fatal(err)
+	}
+	// Well above what a round trip takes and well below the context: a
+	// return inside the budget proves the call did not wait for the context.
+	const budget = time.Second
+	for _, path := range []string{"ExecParams", "FetchAll"} {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		start := time.Now()
+		var err error
+		switch path {
+		case "ExecParams":
+			_, err = conn.ExecParams(ctx, "COPY sluice_copy_execparams FROM STDIN", nil, nil)
+		case "FetchAll":
+			src := conn.Query(ctx, "COPY sluice_copy_execparams FROM STDIN", nil, postgres.QueryConfig{Fetch: postgres.FetchAll})
+			for range src.Stream() {
+			}
+			err = src.Err()
+		}
+		elapsed := time.Since(start)
+		cancel()
+		if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
+			t.Fatalf("%s: error = %v, want a refusal naming Conn.CopyFrom", path, err)
+		}
+		if elapsed > budget {
+			t.Errorf("%s: returned after %v, want under %v — it waited for the context, not the server", path, elapsed, budget)
+		}
+		if conn.Err() != nil {
+			t.Fatalf("%s: the refusal broke the connection: %v", path, conn.Err())
+		}
+		var got int64
+		src := conn.Query(t.Context(), "SELECT 1::int8", nil, postgres.QueryConfig{})
+		for b := range src.Stream() {
+			for _, row := range b.Items {
+				v, _ := row.Value(0)
+				got, _ = postgres.DecodeInt8(v)
+			}
+		}
+		if err := src.Err(); err != nil {
+			t.Fatalf("%s: the statement after the refusal: %v", path, err)
+		}
+		if got != 1 {
+			t.Errorf("%s: the statement after the refusal returned %d, want 1", path, got)
+		}
+	}
+}

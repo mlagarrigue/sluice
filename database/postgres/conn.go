@@ -1498,8 +1498,11 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// out before the deferred resync runs: the backend ignores Sync
 			// while it waits for CopyData, so without it the resync blocks
 			// until the socket deadline. With it, the statement fails and the
-			// connection is recovered like any other failed query.
-			if err := c.refuseCopyIn(); err != nil {
+			// connection is recovered like any other failed query. Fetched
+			// whole, the query's Sync was among the ignored, and resync will
+			// not send another: the refusal carries the one the backend now
+			// waits for — see refuseCopyIn.
+			if err := c.refuseCopyIn(q.synced); err != nil {
 				return false, err
 			}
 			return false, errCopyFromStdin

@@ -1520,6 +1520,40 @@ func TestQueryCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
 	}
 }
 
+// The same refusal on the FetchAll path, which ExecParams always takes. Here
+// the Sync left with the query, and the backend ignored it while it waited
+// for CopyData (§53.2.6): after the CopyFail it discards everything until a
+// Sync. So the CopyFail must be followed by a second Sync, in the same write,
+// and resync reads the ReadyForQuery that one draws.
+func TestExecParamsCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
+	var first []byte
+	first = append(first, beSimple(pgwire.BackendParseComplete)...)
+	first = append(first, beSimple(pgwire.BackendBindComplete)...)
+	first = append(first, frame(pgwire.BackendCopyInResponse, "\x01\x00\x01\x00\x01")...)
+	// One chunk for the one write: the ErrorResponse answers the CopyFail,
+	// the ReadyForQuery the Sync behind it. A backend that still had the
+	// query's Sync to answer would never reach this ReadyForQuery.
+	var second []byte
+	second = append(second, beErrorResponse("57014", "COPY from stdin failed")...)
+	second = append(second, beReadyForQuery()...)
+
+	srv := &fakeServer{responses: [][]byte{first, second}}
+	conn := NewConn(srv)
+
+	_, err := conn.ExecParams(t.Context(), "COPY t FROM STDIN", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
+		t.Fatalf("error = %v, want a refusal naming Conn.CopyFrom", err)
+	}
+	if conn.Err() != nil {
+		t.Fatalf("the refusal broke the connection: %v", conn.Err())
+	}
+	types := srv.clientMessages(t)
+	want := []byte{pgwire.FrontendCopyFail, pgwire.FrontendSync}
+	if i := bytes.IndexByte(types, pgwire.FrontendCopyFail); i < 0 || !bytes.HasPrefix(types[i:], want) {
+		t.Errorf("client messages %q: want the CopyFail followed by a Sync — the backend ignored the query's Sync during copy-in", types)
+	}
+}
+
 // A NUL in statement text would end the C string the protocol frames it as,
 // and the server would read the rest as the message's other fields. Every
 // entry point that sends caller SQL refuses it before a byte is written, and

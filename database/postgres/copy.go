@@ -681,15 +681,28 @@ var (
 // refuses it; the client-side explanation is errCopyFromStdin.
 const copyFailReason = "the client issued COPY FROM STDIN outside CopyFrom and cannot supply data on this path"
 
-// refuseCopyIn answers an unexpected CopyInResponse with CopyFail.
+// refuseCopyIn answers an unexpected CopyInResponse with CopyFail, followed
+// by a Sync when the statement's own Sync has already gone out.
 //
 // Sending something is not optional: the backend is now waiting for CopyData
 // and *ignores Flush and Sync while it waits* (§53.2.6), so a drain that
 // merely skips the message never sees another ReadyForQuery and the
 // connection hangs until its deadline. CopyFail is the one message that ends
 // copy-in from here; the ErrorResponse it draws is the acknowledgement.
-func (c *Conn) refuseCopyIn() error {
+//
+// synced says the Sync that was to end the sequence left with the query —
+// the FetchAll shape, which ExecParams always takes. That Sync was ignored
+// with the rest of copy-in, and after the CopyFail the backend "will discard
+// frontend messages until a Sync message is received" (§53.2.6): the
+// ReadyForQuery the caller is about to read for would never come. The
+// refusal invalidated that Sync, so the refusal replaces it, in the same
+// write. A batched read has no Sync out yet and sends its own in resync; a
+// simple Query has none to send, the backend reports ready on its own.
+func (c *Conn) refuseCopyIn(synced bool) error {
 	c.w.Message(pgwire.FrontendCopyFail, append([]byte(copyFailReason), 0))
+	if synced {
+		c.w.Sync()
+	}
 	if err := c.w.Flush(); err != nil {
 		return c.breakConn(fmt.Errorf("refusing an unexpected copy-in: %w", err))
 	}
@@ -739,7 +752,7 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 		case pgwire.BackendCopyInResponse:
 			// Exec met a COPY ... FROM STDIN. Refused with CopyFail — see
 			// refuseCopyIn for why silence here is a deadlock, not a skip.
-			if err := c.refuseCopyIn(); err != nil {
+			if err := c.refuseCopyIn(false); err != nil {
 				return rolledBack, err
 			}
 			if serverErr == nil {
