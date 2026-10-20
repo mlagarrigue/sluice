@@ -427,7 +427,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		// that is about to close anyway.
 		if err := src.Err(); err != nil && !errors.Is(err, io.EOF) {
 			if status := statusFor(err); status != 0 {
-				_ = writeStatus(c, cfg, nil, status)
+				_ = writeStatus(c, cfg, refusedMethod(err), status)
 			}
 		}
 	}
@@ -544,11 +544,14 @@ func statusFor(err error) int {
 	return 0
 }
 
+// writeStatus answers an error of the transport's own, see [transportError].
+// method is the request's when it was read before the refusal, nil when
+// the refusal came first; a HEAD that reached the refusal gets no body.
 func writeStatus(c net.Conn, cfg Config, method []byte, status int) error {
 	// closing is always true here: every caller is about to end the
 	// connection, so appendResponse writes the Connection: close itself
 	// rather than have it duplicated as a caller-supplied header.
-	buf, err := appendResponse(nil, method, true, false, nil, Response{Status: status}, dateFor(time.Now()))
+	buf, err := appendResponse(nil, method, true, false, nil, transportError(status), dateFor(time.Now()))
 	if err != nil {
 		return err
 	}

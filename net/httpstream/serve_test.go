@@ -1760,3 +1760,41 @@ func TestBareHeadResponseStatesNoContentLength(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9110 §15.5 and §15.6: the status the transport writes for an error of
+// its own carries a one-line text/plain explanation, "<status> <reason>" —
+// what curl prints and a browser shows where an empty 4xx is a blank page.
+// A HEAD read before the refusal states the line's length and type and
+// gets no bytes (§9.3.2).
+func TestTransportErrorCarriesBody(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /x HTTP/one\r\nHost: h\r\n\r\n")
+	status, headers, body := readResponseWithHeaders(t, bufio.NewReader(c))
+	if !strings.HasPrefix(status, "HTTP/1.1 400") {
+		t.Fatalf("status = %q, want 400", status)
+	}
+	if headers["content-type"] != "text/plain; charset=utf-8" || headers["content-length"] != "16" {
+		t.Errorf("headers = %v, want text/plain; charset=utf-8 and a length of 16", headers)
+	}
+	if body != "400 Bad Request\n" {
+		t.Errorf("body = %q, want the status line's text", body)
+	}
+
+	c = dial(t, addr)
+	fmt.Fprint(c, "HEAD /x HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n")
+	br := bufio.NewReader(c)
+	status, err := br.ReadString('\n')
+	if err != nil || !strings.HasPrefix(status, "HTTP/1.1 400") {
+		t.Fatalf("HEAD: status = %q, %v; want 400", status, err)
+	}
+	headers = readHeaders(t, br)
+	if headers["content-type"] != "text/plain; charset=utf-8" || headers["content-length"] != "16" {
+		t.Errorf("HEAD: headers = %v, want the GET twin's type and length", headers)
+	}
+	// The refusal closes the connection: what follows the head is its end.
+	if rest, _ := io.ReadAll(br); len(rest) != 0 {
+		t.Errorf("HEAD: %q followed the head, want no body", rest)
+	}
+}

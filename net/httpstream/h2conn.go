@@ -1,6 +1,7 @@
 package httpstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -115,6 +116,10 @@ type streamError struct {
 	// complete response to stop a request it will not read. A client behind
 	// a proxy acts on a status; a bare reset tells it nothing (§10.5.1).
 	status int
+	// head marks a refused request read as a HEAD: its status carries the
+	// body's length and type and no bytes (RFC 9110 §9.3.2). Unset when
+	// the refusal came before the method was read.
+	head bool
 }
 
 func (e streamError) Error() string { return e.err.Error() }
@@ -127,9 +132,13 @@ func streamFail(id, code uint32, format string, args ...any) error {
 }
 
 // statusFail builds a stream error answered with status before the reset —
-// for the bounds [Config] documents a status for, nothing else.
-func statusFail(id uint32, status int, format string, args ...any) error {
-	return streamError{id: id, code: errNoError, status: status, err: fmt.Errorf(format, args...)}
+// for the bounds [Config] documents a status for, nothing else. method is
+// the request's when it was read before the refusal, nil otherwise.
+func statusFail(id uint32, status int, method []byte, format string, args ...any) error {
+	return streamError{
+		id: id, code: errNoError, status: status, head: bytes.Equal(method, headMethod),
+		err: fmt.Errorf(format, args...),
+	}
 }
 
 // h2State is where a stream is in RFC 9113 §5.1's lifecycle, kept to the three
@@ -730,7 +739,7 @@ func (s *h2Server) reset(se streamError) error {
 	s.retire(se.id, stateClosed)
 	s.w.forget(se.id)
 	if se.status != 0 {
-		return s.w.refuse(se.id, se.status)
+		return s.w.refuse(se.id, se.status, se.head)
 	}
 	return s.w.control32(frameRSTStream, se.id, se.code)
 }
@@ -1072,7 +1081,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// bytes while making every [Request.Get] walk hundreds of entries. A
 	// stream error, not a connection error — the table is already consistent.
 	if fieldCount(fields) > s.cfg.MaxHeaders {
-		return nil, statusFail(st.id, 431, "%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
+		return nil, statusFail(st.id, 431, nil, "%w: over %d header fields", ErrTooLarge, s.cfg.MaxHeaders)
 	}
 
 	switch {
@@ -1160,7 +1169,7 @@ func (s *h2Server) blockRefused(st *h2Stream, err error) error {
 	case st.state == stateClosed:
 		return nil
 	}
-	return statusFail(st.id, 431, "%w", err)
+	return statusFail(st.id, 431, nil, "%w", err)
 }
 
 func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
@@ -1212,7 +1221,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 		body = body[:len(body)-pad]
 	}
 	if len(st.body)+len(body) > s.cfg.MaxBodyBytes {
-		return nil, statusFail(st.id, 413, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
+		return nil, statusFail(st.id, 413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
 	}
 	// The aggregate bound, beside the per-stream one: windows are granted
 	// back as DATA is buffered here, so flow control does not bound what a
@@ -1549,7 +1558,7 @@ func (s *h2Server) answer(got *h2Applied) {
 		// so one handler bug cost every request in flight.
 		res = make([]Response, len(b.reqs))
 		for i := range res {
-			res[i] = Response{Status: 500}
+			res[i] = transportError(500)
 		}
 	}
 
@@ -1598,12 +1607,23 @@ func (s *h2Server) answer(got *h2Applied) {
 			sent.out = sent.out[:a.from]
 			a.body, a.stream = nil, nil
 			a.trailers = nil
-			if out, err = s.appendHead(sent.out, a.id, method, Response{Status: 500}, maxFrame); err != nil {
+			r = transportError(500)
+			if out, err = s.appendHead(sent.out, a.id, method, r, maxFrame); err != nil {
+				// The peer's SETTINGS_MAX_HEADER_LIST_SIZE is under the
+				// line's own two fields: the status alone, which fits
+				// wherever any answer does.
+				r = Response{Status: 500}
+				out, err = s.appendHead(sent.out, a.id, method, r, maxFrame)
+			}
+			if err != nil {
 				_ = s.w.control32(frameRSTStream, a.id, errInternalError)
 				s.w.forget(a.id)
 				a.skip = true
 				s.answers = append(s.answers, a)
 				continue
+			}
+			if !noBody {
+				a.body = r.Body
 			}
 			mid = len(out)
 		}

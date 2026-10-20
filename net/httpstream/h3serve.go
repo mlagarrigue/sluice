@@ -329,10 +329,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 				if err := s.StopSending(h3NoError); err != nil {
 					return err
 				}
-				id, status, fieldSection := se.StreamID, se.Status, a.peerMaxFieldSection()
+				id, status, method, fieldSection := se.StreamID, se.Status, se.Method, a.peerMaxFieldSection()
 				launch(&writers, func() {
 					defer a.retire()
-					writeH3Response(c, id, Response{Status: status}, nil, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
+					writeH3Response(c, id, transportError(status), method, fieldSection, writeBoundOf(cfg), dateFor(time.Now()), func() {})
 				})
 				continue
 			}
@@ -521,7 +521,7 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 		// 500 and the connection carries on.
 		res = make([]Response, len(b.reqs))
 		for i := range res {
-			res[i] = Response{Status: 500}
+			res[i] = transportError(500)
 		}
 	}
 
@@ -589,16 +589,22 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	defer h3ScratchPool.Put(sc)
 	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)
 	if err != nil {
-		if head, err = appendH3Response(sc.head[:0], Response{Status: 500}, method, fieldSection, sc, date); err != nil {
+		r = transportError(500)
+		if head, err = appendH3Response(sc.head[:0], r, method, fieldSection, sc, date); err != nil {
+			// The peer's MAX_FIELD_SECTION_SIZE is under the line's own two
+			// fields: the status alone, as before the body.
+			r = Response{Status: 500}
+			head, err = appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)
+		}
+		if err != nil {
 			// Only reachable when the peer's MAX_FIELD_SECTION_SIZE is under
 			// a bare 500's own (:status, date and content-length, ~155
-			// bytes): no
-			// answer fits what the client said it accepts, so the stream is
-			// reset rather than sent a section §4.2.2 says it will refuse.
+			// bytes): no answer fits what the client said it accepts, so
+			// the stream is reset rather than sent a section §4.2.2 says it
+			// will refuse.
 			_ = s.Reset(h3InternalError)
 			return
 		}
-		r = Response{Status: 500}
 	}
 	sc.head = head
 	status := r.Status

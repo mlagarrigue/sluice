@@ -139,6 +139,28 @@ func (r *reader) keepAlive(batch []Request) bool {
 	return r.served < r.cfg.MaxRequestsPerConn
 }
 
+// refused is a request the parser rejected, carrying the method it had read
+// before rejecting — nil when the request line itself was the fault. The
+// status written for it (see writeStatus) frames its body by that method:
+// a HEAD gets none, RFC 9110 §9.3.2. It wraps the parser's error so
+// statusFor keeps matching on it.
+type refused struct {
+	method []byte
+	err    error
+}
+
+func (e refused) Error() string { return e.err.Error() }
+func (e refused) Unwrap() error { return e.err }
+
+// refusedMethod is the method a refused request had read, nil for any other
+// error.
+func refusedMethod(err error) []byte {
+	if e, ok := errors.AsType[refused](err); ok {
+		return e.method
+	}
+	return nil
+}
+
 // next fills the buffer and parses everything complete in it.
 func (r *reader) next() ([]Request, bool) {
 	for {
@@ -223,7 +245,7 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			if len(r.batch) > 0 {
 				break
 			}
-			return nil, 0, perr
+			return nil, 0, refused{method: req.Method, err: perr}
 		}
 		r.bounds = append(r.bounds, [3]int{start, start + len(req.Headers), len(r.headers)})
 		r.batch = append(r.batch, req)

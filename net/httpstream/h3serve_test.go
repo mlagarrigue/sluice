@@ -590,3 +590,63 @@ func TestTransportParametersCarryIdleTimeout(t *testing.T) {
 		t.Errorf("IdleTimeout 7s → max_idle_timeout %v, want 7s", got)
 	}
 }
+
+// RFC 9110 §15.5: the status the transport answers an oversized request
+// with carries a one-line text/plain explanation, the status text, which
+// HTTP/3 carries nowhere else; a HEAD read before the refusal states the
+// line's length and type and gets no DATA (§9.3.2).
+func TestH3TransportErrorCarriesBody(t *testing.T) {
+	conn, _, _ := startH3With(t, Config{MaxBodyBytes: 1024}, quic.DefaultParameters(), quic.DefaultParameters(),
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+		})
+	over := func(method string) []byte {
+		return appendH3Frame(h3Request(method, "/x"), h3Data, bytes.Repeat([]byte{'b'}, 2048))
+	}
+	post := askH3(t, conn, over("POST"))
+	head := askH3(t, conn, over("HEAD"))
+
+	fields, body := readH3FieldsAndBody(t, post)
+	if fields[":status"] != "413" || fields["content-type"] != "text/plain; charset=utf-8" || fields["content-length"] != "22" {
+		t.Errorf("POST: fields %v, want 413 as text/plain with a length of 22", fields)
+	}
+	if body != "413 Content Too Large\n" {
+		t.Errorf("POST: body %q, want the status text", body)
+	}
+	fields, body = readH3FieldsAndBody(t, head)
+	if fields[":status"] != "413" || fields["content-length"] != "22" || body != "" {
+		t.Errorf("HEAD: fields %v, body %q; want 413 with the length stated and no DATA", fields, body)
+	}
+}
+
+// readH3FieldsAndBody reads a response stream to its end: the last value of
+// each field, and the DATA payloads joined.
+func readH3FieldsAndBody(t *testing.T, s *quic.Stream) (fields map[string]string, body string) {
+	t.Helper()
+	_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
+	raw, err := io.ReadAll(s)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("the response stream ended with %v", err)
+	}
+	frames, _, err := parseH3Frames(nil, raw, 1<<24)
+	if err != nil {
+		t.Fatalf("the response did not parse: %v", err)
+	}
+	fields = map[string]string{}
+	d := newQPACKDecoder(nil, 0)
+	for _, f := range frames {
+		switch f.Type {
+		case h3Headers:
+			decoded, err := d.Decode(nil, f.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, h := range decoded {
+				fields[string(h.Name)] = string(h.Value)
+			}
+		case h3Data:
+			body += string(f.Payload)
+		}
+	}
+	return fields, body
+}

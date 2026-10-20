@@ -2819,6 +2819,14 @@ func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			if !c.ended[1] {
 				t.Error("the refusal did not end stream 1")
 			}
+			// RFC 9110 §15.5: the refusal explains itself in one line of
+			// text — the status text, which HTTP/2 carries nowhere else.
+			if want := fmt.Sprintf("%d %s\n", tt.status, reason(tt.status)); c.got[1] != want {
+				t.Errorf("stream 1 body = %q, want %q", c.got[1], want)
+			}
+			if got := h2Fields(t, c.heads[1])["content-type"]; len(got) != 1 || got[0] != "text/plain; charset=utf-8" {
+				t.Errorf("stream 1's content-type = %q, want text/plain; charset=utf-8", got)
+			}
 			if code, reset := c.resets[1]; !reset || code != errNoError {
 				t.Errorf("stream 1 reset = %v %#x, want NO_ERROR after the status", reset, code)
 			}
@@ -3082,5 +3090,40 @@ func TestH2RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
 		}
+	}
+}
+
+// The line a refusal carries follows the request's method and the peer's
+// credit: a HEAD read before the refusal gets the length and type and no
+// DATA (RFC 9110 §9.3.2); a peer whose initial window is zero has granted
+// nothing for the DATA frame, and gets the head alone with END_STREAM on it
+// rather than a reader held on its WINDOW_UPDATE.
+func TestH2RefusalBodyFollowsMethodAndCredit(t *testing.T) {
+	addr, _ := serveTest(t, Config{MaxBodyBytes: 1024}, echoTarget)
+	over := func(c *h2client, method string) {
+		c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock(method, "/x")})
+		c.data(1, bytes.Repeat([]byte{'b'}, 2048), true)
+		c.flush()
+		c.pump(func() bool { _, reset := c.resets[1]; return reset })
+	}
+
+	c := dialH2(t, addr)
+	over(c, "HEAD")
+	if got := h2Status(c.heads[1]); got != 413 || !c.ended[1] {
+		t.Fatalf("HEAD: status %d, ended %v; want 413 ended", got, c.ended[1])
+	}
+	if got := h2Fields(t, c.heads[1])["content-length"]; len(got) != 1 || got[0] != "22" || c.got[1] != "" {
+		t.Errorf("HEAD: content-length %q, body %q; want the length stated and no DATA", got, c.got[1])
+	}
+
+	c = dialH2(t, addr)
+	const settingInitialWindowSize = 0x4
+	c.frame(h2Frame{Type: frameSettings, Payload: settingsPayload([2]uint32{settingInitialWindowSize, 0})})
+	over(c, "POST")
+	if got := h2Status(c.heads[1]); got != 413 || !c.ended[1] {
+		t.Fatalf("no credit: status %d, ended %v; want 413 ended", got, c.ended[1])
+	}
+	if got := h2Fields(t, c.heads[1])["content-length"]; len(got) != 0 || c.got[1] != "" {
+		t.Errorf("no credit: content-length %q, body %q; want the status alone", got, c.got[1])
 	}
 }

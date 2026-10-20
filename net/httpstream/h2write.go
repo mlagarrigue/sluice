@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -761,9 +762,18 @@ func (w *h2Writer) appendTableUpdate(block []byte) []byte {
 	return appendHPACKInt(block, uint64(w.tableFinal), 5, 0x20)
 }
 
-// refuse answers a stream the reader refused with a bare status head —
-// :status and date, END_STREAM on it — then RST_STREAM NO_ERROR, both in
-// one critical section so that no other head lands between them.
+// refuse answers a stream the reader refused with the status and its one
+// line of body (see [transportError]) — HEADERS, DATA with END_STREAM —
+// then RST_STREAM NO_ERROR, all in one critical section so that no other
+// head lands between them. head marks a request read as a HEAD: its answer
+// states the length and type and carries no DATA (RFC 9110 §9.3.2).
+//
+// The DATA frame spends the connection's credit like any other, and the
+// stream's initial window: a peer that has granted less than the line — a
+// zero initial window, a connection window spent to the byte — gets the
+// head alone with END_STREAM on it, as every refusal was before the body.
+// Waiting for credit here would hold the reader, which is the one goroutine
+// that would read the WINDOW_UPDATE.
 //
 // The request never reached the responder, so this is the one head that is
 // built outside appendHead; it stays correct for the same reasons that one
@@ -771,18 +781,34 @@ func (w *h2Writer) appendTableUpdate(block []byte) []byte {
 // untouched, and a size update the peer is owed goes out in front of this
 // block as it would in front of any other: nghttp2 answers its absence with
 // COMPRESSION_ERROR whatever block it is missing from.
-func (w *h2Writer) refuse(id uint32, status int) error {
+func (w *h2Writer) refuse(id uint32, status int, head bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.waitCtrlLocked(); err != nil {
 		return err
 	}
-	var buf [64]byte // a size update, :status and date fit without the heap
+	res := transportError(status)
+	n := int32(len(res.Body)) //nolint:gosec // G115: one line of text
+	withBody := head || (w.connWind >= n && w.initial >= n)
+	var buf [128]byte // a size update, :status, date and the two content fields fit without the heap
 	block := w.bareHeadLocked(buf[:0], status)
 	block = appendHPACK(block, "date", dateFor(time.Now()))
-	err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: id, Payload: block})
-	if err != nil {
+	flags := byte(flagEndHeaders | flagEndStream)
+	if withBody {
+		block = appendHPACK(block, "content-type", res.Headers[0].Value)
+		block = appendHPACK(block, "content-length", strconv.Itoa(len(res.Body)))
+		if !head {
+			flags = flagEndHeaders
+		}
+	}
+	if err := w.appendCtrl(h2Frame{Type: frameHeaders, Flags: flags, StreamID: id, Payload: block}); err != nil {
 		return err
+	}
+	if withBody && !head {
+		w.connWind -= n
+		if err := w.appendCtrl(h2Frame{Type: frameData, Flags: flagEndStream, StreamID: id, Payload: res.Body}); err != nil {
+			return err
+		}
 	}
 	if err := w.appendCtrl32(frameRSTStream, id, errNoError); err != nil {
 		return err

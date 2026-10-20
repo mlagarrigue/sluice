@@ -189,6 +189,9 @@ type h3StreamError struct {
 	// then H3_NO_ERROR: the response is complete and the stream ends with
 	// a FIN, and STOP_SENDING carries the code (RFC 9114 §4.1).
 	Status int
+	// Method is the refused request's when it was read before the refusal,
+	// nil otherwise; the status is framed by it (a HEAD carries no body).
+	Method []byte
 }
 
 // Error returns the underlying error's message; the stream and code are
@@ -205,6 +208,9 @@ func (e h3StreamError) Unwrap() error { return e.Err }
 // request's end. It wraps err so a caller keeps matching on [ErrTooLarge].
 type h3StatusError struct {
 	status int
+	// method is the request's when it was read before the refusal, nil
+	// otherwise: a HEAD's status carries no body (RFC 9110 §9.3.2).
+	method []byte
 	err    error
 }
 
@@ -212,8 +218,8 @@ func (e h3StatusError) Error() string { return e.err.Error() }
 func (e h3StatusError) Unwrap() error { return e.err }
 
 // h3StatusFail builds an h3StatusError, as statusFail builds the h2 kind.
-func h3StatusFail(status int, format string, args ...any) error {
-	return h3StatusError{status: status, err: fmt.Errorf(format, args...)}
+func h3StatusFail(status int, method []byte, format string, args ...any) error {
+	return h3StatusError{status: status, method: method, err: fmt.Errorf(format, args...)}
 }
 
 // HTTP/3 error codes (RFC 9114 §8.1). Only the ones this server sends are
@@ -410,7 +416,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body))
 		if err != nil {
 			if se, ok := errors.AsType[h3StatusError](err); ok {
-				a.answer(f.StreamID, se.status, err)
+				a.answer(f.StreamID, se.status, se.method, err)
 				continue
 			}
 			// The connection's fault, not the stream's: an invalid frame
@@ -538,9 +544,9 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 // fail does, but not retired — ServeH3 retires it once the status has left,
 // as it does a handler's response, so a draining connection waits for the
 // refusal to be written and acknowledged like any other answer.
-func (a *h3Assembler) answer(id uint64, status int, err error) {
+func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 	a.drop(id)
-	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status})
+	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method})
 }
 
 // drop discards a stream's assembly state, releasing what it retained, and
@@ -969,7 +975,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				}
 				// Same field-count bound as the request block below.
 				if len(trailers) > a.cfg.MaxHeaders {
-					return h3StatusFail(431, "%w: over %d trailer fields",
+					return h3StatusFail(431, st.req.Method, "%w: over %d trailer fields",
 						ErrTooLarge, a.cfg.MaxHeaders)
 				}
 				for _, h := range trailers {
@@ -1001,7 +1007,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// block of near-empty fields fits the bytes while making every
 			// [Request.Get] walk hundreds of entries.
 			if fieldCount(st.headers) > a.cfg.MaxHeaders {
-				return h3StatusFail(431, "%w: over %d header fields",
+				return h3StatusFail(431, nil, "%w: over %d header fields",
 					ErrTooLarge, a.cfg.MaxHeaders)
 			}
 			req, declared, err := buildRequest(st.headers, ErrH3Protocol)
@@ -1023,7 +1029,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			// DATA frames would grow the body without limit, bounded buffer
 			// notwithstanding.
 			if len(st.req.Body)+len(f.Payload) > a.cfg.MaxBodyBytes {
-				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 			st.req.Body = append(st.req.Body, f.Payload...)
 		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
@@ -1053,7 +1059,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			case typ == h3Data && st.gotTrailers:
 				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
 			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by withDefaults
-				return h3StatusFail(413, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 		}
 	}

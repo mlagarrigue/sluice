@@ -756,6 +756,36 @@ func hasFieldControl(b []byte) bool {
 	return false
 }
 
+// transportError is the response this package writes for an error of its
+// own — a request it refused (400, 408, 413, 414, 431, 501, 505) or a
+// handler it could not answer (500: a panic, a response it will not put on
+// the wire). RFC 9110 §15.5 and §15.6 have the server send a representation
+// explaining the error; the transport knows no more than the status, so the
+// body is one line of it, "<status> <reason>", as text/plain. That line is
+// what a browser shows where an empty 4xx is a blank page, and what curl
+// prints on HTTP/2 and HTTP/3, where no reason phrase travels with the
+// status. Nothing from the request is quoted: an error body that echoed
+// the input would be a reflection vector. The three writers frame it as
+// any response — a HEAD still gets the length and type and no bytes
+// (§9.3.2), once its method reached the refusal. 408 and 505 are the one
+// place the line says less than it could (whether to retry; which versions
+// the server speaks): what the server speaks depends on how its listeners
+// were set up, which this package does not see.
+func transportError(status int) Response {
+	body := strconv.AppendInt(make([]byte, 0, 48), int64(status), 10)
+	body = append(body, ' ')
+	body = append(body, reason(status)...)
+	body = append(body, '\n')
+	return Response{
+		Status:  status,
+		Headers: []Header{{Name: []byte("Content-Type"), Value: textPlain}},
+		Body:    body,
+	}
+}
+
+// textPlain is the one media type the transport's own errors carry.
+var textPlain = []byte("text/plain; charset=utf-8")
+
 // reason renders the status text. The set is deliberately short: a code this
 // package does not name is answered with its class, which is what a client
 // acts on anyway.
