@@ -529,6 +529,16 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		return
 	}
 	if !c.rxHighest || probingOnly(frames) {
+		// A probing packet from a new address moves nothing and is not
+		// challenged either. RFC 9000 §9.6.3 says a server SHOULD validate
+		// a client's new address on a probe from it; not taken: a client
+		// that probes before it moves (§9.3.1) is answered and challenged
+		// at its first non-probing packet, one round trip later, and a
+		// probe on the preferred socket already draws this end's own
+		// challenge (preferredPathChallengeLocked, §9.6.2) — where a
+		// challenge per probing datagram would let a peer that probes from
+		// everywhere make this end probe everywhere, one pathProbe at a
+		// time. To revisit with a pathProbe per candidate path.
 		return
 	}
 	if addrChanged {
@@ -541,6 +551,15 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		// link the two paths (§9.5). The connection stays where it is.
 		return
 	}
+	// The old socket goes on being read after the move. RFC 9000 §9.6.2
+	// says the server SHOULD drop newer packets received on the old
+	// address; not taken: what still arrives there is the client's flight
+	// toward the address it was using a round trip ago — acknowledgements
+	// and data this end wants, reordered or late — and a peer that keeps
+	// sending there gains nothing, since nothing is sent back from it. The
+	// section's MUST is kept: non-probing packets leave from the new
+	// socket only. To revisit if a measurement shows a client stuck on the
+	// old address because its packets keep being answered.
 	c.pc = c.rxVia
 	c.pathLocalSeq = c.rxLocalCIDSeq
 	if c.pathProbe.via == c.rxVia {
@@ -786,6 +805,18 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
 	c.pathProbe.retireOld, c.pathProbe.retireSeq = true, previous
+	// One challenge, toward the address in use. RFC 9000 §9.6.3 says a
+	// client that migrates before it has moved to the server's preferred
+	// address SHOULD validate both addresses concurrently from its new
+	// one; not taken: the preferred address is probed at confirmation
+	// (adoptPreferredPathLocked), so a later Rebind normally finds the
+	// move done, and pathProbe is one in-flight challenge — a second,
+	// concurrent one is a probe per candidate path, the same change the
+	// server's §9.6.3 SHOULD waits for (maybeMigrate). What the client
+	// loses is the direct hop to the preferred address from its new
+	// address when the two migrations race; it reaches it on the next
+	// confirmation-time probe or stays on the original address, which
+	// §9.6.3 allows.
 	c.kickTimer()
 	// Jolt the read loop out of the old socket: it re-reads c.pc on its
 	// next iteration. Done under mu so the loop cannot re-arm a later
