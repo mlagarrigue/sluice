@@ -256,8 +256,9 @@ preparation** — scenarios, method and results will be published together.
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
 - **QUIC is experimental**: confronted with two other implementations
-  (quic-go and ngtcp2, in the QUIC Interop Runner in CI), with no external
-  cryptographic review; HTTP/3 runs over it.
+  (quic-go and ngtcp2, in the QUIC Interop Runner, run by hand: the last
+  results are in the run log), with no external cryptographic review;
+  HTTP/3 runs over it.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
 
