@@ -997,7 +997,14 @@ func (c *Conn) writeEndLocked() {
 }
 
 // checkAppLimitedLocked is the check of a write that starts alone, at now,
-// its first packet cleared by the window. The sender had run out of data if
+// its first packet cleared by the window — and, with no write in progress
+// to judge for itself, of an ACK or a timer about to retransmit, judged on
+// the flight before they change it (BBR §4.1.2.4's three sites; handleAck,
+// timer.go). The two latter run only before a retransmission they decide:
+// an idle ACK marks nothing a later write would not mark for itself, and
+// the marks it would add depend on the peer's acknowledgement delay, which
+// the tests counting marks per write would then read as noise. The sender
+// had run out of data if
 // a write last sent more than a pacing slot ago: a write that starts as the
 // previous one ends finds the sender out of data for an instant no packet
 // could have used, which is a bulk transfer's shape at every chunk, and
@@ -1019,23 +1026,23 @@ func (c *Conn) writeEndLocked() {
 // batch, the kernel), is not read: the batch is flushed before any wait on
 // the window, and the kernel's queue would cost a system call per sample
 // for a mark that is rarely wrong.
-func (c *Conn) checkAppLimitedLocked(now time.Time) {
+func (c *Conn) checkAppLimitedLocked(now time.Time) (marked bool) {
 	if !c.writeSent.IsZero() {
 		gap := now.Sub(c.writeSent)
 		if gap <= granularity {
-			return
+			return false
 		}
 		if rate := c.cc.pacingRate(c.rtt.current()); rate > 0 && gap <= time.Duration(float64(c.maxDatagram)/rate*float64(time.Second)) {
-			return
+			return false
 		}
 	}
 	for i := range c.spaces {
 		if len(c.spaces[i].retrans) > 0 {
-			return
+			return false
 		}
 	}
-	c.appLimitedMarks++
 	c.delivery.markAppLimited(c.cc.bytesInFlight())
+	return true
 }
 
 // lossEvent is one batch of losses, as onLost sees it. latestSent is the

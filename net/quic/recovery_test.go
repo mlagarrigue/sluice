@@ -3,6 +3,8 @@ package quic
 import (
 	"errors"
 	"math"
+	"net"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -1095,6 +1097,13 @@ func TestSpacedWritesAreApplicationLimited(t *testing.T) {
 // done, nothing else said yet.
 func plainPair(t *testing.T) (client, server *Conn) {
 	t.Helper()
+	return plainPairOver(t, loopbackSocket(t))
+}
+
+// plainPairOver is plainPair with the client's socket supplied, for a test
+// that drops or holds its datagrams.
+func plainPairOver(t *testing.T, clientPC net.PacketConn) (client, server *Conn) {
+	t.Helper()
 	serverPC := loopbackSocket(t)
 	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
 	if err != nil {
@@ -1111,7 +1120,7 @@ func plainPair(t *testing.T) (client, server *Conn) {
 		}
 		accepted <- c
 	}()
-	client = dialInternal(t, loopbackSocket(t), serverPC.LocalAddr())
+	client = dialInternal(t, clientPC, serverPC.LocalAddr())
 	server = <-accepted
 	if server == nil {
 		t.Fatal("no server connection")
@@ -1236,5 +1245,99 @@ func TestRecoveryPeriodIncludesItsStartInstant(t *testing.T) {
 	cub.onLost(lossEvent{now: later, latestSent: start, bytes: 1200})
 	if cub.cwnd != after {
 		t.Errorf("CUBIC: a loss sent at the period's start instant shrank the window again (%d → %d)", after, cub.cwnd)
+	}
+}
+
+// dropNext is a PacketConn that loses the next datagram written after arm:
+// reported sent, never delivered, the way a lossy path drops it.
+type dropNext struct {
+	net.PacketConn
+	mu      sync.Mutex
+	armed   bool
+	dropped int
+}
+
+func (d *dropNext) arm() {
+	d.mu.Lock()
+	d.armed = true
+	d.mu.Unlock()
+}
+
+func (d *dropNext) WriteTo(b []byte, to net.Addr) (int, error) {
+	d.mu.Lock()
+	drop := d.armed
+	if drop {
+		d.armed, d.dropped = false, d.dropped+1
+	}
+	d.mu.Unlock()
+	if drop {
+		return len(b), nil
+	}
+	return d.PacketConn.WriteTo(b, to)
+}
+
+// A retransmission decided by a timer or an ACK after the writer has gone
+// quiet opens an application-limited phase the way a write would (BBR
+// §4.1.2.4's three sites): the window had room and nothing waited to be
+// sent, so the probe that resends a lost write is stamped so and its sample
+// does not feed the bandwidth filter. The mark is the connection's, not the
+// write's: it is counted after the last write returned.
+func TestARetransmissionAfterAPauseIsApplicationLimited(t *testing.T) {
+	pc := &dropNext{PacketConn: loopbackSocket(t)}
+	client, _ := plainPairOver(t, pc)
+	spy := &rateSpy{}
+	client.mu.Lock()
+	spy.congestionController = client.cc
+	client.cc = spy
+	client.mu.Unlock()
+	resends := func() int {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return client.appLimitedResends
+	}
+
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := func(what string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for client.Stats().BytesInFlight > 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the flight never drained: %s", what)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	// A first write, acknowledged, and a pause long enough for every
+	// delayed acknowledgement the client owes to have left: the next
+	// datagram it writes is then the second write's, which is lost on the
+	// way with nothing written after it — only the probe timeout sends
+	// again.
+	if _, err := s.Write(make([]byte, 100)); err != nil {
+		t.Fatal(err)
+	}
+	drained("the first write was not acknowledged")
+	time.Sleep(60 * time.Millisecond)
+	pc.arm()
+	if _, err := s.Write(make([]byte, 100)); err != nil {
+		t.Fatal(err)
+	}
+	before := resends()
+	drained("the lost write was not resent")
+	pc.mu.Lock()
+	dropped := pc.dropped
+	pc.mu.Unlock()
+	if st := client.Stats(); dropped != 1 || st.ProbeTimeouts == 0 {
+		t.Fatalf("%d datagram dropped, %d probe timeouts: the scenario is not a lost write resent by a probe", dropped, st.ProbeTimeouts)
+	}
+	if after := resends(); after <= before {
+		t.Fatalf("%d application-limited retransmissions after the last write, %d once the probe was acknowledged: the probe timeout opened no phase", before, after)
+	}
+	client.mu.Lock()
+	limited := spy.last.rateSample().appLimited
+	client.mu.Unlock()
+	if !limited {
+		t.Fatal("the probe's acknowledgement yielded a sample that is not application-limited")
 	}
 }

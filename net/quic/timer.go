@@ -139,10 +139,17 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		}
 		earlier(sp.ack.due)
 
-		// The loss timer: packets an ACK left too young to declare.
+		// The loss timer: packets an ACK left too young to declare. BBR
+		// §4.1.2.4's check at the beginning of a timer that may send,
+		// judged before the losses move the flight, run only before the
+		// retransmission it decides (see handleAck).
 		if lt := sp.sent.lossTime; !lt.IsZero() && !now.Before(lt) {
+			idle := c.writers == 0 && c.cc.bytesInFlight() < c.cc.window()
 			out := sp.sent.collectTimeLosses(now, &c.rtt, &c.delivery)
 			if out.lostCount > 0 {
+				if idle && c.checkAppLimitedLocked(now) {
+					c.appLimitedResends++
+				}
 				c.queueLostLocked(sp, out)
 				if out.lostBytes > 0 { // see handleAck: a previous path's losses carry no bytes
 					c.cc.onLost(out.lossEvent(now))
@@ -197,6 +204,12 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 				fired = !sp.discarded && sp.sealer != nil && !c.ptoDeadlineLocked(sp, space).IsZero()
 			}
 			if fired {
+				// The same check before a probe, which resends old data
+				// (sendProbeLocked): the probe timeout is the other timer
+				// BBR §4.1.2.4 names.
+				if c.writers == 0 && c.cc.bytesInFlight() < c.cc.window() && c.checkAppLimitedLocked(now) {
+					c.appLimitedResends++
+				}
 				c.sendProbeLocked(space)
 				earlier(c.ptoDeadlineLocked(sp, space))
 			}

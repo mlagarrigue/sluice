@@ -116,8 +116,8 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 				// an ACK arriving sooner broadcasts too, and the loop simply
 				// re-prices the wait.
 				now := time.Now()
-				if check {
-					c.checkAppLimitedLocked(now)
+				if check && c.checkAppLimitedLocked(now) {
+					c.appLimitedMarks++
 				}
 				rate := c.cc.pacingRate(c.rtt.current())
 				c.pacer.refill(now, rate)

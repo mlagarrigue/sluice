@@ -1267,6 +1267,11 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, f.largest),
 		}
 	}
+	// BBR §4.1.2.4's check at the beginning of ACK processing, judged on
+	// the flight before this frame changes it and run only where it can
+	// stamp a packet: before a retransmission this frame decides (below),
+	// with no write in progress to judge for itself (checkAppLimitedLocked).
+	idle := c.writers == 0 && c.cc.bytesInFlight() < c.cc.window()
 	// RFC 9002 A.7's order: what the frame acknowledges, the round-trip
 	// sample, the ECN counts, the losses and persistent congestion, and
 	// only then the acknowledged packets to the controller (recovery.go).
@@ -1345,6 +1350,9 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		}
 	}
 	if out.lostCount > 0 {
+		if idle && c.checkAppLimitedLocked(now) {
+			c.appLimitedResends++
+		}
 		c.queueLostLocked(sp, out)
 		// Losses from a previous path carry no bytes (RFC 9000 §9.4):
 		// nothing to release, and no event for a window they never

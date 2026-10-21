@@ -115,11 +115,13 @@ type Conn struct {
 	// since when it has sent none. limitCheck says the next paced packet is
 	// the first of a write that started alone (writeBeginLocked).
 	// appLimitedMarks counts the writes that found the sender
-	// application-limited, for tests.
-	writers         int
-	writeSent       time.Time
-	limitCheck      bool
-	appLimitedMarks int
+	// application-limited, appLimitedResends the retransmissions an ACK or
+	// a timer decided while it was (checkAppLimitedLocked), for tests.
+	writers           int
+	writeSent         time.Time
+	limitCheck        bool
+	appLimitedMarks   int
+	appLimitedResends int
 	// streamDeadline is the earliest read or write deadline a stream has
 	// armed (Stream.SetReadDeadline, SetWriteDeadline); the timer loop wakes
 	// what it holds when it matures and recomputes the next from the stream
