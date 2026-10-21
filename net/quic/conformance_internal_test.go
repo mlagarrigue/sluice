@@ -950,3 +950,42 @@ func TestDiscardingASpaceResetsTheProbeCount(t *testing.T) {
 		t.Errorf("ptoCount %d after discarding the Initial space, want 0", c.ptoCount)
 	}
 }
+
+// RFC 9000 §10.3.1: a reset token is compared only for the connection IDs
+// this end has used — a reset answers a packet, which named one of those.
+// The preferred_address identifier and NEW_CONNECTION_IDs still in reserve
+// carry tokens too; a datagram ending in one of them is noise, and the
+// connection goes on.
+func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	used := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}
+	reserve := [16]byte{1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 121, 98, 219}
+	c.mu.Lock()
+	c.peerCIDs = []peerCID{
+		{seq: 0, cid: []byte("dcid0000"), used: true, token: used},
+		{seq: 1, cid: []byte("dcid0001"), token: reserve}, // issued, never sent under
+	}
+	c.mu.Unlock()
+
+	reset := func(token [16]byte) []byte {
+		d := make([]byte, 40)
+		d[0] = 0x40
+		for i := 1; i < len(d)-16; i++ {
+			d[i] = byte(i * 7)
+		}
+		copy(d[len(d)-16:], token[:])
+		return d
+	}
+	if err := c.receive(reset(reserve), pcB.LocalAddr()); errors.Is(err, ErrStatelessReset) {
+		t.Fatal("a datagram ending in the token of an identifier never used was taken for a stateless reset")
+	}
+	if err := c.Err(); err != nil {
+		t.Fatalf("the connection ended on it: %v", err)
+	}
+	// The token of the identifier in use is the reset it looks like.
+	if err := c.receive(reset(used), pcB.LocalAddr()); !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("receive returned %v for the used identifier's token, want ErrStatelessReset", err)
+	}
+}

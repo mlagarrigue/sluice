@@ -582,7 +582,11 @@ func (c *Conn) isStatelessReset(datagram []byte) bool {
 	defer c.mu.Unlock()
 	for i := range c.peerCIDs {
 		t := &c.peerCIDs[i]
-		if t.token == zero {
+		// §10.3.1: only the tokens of identifiers this end has used — a
+		// reset answers a packet, and a packet named one of those. The
+		// preferred_address identifier and the NEW_CONNECTION_IDs still in
+		// reserve carry tokens too, which the section says not to compare.
+		if t.token == zero || !t.used {
 			continue
 		}
 		if subtle.ConstantTimeCompare(tail, t.token[:]) == 1 {
