@@ -119,3 +119,35 @@ func TestAckTrackerBoundsRanges(t *testing.T) {
 		t.Errorf("the newest range was evicted: %+v", top)
 	}
 }
+
+// RFC 9000 §12.3: a packet is discarded unless the receiver is certain it
+// has not processed one of the same number. Past maxAckRanges the lowest
+// ranges are dropped, and below the highest number dropped nothing can be
+// vouched for any more — a replay of a forgotten number used to be recorded
+// and processed again. A number between the floor and the lowest kept range
+// is a gap the tracker still knows about, and is accepted.
+func TestAckTrackerRefusesWhatItCanNoLongerVouchFor(t *testing.T) {
+	var a ackTracker
+	now := time.Now()
+	// Even numbers 0..66: 34 one-packet ranges, two over the bound; the
+	// ranges 0 and 2 are dropped and the floor is 3.
+	for pn := uint64(0); pn <= 66; pn += 2 {
+		if !a.record(pn, now) {
+			t.Fatalf("packet %d refused on first receipt", pn)
+		}
+	}
+	if len(a.ranges) != maxAckRanges || a.ranges[len(a.ranges)-1].lo != 4 {
+		t.Fatalf("ranges = %v, want %d ranges from 4 up", a.ranges, maxAckRanges)
+	}
+	for _, pn := range []uint64{0, 2, 1} {
+		if a.record(pn, now) {
+			t.Fatalf("packet %d, below the floor, was recorded again", pn)
+		}
+	}
+	if !a.record(3, now) {
+		t.Fatal("packet 3, a gap the tracker still knows about, was refused")
+	}
+	if a.record(3, now) {
+		t.Fatal("packet 3 was recorded twice")
+	}
+}

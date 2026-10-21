@@ -44,6 +44,20 @@ type ackTracker struct {
 	// arrived with, indexed by codepoint (§13.4.1): each coalesced packet
 	// counts once, a duplicate never. Reported in every ACK (§19.3.2).
 	ecn [4]uint64
+	// floor, when hasFloor, is the lowest packet number this tracker can
+	// still vouch for: everything below it was once covered by a range
+	// trim dropped, or sat in a gap between such ranges, and whether it was
+	// processed is no longer known. §12.3: "A receiver MUST discard a newly
+	// unprotected packet unless it is certain that it has not processed
+	// another packet with the same packet number" — so record refuses
+	// them. Nothing legitimate is lost: a peer never resends a packet
+	// number, it retransmits the frames under a new one (§12.3), so a
+	// number below the floor is a duplicate, a replay or a straggler.
+	// Until 2026-10-21 trim forgot the low ranges outright, and a replayed
+	// packet of a forgotten number was recorded and processed anew — its
+	// frames idempotent, its ECN count and its ACK counted twice.
+	floor    uint64
+	hasFloor bool
 }
 
 // record notes one received packet number and returns false when it is a
@@ -58,6 +72,9 @@ func (a *ackTracker) record(pn uint64, now time.Time) bool {
 		// would panic on. Refused as "not recorded": nothing is held,
 		// nothing is owed.
 		return false
+	}
+	if a.hasFloor && pn < a.floor {
+		return false // below what the tracker can vouch for (§12.3)
 	}
 	// In order means exactly one past the largest seen; anything else that
 	// still records is either reordered (below the largest) or opens a gap
@@ -112,10 +129,13 @@ func (a *ackTracker) insert(pn uint64, now time.Time) bool {
 }
 
 // trim drops the lowest ranges past the bound. What is forgotten stops being
-// acknowledged, and the peer retransmits it — the cost lands on the endpoint
-// that opened the gaps.
+// acknowledged, and the peer retransmits its frames under new numbers — the
+// cost lands on the endpoint that opened the gaps. The floor rises to just
+// above the highest number dropped: below it, received and never-received
+// numbers can no longer be told apart, and record refuses them all (§12.3).
 func (a *ackTracker) trim() {
 	if len(a.ranges) > maxAckRanges {
+		a.floor, a.hasFloor = a.ranges[maxAckRanges].hi+1, true
 		a.ranges = a.ranges[:maxAckRanges]
 	}
 }
