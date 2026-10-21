@@ -738,10 +738,17 @@ under CUBIC it moves neither `Bottleneck` (0.957) nor `TwoFlows` (1.038).
 A second script, `gate-cc.sh`, holds the three controllers other than
 Reno to their own criteria, on one tree and without a base: the median of
 `share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
-0.51, BBRv1 0.61, BBR 0.50); every round of `RTT80Shallow` is at least
-1.3 times faster on CUBIC than on Reno in the same round (measured: 1.65
-to 2.31, bimodal); every round of `DeepBufferECN` keeps `rtt_x` at 1.5 at
-most on BBR (measured: 1.05 to 1.09). `gate-path.sh` sees a controller
+0.51, BBRv1 0.61, BBR 0.50); the median round of `RTT80Shallow` is at
+least 1.3 times faster on CUBIC than on Reno in the same round (measured:
+1.42 to 1.48, median 1.44, 2026-10-21); every round of `DeepBufferECN`
+keeps `rtt_x` at 1.5 at most on BBR (measured: 1.05 to 1.09). Both sides of
+`RTT80Shallow` are bimodal, by where the slow start's exit loss lands —
+CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21, where Reno read
+8.8 s every round when the bound was set (2026-10-14) — and a round that
+pairs CUBIC's slow mode with Reno's fast one reads 1.03 and says nothing
+about the controller: the worst round, the criterion until then, failed
+three of the sixteen CI runs of 2026-10-21. The median falls
+under the bound only when the slow mode becomes the common case. `gate-path.sh` sees a controller
 that gets worse from one commit to the next; `gate-cc.sh` sees one that
 never met its criterion, or drifts from it by less than 6% a commit.
 CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts

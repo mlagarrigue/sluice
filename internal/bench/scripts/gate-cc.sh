@@ -16,12 +16,16 @@
 #   the bound, so the median is what is judged.
 # - cubic: BenchmarkTransferRTT80Shallow, the long avoidance transfer CUBIC's
 #   window function was designed for, run on CUBIC and on Reno in the same
-#   round. Every round, Reno's time over CUBIC's is at least MINGAIN. The
-#   figure is bimodal on both sides (3.8 s or 5.1 s for CUBIC, by where the
-#   slow start's exit loss lands), so the worst round is the criterion
-#   rather than the median: 1.3 is below the 1.7 the slow mode gives against
-#   Reno's 8.8 s (docs/benchmarks.md, 2026-10-14) and above anything Reno's
-#   own spread produces.
+#   round. The median over the rounds of Reno's time over CUBIC's is at
+#   least MINGAIN. Both sides are bimodal, by where the slow start's exit
+#   loss lands: CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21,
+#   where Reno read 8.8 s every round when the bound was set (2026-10-14).
+#   A round that pairs CUBIC's slow mode with Reno's fast one reads 1.03 and
+#   says nothing about the controller, so the worst round, the criterion
+#   until then, failed three of the sixteen CI runs of 2026-10-21; the
+#   median falls under the bound only when the slow mode is the common
+#   case. 1.3 is below the 1.40-1.44 of the fast modes and above
+#   the 1.09-1.12 of every round with CUBIC's beta at 0.5.
 # - bbr: BenchmarkTransferDeepBufferECN, the deep buffer behind a marking
 #   AQM. Every round, rtt_x — the final smoothed RTT over the smallest — is
 #   at most MAXRTTX: the "RTT within 1.5x min_rtt" the palette plan asked of
@@ -82,6 +86,7 @@ if awk -v m="$median" -v b="$MAXSHARE" 'BEGIN { exit !(m > b) }'; then verdict=O
 echo "TwoFlowsVsReno ($CC): share$shares, median $median, bound $MAXSHARE — $verdict"
 
 if [ "$CC" = cubic ]; then
+  gains=""
   for r in $(seq 1 "$ROUNDS"); do
     # Alternate which side runs first, so a drift within the round does not
     # always land on the same controller.
@@ -95,11 +100,14 @@ if [ "$CC" = cubic ]; then
     need "BenchmarkTransferRTT80Shallow round $r" "$c"
     need "BenchmarkTransferRTT80Shallow round $r" "$n"
     gain="$(awk -v n="$n" -v c="$c" 'BEGIN { printf "%.2f", n / c }')"
-    verdict=ok
-    if awk -v g="$gain" -v b="$MINGAIN" 'BEGIN { exit !(g < b) }'; then verdict=UNDER; fail=1; fi
-    awk -v r="$r" -v n="$n" -v c="$c" -v g="$gain" -v b="$MINGAIN" -v v="$verdict" \
-      'BEGIN { printf "RTT80Shallow round %d: Reno %.2f s, CUBIC %.2f s, gain %s, bound %s — %s\n", r, n / 1e9, c / 1e9, g, b, v }'
+    gains="$gains $gain"
+    awk -v r="$r" -v n="$n" -v c="$c" -v g="$gain" \
+      'BEGIN { printf "RTT80Shallow round %d: Reno %.2f s, CUBIC %.2f s, gain %s\n", r, n / 1e9, c / 1e9, g }'
   done
+  median="$(tr ' ' '\n' <<<"$gains" | grep . | sort -g | awk '{ a[NR] = $1 } END { print (NR % 2) ? a[(NR + 1) / 2] : (a[NR / 2] + a[NR / 2 + 1]) / 2 }')"
+  verdict=ok
+  if awk -v m="$median" -v b="$MINGAIN" 'BEGIN { exit !(m < b) }'; then verdict=UNDER; fail=1; fi
+  echo "RTT80Shallow ($CC): gain$gains, median $median, bound $MINGAIN — $verdict"
 fi
 
 if [ "$CC" = bbr ]; then
