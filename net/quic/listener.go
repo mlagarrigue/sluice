@@ -357,8 +357,11 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // NewListener starts demultiplexing pc. cfg and params are what every
 // accepted connection's handshake uses — the same arguments [Accept] takes,
 // since a Listener is [Accept] generalised to a shared socket rather than a
-// different handshake. pc is any [net.PacketConn]; one from the net/quic/udp
-// helper carries the Don't Fragment bit RFC 9000 §14 asks for.
+// different handshake. pc is any [net.PacketConn]; a [net.UDPConn] is
+// given the socket options RFC 9000 asks for ("The socket is the caller's"
+// in the package documentation). cfg's callbacks run on each connection's
+// receive goroutine, and a slow one stalls that connection alone ("The TLS
+// callbacks are the caller's", same place).
 func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters, lcfg ListenerConfig) (*Listener, error) {
 	if err := params.check(); err != nil {
 		return nil, err

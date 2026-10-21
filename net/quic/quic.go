@@ -153,6 +153,30 @@
 // from udp.Listen. A socket of any other type is used as it comes, and
 // is fragmentable unless the caller configured it.
 //
+// # The TLS callbacks are the caller's
+//
+// The callbacks of the [tls.Config] given to [Dial], [Accept] and
+// [NewListener] — VerifyPeerCertificate, VerifyConnection, GetCertificate,
+// GetConfigForClient and the rest — run on the connection's own receive
+// goroutine, inside the handshake: crypto/tls drives them from the CRYPTO
+// bytes that goroutine feeds it, and returns to it only when the handshake
+// waits for more. A callback that blocks — an OCSP query, a directory
+// lookup — therefore stops the reading of every datagram of that one
+// connection for as long as it runs: acknowledgements and Handshake packets
+// arriving meanwhile wait in its queue, and only the timer loop keeps
+// retransmitting. Other connections behind a Listener are untouched, since
+// the Listener's loop never waits on a connection; what overflows the
+// stalled connection's queue ([ListenerConfig.ConnQueueLen]) is dropped and
+// resent by the peer. RFC 9001 §4.1.4 asks an endpoint to keep answering
+// what it can while TLS works asynchronously; this package buffers the
+// packets whose keys are missing but does not answer during a callback, so
+// the slow work belongs before the handshake — a staple fetched in
+// advance, a cache in front of the lookup — and the callback under the
+// path's round trip. Moving the callbacks off the receive goroutine would
+// take a TLS goroutine per handshake and its events replayed under the
+// connection's lock; it is worth doing the day a measured callback
+// outlasts the round trip.
+//
 // # On the cryptography
 //
 // None of it is invented here. The key schedule is HKDF from [crypto/hkdf]

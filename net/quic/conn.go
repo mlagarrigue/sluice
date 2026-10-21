@@ -608,9 +608,14 @@ func requireTLS13(cfg *tls.Config) error {
 
 // Dial opens a connection to addr and completes the handshake.
 //
-// pc is any [net.PacketConn]; one from the net/quic/udp helper carries the
-// Don't Fragment bit RFC 9000 §14 asks for, one from [net.ListenPacket]
-// does not.
+// pc is any [net.PacketConn]; a [net.UDPConn] is given the socket options
+// RFC 9000 asks for, as the package documentation says under "The socket
+// is the caller's".
+//
+// cfg's callbacks run on the connection's receive goroutine and a slow one
+// stalls that connection's reading: "The TLS callbacks are the caller's",
+// in the package documentation, says what that means and where the slow
+// work goes instead.
 //
 // cfg must name at least one application protocol in NextProtos — ALPN is
 // mandatory in QUIC (RFC 9001 §8.1) — and set MinVersion to
