@@ -496,6 +496,20 @@ func probingOnly(frames []Frame) bool {
 	return true
 }
 
+// loopbackMigration reports whether a move from addr from to addr to would
+// land on a loopback address the peer was not using: a *net.UDPAddr on
+// 127.0.0.0/8 or ::1 (IPv4-mapped forms unmapped, as sameAddr compares),
+// reached from any other address. An address of another type is never
+// loopback.
+func loopbackMigration(from, to net.Addr) bool {
+	return isLoopback(to) && !isLoopback(from)
+}
+
+func isLoopback(a net.Addr) bool {
+	ua, ok := a.(*net.UDPAddr)
+	return ok && ua.AddrPort().Addr().Unmap().IsLoopback()
+}
+
 // maybeMigrate is the §9.3 decision, taken once per authenticated 1-RTT
 // packet: a confirmed server whose peer's non-probing frames arrive from a
 // new address follows it there — but only on the highest-numbered packet
@@ -539,6 +553,22 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		// challenge per probing datagram would let a peer that probes from
 		// everywhere make this end probe everywhere, one pathProbe at a
 		// time. To revisit with a pathProbe per candidate path.
+		return
+	}
+	if addrChanged && loopbackMigration(c.peer, c.rxFrom) {
+		// RFC 9000 §21.5.6: "Endpoints SHOULD NOT allow connections or
+		// migration to a loopback address if the same service was
+		// previously available at a different interface" — a loopback
+		// service often has no authentication of its own, and a peer
+		// that forges its source as 127.0.0.1 would have this end send it
+		// up to three times what it received. The packet is processed;
+		// nothing leaves for the new address, and the peer that really
+		// moved there is told nothing. No option to lift it (the section
+		// allows one): no deployment of this package reaches a service
+		// over loopback after reaching it elsewhere; to revisit on that
+		// case. The section's next paragraph, on link-local and private
+		// addresses, is not taken: it carries "a significant risk of
+		// connectivity failure" the text itself names.
 		return
 	}
 	if addrChanged {

@@ -2358,3 +2358,55 @@ func TestPathChallengeResendsCarryFreshData(t *testing.T) {
 		t.Errorf("the resent PATH_CHALLENGE repeats the first one's data %x; §8.2.1 wants fresh data in every frame", data[0])
 	}
 }
+
+// RFC 9000 §21.5.6: a server does not follow its peer to a loopback address
+// it was not using — a forged source of 127.0.0.1 would otherwise draw up
+// to three times the received bytes toward a local service. Any other new
+// address is still followed, and a peer already on loopback may move within
+// it: that is not a service "previously available at a different
+// interface".
+func TestMigrationToLoopbackIsNotFollowed(t *testing.T) {
+	newServerAt := func(peer *net.UDPAddr) (*Conn, *recordingPC) {
+		pc := &recordingPC{addr: fakeFuzzAddr("loop:self")}
+		c := newConn(pc, peer, []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+		t.Cleanup(func() { _ = c.Close() })
+		installAppSealer(t, c)
+		c.mu.Lock()
+		c.handshakeConfirmed = true
+		c.mu.Unlock()
+		return c, pc
+	}
+	moveTo := func(c *Conn, to *net.UDPAddr) net.Addr {
+		rxFromNewAddress(c, to, 1200, true)
+		if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.peer
+	}
+	global := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 5000}
+	loop := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1).To4(), Port: 6000}
+	other := &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7).To4(), Port: 6000}
+
+	c, pc := newServerAt(global)
+	if got := moveTo(c, loop); !sameAddr(got, global) {
+		t.Errorf("peer = %v after a non-probing packet from loopback, want %v kept (§21.5.6)", got, global)
+	}
+	for _, w := range pc.recorded() {
+		if sameAddr(w.to, loop) {
+			t.Fatalf("a datagram left for the loopback address %v", loop)
+		}
+	}
+
+	// Controls against a false green: any other new address is followed,
+	// and loopback to loopback too.
+	c, _ = newServerAt(global)
+	if got := moveTo(c, other); !sameAddr(got, other) {
+		t.Errorf("peer = %v after a non-probing packet from %v, want it followed", got, other)
+	}
+	c, _ = newServerAt(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1).To4(), Port: 5000})
+	if got := moveTo(c, loop); !sameAddr(got, loop) {
+		t.Errorf("peer = %v after a move within loopback, want %v followed", got, loop)
+	}
+}
