@@ -111,6 +111,9 @@ type Conn struct {
 	// params holds the ParameterStatus values the server announced during
 	// startup. It is nil for a Conn built by NewConn, which never saw them.
 	params map[string]string
+	// paramBytes is what params holds in names and values together, held
+	// under MaxServerParameterBytes by recordParameter.
+	paramBytes int
 
 	// encodingChosen is set when the caller named client_encoding in
 	// [Config.Params]. Without it, recordParameter breaks the

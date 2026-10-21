@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -866,11 +867,15 @@ func TestStartupBoundsTheParameterMap(t *testing.T) {
 }
 
 // Capping how many parameters are remembered is not enough once the message
-// ceiling is the post-auth 64 MiB: one ParameterStatus could still carry a
-// near-ceiling value into the retained map. The size of each is bounded too.
+// ceiling is the post-auth 64 MiB: a few hundred ParameterStatus of a size
+// the startup ceiling lets through could still carry hundreds of megabytes
+// into the retained map. The bytes are budgeted too, all parameters together.
 func TestStartupBoundsAParametersSize(t *testing.T) {
 	script := beAuth(authOK, "")
-	script = append(script, beParameterStatus("application_name", strings.Repeat("v", MaxServerParameterBytes))...)
+	each := 60 << 10 // under the 64 KiB startup ceiling
+	for i := 0; i*each <= MaxServerParameterBytes; i++ {
+		script = append(script, beParameterStatus(fmt.Sprintf("p%03d", i), strings.Repeat("v", each))...)
+	}
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
@@ -878,7 +883,7 @@ func TestStartupBoundsAParametersSize(t *testing.T) {
 	if !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
 	}
-	if !strings.Contains(err.Error(), "name and value") {
+	if !strings.Contains(err.Error(), "budget") {
 		t.Errorf("error = %v, want it to name the cause", err)
 	}
 }
@@ -1077,5 +1082,33 @@ func TestStartupAcceptsANegotiationAfterAuthenticationOk(t *testing.T) {
 	}
 	if got := conn.Protocol(); got != Protocol30 {
 		t.Errorf("protocol = %v after a late NegotiateProtocolVersion to 3.0, want %v", got, Protocol30)
+	}
+}
+
+// PostgreSQL 18 reports search_path, and a search path naming a few hundred
+// schemas is a valid configuration tens of kilobytes long: the budget is the
+// remembered parameters' together, not each one's.
+func TestStartupKeepsALongSearchPath(t *testing.T) {
+	long := strings.Repeat("schema_name_of_some_length, ", 20<<10/28)
+	msgs := append(beAuth(0, ""), beParameterStatus("search_path", long)...)
+	srv := &fakeServer{responses: [][]byte{append(msgs, beReady()...)}}
+	conn, err := startup(srv, Config{User: "u"})
+	if err != nil {
+		t.Fatalf("Startup with a %d-byte search_path: %v", len(long), err)
+	}
+	if got := conn.Parameter("search_path"); got != long {
+		t.Errorf("search_path was not kept whole (%d bytes of %d)", len(got), len(long))
+	}
+
+	// A parameter set again replaces its old value in the budget rather than
+	// adding to it: the same search_path reported a thousand times costs
+	// what one costs.
+	script := beAuth(0, "")
+	for range MaxServerParameterBytes / len(long) {
+		script = append(script, beParameterStatus("search_path", long)...)
+	}
+	srv = &fakeServer{responses: [][]byte{append(script, beReady()...)}}
+	if _, err := startup(srv, Config{User: "u"}); err != nil {
+		t.Errorf("the same long parameter reported repeatedly: %v, want it counted once", err)
 	}
 }
