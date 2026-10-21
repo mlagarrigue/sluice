@@ -115,6 +115,12 @@ Three reasons come up, and the difference matters:
 - **No replication connection.** `Params["replication"]` is refused before
   anything is sent: a server in replication mode speaks only the simple
   query protocol, and what it sends next (`CopyBoth`) nothing here reads.
+- **NegotiateProtocolVersion is read as a whole version word.** The
+  PostgreSQL documentation (§54.7) calls its first field the newest minor
+  version the server supports; the server writes the whole word, major in
+  the high half, and this connector reads it that way. A server that sent
+  a bare minor would be refused as a malformed message, and none exists;
+  `TestStartupFollowsANegotiatedDowngrade` pins the reading.
 - **No automatic resumption of an interrupted COPY.** Delivery is
   at-least-once and idempotence is yours; a resumption watermark should
   live in your schema, not in the library.
