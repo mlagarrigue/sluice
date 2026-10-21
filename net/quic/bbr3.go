@@ -845,6 +845,11 @@ func (b *bbr3) updateMinRTT(now time.Time, rtt time.Duration) {
 // checkProbeRTT is BBRCheckProbeRTT (§5.3.4.3): a probe_rtt_min_delay five
 // seconds old sends every other state to ProbeRTT — not on the first
 // acknowledgement after an idle period, whose age is the application's.
+// The window is saved before the state changes, so saveCwnd records the
+// window ProbeRTT interrupts; the text's listing enters ProbeRTT first and
+// then saves max(prior_cwnd, cwnd), which at the exit would restore an
+// older, larger window a recovery had left behind rather than the last one
+// that was good.
 func (b *bbr3) checkProbeRTT(now time.Time) {
 	if b.state != bbr3ProbeRTT && b.probeRTTExpired && !b.idleRestart {
 		b.priorCwnd = b.saveCwnd()
