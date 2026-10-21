@@ -1543,10 +1543,16 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 // field makes the response malformed (RFC 9114 §4.2), and a caller's
 // content-length is a second opinion on framing this package states itself.
 func TestH3RefusesConnectionSpecificResponseFields(t *testing.T) {
-	for _, field := range []string{"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "content-length"} {
+	// te too: RFC 9114 §4.2 allows it in a request alone, and
+	// checkResponseField refuses it first, as a request's field (ErrMalformed).
+	for _, field := range []string{"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "content-length"} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(field), Value: []byte("1")}}}
-		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, ErrH3Protocol) {
-			t.Errorf("%s: got %v, want ErrH3Protocol", field, err)
+		want := ErrH3Protocol
+		if field == "te" {
+			want = ErrMalformed
+		}
+		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, want) {
+			t.Errorf("%s: got %v, want %v", field, err, want)
 		}
 	}
 }

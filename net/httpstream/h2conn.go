@@ -1195,21 +1195,12 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 			return nil, streamFail(st.id, errProtocolError,
 				"%w: a trailer section on stream %d without END_STREAM", ErrH2Protocol, st.id)
 		}
+		// The rules the head's fields passed, connection-specific fields
+		// included (checkRequestTrailer says why). A bare reset, no 400:
+		// §8.2.1 exempts a fault in a trailer section from the status.
 		for _, h := range fields {
-			if len(h.Name) > 0 && h.Name[0] == ':' {
-				return nil, streamFail(st.id, errProtocolError,
-					"%w: the pseudo-header %s in a trailer section", ErrH2Protocol, h.Name)
-			}
-			// The same octet rules the head's fields passed (§8.2.1): a
-			// trailer reaches whatever reads the request last, so it is just
-			// as good a smuggling carrier as a header.
-			if !isToken(h.Name) || !lowerASCII(h.Name) {
-				return nil, streamFail(st.id, errProtocolError,
-					"%w: %q is not a trailer field name", ErrH2Protocol, h.Name)
-			}
-			if !validFieldValue(h.Value) {
-				return nil, streamFail(st.id, errProtocolError,
-					"%w: the trailer %q holds a control character", ErrH2Protocol, h.Name)
+			if err := checkRequestTrailer(h, ErrH2Protocol); err != nil {
+				return nil, streamError{id: st.id, code: errProtocolError, err: err}
 			}
 		}
 		if len(fields) > 0 {
@@ -1909,10 +1900,12 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 		// Content-length is the h1 writer's refusal for the h1 writer's
 		// reason: framing is this package's to state, and a second opinion
 		// on it is the smuggling class arriving from the inside.
-		switch string(name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+		// TE, whose §8.2.2 exception holds in a request alone, was refused
+		// above by checkResponseField as a request's field.
+		if connectionSpecific(name) {
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH2Protocol, h.Name)
-		case "content-length":
+		}
+		if string(name) == "content-length" {
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH2Protocol)
 		}
 		block = appendHPACK(block, name, h.Value)

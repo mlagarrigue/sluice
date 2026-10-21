@@ -465,6 +465,9 @@ func TestH3RequestTrailersReachTheHandler(t *testing.T) {
 		{"a pseudo-header in the trailers", trailers(Header{Name: []byte(":status"), Value: []byte("200")})},
 		{"a CR in a trailer value", trailers(Header{Name: []byte("x-sum"), Value: []byte("a\rb")})},
 		{"a trailer name that is not a token", trailers(Header{Name: []byte("x sum"), Value: []byte("v")})},
+		// RFC 9114 §4.2 holds for the trailer section as for the head.
+		{"a connection-specific trailer", trailers(Header{Name: []byte("transfer-encoding"), Value: []byte("chunked")})},
+		{"a TE trailer that is not trailers", trailers(Header{Name: []byte("te"), Value: []byte("gzip")})},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := testAssembler(Config{})

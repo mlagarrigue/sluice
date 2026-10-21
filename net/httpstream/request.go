@@ -166,6 +166,52 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 // Errors wrap protocolErr; the caller maps them to its own stream error. The
 // regular fields are returned in fields' own storage, the pseudo-headers
 // dropped; declared is the content-length the head stated, or -1.
+// connectionSpecific reports whether name — lowercase, as HTTP/2 and HTTP/3
+// put it on the wire — is one of the fields RFC 9113 §8.2.2 and RFC 9114 §4.2
+// forbid in any message of theirs: Connection, and the fields RFC 9110
+// §7.6.1 gives connection-specific semantics. Their one exception, TE, is
+// not in the list: it is allowed in a request alone, with the value
+// "trailers" alone, which is each reader's check to make.
+func connectionSpecific(name []byte) bool {
+	switch string(name) {
+	case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+		return true
+	}
+	return false
+}
+
+// checkRequestTrailer holds one received trailer field to the rules a
+// request's header fields pass in buildRequest: no pseudo-header (RFC 9113
+// §8.1, RFC 9114 §4.1), a lowercase token for a name and no control
+// character in the value (RFC 9113 §8.2.1, RFC 9114 §4.2), no
+// connection-specific field and no TE but "trailers" (RFC 9113 §8.2.2,
+// RFC 9114 §4.2). A trailer reaches whatever reads the request last, so it
+// is just as good a smuggling carrier as a header, and the same hop that
+// would split a request on a Transfer-Encoding header would split it on the
+// trailer. The error wraps protocolErr; the caller makes it the stream's,
+// HTTP/2's PROTOCOL_ERROR or HTTP/3's H3_MESSAGE_ERROR.
+func checkRequestTrailer(h Header, protocolErr error) error {
+	if len(h.Name) == 0 {
+		return fmt.Errorf("%w: an empty trailer name", protocolErr)
+	}
+	if h.Name[0] == ':' {
+		return fmt.Errorf("%w: the pseudo-header %s in a trailer section", protocolErr, h.Name)
+	}
+	if !isToken(h.Name) || !lowerASCII(h.Name) {
+		return fmt.Errorf("%w: %q is not a trailer field name", protocolErr, h.Name)
+	}
+	if !validFieldValue(h.Value) {
+		return fmt.Errorf("%w: the trailer %q holds a control character", protocolErr, h.Name)
+	}
+	if connectionSpecific(h.Name) {
+		return fmt.Errorf("%w: the connection-specific field %q in a trailer section", protocolErr, h.Name)
+	}
+	if string(h.Name) == "te" && !equalFold(h.Value, "trailers") {
+		return fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
+	}
+	return nil
+}
+
 func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
 	var method, path, scheme, authority []byte
 	regular := fields[:0]
@@ -217,11 +263,12 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		if !validFieldValue(h.Value) {
 			return req, 0, fmt.Errorf("%w: the value of %q holds a control character", protocolErr, h.Name)
 		}
-		switch string(h.Name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+		if connectionSpecific(h.Name) {
 			// Connection-specific fields have no meaning here and are how
 			// one request becomes two HTTP/1.1 requests at the next hop.
 			return req, 0, fmt.Errorf("%w: the connection-specific field %q", protocolErr, h.Name)
+		}
+		switch string(h.Name) {
 		case "host":
 			// The same rule as :authority below: a host that is not an
 			// authority is malformed, not a request with an odd host.

@@ -1252,18 +1252,11 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					return h3StatusFail(431, st.req.Method, "%w: over %d trailer fields",
 						ErrTooLarge, a.cfg.MaxHeaders)
 				}
+				// The rules the head's fields passed, connection-specific
+				// fields included (checkRequestTrailer says why).
 				for _, h := range trailers {
-					if len(h.Name) == 0 {
-						return fmt.Errorf("%w: an empty trailer name", ErrH3Protocol)
-					}
-					if h.Name[0] == ':' {
-						return fmt.Errorf("%w: pseudo-header %q in the trailers", ErrH3Protocol, h.Name)
-					}
-					if !lowerASCII(h.Name) || !isToken(h.Name) {
-						return fmt.Errorf("%w: trailer name %q is not a token", ErrH3Protocol, h.Name)
-					}
-					if !validFieldValue(h.Value) {
-						return fmt.Errorf("%w: the value of trailer %q holds a control character", ErrH3Protocol, h.Name)
+					if err := checkRequestTrailer(h, ErrH3Protocol); err != nil {
+						return err
 					}
 				}
 				if len(trailers) > 0 {
@@ -1465,10 +1458,12 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 		// The HTTP/2 writer's refusals, for the same reasons: a
 		// connection-specific field makes the response malformed (RFC 9114
 		// §4.2), and framing is this package's to state.
-		switch string(name) {
-		case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade":
+		// TE, whose §4.2 exception holds in a request alone, was refused
+		// above by checkResponseField as a request's field.
+		if connectionSpecific(name) {
 			return nil, fmt.Errorf("%w: the connection-specific response field %q", ErrH3Protocol, h.Name)
-		case "content-length":
+		}
+		if string(name) == "content-length" {
 			return nil, fmt.Errorf("%w: content-length is set by the writer, not the caller", ErrH3Protocol)
 		}
 		fields = append(fields, Header{Name: name, Value: h.Value})

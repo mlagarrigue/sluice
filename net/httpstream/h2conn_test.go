@@ -1845,6 +1845,10 @@ func TestH2RefusesInvalidTrailerFields(t *testing.T) {
 		{"a value edged with a space", literal(nil, "x-sum", " 1")},
 		{"an uppercase name", literal(nil, "X-Sum", "1")},
 		{"a name with a space", literal(nil, "x sum", "1")},
+		// RFC 9113 §8.2.2 holds for the trailer section as for the head.
+		{"a connection-specific field", literal(nil, "transfer-encoding", "chunked")},
+		{"connection", literal(nil, "connection", "close")},
+		{"TE that is not trailers", literal(nil, "te", "gzip")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1907,7 +1911,8 @@ func TestH2RefusesTrailersWithoutEndStream(t *testing.T) {
 // stream, rather than written to the wire for the client's connection to die
 // on.
 func TestH2RefusesConnectionSpecificResponseFields(t *testing.T) {
-	for _, field := range []string{"connection", "transfer-encoding", "keep-alive", "upgrade", "content-length"} {
+	// te too: RFC 9113 §8.2.2 allows it in a request alone.
+	for _, field := range []string{"connection", "transfer-encoding", "keep-alive", "proxy-connection", "upgrade", "te", "content-length"} {
 		t.Run(field, func(t *testing.T) {
 			addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 				out := make([]Response, 0, b.Len())
@@ -1927,7 +1932,9 @@ func TestH2RefusesConnectionSpecificResponseFields(t *testing.T) {
 			if got := h2Status(c.heads[1]); got != 500 {
 				t.Errorf("stream 1 was answered %d, want 500", got)
 			}
-			if bytes.Contains(c.heads[1], []byte(field)) {
+			// The name as an HPACK literal, length byte first: "te" alone
+			// is a substring of content-type and date.
+			if bytes.Contains(c.heads[1], append([]byte{byte(len(field))}, field...)) {
 				t.Errorf("the %s field was written to the wire", field)
 			}
 			if c.sawGoAway {
