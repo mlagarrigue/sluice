@@ -247,7 +247,22 @@ type Rows struct {
 	// within one result, batch-to-batch reuse is the ordinary buffer
 	// contract.
 	gen uint32
+
+	// small counts the batches in a row that fitted the retained sizes
+	// while the storage was larger (see Reset).
+	small int
 }
+
+// What a [Rows] keeps for the life of its connection, and how many batches
+// in a row must fit it before larger storage is given back: the rule
+// pgwire's Reader keeps for its message buffer. A connection that once
+// carried a 60 MB batch kept 60 MB for good — a pool of a hundred that each
+// met one held gigabytes.
+const (
+	rowsRetainBytes = 1 << 20
+	rowsRetainEnds  = 1 << 18 // int32 offsets: 1 MiB
+	rowsShrinkAfter = 256
+)
 
 // maxRowBytes is how many bytes of values one batch may hold, bounded by the
 // int32 offsets in [Rows]. A variable rather than a constant so the guard can
@@ -300,12 +315,27 @@ func (r *Rows) Init(desc []Field, maxRows, maxBytes int) {
 	r.gen++
 }
 
-// Reset empties the accumulator, keeping its storage for the next batch.
+// Reset empties the accumulator, keeping its storage for the next batch —
+// unless that storage outgrew what an ordinary batch needs and
+// rowsShrinkAfter batches in a row have fitted the retained sizes, in which
+// case it is given back and the next batch starts small. Only the
+// connection that met a large batch pays the check's body; the steady state
+// is one comparison.
 //
 // The byte buffer is not cleared: every byte it hands out is covered by an
 // offset written when it was filled, so a stale tail is unreachable rather
 // than merely unlikely.
 func (r *Rows) Reset() {
+	if r.rows > 0 && (cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds) {
+		if len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds {
+			r.small++
+			if r.small >= rowsShrinkAfter {
+				r.buf, r.ends, r.small = nil, nil, 0
+			}
+		} else {
+			r.small = 0
+		}
+	}
 	r.buf = r.buf[:0]
 	r.ends = r.ends[:0]
 	r.rows = 0
