@@ -189,6 +189,14 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 	mech = mechSCRAMSHA256
 	switch {
 	case cs != nil && offersPlus:
+		// RFC 7677 §4 wants the session hash extension (RFC 7627) or no
+		// resumption under a -PLUS mechanism. That guards tls-unique, whose
+		// value is the Finished message a resumption without the extension
+		// lets an attacker replay. The binding here is tls-server-end-point
+		// (RFC 5929 §4.1), the hash of the server's certificate, the same
+		// on a resumed and on a fresh handshake: neither cs.DidResume nor
+		// the extension is examined. TLS 1.3 has no such flaw, and crypto/tls
+		// refuses a TLS 1.2 resumption whose extended-master-secret changed.
 		cbind, err := tlsServerEndPoint(cs.PeerCertificates[0])
 		if err != nil {
 			// Refused rather than downgraded: the server offered binding over
