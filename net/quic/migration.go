@@ -176,6 +176,15 @@ type pathProbe struct {
 	oldPC        net.PacketConn
 	oldSeq       uint64
 	oldValidated bool
+	// viaValidated and viaNonProbing are §9.6.2's two conditions for a
+	// server to send from its preferred address: the probe it sent from
+	// via was answered, and a non-probing packet with a new largest number
+	// arrived there. The move (movePreferredLocked) waits for both, in
+	// either order — the client's answer may trail its first data.
+	// viaLocalSeq is the local identifier that packet named, the path's.
+	viaValidated  bool
+	viaNonProbing bool
+	viaLocalSeq   uint64
 }
 
 // preferredAddress reports the address the server asked this client to move
@@ -601,14 +610,27 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	// section's MUST is kept: non-probing packets leave from the new
 	// socket only. To revisit if a measurement shows a client stuck on the
 	// old address because its packets keep being answered.
-	c.pc = c.rxVia
-	c.pathLocalSeq = c.rxLocalCIDSeq
-	if c.pathProbe.via == c.rxVia {
-		// The client answered — or is answering — the probe this end
-		// sent from this socket (§9.6.2); the identifier it went under
-		// is the new path's from here on (§9.5).
-		c.adoptProbedCIDLocked()
+	// §9.6.2's first condition is met: a non-probing packet with a new
+	// largest number on the preferred socket. The second is the answer to
+	// this end's own probe from that socket, which may still be on its way
+	// — the client's data and its PATH_RESPONSE take separate packets, and
+	// the data may arrive first. Until both hold, non-probing packets keep
+	// leaving from the original address, as the section's MUST has it.
+	c.pathProbe.viaNonProbing, c.pathProbe.viaLocalSeq = true, c.rxLocalCIDSeq
+	if c.pathProbe.viaValidated {
+		c.movePreferredLocked(now)
 	}
+}
+
+// movePreferredLocked moves a server's sends to its preferred-address
+// socket, once §9.6.2's two conditions hold (maybeMigrate,
+// handlePathResponse): the identifier the probe went under is the new
+// path's from here on (§9.5), and the path is new even if the peer is not,
+// so §9.4's reset applies. Callers hold mu.
+func (c *Conn) movePreferredLocked(now time.Time) {
+	c.pc = c.pathProbe.via
+	c.pathLocalSeq = c.pathProbe.viaLocalSeq
+	c.adoptProbedCIDLocked()
 	c.migrations++
 	c.resetPathStateLocked(now)
 }
@@ -1104,6 +1126,7 @@ func (c *Conn) pickFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
 func (c *Conn) adoptProbedCIDLocked() {
 	c.adoptPeerCIDLocked(c.pathProbe.targetCID)
 	c.pathProbe.targetCID, c.pathProbe.via = nil, nil
+	c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
 }
 
 // adoptPeerCIDLocked moves this end's sends to the pooled peer identifier
@@ -1233,6 +1256,16 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 			c.pathProbe.retireOld = false
 			c.retirePeerCIDLocked(c.pathProbe.retireSeq)
 		}
+		if c.pathProbe.via != nil {
+			// A server's probe from its preferred socket, answered: §9.6.2's
+			// second condition. The move waits for the client's first
+			// non-probing packet there if it has not arrived yet
+			// (maybeMigrate), and happens now if it has.
+			c.pathProbe.viaValidated = true
+			if c.pathProbe.viaNonProbing {
+				c.movePreferredLocked(now)
+			}
+		}
 		switch {
 		case c.pathProbe.target != nil:
 			c.adoptPreferredPathLocked(now)
@@ -1273,6 +1306,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 			// connection is where it always was, on the socket in use,
 			// and nothing is wrong (§9.6.2 lets the client stay).
 			c.pathProbe.via, c.pathProbe.targetCID = nil, nil
+			c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
 			return time.Time{}
 		}
 		if !c.isClient {

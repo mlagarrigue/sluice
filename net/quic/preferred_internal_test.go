@@ -454,7 +454,8 @@ func TestServerAcceptsItsPreferredIdentifierInLongHeaders(t *testing.T) {
 // carries the answer and its own PATH_CHALLENGE together, under a pooled
 // identifier never used on the main path (§9.5); the main socket sends
 // nothing for it, and nothing moves until the client's first non-probing
-// packet arrives there — which then also adopts that identifier. The public
+// packet arrives there and the server's own probe is answered, whichever
+// comes last — the move then adopts that identifier. The public
 // interop runner checks exactly this: the first server packet on the new
 // path must carry a PATH_CHALLENGE (ngtcp2 client, 2026-10-10).
 func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
@@ -513,17 +514,80 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 		t.Errorf("a probing-only packet moved the connection (pc=%v, migrations=%d)", pc, migrations)
 	}
 
-	// The client moves: its first non-probing packet on the preferred socket.
+	// The client's first non-probing packet on the preferred socket, its
+	// answer to this end's probe still on the way: §9.6.2's two conditions
+	// are not both met, and non-probing packets keep leaving from the
+	// original address.
+	rxVia(pref)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	pc, migrations = c.pc, c.migrations
+	data := c.pathProbe.data
+	c.mu.Unlock()
+	if pc != net.PacketConn(main) || migrations != 0 {
+		t.Errorf("after the client's data alone: on the preferred socket=%v migrations=%d, want the main socket and 0 (§9.6.2: the path is not validated yet)", pc == net.PacketConn(pref), migrations)
+	}
+	// The answer arrives: both conditions hold, the connection moves and
+	// adopts the identifier it probed under.
+	resp := append(AppendVarint(nil, framePathResponse), data[:]...)
+	rxVia(pref)
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	var dcid []byte
+	pc, dcid, migrations = c.pc, c.dcid, c.migrations
+	c.mu.Unlock()
+	if pc != net.PacketConn(pref) || migrations != 1 {
+		t.Errorf("after the client's data and its answer: on the preferred socket=%v migrations=%d, want true and 1", pc == net.PacketConn(pref), migrations)
+	}
+	if string(dcid) != "cli-cid1" {
+		t.Errorf("the connection sends under %q, want the identifier it probed under", dcid)
+	}
+}
+
+// The usual order: the client answers the server's probe before its first
+// non-probing packet reaches the preferred socket. The answer alone moves
+// nothing (§9.6.2 wants the non-probing packet too); that packet then does.
+func TestServerMovesToItsPreferredSocketOnceProbedAndWrittenTo(t *testing.T) {
+	c, main := newMigratableServer(t, "order")
+	pref := &recordingPC{addr: fakeFuzzAddr("order:preferred")}
+	tok := make([]byte, 16)
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	peer := fakeFuzzAddr("order:peerA")
+	rxVia := func(via net.PacketConn) {
+		c.mu.Lock()
+		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, via, 1200, true
+		c.mu.Unlock()
+	}
+	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	rxVia(pref)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	data := c.pathProbe.data
+	c.mu.Unlock()
+	resp := append(AppendVarint(nil, framePathResponse), data[:]...)
+	rxVia(pref)
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	pc, migrations, pending := c.pc, c.migrations, c.pathProbe.pending
+	c.mu.Unlock()
+	if pc != net.PacketConn(main) || migrations != 0 || pending {
+		t.Fatalf("after the answer alone: pc=%v migrations=%d probe pending=%v, want the main socket, 0 and false", pc, migrations, pending)
+	}
 	rxVia(pref)
 	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
 	c.mu.Lock()
 	pc, dcid, migrations := c.pc, c.dcid, c.migrations
 	c.mu.Unlock()
-	if pc != net.PacketConn(pref) || migrations != 1 {
-		t.Errorf("after the client's data: pc=%v migrations=%d, want the preferred socket and 1", pc, migrations)
-	}
-	if string(dcid) != "cli-cid1" {
-		t.Errorf("the connection sends under %q, want the identifier it probed under", dcid)
+	if pc != net.PacketConn(pref) || migrations != 1 || string(dcid) != "cli-cid1" {
+		t.Fatalf("after the client's data: pc=%v migrations=%d dcid=%q, want the preferred socket, 1 and cli-cid1", pc, migrations, dcid)
 	}
 }
 
