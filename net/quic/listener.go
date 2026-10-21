@@ -925,6 +925,15 @@ func initialPacketDecrypts(h longHeader) (initialKeys, bool) {
 		return initialKeys{}, false
 	}
 	if _, _, err = opener.Open(h.Raw, h.PNOffset, 0); err != nil {
+		// Every refusal of a first Initial is a silent drop, the reserved
+		// bits of RFC 9000 §17.2 included — a connection would answer
+		// those with PROTOCOL_VIOLATION, a Listener has no connection yet.
+		// Chosen: Initial keys are public, so the packet can come from
+		// anyone; a CONNECTION_CLOSE to an unvalidated address is an
+		// unsolicited send toward a possibly forged source (§8.1), and a
+		// connection created to be closed at once is the state the drop
+		// exists to save. A real client that sets the bits is not
+		// conformant, and its handshake timeout tells it so.
 		return initialKeys{}, false
 	}
 	return initialKeys{initial: initial, client: client, opener: opener}, true
