@@ -192,3 +192,35 @@ func TestRenderOpenRanksTheServedExchanges(t *testing.T) {
 		}
 	}
 }
+
+// Render sends WriteJSON's defensive pair: nosniff on every document, no-store
+// on an error unless the exchange carries its own cache directive — on a
+// refusal and on a served error alike.
+func TestRenderSendsTheDefensiveHeaders(t *testing.T) {
+	refused := exchangeFor("GET", "/a")
+	refused.Refuse(401, diagnostics.NewDiagnostic(diagnostics.Error, "X.Unauthenticated", diagnostics.Path{}))
+	cached := exchangeFor("GET", "/b")
+	cached.Headers = append(cached.Headers, httpstream.Header{Name: []byte("Cache-Control"), Value: []byte("max-age=60")})
+	ex := []Exchange{refused, exchangeFor("GET", "/c"), cached, exchangeFor("GET", "/d")}
+	status := []int{0, 200, 404, 500}
+	out := Render(ex, func(i int) (int, any) { return status[i], map[string]any{} })
+
+	want := []string{"no-store", "", "max-age=60", "no-store"}
+	for i, r := range out.Items {
+		nosniff, cache := 0, []string(nil)
+		for _, h := range r.Headers {
+			switch {
+			case foldEqual(h.Name, "x-content-type-options") && string(h.Value) == "nosniff":
+				nosniff++
+			case foldEqual(h.Name, "cache-control"):
+				cache = append(cache, string(h.Value))
+			}
+		}
+		if nosniff != 1 {
+			t.Errorf("response %d (status %d): %d nosniff fields, want 1", i, r.Status, nosniff)
+		}
+		if (want[i] == "" && cache != nil) || (want[i] != "" && (len(cache) != 1 || cache[0] != want[i])) {
+			t.Errorf("response %d (status %d): Cache-Control %q, want %q", i, r.Status, cache, want[i])
+		}
+	}
+}

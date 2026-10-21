@@ -529,3 +529,37 @@ func TestWriteJSONSendsNoContentFor204And304(t *testing.T) {
 		}
 	}
 }
+
+// Every JSON document goes out with nosniff, so a browser never runs or
+// renders it as something else; an error also goes out with no-store, since
+// it quotes the request, unless the handler chose its own cache directive.
+func TestWriteJSONSendsTheDefensiveHeaders(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		cache  string // the handler's own Cache-Control, if any
+		want   string // the Cache-Control the client sees
+	}{
+		{"error", http.StatusUnauthorized, "", "no-store"},
+		{"success", http.StatusOK, "", ""},
+		{"error with the handler's directive", http.StatusNotFound, "max-age=60", "max-age=60"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			if c.cache != "" {
+				rec.Header().Set("Cache-Control", c.cache)
+			}
+			if err := web.WriteJSON(rec, c.status, web.Report{}); err != nil {
+				t.Fatal(err)
+			}
+			h := rec.Result().Header
+			if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+			if got := h.Values("Cache-Control"); len(got) > 1 || h.Get("Cache-Control") != c.want {
+				t.Errorf("Cache-Control = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

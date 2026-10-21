@@ -88,8 +88,21 @@ func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body 
 			out[i] = httpstream.Response{Status: status, Headers: slices.Clone(e.Headers)}
 			continue
 		}
-		headers := make([]httpstream.Header, 0, len(e.Headers)+1)
-		headers = append(headers, httpstream.Header{Name: contentTypeName, Value: contentTypeJSON})
+		// The defensive pair [web.WriteJSON] sends, for the same reasons:
+		// nosniff on every document, no-store on an error unless the caller
+		// set its own cache directive. One slice still holds them all.
+		noStore := status >= 400 && !hasHeader(e.Headers, "cache-control")
+		n := len(e.Headers) + 2
+		if noStore {
+			n++
+		}
+		headers := make([]httpstream.Header, 0, n)
+		headers = append(headers,
+			httpstream.Header{Name: contentTypeName, Value: contentTypeJSON},
+			httpstream.Header{Name: nosniffName, Value: nosniffValue})
+		if noStore {
+			headers = append(headers, httpstream.Header{Name: cacheControlName, Value: noStoreValue})
+		}
 		headers = append(headers, e.Headers...)
 		out[i] = httpstream.Response{Status: status, Headers: headers, Body: append(buf, '\n')}
 	}
@@ -99,6 +112,21 @@ func RenderOpen(exchanges []Exchange, serve func(i, open int) (status int, body 
 // The one field every answer carries, shared rather than rebuilt per
 // response.
 var (
-	contentTypeName = []byte("content-type")
-	contentTypeJSON = []byte("application/json")
+	contentTypeName  = []byte("content-type")
+	contentTypeJSON  = []byte("application/json")
+	nosniffName      = []byte("x-content-type-options")
+	nosniffValue     = []byte("nosniff")
+	cacheControlName = []byte("cache-control")
+	noStoreValue     = []byte("no-store")
 )
+
+// hasHeader reports whether headers holds a field named name, which is lower
+// case; field names compare case-insensitively (RFC 9110 §5.1).
+func hasHeader(headers []httpstream.Header, name string) bool {
+	for _, h := range headers {
+		if foldEqual(h.Name, name) {
+			return true
+		}
+	}
+	return false
+}
