@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"math"
@@ -578,6 +579,56 @@ func checkTLSConfig(cfg *tls.Config) error {
 	return requireTLS13(cfg)
 }
 
+// checkServerCertificates refuses a cfg whose configured chains TLS 1.3
+// forbids a server to send, before any packet is answered with them: a leaf
+// whose Key Usage extension lacks digitalSignature (RFC 8446 §4.4.2.2) and
+// a chain member signed with SHA-1 (§4.2.3), the self-signed anchor
+// excepted since no client verifies its signature. crypto/tls reads
+// neither, and a conformant client refuses the chain mid-handshake, where a
+// Listener can only close and the operator learns nothing of the cause.
+// What GetCertificate or GetConfigForClient return is not seen here, nor is
+// the client's signature_algorithms_cert, which only crypto/tls sees. A
+// certificate that does not parse is left to crypto/tls: this is the
+// operator's configuration, not bytes from the network, so one parser
+// reporting it is enough.
+func checkServerCertificates(cfg *tls.Config) error {
+	for i := range cfg.Certificates {
+		cert := &cfg.Certificates[i]
+		for j, der := range cert.Certificate {
+			c := cert.Leaf
+			if j > 0 || c == nil {
+				var err error
+				if c, err = x509.ParseCertificate(der); err != nil {
+					continue
+				}
+			}
+			if err := checkServedCertificate(c, j == 0); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkServedCertificate is checkServerCertificates's rule for one
+// certificate of a chain, leaf saying whether it is the first.
+func checkServedCertificate(c *x509.Certificate, leaf bool) error {
+	if leaf && c.KeyUsage != 0 && c.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return fmt.Errorf("%w: certificate %q has a Key Usage without digitalSignature (RFC 8446 §4.4.2.2)", ErrQUIC, c.Subject)
+	}
+	switch c.SignatureAlgorithm {
+	case x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1:
+		// A self-issued member above the leaf is the anchor, whose
+		// signature no client verifies (nor does crypto/x509, which
+		// refuses SHA-1 outright — so issuer and subject tell, not a
+		// verification).
+		if leaf || !bytes.Equal(c.RawIssuer, c.RawSubject) {
+			return fmt.Errorf("%w: certificate %q is signed with SHA-1 (RFC 8446 §4.2.3)", ErrQUIC, c.Subject)
+		}
+	}
+	return nil
+}
+
 // clientTLSConfig is cfg as a client handshake uses it: the caller's own
 // when it carries no session cache, otherwise a copy whose cache hands each
 // ticket out once (singleUseSessionCache). The copy leaves the caller's
@@ -767,6 +818,13 @@ type Datagram struct {
 // finds in its out-of-band bytes. Left at zero, the packet counts as
 // Not-ECT and the client sends unmarked from then on.
 //
+// cfg.Certificates is refused here when a leaf carries a Key Usage without
+// digitalSignature or a chain member is signed with SHA-1 (RFC 8446
+// §4.4.2.2, §4.2.3), as [NewListener] refuses it; what GetCertificate or
+// GetConfigForClient return is the caller's to hold to the same rules, as
+// is matching the chain to the client's signature_algorithms_cert, which
+// crypto/tls does not do.
+//
 // A server that keeps pc open after the connection, to accept the next one,
 // should call [Conn.SetClosingPeriod]: "Servers that retain an open socket
 // for accepting new connections SHOULD NOT end the closing or draining
@@ -778,6 +836,9 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 		return nil, err
 	}
 	if err := checkTLSConfig(cfg); err != nil {
+		return nil, err
+	}
+	if err := checkServerCertificates(cfg); err != nil {
 		return nil, err
 	}
 	h, _, err := parseLongHeader(first.Payload)

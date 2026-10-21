@@ -361,12 +361,21 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // given the socket options RFC 9000 asks for ("The socket is the caller's"
 // in the package documentation). cfg's callbacks run on each connection's
 // receive goroutine, and a slow one stalls that connection alone ("The TLS
-// callbacks are the caller's", same place).
+// callbacks are the caller's", same place). cfg.Certificates is refused
+// when a leaf carries a Key Usage without digitalSignature or a chain
+// member is signed with SHA-1 (RFC 8446 §4.4.2.2, §4.2.3): a conformant
+// client would refuse the chain mid-handshake, where the cause is lost.
+// What GetCertificate or GetConfigForClient return is the caller's to hold
+// to the same rules, as is matching the chain to the client's
+// signature_algorithms_cert, which crypto/tls does not do.
 func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters, lcfg ListenerConfig) (*Listener, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
 	if err := checkTLSConfig(cfg); err != nil {
+		return nil, err
+	}
+	if err := checkServerCertificates(cfg); err != nil {
 		return nil, err
 	}
 	lcfg, err := lcfg.resolve()
