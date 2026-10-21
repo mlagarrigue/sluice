@@ -277,6 +277,12 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 	c.rxHighest = false
 	c.mu.Unlock()
 	datagramLen := len(datagram)
+	// RFC 9000 §12.2: every packet coalesced into a datagram names the
+	// destination identifier of the first one; a later packet naming
+	// another is ignored — that packet alone, the rest of the datagram
+	// is still read. Checked on the plaintext header, before any key is
+	// tried, so a forgery coalesced behind a genuine packet costs no open.
+	var datagramDCID []byte
 	for len(datagram) > 0 {
 		if datagram[0] == 0 {
 			// Datagram padding: PADDING frames fill the *packet*, but a peer
@@ -304,6 +310,13 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			if err != nil {
 				c.noteDiscard()
 				return nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
+			}
+			if datagramDCID == nil {
+				datagramDCID = h.DCID
+			} else if !bytes.Equal(h.DCID, datagramDCID) {
+				c.noteDiscard()
+				datagram = after
+				continue
 			}
 			switch h.Type {
 			case packetInitial:
@@ -354,6 +367,11 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			if err != nil {
 				c.noteDiscard()
 				return nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
+			}
+			if datagramDCID != nil && !bytes.Equal(h.DCID, datagramDCID) {
+				// A short header closes the datagram: nothing follows it.
+				c.noteDiscard()
+				return nil
 			}
 			seq, ok := c.localCIDSeqFor(h.DCID)
 			if !ok {

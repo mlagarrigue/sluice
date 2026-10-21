@@ -172,3 +172,41 @@ func carriesLongHeader(types []byte) bool {
 	}
 	return false
 }
+
+// RFC 9000 §12.2: "Receivers SHOULD ignore any subsequent packets with a
+// different Destination Connection ID than the first packet in the
+// datagram." A sender never mixes identifiers in one datagram (a MUST NOT
+// on its side), so a packet that does is not the peer's — Initial keys are
+// public, and anyone on the path can coalesce one behind a genuine packet.
+// Here the second Initial names another identifier this end issued, one
+// every other check accepts; the datagram's first packet is the rule that
+// refuses it, and refuses it before any key is tried. The first packet is
+// processed as before.
+func TestCoalescedPacketUnderAnotherDCIDIsIgnored(t *testing.T) {
+	dcid, scid := []byte("dcid0000"), []byte("scid0000")
+	c := newConn(&fuzzSink{addr: "coal:self"}, fakeFuzzAddr("coal:peer"), dcid, scid, true, DefaultParameters())
+	defer c.Close()
+	if err := c.installInitial(dcid); err != nil {
+		t.Fatal(err)
+	}
+	other := []byte("scid0001")
+	c.mu.Lock()
+	c.localCIDs = append(c.localCIDs, localCID{seq: 1, cid: other})
+	c.mu.Unlock()
+	if !c.expectedDCID(other, spaceInitial) {
+		t.Fatal("the second identifier is not accepted on its own; the test is checking the wrong thing")
+	}
+
+	server := []byte("srv-cid0")
+	datagram := sealedInitialFrom(t, true, dcid, scid, server, 0, false)
+	datagram = append(datagram, sealedInitialFrom(t, true, dcid, other, server, 5, false)...)
+	if err := c.receive(datagram, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	if n := initialRanges(c); n != 1 {
+		t.Errorf("Initial ranges = %d, want 1: the first packet processed, the second — under another DCID — ignored", n)
+	}
+	if n := discardedCount(c); n != 1 {
+		t.Errorf("discarded = %d, want 1: the second packet counted as a rejection", n)
+	}
+}
