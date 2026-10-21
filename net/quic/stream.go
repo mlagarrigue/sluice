@@ -496,7 +496,7 @@ func (s *Stream) Reset(code uint64) error {
 	s.sendClosed = true
 	c.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
-	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.cond.Broadcast() // a writer blocked on credit for this stream gives up
 	return err
@@ -511,7 +511,7 @@ func (s *Stream) StopSending(code uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	frame := appendFrame(nil, FrameStopSending, s.id, code)
-	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	// Stopping is how an application says it will not read the rest: the
 	// peer's RESET_STREAM, when it comes, ends the receive side with
 	// nothing left for the application to take (§3.2).
@@ -584,7 +584,7 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	s.sendClosed = true
 	s.conn.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
-	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
+	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	s.conn.maybeRemoveLocked(s)
 	s.conn.cond.Broadcast()
 	return true, err

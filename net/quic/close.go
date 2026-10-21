@@ -267,6 +267,7 @@ func (c *Conn) Ping(ctx context.Context) error {
 	// Every packet from here on is numbered from first up, skipped numbers
 	// included, so an acknowledgement at or past it is one of them.
 	first := sp.nextPN
+	// Ungated by the congestion window: see sendOpts.waitCwnd.
 	if err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{}); err != nil {
 		return err
 	}

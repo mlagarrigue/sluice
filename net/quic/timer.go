@@ -73,7 +73,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	if sp := &c.spaces[spaceApplication]; !c.keepAliveDeadline.IsZero() && !sp.discarded && sp.sealer != nil {
 		if !now.Before(c.keepAliveDeadline) {
 			c.armKeepAliveLocked(now)
-			_ = c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{})
+			_ = c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{}) // ungated: see sendOpts.waitCwnd
 		}
 		earlier(c.keepAliveDeadline)
 	}

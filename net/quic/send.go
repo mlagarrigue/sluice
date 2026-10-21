@@ -19,6 +19,20 @@ type sendOpts struct {
 	// waits; control frames, acknowledgements and probes do not — an ACK is
 	// how the window reopens, and a probe is how a stall is detected, so
 	// making either wait would be the deadlock it exists to break.
+	//
+	// RFC 9002 §7 says a sender MUST NOT send if bytes in flight would
+	// exceed the window "unless PTO or entering recovery", and this is where
+	// that rule is kept and where it is knowingly not: the window gates
+	// stream data (here), the retransmission queue and the control queue
+	// (canSend in retransmitLocked and takeQueuedLocked), which is every
+	// send that can be large or repeated. A RESET_STREAM, a STOP_SENDING,
+	// the keepalive PING and the PING of a graceful close go out ungated
+	// (the sites say "see sendOpts.waitCwnd"): each is a few dozen bytes,
+	// one per application action or timer, and holding it behind the window
+	// would hold what it frees — a reset waits on the data it cancels, a
+	// keepalive misses the idle clock it serves. Flow-control grants are the
+	// same choice, written at takeQueuedLocked. The excess is bounded by the
+	// count of such events, as a probe's is by the PTO (§7.5).
 	waitCwnd bool
 	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
 	// without bound.
