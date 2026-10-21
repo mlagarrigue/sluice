@@ -141,7 +141,19 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		if f.offset, rest, err = Varint(rest); err != nil {
 			return f, nil, err
 		}
-		return takeLengthPrefixed(f, rest)
+		if f, rest, err = takeLengthPrefixed(f, rest); err != nil {
+			return f, nil, err
+		}
+		if f.offset > MaxVarint-uint64(len(f.Data)) {
+			// §19.6: offset plus length past 2^62-1 is FRAME_ENCODING_ERROR
+			// (the code every parse failure here maps to) or
+			// CRYPTO_BUFFER_EXCEEDED; the frame is malformed before any
+			// buffer is asked, so the first. STREAM frames need no such
+			// check: flow control refuses them long before (§19.8, stream
+			// deliver).
+			return f, nil, fmt.Errorf("%w: a CRYPTO frame reaching past offset 2^62-1", ErrQUIC)
+		}
+		return f, rest, nil
 
 	case f.Type == frameACK || f.Type == frameACK|1:
 		return parseACK(f, rest)
