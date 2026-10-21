@@ -609,6 +609,15 @@ type Config struct {
 	// stop reading until the queue drains, not to buffer without limit. The
 	// pressure then sits in the peer's send buffer, which is what TCP flow
 	// control is for.
+	//
+	// It is also the only bound on the frames RFC 9113 §10.5 asks an
+	// implementation to track — PING, SETTINGS, PRIORITY, WINDOW_UPDATE,
+	// empty DATA — and deliberately so: none of them earns an answer larger
+	// than itself or costs this end an allocation (measured by
+	// TestH2ControlFramesAnswerNoMoreThanTheyCost), so a flood of them is
+	// paid in the peer's own bandwidth, and none restarts the idle timeout.
+	// The frames that do amplify have bounds of their own: RST_STREAM the
+	// rapid-reset allowance, CONTINUATION and header blocks MaxHeaderBytes.
 	MaxPendingControlBytes int
 
 	// MaxWriteBufferBytes is how much HTTP/2 response payload the writer
