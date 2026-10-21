@@ -541,18 +541,30 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 // RFC 9204 §7.4: a value wider than the decoder can decode — past the 62 bits
 // §4.1.1 requires — is a *stream* error of type QPACK_DECOMPRESSION_FAILED
 // on a request stream, where the other decoding failures are the
-// connection's. A string length of 2^62 here; the connection goes on.
+// connection's. Wherever the integer sits — a string length, the prefix's
+// Required Insert Count or its Delta Base — the connection goes on.
 func TestH3QPACKIntegerPastSixtyTwoBitsIsAStreamError(t *testing.T) {
-	a := testAssembler(Config{})
-	// Prefix, then a literal with a literal name whose 3-bit-prefix name
-	// length is 2^62: 0x27 then nine continuation octets.
-	section := []byte{0x00, 0x00, 0x27, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}
-	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, appendH3Frame(nil, h3Headers, section), true)})
-	if err != nil {
-		t.Fatalf("one stream's oversized integer failed the connection: %v", err)
-	}
-	if batch.Len() != 0 || len(failed) != 1 || failed[0].Code != qpackDecompressionFailed {
-		t.Fatalf("batch=%d failed=%v, want one QPACK_DECOMPRESSION_FAILED refusal on the stream", batch.Len(), failed)
+	nine := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	for _, tt := range []struct {
+		name    string
+		section []byte
+	}{
+		// Prefix, then a literal with a literal name whose 3-bit-prefix name
+		// length is 2^62: 0x27 then nine continuation octets.
+		{"a string length of 2^62", []byte{0x00, 0x00, 0x27, 0xf9, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3f}},
+		{"a delta base of 2^62", append(append([]byte{0x00, 0x7f}, nine...), 0x3f)},
+		{"a required insert count of 2^62", append(append([]byte{0xff}, nine...), 0x3f, 0x00)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{})
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, appendH3Frame(nil, h3Headers, tt.section), true)})
+			if err != nil {
+				t.Fatalf("one stream's oversized integer failed the connection: %v", err)
+			}
+			if batch.Len() != 0 || len(failed) != 1 || failed[0].Code != qpackDecompressionFailed {
+				t.Fatalf("batch=%d failed=%v, want one QPACK_DECOMPRESSION_FAILED refusal on the stream", batch.Len(), failed)
+			}
+		})
 	}
 }
 

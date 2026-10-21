@@ -288,9 +288,12 @@ func (d *qpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 	// survived every section that encoded zero: a conformant prefix with a
 	// Delta Base of 0x40 or more was eaten a byte short and the field lines
 	// after it misread.
+	// Both wrap the decoder's own error: an integer past 62 bits here is
+	// the stream's fault, not the connection's (RFC 9204 §7.4), and
+	// sectionRefused tells the two apart by errIntegerWide.
 	ric, block, err := hpackInt(block, 8)
 	if err != nil {
-		return dst, fmt.Errorf("%w: a field section with a truncated prefix", ErrH3Protocol)
+		return dst, fmt.Errorf("%w: a field section prefix's required insert count: %w", ErrH3Protocol, err)
 	}
 	if ric != 0 {
 		return dst, fmt.Errorf("%w: a required insert count of %d, but no dynamic table was offered", ErrH3Protocol, ric)
@@ -305,7 +308,7 @@ func (d *qpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 		return dst, fmt.Errorf("%w: a negative base against an insert count of zero", ErrH3Protocol)
 	}
 	if _, block, err = hpackInt(block, 7); err != nil {
-		return dst, fmt.Errorf("%w: a field section prefix with a truncated delta base", ErrH3Protocol)
+		return dst, fmt.Errorf("%w: a field section prefix's delta base: %w", ErrH3Protocol, err)
 	}
 
 	listSize := 0
