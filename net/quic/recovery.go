@@ -84,6 +84,24 @@ func (r *rttEstimator) sample(rtt, ackDelay time.Duration) {
 	r.smoothed = (7*r.smoothed + adjusted) / 8
 }
 
+// resetAfterPersistentCongestion restarts the estimate from the newest
+// sample, as from a first one: RFC 9002 §5.2 says an endpoint SHOULD set
+// min_rtt to the newest sample once persistent congestion is established
+// — otherwise a path whose RTT has risen keeps an old minimum that makes
+// every later sample look late, and persistent congestion is declared again
+// and again — and §5.3 lets smoothed_rtt be reset with it "after a
+// disruptive network event", which this is; the variance follows as on a
+// first sample. The first-sample date is kept: what happened before the
+// collapse still happened.
+func (r *rttEstimator) resetAfterPersistentCongestion() {
+	if !r.sampled {
+		return
+	}
+	r.min = r.latest
+	r.smoothed = r.latest
+	r.variance = r.latest / 2
+}
+
 // sampleAt is sample on the ACK path, which also dates the first sample.
 func (r *rttEstimator) sampleAt(now time.Time, rtt, ackDelay time.Duration) {
 	r.sample(rtt, ackDelay)

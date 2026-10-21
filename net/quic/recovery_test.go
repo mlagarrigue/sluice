@@ -733,7 +733,10 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	// A round-trip sample taken before every send, so that persistent
 	// congestion can be judged: pto = 100ms + 1ms + 25ms, the duration is
 	// three of those, 378ms.
-	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
+	// min below latest, so that the reset §5.2 asks for after persistent
+	// congestion is visible: the sixth packet's own sample is zero and
+	// discarded, so latest stays at 100ms.
+	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 80 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
 	sp := &c.spaces[spaceInitial]
 	// Five ack-eliciting packets spread over 400ms, all about to be lost,
 	// and a sixth the peer acknowledges.
@@ -759,6 +762,12 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	}
 	if spy.collapsed != 1 {
 		t.Errorf("onPersistentCongestion called %d times for losses spanning 400ms, want 1", spy.collapsed)
+	}
+	// RFC 9002 §5.2: min_rtt (and with it the smoothed estimate, §5.3) is
+	// restarted from the newest sample once persistent congestion is
+	// established, so a path whose RTT rose is not collapsed again for it.
+	if c.rtt.min != c.rtt.latest || c.rtt.smoothed != c.rtt.latest {
+		t.Errorf("after persistent congestion rtt = {min %v, smoothed %v, latest %v}, want min and smoothed reset to latest", c.rtt.min, c.rtt.smoothed, c.rtt.latest)
 	}
 
 	// A send through the sending path.

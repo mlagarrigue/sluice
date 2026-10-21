@@ -1256,6 +1256,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 			// by design (§7.6.1).
 			if out.lostSpan > persistentCongestionThreshold*c.rtt.pto(c.peerMaxAckDelayLocked()) {
 				c.cc.onPersistentCongestion()
+				c.rtt.resetAfterPersistentCongestion() // §5.2 SHOULD
 				c.persistentCongestions++
 			}
 		}
