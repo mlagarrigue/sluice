@@ -578,6 +578,41 @@ func checkTLSConfig(cfg *tls.Config) error {
 	return requireTLS13(cfg)
 }
 
+// clientTLSConfig is cfg as a client handshake uses it: the caller's own
+// when it carries no session cache, otherwise a copy whose cache hands each
+// ticket out once (singleUseSessionCache). The copy leaves the caller's
+// Config untouched — it may be shared with other dialers, or with a TCP
+// listener.
+func clientTLSConfig(cfg *tls.Config) *tls.Config {
+	if cfg.ClientSessionCache == nil {
+		return cfg
+	}
+	c := cfg.Clone()
+	c.ClientSessionCache = singleUseSessionCache{inner: cfg.ClientSessionCache}
+	return c
+}
+
+// singleUseSessionCache hands each session out once: RFC 9001 §4.5 and RFC
+// 8446 Appendix C.4 have a client not reuse a ticket, since a ticket seen
+// twice on the path ties the two connections together for any observer.
+// crypto/tls's own LRU cache keeps an entry across any number of Gets, so
+// the entry is removed as it is taken — Put with a nil session is the
+// interface's way to remove — and the ticket the server issues on the
+// resumed connection puts the next one in. An inner cache that ignores the
+// removal reuses tickets, which is then its caller's decision. Safe for
+// concurrent use when the inner cache is, as the interface requires.
+type singleUseSessionCache struct{ inner tls.ClientSessionCache }
+
+func (c singleUseSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
+	cs, ok := c.inner.Get(key)
+	if ok {
+		c.inner.Put(key, nil)
+	}
+	return cs, ok
+}
+
+func (c singleUseSessionCache) Put(key string, cs *tls.ClientSessionState) { c.inner.Put(key, cs) }
+
 // requireALPN refuses a tls.Config that names no application protocol. QUIC
 // mandates ALPN (RFC 9001 §8.1): against a conformant peer the handshake
 // would fail anyway, mid-flight, with a bare no_application_protocol alert —
@@ -629,7 +664,19 @@ func requireTLS13(cfg *tls.Config) error {
 // A cfg with a [tls.ClientSessionCache] resumes a session the server has
 // issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
 // round trip and no 0-RTT data is sent — this package carries nothing in
-// 0-RTT packets, even when the server offers to accept them.
+// 0-RTT packets, even when the server offers to accept them. A ticket is
+// presented once: Dial wraps the cache, on a copy of cfg, so that a ticket
+// taken out of it is removed — RFC 9001 §4.5 and RFC 8446 Appendix C.4,
+// since a ticket reused lets anyone on the path tie the connections
+// together — and the ticket the server issues on the resumed connection
+// refills it. A cache that ignores Put(key, nil) reuses its tickets
+// anyway; that is the caller's choice to make, not the default.
+//
+// crypto/tls refuses RSA keys under 1024 bits and no more. RFC 8446
+// Appendix C.2 asks applications to hold certification paths to at least
+// 2048-bit RSA or 224-bit ECDSA: a cfg that wants that enforces it in
+// VerifyConnection, on the public keys of [tls.ConnectionState.PeerCertificates]
+// (an *rsa.PublicKey's N.BitLen()); this package adds no bound of its own.
 //
 // The handshake gives up after [DefaultHandshakeTimeout]; [DialContext]
 // takes a context instead.
@@ -680,7 +727,7 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 		_ = c.Close() // newConn started the timer loop; an early failure must stop it
 		return nil, err
 	}
-	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: cfg})
+	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: clientTLSConfig(cfg)})
 	if err := c.handshake(ctx); err != nil {
 		return nil, err // the handshake path closes on every failure
 	}
