@@ -771,6 +771,14 @@ func (s *h2Server) expireAssembly() error {
 // open indefinitely for the cost of one refusal each, which is the rapid-reset
 // shape with the roles swapped.
 func (s *h2Server) reset(se streamError) error {
+	if s.streams[se.id] == nil && s.closed[se.id] == stateClosed {
+		// The stream is closed already — the peer reset it, or it finished —
+		// and RFC 9113 §5.1 forbids any frame but PRIORITY on a closed
+		// stream: the failure is noted on this side and nothing is sent.
+		// Not counted against the reset allowance either: no reset left.
+		s.w.forget(se.id)
+		return nil
+	}
 	if err := s.countReset(); err != nil {
 		return fmt.Errorf("%w: %w", err, se.err)
 	}
@@ -1700,7 +1708,7 @@ func (s *h2Server) answer(got *h2Applied) {
 				out, err = s.appendHead(sent.out, a.id, method, r, maxFrame)
 			}
 			if err != nil {
-				_ = s.w.control32(frameRSTStream, a.id, errInternalError)
+				_ = s.w.reset(a.id, errInternalError)
 				s.w.forget(a.id)
 				a.skip = true
 				s.answers = append(s.answers, a)
@@ -2021,7 +2029,7 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length in
 		// yield the length it declared. Only its own stream pays: it is
 		// reset, as the response that cannot be framed is, and the
 		// connection carries on serving the others.
-		_ = s.w.control32(frameRSTStream, id, errInternalError)
+		_ = s.w.reset(id, errInternalError)
 		s.w.forget(id)
 		return
 	}
@@ -2032,7 +2040,7 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length in
 			// The body is out: a refused trailer resets the stream, as a
 			// producer that panicked does, so the client never reads the
 			// answer as whole.
-			_ = s.w.control32(frameRSTStream, id, errInternalError)
+			_ = s.w.reset(id, errInternalError)
 			s.w.forget(id)
 			return
 		}

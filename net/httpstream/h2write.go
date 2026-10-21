@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -171,6 +172,7 @@ type h2Writer struct {
 	// The read goroutine credits them through credit and creditConn.
 	connWind int32
 	windows  map[uint32]int32
+	gone     []uint32 // streams forgotten lately, newest last (see forget)
 	initial  int32
 	// maxFrame is the largest payload a frame leaves with: the peer's
 	// SETTINGS_MAX_FRAME_SIZE, capped by setMaxFrame.
@@ -863,6 +865,20 @@ func (w *h2Writer) waitCtrlLocked() error {
 // 32-bit word — RST_STREAM's code, WINDOW_UPDATE's increment — from a stack
 // array: AppendFrame copies the payload into ctrl, so nothing needs the heap
 // slice a per-frame make would cost.
+// reset sends RST_STREAM with code on id, unless the stream was forgotten
+// already — reset by the peer or finished — in which case RFC 9113 §5.1
+// forbids the frame and nothing goes out.
+func (w *h2Writer) reset(id, code uint32) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if slices.Contains(w.gone, id) {
+		return nil
+	}
+	var p [4]byte
+	be32put(p[:], code)
+	return w.controlLocked(h2Frame{Type: frameRSTStream, StreamID: id, Payload: p[:]})
+}
+
 func (w *h2Writer) control32(typ byte, id, v uint32) error {
 	var p [4]byte
 	be32put(p[:], v)
@@ -901,6 +917,15 @@ func (w *h2Writer) forget(id uint32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.windows, id)
+	// Remembered so that a late failure on this stream — a head that cannot
+	// be framed, a producer that panicked — does not send a RST_STREAM to a
+	// stream the peer already closed (RFC 9113 §5.1). A short ring: the
+	// identifiers grow, and a stream forgotten long ago has nothing left
+	// that could fail.
+	w.gone = append(w.gone, id)
+	if len(w.gone) > 64 {
+		w.gone = w.gone[1:]
+	}
 	kept := w.jobs[:0]
 	for _, j := range w.jobs {
 		if j.id != id {
