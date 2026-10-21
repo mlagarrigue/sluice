@@ -2049,3 +2049,123 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 		t.Error("the new path's acknowledgement gave no round-trip sample")
 	}
 }
+
+// challengeFromNewAddress builds a confirmed server whose peer pool holds
+// "peercid0", in use on the path, plus fresh identifiers "peercid1",
+// "peercid2", …, and feeds it one sealed 1-RTT datagram from a new address,
+// naming the local identifier given and carrying a PATH_CHALLENGE padded to
+// 1200 bytes: RFC 9000 §9.5's probe of a new path when the identifier is
+// not the path's, a NAT rebinding when it is. Returns what it takes to send
+// more from that address.
+func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
+	t.Helper()
+	pc = &recordingPC{addr: fakeFuzzAddr("np:self")}
+	c = newConn(pc, fakeFuzzAddr("np:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	secrets, err := initialSecrets([]byte("np secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, _ := newPacketOpener(secrets.Client)
+	sealer, _ := newPacketSealer(secrets.Server)
+	peerSealer, _ := newPacketSealer(secrets.Client)
+	c.mu.Lock()
+	c.spaces[spaceApplication].opener = opener
+	c.spaces[spaceApplication].sealer = sealer
+	c.handshakeConfirmed = true
+	c.localCIDs = append(c.localCIDs, localCID{seq: 1, cid: []byte("selfcid1")})
+	for i := 1; i <= fresh; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: []byte("peercid" + string(rune('0'+i)))})
+	}
+	c.mu.Unlock()
+	seal = func(pn uint64, payload []byte) []byte {
+		const pnLen = 4
+		header := []byte{0x40 | byte(pnLen-1)}
+		header = append(header, named...)
+		pnOffset := len(header)
+		header = append(header, byte(pn>>24), byte(pn>>16), byte(pn>>8), byte(pn))
+		pkt, err := peerSealer.Seal(nil, header, payload, pn, pnOffset, pnLen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkt
+	}
+	challenge := AppendVarint(nil, framePathChallenge)
+	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
+	challenge = append(challenge, make([]byte, 1200-len(challenge)-1-8-4-16)...) // PADDING frames
+	newAddr = fakeFuzzAddr("np:peerB")
+	if err := c.receive(seal(1, challenge), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	w := pc.recorded()
+	if len(w) != 1 || !sameAddr(w[0].to, newAddr) {
+		t.Fatalf("writes = %d, want one to %v", len(w), newAddr)
+	}
+	return c, pc, newAddr, seal
+}
+
+// answerDCID is the destination identifier the n-th recorded datagram's
+// short header names, identifiers being 8 bytes in these tests.
+func answerDCID(pc *recordingPC, n int) []byte {
+	return pc.recorded()[n].data[1:9]
+}
+
+// RFC 9000 §9.5: a peer probing a new path does so under a new identifier
+// of this end, and the answer must not name the identifier in use toward
+// the old address, or an observer links the two paths. The answer takes a
+// pooled identifier never used, a repeat of the challenge the same one,
+// and the migration that follows adopts it rather than burning another.
+func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
+	c, pc, newAddr, seal := challengeFromNewAddress(t, []byte("selfcid1"), 2)
+	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid1")) {
+		t.Fatalf("answer to the new address names %q, want the never-used peercid1", got)
+	}
+	// The repeat (the first answer may have been lost) names the same one.
+	challenge := AppendVarint(nil, framePathChallenge)
+	challenge = append(challenge, 8, 7, 6, 5, 4, 3, 2, 1)
+	challenge = append(challenge, make([]byte, 1200-len(challenge)-1-8-4-16)...)
+	if err := c.receive(seal(2, challenge), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	if got := answerDCID(pc, 1); !bytes.Equal(got, []byte("peercid1")) {
+		t.Fatalf("repeated answer names %q, want peercid1 again", got)
+	}
+	// The migration adopts the identifier the answers went under.
+	if err := c.receive(seal(3, AppendVarint(nil, framePing)), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	dcid, seq, migrations := c.dcid, c.currentPeerSeq, c.migrations
+	var unused []uint64
+	for _, e := range c.peerCIDs {
+		if !e.used {
+			unused = append(unused, e.seq)
+		}
+	}
+	c.mu.Unlock()
+	if migrations != 1 || !bytes.Equal(dcid, []byte("peercid1")) || seq != 1 {
+		t.Errorf("after the migration dcid = %q (seq %d, migrations %d), want peercid1 (seq 1, 1 migration)", dcid, seq, migrations)
+	}
+	if len(unused) != 1 || unused[0] != 2 {
+		t.Errorf("unused peer identifiers = %v, want [2]: the migration adopted the answer's rather than taking another", unused)
+	}
+}
+
+// §9.5's exception: a challenge from a new address under the identifier
+// the path in use already names is a NAT rebinding, and the current
+// identifier serves.
+func TestRebindChallengeIsAnsweredUnderTheCurrentCID(t *testing.T) {
+	_, pc, _, _ := challengeFromNewAddress(t, []byte("selfcid0"), 2)
+	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid0")) {
+		t.Fatalf("answer to the rebound address names %q, want the current peercid0", got)
+	}
+}
+
+// With no pooled identifier to take, the answer goes under the current one
+// rather than not at all: §9.3 owes it.
+func TestNewPathChallengeWithAnEmptyPoolIsStillAnswered(t *testing.T) {
+	_, pc, _, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
+	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid0")) {
+		t.Fatalf("answer names %q, want peercid0, the only identifier the peer issued", got)
+	}
+}

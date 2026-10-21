@@ -395,6 +395,18 @@ type Conn struct {
 	lastValidatedPeer net.Addr
 	lastValidatedPC   net.PacketConn
 	lastValidatedSeq  uint64
+	// pathLocalSeq is the local identifier the path in use last received
+	// under: what tells a challenge from a new address apart — the peer
+	// probing a new path under a new identifier (§9.5), answered under a
+	// fresh one of its own — from a NAT rebinding, which keeps the
+	// identifier and may keep the answer's (§9.5's exception).
+	pathLocalSeq uint64
+	// answeredFrom and answeredCID are the new address whose challenge was
+	// last answered under a fresh peer identifier, and that identifier: a
+	// repeat of the challenge is answered under the same one, and a
+	// migration to that address adopts it rather than taking another.
+	answeredFrom net.Addr
+	answeredCID  []byte
 
 	// rxFrom, rxDatagramLen, rxLocalCIDSeq and rxHighest describe the
 	// datagram currently being processed — its source address, its size,

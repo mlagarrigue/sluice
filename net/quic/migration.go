@@ -467,12 +467,15 @@ func probingOnly(frames []Frame) bool {
 func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.isClient || !c.handshakeConfirmed {
-		return
-	}
 	addrChanged := c.rxFrom != nil && !sameAddr(c.rxFrom, c.peer)
 	viaChanged := c.rxVia != nil && c.rxVia != c.pc
 	if !addrChanged && !viaChanged {
+		// On the path in use: the identifier this packet named is the
+		// path's, whatever rotation the peer made (§5.1.2).
+		c.pathLocalSeq = c.rxLocalCIDSeq
+		return
+	}
+	if c.isClient || !c.handshakeConfirmed {
 		return
 	}
 	if !c.rxHighest || probingOnly(frames) {
@@ -489,6 +492,7 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		return
 	}
 	c.pc = c.rxVia
+	c.pathLocalSeq = c.rxLocalCIDSeq
 	if c.pathProbe.via == c.rxVia {
 		// The client answered — or is answering — the probe this end
 		// sent from this socket (§9.6.2); the identifier it went under
@@ -527,11 +531,12 @@ func (c *Conn) resetPathStateLocked(now time.Time) {
 // §8.1 amplification limit until a PATH_CHALLENGE round trip validates it,
 // and the congestion window and round-trip estimate restart from their
 // initial state because the old path's measurements are not evidence about
-// the new one (§9.4). The destination identifier moves to a never-used one
-// if the peer issued any (§9.5) — retiring nothing: the old identifier may
-// still be answering stragglers on the old path. via, when non-nil, is the
-// local socket the move also lands on (the listener's preferred-address
-// one, §9.6). Callers hold mu.
+// the new one (§9.4). The destination identifier moves to the one the
+// address's challenge was answered under, if the peer probed first, else to
+// a never-used one if the peer issued any (§9.5) — retiring nothing: the
+// old identifier may still be answering stragglers on the old path. via,
+// when non-nil, is the local socket the move also lands on (the listener's
+// preferred-address one, §9.6). Callers hold mu.
 func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	newPC := c.pc
 	if via != nil {
@@ -560,12 +565,16 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	}
 	c.peer = to
 	c.pc = newPC
+	c.pathLocalSeq = c.rxLocalCIDSeq
 	c.migrations++
 	c.amplActive = true
 	c.amplRecv = int64(c.rxDatagramLen)
 	c.amplSent = 0
 	c.resetPathStateLocked(now)
-	c.switchToFreshPeerCIDLocked()
+	if c.answeredFrom == nil || !sameAddr(to, c.answeredFrom) || !c.adoptPeerCIDLocked(c.answeredCID) {
+		c.switchToFreshPeerCIDLocked()
+	}
+	c.answeredFrom, c.answeredCID = nil, nil
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
 }
@@ -792,6 +801,9 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		// keeps it on the original address — a stay, not a fault.
 		return
 	}
+	if dcid == nil && !onPath && len(c.dcid) > 0 {
+		dcid = c.newPathCIDLocked()
+	}
 	const responseLen = 1 + 8 // type, data
 	per := c.maxStreamChunk() / responseLen * responseLen
 	for len(responses) > 0 {
@@ -846,6 +858,44 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 	return append(AppendVarint(nil, framePathChallenge), data...), cid
 }
 
+// newPathCIDLocked chooses the peer identifier a PATH_RESPONSE to an
+// address other than the path's goes under. §9.5: a peer that probes a new
+// path does so under a new identifier of this end, and the answer MUST NOT
+// name an identifier already used toward another address, or an observer
+// links the two paths — so the answer takes a pooled identifier never used
+// on any path, remembered so that a repeat of the challenge, and the
+// migration that follows, use the same one. The section's exception is the
+// NAT rebinding: the challenge named the identifier the path in use
+// already does, and the current identifier may serve. A client probing the
+// server's preferred address answers under the identifier set aside for
+// it (§9.6.2). An empty pool — the peer issued none beyond the one in use
+// — answers under the current identifier rather than not at all: §9.3
+// owes the response, and a conformant peer, which issues identifiers up
+// to active_connection_id_limit before probing, never gets here. Returns
+// nil for "the one in use". Callers hold mu.
+func (c *Conn) newPathCIDLocked() []byte {
+	if c.pathProbe.target != nil && sameAddr(c.rxFrom, c.pathProbe.target) {
+		return c.pathProbe.targetCID
+	}
+	if c.rxLocalCIDSeq == c.pathLocalSeq {
+		return nil
+	}
+	if c.answeredFrom != nil && sameAddr(c.rxFrom, c.answeredFrom) {
+		for i := range c.peerCIDs {
+			if bytes.Equal(c.peerCIDs[i].cid, c.answeredCID) {
+				return c.answeredCID
+			}
+		}
+		// Retired since the first answer: this one takes another.
+	}
+	cid, _, ok := c.pickFreshPeerCIDLocked()
+	if !ok {
+		return nil
+	}
+	c.answeredFrom, c.answeredCID = c.rxFrom, cid
+	return cid
+}
+
 // startPathChallengeData arms the probe state around data without sending
 // anything: the caller is putting the challenge in a packet of its own.
 // Callers hold mu.
@@ -885,13 +935,22 @@ func (c *Conn) pickFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
 // from its preferred socket the one in use, now that the connection sends
 // from that socket. Callers hold mu.
 func (c *Conn) adoptProbedCIDLocked() {
+	c.adoptPeerCIDLocked(c.pathProbe.targetCID)
+	c.pathProbe.targetCID, c.pathProbe.via = nil, nil
+}
+
+// adoptPeerCIDLocked moves this end's sends to the pooled peer identifier
+// given — one already set aside for the path being moved to — and reports
+// whether it is still in the pool. Callers hold mu.
+func (c *Conn) adoptPeerCIDLocked(cid []byte) bool {
 	for i := range c.peerCIDs {
-		if e := &c.peerCIDs[i]; bytes.Equal(e.cid, c.pathProbe.targetCID) {
+		if e := &c.peerCIDs[i]; bytes.Equal(e.cid, cid) {
 			c.dcid, c.currentPeerSeq = e.cid, e.seq
 			c.rollSpinLocked()
+			return true
 		}
 	}
-	c.pathProbe.targetCID, c.pathProbe.via = nil, nil
+	return false
 }
 
 // sendOldPathChallengeLocked sends the §9.3.3 challenge to the last
