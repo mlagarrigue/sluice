@@ -282,24 +282,138 @@ func TestH3ContentLengthMustMatchTheBody(t *testing.T) {
 	})
 }
 
-// RFC 9114 §7.1: a clean FIN inside a frame means the declared tail never
-// arrived — H3_FRAME_ERROR, not a truncated body served as an intact one.
-func TestH3FinMidFrameIsAFrameError(t *testing.T) {
-	stream := h3Request("POST", "/cut")
-	stream = quic.AppendVarint(stream, h3Data)
-	stream = quic.AppendVarint(stream, 10)
-	stream = append(stream, []byte("abc")...) // 3 of the 10 declared bytes
+// RFC 9114 §7.1: "When a stream terminates cleanly, if the last frame on the
+// stream was truncated, this MUST be treated as a connection error of type
+// H3_FRAME_ERROR" — the connection's, not the stream's: the declared tail
+// never arrived, and a framer that ends streams mid-frame cannot be trusted
+// on the next one. It used to reset the stream alone with that code. The
+// same holds while an unknown frame is being skipped unread: its bytes are
+// owed all the same.
+func TestH3FinMidFrameIsAConnectionError(t *testing.T) {
+	inData := h3Request("POST", "/cut")
+	inData = quic.AppendVarint(inData, h3Data)
+	inData = quic.AppendVarint(inData, 10)
+	inData = append(inData, []byte("abc")...) // 3 of the 10 declared bytes
 
+	inReserved := h3Request("POST", "/grease")
+	inReserved = quic.AppendVarint(inReserved, 0x21+0x1f) // a reserved type
+	inReserved = quic.AppendVarint(inReserved, 10)
+	inReserved = append(inReserved, []byte("abc")...)
+
+	for _, tt := range []struct {
+		name   string
+		stream []byte
+	}{
+		{"inside a DATA frame", inData},
+		{"inside a reserved frame being skipped", inReserved},
+		{"inside a frame header", append(h3Request("POST", "/h"), byte(h3Data))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{})
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tt.stream, true)})
+			if batch.Len() != 0 || len(failed) != 0 {
+				t.Fatalf("served or refused on the stream (batch=%d failed=%v); the connection is at fault", batch.Len(), failed)
+			}
+			connErr(t, err, h3FrameError)
+		})
+	}
+}
+
+// RFC 9114 §4.1: a stream that ends "without enough of the HTTP message to
+// provide a complete response" is aborted with H3_REQUEST_INCOMPLETE — the
+// message is short, not malformed. A FIN before any HEADERS used to be
+// H3_MESSAGE_ERROR, the code for a request that is wrong rather than
+// missing.
+func TestH3FinBeforeHeadersIsRequestIncomplete(t *testing.T) {
 	a := testAssembler(Config{})
-	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, true)})
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, nil, true)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if batch.Len() != 0 {
-		t.Fatal("a request truncated mid-frame was served")
+		t.Fatal("an empty stream was served")
 	}
-	if len(failed) != 1 || failed[0].Code != h3FrameError {
-		t.Fatalf("failed = %v, want one H3_FRAME_ERROR refusal", failed)
+	if len(failed) != 1 || failed[0].Code != h3RequestIncomplete {
+		t.Fatalf("failed = %v, want one H3_REQUEST_INCOMPLETE refusal", failed)
+	}
+}
+
+// The one-identifier frames of the control stream — GOAWAY, MAX_PUSH_ID,
+// CANCEL_PUSH — are inert for a server that never pushes, and were not read
+// at all until 2026-10-21. RFC 9114 still binds their layout (§7.1, §10.8:
+// exactly one varint, else H3_FRAME_ERROR) and their identifiers: a GOAWAY
+// may not carry a larger push ID than the previous one (§5.2), a
+// MAX_PUSH_ID may not shrink (§7.2.7), and a CANCEL_PUSH names a push this
+// server never promised (§7.2.3) — each H3_ID_ERROR.
+func TestH3ControlIdentifiersAreChecked(t *testing.T) {
+	settings := settingsFrame(h3SettingMaxFieldSection, 64)
+	id := func(typ uint64, v uint64) []byte { return appendH3Frame(nil, typ, quic.AppendVarint(nil, v)) }
+	for _, tt := range []struct {
+		name   string
+		frames [][]byte
+		code   uint64 // zero: no error
+	}{
+		{"GOAWAY then a smaller GOAWAY", [][]byte{id(h3GoAway, 8), id(h3GoAway, 4)}, 0},
+		{"GOAWAY then the same GOAWAY", [][]byte{id(h3GoAway, 8), id(h3GoAway, 8)}, 0},
+		{"GOAWAY then a larger GOAWAY", [][]byte{id(h3GoAway, 4), id(h3GoAway, 8)}, h3IDError},
+		{"a first GOAWAY at the maximum", [][]byte{id(h3GoAway, 1<<62-1)}, 0},
+		{"MAX_PUSH_ID then a larger one", [][]byte{id(h3MaxPushID, 4), id(h3MaxPushID, 8)}, 0},
+		{"MAX_PUSH_ID then the same one", [][]byte{id(h3MaxPushID, 4), id(h3MaxPushID, 4)}, 0},
+		{"MAX_PUSH_ID then a smaller one", [][]byte{id(h3MaxPushID, 8), id(h3MaxPushID, 4)}, h3IDError},
+		{"CANCEL_PUSH", [][]byte{id(h3CancelPush, 0)}, h3IDError},
+		{"GOAWAY with an empty payload", [][]byte{appendH3Frame(nil, h3GoAway, nil)}, h3FrameError},
+		{"GOAWAY with a byte after the identifier", [][]byte{appendH3Frame(nil, h3GoAway, []byte{0x04, 0x00})}, h3FrameError},
+		{"MAX_PUSH_ID cut inside the identifier", [][]byte{appendH3Frame(nil, h3MaxPushID, []byte{0x40})}, h3FrameError},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAssembler(Config{})
+			open := append(uniOpen(h3StreamControl), settings...)
+			for _, fr := range tt.frames {
+				open = append(open, fr...)
+			}
+			_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
+			if tt.code == 0 {
+				if err != nil {
+					t.Fatalf("a legal control frame failed the connection: %v", err)
+				}
+				return
+			}
+			connErr(t, err, tt.code)
+		})
+	}
+}
+
+// RFC 9114 §5.2: the GOAWAY promises every request stream below its
+// identifier an answer, and ServeH3 finishes a draining connection the
+// moment nothing is in flight. The two agree only if admitting a stream and
+// counting it in flight cannot interleave with the drain's reading of the
+// count: a stream admitted but not yet counted when the drain looked was
+// served into a connection already finishing. Here streams are admitted on
+// one goroutine while the drain is decided on another, many times over; if
+// the drain ever finds nothing in flight, nothing may be in flight after it.
+func TestH3DrainNeverFinishesOverAnAdmittedStream(t *testing.T) {
+	head := h3Request("GET", "/x") // no FIN: the stream stays in flight
+	for round := range 2000 {
+		a := testAssembler(Config{MaxConcurrentStreams: 1 << 16})
+		a.Finish = func() {}
+		start := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			<-start
+			for id := uint64(0); id < 16*4; id += 4 {
+				if _, _, _, err := a.Frames([]quic.Frame{streamFrame(id, head, false)}); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+		close(start)
+		_, idle := a.beginDrain()
+		<-done
+		if n := a.inFlight.Load(); idle && n != 0 {
+			t.Fatalf("round %d: the drain found nothing in flight, yet %d request streams are in flight after it", round, n)
+		}
 	}
 }
 

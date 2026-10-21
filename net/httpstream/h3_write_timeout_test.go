@@ -149,7 +149,7 @@ func TestH3SlowReaderAboveTheProgressFloorIsServedToTheEnd(t *testing.T) {
 	if !ended {
 		t.Fatalf("the response had not ended after %v, with %d bytes", took.Round(time.Millisecond), len(got))
 	}
-	frames, _, err := parseH3Frames(nil, got, 1<<24)
+	frames, _, _, err := parseH3Frames(nil, got, 1<<24)
 	if err != nil {
 		t.Fatalf("the response did not parse: %v", err)
 	}

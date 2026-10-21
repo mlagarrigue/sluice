@@ -451,7 +451,7 @@ func TestH3OverARealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the answer: %v", err)
 	}
-	frames, _, err := parseH3Frames(nil, reply[:n], 1<<20)
+	frames, _, _, err := parseH3Frames(nil, reply[:n], 1<<20)
 	if err != nil {
 		t.Fatalf("the answer did not parse: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestH3ControlStreamCarriesSettings(t *testing.T) {
 	if typ != h3StreamControl {
 		t.Fatalf("the stream type is %#x, want the control stream", typ)
 	}
-	frames, _, err := parseH3Frames(nil, rest, 1<<20)
+	frames, _, _, err := parseH3Frames(nil, rest, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +812,7 @@ func TestH3StreamedResponse(t *testing.T) {
 	}
 
 	// The headers carry no content-length, because the length is not known.
-	parsed, _, err := parseH3Frames(nil, heads[0], 1<<20)
+	parsed, _, _, err := parseH3Frames(nil, heads[0], 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,7 +840,7 @@ func TestH3StreamedResponse(t *testing.T) {
 	var got strings.Builder
 	bodies[0](func(b sluice.Batch[[]byte]) bool {
 		out := appendH3StreamedBody(nil, b.Items)
-		frames, _, err := parseH3Frames(nil, out, 1<<20)
+		frames, _, _, err := parseH3Frames(nil, out, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -995,7 +995,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the healthy request went unanswered: %v (conn: %v)", err, conn.Err())
 	}
-	frames, _, err := parseH3Frames(nil, reply[:n], 1<<20)
+	frames, _, _, err := parseH3Frames(nil, reply[:n], 1<<20)
 	if err != nil {
 		t.Fatalf("the answer did not parse: %v", err)
 	}
@@ -1254,7 +1254,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 			done <- err
 			return
 		}
-		frames, _, err := parseH3Frames(nil, reply[:n], 1<<20)
+		frames, _, _, err := parseH3Frames(nil, reply[:n], 1<<20)
 		if err != nil {
 			done <- err
 			return
@@ -1487,7 +1487,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("the request after the panic was not answered: %v (conn: %v)", err, conn.Err())
 	}
-	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	frames, _, _, err := parseH3Frames(nil, reply, 1<<20)
 	if err != nil {
 		t.Fatalf("the answer did not parse: %v", err)
 	}
@@ -1556,20 +1556,67 @@ func TestQPACKMarksCredentialsNeverIndexed(t *testing.T) {
 	}
 }
 
-// A frame declaring more than the stream may carry is excessive load, not a
-// malformed message, whatever its type: a reserved GREASE type the assembler
-// would otherwise skip is refused with the same code as an oversized DATA.
-func TestH3OversizedGREASEFrameIsExcessiveLoad(t *testing.T) {
-	a := testAssembler(Config{MaxBodyBytes: 1 << 10})
-	stream := quic.AppendVarint(nil, 0x21+0x1f) // a reserved frame type
-	stream = quic.AppendVarint(stream, 1<<20)
-	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream, false)})
-	if err != nil {
-		t.Fatalf("Frames failed the connection over one stream: %v", err)
+// RFC 9114 §7.2.8: a frame of a reserved type is ignored whatever its
+// length — it is skipped as its bytes arrive, nothing of it buffered, and
+// the request after it is served. It used to be refused as excessive load
+// past the body bound, which made a peer greasing with a long frame a
+// refused peer; the bound exists for what is kept, and nothing of this is.
+// The same on the control stream, where the carry buffer is bounded far
+// lower than a long GREASE frame.
+func TestH3LongReservedFrameIsSkippedUnbuffered(t *testing.T) {
+	cfg := Config{MaxBodyBytes: 1 << 10, MaxHeaderBytes: 1 << 10}
+	const long = 1 << 20 // far past both bounds
+	reserved := func() []byte {
+		stream := quic.AppendVarint(nil, 0x21+0x1f) // a reserved frame type
+		return quic.AppendVarint(stream, long)
 	}
-	if len(failed) != 1 || failed[0].Code != h3ExcessiveLoad {
-		t.Fatalf("Frames reported %v, want one H3_EXCESSIVE_LOAD stream error", failed)
-	}
+
+	t.Run("on a request stream", func(t *testing.T) {
+		a := testAssembler(cfg)
+		var released uint64
+		a.Credit = func(_, n uint64) { released += n }
+		stream := append(reserved(), make([]byte, long)...)
+		stream = append(stream, h3Request("GET", "/after")...)
+		var served int
+		for len(stream) > 0 {
+			n := min(1200, len(stream))
+			batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, stream[:n], n == len(stream))})
+			if err != nil || len(failed) != 0 {
+				t.Fatalf("Frames: err=%v failed=%v", err, failed)
+			}
+			served += batch.Len()
+			if st := a.streams[0]; st != nil && len(st.buf) > 1200 {
+				t.Fatalf("%d bytes of a reserved frame buffered", len(st.buf))
+			}
+			stream = stream[n:]
+		}
+		if served != 1 {
+			t.Fatalf("served %d requests after the reserved frame, want 1", served)
+		}
+		// Everything was consumed: the skipped frame and the request's
+		// HEADERS, decoded on arrival.
+		if want := uint64(len(reserved())) + long + uint64(len(h3Request("GET", "/after"))); released != want {
+			t.Fatalf("released %d bytes to flow control, want %d: the skipped frame is consumed", released, want)
+		}
+	})
+
+	t.Run("on the control stream", func(t *testing.T) {
+		a := testAssembler(cfg)
+		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
+		open = append(open, reserved()...)
+		open = append(open, make([]byte, long)...)
+		open = append(open, appendH3Frame(nil, h3MaxPushID, quic.AppendVarint(nil, 8))...)
+		for len(open) > 0 {
+			n := min(1200, len(open))
+			if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open[:n], false)}); err != nil {
+				t.Fatalf("Frames: %v", err)
+			}
+			open = open[n:]
+		}
+		if a.peerMaxPush != 8 {
+			t.Fatalf("the MAX_PUSH_ID after the reserved frame was not read: %d", a.peerMaxPush)
+		}
+	})
 }
 
 // A static-table hit is a view of the table and the section's literals share
@@ -1708,7 +1755,7 @@ func readH3GoAways(t *testing.T, control *quic.Stream, n int) []uint64 {
 		m, err := control.Read(tmp)
 		raw = append(raw, tmp[:m]...)
 		if _, body, verr := quic.Varint(raw); verr == nil {
-			frames, _, perr := parseH3Frames(nil, body, 1<<20)
+			frames, _, _, perr := parseH3Frames(nil, body, 1<<20)
 			if perr != nil {
 				t.Fatalf("the control stream did not parse: %v", perr)
 			}
@@ -1852,7 +1899,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 			t.Fatalf("reading the answer: %v", err)
 		}
 	}
-	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	frames, _, _, err := parseH3Frames(nil, reply, 1<<20)
 	if err != nil {
 		t.Fatalf("the answer did not parse: %v", err)
 	}
@@ -2007,7 +2054,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 		code, reset := s.WasReset()
 		t.Fatalf("the early request: %v (reset %v, code %#x), want its answer", err, reset, code)
 	}
-	frames, _, err := parseH3Frames(nil, reply, 1<<20)
+	frames, _, _, err := parseH3Frames(nil, reply, 1<<20)
 	if err != nil {
 		t.Fatalf("the answer did not parse: %v", err)
 	}

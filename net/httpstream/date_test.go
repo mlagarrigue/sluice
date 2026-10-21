@@ -149,7 +149,7 @@ func readH3Fields(t *testing.T, s *quic.Stream) map[string][]string {
 	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("the response stream ended with %v", err)
 	}
-	frames, _, err := parseH3Frames(nil, raw, 1<<24)
+	frames, _, _, err := parseH3Frames(nil, raw, 1<<24)
 	if err != nil {
 		t.Fatalf("the response did not parse: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestDateFollowsTheStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			frames, _, err := parseH3Frames(nil, h3, 1<<24)
+			frames, _, _, err := parseH3Frames(nil, h3, 1<<24)
 			if err != nil {
 				t.Fatal(err)
 			}

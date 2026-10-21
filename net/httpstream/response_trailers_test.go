@@ -122,7 +122,7 @@ func TestResponseTrailersReachAnHTTP3Client(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: the response stream ended with %v", path, err)
 		}
-		frames, _, err := parseH3Frames(nil, raw, 1<<24)
+		frames, _, _, err := parseH3Frames(nil, raw, 1<<24)
 		if err != nil {
 			t.Fatalf("%s: the response did not parse: %v", path, err)
 		}

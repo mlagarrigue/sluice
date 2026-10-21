@@ -1774,7 +1774,7 @@ func TestBareHeadResponseStatesNoContentLength(t *testing.T) {
 		if err != nil {
 			t.Fatalf("h3: %s: %v", tc.name, err)
 		}
-		frames, rest, err := parseH3Frames(nil, out, 1<<24)
+		frames, rest, _, err := parseH3Frames(nil, out, 1<<24)
 		if err != nil || len(frames) != 1 || frames[0].Type != h3Headers || len(rest) != 0 {
 			t.Fatalf("h3: %s: %d frames, %d bytes left, %v; want one HEADERS", tc.name, len(frames), len(rest), err)
 		}

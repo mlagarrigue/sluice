@@ -219,7 +219,7 @@ func TestResponseContentLengthOverHTTP3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("/exact: the response stream ended with %v", err)
 	}
-	frames, _, err := parseH3Frames(nil, raw, 1<<24)
+	frames, _, _, err := parseH3Frames(nil, raw, 1<<24)
 	if err != nil || len(frames) == 0 {
 		t.Fatalf("/exact: %d frames, %v", len(frames), err)
 	}

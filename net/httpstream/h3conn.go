@@ -47,6 +47,13 @@ type h3Assembler struct {
 	// stream this connection rejects (§5.2: "the indicated identifier or
 	// greater are rejected"), zero when none was ever admitted.
 	rejectFrom uint64
+	// finished records that Finish was decided — the draining connection
+	// had nothing in flight, under mu — after which admit rejects every
+	// request stream, those below rejectFrom included (§5.2 lets a server
+	// reject individual requests below the identifier it announced).
+	// Without it a stream below the identifier arriving after the decision
+	// was admitted into a connection already closing: served, then cut.
+	finished bool
 	// inFlight counts the request streams admitted and not yet retired:
 	// still assembling, queued for the handler, being handled or being
 	// answered. The assembler retires a stream that leaves without a
@@ -115,6 +122,14 @@ type h3Assembler struct {
 	// a SETTINGS frame of MaxHeaderBytes holds thousands of identifiers, and
 	// a map of them all lived as long as the connection.
 	peerFieldSection uint64
+	// peerGoAway is the push identifier the client's last GOAWAY carried, one
+	// past the largest possible until it sends one: a later GOAWAY may not
+	// carry a larger one (§5.2, H3_ID_ERROR). peerMaxPush is the client's
+	// last MAX_PUSH_ID, which may not decrease (§7.2.7, H3_ID_ERROR). This
+	// server never pushes, so neither changes what it does; they are kept
+	// for the two checks alone.
+	peerGoAway  uint64
+	peerMaxPush uint64
 
 	batch  []Request
 	ids    []uint64
@@ -140,7 +155,11 @@ type h3Assembler struct {
 const maxRefusedRemembered = 256
 
 type h3Stream struct {
-	buf     []byte
+	buf []byte
+	// skip is what is left of an unknown frame being discarded off the
+	// stream (parseH3Frames, skipAhead): its bytes never enter buf. A FIN
+	// while it is owed is a truncated last frame, §7.1's connection error.
+	skip    uint64
 	headers []Header
 	req     Request
 	gotHead bool
@@ -182,6 +201,9 @@ type h3Uni struct {
 	// H3Stream* types, or uniKindUnknown for a type this server discards.
 	kind int
 	buf  []byte
+	// skip is what is left of an unknown frame being discarded off the
+	// control stream (parseH3Frames, skipAhead): its bytes never enter buf.
+	skip uint64
 }
 
 // uniKindUnknown marks a typed unidirectional stream this server does not
@@ -202,6 +224,8 @@ func newH3Assembler(cfg Config) *h3Assembler {
 		streams: make(map[uint64]*h3Stream),
 		refused: make(map[uint64]struct{}),
 		unis:    make(map[uint64]*h3Uni),
+		// §5.2: a client's GOAWAY carries a push ID, at most 2^62-1.
+		peerGoAway: 1 << 62,
 	}
 }
 
@@ -271,6 +295,7 @@ const (
 	h3FrameUnexpected      = 0x0105
 	h3FrameError           = 0x0106
 	h3ExcessiveLoad        = 0x0107
+	h3IDError              = 0x0108
 	h3SettingsError        = 0x0109
 	h3MissingSettings      = 0x010a
 	h3RequestRejected      = 0x010b
@@ -408,17 +433,17 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		}
 		st := a.streams[f.StreamID]
 		if st == nil {
-			if !a.admit(f.StreamID) {
-				// Past the GOAWAY's identifier: §5.2 has the server reject
-				// what it said it would, and REQUEST_REJECTED is the code
-				// that says nothing was processed, so the client retries
-				// elsewhere.
+			switch a.admit(f.StreamID) {
+			case admitPastGoAway:
+				// Past the GOAWAY's identifier, or after the drain found
+				// nothing left to serve: §5.2 has the server reject what it
+				// said it would, and REQUEST_REJECTED is the code that says
+				// nothing was processed, so the client retries elsewhere.
 				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: stream %d opened after GOAWAY(%d)",
 					ErrH3Protocol, f.StreamID, a.rejectFrom))
 				a.release(f.StreamID, len(f.Data))
 				continue
-			}
-			if a.inFlight.Load() >= int64(a.cfg.MaxConcurrentStreams) {
+			case admitOverLimit:
 				// §5.2 wants a request refused rather than a connection lost
 				// when a server is at its limit, and REQUEST_REJECTED tells
 				// the client nothing was processed so it may retry elsewhere.
@@ -438,7 +463,6 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			}
 			st = &h3Stream{declared: -1, deadline: now.Add(a.cfg.ReadTimeout)}
 			a.streams[f.StreamID] = st
-			a.inFlight.Add(1)
 		}
 		// The unparsed bytes are framing, not body: a request whose body is
 		// exactly MaxBodyBytes arrives as its HEADERS frame plus a DATA
@@ -512,17 +536,23 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			a.continues = append(a.continues, h3Continue{StreamID: f.StreamID})
 		}
 		if f.Fin {
-			if !st.gotHead {
-				a.fail(f.StreamID, h3MessageError, fmt.Errorf("%w: a stream ended before its HEADERS", ErrH3Protocol))
-				continue
+			if len(st.buf) > 0 || st.skip > 0 {
+				// A clean FIN inside a frame is a connection error of type
+				// H3_FRAME_ERROR (RFC 9114 §7.1: "if the last frame on the
+				// stream was truncated, this MUST be treated as a connection
+				// error"): the tail the peer declared never arrived, and a
+				// framer that ends streams mid-frame cannot be trusted on
+				// the next one either. Until 2026-10-21 the stream alone was
+				// reset with that code — the right code at the wrong scope.
+				return sluice.Batch[Request]{}, nil, a.failed, h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
+					"%w: stream %d ended inside a frame, %d bytes short", ErrH3Protocol, f.StreamID, len(st.buf)+int(st.skip))} //nolint:gosec // G115: skip is under the stream's bound, far below 2^63
 			}
-			if len(st.buf) > 0 {
-				// A clean FIN inside a frame is H3_FRAME_ERROR (RFC 9114
-				// §7.1): the tail the peer declared never arrived, and
-				// serving the request without it would deliver a truncated
-				// body as an intact one.
-				a.fail(f.StreamID, h3FrameError, fmt.Errorf(
-					"%w: the stream ended inside a frame, %d bytes short", ErrH3Protocol, len(st.buf)))
+			if !st.gotHead {
+				// §4.1: a stream that ends "without enough of the HTTP
+				// message to provide a complete response" is aborted with
+				// H3_REQUEST_INCOMPLETE — a message that is short, not one
+				// that is malformed. It used to be H3_MESSAGE_ERROR.
+				a.fail(f.StreamID, h3RequestIncomplete, fmt.Errorf("%w: a stream ended before its HEADERS", ErrH3Protocol))
 				continue
 			}
 			if st.declared >= 0 && st.declared != len(st.req.Body) {
@@ -728,51 +758,81 @@ func (a *h3Assembler) Forget(id uint64) {
 	}
 }
 
-// admit decides, under mu, whether a new request stream may be served: not
-// once the GOAWAY is decided and the stream is at or past its identifier.
-// An admitted stream raises last, which is what the GOAWAY will be computed
-// from — a stream refused later for the concurrency limit raises it too,
-// which §5.2 allows ("servers MAY reject individual requests on streams
-// below the indicated ID").
-func (a *h3Assembler) admit(id uint64) bool {
+// admission is admit's verdict on a new request stream.
+type admission uint8
+
+const (
+	admitted        admission = iota
+	admitPastGoAway           // at or past the GOAWAY's identifier, or the drain is over
+	admitOverLimit            // MaxConcurrentStreams request streams are in flight
+)
+
+// admit decides, under mu, whether a new request stream may be served, and
+// counts it in flight in the same critical section: not once the GOAWAY is
+// decided and the stream is at or past its identifier, nor once the drain
+// found nothing left to serve, nor over the concurrency limit. A stream
+// that raises last is what the GOAWAY will be computed from — one refused
+// for the concurrency limit raises it too, which §5.2 allows ("servers MAY
+// reject individual requests on streams below the indicated ID").
+//
+// Admitting and counting under one lock is what makes the GOAWAY's promise
+// hold: beginDrain reads the count under the same lock, so a stream is
+// either counted before the drain looks — and waited for — or rejected.
+// Until 2026-10-21 the count was raised after admit returned, and a drain
+// deciding in between saw nothing in flight, finished the connection, and
+// cut the request it had just promised to serve.
+func (a *h3Assembler) admit(id uint64) admission {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.draining && id >= a.rejectFrom {
-		return false
+	if a.draining && (a.finished || id >= a.rejectFrom) {
+		return admitPastGoAway
 	}
 	if !a.accepted || id > a.last {
 		a.accepted, a.last = true, id
 	}
-	return true
+	if a.inFlight.Load() >= int64(a.cfg.MaxConcurrentStreams) {
+		return admitOverLimit
+	}
+	a.inFlight.Add(1)
+	return admitted
 }
 
 // beginDrain decides the GOAWAY, under mu, and returns the identifier it
-// carries: the request stream after the highest one admitted, or zero when
-// none was. From here on admit rejects every stream from that identifier.
-func (a *h3Assembler) beginDrain() uint64 {
+// carries — the request stream after the highest one admitted, or zero when
+// none was — and whether nothing is in flight, in which case the caller
+// calls Finish and no later stream is admitted. From here on admit rejects
+// every stream from that identifier.
+func (a *h3Assembler) beginDrain() (from uint64, idle bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.draining = true
 	if a.accepted {
 		a.rejectFrom = a.last + 4
 	}
-	return a.rejectFrom
+	if a.inFlight.Load() == 0 {
+		a.finished = true
+	}
+	return a.rejectFrom, a.finished
 }
 
 // retire takes one request stream out of the in-flight count and, when it
-// was the last one of a draining connection, calls Finish. The count is
-// read after the decrement and the flag after that, under mu; beginDrain
-// sets the flag under mu before it reads the count: whichever of the two
-// runs second sees the other's write, so a connection that empties as the
-// GOAWAY is decided is finished exactly once, by one of them.
+// was the last one of a draining connection, calls Finish. The decision is
+// made under mu, where admit raises the count and beginDrain sets the flag:
+// a stream admitted as the last one retires is counted before the decision
+// reads the count, and a connection that empties as the GOAWAY is decided
+// is finished exactly once, by whichever of retire and beginDrain runs
+// second.
 func (a *h3Assembler) retire() {
 	if a.inFlight.Add(-1) != 0 {
 		return
 	}
 	a.mu.Lock()
-	draining := a.draining
+	finish := a.draining && !a.finished && a.inFlight.Load() == 0
+	if finish {
+		a.finished = true
+	}
 	a.mu.Unlock()
-	if draining && a.Finish != nil {
+	if finish && a.Finish != nil {
 		a.Finish()
 	}
 }
@@ -843,14 +903,17 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 			u.buf = nil
 		}
 	case h3StreamControl:
-		// Control frames are small; a frame that cannot fit under the header
-		// bound is not one this server reads, so the carry buffer is bounded
-		// by what ParseH3Frames below will accept plus its header.
-		if len(u.buf)+len(f.Data) > a.cfg.MaxHeaderBytes+16 {
-			return h3ConnectionError{Code: h3ExcessiveLoad, Err: fmt.Errorf(
-				"%w: a control-stream frame over %d bytes", ErrTooLarge, a.cfg.MaxHeaderBytes)}
-		}
-		u.buf = append(u.buf, f.Data...)
+		// What is left of an unknown frame goes by unread (§7.2.8). The
+		// carry buffer holds at most one incomplete frame this server
+		// reads, under MaxHeaderBytes plus its header: parseH3Frames
+		// refuses a longer known frame on its declaration and skips an
+		// unknown one unbuffered, so what controlFrames keeps is bounded
+		// without a check of its own. Until 2026-10-21 the bound was
+		// checked on arrival, which refused a long GREASE frame the
+		// section says to ignore.
+		data, skip := skipAhead(f.Data, u.skip)
+		u.skip = skip
+		u.buf = append(u.buf, data...)
 	case h3StreamQPACKEncode, h3StreamQPACKDecode:
 		// Each instruction is consumed as soon as it is whole, so what parks
 		// here is at most one integer's few bytes.
@@ -893,8 +956,10 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
 		}
 	}
-	frames, rest, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
-	a.frames = frames
+	frames, rest, skip, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
+	// Added, not set: a skip still owed emptied the buffer before the parse,
+	// which then started none; a parse that started one found none owed.
+	a.frames, u.skip = frames, u.skip+skip
 	if err != nil {
 		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
 		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
@@ -933,9 +998,47 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 		case h3GoAway, h3MaxPushID, h3CancelPush:
 			// Legal here, and inert: this server never pushes and announces
 			// its own shutdown by closing, so there is nothing to act on.
+			// Their payloads are still held to their layout (§7.1, §10.8:
+			// exactly one identifier) and to the identifier rules of §5.2,
+			// §7.2.3 and §7.2.7 — each a MUST for a connection error, and
+			// each a peer whose framer or push state is wrong.
+			if err := a.controlIdentifier(fr); err != nil {
+				return err
+			}
 		}
 	}
 	u.buf = keepRest(u.buf, rest)
+	return nil
+}
+
+// controlIdentifier checks the one-identifier frames of the control stream:
+// a GOAWAY carrying a push ID larger than the previous one (§5.2), a
+// MAX_PUSH_ID smaller than the previous one (§7.2.7), and any CANCEL_PUSH
+// at all — it names a push ID "not yet mentioned by a PUSH_PROMISE frame"
+// (§7.2.3), since this server promises none — are connection errors of type
+// H3_ID_ERROR; a payload that is not exactly one varint is H3_FRAME_ERROR.
+func (a *h3Assembler) controlIdentifier(fr h3Frame) error {
+	id, err := h3Identifier(fr.Payload)
+	if err != nil {
+		return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf("frame %#x: %w", fr.Type, err)}
+	}
+	switch fr.Type {
+	case h3GoAway:
+		if id > a.peerGoAway {
+			return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
+				"%w: GOAWAY(%d) after GOAWAY(%d)", ErrH3Protocol, id, a.peerGoAway)}
+		}
+		a.peerGoAway = id
+	case h3MaxPushID:
+		if id < a.peerMaxPush {
+			return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
+				"%w: MAX_PUSH_ID(%d) after MAX_PUSH_ID(%d)", ErrH3Protocol, id, a.peerMaxPush)}
+		}
+		a.peerMaxPush = id
+	case h3CancelPush:
+		return h3ConnectionError{Code: h3IDError, Err: fmt.Errorf(
+			"%w: CANCEL_PUSH(%d) for a push never promised", ErrH3Protocol, id)}
+	}
 	return nil
 }
 
@@ -1075,7 +1178,14 @@ func (a *h3Assembler) rawStreamBound() int {
 // has not arrived. A QUIC stream is a byte stream: a frame split across two
 // datagrams is ordinary rather than an error.
 func (a *h3Assembler) drain(st *h3Stream) error {
-	frames, rest, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
+	if st.skip > 0 {
+		// The buffer is this delivery alone: an unknown frame being skipped
+		// emptied it, and what the frame still owes goes by unread.
+		data, skip := skipAhead(st.buf, st.skip)
+		st.buf, st.skip = st.buf[:copy(st.buf, data)], skip
+	}
+	frames, rest, skip, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
+	st.skip += skip // one of the two is zero: a skip owed empties the buffer first
 	// A frame over the bound leaves rest at its start. A DATA frame there is
 	// judged below, after the frames ahead of it, as a body over
 	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length

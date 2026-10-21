@@ -215,12 +215,15 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
-		from := a.beginDrain()
+		from, idle := a.beginDrain()
 		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
-		if a.inFlight.Load() == 0 {
+		if idle {
+			// Decided under the assembler's lock, with the admission: a
+			// request stream arriving from here on is rejected, not served
+			// into a connection that is closing.
 			a.Finish()
 		}
 		select {

@@ -72,15 +72,28 @@ type h3Frame struct {
 // rest is always a suffix of buf — buf itself when the very first frame is
 // still incomplete, nil when everything was consumed — so the caller can tell
 // from its length alone whether anything was consumed; see keepRest.
-func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, err error) {
+//
+// A frame of a type this layer does not know is skipped, not kept: RFC 9114
+// §7.2.8 has peers send reserved (GREASE) types precisely so that a receiver
+// which refuses the unknown is found out early, and refusing them is how a
+// protocol ossifies. One whose payload has not all arrived is skipped as far
+// as it goes, and skip says how many of its bytes are still to come — the
+// caller discards that many off the front of its next deliveries (skipAhead)
+// before parsing again. Nothing of it is buffered and no bound applies to its
+// length: the work it costs is one pass over the bytes the peer actually
+// sent, and the stream's own bound (rawStreamBound) still holds what is kept.
+// Until 2026-10-21 an unknown frame longer than maxFrame was refused like a
+// DATA frame of that size; a peer that greases with a long frame is
+// conforming, and §7.2.8 says to ignore it.
+func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, skip uint64, err error) {
 	for len(buf) > 0 {
 		typ, after, err := quic.Varint(buf)
 		if err != nil {
-			return dst, buf, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
+			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
 		length, after, err := quic.Varint(after)
 		if err != nil {
-			return dst, buf, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
+			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
 		if h3ReservedH2(typ) {
 			// RFC 9114 §7.2.8: the HTTP/2 frame types with no HTTP/3
@@ -90,32 +103,63 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			// type alone, before the payload is waited for: there is nothing
 			// in it this layer would read. They used to be skipped with the
 			// GREASE types, which the same section wants ignored.
-			return dst, nil, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
+			return dst, nil, 0, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
 				errH3FrameUnexpected, typ)
+		}
+		if !h3Known(typ) {
+			// The one exception is the four above, which §7.2.8 reserves by
+			// name.
+			if length > uint64(len(after)) {
+				return dst, nil, length - uint64(len(after)), nil
+			}
+			buf = after[length:]
+			continue
 		}
 		if maxFrame > 0 && length > uint64(maxFrame) {
 			// ErrTooLarge as well as ErrH3Protocol: a frame too long to read is the
-			// peer asking for more than it may, whatever its type — a GREASE
-			// frame included — which a request stream answers with
-			// H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.
-			return dst, buf, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
+			// peer asking for more than it may, which a request stream answers
+			// with H3_EXCESSIVE_LOAD rather than H3_MESSAGE_ERROR.
+			return dst, buf, 0, fmt.Errorf("%w: %w: a frame of %d bytes, over the %d bound", ErrH3Protocol, ErrTooLarge, length, maxFrame)
 		}
 		if length > uint64(len(after)) {
-			return dst, buf, nil // the payload has not all arrived
-		}
-		// Unknown types exist to be ignored: RFC 9114 §7.2.8 has peers send
-		// GREASE types precisely so that a receiver which refuses the
-		// unknown is found out early. Refusing them is how a protocol
-		// ossifies. The one exception is the four above, which §7.2.8
-		// reserves by name.
-		if !h3Known(typ) {
-			buf = after[length:]
-			continue
+			return dst, buf, 0, nil // the payload has not all arrived
 		}
 		dst = append(dst, h3Frame{Type: typ, Payload: after[:length]})
 		buf = after[length:]
 	}
-	return dst, nil, nil
+	return dst, nil, 0, nil
+}
+
+// skipAhead discards, off the front of a delivery, what is left of an
+// unknown frame parseH3Frames started skipping: as many bytes as the frame
+// still owes, or the whole delivery when it owes more. It returns the bytes
+// after the skip, which are the start of the next frame, and what the frame
+// still owes after them. The discarded bytes are consumed like any other —
+// released to flow control by the caller's "delivered minus retained"
+// arithmetic — and nothing of them is kept.
+func skipAhead(data []byte, skip uint64) (after []byte, owed uint64) {
+	if skip == 0 {
+		return data, 0
+	}
+	if skip >= uint64(len(data)) {
+		return data[len(data):], skip - uint64(len(data))
+	}
+	return data[skip:], 0
+}
+
+// h3Identifier reads a payload made of exactly one variable-length integer —
+// all a GOAWAY, MAX_PUSH_ID or CANCEL_PUSH frame carries (RFC 9114 §7.2.3,
+// §7.2.6, §7.2.7). Anything short or long is the frame's layout at fault,
+// H3_FRAME_ERROR (§7.1, §10.8), as a SETTINGS pair cut short is.
+func h3Identifier(payload []byte) (uint64, error) {
+	v, rest, err := quic.Varint(payload)
+	if err != nil {
+		return 0, fmt.Errorf("%w: an identifier cut short", errH3FrameLayout)
+	}
+	if len(rest) != 0 {
+		return 0, fmt.Errorf("%w: %d bytes after the identifier", errH3FrameLayout, len(rest))
+	}
+	return v, nil
 }
 
 // keepRest moves what parseH3Frames left unconsumed to the front of its
