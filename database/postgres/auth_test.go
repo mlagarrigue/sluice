@@ -1028,7 +1028,6 @@ func TestStartupRefusesAMalformedNegotiation(t *testing.T) {
 		{"bytes after the last option", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00\x00\x00\x00\x00x")},
 		{"a truncated body", Protocol32, nil, frame(pgwire.BackendNegotiateProtocolVersion, "\x00\x03\x00\x00")},
 		{"sent twice", Protocol32, nil, append(beNegotiate(0), beNegotiate(0)...)},
-		{"after authentication began", Protocol32, nil, append(beAuth(0, ""), beNegotiate(0)...)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := &fakeServer{responses: [][]byte{append(tc.msgs, append(beAuth(0, ""), beReady()...)...)}}
@@ -1062,5 +1061,21 @@ func TestStartupRefusesAnUnspokenProtocolVersion(t *testing.T) {
 		if srv.sent.Len() != 0 {
 			t.Errorf("MinProtocol %v, MaxProtocol %v: % x went to the server", cfg.MinProtocol, cfg.MaxProtocol, srv.sent.Bytes())
 		}
+	}
+}
+
+// protocol-flow, Start-up: "After having received AuthenticationOk … it is
+// still possible for … the server to decline support for the requested minor
+// protocol version (NegotiateProtocolVersion)". PostgreSQL negotiates before
+// it authenticates, but the text allows the other order, and a client that
+// refused it would break on a server that follows the text.
+func TestStartupAcceptsANegotiationAfterAuthenticationOk(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{append(append(beAuth(0, ""), beNegotiate(0)...), beReady()...)}}
+	conn, err := startup(srv, Config{User: "u", MaxProtocol: Protocol32})
+	if err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	if got := conn.Protocol(); got != Protocol30 {
+		t.Errorf("protocol = %v after a late NegotiateProtocolVersion to 3.0, want %v", got, Protocol30)
 	}
 }

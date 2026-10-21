@@ -542,11 +542,14 @@ type startupState struct {
 	// BackendKeyData may be.
 	version ProtocolVersion
 
-	// negotiated is set once a NegotiateProtocolVersion has been read, and
-	// authenticating once any Authentication message has: the server settles
-	// the version from the startup packet, before it authenticates, and says
-	// so once.
-	negotiated, authenticating bool
+	// negotiated is set once a NegotiateProtocolVersion has been read: the
+	// server settles the version from the startup packet and says so once.
+	// PostgreSQL sends it before any Authentication message
+	// (ProcessStartupPacket), but the protocol chapter allows it until
+	// ReadyForQuery — "after having received AuthenticationOk … the server
+	// [may] decline support for the requested minor protocol version"
+	// (protocol-flow, Start-up) — so a late one is read, not refused.
+	negotiated bool
 }
 
 // authenticate drives the exchange from the startup packet to ReadyForQuery.
@@ -566,8 +569,8 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 
 		switch m.Type {
 		case pgwire.BackendNegotiateProtocolVersion:
-			if st.negotiated || st.authenticating {
-				return c.breakConn(fmt.Errorf("%w: NegotiateProtocolVersion after the server had already settled the version", ErrProtocol))
+			if st.negotiated {
+				return c.breakConn(fmt.Errorf("%w: a second NegotiateProtocolVersion, after the server had already settled the version", ErrProtocol))
 			}
 			st.negotiated = true
 			version, err := negotiateProtocol(m.Body, st.version, cfg.Params)
@@ -580,7 +583,6 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			st.version = version
 
 		case pgwire.BackendAuthentication:
-			st.authenticating = true
 			code, data, err := parseAuthentication(m.Body)
 			if err != nil {
 				return c.breakConn(err)
@@ -673,7 +675,10 @@ func negotiateProtocol(body []byte, asked ProtocolVersion, params map[string]str
 	// The documentation calls this field the newest minor version, but the
 	// server writes the whole version word, major in the high half, as the
 	// startup packet carries it: PostgreSQL 17 answers 3.2 with 0x00030000
-	// (backend_startup.c sends FrontendProtocol, Min(asked, latest)).
+	// (REL_17 backend_startup.c sends PG_PROTOCOL_LATEST, which is 3.0
+	// there), PostgreSQL 18 with the version it settled on (REL_18
+	// backend_startup.c sends FrontendProtocol, Min(asked, latest)). Both
+	// are read the same way: a whole word, never above what was asked.
 	version := ProtocolVersion(binary.BigEndian.Uint32(body[0:4]))
 	count := binary.BigEndian.Uint32(body[4:8])
 	rest := body[8:]
