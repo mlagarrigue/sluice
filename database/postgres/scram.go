@@ -500,7 +500,13 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 }
 
 // parseServerFinal reads the server's signature, or the error it sent instead.
+//
+// Every attribute is read before the signature is returned: RFC 5802 §5.1
+// makes the presence of m — a mandatory extension — an authentication
+// failure "when the attribute is parsed by the other end", wherever it
+// stands, and a signature followed by one is not a success.
 func parseServerFinal(msg string) ([]byte, error) {
+	var sig []byte
 	for attr := range strings.SplitSeq(msg, ",") {
 		name, val, ok := splitAttr(attr)
 		if !ok {
@@ -508,19 +514,24 @@ func parseServerFinal(msg string) ([]byte, error) {
 		}
 		switch name {
 		case 'v':
-			sig, err := base64.StdEncoding.DecodeString(val)
+			decoded, err := base64.StdEncoding.DecodeString(val)
 			if err != nil {
 				return nil, fmt.Errorf("%w: the server's signature is not base64: %w", ErrAuth, err)
 			}
-			return sig, nil
+			sig = decoded
 		case 'e':
 			// The server-error attribute: the exchange failed on its side and
 			// it said why, which is more useful than the generic refusal that
 			// would otherwise follow.
 			return nil, fmt.Errorf("%w: the server rejected the exchange: %s", ErrAuth, val)
+		case 'm':
+			return nil, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, val)
 		}
 	}
-	return nil, fmt.Errorf("%w: the server's final message carries no signature", ErrAuth)
+	if sig == nil {
+		return nil, fmt.Errorf("%w: the server's final message carries no signature", ErrAuth)
+	}
+	return sig, nil
 }
 
 // splitAttr splits one "x=value" attribute. The name is a single byte, which

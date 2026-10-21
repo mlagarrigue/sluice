@@ -162,6 +162,14 @@ func TestParseServerFinal(t *testing.T) {
 	if _, err := parseServerFinal("x=1"); err == nil {
 		t.Error("parseServerFinal accepted a final message with no signature")
 	}
+
+	// RFC 5802 §5.1: a mandatory extension fails the exchange wherever it
+	// stands — after the signature too, which used to end the parse early.
+	for _, msg := range []string{"v=" + rfcServerSignature + ",m=x", "m=x,v=" + rfcServerSignature} {
+		if _, err := parseServerFinal(msg); !errors.Is(err, ErrAuth) {
+			t.Errorf("parseServerFinal(%q) = %v, want ErrAuth for the m attribute", msg, err)
+		}
+	}
 }
 
 func TestParseMechanisms(t *testing.T) {
