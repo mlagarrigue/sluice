@@ -624,11 +624,25 @@ func equalFold(got []byte, want string) bool {
 //
 // progress, when not nil, carries a chunked body's validated prefix from one
 // call to the next, so a body that arrives over many reads is walked once
-// rather than once per read — see chunkProgress. The caller owns it and
-// guarantees it belongs to the request at the front of buf.
+// rather than once per read, and for a Content-Length body the length the
+// accepted head asked for, so the head is parsed once rather than once per
+// read — see chunkProgress. The caller owns it and guarantees it belongs to
+// the request at the front of buf.
 func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgress) (req Request, consumed int, out []Header, err error) {
 	out = arena
 	start := len(arena)
+
+	// A Content-Length body still short of its end, on a request whose head
+	// an earlier call already parsed and accepted: nothing before the body's
+	// last byte can change the answer, so the head is not parsed again.
+	// Re-parsing it on every read cost up to MaxHeaderBytes per byte of a
+	// body dripped one byte at a time, and the client nothing.
+	if progress != nil && progress.need > 0 && len(buf) < progress.need {
+		if progress.expect {
+			return req, 0, out, errExpectContinue
+		}
+		return req, 0, out, errIncomplete
+	}
 
 	// RFC 9112 §2.2: at least one empty line before the request-line is
 	// ignored — the CRLF some clients send after a body. One, exactly: a
@@ -723,10 +737,18 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		return req, 0, out, err
 	}
 	if len(rest) < length {
-		if expectsContinue(req) {
+		expect := expectsContinue(req)
+		if progress != nil {
+			// The head is accepted: the next calls only wait for the body.
+			*progress = chunkProgress{at: progress.at, need: consumed + length, expect: expect}
+		}
+		if expect {
 			return req, 0, out, errExpectContinue
 		}
 		return req, 0, out, errIncomplete
+	}
+	if progress != nil && progress.need != 0 {
+		*progress = chunkProgress{} // the body that was waited for is whole
 	}
 	req.Body = rest[:length]
 	return req, consumed + length, out, nil
@@ -993,8 +1015,10 @@ func checkFraming(req Request, http11 bool) (chunked bool, err error) {
 // kilobyte is already far past the dozen hex digits any accepted size needs.
 const maxChunkLineBytes = 1 << 10
 
-// chunkProgress is how far into a chunked body the walk has validated, kept
-// across the reads a body arrives over. Without it every read re-walked the
+// chunkProgress is how far into its body a request's parse has got, kept
+// across the reads the body arrives over: for a chunked body, how far the
+// walk has validated; for a Content-Length body, how long the request is
+// (need). Without it every read re-walked the
 // body from its first chunk, and a client sending one-byte chunks one packet
 // at a time cost O(n²) CPU per request — some 12 s for 40 000 chunks, with
 // ReadTimeout bounding the wall time but not the work per byte.
@@ -1021,6 +1045,14 @@ type chunkProgress struct {
 	trailer       bool
 	trailerBytes  int
 	trailerFields int
+
+	// need, for a Content-Length body, is how many bytes from at the
+	// request takes, once its head has been parsed and accepted; zero until
+	// then. A call on fewer bytes returns at once, without parsing the head
+	// again (see parseRequest); expect is whether that call owes the
+	// interim 100 the head asked for.
+	need   int
+	expect bool
 }
 
 // decodeChunked decodes a chunked request body (RFC 9112 §7.1) in place at

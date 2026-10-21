@@ -210,7 +210,7 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 		}
 		req, n, arena, perr := parseRequest(r.buf[used:r.n], r.cfg, r.headers, &r.progress)
 		r.headers = arena
-		if errors.Is(perr, errIncomplete) {
+		if errors.Is(perr, errIncomplete) || errors.Is(perr, errExpectContinue) {
 			r.progress.at = used
 		}
 		if errors.Is(perr, errExpectContinue) {

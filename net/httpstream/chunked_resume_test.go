@@ -164,3 +164,53 @@ func TestChunkedWalkSurvivesBufferCompaction(t *testing.T) {
 		t.Fatalf("bodies = %q, want %q", got, want)
 	}
 }
+
+// A Content-Length body fed one byte at a time used to re-parse the request
+// line and every header on each read — up to MaxHeaderBytes per byte of
+// body, free for the client that drips it. The headers are parsed once now:
+// a call on a prefix still short of the body returns before touching them,
+// which shows as an arena left as it was given. Expect: 100-continue, whose
+// incomplete calls return errExpectContinue instead, must not reopen the
+// path.
+func TestBodyDripDoesNotReparseHeaders(t *testing.T) {
+	cfg := Config{}.mustResolve()
+	for _, expect := range []bool{false, true} {
+		var head strings.Builder
+		head.WriteString("POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: 64\r\n")
+		if expect {
+			head.WriteString("Expect: 100-continue\r\n")
+		}
+		for i := 0; head.Len() < cfg.MaxHeaderBytes/2; i++ {
+			fmt.Fprintf(&head, "X-Pad-%d: %s\r\n", i, strings.Repeat("v", cfg.MaxHeaderBytes/80))
+		}
+		head.WriteString("\r\n")
+		body := strings.Repeat("b", 64)
+		raw := []byte(head.String() + body)
+		want := errIncomplete
+		if expect {
+			want = errExpectContinue
+		}
+
+		var progress chunkProgress
+		parsed := 0
+		for n := head.Len(); n < len(raw); n++ {
+			_, _, arena, err := parseRequest(raw[:n], cfg, nil, &progress)
+			if !errors.Is(err, want) {
+				t.Fatalf("expect=%v: a %d-byte prefix returned %v, want %v", expect, n, err, want)
+			}
+			if len(arena) > 0 {
+				parsed++
+			}
+		}
+		if parsed > 1 {
+			t.Errorf("expect=%v: the headers were parsed on %d of %d reads of the body, want once", expect, parsed, len(body))
+		}
+		r, used, _, err := parseRequest(raw, cfg, nil, &progress)
+		if err != nil || used != len(raw) || string(r.Body) != body {
+			t.Fatalf("expect=%v: completed parse: %d body bytes, used %d of %d, err %v", expect, len(r.Body), used, len(raw), err)
+		}
+		if progress != (chunkProgress{}) {
+			t.Errorf("expect=%v: a completed request left its progress behind: %+v", expect, progress)
+		}
+	}
+}
