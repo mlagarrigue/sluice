@@ -109,6 +109,15 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		check := c.limitCheck
 		c.limitCheck = false
 		for {
+			// Lost data first (RFC 9000 §13.3): a writer woken by the
+			// acknowledgement that opened the window may reach here before
+			// the retransmission pass that follows the packet's frames,
+			// and would otherwise spend the window on new data while the
+			// queue waits. The pass takes what the window and the pacer
+			// allow; the check below then sees the window it left.
+			if len(c.spaces[space].retrans) > 0 {
+				c.retransmitLocked()
+			}
 			ready := c.cc.canSend(len(payload) + 64)
 			if ready {
 				// The window has room; the pacer decides *when*. A deficit
