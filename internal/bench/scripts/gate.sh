@@ -55,7 +55,7 @@ GATED="$GATED|BenchmarkZipLongest$|BenchmarkZipLongestUneven$"
 GATED="$GATED|BenchmarkIntervalJoinNarrow$|BenchmarkIntervalJoinWide$"
 GATED="$GATED|BenchmarkWindowWide$|BenchmarkWindowNarrow$"
 GATED="$GATED|BenchmarkTake$|BenchmarkDrop$|BenchmarkTakeWhile$|BenchmarkDropWhile$"
-GATED="$GATED|BenchmarkSplitPartition$|BenchmarkSplitBroadcast$|BenchmarkInterleave2$"
+GATED="$GATED|BenchmarkSplitPartition$|BenchmarkSplitBroadcast$|BenchmarkInterleave2$|BenchmarkConcat$"
 # The request path, which is the figure a web workload actually feels.
 GATED="$GATED|BenchmarkWebBatchOne$|BenchmarkWebHandwritten$"
 # The connector's read loop, which is upstream of every operator above: it runs

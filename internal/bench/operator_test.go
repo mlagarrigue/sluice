@@ -224,3 +224,27 @@ func BenchmarkInterleave8(b *testing.B) {
 	}
 	reportPerElem(b, N)
 }
+
+// BenchmarkConcat chains four streams of a quarter of the input each: the
+// stage costs one forwarding call per batch and one hand-over per stream, so
+// per element it should read as the traversal itself.
+func BenchmarkConcat(b *testing.B) {
+	src := data(N)
+	q := N / 4
+	b.SetBytes(N * 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		var acc int64
+		sluice.Concat(
+			sluice.Of(src[:q], 1024), sluice.Of(src[q:2*q], 1024),
+			sluice.Of(src[2*q:3*q], 1024), sluice.Of(src[3*q:], 1024),
+		)(func(bt sluice.Batch[int64]) bool {
+			for _, v := range bt.Items {
+				acc += v
+			}
+			return true
+		})
+		sink = acc
+	}
+	reportPerElem(b, N)
+}
