@@ -1002,7 +1002,7 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 	frames, rest, skip, err := parseH3Frames(a.frames[:0], u.buf, a.cfg.MaxHeaderBytes)
 	// Added, not set: a skip still owed emptied the buffer before the parse,
 	// which then started none; a parse that started one found none owed.
-	a.frames, u.skip = frames, u.skip+skip
+	a.frames, u.skip = keepFrames(frames), u.skip+skip
 	if err != nil {
 		// A frame too long is a layout fault (H3_FRAME_ERROR); an HTTP/2
 		// frame type is §7.2.8's H3_FRAME_UNEXPECTED.
@@ -1238,7 +1238,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	if typ, _, e := quic.Varint(rest); err != nil && (e != nil || typ != h3Data) {
 		return err
 	}
-	a.frames = frames
+	a.frames = keepFrames(frames)
 	for _, f := range frames {
 		switch f.Type {
 		case h3Headers:
@@ -1357,9 +1357,51 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	if err != nil {
 		return err // unreachable: a DATA frame over the bound is refused above
 	}
-	st.buf = keepRest(st.buf, rest)
+	st.buf = keepStreamRest(st.buf, rest)
 	return nil
 }
+
+// keepStreamRest is keepRest for a request stream, which may sit unfinished
+// for as long as ReadTimeout allows. Once a frame has left the buffer — its
+// payload copied into the body, which assembling counts — a capacity grown
+// to hold that frame is not kept behind the short remainder: assembling
+// counts lengths, and the emptied buffer would otherwise hold the frame's
+// size a second time, uncounted, on every stream that sent one. A buffer
+// still growing toward a frame that has not all arrived keeps its capacity;
+// it is shed only when bytes left, so a stream pays at most one allocation
+// per completed frame larger than the slack, and none for small ones.
+func keepStreamRest(buf, rest []byte) []byte {
+	if len(rest) == len(buf) {
+		return buf
+	}
+	if cap(buf)-len(rest) > h3BufferSlack {
+		if len(rest) == 0 {
+			return nil
+		}
+		return append(make([]byte, 0, len(rest)), rest...)
+	}
+	return append(buf[:0], rest...)
+}
+
+// h3BufferSlack is the spare capacity a request stream's buffer may keep
+// beyond what it holds: enough for the frames of a few datagrams, so the
+// usual small frames reuse it.
+const h3BufferSlack = 4096
+
+// keepFrames returns the frame scratch to keep for the next parse. One
+// delivery of many tiny frames — an empty DATA frame is two bytes, and the
+// transport may hand a large in-order delta at once — grows it to one entry
+// per frame, 32 bytes each; that size is let go rather than held for the
+// connection's life.
+func keepFrames(frames []h3Frame) []h3Frame {
+	if cap(frames) > h3FramesKept {
+		return nil
+	}
+	return frames
+}
+
+// h3FramesKept is the frame scratch's retained capacity, in frames.
+const h3FramesKept = 256
 
 // sectionRefused turns the decoder's error for a field section into the
 // refusal it earns. A section past the list bound is a 431 on the stream
