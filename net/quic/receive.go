@@ -786,7 +786,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// Owed after the loop, the ACK was not yet pending when that answer
 	// left, so the answer went without it (sendPacketLocked carries only a
 	// pending one) and the delayed ACK followed in a datagram of its own
-	// localMaxAckDelay later.
+	// ackTimerDelay later.
 	//
 	// RFC 9000 §13.2 (Table 3): ACK, PADDING and CONNECTION_CLOSE elicit no
 	// acknowledgement. parseFrames drops PADDING, so the two frame types

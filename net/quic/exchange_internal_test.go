@@ -82,8 +82,8 @@ func (p *delayedPC) Close() error {
 // The exchange runs in a bubble over dgram.Pair, so no datagram is lost and
 // time moves only when every goroutine waits, with the server's datagrams
 // held pathDelay on the way: every round trip is exactly that long. The
-// client acknowledges the response localMaxAckDelay after it arrives, so the
-// ACK reaches the server pathDelay + localMaxAckDelay after the response
+// client acknowledges the response ackTimerDelay after it arrives, so the
+// ACK reaches the server pathDelay + ackTimerDelay after the response
 // left; the server's probe timeout is the smoothed RTT (pathDelay), four
 // variances and the client's max_ack_delay (RFC 9002 §6.2.1) — later, by the
 // variances, every run. A probe here is a timeout computed without the
@@ -151,7 +151,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 // application, so an answer sent while they are being delivered carries it.
 // It used to be owed only once every frame had been acted on: a handler that
 // read the request and wrote the response in that window sent the response
-// without the ACK, and the delayed ACK followed alone localMaxAckDelay later
+// without the ACK, and the delayed ACK followed alone ackTimerDelay later
 // — two datagrams for the exchange above, a few runs in a thousand. The
 // batch callback runs inside delivery, so it sees the window every time.
 func TestAnAnswerSentDuringDeliveryCarriesTheACK(t *testing.T) {

@@ -14,8 +14,25 @@ const maxAckRanges = 32
 // localMaxAckDelay is how long this endpoint may sit on an ACK in the
 // application space, and is the protocol's default so it does not need
 // announcing. Initial and handshake packets are acknowledged immediately —
-// the peer's handshake timers are tuned for that.
+// the peer's handshake timers are tuned for that. The timer itself is armed
+// at ackTimerDelay, under this bound by ackAlarmMargin.
 const localMaxAckDelay = 25 * time.Millisecond
+
+// ackAlarmMargin is the room left under localMaxAckDelay for the alarm to
+// fire late: RFC 9000 §18.2 has max_ack_delay "include the receiver's
+// expected delays in alarms firing" ("if a receiver sets a timer for 5ms
+// and alarms commonly fire up to 1ms late, then it should send a
+// max_ack_delay of 6ms"). The delayed ACK rides a time.Timer (timer.go),
+// which the runtime fires a fraction of a millisecond late when idle and a
+// few milliseconds late under load or on a coarse clock; a fifth of the
+// bound covers that without shortening the delay to where a burst's ACKs
+// stop coalescing. The peer bounds its RTT samples and sets its probe
+// timeout by the 25 ms it assumes, so an ACK that keeps under it never
+// reads as a late one.
+const ackAlarmMargin = 5 * time.Millisecond
+
+// ackTimerDelay is what the delayed ACK is armed at.
+const ackTimerDelay = localMaxAckDelay - ackAlarmMargin
 
 // pnRange is a run of received packet numbers, both ends inclusive.
 type pnRange struct{ lo, hi uint64 }
@@ -158,7 +175,7 @@ func (a *ackTracker) onAckEliciting(space int, now time.Time, ce bool) {
 		return
 	}
 	if a.due.IsZero() {
-		a.due = now.Add(localMaxAckDelay)
+		a.due = now.Add(ackTimerDelay)
 	}
 }
 

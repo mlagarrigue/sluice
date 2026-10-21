@@ -93,6 +93,14 @@ func TestAckUrgencyPolicy(t *testing.T) {
 	if app.due.IsZero() {
 		t.Error("no delayed ACK was armed")
 	}
+	// RFC 9000 §18.2: armed under the max_ack_delay the peer assumes, so
+	// the alarm's own lateness never carries the ACK past it.
+	if app.owes(now.Add(ackTimerDelay - time.Millisecond)) {
+		t.Error("the delayed ACK matured before its timer")
+	}
+	if !app.owes(now.Add(ackTimerDelay)) {
+		t.Errorf("the delayed ACK is not owed at now+%v, want it armed %v under max_ack_delay (%v)", ackTimerDelay, ackAlarmMargin, localMaxAckDelay)
+	}
 	if !app.owes(now.Add(localMaxAckDelay + time.Millisecond)) {
 		t.Error("the delayed ACK never matured")
 	}
