@@ -38,6 +38,10 @@ import (
 // or HTTP/3 connection for a batch that arrives while an earlier one is
 // still being answered. It is never called twice for the same request.
 //
+// What it returns is read after it returns, and on HTTP/2 and HTTP/3 while
+// its later calls run: a [Response] must stay valid until it is written,
+// which the handler is not told.
+//
 // # What a request looks like, whichever protocol carried it
 //
 // A handler is not told which protocol a request arrived on, and this is the

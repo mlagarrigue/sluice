@@ -271,7 +271,8 @@ func unitTarget(req *httpstream.Request) (int64, bool) {
 
 // encode marshals the answer and, under axis F, compresses it when the
 // request accepts the codec. The headers of a compressed answer are built
-// per response: the slice is read during the write and not retained.
+// per response: a Response must stay unchanged until it is written, which
+// on HTTP/2 and HTTP/3 outlasts the handler's return.
 func (a *app) encode(ans answer, req *httpstream.Request) httpstream.Response {
 	if ans.stream != nil {
 		// Axis E: Response.Stream, the transport pulls the fragments and
@@ -298,8 +299,8 @@ func (a *app) encode(ans answer, req *httpstream.Request) httpstream.Response {
 	return httpstream.Response{Status: ans.status, Headers: a.encodedHeaders(), Body: enc}
 }
 
-// encodedHeaders are the headers of a compressed answer, built per response:
-// the slice is read during the write and not retained.
+// encodedHeaders are the headers of a compressed answer, built per response
+// rather than shared, so nothing touches them while the write runs.
 func (a *app) encodedHeaders() []httpstream.Header {
 	return []httpstream.Header{
 		jsonHeader[0],

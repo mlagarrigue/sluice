@@ -9,8 +9,18 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// Response is what goes back for one request. Its fields are read during the
-// write and not retained, so they may borrow whatever the pipeline had.
+// Response is what goes back for one request. Its fields may borrow what the
+// pipeline had, on one condition: Body, Headers and the fields Trailers
+// returns stay valid and unchanged until the response has been written.
+// That moment is not the handler's return. HTTP/2 and HTTP/3 frame and send
+// answers on goroutines of their own while later batches of the connection
+// are being handled, and a write waiting on the client's flow-control window
+// lasts as long as [Config.WriteTimeout] sees it progress; nothing tells the
+// handler when it is over. A buffer the pipeline hands back to a pool or
+// overwrites for its next batch is therefore not one to borrow from:
+// allocate the body, or borrow from data that no longer changes. HTTP/1.1
+// writes a batch before it reads the next, but a handler is not told the
+// protocol, and the rule is the one that holds on all three.
 type Response struct {
 	// Status is the HTTP status code. Zero means 200. The writers refuse,
 	// with [ErrMalformed], a code outside 200..599 (a 1xx is never a final

@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written)
 - **Theme:** httpstream
 
 ## Problem
@@ -67,6 +67,22 @@ forgotten, is decoded and dropped rather than refused — only a block on a
 stream the client never opened is the connection error; the idle
 clock does not run while answers are owed; the connection receive window
 starts at 1 MiB.
+
+What a call returns is read after it returns. The HTTP/2 responder encodes
+the response and the writer sends its body while later batches of the same
+connection are being handled; HTTP/3 writes each response on a goroutine
+per stream. A write waiting for the client's window lasts as long as
+`WriteTimeout` sees it progress. `Body`, `Headers` and the fields `Trailers`
+returns must therefore stay valid and unchanged until the write is over,
+not until the handler returns nor until its next call, and nothing tells
+the handler when that is. A buffer the pipeline hands back to a pool or
+overwrites for its next batch is not one to borrow from: the body is
+allocated, or borrowed from data that no longer changes. HTTP/1.1 writes a
+batch before it reads the next, but a handler does not know which protocol
+called it, and the rule is the one that holds on all three. A defensive
+copy at the hand-off would have kept the original promise ("read during
+the write and not retained") true, at the price of copying every body on
+the hot path: the contract changed, not the writer.
 
 ## Rationale
 
