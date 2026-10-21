@@ -279,8 +279,17 @@ type ackOutcome struct {
 	largestWasNew    bool // the frame's largest was newly acknowledged…
 	largestEliciting bool // …ack-eliciting and sent on this path: what a sample needs
 	largestSentAt    time.Time
-	lostBytes        int
-	lostCount        uint64 // packets behind lostBytes, for Stats.LostPackets
+	// latestSentAt is when the most recent tracked packet the frame newly
+	// acknowledges was sent — the largest itself when that one is tracked.
+	// It dates a congestion event (RFC 9002 B.7) where largestSentAt
+	// cannot: only ack-eliciting packets are recorded, and the peer
+	// acknowledges every number it received, ACK-only ones included; a
+	// frame whose largest is one of those left largestSentAt at zero, which
+	// read as "before the recovery began" and dropped the CE mark it
+	// carried (§7.3.1 MUST), until 2026-10-21.
+	latestSentAt time.Time
+	lostBytes    int
+	lostCount    uint64 // packets behind lostBytes, for Stats.LostPackets
 	// lostRanges is how many lost ranges the batch opens
 	// (sentPacket.afterLoss), crossing the first lost packet whose losses
 	// crossed BBR's threshold (lossEvent).
@@ -409,6 +418,9 @@ func (out *ackOutcome) mark(p *sentPacket, onPath bool, largest uint64) {
 		out.largestWasNew = true
 		out.largestEliciting = p.ackEliciting && onPath
 		out.largestSentAt = p.sentAt
+	}
+	if p.sentAt.After(out.latestSentAt) {
+		out.latestSentAt = p.sentAt
 	}
 }
 

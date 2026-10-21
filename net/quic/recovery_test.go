@@ -1142,3 +1142,50 @@ func TestMarksAreACongestionEvent(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9002 §7.3.1: a CE increase enters recovery; B.7 dates the event by
+// the frame's largest acknowledged packet. This end records only
+// ack-eliciting packets, yet the peer acknowledges every number it received,
+// ACK-only ones included: when the frame's largest is one of those, the
+// largest has no send time, and the event is dated by the latest tracked
+// packet the frame acknowledges instead. Until 2026-10-21 the zero date
+// read as "before recovery began" once a first recovery period had
+// happened, and the mark bought no reduction.
+func TestMarkDatedByAnUntrackedLargestStillReduces(t *testing.T) {
+	controllers := map[string]func() congestionController{
+		"newReno": func() congestionController { return newNewReno(1200) },
+		"cubic":   func() congestionController { return newCubic(1200) },
+	}
+	for name, build := range controllers {
+		t.Run(name, func(t *testing.T) {
+			now := time.Now()
+			var s sentTracker
+			for pn := range uint64(3) {
+				s.record(sentPacket{pn: pn, sentAt: now.Add(time.Duration(pn) * time.Millisecond), size: 1200, ackEliciting: true})
+			}
+			// Packet 3 was ACK-only: sent, never recorded, but acknowledged
+			// by the peer like any other. Ranges: count 0, first range 3,
+			// i.e. packets 0..3.
+			out, err := s.markAcked(3, []byte{0, 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.newlyAckedCount != 3 || !out.raisedLargest {
+				t.Fatalf("newlyAckedCount=%d raisedLargest=%v: the frame should newly acknowledge 0..2", out.newlyAckedCount, out.raisedLargest)
+			}
+			if !out.latestSentAt.Equal(now.Add(2 * time.Millisecond)) {
+				t.Fatalf("latestSentAt = %v, want packet 2's send time", out.latestSentAt)
+			}
+			cc := build()
+			// One recovery period already happened on this connection.
+			cc.onLost(lossEvent{now: now.Add(-time.Second), latestSent: now.Add(-time.Second)})
+			before := cc.window()
+			// The ECN counts passed validation and report one more CE
+			// mark; the connection dates the event the way handleAck does.
+			cc.onMarked(markEvent{now: now.Add(10 * time.Millisecond), latestSent: out.latestSentAt, packets: 1})
+			if cc.window() >= before {
+				t.Fatalf("window %d before the CE mark, %d after: the event was dropped", before, cc.window())
+			}
+		})
+	}
+}

@@ -1183,8 +1183,10 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if newCE := c.validateECNLocked(space, f, out); newCE > 0 {
 		// Before the frame's losses (A.7's ProcessECN): a mark is
 		// congestion the network reported without dropping (§13.4.2), and
-		// the controller hears it as such (draft-ietf-ccwg-bbr §3.7).
-		c.cc.onMarked(markEvent{now: now, latestSent: out.largestSentAt, packets: newCE})
+		// the controller hears it as such (draft-ietf-ccwg-bbr §3.7). Dated
+		// by the latest tracked packet the frame acknowledges, which is
+		// the largest whenever the largest is tracked (ackOutcome.latestSentAt).
+		c.cc.onMarked(markEvent{now: now, latestSent: out.latestSentAt, packets: newCE})
 	}
 	sp.sent.detectLost(now, &c.rtt, &c.delivery, &out)
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {
