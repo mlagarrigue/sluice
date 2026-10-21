@@ -884,6 +884,10 @@ func (c *Conn) retransmitLocked() {
 		}
 		for len(sp.retrans) > 0 {
 			payload, rest := c.fitLocked(space, sp.retrans[0])
+			if len(payload) == 0 {
+				sp.retrans = sp.retrans[1:] // nothing of it is owed any more
+				continue
+			}
 			if !c.cc.canSend(len(payload) + 64) {
 				return
 			}
@@ -908,6 +912,7 @@ func (c *Conn) retransmitLocked() {
 			}
 		}
 	}
+	c.pruneResetIDsLocked()
 }
 
 // fitLocked cuts a payload recorded for retransmission to what one packet
@@ -915,9 +920,81 @@ func (c *Conn) retransmitLocked() {
 // the rest (nil when it all fits). A payload sent under a larger datagram
 // size — before a black hole or a new path brought it back to 1200
 // (pmtu.go) — would otherwise be resent whole into the path that just lost
-// it. Callers hold mu.
+// it. The frames of a stream reset since leave the payload first
+// (pruneResetLocked); a payload with nothing left comes back empty, and
+// the caller owes nothing for it. Callers hold mu.
 func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
+	if space == spaceApplication && len(c.resetIDs) > 0 {
+		if payload = c.pruneResetLocked(payload); len(payload) == 0 {
+			return nil, nil
+		}
+	}
 	return fitFrames(payload, c.maxDatagram-c.packetOverhead(space))
+}
+
+// noteResetLocked records that this end reset stream id, for the replay
+// filter: the mark is the next application packet number, so that every
+// packet that may carry a STREAM frame of the stream is older than it — the
+// RESET_STREAM itself leaves at the mark and carries none. Callers hold mu.
+func (c *Conn) noteResetLocked(id uint64) {
+	if c.resetIDs == nil {
+		c.resetIDs = make(map[uint64]uint64)
+	}
+	c.resetIDs[id] = c.spaces[spaceApplication].nextPN
+}
+
+// pruneResetLocked drops from payload — a lost packet's frames, about to go
+// again — the STREAM and STREAM_DATA_BLOCKED frames of the streams this end
+// has reset since: after RESET_STREAM an endpoint ceases transmission and
+// retransmission of both (RFC 9000 §3.3, §19.4). Every other frame goes as
+// it was, the RESET_STREAM above all when that is what was lost. The
+// payload comes back untouched, without a copy, when nothing is dropped;
+// a payload that does not parse, which cannot happen, goes whole.
+func (c *Conn) pruneResetLocked(payload []byte) []byte {
+	var kept []byte
+	n := 0
+	for n < len(payload) {
+		f, tail, err := parseFrame(payload[n:])
+		if err != nil {
+			return payload
+		}
+		l := len(payload) - n - len(tail)
+		drop := f.IsStream() || f.Type == frameStreamDataBlocked
+		if drop {
+			_, drop = c.resetIDs[f.StreamID]
+		}
+		switch {
+		case drop && kept == nil:
+			kept = append(make([]byte, 0, len(payload)), payload[:n]...)
+		case !drop && kept != nil:
+			kept = append(kept, payload[n:n+l]...)
+		}
+		n += l
+	}
+	if kept == nil {
+		return payload
+	}
+	return kept
+}
+
+// pruneResetIDsLocked forgets the reset streams nothing in flight predates:
+// with the retransmission queue empty and every packet in flight sent at or
+// after a stream's mark, no STREAM frame of it can come back. Called at the
+// end of a replay pass, which is when the queue is known empty.
+func (c *Conn) pruneResetIDsLocked() {
+	sp := &c.spaces[spaceApplication]
+	if len(c.resetIDs) == 0 || len(sp.retrans) > 0 {
+		return
+	}
+	oldest := sp.nextPN
+	if len(sp.sent.packets) > 0 {
+		oldest = sp.sent.packets[0].pn
+	}
+	for id, mark := range c.resetIDs {
+		if mark <= oldest {
+			delete(c.resetIDs, id)
+		}
+	}
 }
 
 // fitFrames cuts payload, frames this end encoded, so that the first part
@@ -1018,8 +1095,10 @@ func (c *Conn) sendProbeLocked(space int) {
 	}
 	const probes = 2
 	var payloads [probes][]byte
+	// A payload fitLocked empties — frames of a stream reset since — fills
+	// no slot: the next one is looked at instead.
 	n := 0
-	for ; n < probes && len(sp.retrans) > 0; n++ {
+	for n < probes && len(sp.retrans) > 0 {
 		var rest []byte
 		payloads[n], rest = c.fitLocked(space, sp.retrans[0])
 		if rest != nil {
@@ -1027,10 +1106,13 @@ func (c *Conn) sendProbeLocked(space int) {
 		} else {
 			sp.retrans = sp.retrans[1:]
 		}
+		if len(payloads[n]) > 0 {
+			n++
+		}
 	}
 	// Lifted before any is sent: the copies are recorded as they go, and
 	// the newest of them must not be the next one lifted.
-	for ; n < probes; n++ {
+	for n < probes {
 		p, ok := sp.sent.liftOldestResendable()
 		if !ok {
 			break
@@ -1041,6 +1123,9 @@ func (c *Conn) sendProbeLocked(space int) {
 		var rest []byte
 		if payloads[n], rest = c.fitLocked(space, p.payload); rest != nil {
 			sp.retrans = append([][]byte{rest}, sp.retrans...)
+		}
+		if len(payloads[n]) > 0 {
+			n++
 		}
 	}
 	switch n {
@@ -1146,7 +1231,9 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 		blocked = true
 	}
 	for _, s := range c.streams {
-		if s.sendQ.avail() == 0 && s.sendQ.blockedSent {
+		// Not for a stream reset since: nothing waits for its credit any
+		// more, and §3.3 forbids the frame after RESET_STREAM.
+		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.writeReset {
 			c.control = appendFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
 			blocked = true
 		}

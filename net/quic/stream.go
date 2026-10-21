@@ -494,6 +494,7 @@ func (s *Stream) Reset(code uint64) error {
 	}
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
+	c.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	c.maybeRemoveLocked(s)
@@ -575,6 +576,7 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	}
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
+	s.conn.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{})
 	s.conn.maybeRemoveLocked(s)

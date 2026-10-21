@@ -297,6 +297,15 @@ type Conn struct {
 	// reopened it, delivered an HTTP/3 request twice and credited
 	// MAX_STREAMS twice (see streamFor).
 	streams map[uint64]*Stream
+	// resetIDs holds the streams this end has reset and whose STREAM frames
+	// may still be in flight, by the application packet number the reset
+	// left at: a lost payload replayed after the reset drops their STREAM
+	// and STREAM_DATA_BLOCKED frames (RFC 9000 §3.3, pruneResetLocked). The
+	// stream itself may have left streams by then — it is retired as soon
+	// as its receiving side ends, an HTTP/3 cancellation's usual order — so
+	// the record is this map, pruned once nothing sent before the mark is
+	// in flight (pruneResetIDsLocked). Nil until the first reset.
+	resetIDs map[uint64]uint64
 	// acceptQ holds the streams the peer opened that AcceptStream has not
 	// handed out yet, in identifier order per kind; acceptReady wakes a
 	// waiting AcceptStream. MAX_STREAMS bounds it, not a capacity.
