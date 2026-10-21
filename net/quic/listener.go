@@ -172,8 +172,22 @@ type ListenerConfig struct {
 	// cannot recognise, and waits out its idle timeout instead of closing
 	// at once. A key kept across restarts, or shared by every instance
 	// behind one address, makes that reset recognised — which is the case
-	// stateless reset exists for. Keep it secret: anyone holding it can end
-	// any connection of the listeners that share it.
+	// stateless reset exists for.
+	//
+	// Sharing the key has a condition (RFC 9000 §21.11): the instances
+	// MUST be arranged so that every packet of a connection identifier
+	// reaches the instance that holds the connection, as long as it is
+	// active — routing by connection identifier, not by address and port.
+	// A listener answers any short-header datagram whose identifier it
+	// does not know with a reset under this key, and asks nothing about
+	// where the connection might live. Behind a load balancer that routes
+	// by the four-tuple, a client whose address changed — a NAT rebinding,
+	// a migration — lands on another instance, which resets with the real
+	// token a connection still alive on the first; an attacker who can
+	// steer that routing ends connections at will. There, give each
+	// instance its own key: its resets then stand only for the connections
+	// it held itself, which is all a restart needs. Keep it secret: anyone
+	// holding it can end any connection of the listeners that share it.
 	StatelessResetKey [32]byte
 
 	// TokenKey authenticates Retry tokens (HMAC-SHA256, RFC 9000 §8.1.4).

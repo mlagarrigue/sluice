@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition)
 - **Theme:** quic
 
 ## Problem
@@ -62,6 +62,17 @@ That key, `StatelessResetKey`, and the one that authenticates Retry tokens,
 given, they survive a restart and are shared by the instances behind one
 address (RFC 9000 §10.3.2): the client of a dead process receives a reset
 it recognises and stops at once instead of waiting out its idle timeout.
+Sharing is conditioned by §21.11: the instances MUST be arranged so that
+every packet of a connection identifier reaches the instance holding the
+connection while it is active — routing by connection identifier, not by
+address and port. The listener resets any unknown short-header identifier
+and cannot tell a connection it never had from one alive next door; behind
+a four-tuple load balancer, a client whose address changes is reset with
+its real token by the instance it lands on, and an attacker who steers the
+routing resets connections at will. In plain words: one key for all
+instances only when the balancer routes by connection identifier;
+otherwise one key per instance, whose resets then cover the connections it
+held itself — enough for a restart.
 What the listener used to fix in constants is tuned the way its bounds
 are: `ConnQueueLen` (64), `RetryTokenTTL` (10 s), `MaxSpentRetryTokens`
 (16,384), zero for the default, negative refused (ADR 0018). The number
