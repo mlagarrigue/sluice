@@ -48,7 +48,10 @@ type stmtCache struct {
 	// map at once and its name waits here until CloseComplete arrives. A
 	// Close the server never confirmed — the batch failed before it, or the
 	// connection was abandoned mid-read — stays here and goes out again with
-	// the next miss, so the server's statement count stays bounded.
+	// the next miss, so the server's statement count stays bounded. A batch
+	// read to ReadyForQuery without an error must have confirmed every Close
+	// in front of it, or the connection breaks, so a live connection holds at
+	// most max+1 names here.
 	closing []string
 
 	// Hits and misses, for the benchmark that has to be able to say the cache
@@ -416,8 +419,18 @@ func (c *Conn) parseCompleted() { c.pendingParse = false }
 // forever: a poisoned cache, from one bad moment.
 //
 // The pipelined Closes are settled at the same point: those the server
-// confirmed are forgotten, the rest stay queued for the next miss.
-func (c *Conn) settleParse(queryErr error) {
+// confirmed are forgotten, the rest stay queued for the next miss. The server
+// answers in order, so a batch that succeeded has seen a CloseComplete for
+// every Close sent in front of it; one that did not comes from a peer that
+// swallows Closes, and keeping their names would grow the list by one per miss
+// for the life of the connection. That breaks the connection, and the error is
+// returned to the query.
+func (c *Conn) settleParse(queryErr error) error {
+	var err error
+	if queryErr == nil && c.broken == nil && c.closesDone < c.closesSent {
+		err = c.breakConn(fmt.Errorf("%w: the server answered the batch and confirmed %d of the %d Close messages sent before it",
+			ErrProtocol, c.closesDone, c.closesSent))
+	}
 	if c.pendingParse && queryErr != nil && c.stmts != nil {
 		c.stmts.remove(c.pendingKey)
 	}
@@ -428,6 +441,7 @@ func (c *Conn) settleParse(queryErr error) {
 	}
 	c.pendingParse, c.pendingKey = false, stmtKey{}
 	c.closesSent, c.closesDone = 0, 0
+	return err
 }
 
 // forgetStatement drops a cached statement after the server rejected it.

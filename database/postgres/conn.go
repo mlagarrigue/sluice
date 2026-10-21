@@ -867,7 +867,9 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	// cache's provisional entry is confirmed or dropped on the server's
 	// last word — see [Conn.settleParse] for what a kept-but-unparsed
 	// entry would poison.
-	c.settleParse(queryErr)
+	if err := c.settleParse(queryErr); err != nil {
+		queryErr = err
+	}
 	// A plan the server rejected as stale is dropped here rather than
 	// retried: the retry would usually work and would hide that something
 	// migrated the schema under a live connection. The entry is gone, so

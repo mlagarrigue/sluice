@@ -309,6 +309,35 @@ func TestStatementCacheRetriesAnUnconfirmedClose(t *testing.T) {
 	}
 }
 
+// The server answers in order, so a batch read to ReadyForQuery without an
+// error has confirmed every Close sent in front of it. A peer that answers the
+// rest and swallows the Close would otherwise grow stmtCache.closing by one
+// name per miss for the life of the connection, every miss sending the whole
+// list again; the first such batch breaks the connection instead.
+func TestStatementCacheBreaksOnACloseTheServerAnsweredAround(t *testing.T) {
+	var responses [][]byte
+	for range 3 {
+		responses = append(responses, oneRow()...) // never a CloseComplete
+	}
+	srv := &fakeServer{responses: responses}
+	conn := NewConn(srv)
+	if err := conn.PrepareStatements(2); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{"SELECT a", "SELECT b"} {
+		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := drain(t, conn.Query(t.Context(), "SELECT c", nil, batched))
+	if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrConnBroken) {
+		t.Fatalf("first eviction answered without CloseComplete: err = %v, want ErrProtocol and ErrConnBroken", err)
+	}
+	if len(conn.stmts.closing) > conn.stmts.max {
+		t.Errorf("closing holds %d names, max is %d", len(conn.stmts.closing), conn.stmts.max)
+	}
+}
+
 // A schema change under a live connection invalidates a plan. The entry is
 // dropped so the caller's retry re-prepares, and the error says what happened
 // rather than being retried into silence. The server discarded the plan, not
