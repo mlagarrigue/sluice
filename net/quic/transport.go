@@ -51,7 +51,9 @@ type TransportParameters struct {
 	// Announced, it also caps the size the peer probes the path for
 	// (RFC 9000 §14.3); what this endpoint sends is decided by its own
 	// probe of the path, never by the peer's announcement alone — see the
-	// package documentation.
+	// package documentation. Zero means 1452, like MaxDatagramSize; below
+	// 1200 or above 65527 (§18.2's bounds), [Dial], [Accept] and
+	// [NewListener] refuse it.
 	MaxUDPPayloadSize uint64
 
 	// InitialMaxData bounds everything the peer may send on all streams
@@ -375,7 +377,23 @@ func (p TransportParameters) check() error {
 	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
 		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
 	}
+	// RFC 9000 §18.2: below 1200 the announcement is invalid, and a
+	// conforming peer closes the handshake with TRANSPORT_PARAMETER_ERROR;
+	// above 65527 it names more than a UDP payload can hold.
+	if n := p.MaxUDPPayloadSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
+		return fmt.Errorf("quic: MaxUDPPayloadSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)
+	}
 	return nil
+}
+
+// udpPayloadSize is the max_udp_payload_size this endpoint announces: the
+// field, or 1452 when it is left at zero — never 0, which §18.2 makes
+// invalid, and never less than the read buffer (recvBufSize) can hold.
+func (p TransportParameters) udpPayloadSize() uint64 {
+	if p.MaxUDPPayloadSize == 0 {
+		return pmtuCommonSize
+	}
+	return p.MaxUDPPayloadSize
 }
 
 // DefaultParameters are modest limits for a connection that serves requests:
@@ -416,7 +434,7 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 		dst = append(dst, v...)
 	}
 	num(paramMaxIdleTimeout, uint64(max(p.MaxIdleTimeout, 0)/time.Millisecond))
-	num(paramMaxUDPPayloadSize, p.MaxUDPPayloadSize)
+	num(paramMaxUDPPayloadSize, p.udpPayloadSize())
 	num(paramInitialMaxData, p.InitialMaxData)
 	num(paramInitialMaxStreamBidiL, p.InitialMaxStreamDataBidiLocal)
 	num(paramInitialMaxStreamBidiR, p.InitialMaxStreamDataBidiRemote)
@@ -558,6 +576,11 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			case paramMaxIdleTimeout:
 				p.MaxIdleTimeout = idleDuration(v)
 			case paramMaxUDPPayloadSize:
+				// §18.2: "Values below 1200 are invalid" — 0 included,
+				// which is not the absence the default stands in for.
+				if v < pmtuBaseSize {
+					return p, parameterError(fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, v))
+				}
 				p.MaxUDPPayloadSize = v
 			case paramInitialMaxData:
 				p.InitialMaxData = v
@@ -588,6 +611,13 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				p.sawMaxAckDelay = true
 			}
 		}
+	}
+	if seen&(1<<paramMaxUDPPayloadSize) == 0 {
+		// §18.2: "The default for this parameter is the maximum permitted
+		// UDP payload of 65527." Left at zero, the peer would be read as
+		// accepting nothing, and the path search (pmtuCeilingLocked) would
+		// never leave 1200.
+		p.MaxUDPPayloadSize = pmtuMaxSize
 	}
 	return p, nil
 }

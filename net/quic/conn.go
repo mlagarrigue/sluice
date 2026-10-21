@@ -1338,10 +1338,9 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	case p.sawPreferredAddress:
 		return parameterError(fmt.Errorf("%w: a client sent preferred_address", ErrQUIC))
 	}
-	// §18.2's own bounds: below 1200, above 20, 2^14 or more are "invalid".
-	if p.MaxUDPPayloadSize != 0 && p.MaxUDPPayloadSize < 1200 {
-		return parameterError(fmt.Errorf("%w: max_udp_payload_size %d is below the protocol minimum", ErrQUIC, p.MaxUDPPayloadSize))
-	}
+	// §18.2's own bounds: above 20 and 2^14 or more are "invalid"
+	// (max_udp_payload_size below 1200 is refused by the parser, which is
+	// where its default is filled in too).
 	if p.AckDelayExponent > 20 {
 		return parameterError(fmt.Errorf("%w: ack_delay_exponent %d is over 20", ErrQUIC, p.AckDelayExponent))
 	}
