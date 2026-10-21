@@ -4,12 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/web"
 )
 
 func withBody(body string) Exchange {
 	e := exchangeFor("PATCH", "/orders/1")
 	e.Request.Body = []byte(body)
+	e.Request.Headers = append(e.Request.Headers, httpstream.Header{Name: []byte("Content-Type"), Value: []byte("application/json")})
 	return e
 }
 
@@ -57,6 +59,44 @@ func TestDecodeJSON(t *testing.T) {
 			}
 			if len(e.Diagnostics) != 1 || e.Diagnostics[0].Code != tc.code {
 				t.Errorf("diagnostics = %v, want one %s", e.Diagnostics, tc.code)
+			}
+		})
+	}
+
+	// The label rule is web's: one Content-Type naming JSON, checked before
+	// the body is read.
+	labels := []struct {
+		name   string
+		values []string
+		ok     bool
+	}{
+		{"json, case and parameters aside", []string{"Application/JSON; charset=utf-8"}, true},
+		{"a +json subtype", []string{"application/merge-patch+json"}, true},
+		{"no label", nil, false},
+		{"text/plain", []string{"text/plain"}, false},
+		{"a form", []string{"application/x-www-form-urlencoded"}, false},
+		{"a near miss", []string{"application/jsonx"}, false},
+		{"two labels", []string{"application/json", "application/json"}, false},
+	}
+	for _, tc := range labels {
+		t.Run(tc.name, func(t *testing.T) {
+			e := withBody(`{"saleQty": 4}`)
+			e.Request.Headers = nil
+			for _, v := range tc.values {
+				e.Request.Headers = append(e.Request.Headers, httpstream.Header{Name: []byte("content-type"), Value: []byte(v)})
+			}
+			var p patch
+			if DecodeJSON(&e, 1<<10, &p) != tc.ok {
+				t.Fatalf("decoded = %v, want %v (%v)", !tc.ok, tc.ok, e.Diagnostics)
+			}
+			if tc.ok {
+				return
+			}
+			if e.Status != 400 || len(e.Diagnostics) != 1 || e.Diagnostics[0].MessageID != "RequestBodyMediaType" {
+				t.Errorf("status %d, diagnostics %v, want 400 and one RequestBodyMediaType", e.Status, e.Diagnostics)
+			}
+			if p.SaleQty != 0 {
+				t.Errorf("refused, yet the body was decoded: %+v", p)
 			}
 		})
 	}

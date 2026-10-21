@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/mlagarrigue/sluice/diagnostics"
+	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/web"
 	"github.com/mlagarrigue/sluice/web/internal/reqbody"
 )
@@ -21,7 +22,8 @@ import (
 // still a required argument with no usable zero, for the same reason web's
 // is.
 //
-// The rules are web's exactly: unknown fields refused, a null body refused
+// The rules are web's exactly: one Content-Type naming JSON, unknown fields
+// refused, a null body refused
 // when dst is a struct, a second JSON value behind the first refused as the
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
@@ -32,6 +34,10 @@ func DecodeJSON(e *Exchange, limit int, dst any) bool {
 		panic("stream: DecodeJSON needs a positive byte limit; an unbounded body is not a default")
 	}
 	if e.Refused() {
+		return false
+	}
+	if !jsonBody(e.Request.Headers) {
+		e.Refuse(400, reqbody.MediaType(web.CodeMalformedBody))
 		return false
 	}
 	body := e.Request.Body
@@ -66,4 +72,23 @@ func DecodeJSON(e *Exchange, limit int, dst any) bool {
 		return false
 	}
 	return true
+}
+
+// jsonBody reports whether the request carries exactly one Content-Type and
+// it names JSON, under the rule [web.DecodeJSON] states. Two lines are not a
+// list to choose from: the field is not list-valued, and a request that
+// labels its body twice has not said what it is.
+func jsonBody(headers []httpstream.Header) bool {
+	var ct []byte
+	found := false
+	for _, h := range headers {
+		if !foldEqual(h.Name, "content-type") {
+			continue
+		}
+		if found {
+			return false
+		}
+		ct, found = h.Value, true
+	}
+	return found && reqbody.JSONMediaType(ct)
 }

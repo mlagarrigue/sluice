@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,7 +19,9 @@ type amendment struct {
 }
 
 func post(body string) *http.Request {
-	return httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	r := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	return r
 }
 
 func TestDecodeJSON(t *testing.T) {
@@ -28,6 +31,46 @@ func TestDecodeJSON(t *testing.T) {
 	}
 	if a.OrderID != 42 || a.SaleQty != 9 {
 		t.Errorf("decoded %+v", a)
+	}
+}
+
+// A browser posts text/plain and form bodies across origins without a
+// preflight; a JSON document inside one is refused unread, whatever it says.
+// The label must be one Content-Type naming JSON, parameters and case aside.
+func TestDecodeJSONRefusesABodyNotLabelledJSON(t *testing.T) {
+	accepted := [][]string{
+		{"application/json"},
+		{"Application/JSON; charset=utf-8"},
+		{" application/json ;"},
+		{"application/merge-patch+json"},
+	}
+	refused := [][]string{
+		nil,
+		{""},
+		{"text/plain"},
+		{"text/plain; charset=utf-8"},
+		{"application/x-www-form-urlencoded"},
+		{"multipart/form-data; boundary=x"},
+		{"application/jsonx"},
+		{"application/+json"},
+		{"application/json", "application/json"},
+	}
+	for _, labels := range append(accepted, refused...) {
+		r := post(`{"orderId":42,"saleQty":9}`)
+		r.Header["Content-Type"] = labels
+		var a amendment
+		d, ok := web.DecodeJSON(r, 1<<16, &a)
+		want := slices.ContainsFunc(accepted, func(l []string) bool { return slices.Equal(l, labels) })
+		if ok != want {
+			t.Errorf("Content-Type %q: decoded = %v, want %v (%+v)", labels, ok, want, d)
+			continue
+		}
+		if !ok && (d.Code != web.CodeMalformedBody || d.MessageID != "RequestBodyMediaType") {
+			t.Errorf("Content-Type %q: refused with %s/%s, want %s/RequestBodyMediaType", labels, d.Code, d.MessageID, web.CodeMalformedBody)
+		}
+		if !ok && a != (amendment{}) {
+			t.Errorf("Content-Type %q: refused, yet the body was decoded into %+v", labels, a)
+		}
 	}
 }
 

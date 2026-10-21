@@ -79,9 +79,18 @@ const (
 // A body of null is refused when dst points to a struct. It parses, but it
 // decodes into a struct as no assignment at all, so the handler would go on
 // with a value the client never sent.
+//
+// The request must say it carries JSON: one Content-Type, application/json or
+// a +json subtype. Any other label, or none, is refused as malformed before a
+// byte is read — a browser posts text/plain and form bodies across origins
+// without a preflight, and a JSON document hidden in one would otherwise be
+// decoded as if the client had asked to send it.
 func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, bool) {
 	if limit <= 0 {
 		panic("web: DecodeJSON needs a positive byte limit; an unbounded read from a socket is not a default")
+	}
+	if ct := r.Header["Content-Type"]; len(ct) != 1 || !reqbody.JSONMediaType(ct[0]) {
+		return reqbody.MediaType(CodeMalformedBody), false
 	}
 
 	// MaxBytesReader rather than io.LimitReader: it reports the overrun as a

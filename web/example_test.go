@@ -50,6 +50,7 @@ func Example() {
 
 	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/orders/42/lines/7",
 		strings.NewReader(`{"saleQty":0}`))
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Println(err)

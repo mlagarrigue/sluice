@@ -30,6 +30,72 @@ func Null(code string) diagnostics.Diagnostic {
 		WithOrigin(diagnostics.OriginProtocol)
 }
 
+// JSONMediaType reports whether a Content-Type value names a JSON document:
+// application/json, or any subtype with the +json structured syntax suffix
+// (RFC 6839 §3.1), such as application/merge-patch+json. Parameters are
+// ignored — JSON defines none that change how it is read (RFC 8259 §11) —
+// and the comparison is case-insensitive, as RFC 9110 §8.3.1 has it. It
+// allocates nothing: it runs on every request that carries a body.
+func JSONMediaType[T string | []byte](v T) bool {
+	end := len(v)
+	for i := range len(v) {
+		if v[i] == ';' {
+			end = i
+			break
+		}
+	}
+	start := 0
+	for start < end && (v[start] == ' ' || v[start] == '\t') {
+		start++
+	}
+	for end > start && (v[end-1] == ' ' || v[end-1] == '\t') {
+		end--
+	}
+	if foldEqual(v, start, end, "application/json") {
+		return true
+	}
+	// The suffix needs a type, a slash and a subtype name in front of it.
+	const suffix = "+json"
+	slash := -1
+	for i := start; i < end; i++ {
+		if v[i] == '/' {
+			slash = i
+			break
+		}
+	}
+	return slash > start && end-slash-1 > len(suffix) && foldEqual(v, end-len(suffix), end, suffix)
+}
+
+// foldEqual reports whether v[start:end] equals want, ASCII case folded; want
+// is lower case.
+func foldEqual[T string | []byte](v T, start, end int, want string) bool {
+	if end-start != len(want) {
+		return false
+	}
+	for i := range len(want) {
+		c := v[start+i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// MediaType is the refusal of a body whose Content-Type is missing, repeated,
+// or not JSON. A browser sends a text/plain, form or multipart body to another
+// origin without asking first (no CORS preflight), so decoding JSON whatever
+// the label says lets any page a user visits post to the endpoint with the
+// user's cookies; a JSON label is what forces the preflight. The client is
+// told what is accepted, not what it sent: the value is its own.
+func MediaType(code string) diagnostics.Diagnostic {
+	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		WithMessage("RequestBodyMediaType", map[string]any{"accepted": "application/json"}).
+		WithOrigin(diagnostics.OriginProtocol)
+}
+
 // MalformedArgs builds the client-visible arguments of a
 // RequestBodyMalformed message from a JSON decoding error.
 //
