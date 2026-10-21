@@ -556,6 +556,13 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 				s.answer(a)
 			case <-s.settled:
 			}
+			// Idle after a burst: the answers kept for the largest batch and
+			// the writer's batches let go (see h2Writer.shed), read in the
+			// same order as the drained check below.
+			if cap(s.answers) > h2KeptJobs && s.open.Load() == 0 && s.inFlight.Load() == 0 {
+				s.answers = nil
+				s.w.shed()
+			}
 			// The last answer of a drained connection closes it, whether the
 			// responder or the writer finished it. open is read before
 			// inFlight because finish moves a stream the other way round,

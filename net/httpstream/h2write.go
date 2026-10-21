@@ -578,6 +578,40 @@ func (w *h2Writer) settle(j *h2Job, err error) {
 	}
 }
 
+// shed lets go of what a burst grew, once the connection is idle: a burst
+// grows a batch to one job per request and its frame buffer to every head,
+// and the free list to one batch per call in flight, and kept at that
+// high-water mark an idle connection held some twenty kilobytes more than
+// an HTTP/1.1 one after a hundred requests at once. The free list keeps two
+// batches, each no more than an ordinary batch needs; the next burst
+// allocates again, once. Nothing is touched while a job is queued.
+func (w *h2Writer) shed() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.jobs) != 0 {
+		return
+	}
+	if len(w.free) > 2 {
+		clear(w.free[2:])
+		w.free = w.free[:2]
+	}
+	for _, b := range w.free {
+		if cap(b.jobs) > h2KeptJobs {
+			b.jobs = nil
+		}
+		if cap(b.out) > h2KeptOut {
+			b.out = nil
+		}
+	}
+}
+
+// h2KeptJobs and h2KeptOut are what a batch keeps of its job list and frame
+// buffer once the connection is idle (see shed).
+const (
+	h2KeptJobs = 16
+	h2KeptOut  = 4 << 10
+)
+
 // extend queues data for a streamed body on id and returns the job carrying
 // it, without waiting for the wire.
 //
