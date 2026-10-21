@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -558,6 +559,12 @@ func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 	rows, size = cfg.BatchRows, cfg.BatchBytes
 	if rows < 0 {
 		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchRows %d is negative — zero means the default, %d", rows, sluice.DefaultBatchSize)
+	}
+	if int64(rows) > math.MaxUint32 {
+		// Execute carries the row limit as a uint32; a larger value would be
+		// sent truncated — to a small number, or to 0, which means every
+		// row — and nothing in the behaviour would point back to it.
+		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchRows %d is over %d, the most one Execute can ask for", rows, uint32(math.MaxUint32))
 	}
 	if size < 0 || size > maxBatchBytes {
 		return 0, 0, fmt.Errorf("postgres: QueryConfig.BatchBytes %d is outside 1..%d bytes — zero means the default, %d", size, maxBatchBytes, defaultBatchBytes)

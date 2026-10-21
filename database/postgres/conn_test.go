@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"slices"
 	"strings"
@@ -1647,5 +1648,21 @@ func TestAnEncodingChangeNobodyAskedForBreaksTheConnection(t *testing.T) {
 	}
 	if got := conn.Parameter("client_encoding"); got != "LATIN1" {
 		t.Errorf("Parameter(client_encoding) = %q, want LATIN1", got)
+	}
+}
+
+// Execute carries its row limit as a uint32: a BatchRows the field cannot
+// hold would be sent truncated — to 0, which asks for every row — and nothing
+// in the behaviour would point back at the configuration (ADR 0018).
+func TestBatchRowsOverUint32IsRefused(t *testing.T) {
+	big := int64(math.MaxUint32) + 1
+	if int64(int(big)) != big {
+		t.Skip("int is 32 bits here: the value cannot be configured")
+	}
+	if _, _, err := batchBounds(QueryConfig{BatchRows: int(big)}); err == nil {
+		t.Error("BatchRows 2^32 was accepted; it would reach the server as 0")
+	}
+	if _, _, err := batchBounds(QueryConfig{BatchRows: int(big - 1)}); err != nil {
+		t.Errorf("BatchRows 2^32-1 was refused: %v", err)
 	}
 }

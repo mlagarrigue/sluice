@@ -12,12 +12,22 @@ import (
 	"io"
 )
 
-// ErrMessageTooLarge reports a message whose declared length exceeds the
-// reader's limit. It is returned before anything is allocated for that
-// message, which is the whole point of the limit (guarantee S8): a length
-// prefix is attacker-controlled, and a reader that allocates first and checks
-// second can be made to allocate two gigabytes by four bytes of input.
-var ErrMessageTooLarge = errors.New("postgres: message longer than the reader's limit")
+// MaxOutgoingMessage bounds one message this package writes: the server
+// refuses anything longer than its MaxAllocSize, a byte under 1 GiB, by
+// closing the connection, and past 4 GiB the length field itself would wrap
+// and corrupt the stream. The bound is checked when the message is framed
+// and reported by [Writer.Flush], before a byte of it is written.
+const MaxOutgoingMessage = 1<<30 - 1
+
+// ErrMessageTooLarge reports a message longer than a bound, in either
+// direction. Read, it is a message whose declared length exceeds the
+// reader's limit, returned before anything is allocated for that message,
+// which is the whole point of the limit (guarantee S8): a length prefix is
+// attacker-controlled, and a reader that allocates first and checks second
+// can be made to allocate two gigabytes by four bytes of input. Written, it
+// is a message past [MaxOutgoingMessage], reported by [Writer.Flush] before
+// a byte of the batch goes out.
+var ErrMessageTooLarge = errors.New("postgres: message longer than the limit")
 
 // ErrMalformedMessage reports a length prefix that cannot describe a message —
 // shorter than the four bytes it counts itself. There is no recovery: the
@@ -328,11 +338,29 @@ func (rd *Reader) bodyBuffer(n int) []byte {
 type Writer struct {
 	w   io.Writer
 	buf []byte
+	// max is the outbound bound, MaxOutgoingMessage unless a test lowers it;
+	// err holds the first message that broke it, reported by Flush.
+	max int
+	err error
 }
 
 // NewWriter returns a Writer over w.
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{w: w}
+	return &Writer{w: w, max: MaxOutgoingMessage}
+}
+
+// framed checks the length of a message of n bytes (type byte excluded)
+// against the outbound bound. Over it, the message is not framed: the first
+// failure is kept for Flush and the buffer is cut back to from.
+func (wr *Writer) framed(from, n int) bool {
+	if n <= wr.max {
+		return true
+	}
+	if wr.err == nil {
+		wr.err = fmt.Errorf("%w: a %d-byte message, over the %d bytes a server accepts", ErrMessageTooLarge, n, wr.max)
+	}
+	wr.buf = wr.buf[:from]
+	return false
 }
 
 // Buffered reports how many bytes are waiting for a flush. It is what a caller
@@ -345,14 +373,20 @@ func (wr *Writer) Buffered() int { return len(wr.buf) }
 // hand-written length is a class of bug this package should not be able to
 // have.
 func (wr *Writer) Message(typ byte, body []byte) {
+	if !wr.framed(len(wr.buf), LengthSize+len(body)) {
+		return
+	}
 	wr.buf = append(wr.buf, typ)
-	wr.buf = binary.BigEndian.AppendUint32(wr.buf, uint32(LengthSize+len(body))) //nolint:gosec // G115: bounded by the caller's body
+	wr.buf = binary.BigEndian.AppendUint32(wr.buf, uint32(LengthSize+len(body))) //nolint:gosec // G115: under MaxOutgoingMessage
 	wr.buf = append(wr.buf, body...)
 }
 
 // Startup appends a message with no type byte, for the startup phase.
 func (wr *Writer) Startup(body []byte) {
-	wr.buf = binary.BigEndian.AppendUint32(wr.buf, uint32(LengthSize+len(body))) //nolint:gosec // G115: bounded by the caller's body
+	if !wr.framed(len(wr.buf), LengthSize+len(body)) {
+		return
+	}
+	wr.buf = binary.BigEndian.AppendUint32(wr.buf, uint32(LengthSize+len(body))) //nolint:gosec // G115: under MaxOutgoingMessage
 	wr.buf = append(wr.buf, body...)
 }
 
@@ -373,9 +407,14 @@ func (wr *Writer) Begin(typ byte) int {
 	return at
 }
 
-// End writes the length of a message begun at the offset Begin returned.
+// End writes the length of a message begun at the offset Begin returned. A
+// message grown past the outbound bound is dropped whole, type byte
+// included, and Flush reports it.
 func (wr *Writer) End(at int) {
-	binary.BigEndian.PutUint32(wr.buf[at:at+LengthSize], uint32(len(wr.buf)-at)) //nolint:gosec // G115: bounded by the buffer
+	if !wr.framed(at-1, len(wr.buf)-at) {
+		return
+	}
+	binary.BigEndian.PutUint32(wr.buf[at:at+LengthSize], uint32(len(wr.buf)-at)) //nolint:gosec // G115: under MaxOutgoingMessage
 }
 
 // AppendBytes appends raw bytes to the message being built.
@@ -401,6 +440,13 @@ func (wr *Writer) AppendUint32(v uint32) { wr.buf = binary.BigEndian.AppendUint3
 // corrupt the stream rather than repair it. The error is the end of that
 // connection.
 func (wr *Writer) Flush() error {
+	if err := wr.err; err != nil {
+		// Nothing of the batch goes out: the message that broke the bound
+		// was part of it, and the caller's conversation is in error before
+		// a byte crossed. The writer is usable again for the next one.
+		wr.err, wr.buf = nil, wr.buf[:0]
+		return err
+	}
 	if len(wr.buf) == 0 {
 		return nil
 	}
