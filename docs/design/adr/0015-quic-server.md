@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered)
 - **Theme:** quic
 
 ## Problem
@@ -107,7 +107,16 @@ otherwise unreachable and the parameter's whole point (§9.6) is a server
 behind a shared address — a deployment, not a test. The preferred address
 is announced by `PreferredIPv4` and `PreferredIPv6`, one `netip.Addr`
 each: the transport parameter carries one address per family (§18.2), and
-the type enforces it instead of a list being checked.
+the type enforces it instead of a list being checked. A client's
+PATH_CHALLENGE that reaches the preferred-address socket while the client
+has issued no spare identifier goes unanswered: §19.17's "MUST generate a
+PATH_RESPONSE" meets §9.5's "MUST NOT reuse a connection ID when sending
+from more than one local address", and the second wins — an answer under
+the identifier in use would tie the two paths for any observer, which is
+the harm §9.5 names, while the silence costs the client only the failed
+validation §9.6.1 already provides for, on the original address it keeps.
+A client that wants the preferred address issues a spare identifier
+(§5.1.1); a real one found waiting without any is the signal to revisit.
 
 ## Rationale
 

@@ -948,7 +948,8 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		// socket the connection does not send from, and the client has
 		// given no identifier that path could take: nothing leaves that
 		// socket. The client's validation of the path fails, and §9.6.1
-		// keeps it on the original address — a stay, not a fault.
+		// keeps it on the original address — a stay, not a fault. Recorded
+		// in ADR 0015, against §19.17's MUST.
 		return
 	}
 	if dcid == nil && !onPath && len(c.dcid) > 0 {
