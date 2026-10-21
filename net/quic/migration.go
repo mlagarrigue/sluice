@@ -1137,7 +1137,11 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 	if !c.pathProbe.pending {
 		return time.Time{}
 	}
-	interval := c.rtt.pto(0) << min(c.pathProbe.retransmits, 10)
+	// RFC 9000 §9.4: the timer is RFC 9002 §6.2.1's PTO, max_ack_delay
+	// included as in the application space — "MUST NOT be more aggressive"
+	// leaves no room to drop the term because a PATH_RESPONSE is not
+	// delayed the way an ACK is. Until 2026-10-21 the term was zero.
+	interval := c.rtt.pto(c.peerMaxAckDelayLocked()) << min(c.pathProbe.retransmits, 10)
 	deadline := c.pathProbe.sentAt.Add(interval)
 	if now.Before(deadline) {
 		return deadline
@@ -1183,5 +1187,5 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 	if c.pathProbe.oldPending {
 		c.sendOldPathChallengeLocked()
 	}
-	return now.Add(c.rtt.pto(0) << min(c.pathProbe.retransmits, 10))
+	return now.Add(c.rtt.pto(c.peerMaxAckDelayLocked()) << min(c.pathProbe.retransmits, 10)) // §9.4, as above
 }

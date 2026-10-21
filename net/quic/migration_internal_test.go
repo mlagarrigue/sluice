@@ -2258,3 +2258,39 @@ func TestRebindRetiresTheOldPathIdentifierOnceValidated(t *testing.T) {
 		t.Fatalf("sending under sequence %d, want 1", c.currentPeerSeq)
 	}
 }
+
+// RFC 9000 §9.4: the PATH_CHALLENGE timer is RFC 9002 §6.2.1's PTO and MUST
+// NOT be more aggressive — max_ack_delay included, as in the application
+// space. At pto(0) the challenge is not resent yet; at pto(max_ack_delay)
+// it is.
+func TestPathChallengeTimerIsNotMoreAggressiveThanThePTO(t *testing.T) {
+	old := &recordingPC{addr: fakeFuzzAddr("timer:old")}
+	c := newConn(old, fakeFuzzAddr("timer:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 100 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true}
+	c.mu.Unlock()
+
+	fresh := &recordingPC{addr: fakeFuzzAddr("timer:new")}
+	if err := c.Rebind(fresh); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sentAt := c.pathProbe.sentAt
+	short, full := c.rtt.pto(0), c.rtt.pto(c.peerMaxAckDelayLocked())
+	if full <= short {
+		t.Fatalf("pto(max_ack_delay) = %v is not above pto(0) = %v; the peer's max_ack_delay reads as zero", full, short)
+	}
+	c.pathProbeDeadlineLocked(sentAt.Add(short))
+	if n := len(fresh.recorded()); n != 1 {
+		t.Fatalf("%d datagrams after pto(0) = %v, want the first challenge alone: the timer is more aggressive than §6.2.1's PTO", n, short)
+	}
+	c.pathProbeDeadlineLocked(sentAt.Add(full))
+	if n := len(fresh.recorded()); n != 2 {
+		t.Errorf("%d datagrams after pto(max_ack_delay) = %v, want the challenge resent once", n, full)
+	}
+}
