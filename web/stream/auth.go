@@ -74,7 +74,7 @@ func authorization(headers []httpstream.Header) (raw []byte, duplicated bool) {
 }
 
 // bearer extracts the token from a raw authorization value, under the same
-// rules as [web.Bearer]: the scheme case-insensitive as RFC 7235 requires,
+// rules as [web.Bearer]: the scheme case-insensitive as RFC 9110 §11.1 says,
 // exactly one space, no creative parsing at an authentication boundary. A
 // failure is named by the message identifier the refusal carries.
 func bearer(raw []byte) (token, messageID string) {

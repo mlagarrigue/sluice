@@ -32,7 +32,7 @@ func withAuthz(value string) Exchange {
 }
 
 // web.Bearer (string, over *http.Request) and this package's bearer (bytes,
-// over the raw header) implement the same RFC 7235 rule twice — the
+// over the raw header) implement the same RFC 9110 §11.1 rule twice — the
 // []byte→string conversion a batch path can't afford to pay per element is
 // the whole reason there are two. Nothing stops them drifting apart as each
 // evolves on its own, so this table drives both real implementations side

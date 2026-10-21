@@ -450,7 +450,7 @@ const CodeUnauthenticated = "Transport.Request.Unauthenticated"
 
 // Bearer extracts the token from an Authorization header.
 //
-// The scheme is matched case-insensitively, as RFC 7235 requires, and exactly
+// The scheme is matched case-insensitively, as RFC 9110 §11.1 says, and exactly
 // one space separates it from the token — a header this package will not parse
 // creatively, because creative parsing at an authentication boundary is how
 // two components disagree about what the credential was.
