@@ -3,6 +3,7 @@ package httpstream
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/mlagarrigue/sluice/net/quic"
 )
@@ -46,6 +47,30 @@ func BenchmarkH3Assemble(b *testing.B) {
 				}
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*depth), "ns/request")
+		})
+	}
+}
+
+// BenchmarkH3Expire measures the per-datagram sweep of the streams still
+// assembling: Frames runs expire once per delivery, so its cost is paid on
+// every datagram, with as many streams parked as the peer keeps open.
+func BenchmarkH3Expire(b *testing.B) {
+	for _, n := range []int{1, 64, 1024} {
+		b.Run(fmt.Sprintf("streams=%d", n), func(b *testing.B) {
+			a := testAssembler(Config{MaxConcurrentStreams: 2048})
+			head := h3Request("POST", "/u") // no FIN: the stream stays parked
+			frames := make([]quic.Frame, n)
+			for i := range n {
+				frames[i] = streamFrame(uint64(4*i), head, false)
+			}
+			if _, _, failed, err := a.Frames(frames); err != nil || len(failed) != 0 {
+				b.Fatalf("Frames: err=%v failed=%v", err, failed)
+			}
+			now := time.Now() // before every deadline: the sweep finds nothing
+			b.ReportAllocs()
+			for b.Loop() {
+				a.expire(now)
+			}
 		})
 	}
 }

@@ -825,8 +825,13 @@ func TestH3StalledAssemblyExpires(t *testing.T) {
 	}
 	// ...and is made to have run out rather than waited out: the subject is
 	// what the sweep does with an expired stream, and a sleep would only
-	// guess at when one is.
+	// guess at when one is. The sweep's own clock, the earliest deadline it
+	// knows of, was armed at the same instant and is moved with it.
+	if !a.nextExpiry.Equal(st.deadline) {
+		t.Fatalf("the sweep's earliest deadline is %v, want the one stream's %v", a.nextExpiry, st.deadline)
+	}
 	st.deadline = time.Now().Add(-time.Nanosecond)
+	a.nextExpiry = st.deadline
 
 	// The next datagram — any datagram — is the sweep's clock.
 	_, _, failed, err := a.Frames([]quic.Frame{streamFrame(4, h3Request("GET", "/live"), true)})
