@@ -1105,15 +1105,20 @@ func (a *h3Assembler) controlIdentifier(fr h3Frame) error {
 // capacity above the advertised zero is the connection error
 // QPACK_ENCODER_STREAM_ERROR (§4.2, §8.3).
 func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
-	for len(u.buf) > 0 {
-		if u.buf[0]&0xe0 != 0x20 {
+	// One pass over the buffer, one compaction at the end (keepRest):
+	// moving the rest to the front after each instruction made a delivery of
+	// one-byte instructions quadratic.
+	buf := u.buf
+	defer func() { u.buf = keepRest(u.buf, buf) }()
+	for len(buf) > 0 {
+		if buf[0]&0xe0 != 0x20 {
 			// Insert With Name Reference (1xxxxxxx), Insert With Literal
 			// Name (01xxxxxx) and Duplicate (000xxxxx) all grow or read a
 			// table whose capacity cannot leave zero.
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
-				"%w: encoder instruction %#x against a dynamic-table capacity of zero", ErrH3Protocol, u.buf[0])}
+				"%w: encoder instruction %#x against a dynamic-table capacity of zero", ErrH3Protocol, buf[0])}
 		}
-		capacity, rest, err := hpackInt(u.buf, 5)
+		capacity, rest, err := hpackInt(buf, 5)
 		if err != nil {
 			// An integer that runs off the end has not all arrived yet; one
 			// wider than 62 bits (RFC 9204 §4.1.1) never will be legal.
@@ -1127,7 +1132,7 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 			return h3ConnectionError{Code: qpackEncoderStreamError, Err: fmt.Errorf(
 				"%w: a dynamic-table capacity of %d, but zero was advertised", ErrH3Protocol, capacity)}
 		}
-		u.buf = append(u.buf[:0], rest...)
+		buf = rest
 	}
 	return nil
 }
@@ -1142,8 +1147,10 @@ func (a *h3Assembler) encoderInstructions(u *h3Uni) error {
 // inserts never sent, and both are QPACK_DECODER_STREAM_ERROR. Discarding the
 // stream unread, as before, accepted either without a word.
 func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
-	for len(u.buf) > 0 {
-		switch b := u.buf[0]; {
+	buf := u.buf // one pass, one compaction, as in encoderInstructions
+	defer func() { u.buf = keepRest(u.buf, buf) }()
+	for len(buf) > 0 {
+		switch b := buf[0]; {
 		case b&0x80 != 0:
 			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
 				"%w: a Section Acknowledgment, but no field section used the dynamic table", ErrH3Protocol)}
@@ -1158,7 +1165,7 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 		// used to close the connection over the cancellation of stream
 		// 2^28 — a legal instruction a long-lived client reaches, since
 		// HTTP/3 caps no request count.
-		_, rest, err := hpackInt(u.buf, 6)
+		_, rest, err := hpackInt(buf, 6)
 		if err != nil {
 			// As in encoderInstructions: an integer that runs off the end
 			// has not all arrived yet.
@@ -1168,7 +1175,7 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 			return h3ConnectionError{Code: qpackDecoderStreamError, Err: fmt.Errorf(
 				"%w: a Stream Cancellation naming a stream wider than 62 bits", ErrH3Protocol)}
 		}
-		u.buf = append(u.buf[:0], rest...)
+		buf = rest
 	}
 	return nil
 }
