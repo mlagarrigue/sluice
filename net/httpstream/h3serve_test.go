@@ -554,7 +554,7 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 					}
 					return sluice.Batch[Response]{Items: res}
 				})
-			refused := askH3(t, conn, tt.request)
+			refused := askH3Open(t, conn, tt.request)
 			healthy := askH3(t, conn, h3Request("GET", "/y"))
 
 			// readH3Fields reads to a clean EOF: a RESET_STREAM would end it
@@ -621,6 +621,28 @@ func TestH3TransportErrorCarriesBody(t *testing.T) {
 
 // readH3FieldsAndBody reads a response stream to its end: the last value of
 // each field, and the DATA payloads joined.
+// askH3Open sends a request and leaves its stream open: the FIN never
+// goes out. For a request the server refuses on its head, that makes the
+// refusal land before the request's end for certain, which is what earns it
+// a STOP_SENDING (RFC 9114 §4.1.1) — a FIN that reached the server first,
+// as a Write followed by a CloseWrite may be coalesced into under load,
+// leaves it nothing to stop and no STOP_SENDING is sent (Stream.StopSending
+// on a finished receive side). The response is read as usual; the server's
+// RESET_STREAM for the write side ends what the client did not close.
+func askH3Open(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
+	t.Helper()
+	s, err := conn.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(request); err != nil {
+		if code, reset := s.WasReset(); !reset || code != h3NoError {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
 func readH3FieldsAndBody(t *testing.T, s *quic.Stream) (fields map[string]string, body string) {
 	t.Helper()
 	_ = s.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -966,7 +988,7 @@ func TestH3AnswersAWellFormedConnectWith501(t *testing.T) {
 		{Name: []byte(":method"), Value: []byte("CONNECT")},
 		{Name: []byte(":authority"), Value: []byte("h:443")},
 	}))
-	refused := askH3(t, conn, connect)
+	refused := askH3Open(t, conn, connect)
 	healthy := askH3(t, conn, h3Request("GET", "/y"))
 
 	fields, body := readH3FieldsAndBody(t, refused)
