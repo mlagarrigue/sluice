@@ -6,7 +6,8 @@
 #
 # Needs docker (with compose), python3, tshark 4.5 or newer, jq and git.
 # The runner is cloned into RUNNER_DIR (default: a directory under the
-# system temporary directory) at RUNNER_REF (default: master); TESTS
+# system temporary directory) at RUNNER_REF (default: the commit pinned
+# below, so that a result read today reads the same tomorrow); TESTS
 # narrows the cases (comma separated, the runner's names). The image is
 # built from the working tree, or pulled when IMAGE names a published one
 # (ghcr.io/mlagarrigue/sluice-interop:latest, the last release),
@@ -23,7 +24,10 @@ cd "$(dirname "$0")/.."
 
 peer=${1:-quic-go}
 RUNNER_DIR=${RUNNER_DIR:-${TMPDIR:-/tmp}/quic-interop-runner}
-RUNNER_REF=${RUNNER_REF:-master}
+# Pinned by commit, as h2spec is in interop-http.sh: the revision the
+# results in docs/guide/limits.md were read at. repo_test.go refuses a
+# branch here, since a branch moves under the results.
+RUNNER_REF=${RUNNER_REF:-ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6}
 TESTS=${TESTS:-handshake,transfer,longrtt,chacha20,multiplexing,retry,resumption,zerortt,http3,blackhole,keyupdate,ecn,amplificationlimit,handshakeloss,transferloss,handshakecorruption,transfercorruption,ipv6,v2,rebind-port,rebind-addr,connectionmigration}
 image=${IMAGE:-sluice-interop:local}
 
@@ -46,8 +50,11 @@ fi
 
 echo "## runner"
 if [ ! -d "$RUNNER_DIR/.git" ]; then
-  git clone -q --depth 1 --branch "$RUNNER_REF" \
+  # Cloned without a checkout, then checked out at the ref: a commit as
+  # well as a branch or tag, where --branch takes only the last two.
+  git clone -q --no-checkout \
     https://github.com/quic-interop/quic-interop-runner "$RUNNER_DIR"
+  git -C "$RUNNER_DIR" checkout -q "$RUNNER_REF"
 fi
 echo "$(git -C "$RUNNER_DIR" rev-parse --short HEAD) in $RUNNER_DIR"
 if [ ! -x "$RUNNER_DIR/.venv/bin/python" ]; then

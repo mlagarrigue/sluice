@@ -498,3 +498,25 @@ func TestDockerImagesArePinned(t *testing.T) {
 		}
 	}
 }
+
+// TestInteropRunnerIsPinned: the QUIC interop runner is cloned at a commit,
+// as h2spec is built from one, so that a result read today can be read
+// again tomorrow; and the limits guide names the same revision as the one
+// the script runs, since the guide's results are the script's.
+func TestInteropRunnerIsPinned(t *testing.T) {
+	script, err := os.ReadFile("scripts/interop-runner.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^RUNNER_REF=\$\{RUNNER_REF:-([0-9a-f]{40})\}`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal("scripts/interop-runner.sh: RUNNER_REF does not default to a 40-hex commit; a branch moves under the results")
+	}
+	guide, err := os.ReadFile("docs/guide/limits.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short := string(m[1][:7]); !bytes.Contains(guide, []byte(short)) {
+		t.Errorf("docs/guide/limits.md does not name the runner revision %s the script runs", short)
+	}
+}
