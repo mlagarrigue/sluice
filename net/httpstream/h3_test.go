@@ -222,6 +222,13 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 		// parser's octet rules apply to what it decoded — these are the
 		// CR/LF/NUL and token refusals that close the smuggling family at
 		// any h3→h1 hop.
+		{"a field value edged with a space", []Header{
+			{[]byte(":method"), []byte("GET")},
+			{[]byte(":path"), []byte("/x")},
+			{[]byte(":scheme"), []byte("https")},
+			{[]byte(":authority"), []byte("h")},
+			{[]byte("x-note"), []byte("v ")},
+		}},
 		{"a CRLF in a field value", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x")},
@@ -755,6 +762,12 @@ func TestH3ResponseRefusesControlBytesInFieldValues(t *testing.T) {
 	res.Headers[0].Value = []byte("a\tb")
 	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a response field value with an HTAB was refused: %v", err)
+	}
+	// RFC 9113 §8.2.1 / RFC 9114 §4.1.2: a value edged with whitespace is
+	// malformed to a strict reader, so it is not emitted either.
+	res.Headers[0].Value = []byte(" x")
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
+		t.Error("a response field value starting with a space was encoded")
 	}
 }
 

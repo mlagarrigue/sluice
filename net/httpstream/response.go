@@ -744,16 +744,18 @@ func hasCRLF(b []byte) bool {
 
 // hasFieldControl reports a value carrying any byte RFC 9110 §5.5 keeps out
 // of field content beyond CR and LF: the other C0 controls (HTAB excepted)
-// and DEL. Outbound values are held to the same octet rules the request
-// parser enforces inbound — a NUL or 0x0C a handler lets through is the same
-// cross-hop disagreement as a CR, with a subtler trigger.
+// and DEL, or SP/HTAB at either edge. Outbound values are held to the same
+// octet rules the request parser enforces inbound — a NUL or 0x0C a handler
+// lets through is the same cross-hop disagreement as a CR, with a subtler
+// trigger, and a value edged with whitespace is one an HTTP/1.1 reader trims
+// and a strict HTTP/2 reader refuses as malformed (RFC 9113 §8.2.1).
 func hasFieldControl(b []byte) bool {
 	for _, c := range b {
 		if (c < 0x20 && c != '\t') || c == 0x7f {
 			return true
 		}
 	}
-	return false
+	return edgedWithWhitespace(b)
 }
 
 // transportError is the response this package writes for an error of its

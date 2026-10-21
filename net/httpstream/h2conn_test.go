@@ -520,6 +520,8 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 		{"a header name with a colon", func(b []byte) []byte { return literal(b, "x:y", "v") }},
 		{"a header value with CRLF", func(b []byte) []byte { return literal(b, "x-a", "a\r\nb") }},
 		{"a header value with NUL", func(b []byte) []byte { return literal(b, "x-a", "a\x00b") }},
+		{"a header value starting with a space", func(b []byte) []byte { return literal(b, "x-a", " v") }},
+		{"a header value ending with a tab", func(b []byte) []byte { return literal(b, "x-a", "v\t") }},
 		{"a repeated content-length", func(b []byte) []byte {
 			return literal(literal(b, "content-length", "0"), "content-length", "0")
 		}},
@@ -1825,6 +1827,7 @@ func TestH2RefusesInvalidTrailerFields(t *testing.T) {
 	}{
 		{"a value with a bare LF", literal(nil, "x-sum", "a\nb")},
 		{"a value with NUL", literal(nil, "x-sum", "a\x00b")},
+		{"a value edged with a space", literal(nil, "x-sum", " 1")},
 		{"an uppercase name", literal(nil, "X-Sum", "1")},
 		{"a name with a space", literal(nil, "x sum", "1")},
 	}
@@ -3182,5 +3185,33 @@ func TestH2AnswersAWellFormedConnectWith501(t *testing.T) {
 				t.Errorf("the handler saw batches %v, want the one GET and never the CONNECT", got)
 			}
 		})
+	}
+}
+
+// RFC 9113 §8.2.1 on the way out: a handler's field value edged with SP or
+// HTAB is malformed to a strict HTTP/2 reader (an HTTP/1.1 one would merely
+// trim it), so the response is replaced by the 500 every other refused value
+// earns, on its own stream.
+func TestH2ResponseEdgedWithWhitespaceIsA500(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, b.Len())
+		for i := range out {
+			out[i] = Response{Status: 200, Headers: []Header{{Name: []byte("x-note"), Value: []byte(" x")}}, Body: []byte("ok")}
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/x")
+	c.request(3, "GET", "/y")
+	c.flush()
+	c.bodies(2)
+	if got := h2Status(c.heads[1]); got != 500 {
+		t.Errorf("status = %d for a response value starting with a space, want 500", got)
+	}
+	if got := h2Status(c.heads[3]); got != 500 {
+		t.Errorf("status = %d on the second stream, want 500 as well", got)
+	}
+	if c.sawGoAway {
+		t.Error("a refused response value ended the whole connection")
 	}
 }

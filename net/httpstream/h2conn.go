@@ -1420,14 +1420,27 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 // second field or a second request into whatever re-serialises this one
 // toward HTTP/1.1, plus the other C0 controls (HTAB excepted) and DEL — the
 // same octet rules the h1 parser enforces in parseHeaderLine and the writers
-// enforce outbound via hasFieldControl.
+// enforce outbound via hasFieldControl. A value edged with SP or HTAB is
+// refused too (RFC 9113 §8.2.1, RFC 9114 §4.1.2): the h1 parser trims that
+// whitespace, so two hops would not agree on what the value was.
 func validFieldValue(v []byte) bool {
 	for _, c := range v {
 		if (c < 0x20 && c != '\t') || c == 0x7f {
 			return false
 		}
 	}
-	return true
+	return !edgedWithWhitespace(v)
+}
+
+// edgedWithWhitespace reports a value that starts or ends with SP or HTAB —
+// what RFC 9110 §5.5's field-content grammar never produces, and what the
+// RFC 9113 §8.2.1 and RFC 9114 §4.1.2 minimal validation refuses.
+func edgedWithWhitespace(v []byte) bool {
+	if len(v) == 0 {
+		return false
+	}
+	first, last := v[0], v[len(v)-1]
+	return first == ' ' || first == '\t' || last == ' ' || last == '\t'
 }
 
 // parseContentLength parses a decimal content-length the way the h1 parser
