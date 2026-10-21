@@ -1042,3 +1042,25 @@ func TestH3ACompletedRequestHoldsItsSlotUntilRetired(t *testing.T) {
 		t.Fatalf("the request after a retire: batch=%d failed=%v err=%v, want it assembled", batch.Len(), failed, err)
 	}
 }
+
+// RFC 9114 §4.2.2, §7.2.4.2: before the client's SETTINGS arrive its
+// MAX_FIELD_SECTION_SIZE is unlimited; a SETTINGS that announces zero is a
+// limit of zero, under which no response fits — not the absence of a limit,
+// which is what zero used to mean on this side.
+func TestH3AnnouncedFieldSectionLimitOfZeroIsALimit(t *testing.T) {
+	a := testAssembler(Config{})
+	res := Response{Status: 200}
+	if _, err := appendH3Response(nil, res, nil, a.peerMaxFieldSection(), &h3Scratch{}, testDate); err != nil {
+		t.Fatalf("before any SETTINGS the response was refused: %v", err)
+	}
+	open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 0)...)
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)}); err != nil {
+		t.Fatalf("the control stream was refused: %v", err)
+	}
+	if got := a.peerMaxFieldSection(); got != 0 {
+		t.Fatalf("peerMaxFieldSection = %d after SETTINGS_MAX_FIELD_SECTION_SIZE 0, want 0", got)
+	}
+	if _, err := appendH3Response(nil, res, nil, a.peerMaxFieldSection(), &h3Scratch{}, testDate); err == nil {
+		t.Error("a response was encoded for a peer that announced a field-section limit of zero")
+	}
+}

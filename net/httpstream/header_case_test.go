@@ -99,7 +99,7 @@ func TestLowercasedNameFeedsTheEncoder(t *testing.T) {
 		if _, err := s.appendHead(nil, 1, []byte("GET"), bad, defaultMaxFrameSize); !errors.Is(err, ErrH2Protocol) {
 			t.Errorf("h2 %s: got %v, want ErrH2Protocol", name, err)
 		}
-		if _, err := appendH3Response(nil, bad, []byte("GET"), 0, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
+		if _, err := appendH3Response(nil, bad, []byte("GET"), h3NoFieldSectionLimit, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("h3 %s: got %v, want ErrH3Protocol", name, err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestLowercasedNameFeedsTheEncoder(t *testing.T) {
 		{Name: []byte("X-One"), Value: []byte("1")},
 		{Name: []byte("X-Two"), Value: []byte("2")},
 	}}
-	if _, err := appendH3Response(nil, two, []byte("GET"), 0, sc, testDate); err != nil {
+	if _, err := appendH3Response(nil, two, []byte("GET"), h3NoFieldSectionLimit, sc, testDate); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"x-one", "x-two"} {

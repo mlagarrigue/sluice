@@ -1771,7 +1771,7 @@ func TestBareHeadResponseStatesNoContentLength(t *testing.T) {
 		}
 
 		// HTTP/3: one HEADERS frame, no DATA.
-		out, err = appendH3Response(nil, tc.res, method, 0, &h3Scratch{}, dateFor(time.Now()))
+		out, err = appendH3Response(nil, tc.res, method, h3NoFieldSectionLimit, &h3Scratch{}, dateFor(time.Now()))
 		if err != nil {
 			t.Fatalf("h3: %s: %v", tc.name, err)
 		}

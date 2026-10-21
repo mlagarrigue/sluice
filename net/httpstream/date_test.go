@@ -234,7 +234,7 @@ func TestDateFollowsTheStatus(t *testing.T) {
 			}
 			checkOrder(t, "h2", fieldNames(fields), append([]string{":status"}, tt.want...))
 
-			h3, err := appendH3Response(nil, tt.r, method, 0, &h3Scratch{}, testDate)
+			h3, err := appendH3Response(nil, tt.r, method, h3NoFieldSectionLimit, &h3Scratch{}, testDate)
 			if err != nil {
 				t.Fatal(err)
 			}

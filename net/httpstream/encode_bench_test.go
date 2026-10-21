@@ -55,7 +55,7 @@ func BenchmarkH3Encode(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		head, err := appendH3Response(sc.head[:0], r, method, 0, sc, date)
+		head, err := appendH3Response(sc.head[:0], r, method, h3NoFieldSectionLimit, sc, date)
 		if err != nil {
 			b.Fatal(err)
 		}

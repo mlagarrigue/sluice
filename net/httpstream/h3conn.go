@@ -114,9 +114,11 @@ type h3Assembler struct {
 	hasEncoder      bool
 	hasDecoder      bool
 	controlSettings bool
-	// peerFieldSection is the client's SETTINGS_MAX_FIELD_SECTION_SIZE, zero
-	// until its control stream delivers one. It is the one setting a server
-	// consults — it bounds the field sections it SHOULD send (RFC 9114
+	// peerFieldSection is the client's SETTINGS_MAX_FIELD_SECTION_SIZE,
+	// h3NoFieldSectionLimit until its control stream delivers one: §7.2.4.2
+	// makes the default unlimited, and a client that announces zero has
+	// announced a limit of zero (RFC 9114 §4.2.2), not the absence of one.
+	// It is the one setting a server consults — it bounds the field sections it SHOULD send (RFC 9114
 	// §4.2.2); ServeH3 snapshots it per batch and the response encoder
 	// enforces it. The rest are ignored as §7.2.4 requires, and not kept:
 	// a SETTINGS frame of MaxHeaderBytes holds thousands of identifiers, and
@@ -220,6 +222,11 @@ const uniKindUnknown = -2
 // the assembler driven without one.
 const maxUniStreams = 32
 
+// h3NoFieldSectionLimit is peerFieldSection before the client's SETTINGS
+// arrive: RFC 9114 §7.2.4.2 gives SETTINGS_MAX_FIELD_SECTION_SIZE the
+// default "unlimited", and no field section is this large.
+const h3NoFieldSectionLimit = ^uint64(0)
+
 // newH3Assembler returns an assembler bounded by cfg, which is resolved.
 func newH3Assembler(cfg Config) *h3Assembler {
 	return &h3Assembler{
@@ -229,7 +236,8 @@ func newH3Assembler(cfg Config) *h3Assembler {
 		refused: make(map[uint64]struct{}),
 		unis:    make(map[uint64]*h3Uni),
 		// §5.2: a client's GOAWAY carries a push ID, at most 2^62-1.
-		peerGoAway: 1 << 62,
+		peerGoAway:       1 << 62,
+		peerFieldSection: h3NoFieldSectionLimit,
 	}
 }
 
@@ -1146,8 +1154,9 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 }
 
 // peerMaxFieldSection is the MAX_FIELD_SECTION_SIZE the client advertised, or
-// zero when none has arrived — zero meaning unbounded, since RFC 9114 §4.2.2
-// binds a sender only once the parameter has been received.
+// h3NoFieldSectionLimit when none has arrived — RFC 9114 §4.2.2 binds a
+// sender only once the parameter has been received, and an advertised zero
+// binds it to nothing at all.
 func (a *h3Assembler) peerMaxFieldSection() uint64 {
 	return a.peerFieldSection
 }
@@ -1385,7 +1394,7 @@ func appendH3StreamedBody(dst []byte, chunks [][]byte) []byte {
 // — the internal responder path, which knows the method and calls that
 // instead.
 func appendH3ResponseBasic(dst []byte, r Response) ([]byte, error) {
-	return appendH3Response(dst, r, nil, 0, &h3Scratch{}, dateFor(time.Now()))
+	return appendH3Response(dst, r, nil, h3NoFieldSectionLimit, &h3Scratch{}, dateFor(time.Now()))
 }
 
 // h3Scratch is one writer's reusable per-response state: the field list
@@ -1491,12 +1500,10 @@ func appendH3Response(dst []byte, r Response, method []byte, peerFieldSection ui
 }
 
 // checkH3FieldSection refuses a field section over the peer's
-// SETTINGS_MAX_FIELD_SECTION_SIZE, zero for unbounded, measured as §4.2.2
-// does: the uncompressed name and value, plus 32 per field.
+// SETTINGS_MAX_FIELD_SECTION_SIZE — h3NoFieldSectionLimit when none was
+// announced, zero when zero was — measured as §4.2.2 does: the uncompressed
+// name and value, plus 32 per field.
 func checkH3FieldSection(fields []Header, peerFieldSection uint64) error {
-	if peerFieldSection == 0 {
-		return nil
-	}
 	var size uint64
 	for _, h := range fields {
 		size += uint64(len(h.Name)+len(h.Value)) + 32

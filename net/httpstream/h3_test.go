@@ -719,8 +719,12 @@ func TestH3ResponseHonoursPeerFieldSectionLimit(t *testing.T) {
 	if _, err := appendH3Response(nil, res, nil, 4096, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a field section under the limit was refused: %v", err)
 	}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
+	if _, err := appendH3Response(nil, res, nil, h3NoFieldSectionLimit, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("no advertised limit still refused the response: %v", err)
+	}
+	// RFC 9114 §4.2.2: an announced zero is a limit, the smallest one.
+	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
+		t.Error("a field section was encoded for a peer whose announced limit is zero")
 	}
 }
 
@@ -756,17 +760,17 @@ func TestH3ResponseRefusesControlBytesInFieldValues(t *testing.T) {
 	res := Response{Status: 200, Headers: []Header{
 		{Name: []byte("x-note"), Value: []byte("a\x00b")},
 	}}
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
+	if _, err := appendH3Response(nil, res, nil, h3NoFieldSectionLimit, &h3Scratch{}, testDate); err == nil {
 		t.Error("a response field value with a NUL was encoded")
 	}
 	res.Headers[0].Value = []byte("a\tb")
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err != nil {
+	if _, err := appendH3Response(nil, res, nil, h3NoFieldSectionLimit, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("a response field value with an HTAB was refused: %v", err)
 	}
 	// RFC 9113 §8.2.1 / RFC 9114 §4.1.2: a value edged with whitespace is
 	// malformed to a strict reader, so it is not emitted either.
 	res.Headers[0].Value = []byte(" x")
-	if _, err := appendH3Response(nil, res, nil, 0, &h3Scratch{}, testDate); err == nil {
+	if _, err := appendH3Response(nil, res, nil, h3NoFieldSectionLimit, &h3Scratch{}, testDate); err == nil {
 		t.Error("a response field value starting with a space was encoded")
 	}
 }
@@ -1032,16 +1036,33 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	}
 }
 
-// ServeH3 runs up to a handler call and a writer goroutine per admitted
-// stream. A connection whose announced stream limit exceeds the cap on that
-// bound is refused outright, with a close the client sees.
-func TestServeH3RefusesAStreamLimitPastItsCap(t *testing.T) {
+// ServeH3 refuses, with a close the client sees, a connection whose transport
+// parameters it cannot serve: a request-stream limit past the cap on the
+// goroutines it runs per admitted stream, or fewer than the three
+// unidirectional streams RFC 9114 §6.2 requires — or no credit on them,
+// under which the client's control stream could never start.
+func TestServeH3RefusesTransportParametersItCannotServe(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*quic.TransportParameters)
+		want   string
+	}{
+		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, "InitialMaxStreamsBidi"},
+		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, "InitialMaxStreamsUni"},
+		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, "InitialMaxStreamDataUni"},
+	} {
+		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.want) })
+	}
+}
+
+func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want string) {
+	t.Helper()
 	serverPC, clientPC := dgram.Pair()
 	defer func() { _ = serverPC.Close() }()
 	defer func() { _ = clientPC.Close() }()
 
 	params := quic.DefaultParameters()
-	params.InitialMaxStreamsBidi = h3MaxServeStreams + 1
+	mutate(&params)
 
 	served := make(chan error, 1)
 	go func() {
@@ -1073,8 +1094,8 @@ func TestServeH3RefusesAStreamLimitPastItsCap(t *testing.T) {
 
 	select {
 	case err := <-served:
-		if err == nil || !strings.Contains(err.Error(), "InitialMaxStreamsBidi") {
-			t.Fatalf("ServeH3 returned %v, want a refusal naming InitialMaxStreamsBidi", err)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("ServeH3 returned %v, want a refusal naming %s", err, want)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("ServeH3 accepted a stream limit past its cap")
@@ -1525,7 +1546,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 	for _, name := range []string{"x bad", "x:y", "x\x00", ""} {
 		r := Response{Status: 200, Headers: []Header{{Name: []byte(name), Value: []byte("v")}}}
-		if _, err := appendH3Response(nil, r, []byte("GET"), 0, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
+		if _, err := appendH3Response(nil, r, []byte("GET"), h3NoFieldSectionLimit, &h3Scratch{}, testDate); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("h3, name %q: got %v, want ErrH3Protocol", name, err)
 		}
 		s := newBenchH2Server(Config{})
@@ -1534,7 +1555,7 @@ func TestResponseFieldNamesMustBeTokens(t *testing.T) {
 		}
 	}
 	ok := Response{Status: 200, Headers: []Header{{Name: []byte("x-ok"), Value: []byte("v")}}}
-	if _, err := appendH3Response(nil, ok, []byte("GET"), 0, &h3Scratch{}, testDate); err != nil {
+	if _, err := appendH3Response(nil, ok, []byte("GET"), h3NoFieldSectionLimit, &h3Scratch{}, testDate); err != nil {
 		t.Errorf("h3 refused a token name: %v", err)
 	}
 }

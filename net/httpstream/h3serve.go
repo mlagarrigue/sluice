@@ -125,6 +125,21 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			"httpstream: InitialMaxStreamsBidi %d is over the %d streams ServeH3 serves on one connection",
 			lim, h3MaxServeStreams)
 	}
+	// RFC 9114 §6.2: the transport parameters MUST let the peer create at
+	// least three unidirectional streams — its control stream and QPACK's
+	// two — and SHOULD give each at least 1,024 bytes of credit. The
+	// defaults hold both (quic.DefaultParameters, Config.TransportParameters);
+	// parameters written by hand are checked for the MUST, and for a credit
+	// of zero, under which the client's control stream could never carry
+	// even its type byte: this end grants more credit only as it reads, and
+	// it would never read. Below 1,024 the stream merely goes slowly, which
+	// is the operator's to choose.
+	if p := c.LocalParameters(); p.InitialMaxStreamsUni < 3 || p.InitialMaxStreamDataUni == 0 {
+		_ = c.CloseWithError(h3InternalError)
+		return fmt.Errorf(
+			"httpstream: InitialMaxStreamsUni %d with InitialMaxStreamDataUni %d leaves the peer short of the three unidirectional streams RFC 9114 §6.2 requires",
+			p.InitialMaxStreamsUni, p.InitialMaxStreamDataUni)
+	}
 	// RFC 9114 §3.1: HTTP/3 is the protocol identified by the ALPN token
 	// "h3". A peer that settled on anything else is waiting for that other
 	// protocol and would read this layer's SETTINGS and frames as garbage;
