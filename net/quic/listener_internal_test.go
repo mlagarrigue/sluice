@@ -1591,3 +1591,42 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9000 §10.3.1: a datagram the listener cannot route may be a stateless
+// reset from the peer of one of its connections — a client that lost its
+// state and answers the server's packets with a reset ending in the token
+// it was given. The listener compares before it answers with a reset of its
+// own, and the connection ends now rather than at its idle timeout.
+func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+
+	c := newConn(pc, fakeFuzzAddr("client:peer"), []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	defer c.Close()
+	token := [16]byte{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3}
+	c.mu.Lock()
+	c.peerCIDs = []peerCID{{seq: 0, cid: []byte("cli-cid0"), used: true, token: token}}
+	c.mu.Unlock()
+	l.mu.Lock()
+	l.routeLocked("srv-cid0", c)
+	l.mu.Unlock()
+
+	// A short-header datagram naming an identifier nobody issued, ending in
+	// the token: §10.3's reset, as the client sends it.
+	reset := make([]byte, 60)
+	reset[0] = 0x40
+	copy(reset[1:], "made-up0")
+	copy(reset[len(reset)-16:], token[:])
+	l.dispatch(append([]byte(nil), reset...), fakeFuzzAddr("client:peer"), l.pc, 0)
+
+	if err := c.Err(); !errors.Is(err, ErrStatelessReset) {
+		t.Fatalf("the connection's Err = %v after its peer's stateless reset, want ErrStatelessReset", err)
+	}
+	if got := pc.taken(); len(got) != 0 {
+		t.Errorf("the listener answered the peer's reset with %d datagrams of its own, want none", len(got))
+	}
+}

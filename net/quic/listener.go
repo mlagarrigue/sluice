@@ -713,6 +713,13 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn, 
 	// goes to any unknown one; the token is derived from the identifier, so
 	// only a peer that was handed it for a real connection recognises it.
 	if datagram[0]&0x80 == 0 {
+		// Or the other way round: the peer of one of this listener's
+		// connections lost its state and is saying so (§10.3.1). Compared
+		// before the reset this end would send, within the same budget.
+		if c := l.resetFor(datagram); c != nil {
+			_ = c.handleStatelessReset()
+			return
+		}
 		l.maybeSendStatelessReset(datagram, dcid, from, via)
 		return
 	}
@@ -1306,6 +1313,46 @@ const maxResetsPerSecond = 16
 // connection this listener lost waits out its idle timeout instead. The
 // address is the IP alone: the port is free for a sender to vary.
 const maxResetsPerSourcePerSecond = 4
+
+// resetFor reports which live connection, if any, an unroutable short-header
+// datagram is a stateless reset for: RFC 9000 §10.3.1 has the comparison
+// made "when a packet cannot be associated with a connection", and on a
+// server that is here, not in any connection — the datagram named an
+// identifier the peer made up. The 16-byte tail is compared against the
+// tokens each connection holds from its peer (isStatelessReset, used
+// identifiers only), in constant time per connection but once per
+// connection, so only within the per-second budget of the resets this end
+// sends: a flood of unroutable datagrams costs a comparison per connection
+// each until the budget is spent, and a real reset is one datagram. Long
+// headers are not compared: §10.3 says "any packet", but a reset has the
+// short-header shape by construction (§10.3), a conforming peer never sends
+// a long-header one, and every Initial from a new client would otherwise
+// pay a comparison per live connection on the accept path.
+//
+// The connections are listed under l.mu and compared outside it: the
+// established order is Conn.mu then Listener.mu, and isStatelessReset takes
+// the connection's.
+func (l *Listener) resetFor(datagram []byte) *Conn {
+	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
+		return nil
+	}
+	l.mu.Lock()
+	if l.resetsSent >= maxResetsPerSecond && time.Since(l.resetWindow) < time.Second {
+		l.mu.Unlock()
+		return nil
+	}
+	conns := make([]*Conn, 0, len(l.keysOf))
+	for c := range l.keysOf {
+		conns = append(conns, c)
+	}
+	l.mu.Unlock()
+	for _, c := range conns {
+		if c.isStatelessReset(datagram) {
+			return c
+		}
+	}
+	return nil
+}
 
 // maybeSendStatelessReset answers one unroutable short-header datagram with
 // a stateless reset (§10.3): random-looking bytes ending in the token the
