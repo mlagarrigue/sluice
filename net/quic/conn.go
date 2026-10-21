@@ -878,6 +878,9 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 		localMaxStreamsUni:  params.InitialMaxStreamsUni,
 		idleTimeout:         params.MaxIdleTimeout,
 	}
+	// §14: the datagrams this end sends must not be fragmented, so the
+	// socket is asked to say no (DF) before the first one leaves.
+	dfSocket(pc)
 	// ECN marks and counts need a socket that reports the field; one that
 	// cannot leaves the path on failed, which marks nothing (§13.4.2.2).
 	c.ecnRecv = ecnSocket(pc)

@@ -535,6 +535,7 @@ func (l *Listener) noteDiscard() {
 func (l *Listener) readLoop(pc net.PacketConn) {
 	buf := make([]byte, max(int(l.params.MaxUDPPayloadSize), minRecvBuf)) //nolint:gosec // G115: the endpoint's own configuration, not peer input
 	oob := make([]byte, udp.PacketInfoLen)
+	dfSocket(pc)           // Don't Fragment on what this socket sends (§14)
 	ecnOK := ecnSocket(pc) // the kernel reports each datagram's ECN field (§13.4.1)
 	var sv *sourcedVias
 	if l.sourced != nil && pc == net.PacketConn(l.sourced) {

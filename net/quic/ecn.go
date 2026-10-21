@@ -134,6 +134,23 @@ func ecnSocket(pc net.PacketConn) bool {
 	return false
 }
 
+// dfSocket sets the Don't Fragment option on pc, with the per-flow IPv6
+// label where the platform has one (udp.Configure): RFC 9000 §14 asks for
+// DF "if possible", and on the caller's *net.UDPConn it is — the same
+// socket ecnSocket already configures. Best effort, like ecnSocket: a
+// platform without the option, or a socket of another type, leaves the
+// datagrams fragmentable and the transport's search (pmtu.go) the only
+// guard. Idempotent: a socket udp.Listen already configured, or a
+// Listener's shared one, takes the option again without change.
+func dfSocket(pc net.PacketConn) {
+	switch pc := pc.(type) {
+	case *net.UDPConn:
+		_ = udp.Configure(pc)
+	case *sourcedConn:
+		_ = udp.Configure(pc.UDPConn)
+	}
+}
+
 // readDatagram reads one datagram from pc and, where the socket reports it
 // (ecnOK, from ecnSocket), the ECN field it arrived with. oob is scratch
 // for the control messages, at least udp.PacketInfoLen long.

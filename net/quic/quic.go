@@ -147,8 +147,11 @@
 // a different name on each operating system, so they live in the
 // [github.com/mlagarrigue/sluice/net/quic/udp] helper: its Listen opens a UDP
 // socket with them applied, its Configure applies them to one the caller
-// already holds. A plain [net.ListenPacket] socket works too; it is just
-// fragmentable.
+// already holds. When the socket given is a [net.UDPConn], [Dial] and
+// [NewListener] apply them themselves, best effort, as they ask it to
+// report ECN; a plain [net.ListenPacket] socket therefore works as one
+// from udp.Listen. A socket of any other type is used as it comes, and
+// is fragmentable unless the caller configured it.
 //
 // # On the cryptography
 //
