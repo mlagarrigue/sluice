@@ -506,18 +506,35 @@ func (s *Stream) Reset(code uint64) error {
 // §3.5): the request it carries will not be served, so every byte still in
 // flight is effort wasted at both ends. The peer answers with RESET_STREAM,
 // which is what finally closes the receiving direction's accounting.
+//
+// Nothing is sent when there is nothing left to stop — the peer has reset
+// the stream already, or its FIN has arrived whole — since §3.5 says
+// STOP_SENDING "SHOULD only be sent for a stream that has not been reset
+// by the peer" and the HTTP/3 server calls this after its own Reset, when
+// either may well have happened; the application's intent is kept all the
+// same. On a unidirectional stream this end opened the peer has no sending
+// part to stop and would answer STREAM_STATE_ERROR (§19.5): an error, no
+// frame.
 func (s *Stream) StopSending(code uint64) error {
 	c := s.conn
+	if s.sendOnly() {
+		return fmt.Errorf("%w: STOP_SENDING on stream %d, which this end opened send-only", ErrQUIC, s.id)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	frame := appendFrame(nil, FrameStopSending, s.id, code)
-	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	// Stopping is how an application says it will not read the rest: the
 	// peer's RESET_STREAM, when it comes, ends the receive side with
 	// nothing left for the application to take (§3.2).
 	s.mu.Lock()
 	s.endTaken = true
+	over := s.readReset || s.recvDone
 	s.mu.Unlock()
+	if over {
+		c.maybeRemoveLocked(s)
+		return nil
+	}
+	frame := appendFrame(nil, FrameStopSending, s.id, code)
+	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
 	c.flushControlLocked()
 	return err

@@ -993,11 +993,22 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 				}
 			}
 
-		// The *_BLOCKED frames are the peer saying our grants are the
+		case f.Type == frameStreamDataBlocked:
+			// Through streamFor like STREAM, since the peer is sending on
+			// this stream: §3.2 has the frame open it, §4.6 makes one past
+			// the stream limit a STREAM_LIMIT_ERROR and §19.13 one for a
+			// send-only stream a STREAM_STATE_ERROR. Used to be inert with
+			// the other *_BLOCKED frames, which let both pass. What it says
+			// — our grant is the bottleneck — consumption already answers
+			// with fresh grants, so the stream it names has nothing to do.
+			if _, _, err := c.streamFor(f.StreamID, space, false); err != nil {
+				return err
+			}
+
+		// The other *_BLOCKED frames are the peer saying our grants are the
 		// bottleneck, which consumption already answers with fresh grants.
 		// All legal, all deliberately inert.
 		case f.Type == frameDataBlocked,
-			f.Type == frameStreamDataBlocked,
 			f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1,
 			f.Type == framePing:
 		}

@@ -2,6 +2,7 @@ package quic
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,5 +105,73 @@ func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 	}
 	if te.code != transportStreamLimit {
 		t.Fatalf("the refusal carried code %#x, want STREAM_LIMIT_ERROR (%#x)", te.code, transportStreamLimit)
+	}
+}
+
+// STREAM_DATA_BLOCKED names a stream the peer is sending on, so it goes
+// through the same checks as a STREAM frame (RFC 9000 §3.2): one past the
+// advertised limit is STREAM_LIMIT_ERROR (§4.6), one for a unidirectional
+// stream this end opened — which the peer cannot be blocked on — is
+// STREAM_STATE_ERROR (§19.13). It used to be inert with DATA_BLOCKED.
+func TestStreamDataBlockedIsCheckedLikeAStreamFrame(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		id   uint64
+		code uint64
+	}{
+		{"past the bidirectional stream limit", DefaultParameters().InitialMaxStreamsBidi * 4, transportStreamLimit},
+		{"on a send-only stream of this end's", 3, transportStreamState}, // server-initiated unidirectional
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
+				[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+			defer c.Close()
+			c.OnStreamFrames(func([]Frame) error { return nil })
+
+			err := c.frames(spaceApplication, appendFrame(nil, frameStreamDataBlocked, tt.id, 0), time.Now())
+			var te *transportError
+			if !errors.As(err, &te) {
+				t.Fatalf("STREAM_DATA_BLOCKED for stream %d gave %v (%T), want a *transportError", tt.id, err, err)
+			}
+			if te.code != tt.code {
+				t.Fatalf("the refusal carried code %#x, want %#x", te.code, tt.code)
+			}
+		})
+	}
+}
+
+// RFC 9000 §3.5: STOP_SENDING is only sent for a stream the peer has not
+// reset — once its RESET_STREAM is in there is nothing to stop, and the
+// HTTP/3 server asks after its own Reset, when that is common. A send-only
+// stream of this end's has no peer sending part at all: an error, no frame.
+func TestStopSendingIsNotSentWhereItMeansNothing(t *testing.T) {
+	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	defer c.Close()
+	c.OnStreamFrames(func([]Frame) error { return nil })
+
+	s, err := c.Stream(0) // client-initiated bidirectional, picked ahead of its first frame
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, 0, 7, 0), time.Now()); err != nil {
+		t.Fatalf("the peer's RESET_STREAM was refused: %v", err)
+	}
+	c.mu.Lock()
+	before := c.spaces[spaceApplication].nextPN
+	c.mu.Unlock()
+	if err := s.StopSending(1); err != nil {
+		t.Errorf("StopSending after the peer's reset = %v, want nil and no frame", err)
+	}
+	c.mu.Lock()
+	after := c.spaces[spaceApplication].nextPN
+	c.mu.Unlock()
+	if after != before {
+		t.Errorf("StopSending after the peer's reset sent a packet (pn %d → %d)", before, after)
+	}
+
+	uni := newStream(c, 3) // server-initiated unidirectional: this end sends, the peer only receives
+	if err := uni.StopSending(1); err == nil || !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "send-only") {
+		t.Errorf("StopSending on a send-only stream = %v, want an ErrQUIC naming the send-only stream", err)
 	}
 }
