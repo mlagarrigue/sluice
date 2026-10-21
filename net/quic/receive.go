@@ -1596,8 +1596,8 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 	for i := range settled {
 		e := &settled[i]
 		e.s.mu.Lock()
-		if e.s.recvQ.consume(e.n) {
-			e.grant = e.s.recvQ.nextMax()
+		if grant, nextMax := e.s.grantLocked(e.n); grant {
+			e.grant = nextMax
 		}
 		e.s.mu.Unlock()
 	}
@@ -1716,9 +1716,7 @@ func (c *Conn) ReleaseStreamBytes(id, n uint64) {
 	grant := false
 	if s != nil {
 		s.mu.Lock()
-		if grant = s.recvQ.consume(n); grant {
-			nextMax = s.recvQ.nextMax()
-		}
+		grant, nextMax = s.grantLocked(n)
 		s.mu.Unlock()
 	}
 	c.mu.Lock()

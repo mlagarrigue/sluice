@@ -235,11 +235,7 @@ func (s *Stream) Read(p []byte) (int, error) {
 			if !s.conn.readTaken.Load() {
 				s.conn.readTaken.Store(true)
 			}
-			grant := s.recvQ.consume(uint64(n)) //nolint:gosec // G115: a byte count, positive
-			var nextMax uint64
-			if grant {
-				nextMax = s.recvQ.nextMax()
-			}
+			grant, nextMax := s.grantLocked(uint64(n)) //nolint:gosec // G115: a byte count, positive
 			// The last byte of a finished stream is its end taken: a
 			// reader that knows where its message ends need not come back
 			// for the EOF before the stream may retire.
@@ -639,6 +635,22 @@ func (s *Stream) recvState() (finished, taken bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.recvDone, s.endTaken
+}
+
+// grantLocked counts n bytes the application consumed against the stream's
+// receive window and says whether that earned the peer a MAX_STREAM_DATA,
+// with the limit it would carry. Consumption is always counted; the grant
+// is withheld once the final size is known — a FIN or a RESET_STREAM has
+// arrived — since the peer has nothing left to send on the stream: RFC 9000
+// §3.3 has MAX_STREAM_DATA leave in the "Recv" state only, and §13.3 asks
+// a receiver to stop sending it on entering "Size Known" or "Reset Recvd".
+// The connection-level grant is the caller's and keeps flowing: that debt
+// survives the stream (§4.1). Callers hold s.mu.
+func (s *Stream) grantLocked(n uint64) (grant bool, nextMax uint64) {
+	if grant = s.recvQ.consume(n) && !s.fin && !s.readReset; grant {
+		nextMax = s.recvQ.nextMax()
+	}
+	return grant, nextMax
 }
 
 // deliveredSoFar is the offset the ordered prefix has reached, which is what
