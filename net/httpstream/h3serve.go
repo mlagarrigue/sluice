@@ -307,7 +307,58 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		return !ended
 	}
 
-	c.OnStreamFrames(func(frames []quic.Frame) error {
+	// The assembler belongs to the delivery callback and to the expiry timer
+	// below, which take amu in turn; without the timer the read timeout only
+	// ran when stream frames arrived (see expire). The timer is armed at the
+	// assembler's earliest deadline after every delivery and every sweep, and
+	// re-armed only when that deadline moved, which on the ordinary path is
+	// once per first partial stream: one timer per connection, not per
+	// stream, and no timer at all while nothing is assembling.
+	var (
+		amu       sync.Mutex
+		sweepT    *time.Timer
+		sweepAt   time.Time
+		sweepDone bool
+		sweepNow  func()
+	)
+	arm := func() { // under amu
+		next := a.nextExpiry
+		if sweepDone || next.Equal(sweepAt) {
+			return
+		}
+		sweepAt = next
+		switch {
+		case next.IsZero():
+			if sweepT != nil {
+				sweepT.Stop()
+			}
+		case sweepT == nil:
+			sweepT = time.AfterFunc(time.Until(next), sweepNow)
+		default:
+			sweepT.Reset(time.Until(next))
+		}
+	}
+	sweepNow = func() {
+		amu.Lock()
+		if sweepDone {
+			amu.Unlock()
+			return
+		}
+		failed := append([]h3StreamError(nil), a.sweep(time.Now())...)
+		sweepAt = time.Time{} // fired: whatever the next deadline is, arm it
+		arm()
+		amu.Unlock()
+		for _, se := range failed {
+			// Reset on both halves, as a stream failure inside a delivery
+			// is (below); the connection may have ended meanwhile, which
+			// leaves nothing to reset.
+			if s, err := c.Stream(se.StreamID); err == nil {
+				_ = s.Reset(se.Code)
+				_ = s.StopSending(se.Code)
+			}
+		}
+	}
+	onFrames := func(frames []quic.Frame) error {
 		// RFC 9114 §6.2.1: "the receiver MUST NOT request that the sender
 		// close the control stream", and a closed one is a connection error
 		// of type H3_CLOSED_CRITICAL_STREAM. The transport has answered the
@@ -419,9 +470,21 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		}
 		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
+	}
+	c.OnStreamFrames(func(frames []quic.Frame) error {
+		amu.Lock()
+		defer amu.Unlock()
+		defer arm()
+		return onFrames(frames)
 	})
 
 	<-c.Done()
+	amu.Lock()
+	sweepDone = true
+	if sweepT != nil {
+		sweepT.Stop()
+	}
+	amu.Unlock()
 	// No call starts once the connection is done, and every writer that is
 	// writing exits then: its writes fail. A writer
 	// inside a streamed producer is not waited for — the producer is the

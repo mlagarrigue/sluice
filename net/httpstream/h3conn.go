@@ -617,11 +617,12 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 }
 
 // expire fails every request stream that has been assembling for longer than
-// ReadTimeout — the h3 twin of the h2 reader's assembly sweep, run on the
-// same occasion: a datagram arriving is the only clock this layer has, and
-// the only way a stalled stream's memory stays parked is the peer sending
-// *something* to keep the connection's own idle timer alive. A peer that
-// sends nothing at all is the transport's idle timeout's to end.
+// ReadTimeout — the h3 twin of the h2 reader's assembly sweep. It runs at
+// every delivery, and from ServeH3's timer at nextExpiry (see sweep): a peer
+// that sends no stream frame but keeps the transport's idle timer alive with
+// PINGs or ACKs would otherwise park a stalled stream's memory and admission
+// slot for as long as it kept doing so. A peer that sends nothing at all is
+// the transport's idle timeout's to end.
 //
 // The sweep runs only once the earliest deadline (nextExpiry) has passed,
 // and finds the next one as it goes: a datagram costs one comparison, not
@@ -648,6 +649,16 @@ func (a *h3Assembler) expire(now time.Time) {
 		}
 	}
 	a.nextExpiry = next
+}
+
+// sweep runs the expiry outside a delivery, for the timer ServeH3 arms at
+// nextExpiry, and returns the streams it failed for the caller to reset as it
+// resets those Frames fails. The slice is the assembler's, reused by the next
+// call of either.
+func (a *h3Assembler) sweep(now time.Time) []h3StreamError {
+	a.failed = a.failed[:0]
+	a.expire(now)
+	return a.failed
 }
 
 // reset folds one RESET_STREAM into assembly state, in packet order. For a
