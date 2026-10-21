@@ -804,6 +804,15 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// pending one) and the delayed ACK followed in a datagram of its own
 	// ackTimerDelay later.
 	//
+	// That is a chosen deviation from RFC 9000 §13.1, which has a packet
+	// acknowledged only once "all frames contained in the packet have been
+	// processed". What it costs: a writer woken by an early frame can carry
+	// the ACK out while the packet's later frames are still being read, and
+	// if one of those aborts the connection, the peer sees an ACK for the
+	// packet that ended it — of no consequence, since the close follows.
+	// What it buys is the measure above: one ACK-only datagram per request
+	// gone. To revisit if a peer is found to act on such an ACK.
+	//
 	// RFC 9000 §13.2 (Table 3): ACK, PADDING and CONNECTION_CLOSE elicit no
 	// acknowledgement. parseFrames drops PADDING, so the two frame types
 	// left to skip are ACK and the close: a packet carrying nothing else is
