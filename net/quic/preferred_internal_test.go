@@ -70,13 +70,15 @@ func TestPreferredAddressCodec(t *testing.T) {
 	if _, err := parseParameters(raw(tooLong)); !errors.As(err, &te) || te.code != transportParameterError {
 		t.Errorf("a 21-byte identifier returned %v, want TRANSPORT_PARAMETER_ERROR", err)
 	}
+	// §18.2 and §20.1: a malformed length is the same TRANSPORT_PARAMETER_ERROR,
+	// not the INTERNAL_ERROR an unwrapped error would close with.
 	short := make([]byte, preferredAddressLen+3)
 	short[24] = 8 // claims 8, carries 3
-	if _, err := parseParameters(raw(short)); err == nil {
-		t.Error("an identifier longer than what follows it parsed")
+	if _, err := parseParameters(raw(short)); !errors.As(err, &te) || te.code != transportParameterError {
+		t.Errorf("an identifier longer than what follows it returned %v, want TRANSPORT_PARAMETER_ERROR", err)
 	}
-	if _, err := parseParameters(raw(make([]byte, 10))); err == nil {
-		t.Error("a 10-byte preferred_address parsed")
+	if _, err := parseParameters(raw(make([]byte, 10))); !errors.As(err, &te) || te.code != transportParameterError {
+		t.Errorf("a 10-byte preferred_address returned %v, want TRANSPORT_PARAMETER_ERROR", err)
 	}
 }
 

@@ -335,20 +335,19 @@ func appendPreferredAddress(dst []byte, p *preferredAddress) []byte {
 }
 
 func parsePreferredAddress(val []byte) (*preferredAddress, error) {
+	// Every refusal here is TRANSPORT_PARAMETER_ERROR: §18.2 names it for
+	// the identifier's length, §20.1 for a parameter "badly formatted".
 	if len(val) < preferredAddressLen {
-		return nil, fmt.Errorf("%w: a preferred_address of %d bytes; at least %d are needed", ErrQUIC, len(val), preferredAddressLen)
+		return nil, parameterError(fmt.Errorf("%w: a preferred_address of %d bytes; at least %d are needed", ErrQUIC, len(val), preferredAddressLen))
 	}
 	cidLen := int(val[24])
 	if cidLen == 0 || cidLen > 20 {
-		// §18.2: a zero-length identifier is TRANSPORT_PARAMETER_ERROR;
-		// over 20 bytes is not an identifier version 1 can carry (§17.2).
-		return nil, &transportError{
-			code: transportParameterError,
-			err:  fmt.Errorf("%w: a preferred_address with a %d-byte connection identifier", ErrQUIC, cidLen),
-		}
+		// A zero-length identifier is what §18.2 names; over 20 bytes is
+		// not an identifier version 1 can carry (§17.2).
+		return nil, parameterError(fmt.Errorf("%w: a preferred_address with a %d-byte connection identifier", ErrQUIC, cidLen))
 	}
 	if len(val) != preferredAddressLen+cidLen {
-		return nil, fmt.Errorf("%w: a preferred_address of %d bytes carrying a %d-byte identifier", ErrQUIC, len(val), cidLen)
+		return nil, parameterError(fmt.Errorf("%w: a preferred_address of %d bytes carrying a %d-byte identifier", ErrQUIC, len(val), cidLen))
 	}
 	p := &preferredAddress{cid: append([]byte(nil), val[25:25+cidLen]...)}
 	copy(p.statelessResetToken[:], val[25+cidLen:])
