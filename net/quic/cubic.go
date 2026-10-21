@@ -171,7 +171,8 @@ func (c *cubic) onAcked(ev ackEvent) {
 // more leaves room for whoever is taking it (§4.7, fast convergence). A
 // flow alone on its path has no one to leave room for, and §4.7 wants the
 // heuristic off there: DisableFastConvergence keeps wMax at the window.
-// The new stage starts at the reduced window.
+// The new stage starts at the reduced window. Nothing is sent from here:
+// see newReno.onLost on B.6's MaybeSendOnePacket.
 func (c *cubic) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
 	if !c.recoveryStart.IsZero() && !ev.latestSent.After(c.recoveryStart) {

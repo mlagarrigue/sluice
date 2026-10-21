@@ -1314,6 +1314,16 @@ func (c *newReno) slowStart(ev ackEvent, earns, closed bool) {
 // newest predates the recovery start, the whole batch belongs to the epoch
 // already paid for; if it does not, this is a new epoch, however many
 // stragglers ride along.
+//
+// Nothing is sent from here. B.6's OnCongestionEvent ends with
+// MaybeSendOnePacket — "a packet can be sent to speed up loss recovery",
+// a may — and this end does not take it: the retransmissions the loss
+// queued leave through retransmitLocked as the reduced window admits them,
+// which costs at most one round trip of recovery when that window is
+// already full, and a packet sent past the window right after a loss adds
+// to the very load the loss reported. The PTO covers the case where no
+// acknowledgement comes at all. The same holds for cubic, bbr and bbr3,
+// whose onLost say so by reference.
 func (c *newReno) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
 	if !c.recoveryStart.IsZero() && !ev.latestSent.After(c.recoveryStart) {

@@ -982,7 +982,8 @@ func (b *bbr3) boundCwndForModel() {
 // was sent into (lossEvent.crossing) sets the long-term bound to the
 // volume at which they crossed it. That packet's own stamps, not the
 // flight at the declaration: losses declared a round after an UP step, in
-// DOWN, were sent into the larger flight (l.3891-3898).
+// DOWN, were sent into the larger flight (l.3891-3898). Nothing is sent
+// from here: see newReno.onLost on B.6's MaybeSendOnePacket.
 func (b *bbr3) onLost(ev lossEvent) {
 	b.inFlight = max(b.inFlight-ev.bytes, 0)
 	b.noteCongestion()

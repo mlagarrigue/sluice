@@ -472,7 +472,8 @@ func (b *bbr) setCwnd(acked int) {
 // conservation holds for the round. A batch within the period takes its
 // bytes off the window, never below one datagram. The model is not
 // touched: loss is not evidence about the path's bandwidth. ProbeBW's
-// probing phase ends on a loss once it has lasted its round trip.
+// probing phase ends on a loss once it has lasted its round trip. Nothing
+// is sent from here: see newReno.onLost on B.6's MaybeSendOnePacket.
 func (b *bbr) onLost(ev lossEvent) {
 	b.inFlight = max(b.inFlight-ev.bytes, 0)
 	if !b.recoveryStart.IsZero() && !ev.latestSent.After(b.recoveryStart) { // RFC 9002 B.5: inside the period
