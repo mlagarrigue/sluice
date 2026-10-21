@@ -296,7 +296,8 @@ to a separate module before a v1.
   runner's at revision `ab039a4`. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
-  resumption, QUIC v2 — plus chacha20 on the client side (Go's TLS 1.3
+  resumption, QUIC v2 (see the `net/quic` versions line below) — plus
+  chacha20 on the client side (Go's TLS 1.3
   offers no way to restrict the cipher suites it offers), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
   passed against at least two peers.
@@ -347,6 +348,14 @@ to a separate module before a v1.
   one byte per frame, who would otherwise choose this end's bookkeeping
   cost. In plain words: a stream may be delivered in any order, but not
   as confetti.
+- **`net/quic` versions**: version 1 only. QUIC version 2 (RFC 9369) and
+  compatible version negotiation (RFC 9368) are not implemented: a server
+  that does not speak version 1 ends the dial, and a peer's
+  `version_information` parameter is skipped like any unknown parameter.
+  Version 2 differs from 1 in constants only and exists against
+  middleboxes that ossify on version 1; none of this package's peers has
+  shown one, and the day one does is the day to add it. In plain words:
+  there is one dialect, and it is the one everybody speaks today.
 - **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's

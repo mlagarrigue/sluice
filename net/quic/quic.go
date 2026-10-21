@@ -138,6 +138,15 @@
 //   - 0-RTT. A server issues no session ticket; a client given a
 //     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
 //     still in one round trip and with nothing sent in 0-RTT.
+//   - **Versions other than 1.** QUIC version 2 (RFC 9369) and compatible
+//     version negotiation (RFC 9368, the version_information parameter)
+//     are not implemented: the only version spoken is 1. A Version
+//     Negotiation packet from a server that does not speak it ends the
+//     dial with [ErrVersionNegotiation], and a version_information
+//     parameter from a peer is skipped as any unknown parameter is
+//     (RFC 9000 §7.4.2). Version 2 differs from 1 in constants only and
+//     exists against middlebox ossification, which no peer of this
+//     package has shown; it is to be added the day one does.
 //
 // # The socket is the caller's
 //

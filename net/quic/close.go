@@ -70,7 +70,8 @@ var (
 	ErrStatelessReset = errors.New("quic: stateless reset, the peer no longer holds state for this connection")
 	// ErrVersionNegotiation: the server answered the first flight with a
 	// Version Negotiation packet that does not list version 1 (RFC 9000
-	// §6), the only version this package speaks.
+	// §6, RFC 8999 §6), the only version this package speaks — see
+	// "Versions other than 1" in the package documentation.
 	ErrVersionNegotiation = errors.New("quic: the server does not speak QUIC version 1")
 )
 
