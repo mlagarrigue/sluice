@@ -1265,10 +1265,14 @@ func (q *query) replan() (rebind bool) {
 		return false
 	}
 	if snap.Limit != pushdown.Unlimited && (q.allowed < 0 || snap.Limit < q.allowed) {
-		// Limit 0 never reaches here: Exhausted was checked first, and a
-		// zero would make Execute ask for every row.
+		// At least one row, never zero: Execute reads a row count of 0 as
+		// every row. The callers check Exhausted first, but a Demand is
+		// tightened concurrently, and a LimitTo(0) landing between that
+		// check and this read reached here. The row asked for is cut by
+		// emit, which honours allowed, and the check before the next
+		// batch ends the query.
 		q.allowed = snap.Limit
-		q.rowsWanted = int(min(int64(q.batchRows), q.allowed))
+		q.rowsWanted = int(max(1, min(int64(q.batchRows), q.allowed)))
 	}
 	if q.keyParam == 0 || snap.LowerBound == nil || bytes.Equal(snap.LowerBound, q.bound) {
 		return false

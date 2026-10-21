@@ -129,3 +129,26 @@ func TestDemandAheadCutsToALimit(t *testing.T) {
 		t.Errorf("keys %v, want %v", keys, want)
 	}
 }
+
+// A Demand is safe for concurrent use: a source reads it while operators
+// tighten it. run checks Exhausted and then calls replan, so a LimitTo(0)
+// landing between the two reached replan, which copied it into rowsWanted —
+// and Execute with a row count of 0 asks the server for every row. replan
+// now never asks for fewer than one: the row it may fetch is cut by emit,
+// which honours allowed, and the next batch's check ends the query.
+func TestReplanNeverAsksForEveryRowWhenTheLimitFallsToZero(t *testing.T) {
+	d := new(pushdown.Demand)
+	d.LimitTo(5)
+	q := &query{demand: pushdown.NewReader(d), batchRows: 100, rowsWanted: 100, allowed: -1}
+	if q.demand.Exhausted() {
+		t.Fatal("a limit of 5 reads as exhausted")
+	}
+	d.LimitTo(0) // the concurrent tightening, landed after the check
+	q.replan()
+	if q.rowsWanted == 0 {
+		t.Fatal(`replan set rowsWanted to 0: Execute("", 0) asks the server for every row where the consumer wants none`)
+	}
+	if q.allowed != 0 {
+		t.Errorf("allowed = %d after a limit of 0, want 0 so the next batch ends the query", q.allowed)
+	}
+}
