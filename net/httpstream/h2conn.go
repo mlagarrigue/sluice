@@ -472,16 +472,20 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	}
 	s.goAwayLast.Store(maxStreamID)
 	s.w.answered = s.answered
-	if st != nil {
-		stop := context.AfterFunc(st.drain, s.beginDrain)
-		defer stop()
-	}
 
 	go s.w.run()
 	if err := s.hello(); err != nil {
 		s.w.stop()
 		<-s.w.done
 		return err
+	}
+	if st != nil {
+		// Registered after hello has queued the SETTINGS: a drain already
+		// under way runs beginDrain at once, on its own goroutine, and its
+		// GOAWAY must not reach the writer first (RFC 9113 §3.4: SETTINGS
+		// is the first frame the server sends).
+		stop := context.AfterFunc(st.drain, s.beginDrain)
+		defer stop()
 	}
 
 	// Capacity MaxConcurrentStreams: see the package note above for why a

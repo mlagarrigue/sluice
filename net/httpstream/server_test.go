@@ -602,3 +602,49 @@ func TestServerKeepAliveHoldsAnHTTP3ConnectionPastTheIdleTimeout(t *testing.T) {
 		t.Fatalf("the second request read %q, want /slow", got)
 	}
 }
+
+// RFC 9113 §3.4: the SETTINGS frame "MUST be the first frame the server
+// sends". A connection served under a context already cancelled starts its
+// drain at once, on the drain's own goroutine; its GOAWAY must still queue
+// behind the SETTINGS. The window is a few microseconds, so many connections
+// are opened: the review's probe saw one GOAWAY-first in three hundred.
+func TestServeH2SendsSettingsBeforeAnyGoAway(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // every connection below is served under a dead context
+	const conns = 300
+	go func() {
+		for range conns {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				_ = ServeH2(ctx, c, Config{ShutdownGrace: time.Second, Logger: discardLogger()}, echoTarget)
+			}()
+		}
+	}()
+	for i := range conns {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Write([]byte(Preface)); err != nil {
+			t.Fatal(err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		head := make([]byte, 9)
+		if _, err := io.ReadFull(c, head); err != nil {
+			t.Fatalf("connection %d: reading the first frame: %v", i, err)
+		}
+		_ = c.Close()
+		if head[3] != frameSettings {
+			t.Fatalf("connection %d: the server's first frame is type %#x, want SETTINGS (%#x)", i, head[3], frameSettings)
+		}
+	}
+}
