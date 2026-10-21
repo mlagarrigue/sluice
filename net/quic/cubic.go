@@ -186,6 +186,12 @@ func (c *cubic) onLost(ev lossEvent) {
 		c.wMax = cwnd
 	}
 	c.cwndPrior = cwnd
+	// The floor is RFC 9002's minimum window of two packets (§4.8, and
+	// §7.2 names it for a loss and for a CE mark alike). RFC 9438 §4.6 has
+	// CUBIC reduce on ECN-Echo down to 1 SMSS and then back off a timer:
+	// that is TCP's floor (RFC 3168). A QUIC window of one packet waits a
+	// PTO on its first loss, and §4.8 calls two safe because the probe
+	// backoff of §6.2 still throttles persistent congestion.
 	c.ssthresh = max(int(math.Round(cwnd*cubicBeta)), 2*c.maxDatagram)
 	c.cwnd = c.ssthresh
 	c.hs.disarm()
