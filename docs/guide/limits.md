@@ -68,7 +68,11 @@ Three reasons come up, and the difference matters:
   RFC 5802 §4 requires of every SCRAM client, is not implemented: no
   PostgreSQL server offers it. The SCRAM username field is sent empty, as
   libpq sends it: PostgreSQL takes the role from the startup packet and
-  ignores it, where RFC 5802 §5.1 wants a name. **`md5` is refused**
+  ignores it, where RFC 5802 §5.1 wants a name. A password that SASLprep
+  (RFC 4013) would refuse — not UTF-8, a prohibited character, mixed
+  bidirectional text — is sent as its raw bytes, the way `pg_saslprep`
+  derived the role's key on the server: refusing it here would lock out a
+  password the server accepts. **`md5` is refused**
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on
   the server. The PBKDF2 iteration count the server asks for is accepted
