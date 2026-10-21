@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2292,5 +2293,28 @@ func TestPathChallengeTimerIsNotMoreAggressiveThanThePTO(t *testing.T) {
 	c.pathProbeDeadlineLocked(sentAt.Add(full))
 	if n := len(fresh.recorded()); n != 2 {
 		t.Errorf("%d datagrams after pto(max_ack_delay) = %v, want the challenge resent once", n, full)
+	}
+}
+
+// RFC 9000 §9.5: no migration toward a peer that uses zero-length connection
+// IDs — every path of its would be told apart by address alone. Rebind
+// refuses before anything moves, and the new socket sends nothing.
+func TestRebindRefusesAPeerWithZeroLengthIDs(t *testing.T) {
+	old := &recordingPC{addr: fakeFuzzAddr("zero:old")}
+	c := newConn(old, fakeFuzzAddr("zero:peer"), nil, []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.dcid = nil
+	c.mu.Unlock()
+
+	fresh := &recordingPC{addr: fakeFuzzAddr("zero:new")}
+	err := c.Rebind(fresh)
+	if err == nil || !strings.Contains(err.Error(), "zero-length") {
+		t.Fatalf("Rebind toward a zero-length-ID peer = %v, want a refusal naming zero-length connection IDs", err)
+	}
+	if n := len(fresh.recorded()); n != 0 {
+		t.Errorf("%d datagrams left on the new socket after a refused Rebind", n)
 	}
 }

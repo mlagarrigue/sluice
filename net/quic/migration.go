@@ -722,7 +722,9 @@ var ErrNoFreshConnectionID = errors.New("quic: no connection identifier never us
 // anything.
 //
 // Refused before the handshake is confirmed — §9 forbids migrating
-// earlier — on a server, which never migrates, and on a closed connection.
+// earlier — on a server, which never migrates, on a closed connection, and
+// toward a peer that uses zero-length connection IDs (§9.5: the new path
+// would be linked to the old by its address alone).
 // Refused with [ErrMigrationDisabled] when the server announced
 // disable_active_migration (§18.2), unless the connection has since moved
 // to the preferred address that server offered: the parameter forbids a
@@ -742,6 +744,13 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		return errClosed
 	case !c.handshakeConfirmed:
 		return errors.New("quic: Rebind before the handshake is confirmed (RFC 9000 §9)")
+	case len(c.dcid) == 0:
+		// §9.5: with zero-length identifiers every path of the peer's is
+		// told apart by address alone, so the new path is trivially linked
+		// to the old and the section says not to migrate. The library's
+		// own server never issues an empty identifier; a third-party one
+		// may.
+		return errors.New("quic: Rebind toward a peer that uses zero-length connection IDs (RFC 9000 §9.5)")
 	case c.hasPeerParams && c.peerParams.DisableActiveMigration &&
 		(c.preferred == nil || !sameAddr(c.preferred, c.peer)):
 		// §18.2: "MUST NOT use a new local address when sending to the
