@@ -920,3 +920,48 @@ func TestRetryResetsThePTOBackoff(t *testing.T) {
 		t.Errorf("ptoCount = %d after a Retry, want 0 (§6.3)", count)
 	}
 }
+
+// RFC 9000 §17.2.5.1: "A client MUST discard a Retry packet that contains a
+// Source Connection ID field that is identical to the Destination
+// Connection ID field of its Initial packet." The tag is computable by
+// anyone on the path, so the check is what keeps such a Retry — one that
+// would re-derive the keys it asks to replace — from counting as the one
+// Retry the connection honours: the next, well-formed one is still taken.
+func TestRetryEchoingTheInitialDCIDIsDiscarded(t *testing.T) {
+	dcid, scid := []byte("dcid0000"), []byte("scid0000")
+	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultParameters())
+	defer c.Close()
+	c.initialDCID = dcid
+	if err := c.installInitial(dcid); err != nil {
+		t.Fatal(err)
+	}
+
+	echo := appendRetryPacket(nil, scid, dcid, dcid, []byte("token"))
+	if err := c.receive(echo, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	retried, token, cur := c.retried, c.retryToken, append([]byte(nil), c.dcid...)
+	c.mu.Unlock()
+	if retried || len(token) != 0 {
+		t.Errorf("retried = %v, token = %q after a Retry whose SCID echoes the Initial DCID; §17.2.5.1 says discard it", retried, token)
+	}
+	if !bytes.Equal(cur, dcid) {
+		t.Errorf("dcid = %q after the discarded Retry, want the Initial's %q", cur, dcid)
+	}
+	if n := discardedCount(c); n != 1 {
+		t.Errorf("discarded = %d, want 1", n)
+	}
+
+	// Discarded, not consumed: a Retry under a fresh identifier is honoured.
+	retry := appendRetryPacket(nil, scid, []byte("srv-cid0"), dcid, []byte("token"))
+	if err := c.receive(retry, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	retried = c.retried
+	c.mu.Unlock()
+	if !retried {
+		t.Error("a well-formed Retry after the discarded one was not honoured")
+	}
+}

@@ -705,7 +705,11 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 // chosen not to retry (RFC 9001 §5.8 is what makes the tag check meaningful).
 func (c *Conn) handleRetry(h longHeader) {
 	c.mu.Lock()
-	if !c.isClient || c.retried || c.peerCIDSet || len(h.Token) == 0 {
+	// §17.2.5.1: a Retry whose source identifier echoes the Initial's
+	// destination is discarded — it would re-derive the very keys it asks
+	// to replace. Discarded, not consumed: a later, well-formed Retry is
+	// still honoured.
+	if !c.isClient || c.retried || c.peerCIDSet || len(h.Token) == 0 || bytes.Equal(h.SCID, c.initialDCID) {
 		c.mu.Unlock()
 		c.noteDiscard()
 		return
