@@ -861,18 +861,20 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	// A plan the server rejected as stale is dropped here rather than
 	// retried: the retry would usually work and would hide that something
 	// migrated the schema under a live connection. The entry is gone, so
-	// the caller's own retry re-prepares and succeeds.
+	// the caller's own retry re-prepares and succeeds. The server still
+	// holds the statement, so its Close is queued for that retry.
 	if isStalePlan(queryErr) {
-		c.forgetStatement(sql, cfg.ParamOIDs)
+		c.forgetStatement(sql, cfg.ParamOIDs, true)
 		queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
 	}
 	// A statement the server says it does not hold is dropped for the
 	// same reason, from the other direction: this happens on a cache hit
 	// whose server-side half has vanished — a pooler's DISCARD ALL, a
 	// swapped backend — and keeping the entry re-binds the dead name
-	// forever. See [isMissingStatement].
+	// forever. Nothing to close: the server has no statement under the
+	// name. See [isMissingStatement].
 	if isMissingStatement(queryErr) {
-		c.forgetStatement(sql, cfg.ParamOIDs)
+		c.forgetStatement(sql, cfg.ParamOIDs, false)
 	}
 	return queryErr
 }

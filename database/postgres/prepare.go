@@ -430,13 +430,27 @@ func (c *Conn) settleParse(queryErr error) {
 	c.closesSent, c.closesDone = 0, 0
 }
 
-// forgetStatement drops a cached statement after the server rejected it. The
-// server has already discarded the plan, so there is nothing to close.
-func (c *Conn) forgetStatement(sql string, oids []uint32) {
+// forgetStatement drops a cached statement after the server rejected it.
+//
+// held says whether the server still holds a statement under the name. After
+// a stale plan it does: the server discarded the plan, not the statement,
+// which lasts until the session ends or a Close releases it (PostgreSQL 18
+// §54.2.3). Forgetting it here alone would leave one more statement on the
+// backend per schema change under a live connection, outside the bound
+// PrepareStatements promises on the server as well. So the name is queued in
+// stmtCache.closing and travels in front of the next miss's Parse, as an
+// eviction does: no round trip of its own. After 26000 the server holds
+// nothing under the name — a pooler's DISCARD ALL, a swapped backend — and a
+// Close, harmless on an unknown name, would only be noise.
+func (c *Conn) forgetStatement(sql string, oids []uint32, held bool) {
 	if c.stmts == nil {
 		return
 	}
-	c.stmts.remove(stmtKey{sql: sql, oids: packOIDs(oids)})
+	key := stmtKey{sql: sql, oids: packOIDs(oids)}
+	if i, ok := c.stmts.byKey[key]; ok && held {
+		c.stmts.closing = append(c.stmts.closing, c.stmts.entries[i].name)
+	}
+	c.stmts.remove(key)
 }
 
 // isStalePlan reports the server error that means a cached plan no longer

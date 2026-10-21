@@ -1943,3 +1943,62 @@ func TestIntegrationCopyFromStdinThroughExecParamsReturnsAtOnce(t *testing.T) {
 		}
 	}
 }
+
+// A stale plan drops the cache entry, and the server must drop the statement
+// with it: PostgreSQL discards the plan but keeps a named statement until a
+// Close releases it, so forgetting the name here alone leaves one statement
+// behind on the backend per schema change under a live connection. After the
+// stale plan and a retry, pg_prepared_statements holds exactly what the cache
+// does.
+func TestStalePlanStatementIsClosedOnTheServer(t *testing.T) {
+	conn := dial(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	run := func(sql string) error {
+		src := conn.Query(ctx, sql, nil, postgres.QueryConfig{})
+		src.Stream()(func(sluice.Batch[postgres.Row]) bool { return true })
+		return src.Err()
+	}
+	// names lists the statements the server holds for this session; the query
+	// goes through the cache too, and counts once on both sides.
+	names := func() []string {
+		var out []string
+		src := conn.Query(ctx, "SELECT name FROM pg_prepared_statements WHERE name LIKE 'sluice\\_%' ORDER BY name", nil, postgres.QueryConfig{})
+		src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+			for _, r := range b.Items {
+				v, _ := r.Value(0)
+				out = append(out, string(v))
+			}
+			return true
+		})
+		if err := src.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if err := conn.Exec(ctx, "CREATE TEMP TABLE stale_plan_closed (a int)"); err != nil {
+		t.Fatal(err)
+	}
+	const sql = "SELECT * FROM stale_plan_closed"
+	if err := run(sql); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec(ctx, "ALTER TABLE stale_plan_closed ADD COLUMN b int"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(sql); !errors.Is(err, postgres.ErrStalePlan) {
+		t.Fatalf("after the schema change, error = %v, want ErrStalePlan", err)
+	}
+	// The retry re-prepares under a fresh name and closes the stale one in
+	// front of its Parse; the runs after it are hits and change nothing.
+	for range 3 {
+		if err := run(sql); err != nil {
+			t.Fatalf("the retry after the stale plan returned %v", err)
+		}
+	}
+	held := names()
+	cached, _, _ := conn.StatementCacheStats()
+	if len(held) != cached {
+		t.Errorf("the server holds %d statements %q, the cache %d: the stale statement was forgotten, not closed", len(held), held, cached)
+	}
+}

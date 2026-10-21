@@ -311,7 +311,9 @@ func TestStatementCacheRetriesAnUnconfirmedClose(t *testing.T) {
 
 // A schema change under a live connection invalidates a plan. The entry is
 // dropped so the caller's retry re-prepares, and the error says what happened
-// rather than being retried into silence.
+// rather than being retried into silence. The server discarded the plan, not
+// the statement: the retry's Parse carries the old name's Close in front of
+// it, so the backend holds no more statements than the cache does.
 func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	var stale []byte
 	stale = append(stale, beSimple(pgwire.BackendParseComplete)...)
@@ -320,7 +322,9 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{
 		oneRow()[0], oneRow()[1], // prepared and run once
 		stale, beReadyForQuery(), // then the schema moves
-		oneRow()[0], oneRow()[1], // and the retry re-prepares
+		// and the retry re-prepares, the old statement's Close pipelined in
+		// front of its Parse: the CloseComplete comes in the same answer.
+		append(beSimple(pgwire.BackendCloseComplete), oneRow()[0]...), oneRow()[1],
 	}}
 	conn := NewConn(srv)
 	if err := conn.PrepareStatements(8); err != nil {
@@ -362,6 +366,21 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	bs := bound(t, srv)
 	if bs[len(bs)-1] != ps[1][0] {
 		t.Errorf("the retry bound %q, want the freshly prepared %q", bs[len(bs)-1], ps[1][0])
+	}
+	// The discarded name is closed on the server, not only forgotten here:
+	// the server keeps a named statement until a Close releases it, and
+	// every schema change would otherwise leave one more behind.
+	cs := closed(t, srv)
+	if len(cs) != 1 || cs[0] != ps[0][0] {
+		t.Errorf("closed %q, want the stale statement %q once", cs, ps[0][0])
+	}
+	// Queued in front of the retry's Parse, in the same write: a stale plan
+	// costs the caller's retry and no round trip more.
+	if got := frontendTypes(srv.sent.Bytes()); !strings.Contains(got, "CP") {
+		t.Errorf("client messages %q: the stale statement's Close is not pipelined with the retry's Parse", got)
+	}
+	if len(conn.stmts.closing) != 0 {
+		t.Errorf("closing = %q after the server confirmed the Close", conn.stmts.closing)
 	}
 }
 
@@ -563,6 +582,11 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	}
 	if ps[0][0] == ps[1][0] {
 		t.Errorf("both prepared under %q, so the dead name was reused", ps[0][0])
+	}
+	// Unlike a stale plan, nothing is closed: the server holds no statement
+	// under the name, and a Close of it would be a message for nothing.
+	if cs := closed(t, srv); len(cs) != 0 {
+		t.Errorf("closed %q after the server said it holds no such statement", cs)
 	}
 }
 
