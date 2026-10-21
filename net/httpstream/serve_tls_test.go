@@ -61,12 +61,16 @@ type wireConn struct {
 
 // Write records what the socket took, not what was offered: an alert
 // attempted on a socket already closed under the record layer never reaches
-// the wire, and must not count.
+// the wire, and must not count. The lock is held across the write itself:
+// the client can read the bytes — and, on a close_notify, return its EOF to
+// the test — before the write has returned here, so a recordTypes taken at
+// that EOF must wait for the write in flight to be recorded. Recorded after
+// the write and in the lock, it never ran ahead of the socket either.
 func (c *wireConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
 	c.l.mu.Lock()
+	defer c.l.mu.Unlock()
+	n, err := c.Conn.Write(p)
 	c.l.sent = append(c.l.sent, p[:n]...)
-	c.l.mu.Unlock()
 	return n, err
 }
 
