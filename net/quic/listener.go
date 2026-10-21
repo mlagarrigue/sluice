@@ -80,8 +80,9 @@ type ListenerConfig struct {
 	// parked for [Listener.Accept], or accepted and in use — where
 	// MaxPendingConns bounds only the first two. Beyond it a new Initial is
 	// refused with a stateless CONNECTION_REFUSED (RFC 9000 §5.2.2), the
-	// same answer as a full pending table; a connection counts until it is
-	// closed on this end or the peer's close is heard. Zero means no bound:
+	// same answer as a full pending table; a connection counts until its
+	// closing or draining state ends, three probe timeouts after the close
+	// and ten seconds at most (RFC 9000 §10.2). Zero means no bound:
 	// unlike MaxPendingConns, a total has no figure that suits every
 	// deployment, so an unset one limits nothing. Negative is refused by
 	// [NewListener].

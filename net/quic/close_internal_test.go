@@ -190,3 +190,32 @@ func initialCloseCode(t *testing.T, pc net.PacketConn, dcid []byte) uint64 {
 	}
 	return frames[0].value
 }
+
+// The closing period is three probe timeouts (RFC 9000 §10.2) on any real
+// path, and ten seconds at most: the peer chooses most of a PTO — its
+// max_ack_delay, legal up to 2^14 ms, and a smoothed RTT its delayed
+// acknowledgements inflate — and a Listener's connection holds its MaxConns
+// slots for the whole period, so an uncapped one let a peer keep a slot for
+// a minute or more after each close.
+func TestClosingPeriodIsThreePTOsWithACeiling(t *testing.T) {
+	c := &Conn{}
+	c.rtt.sample(80*time.Millisecond, 0)
+	if got, want := c.closingPeriodLocked(), 3*c.rtt.pto(25*time.Millisecond); got != want {
+		t.Errorf("an 80 ms path closes over %v, want three PTOs, %v", got, want)
+	}
+
+	// The legal extremes a peer can reach: max_ack_delay at 2^14 - 1 ms
+	// and acknowledgements held back for seconds.
+	c.hasPeerParams = true
+	c.peerParams.sawMaxAckDelay = true
+	c.peerParams.MaxAckDelay = (1<<14 - 1) * time.Millisecond
+	for range 8 {
+		c.rtt.sample(20*time.Second, 0)
+	}
+	if uncapped := 3 * c.rtt.pto(c.peerMaxAckDelayLocked()); uncapped < time.Minute {
+		t.Fatalf("the extremes give an uncapped period of %v; the case no longer tests the ceiling", uncapped)
+	}
+	if got := c.closingPeriodLocked(); got != 10*time.Second {
+		t.Errorf("the extremes close over %v, want the %v ceiling", got, 10*time.Second)
+	}
+}

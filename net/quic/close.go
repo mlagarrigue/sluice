@@ -504,10 +504,24 @@ func (c *Conn) holdsClosingLocked() bool {
 }
 
 // closingPeriodLocked is how long the closing state lasts: three probe
-// timeouts (§10.2), computed at the moment the close leaves.
+// timeouts (§10.2), computed at the moment the close leaves, and at most
+// maxClosingPeriod.
 func (c *Conn) closingPeriodLocked() time.Duration {
-	return 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	return min(3*c.rtt.pto(c.peerMaxAckDelayLocked()), maxClosingPeriod)
 }
+
+// maxClosingPeriod caps the closing state, against §10.2's "at least three
+// times the current PTO" where the PTO itself runs past any real path. The
+// peer chooses most of it: its max_ack_delay, legal up to 2^14 ms (§18.2),
+// and a smoothed RTT its delayed acknowledgements inflate — and a Listener's
+// connection keeps its routing entry and its MaxConns and MaxConnsPerIP
+// slots for the whole period, so an uncapped one let a peer hold a slot
+// for a minute or more after every close. Ten seconds is three PTOs of a
+// path with a 2.5 s round trip, past any satellite hop. What ending early
+// costs is the one thing §10.2 names: a packet arriving later than that is
+// answered with a Stateless Reset rather than the close repeated, and both
+// tell the peer the connection is gone.
+const maxClosingPeriod = 10 * time.Second
 
 // keepClosingDatagramLocked is writeLocked's hook: a copy of each datagram
 // of the close, and the socket and address it left by.

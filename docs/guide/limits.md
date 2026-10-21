@@ -366,6 +366,18 @@ to a separate module before a v1.
   one byte per frame, who would otherwise choose this end's bookkeeping
   cost. In plain words: a stream may be delivered in any order, but not
   as confetti.
+- **`net/quic` closing period**: after a close, a connection stays in the
+  closing or draining state for three probe timeouts (PTO, the delay
+  after which a sender resends for want of an acknowledgement), as RFC
+  9000 §10.2 asks, and ten seconds at most. The peer chooses most of a
+  PTO — its `max_ack_delay`, legal up to 2^14 ms, and a smoothed RTT its
+  delayed acknowledgements inflate: uncapped, legal parameters gave 3 min
+  25 s, during which a listener's connection keeps its `MaxConns` and
+  `MaxConnsPerIP` slots. Ten seconds covers three PTOs of a path with a
+  2.5 s round trip. Past it, a late packet is answered with a Stateless
+  Reset instead of the close repeated: both tell the peer the connection
+  is gone. In plain words: a closed connection does not keep its place
+  for more than ten seconds, whatever the peer says.
 - **`net/quic` versions**: version 1 only. QUIC version 2 (RFC 9369) and
   compatible version negotiation (RFC 9368) are not implemented: a server
   that does not speak version 1 ends the dial, and a peer's
