@@ -54,6 +54,18 @@ the address (`{order}`), which `http.ServeMux` can extract since Go 1.22.
 `Status` picks the code from the diagnostics (see below); `WriteJSON`
 writes the response as JSON.
 
+`DecodeJSON` also requires the request to say it carries JSON: one
+`Content-Type` header, `application/json` or a `+json` subtype (such as
+`application/merge-patch+json`). Any other type, or none, is refused with a
+400 before a byte is read: a browser sends a form or `text/plain` to another
+site without asking permission, and a JSON document hidden in one would
+otherwise be decoded as if the client had meant to send it. With `curl`,
+remember `-H 'Content-Type: application/json'`.
+
+To stay short, this example authenticates no one. A handler that serves
+protected data authenticates first and decodes after: see
+[Authenticating, authorizing](#authenticating-authorizing).
+
 ## Diagnostics and remedies: refusing cleanly
 
 When a business rule refuses a value ("quantity must be positive"),
@@ -175,6 +187,14 @@ grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or
 > which half of their forgery was right is telling them how to fix the
 > other. Everything in `HMACConfig` is a ground for refusal: audience,
 > issuer, clock, maximum token size.
+
+**The order: `Authenticate`, then `Authorize`, then `DecodeJSON`.**
+Verifying a token reads only the `Authorization` header, bounded to 8 KB by
+default; decoding reads the body up to its limit — 64 KB in the first
+example — and parses it. Decoding first offers that work to any anonymous
+caller; authenticating first keeps it for those you serve. And a refused
+authentication says nothing about the body: an anonymous client does not
+learn which fields your API expects.
 
 `ClaimAuthorizer` builds the grant from the token's own claims; that is
 correct only if the token's issuer is your own service. Otherwise,
