@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -186,5 +187,37 @@ func TestRetryDrawsItsUnusedBits(t *testing.T) {
 	}
 	if len(seen) < 2 {
 		t.Errorf("32 Retry packets all share one first byte: %v", seen)
+	}
+}
+
+// RFC 9000 §7.3: initial_source_connection_id is mandatory for both
+// endpoints, and its absence is TRANSPORT_PARAMETER_ERROR — also against a
+// peer whose own identifier is zero-length, where the absent parameter used
+// to compare equal to the empty identifier. Present and empty is the legal
+// announcement of such a peer, and stays accepted.
+func TestMissingInitialSourceCIDIsRefusedEvenForAnEmptyPeerCID(t *testing.T) {
+	// A client block with every identifier parameter left out.
+	absent := appendParam(nil, paramInitialMaxData, AppendVarint(nil, 1<<20))
+	absent = appendParam(absent, paramInitialMaxStreamsBidi, AppendVarint(nil, 100))
+
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	c.dcid = nil // the peer's source identifier is zero-length
+	c.mu.Unlock()
+	wantCode(t, c.handlePeerParameters(absent), transportParameterError, "an absent initial_source_connection_id against an empty peer identifier")
+
+	c = boundsConn(t, false)
+	c.mu.Lock()
+	c.dcid = nil
+	c.mu.Unlock()
+	present := appendParam(absent, paramInitialSourceCID, nil)
+	if err := c.handlePeerParameters(present); err != nil {
+		t.Errorf("a present, empty initial_source_connection_id from a peer with an empty identifier was refused: %v", err)
+	}
+
+	// This end announces its own identifier even when it is empty.
+	var p TransportParameters
+	if got := appendParameters(nil, p); !bytes.Contains(got, []byte{byte(paramInitialSourceCID), 0}) {
+		t.Errorf("an empty initial_source_connection_id was not announced: %x", got)
 	}
 }

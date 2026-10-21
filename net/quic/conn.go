@@ -1308,6 +1308,12 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 
 	// Every refusal below is TRANSPORT_PARAMETER_ERROR (parameterError says
 	// which section names it for which check).
+	if !p.hasInitialSourceCID {
+		// §7.3: mandatory for both endpoints. Checked apart from the
+		// comparison below: against a peer whose identifier is zero-length
+		// an absent parameter compared equal to the empty identifier.
+		return parameterError(fmt.Errorf("%w: the peer omitted initial_source_connection_id", ErrQUIC))
+	}
 	if !bytes.Equal(p.initialSourceCID, c.dcid) {
 		return parameterError(fmt.Errorf("%w: the peer's initial_source_connection_id is not the identifier its packets carry", ErrQUIC))
 	}

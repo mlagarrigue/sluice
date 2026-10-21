@@ -94,6 +94,10 @@ type TransportParameters struct {
 	// InitialSourceCID is the identifier this endpoint used on its own first
 	// packet, for the same reason.
 	initialSourceCID []byte
+	// hasInitialSourceCID says the parameter was present, which a
+	// zero-length identifier cannot say for itself (§7.3 makes its absence
+	// an error).
+	hasInitialSourceCID bool
 
 	// RetrySourceCID is the identifier a server put on the Retry packet it
 	// sent, echoed so the client can bind the connection it ends up with to
@@ -450,7 +454,13 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 		dst = AppendVarint(dst, 0) // §18.2: a zero-length value
 	}
 	raw(paramOriginalDCID, p.originalDCID)
-	raw(paramInitialSourceCID, p.initialSourceCID)
+	// Always, even zero-length: §7.3 makes initial_source_connection_id
+	// mandatory for both endpoints, and raw's "nothing to say" shortcut
+	// would turn an endpoint's empty identifier into the omission the peer
+	// has to refuse.
+	dst = AppendVarint(dst, paramInitialSourceCID)
+	dst = AppendVarint(dst, uint64(len(p.initialSourceCID)))
+	dst = append(dst, p.initialSourceCID...)
 	raw(paramRetrySourceCID, p.retrySourceCID)
 	raw(paramStatelessResetToken, p.statelessResetToken)
 	if p.preferredAddress != nil {
@@ -527,7 +537,10 @@ func parseParameters(b []byte) (TransportParameters, error) {
 		case paramOriginalDCID:
 			p.originalDCID = val
 		case paramInitialSourceCID:
-			p.initialSourceCID = val
+			// Present and empty is a legal value for a peer whose own
+			// identifier is zero-length; absent is a §7.3 refusal. The
+			// slice alone cannot tell the two apart.
+			p.initialSourceCID, p.hasInitialSourceCID = val, true
 		case paramRetrySourceCID:
 			p.retrySourceCID = val
 		case paramStatelessResetToken:
