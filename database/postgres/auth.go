@@ -210,6 +210,30 @@ type Config struct {
 	// RequireAuth.
 	RequireChannelBinding bool
 
+	// MinSCRAMIterations and MaxSCRAMIterations bound the PBKDF2 iteration
+	// count a server may ask for in its SCRAM first message. Zero means the
+	// default: 4096 below — the floor RFC 7677 §3 asks a server to keep to,
+	// and PostgreSQL's own default — and 1,048,576 above. The count is the
+	// server's choice and this client's CPU: below the floor the stored key
+	// is cheap to brute-force, above the ceiling a hostile or misconfigured
+	// server stalls every connection for free. A server outside the range
+	// is refused with [ErrAuth] and the field named. PostgreSQL 16+ sets
+	// the count with scram_iterations, from 1 to INT_MAX: a role stored at
+	// 1000 for a fast test fixture needs MinSCRAMIterations at 1000, one
+	// stored at 2,000,000 by a hardened server needs MaxSCRAMIterations
+	// there. [Connect] refuses, before anything is sent, a negative value
+	// or a maximum below the minimum.
+	MinSCRAMIterations int
+	MaxSCRAMIterations int
+
+	// MinSCRAMSaltLen is the shortest salt, in bytes, this client derives a
+	// key against. Zero means 16: PostgreSQL's own salt length, and the floor
+	// crypto/pbkdf2 enforces under GOFIPS140=only. A shorter salt shrinks
+	// the space a precomputed table has to cover; a server that sends one
+	// is refused with [ErrAuth] and the field named. [Connect] refuses a
+	// negative value before anything is sent.
+	MinSCRAMSaltLen int
+
 	// Params sets additional runtime parameters in the startup packet —
 	// application_name, search_path, statement_timeout and the rest. It may
 	// not contain "user" or "database", which have fields of their own, nor
@@ -375,6 +399,9 @@ func startupBody(cfg Config) ([]byte, error) {
 	}
 	if lo, hi := cfg.MinProtocol, cfg.maxProtocol(); lo > hi {
 		return nil, fmt.Errorf("postgres: Config.MinProtocol %v is above Config.MaxProtocol %v — no version satisfies both", lo, hi)
+	}
+	if err := checkSCRAMBounds(cfg); err != nil {
+		return nil, err
 	}
 	if cfg.CancelTimeout < 0 {
 		return nil, fmt.Errorf("postgres: Config.CancelTimeout %v is negative — zero means the default, %v", cfg.CancelTimeout, defaultCancelTimeout)
@@ -710,7 +737,7 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg Config, 
 		return c.flushAuth("starting the SCRAM exchange")
 
 	case authSASLContinue:
-		msg, err := sc.respond(data, cfg.Password)
+		msg, err := sc.respond(data, cfg.Password, cfg.scramBounds())
 		if err != nil {
 			return c.breakConn(err)
 		}

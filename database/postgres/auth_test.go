@@ -203,7 +203,7 @@ func TestStartupSCRAM(t *testing.T) {
 	// What the client will have signed by the time it answers.
 	authMessage := "n=,r=" + clientNonce + "," + serverFirst +
 		",c=biws,r=" + serverNonce
-	_, serverSig, err := scramProof(password, salt, 4096, authMessage)
+	_, serverSig, err := scramProof(password, salt, 4096, authMessage, defaultMinSaltLen)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -180,7 +180,7 @@ func scramPlusServer(nc net.Conn, cert tls.Certificate, password string, wantCB 
 	}
 	salt, _ := base64.StdEncoding.DecodeString(rfcSalt)
 	authMessage := clientFirstBare + "," + serverFirst + "," + withoutProof
-	wantProof, serverSig, err := scramProof(password, salt, 4096, authMessage)
+	wantProof, serverSig, err := scramProof(password, salt, 4096, authMessage, defaultMinSaltLen)
 	if err != nil {
 		return err
 	}

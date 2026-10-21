@@ -2002,3 +2002,63 @@ func TestStalePlanStatementIsClosedOnTheServer(t *testing.T) {
 		t.Errorf("the server holds %d statements %q, the cache %d: the stale statement was forgotten, not closed", len(held), held, cached)
 	}
 }
+
+// A role stored with fewer PBKDF2 iterations than the default floor — what
+// scram_iterations = 1000 produces on PostgreSQL 16+, a fast fixture for a
+// test database — is refused under Config{} with the field to set named,
+// and accepted once Config.MinSCRAMIterations says 1000. The server's own
+// count is what makes this a check a scripted server cannot stand in for:
+// the refusal reads the i= the real server derived the stored key with.
+func TestIntegrationSCRAMIterationBounds(t *testing.T) {
+	const role = "sluice_scram_iter_test"
+	const password = "iter-pass" //nolint:gosec // G101: a throwaway role's password
+	addr, cfg := pgTarget(t)
+	admin := dial(t)
+	drop := func(ctx context.Context) error {
+		return execContext(ctx, admin, "DROP ROLE IF EXISTS "+role)
+	}
+	if err := drop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "SET scram_iterations = 1000"); err != nil {
+		var pgErr *postgres.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "42704" {
+			t.Skipf("scram_iterations needs PostgreSQL 16 or later: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "SET password_encryption = 'scram-sha-256'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec(t, admin, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"'"); err != nil {
+		var pgErr *postgres.Error
+		if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+			t.Skipf("%s may not create roles: %v", cfg.User, err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := drop(ctx); err != nil {
+			t.Errorf("drop role %s: %v", role, err)
+		}
+	})
+
+	c := cfg
+	c.User, c.Password = role, password
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	_, err := postgres.Connect(ctx, postgres.DialTCP(addr), c)
+	switch {
+	case err == nil:
+		t.Fatal("a role stored at 1000 iterations authenticated under the default floor of 4096")
+	case !errors.Is(err, postgres.ErrAuth):
+		t.Fatalf("refused with %v, want ErrAuth", err)
+	case !strings.Contains(err.Error(), "1000 PBKDF2 iterations") || !strings.Contains(err.Error(), "Config.MinSCRAMIterations"):
+		t.Fatalf("refused with %v, want the server's count and the field to set named", err)
+	}
+
+	c.MinSCRAMIterations = 1000
+	dialWith(t, addr, c)
+}

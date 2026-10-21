@@ -38,11 +38,11 @@ func TestSASLprep(t *testing.T) {
 // typed "Ⅸ" authenticate against a key the server derived from "IX".
 func TestSCRAMProofUsesSASLprep(t *testing.T) {
 	salt := []byte("0123456789abcdef")
-	a, _, err := scramProof("Ⅸ", salt, 4096, "auth")
+	a, _, err := scramProof("Ⅸ", salt, 4096, "auth", defaultMinSaltLen)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, err := scramProof("IX", salt, 4096, "auth")
+	b, _, err := scramProof("IX", salt, 4096, "auth", defaultMinSaltLen)
 	if err != nil {
 		t.Fatal(err)
 	}

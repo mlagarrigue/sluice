@@ -40,9 +40,16 @@ import (
 // chooses and the *client* burns CPU on, so an unbounded one is a stall a
 // hostile or misconfigured server can impose for free. A million iterations is
 // already far above any real deployment.
+//
+// These are the defaults; [Config.MinSCRAMIterations] and
+// [Config.MaxSCRAMIterations] move them for a deployment that must talk to a
+// role stored with fewer (a test fixture at scram_iterations = 1000) or more
+// (a hardened server at 2,000,000). PostgreSQL 16+ accepts any count from 1
+// to INT_MAX, and libpq any i ≥ 1; this client keeps the RFC's floor by
+// default and lets the deployer say otherwise.
 const (
-	minIterations = 4096
-	maxIterations = 1 << 20
+	defaultMinIterations = 4096
+	defaultMaxIterations = 1 << 20
 )
 
 // minSaltLen is the shortest salt this client will derive against.
@@ -52,8 +59,52 @@ const (
 // to cover, and a client that simply used whatever it was handed would inherit
 // that. Sixteen bytes is PostgreSQL's own default, and it is also the floor
 // crypto/pbkdf2 enforces under GOFIPS140=only — so anything below it would
-// fail there regardless, and failing here says why.
-const minSaltLen = 16
+// fail there regardless, and failing here says why. The default;
+// [Config.MinSCRAMSaltLen] moves it.
+const defaultMinSaltLen = 16
+
+// scramBounds is what this client accepts in a server's first message:
+// the PBKDF2 iteration count within [minIter, maxIter], the salt at least
+// minSalt bytes. [Config.scramBounds] resolves them from the configuration.
+type scramBounds struct {
+	minIter, maxIter, minSalt int
+}
+
+// scramBounds is the SCRAM bounds [Config] names, zeros replaced by the
+// defaults. startupBody has already refused a configuration whose values
+// make no sense; this only fills in the blanks.
+func (cfg Config) scramBounds() scramBounds {
+	b := scramBounds{minIter: cfg.MinSCRAMIterations, maxIter: cfg.MaxSCRAMIterations, minSalt: cfg.MinSCRAMSaltLen}
+	if b.minIter == 0 {
+		b.minIter = defaultMinIterations
+	}
+	if b.maxIter == 0 {
+		b.maxIter = defaultMaxIterations
+	}
+	if b.minSalt == 0 {
+		b.minSalt = defaultMinSaltLen
+	}
+	return b
+}
+
+// checkSCRAMBounds refuses, before anything is sent, SCRAM bounds that make
+// no sense: a negative value (zero means the default, a negative one was
+// typed), or a maximum below the minimum once the defaults are in. Each
+// error names the field.
+func checkSCRAMBounds(cfg Config) error {
+	switch {
+	case cfg.MinSCRAMIterations < 0:
+		return fmt.Errorf("postgres: Config.MinSCRAMIterations %d is negative — zero means the default, %d", cfg.MinSCRAMIterations, defaultMinIterations)
+	case cfg.MaxSCRAMIterations < 0:
+		return fmt.Errorf("postgres: Config.MaxSCRAMIterations %d is negative — zero means the default, %d", cfg.MaxSCRAMIterations, defaultMaxIterations)
+	case cfg.MinSCRAMSaltLen < 0:
+		return fmt.Errorf("postgres: Config.MinSCRAMSaltLen %d is negative — zero means the default, %d", cfg.MinSCRAMSaltLen, defaultMinSaltLen)
+	}
+	if b := cfg.scramBounds(); b.maxIter < b.minIter {
+		return fmt.Errorf("postgres: Config.MaxSCRAMIterations %d is below Config.MinSCRAMIterations %d — no iteration count satisfies both", b.maxIter, b.minIter)
+	}
+	return nil
+}
 
 // nonceBytes is the entropy behind a client nonce, before base64. It is what
 // makes a replayed server-first message useless, and 18 bytes is what libpq
@@ -248,7 +299,7 @@ func pssHash(der []byte) hash.Hash {
 
 // respond answers AuthenticationSASLContinue with the client's final message,
 // and records the server signature that must come back.
-func (s *scram) respond(serverFirst []byte, password string) ([]byte, error) {
+func (s *scram) respond(serverFirst []byte, password string, bounds scramBounds) ([]byte, error) {
 	switch s.step {
 	case scramIdle:
 		return nil, fmt.Errorf("%w: a SASLContinue arrived before any SASL exchange was started", ErrProtocol)
@@ -259,7 +310,7 @@ func (s *scram) respond(serverFirst []byte, password string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: a second SASLContinue arrived after the challenge was answered", ErrProtocol)
 	}
 	msg := string(serverFirst) // copied: the reader's buffer is about to be reused
-	nonce, salt, iter, err := parseServerFirst(msg, s.nonce)
+	nonce, salt, iter, err := parseServerFirst(msg, s.nonce, bounds)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +323,7 @@ func (s *scram) respond(serverFirst []byte, password string) ([]byte, error) {
 	clientFinalBare := "c=" + base64.StdEncoding.EncodeToString(append([]byte(s.gs2), s.cbind...)) + ",r=" + nonce
 	s.auth += "," + msg + "," + clientFinalBare
 
-	proof, serverSig, err := scramProof(password, salt, iter, s.auth)
+	proof, serverSig, err := scramProof(password, salt, iter, s.auth, bounds.minSalt)
 	if err != nil {
 		// Unreachable from here: parseServerFirst has already judged the salt
 		// and the iteration count, which are the only things scramProof
@@ -313,12 +364,12 @@ func (s *scram) verify(serverFinal []byte) error {
 // the RFC's published test vector drive it directly — the vector's messages
 // are not the ones this client sends, and a function that assembled them
 // itself could only ever be tested against its own assembly.
-func scramProof(password string, salt []byte, iter int, authMessage string) (proof, serverSig []byte, err error) {
-	if len(salt) < minSaltLen {
+func scramProof(password string, salt []byte, iter int, authMessage string, minSalt int) (proof, serverSig []byte, err error) {
+	if len(salt) < minSalt {
 		// Reached only by a caller other than the exchange, which has already
 		// judged the salt. It is checked again rather than assumed, because
 		// this function is what a future codepath will reuse.
-		return nil, nil, fmt.Errorf("%w: a %d-byte salt is below the %d this client accepts", ErrAuth, len(salt), minSaltLen)
+		return nil, nil, fmt.Errorf("%w: a %d-byte salt is below the %d this client accepts (Config.MinSCRAMSaltLen)", ErrAuth, len(salt), minSalt)
 	}
 	// The password is prepared by SASLprep (RFC 4013) first, as libpq's
 	// scram_init does and as the server did when it stored the role's key.
@@ -387,7 +438,7 @@ func parseMechanisms(body []byte) ([]string, error) {
 //
 // Every check here is a downgrade this client refuses, which is the reason to
 // parse the message rather than pick the fields out of it.
-func parseServerFirst(msg, clientNonce string) (nonce string, salt []byte, iter int, err error) {
+func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, salt []byte, iter int, err error) {
 	var haveNonce, haveSalt, haveIter bool
 	for attr := range strings.SplitSeq(msg, ",") {
 		name, val, ok := splitAttr(attr)
@@ -426,12 +477,12 @@ func parseServerFirst(msg, clientNonce string) (nonce string, salt []byte, iter 
 		// and not echo it. This is the check that ties the answer to this
 		// exchange: without it a recorded server-first message replays.
 		return "", nil, 0, fmt.Errorf("%w: the server's nonce does not extend the client's", ErrAuth)
-	case iter < minIterations:
-		return "", nil, 0, fmt.Errorf("%w: the server asked for %d PBKDF2 iterations, below the %d this client accepts", ErrAuth, iter, minIterations)
-	case iter > maxIterations:
-		return "", nil, 0, fmt.Errorf("%w: the server asked for %d PBKDF2 iterations, above the %d this client accepts", ErrAuth, iter, maxIterations)
-	case len(salt) < minSaltLen:
-		return "", nil, 0, fmt.Errorf("%w: the server sent a %d-byte salt, below the %d this client accepts", ErrAuth, len(salt), minSaltLen)
+	case iter < b.minIter:
+		return "", nil, 0, fmt.Errorf("%w: the server asked for %d PBKDF2 iterations, below the %d this client accepts (Config.MinSCRAMIterations)", ErrAuth, iter, b.minIter)
+	case iter > b.maxIter:
+		return "", nil, 0, fmt.Errorf("%w: the server asked for %d PBKDF2 iterations, above the %d this client accepts (Config.MaxSCRAMIterations)", ErrAuth, iter, b.maxIter)
+	case len(salt) < b.minSalt:
+		return "", nil, 0, fmt.Errorf("%w: the server sent a %d-byte salt, below the %d this client accepts (Config.MinSCRAMSaltLen)", ErrAuth, len(salt), b.minSalt)
 	}
 	return nonce, salt, iter, nil
 }

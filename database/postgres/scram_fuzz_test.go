@@ -29,7 +29,7 @@ func FuzzParseServerFirst(f *testing.F) {
 	f.Add("r=" + clientNonce + "S,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,r=other")
 
 	f.Fuzz(func(t *testing.T, msg string) {
-		nonce, salt, iter, err := parseServerFirst(msg, clientNonce)
+		nonce, salt, iter, err := parseServerFirst(msg, clientNonce, Config{}.scramBounds())
 		if err != nil {
 			if !errors.Is(err, ErrAuth) {
 				t.Fatalf("unclassified error %v for %q", err, msg)
@@ -41,10 +41,10 @@ func FuzzParseServerFirst(f *testing.F) {
 		switch {
 		case !strings.HasPrefix(nonce, clientNonce) || len(nonce) == len(clientNonce):
 			t.Fatalf("accepted a nonce %q that does not extend %q", nonce, clientNonce)
-		case iter < minIterations || iter > maxIterations:
-			t.Fatalf("accepted %d iterations, outside [%d, %d]", iter, minIterations, maxIterations)
-		case len(salt) < minSaltLen:
-			t.Fatalf("accepted a %d-byte salt, below %d", len(salt), minSaltLen)
+		case iter < defaultMinIterations || iter > defaultMaxIterations:
+			t.Fatalf("accepted %d iterations, outside [%d, %d]", iter, defaultMinIterations, defaultMaxIterations)
+		case len(salt) < defaultMinSaltLen:
+			t.Fatalf("accepted a %d-byte salt, below %d", len(salt), defaultMinSaltLen)
 		}
 	})
 }

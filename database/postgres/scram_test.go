@@ -35,7 +35,7 @@ func TestSCRAMProofMatchesRFC7677(t *testing.T) {
 	}
 	authMessage := rfcClientFirstBare + "," + rfcServerFirst + "," + rfcClientFinalBare
 
-	proof, serverSig, err := scramProof(rfcPassword, salt, rfcIterations, authMessage)
+	proof, serverSig, err := scramProof(rfcPassword, salt, rfcIterations, authMessage, defaultMinSaltLen)
 	if err != nil {
 		t.Fatalf("scramProof: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestParseServerFirstRefusals(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, _, err := parseServerFirst(tc.msg, clientNonce)
+			_, _, _, err := parseServerFirst(tc.msg, clientNonce, Config{}.scramBounds())
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("parseServerFirst = %v, want it accepted", err)
@@ -137,7 +137,7 @@ func TestParseServerFirstRefusals(t *testing.T) {
 func TestParseServerFirstSkipsUnknownOptionalAttributes(t *testing.T) {
 	const clientNonce = "abcdefgh"
 	msg := "r=" + clientNonce + "S,s=" + rfcSalt + ",i=4096,x=something-new"
-	if _, _, _, err := parseServerFirst(msg, clientNonce); err != nil {
+	if _, _, _, err := parseServerFirst(msg, clientNonce, Config{}.scramBounds()); err != nil {
 		t.Errorf("parseServerFirst = %v, want the unknown attribute skipped", err)
 	}
 }
@@ -202,7 +202,7 @@ func TestSCRAMVerifyRejectsAWrongSignature(t *testing.T) {
 // is being walked through a conversation it did not begin.
 func TestSCRAMStepsRefuseOutOfOrder(t *testing.T) {
 	var s scram
-	if _, err := s.respond([]byte(rfcServerFirst), rfcPassword); !errors.Is(err, ErrProtocol) {
+	if _, err := s.respond([]byte(rfcServerFirst), rfcPassword, Config{}.scramBounds()); !errors.Is(err, ErrProtocol) {
 		t.Errorf("respond before begin = %v, want ErrProtocol", err)
 	}
 	if err := s.verify([]byte("v=" + rfcServerSignature)); !errors.Is(err, ErrProtocol) {
@@ -248,7 +248,7 @@ func TestSCRAMBeginRefusals(t *testing.T) {
 // proof nobody should trust. The exchange judges the salt before it gets here,
 // but the function is callable on its own and its contract is its own.
 func TestSCRAMProofRefusesAShortSalt(t *testing.T) {
-	_, _, err := scramProof(rfcPassword, []byte("salty"), 4096, "auth")
+	_, _, err := scramProof(rfcPassword, []byte("salty"), 4096, "auth", defaultMinSaltLen)
 	if err == nil {
 		t.Fatal("scramProof accepted a five-byte salt")
 	}
@@ -278,13 +278,13 @@ func runSCRAM(t *testing.T, s *scram) (mechanisms, serverFirst, serverFinal []by
 	}
 	salt := []byte("0123456789abcdef")
 	serverFirst = []byte("r=" + s.nonce + "server,s=" + base64.StdEncoding.EncodeToString(salt) + ",i=4096")
-	clientFinal, err := s.respond(serverFirst, rfcPassword)
+	clientFinal, err := s.respond(serverFirst, rfcPassword, Config{}.scramBounds())
 	if err != nil {
 		t.Fatalf("respond: %v", err)
 	}
 	withoutProof, _, _ := strings.Cut(string(clientFinal), ",p=")
 	_, serverSig, err := scramProof(rfcPassword, salt, 4096,
-		"n=,r="+s.nonce+","+string(serverFirst)+","+withoutProof)
+		"n=,r="+s.nonce+","+string(serverFirst)+","+withoutProof, defaultMinSaltLen)
 	if err != nil {
 		t.Fatalf("scramProof: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestSCRAMRefusesAMessageOutOfSequence(t *testing.T) {
 			return err
 		}},
 		{"a second SASLContinue", func(s *scram, _, serverFirst, _ []byte) error {
-			_, err := s.respond(serverFirst, rfcPassword)
+			_, err := s.respond(serverFirst, rfcPassword, Config{}.scramBounds())
 			return err
 		}},
 		{"a second SASLFinal", func(s *scram, _, _, serverFinal []byte) error {
@@ -338,10 +338,10 @@ func TestSCRAMRefusesASecondChallenge(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverFirst := []byte("r=" + s.nonce + "server,s=" + base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")) + ",i=4096")
-	if _, err := s.respond(serverFirst, rfcPassword); err != nil {
+	if _, err := s.respond(serverFirst, rfcPassword, Config{}.scramBounds()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.respond(serverFirst, rfcPassword); !errors.Is(err, ErrProtocol) {
+	if _, err := s.respond(serverFirst, rfcPassword, Config{}.scramBounds()); !errors.Is(err, ErrProtocol) {
 		t.Errorf("second respond = %v, want ErrProtocol", err)
 	}
 }

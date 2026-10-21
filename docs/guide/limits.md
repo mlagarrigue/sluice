@@ -66,7 +66,14 @@ Three reasons come up, and the difference matters:
   cleartext password on explicit request, and `trust`. **`md5` is refused**
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on
-  the server.
+  the server. The PBKDF2 iteration count the server asks for is accepted
+  between 4096 (RFC 7677's floor, PostgreSQL's default) and 1,048,576, and
+  the salt at 16 bytes or more; a server outside that range is refused with
+  the field to set in the message — `Config.MinSCRAMIterations`,
+  `MaxSCRAMIterations`, `MinSCRAMSaltLen` — for a role stored at
+  `scram_iterations = 1000` (a fast test fixture) or at two million (a
+  hardened server). Zero means the default; a negative value is refused
+  before anything is sent.
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,

@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15
+- **Revised:** 2026-10-21
 - **Theme:** httpstream
 
 ## Problem
@@ -80,6 +80,19 @@ never removed.**
    `quic.TransportParameters`, which `Config.TransportParameters` derives
    and `ServeH3` takes as they are, because `net/quic` also serves
    connections that do not speak HTTP/3.
+
+6. **The rule holds for every `Config` of the periphery, not for
+   `httpstream` alone.** `postgres.Config` follows it to the letter: zero
+   means the default named in the field's comment (`MaxMessage` 64 MiB,
+   `CancelTimeout` 5 s, `MinSCRAMIterations` 4096, `MaxSCRAMIterations`
+   1,048,576, `MinSCRAMSaltLen` 16), a negative value or one outside what
+   the protocol allows is refused by `Connect` before anything is sent,
+   with the field named, and no bound is removed by its absence — the SCRAM
+   bounds were constants with no setting until 2026-10-21, which refused a
+   role stored at `scram_iterations = 1000` with no remedy; they became
+   fields rather than a widened constant, because a floor that suits a test
+   fixture does not suit a public socket. A new bound in a periphery
+   package follows this point, with no new decision.
 
 ## Rationale
 
