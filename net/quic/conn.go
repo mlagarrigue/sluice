@@ -727,6 +727,13 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 	if h.Type != packetInitial {
 		return nil, fmt.Errorf("%w: a connection opening with a %d packet", ErrQUIC, h.Type)
 	}
+	// RFC 9000 §14.1: a server discards an Initial carried in a datagram
+	// under 1200 bytes. A real client pads its first flight; what arrives
+	// shorter is a forgery, and answering it would amplify it toward
+	// whoever its source address names.
+	if len(first.Payload) < 1200 {
+		return nil, fmt.Errorf("%w: a client Initial in a %d-byte datagram; §14.1 requires 1200", ErrQUIC, len(first.Payload))
+	}
 	// RFC 9000 §7.2: a client's first Initial carries a destination
 	// identifier of at least eight bytes; a shorter one is refused before any
 	// Initial secrets are derived from it.

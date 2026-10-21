@@ -44,10 +44,11 @@ func TestReceiveCoalescedPackets(t *testing.T) {
 		return pkt
 	}
 
-	// Two PING packets coalesced, then datagram padding.
+	// Two PING packets coalesced, then datagram padding — up to the 1200
+	// bytes §14.1 asks of every datagram a client carries an Initial in.
 	datagram := seal(0, []byte{framePing, 0, 0, 0})
 	datagram = append(datagram, seal(1, []byte{framePing, 0, 0, 0})...)
-	datagram = append(datagram, make([]byte, 40)...)
+	datagram = append(datagram, make([]byte, 1200-len(datagram))...)
 
 	if err := c.receive(datagram, c.peer); err != nil {
 		t.Fatalf("receive: %v", err)

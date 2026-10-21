@@ -276,6 +276,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 	c.rxLocalCIDSeq = 0
 	c.rxHighest = false
 	c.mu.Unlock()
+	datagramLen := len(datagram)
 	for len(datagram) > 0 {
 		if datagram[0] == 0 {
 			// Datagram padding: PADDING frames fill the *packet*, but a peer
@@ -312,6 +313,17 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				// discarding keeps unauthenticated bytes unable to end the
 				// connection, same as every other refusal here).
 				if c.isClient && len(h.Token) > 0 {
+					c.noteDiscard()
+					datagram = after
+					continue
+				}
+				// §14.1: a server discards an Initial carried in a
+				// datagram under 1200 bytes, on this path as on a
+				// Listener's first one — a real client pads every one of
+				// them, and answering a short forgery amplifies it toward
+				// whoever its source address names. The Initial alone is
+				// discarded; a packet coalesced after it is still read.
+				if !c.isClient && datagramLen < 1200 {
 					c.noteDiscard()
 					datagram = after
 					continue

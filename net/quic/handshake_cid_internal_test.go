@@ -3,6 +3,9 @@ package quic
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
+	"net"
+	"strings"
 	"testing"
 )
 
@@ -186,5 +189,61 @@ func TestServerDiscardsAnInitialUnderAnotherSCID(t *testing.T) {
 	c.mu.Unlock()
 	if moved {
 		t.Error("the server's destination identifier moved on a second Initial; §7.2 permits only NEW_CONNECTION_ID to move it")
+	}
+}
+
+// RFC 9000 §14.1: "A server MUST discard an Initial packet that is carried
+// in a UDP datagram with a payload that is smaller than ... 1200 bytes" —
+// on an Initial routed to an existing connection as on a Listener's first.
+func TestServerDiscardsAShortInitialOnAnExistingConn(t *testing.T) {
+	odcid, clientSCID := []byte("odcid-00"), []byte("cli-cid0")
+	c := serverConnFor(t, odcid, clientSCID)
+
+	short := sealedInitialFrom(t, false, odcid, odcid, clientSCID, 0, false)
+	if len(short) >= 1200 {
+		t.Fatalf("the short Initial is %d bytes; the test is checking the wrong thing", len(short))
+	}
+	if err := c.receive(short, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	if n := initialRanges(c); n != 0 {
+		t.Errorf("Initial ranges = %d after a %d-byte Initial datagram, want 0: §14.1 says discard it", n, len(short))
+	}
+	if n := discardedCount(c); n != 1 {
+		t.Errorf("discarded = %d, want 1", n)
+	}
+
+	// The control: the same Initial padded to 1200 is processed.
+	if err := c.receive(sealedInitialFrom(t, false, odcid, odcid, clientSCID, 0, true), c.peer); err != nil {
+		t.Fatal(err)
+	}
+	if initialRanges(c) != 1 {
+		t.Error("the padded control Initial was not processed; the test is checking the wrong thing")
+	}
+}
+
+// The same rule at [Accept], the other entry a client's Initial has into
+// a server: a short one earns no connection.
+func TestAcceptRefusesAShortInitial(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	peer := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}
+	odcid, scid := []byte("odcid-00"), []byte("cli-cid0")
+
+	short := sealedInitialFrom(t, false, odcid, odcid, scid, 0, false)
+	c, err := Accept(pc, Datagram{Peer: peer, Payload: short}, cfg, DefaultParameters())
+	if err == nil {
+		c.Close()
+		t.Fatalf("Accept opened a connection on a %d-byte Initial datagram; §14.1 says discard it", len(short))
+	}
+	// The refusal must be this one, not a later failure of the handshake
+	// the same Initial padded to 1200 would start (conn_test.go accepts
+	// those against a real client; a short one must not get that far).
+	if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), "§14.1") {
+		t.Errorf("Accept error = %v, want the §14.1 refusal wrapping ErrQUIC", err)
 	}
 }
