@@ -651,7 +651,7 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle
 		// from here made 24 silent bytes count as a request a forced stop
 		// cut. Marked HTTP/2: from here the shutdown tells it, never cuts it
 		// (see connState.h2); one still short of its SETTINGS is told and
-		// closed at once (see beginDrain).
+		// closed after LingerTimeout (see beginDrain).
 		if st != nil {
 			st.h2.Store(true)
 		}

@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is told GOAWAY 0 and closed at once)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed)
 - **Theme:** httpstream
 
 ## Problem
@@ -85,10 +85,16 @@ cancellation.
      that has sent only the preface, without the SETTINGS §3.4 makes
      follow it, has opened no stream, and its acknowledgement would come,
      if ever, behind that SETTINGS: it is the HTTP/2 form of the accepted
-     and silent connection of (4). It is told a GOAWAY naming stream 0 —
+     and silent connection of (4). Deciding at once would be wrong the
+     other way: a client sends its preface and SETTINGS together, and a
+     shutdown landing between the two reads would cut a connection whose
+     SETTINGS, and perhaps a request, is already in the socket — unread
+     bytes a close answers with a reset that can erase the GOAWAY. So it is
+     told as the others are and given `LingerTimeout` (a second by default)
+     for its first frame; without one, a second GOAWAY names stream 0 —
      nothing was processed, so a request crossing the close may be
-     replayed as is — and closes once that is sent; a SETTINGS arriving
-     after the decision opens nothing.
+     replayed as is — and the connection closes; a SETTINGS arriving after
+     the decision opens nothing.
    - HTTP/3: as on HTTP/2, a pair of GOAWAY frames on the control stream.
      The first names 2^62−4, the highest identifier a server may send: the
      client opens nothing more, and everything it already sent is still

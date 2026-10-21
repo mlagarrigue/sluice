@@ -320,14 +320,17 @@ func TestH2GoAwayLastStreamIdentifierNeverRises(t *testing.T) {
 // connection, which ADR 0017 closes at once. It used to count as busy from
 // the preface on and wait for the acknowledgement of a PING it would never
 // send, so the shutdown ran to the end of its grace and reported requests in
-// flight. It is now told GOAWAY(0, NO_ERROR) — nothing was processed, so a
-// request crossing the close may be retried — and closed at once.
-func TestShutdownClosesAPrefaceOnlyH2ConnectionAtOnce(t *testing.T) {
+// flight. It is now told as any connection is, given LingerTimeout to send
+// its SETTINGS — a client whose SETTINGS is already in the socket gets the
+// ordinary two-step drain — then told GOAWAY(0, NO_ERROR), nothing having
+// been processed, and closed.
+func TestShutdownClosesAPrefaceOnlyH2ConnectionAfterTheLinger(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: Config{ShutdownGrace: 1500 * time.Millisecond}, Handler: echoTarget}
+	const linger = 50 * time.Millisecond
+	srv := &Server{Config: Config{ShutdownGrace: 1500 * time.Millisecond, LingerTimeout: linger}, Handler: echoTarget}
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
@@ -353,18 +356,25 @@ func TestShutdownClosesAPrefaceOnlyH2ConnectionAtOnce(t *testing.T) {
 	if err := srv.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown = %v after %v, want nil: a preface-only connection held the drain", err, time.Since(start))
 	}
-	if took := time.Since(start); took > 100*time.Millisecond {
-		t.Errorf("Shutdown returned after %v, want at once", took)
+	if took := time.Since(start); took < linger || took > 10*linger {
+		t.Errorf("Shutdown returned after %v, want about the %v linger", took, linger)
 	}
-	typ, payload := readRawFrame(t, c)
-	for typ != frameGoAway && typ != 0xff {
-		typ, payload = readRawFrame(t, c) // the rest of the server's greeting
+	// What the client read before the close: the rest of the greeting, the
+	// drain's GOAWAY and PING, and a last GOAWAY naming stream 0.
+	var goAways [][]byte
+	for typ, payload := readRawFrame(t, c); typ != 0xff; typ, payload = readRawFrame(t, c) {
+		if typ == frameGoAway && len(payload) >= 8 {
+			goAways = append(goAways, payload)
+		}
 	}
-	if typ != frameGoAway || len(payload) < 8 {
-		t.Fatalf("after the shutdown: frame type %#x, want GOAWAY", typ)
+	if len(goAways) != 2 {
+		t.Fatalf("%d GOAWAY frames before the close, want 2", len(goAways))
 	}
-	if last, code := be32(payload[:4]), be32(payload[4:8]); last != 0 || code != errNoError {
-		t.Errorf("GOAWAY names stream %d with code %#x, want 0 and NO_ERROR", last, code)
+	if last := be32(goAways[0][:4]); last != maxStreamID {
+		t.Errorf("first GOAWAY names %d, want 2^31-1", last)
+	}
+	if last, code := be32(goAways[1][:4]), be32(goAways[1][4:8]); last != 0 || code != errNoError {
+		t.Errorf("last GOAWAY names stream %d with code %#x, want 0 and NO_ERROR", last, code)
 	}
 	if err := <-served; err != nil {
 		t.Errorf("Serve = %v", err)
