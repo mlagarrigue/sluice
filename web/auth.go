@@ -162,7 +162,7 @@ type HMACConfig struct {
 	// machine. Zero means none, which is correct and occasionally brutal: two
 	// machines a second apart will reject each other's freshly minted tokens.
 	// A minute is the usual answer; more than a few minutes means an expiry is
-	// no longer an expiry.
+	// no longer an expiry. A negative value is an error.
 	Leeway time.Duration
 
 	// MaxTokenBytes bounds what will be parsed at all. Zero means 8 KiB; a
@@ -204,6 +204,9 @@ func NewHMACVerifier(cfg HMACConfig) (*HMACVerifier, error) {
 	if cfg.MaxTokenBytes < 0 {
 		return nil, fmt.Errorf("web: HMACConfig.MaxTokenBytes %d is negative — zero means 8 KiB", cfg.MaxTokenBytes)
 	}
+	if cfg.Leeway < 0 {
+		return nil, fmt.Errorf("web: HMACConfig.Leeway %v is negative — zero means none", cfg.Leeway)
+	}
 	if cfg.MaxTokenBytes == 0 {
 		cfg.MaxTokenBytes = 8 << 10
 	}
@@ -236,8 +239,12 @@ type jwtHeader struct {
 	// Crit is read only to be refused. RFC 7515 §4.1.11: a verifier MUST
 	// reject a token whose `crit` lists an extension it does not implement —
 	// and this verifier implements none, so any `crit` at all means the token
-	// demands semantics that will not be enforced here.
-	Crit []json.RawMessage `json:"crit"`
+	// demands semantics that will not be enforced here. Raw rather than a
+	// slice: a slice decodes "crit": null to nil, which reads as absent, where
+	// json.RawMessage keeps the null and the presence check below sees it —
+	// RFC 7515 §4.1.11 allows no null, no empty list, no value of any kind
+	// this verifier could honour.
+	Crit json.RawMessage `json:"crit"`
 }
 
 // Verify checks a token and returns who it is from.

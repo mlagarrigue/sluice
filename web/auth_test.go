@@ -139,6 +139,17 @@ func TestVerifyRefusesForgeries(t *testing.T) {
 		}
 	})
 
+	// A null crit is no more a list the verifier honours than an empty one,
+	// and must not read as an absent field.
+	t.Run("crit present but null", func(t *testing.T) {
+		v := verifier(t, web.HMACConfig{})
+		header := map[string]any{"alg": "HS256", "typ": "JWT", "crit": nil}
+		token := mint(t, header, valid, testSecret)
+		if _, err := v.Verify(token); !errors.Is(err, web.ErrTokenMalformed) {
+			t.Fatalf("err = %v, want ErrTokenMalformed", err)
+		}
+	})
+
 	t.Run("algorithm confusion: RS256 declared", func(t *testing.T) {
 		// The classic: declare an asymmetric algorithm and sign with the
 		// public key as an HMAC secret. Refused because the algorithm is
@@ -631,5 +642,17 @@ func TestBearerChallenge(t *testing.T) {
 	}
 	if got := web.BearerChallenge(diagnostics.Diagnostic{}); got != "Bearer" {
 		t.Errorf("a foreign diagnostic gets %q, want the bare scheme", got)
+	}
+}
+
+// A negative leeway is a mistake, not a request for none (ADR 0018): zero is
+// the one way to ask for no skew allowance.
+func TestNewHMACVerifierRefusesANegativeLeeway(t *testing.T) {
+	_, err := web.NewHMACVerifier(web.HMACConfig{Secret: testSecret, Leeway: -time.Second})
+	if err == nil {
+		t.Fatal("a negative Leeway was accepted")
+	}
+	if !strings.Contains(err.Error(), "Leeway -1s") || !strings.Contains(err.Error(), "zero means none") {
+		t.Errorf("err = %q, want the field, the value and what zero means", err)
 	}
 }
