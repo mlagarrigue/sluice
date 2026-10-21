@@ -137,7 +137,11 @@ type frameReader struct {
 	err  error
 
 	prefaced bool
-	batch    []h2Frame
+	// settled is set once the first frame after the preface has been
+	// parsed: RFC 9113 §3.4 makes that frame a SETTINGS (ACK flag clear),
+	// and anything else is an invalid preface, a connection error.
+	settled bool
+	batch   []h2Frame
 
 	// pending is what the last batch consumed. Compacted at the start of the
 	// next round, not before the batch was yielded: the frames borrow the
@@ -241,6 +245,15 @@ func (r *frameReader) parseBuffered() (batch []h2Frame, used int, err error) {
 		}
 		if err != nil {
 			return nil, 0, err
+		}
+		if !r.settled {
+			r.settled = true
+			if f.Type != frameSettings || f.Flags&flagAck != 0 {
+				// §3.4: the preface "MUST be followed by a SETTINGS frame".
+				// A PING or a HEADERS first is a peer that skipped its
+				// preface, and the invalid preface is PROTOCOL_ERROR.
+				return nil, 0, fmt.Errorf("%w: the first frame after the preface is type %#x, not SETTINGS (RFC 9113 §3.4)", ErrH2Protocol, f.Type)
+			}
 		}
 		if err := r.trackHeaderBlock(f); err != nil {
 			return nil, 0, err

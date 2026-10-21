@@ -129,7 +129,7 @@ func TestFrameShapeRefusals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			script := append([]byte(Preface), tt.frame...)
+			script := append(prefaced(), tt.frame...)
 			if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 				t.Fatalf("err = %v, want ErrH2Protocol", err)
 			}
@@ -145,7 +145,7 @@ func TestFrameLengthIsCheckedBeforeThePayload(t *testing.T) {
 	hdr[3] = frameData
 	binary.BigEndian.PutUint32(hdr[5:], 1)
 
-	script := append([]byte(Preface), hdr[:]...)
+	script := append(prefaced(), hdr[:]...)
 	// No payload follows: if the length were believed, the reader would wait
 	// for sixteen megabytes that never come.
 	if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
@@ -157,7 +157,7 @@ func TestFrameLengthIsCheckedBeforeThePayload(t *testing.T) {
 // server that does not bound how far can be made to read forever without a
 // request ever completing.
 func TestContinuationFloodIsBounded(t *testing.T) {
-	script := append([]byte(Preface), frame(frameHeaders, 0, 1, []byte{0x82})...) // no END_HEADERS
+	script := append(prefaced(), frame(frameHeaders, 0, 1, []byte{0x82})...) // no END_HEADERS
 	for range 64 {
 		script = append(script, frame(frameContinuation, 0, 1, make([]byte, 16))...)
 	}
@@ -170,7 +170,7 @@ func TestContinuationFloodIsBounded(t *testing.T) {
 // A header block is one stream's, and a frame for another stream in the
 // middle of it is refused rather than reordered.
 func TestHeaderBlockCannotBeInterleaved(t *testing.T) {
-	script := append([]byte(Preface), frame(frameHeaders, 0, 1, []byte{0x82})...)
+	script := append(prefaced(), frame(frameHeaders, 0, 1, []byte{0x82})...)
 	script = append(script, frame(frameHeaders, flagEndHeaders, 3, []byte{0x82})...)
 	if _, err := readFrames(t, script, Config{}); !errors.Is(err, ErrH2Protocol) {
 		t.Fatalf("err = %v, want ErrH2Protocol", err)
@@ -178,8 +178,15 @@ func TestHeaderBlockCannotBeInterleaved(t *testing.T) {
 }
 
 // A block split across CONTINUATION frames, within the bounds, is accepted.
+// prefaced is the client preface followed by the empty SETTINGS RFC 9113
+// §3.4 requires right after it: what every scripted connection starts with,
+// so that the frame under test is reached and not refused as a bad preface.
+func prefaced() []byte {
+	return append([]byte(Preface), frame(frameSettings, 0, 0, nil)...)
+}
+
 func TestSplitHeaderBlockIsAccepted(t *testing.T) {
-	script := append([]byte(Preface), frame(frameHeaders, 0, 1, []byte{0x82})...)
+	script := append(prefaced(), frame(frameHeaders, 0, 1, []byte{0x82})...)
 	script = append(script, frame(frameContinuation, 0, 1, []byte{0x84})...)
 	script = append(script, frame(frameContinuation, flagEndHeaders, 1, []byte{0x86})...)
 	script = append(script, frame(frameData, flagEndStream, 1, []byte("hello"))...)
@@ -194,7 +201,7 @@ func TestSplitHeaderBlockIsAccepted(t *testing.T) {
 			types = append(types, f.Type)
 		}
 	}
-	want := []byte{frameHeaders, frameContinuation, frameContinuation, frameData}
+	want := []byte{frameSettings, frameHeaders, frameContinuation, frameContinuation, frameData}
 	if string(types) != string(want) {
 		t.Errorf("frame types = %v, want %v", types, want)
 	}
