@@ -396,15 +396,25 @@ const maxWindow = 1<<31 - 1
 // carries ctx's values but not its cancellation, which is the normal stop
 // and not the handler's to see.
 //
+// ServeH2 owns c once it has accepted cfg: c is closed before ServeH2
+// returns, whatever ended the connection — the peer's own close, the idle
+// timeout, a drain, the grace, or a connection error, after whose GOAWAY
+// RFC 9113 §5.4.1 says the endpoint MUST close the TCP connection. A caller
+// has nothing to close and nothing to reuse, as under [Serve].
+//
 // cfg is the [Config] [Serve] takes: ServeH2 reads the fields that say
 // they bound HTTP/2 and ignores the others. A configuration it refuses is
 // returned as an error before a byte is read, and the connection is left to
-// the caller.
+// the caller, open.
 func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error {
 	cfg, err := cfg.resolve()
 	if err != nil {
 		return err
 	}
+	// Runs last: the grace timer's close, when it fired, has gone first and
+	// this one is a no-op on a closed socket. A connection error has already
+	// half-closed and drained the socket (linger) by the time it gets here.
+	defer func() { _ = c.Close() }()
 	setTCPKeepAlive(c, cfg.KeepAlive)
 	// The grace is a timer armed at the cancellation, as in ServeH3. When it
 	// passes it closes the socket, which unwinds the connection's goroutines

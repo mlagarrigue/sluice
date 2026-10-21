@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"slices"
@@ -3231,5 +3232,51 @@ func TestH2AcceptsTETrailersInAnyCase(t *testing.T) {
 	}
 	if _, reset := c.resets[1]; reset {
 		t.Error("stream 1 (te: Trailers) was reset")
+	}
+}
+
+// RFC 9113 §5.4.1: after the GOAWAY of a connection error, the endpoint MUST
+// close the TCP connection. ServeH2 called directly does it itself: the peer
+// reads the GOAWAY and then the end of the stream, and the socket is closed
+// on this side once ServeH2 has returned, without the caller doing anything.
+func TestServeH2ClosesTheConnectionAfterAnErrorGoAway(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		// No deferred Close: that is what the test is about.
+		_ = ServeH2(t.Context(), c, Config{Logger: discardLogger()}, echoTarget)
+		served <- c
+	}()
+
+	c := dialH2(t, ln.Addr().String())
+	// A WINDOW_UPDATE of zero on the connection is a connection error (§6.9).
+	c.frame(h2Frame{Type: frameWindowUpdate, Payload: windowUpdatePayload(0)})
+	c.flush()
+	if code := goAwayCode(c.waitGoAway()); code != 0x1 {
+		t.Fatalf("GOAWAY code = %#x, want 0x1 PROTOCOL_ERROR", code)
+	}
+	var tail [16]byte
+	if _, err := c.conn.Read(tail[:]); !errors.Is(err, io.EOF) {
+		t.Errorf("after the GOAWAY the peer read %v, want io.EOF", err)
+	}
+	_ = c.conn.Close()
+
+	select {
+	case sc := <-served:
+		if err := sc.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
+			if _, err = sc.Read(tail[:]); !errors.Is(err, net.ErrClosed) {
+				t.Errorf("the server's socket is still open after ServeH2 returned: read gave %v", err)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH2 did not return after the connection error")
 	}
 }
