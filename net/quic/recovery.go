@@ -706,7 +706,9 @@ func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 // has them counted additionally in flight: the original stays in the
 // record and in the count until its own acknowledgement or its loss retires
 // it, like any other packet — a late acknowledgement of it is a sample, not
-// a number nobody knows. Its payload goes with the probe so that a loss
+// a number nobody knows. Nothing is marked lost at the timeout, which RFC
+// 9002 §6.2 forbids: a lost payload is resent, a lost packet is for §6.1 to
+// declare. Its payload goes with the probe so that a loss
 // declared later does not queue the same frames a third time, and so that
 // the next timeout moves on: with the payload left in place a probe copy
 // would be anonymous — acknowledged under its own number, it would tell the
