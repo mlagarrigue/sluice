@@ -186,6 +186,31 @@ Three reasons come up, and the difference matters:
   stream is reset as such. In plain words: a client that asks this server
   to open a connection to somewhere else is told, with a status, that the
   server does not do that; it is not told its request was wrong.
+- **The never-indexed bit is not carried.** An HTTP/2 or HTTP/3 client may
+  mark a field as never to be indexed (RFC 7541 §6.2.3, RFC 9204 §4.5.4);
+  `Header` keeps the name and the value only, and the bit is lost at
+  decoding. The response encoders set it by name alone (`Set-Cookie`,
+  `Authorization`, `Proxy-Authorization`) and never index anything: a
+  response is safe to send, but a program that relays a field it received
+  under another name cannot preserve the bit, which RFC 9204 §7.1.3 asks of
+  an intermediary. This server is an origin, not a relay; the field that
+  would carry the bit is the thing to add when a relay is built on it. In
+  plain words: if you copy the headers you received toward another HTTP/2
+  or HTTP/3 server, a secret the client had marked "do not compress" may
+  leave compressed.
+- **Unknown HTTP/3 elements are skipped, not counted.** A frame, a setting
+  or a stream of an unknown type is ignored as RFC 9114 §9 requires, with
+  no counter and no cap on their number (§10.5 asks to track their use).
+  Measured before it was written (`TestH3UnknownControlFramesCostNothingHere`):
+  a control stream fed GREASE frames, empty or a kilobyte each, leaves
+  nothing in the carry buffer and allocates nothing per frame — they are
+  skipped by counter, never buffered. A peer that sends them without end
+  pays its own bandwidth, and the transport's flow control bounds it: credit
+  is given back only as this side reads. What does cost something — field
+  sections, request streams, cancellations — has a bound of its own
+  (`MaxHeaderBytes`, the per-stream cap, the cancellation allowance). To
+  revisit if a measurement shows a disproportionate processor cost per
+  frame.
 
 ## Experimental: the exit conditions
 

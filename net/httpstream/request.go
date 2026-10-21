@@ -12,6 +12,16 @@ import (
 // Name and Value borrow the connection's read buffer on the way in, so they
 // follow the batch contract: valid for the duration of the call that received
 // the batch, copied if retained.
+//
+// Nothing else of the wire is carried — in particular not the never-indexed
+// bit an HTTP/2 or HTTP/3 client may set on a field (RFC 7541 §6.2.3,
+// RFC 9204 §4.5.4). The response encoders set that bit by name alone, on
+// Set-Cookie, Authorization and Proxy-Authorization, and never index
+// anything: a response is safe to send, but a program that relays a field
+// it received under another name cannot preserve the bit, which RFC 9204
+// §7.1.3 asks of an intermediary. This server is an origin, not a relay;
+// the field that would carry the bit is the thing to add when a relay is
+// built on it.
 type Header struct {
 	Name  []byte
 	Value []byte
