@@ -90,7 +90,7 @@ func newPreferredClient(t *testing.T, name string, pref *net.UDPAddr) (*Conn, *r
 	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
 	c.initialDCID = []byte("srv-cid0")
-	c.adoptPeerCID([]byte("srv-cid0"))
+	c.pinPeerSCID([]byte("srv-cid0"))
 	installAppSealer(t, c)
 	pa := &preferredAddress{ipv4: pref, cid: []byte("pref-cid"), statelessResetToken: [16]byte{7}}
 	if err := c.handlePeerParameters(preferredParams(pa, []byte("srv-cid0"), []byte("srv-cid0"))); err != nil {
@@ -243,7 +243,7 @@ func TestPreferredAddressOfAnotherFamilyIsIgnored(t *testing.T) {
 	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
 	defer c.Close()
 	c.initialDCID = []byte("srv-cid0")
-	c.adoptPeerCID([]byte("srv-cid0"))
+	c.pinPeerSCID([]byte("srv-cid0"))
 	installAppSealer(t, c)
 	pa := &preferredAddress{ipv6: &net.UDPAddr{IP: net.ParseIP("2001:db8::2"), Port: 4433}, cid: []byte("pref-cid")}
 	if err := c.handlePeerParameters(preferredParams(pa, []byte("srv-cid0"), []byte("srv-cid0"))); err != nil {

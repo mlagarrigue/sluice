@@ -91,9 +91,14 @@ type Conn struct {
 	initialDCID []byte // what keyed the Initial secrets; the server echoes it
 	odcid       []byte // server side: the client's first destination choice
 	peerCIDSet  bool
-	retried     bool
-	retryToken  []byte
-	retrySCID   []byte // what the Retry carried; retry_source_connection_id must echo it
+	// peerSCID is the source identifier the peer's first authenticated
+	// long-header packet carried (a server reads it off the client's first
+	// Initial before the Conn exists). RFC 9000 §7.2 pins it: every later
+	// long-header packet must repeat it, or it is discarded.
+	peerSCID   []byte
+	retried    bool
+	retryToken []byte
+	retrySCID  []byte // what the Retry carried; retry_source_connection_id must echo it
 
 	spaces   [3]space
 	rtt      rttEstimator
@@ -883,8 +888,10 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 	if !isClient {
 		// A server knows the peer's identifier (the client's SCID) at
 		// construction; a client learns it from the server's first
-		// authenticated packet and seeds the pool in adoptPeerCID.
+		// authenticated packet and seeds the pool in pinPeerSCID.
 		c.peerCIDs = []peerCID{{seq: 0, cid: dcid, used: true}}
+		c.peerSCID = dcid
+		c.peerCIDSet = true
 	}
 	c.cc = newController(c.params.Congestion, c.maxDatagram, &c.delivery)
 	// §7.7: the pacer's bucket is the initial window, which is also the

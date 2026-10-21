@@ -295,7 +295,7 @@ func TestRetirePriorToRetiresAndSwitches(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "pool:self"}, fakeFuzzAddr("pool:peer"),
 		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
 	defer c.Close()
-	c.adoptPeerCID([]byte("srv-cid0"))
+	c.pinPeerSCID([]byte("srv-cid0"))
 
 	tok := make([]byte, 16)
 	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("srv-cid1"), tok), time.Now()); err != nil {
@@ -352,7 +352,7 @@ func TestNewConnectionIDViolations(t *testing.T) {
 		c := newConn(&fuzzSink{addr: fakeFuzzAddr(name + ":self")}, fakeFuzzAddr(name+":peer"),
 			[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
 		t.Cleanup(func() { _ = c.Close() })
-		c.adoptPeerCID([]byte("srv-cid0"))
+		c.pinPeerSCID([]byte("srv-cid0"))
 		return c
 	}
 
@@ -1513,7 +1513,7 @@ func TestRetirementFloodIsBounded(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "flood:self"}, fakeFuzzAddr("flood:peer"),
 		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
 	defer c.Close()
-	c.adoptPeerCID([]byte("srv-cid0"))
+	c.pinPeerSCID([]byte("srv-cid0"))
 	tok := make([]byte, 16)
 
 	limit := int(max(2*c.params.ActiveConnIDLimit, 8))
@@ -1539,7 +1539,7 @@ func TestRetirementsThatLeaveDoNotAccumulate(t *testing.T) {
 		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
 	defer c.Close()
 	installAppSealer(t, c)
-	c.adoptPeerCID([]byte("srv-cid0"))
+	c.pinPeerSCID([]byte("srv-cid0"))
 	tok := make([]byte, 16)
 	for seq := uint64(1); seq <= 100; seq++ {
 		cid := []byte{'d', 'r', 'a', 'i', 'n', byte(seq >> 16), byte(seq >> 8), byte(seq)}

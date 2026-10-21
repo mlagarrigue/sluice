@@ -429,8 +429,15 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			continue
 		}
 
-		if peerSCID != nil {
-			c.adoptPeerCID(peerSCID)
+		if peerSCID != nil && !c.pinPeerSCID(peerSCID) {
+			// RFC 9000 §7.2: a long-header packet under another source
+			// identifier than the one pinned is discarded — authenticated
+			// or not, since Initial keys are public and a Handshake packet
+			// that changes it is the peer's own fault. Nothing in it is
+			// acted on and no acknowledgement is owed for it.
+			c.noteDiscard()
+			datagram = rest
+			continue
 		}
 		if used == usedNext {
 			// The peer moved to the next key phase (RFC 9001 §6.2): the
@@ -588,20 +595,25 @@ func (c *Conn) handleStatelessReset() error {
 	return ErrStatelessReset
 }
 
-// adoptPeerCID pins the connection identifier the peer chose, from the first
-// authenticated long-header packet it sent (§7.2). Everything this end sends
-// from here on names it.
-func (c *Conn) adoptPeerCID(scid []byte) {
+// pinPeerSCID pins the connection identifier the peer chose, from the first
+// authenticated long-header packet it sent, and reports whether a later
+// long-header packet repeats it (RFC 9000 §7.2). A server pinned it at
+// construction, from the client's first Initial; a client pins it here and
+// addresses everything it sends from now on to it.
+func (c *Conn) pinPeerSCID(scid []byte) bool {
 	c.mu.Lock()
-	if c.isClient && !c.peerCIDSet {
-		c.peerCIDSet = true
-		c.dcid = append([]byte(nil), scid...)
-		// Sequence 0 of the peer's identifier pool is the one its first
-		// packet carried (§5.1.1); NEW_CONNECTION_ID adds the rest.
-		c.peerCIDs = []peerCID{{seq: 0, cid: c.dcid, used: true}}
-		c.currentPeerSeq = 0
+	defer c.mu.Unlock()
+	if c.peerCIDSet {
+		return bytes.Equal(scid, c.peerSCID)
 	}
-	c.mu.Unlock()
+	c.peerCIDSet = true
+	c.peerSCID = append([]byte(nil), scid...)
+	c.dcid = c.peerSCID
+	// Sequence 0 of the peer's identifier pool is the one its first
+	// packet carried (§5.1.1); NEW_CONNECTION_ID adds the rest.
+	c.peerCIDs = []peerCID{{seq: 0, cid: c.dcid, used: true}}
+	c.currentPeerSeq = 0
+	return true
 }
 
 // handleVersionNegotiation acts on a version-negotiation packet: a client
@@ -671,7 +683,7 @@ func (c *Conn) handleRetry(h longHeader) {
 	c.retried = true
 	c.retryToken = append([]byte(nil), h.Token...)
 	c.dcid = append([]byte(nil), h.SCID...)
-	c.retrySCID = c.dcid // adoptPeerCID will move dcid on; this must not move with it
+	c.retrySCID = c.dcid // pinPeerSCID will move dcid on; this must not move with it
 	sp := &c.spaces[spaceInitial]
 	payloads, inFlight := sp.sent.takeAll()
 	sp.retrans = append(sp.retrans, payloads...)
