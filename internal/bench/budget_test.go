@@ -30,6 +30,13 @@ func TestStageBudget(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector instruments every memory access: timings measure it, not the code")
 	}
+	if testing.CoverMode() != "" {
+		// The coverage job runs every test with counters in each basic block,
+		// the loop under measurement included: 3.03 ns read there on
+		// 2026-10-21 against a ceiling of 3.0, for code its own job, built
+		// without them, measures well under. That job is where this holds.
+		t.Skip("coverage counters instrument the measured loop: timings measure them, not the code")
+	}
 
 	const (
 		elems  = 1 << 20
