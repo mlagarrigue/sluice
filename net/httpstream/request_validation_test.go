@@ -36,7 +36,8 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 		{"an IPv6 literal with a port", "GET", "/x", ptr("[::1]:8443"), nil, true, ""},
 		{"an unclosed IPv6 literal", "GET", "/x", ptr("[::1"), nil, false, ""},
 		// RFC 3986 §3.2.2 whole: '%' starts two hex digits, brackets hold an
-		// IPv6 address or an IPvFuture, and an RFC 6874 zone is refused.
+		// IPv6 address or an IPvFuture, and a zone identifier is refused
+		// (RFC 9844 §3: no longer URI syntax).
 		{"a percent-encoded reg-name", "GET", "/x", ptr("h%41"), nil, true, ""},
 		{"a percent not followed by hex", "GET", "/x", ptr("h%zz"), nil, false, ""},
 		{"a truncated percent-encoding", "GET", "/x", ptr("h%"), nil, false, ""},

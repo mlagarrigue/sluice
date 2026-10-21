@@ -426,10 +426,10 @@ var authorityChar = func() (t [256]bool) {
 //
 // The grammar is RFC 3986 §3.2.2's, whole: a reg-name's '%' starts two hex
 // digits, and an IP literal is an IPv6 address or an IPvFuture. An IPv6
-// address with a zone (RFC 6874's "[fe80::1%25eth0]") is refused: RFC 6874 §4
-// has every client and intermediary remove the zone from an outgoing URI,
-// since it means something only on the host that wrote it, so one that
-// arrives names a link this server cannot know.
+// address with a zone ("[fe80::1%25eth0]", the form RFC 6874 once added) is
+// refused: RFC 9844 §3 withdrew that syntax from RFC 3986 altogether, and a
+// zone means something only on the host that wrote it (RFC 4007), so one
+// that arrives names a link this server cannot know.
 func validAuthority(b []byte) bool {
 	if len(b) == 0 {
 		return false
