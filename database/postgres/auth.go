@@ -68,6 +68,9 @@ const (
 
 // The SASL mechanisms this package speaks. The -PLUS one binds the exchange
 // to the TLS connection it runs in, and is used only when there is one.
+// SCRAM-SHA-1, which RFC 5802 §4 has every SCRAM client implement, is not
+// here: that MUST addresses generic SASL profiles, and no PostgreSQL server
+// offers it — the protocol defines only the SHA-256 pair.
 const (
 	mechSCRAMSHA256     = "SCRAM-SHA-256"
 	mechSCRAMSHA256Plus = "SCRAM-SHA-256-PLUS"
