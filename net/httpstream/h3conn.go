@@ -935,7 +935,7 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 			// its own shutdown by closing, so there is nothing to act on.
 		}
 	}
-	u.buf = append(u.buf[:0], rest...)
+	u.buf = keepRest(u.buf, rest)
 	return nil
 }
 
@@ -1210,7 +1210,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	if err != nil {
 		return err // unreachable: a DATA frame over the bound is refused above
 	}
-	st.buf = append(st.buf[:0], rest...)
+	st.buf = keepRest(st.buf, rest)
 	return nil
 }
 

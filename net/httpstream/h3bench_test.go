@@ -49,3 +49,32 @@ func BenchmarkH3Assemble(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkH3DrainIncomplete measures what one byte of a trickled DATA frame
+// costs once a buffer of the given size is parked ahead of it: the peer
+// declared a frame at MaxBodyBytes and delivers its payload one byte at a
+// time. The figure must not grow with the parked size — a flat line from
+// 64 KiB to 1 MiB — or each byte a peer sends buys a copy of everything it
+// sent before (RP-20261020-secnet-01).
+func BenchmarkH3DrainIncomplete(b *testing.B) {
+	for _, parked := range []int{64 << 10, 1 << 20} {
+		b.Run(fmt.Sprintf("parked=%dKiB", parked>>10), func(b *testing.B) {
+			cfg := Config{MaxBodyBytes: 4 << 20}.mustResolve()
+			a := testAssembler(cfg)
+			buf := make([]byte, 0, parked+16)
+			buf = quic.AppendVarint(buf, h3Data)
+			buf = quic.AppendVarint(buf, uint64(cfg.MaxBodyBytes))
+			buf = append(buf, make([]byte, parked)...)
+			st := &h3Stream{declared: -1, gotHead: true, buf: buf}
+			n := len(buf)
+			b.ReportAllocs()
+			for b.Loop() {
+				st.buf = append(st.buf[:n], 0)
+				if err := a.drain(st); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N), "ns/byte")
+		})
+	}
+}

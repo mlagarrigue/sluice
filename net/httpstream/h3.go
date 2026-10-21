@@ -68,6 +68,10 @@ type h3Frame struct {
 // frames ahead of it returned and rest starting at it: a request stream
 // answers an oversized DATA frame with a 413 once the frames before it — its
 // HEADERS — are read, rather than with the protocol error.
+//
+// rest is always a suffix of buf — buf itself when the very first frame is
+// still incomplete, nil when everything was consumed — so the caller can tell
+// from its length alone whether anything was consumed; see keepRest.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, err error) {
 	for len(buf) > 0 {
 		typ, after, err := quic.Varint(buf)
@@ -112,6 +116,22 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 		buf = after[length:]
 	}
 	return dst, nil, nil
+}
+
+// keepRest moves what parseH3Frames left unconsumed to the front of its
+// buffer, for the next delivery to append to. rest is a suffix of buf; when
+// it is the whole of buf nothing was consumed and the buffer is returned as
+// it is. Copying it onto itself is not free: runtime.memmove has no shortcut
+// for dst == src, and a DATA frame declared at MaxBodyBytes parks a buffer
+// that grows to rawStreamBound while its payload trickles in — fed one byte
+// per datagram, each byte used to cost a copy of the whole buffer
+// (RFC 9114 §10.5: the work a peer can cause must stay bounded by what it
+// sends).
+func keepRest(buf, rest []byte) []byte {
+	if len(rest) == len(buf) {
+		return buf
+	}
+	return append(buf[:0], rest...)
 }
 
 func h3Known(typ uint64) bool {
