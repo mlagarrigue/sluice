@@ -3215,3 +3215,21 @@ func TestH2ResponseEdgedWithWhitespaceIsA500(t *testing.T) {
 		t.Error("a refused response value ended the whole connection")
 	}
 }
+
+// RFC 9113 §8.2.2 allows TE with no value other than "trailers", and RFC
+// 9110 §10.1.4 writes that value as an ABNF string, which is case-insensitive:
+// "Trailers" is the same request.
+func TestH2AcceptsTETrailersInAnyCase(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, echoTarget)
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/any-case", [2]string{"te", "Trailers"})
+	c.request(3, "GET", "/upper", [2]string{"te", "TRAILERS"})
+	c.flush()
+	got := c.bodies(2)
+	if got[1] != "/any-case" || got[3] != "/upper" {
+		t.Errorf("bodies = %v; a TE: Trailers request was refused", got)
+	}
+	if _, reset := c.resets[1]; reset {
+		t.Error("stream 1 (te: Trailers) was reset")
+	}
+}

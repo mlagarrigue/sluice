@@ -230,7 +230,9 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 				return req, 0, fmt.Errorf("%w: host %q is not an authority", protocolErr, h.Value)
 			}
 		case "te":
-			if string(h.Value) != "trailers" {
+			// RFC 9113 §8.2.2: no value other than "trailers" — compared
+			// without case, as RFC 9110 §10.1.4's ABNF string is.
+			if !equalFold(h.Value, "trailers") {
 				return req, 0, fmt.Errorf("%w: TE may only be \"trailers\"", protocolErr)
 			}
 		case "content-length":
