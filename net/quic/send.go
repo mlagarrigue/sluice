@@ -108,10 +108,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 					c.writeSent = now
 					break
 				}
-				if until := now.Add(d); c.paceDeadline.IsZero() || until.Before(c.paceDeadline) {
-					c.paceDeadline = until
-					c.kickTimer()
-				}
+				c.armPaceLocked(now.Add(d))
 			}
 			check = false
 			if err := c.waitForCreditLocked(opts.deadline); err != nil {
@@ -859,10 +856,27 @@ func (c *Conn) queueLostLocked(sp *space, out ackOutcome) {
 	}
 }
 
+// armPaceLocked asks the timer loop to come back at until — unless an
+// earlier pace deadline is already armed — for whoever the pacer stopped:
+// a parked writer, or the retransmission pass. Callers hold mu.
+func (c *Conn) armPaceLocked(until time.Time) {
+	if c.paceDeadline.IsZero() || until.Before(c.paceDeadline) {
+		c.paceDeadline = until
+		c.kickTimer()
+	}
+}
+
 // retransmitLocked drains the queues of lost payloads, best effort under the
-// congestion window: what does not fit now goes when the next ACK opens the
-// window again.
+// congestion window and the pacer: what the window refuses goes when the
+// next ACK opens it again; what the pacer's bucket does not hold whole goes
+// at the pace deadline, when the timer loop runs the next pass. One pass
+// therefore sends at most one bucket — the initial window, the burst RFC
+// 9002 §7.7 permits — where it used to send whatever the window left after
+// an ACK that released most of a large flight and declared the rest lost.
+// Nothing parks here: the read and timer loops are the callers.
 func (c *Conn) retransmitLocked() {
+	rate := c.cc.pacingRate(c.rtt.current())
+	c.pacer.refill(time.Now(), rate)
 	for space := range c.spaces {
 		sp := &c.spaces[space]
 		if sp.discarded || sp.sealer == nil {
@@ -871,6 +885,10 @@ func (c *Conn) retransmitLocked() {
 		for len(sp.retrans) > 0 {
 			payload, rest := c.fitLocked(space, sp.retrans[0])
 			if !c.cc.canSend(len(payload) + 64) {
+				return
+			}
+			if d := c.pacer.until(len(payload)+c.packetOverhead(space), rate); d > 0 {
+				c.armPaceLocked(time.Now().Add(d))
 				return
 			}
 			if rest != nil {

@@ -82,17 +82,18 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	// probe-timeout backoff — the same timer loop, not a second timer system.
 	earlier(c.pathProbeDeadlineLocked(now))
 
-	// A pacer-blocked writer parked by sendPacketLocked: when its deadline
-	// matures, wake it to re-price. The broadcast is cheap and the writer
-	// re-checks everything, so firing early (an ACK moved the deadline) or
-	// spuriously costs one loop turn, not correctness.
-	if !c.paceDeadline.IsZero() {
-		if !now.Before(c.paceDeadline) {
-			c.paceDeadline = time.Time{}
-			c.cond.Broadcast()
-		} else {
-			earlier(c.paceDeadline)
-		}
+	// The pace deadline: a writer parked by sendPacketLocked, or a
+	// retransmission pass the pacer stopped. When it matures, run the
+	// pass — it arms the deadline again if the bucket still falls short —
+	// then wake the writer to re-price behind it. The broadcast is cheap
+	// and the writer re-checks everything, so firing early (an ACK moved
+	// the deadline) or spuriously costs one loop turn, not correctness.
+	// The deadline is read again at the end of this pass: the loss timer
+	// below retransmits too, and may arm it.
+	if !c.paceDeadline.IsZero() && !now.Before(c.paceDeadline) {
+		c.paceDeadline = time.Time{}
+		c.retransmitLocked()
+		c.cond.Broadcast()
 	}
 
 	// A stream's read or write deadline (Stream.SetReadDeadline): the
@@ -190,6 +191,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 			}
 		}
 	}
+	earlier(c.paceDeadline)
 	if c.idleTimeout != 0 {
 		earlier(c.idleDeadline)
 	}

@@ -100,8 +100,9 @@ type Conn struct {
 	cc       congestionController
 	delivery deliveryEstimator // delivery-rate state (BBR draft §4.1), fed by send.go and sentTracker.release
 	pacer    pacer
-	// paceDeadline is when the earliest pacer-blocked writer may try again;
-	// the timer loop broadcasts cond and clears it. Zero while nobody waits.
+	// paceDeadline is when the earliest pacer-blocked sender — a parked
+	// writer, or the retransmission pass — may try again; the timer loop
+	// runs the pass, broadcasts cond and clears it. Zero while nobody waits.
 	paceDeadline time.Time
 	// writers is how many Stream writes are in progress, writeSent when a
 	// write last cleared the pacer to send: whether the sender has data, and

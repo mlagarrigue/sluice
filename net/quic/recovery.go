@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -1318,13 +1319,18 @@ func (c *newReno) onPersistentCongestion() {
 // newReno.canSend); time, not the ack clock, has to be what refills the
 // bucket.
 //
-// Only the application writer's blocking path waits on the pacer
-// (sendPacketLocked's waitCwnd loop, woken by the timer loop at the pace
-// deadline). Everything else — probes, acknowledgements, grants,
-// retransmissions driven by the read loop — spends tokens, because it
-// occupies the wire, but is never delayed by them: the read and timer loops
-// must not park on a send, and a retransmission delayed past its probe
-// timeout would answer loss with more loss.
+// Two senders obey the pacer. The application writer's blocking path waits
+// on it (sendPacketLocked's waitCwnd loop, woken by the timer loop at the
+// pace deadline), going as soon as the bucket is not in deficit and pricing
+// the dip for the next sender. The retransmission pass (retransmitLocked)
+// does not park — the read and timer loops call it — so it asks whether the
+// bucket holds the packet whole (until), stops when it does not, and the
+// timer loop runs the next pass at the pace deadline: one pass sends at
+// most the bucket, which is the burst §7.7 bounds. A retransmission never
+// waits past its probe timeout for all that, which would answer loss with
+// more loss: the probe lifts the head of the queue, pacer or not
+// (sendProbeLocked). Everything else — probes, acknowledgements, grants —
+// spends tokens, because it occupies the wire, but is never delayed by them.
 type pacer struct {
 	// tokens is how many bytes may leave now. One send may drive it
 	// negative; the deficit is what the next sender waits out.
@@ -1377,4 +1383,18 @@ func (p *pacer) delay(rate float64) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// until is how long until the bucket holds bytes whole at rate bytes per
+// second, zero when it does now. No granularity rounding here, unlike
+// delay: a retransmission released early would exceed the burst the bucket
+// bounds, and the timer loop sleeps any duration. Rounded up to the
+// microsecond so that the refill at the deadline, truncated to the byte,
+// does not fall one byte short and cost a loop turn.
+func (p *pacer) until(bytes int, rate float64) time.Duration {
+	short := int64(bytes) - p.tokens
+	if short <= 0 || rate <= 0 {
+		return 0
+	}
+	return time.Duration(math.Ceil(float64(short)/rate*1e6)) * time.Microsecond
 }
