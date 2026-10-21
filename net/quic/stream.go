@@ -484,13 +484,18 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 // transmitting (RFC 9114 §4.1.1 uses both).
 //
 // The final size sent is what this end has written so far, which is what the
-// peer needs to close its own flow-control accounting for the stream.
+// peer needs to close its own flow-control accounting for the stream. A
+// direction already finished — FIN sent and every byte acknowledged — has
+// nothing left to abandon, and nothing is sent (RFC 9000 §3.3).
 func (s *Stream) Reset(code uint64) error {
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if s.writeReset {
 		return nil // already abandoned; saying so twice tells the peer nothing
+	}
+	if c.streamDataRecvdLocked(s) {
+		return nil // finished and acknowledged: "Data Recvd", nothing may leave
 	}
 	s.writeReset, s.writeCode = true, code
 	s.sendClosed = true
@@ -595,6 +600,12 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 // application is told of. Runs on the read loop, under conn.mu.
 func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	if s.writeReset {
+		return false, nil
+	}
+	if s.conn.streamDataRecvdLocked(s) {
+		// Everything was delivered and acknowledged before the peer asked
+		// to stop: the direction is in "Data Recvd", from which §3.3 lets
+		// nothing leave, and there is nothing to abandon or to tell.
 		return false, nil
 	}
 	s.writeReset, s.writeCode = true, code

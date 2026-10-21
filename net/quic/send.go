@@ -980,6 +980,54 @@ func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
 	return fitFrames(payload, c.maxDatagram-c.packetOverhead(space))
 }
 
+// streamDataRecvdLocked reports whether s's sending direction is in RFC 9000
+// §3.1's terminal "Data Recvd" state: its FIN has been sent and every byte
+// up to it acknowledged. From there nothing may be sent for the stream, a
+// RESET_STREAM included (§3.3), and §3.5 asks for one on STOP_SENDING only
+// in "Ready" or "Send" ("Data Sent" may defer it). The state is read on
+// demand, from the payloads still tracked in the application space — the
+// packets in flight and the lost ones waiting to go again — rather than
+// kept per packet or per stream: an acknowledged packet leaves the record,
+// a lost one puts its payload on the queue, and a payload a probe lifted
+// travels in the probe, which is tracked too; so a STREAM frame of s found
+// nowhere is a STREAM frame acknowledged. The walk costs a parse of a few
+// hundred frames on the rare event that asks, and nothing per packet or
+// per ACK. Callers hold mu.
+func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
+	if !s.sendClosed || s.writeReset {
+		return false
+	}
+	sp := &c.spaces[spaceApplication]
+	for i := range sp.sent.packets {
+		if carriesStream(sp.sent.packets[i].payload, s.id) {
+			return false
+		}
+	}
+	for _, payload := range sp.retrans {
+		if carriesStream(payload, s.id) {
+			return false
+		}
+	}
+	return true
+}
+
+// carriesStream reports whether payload holds a STREAM frame of stream id.
+// A payload that does not parse, which cannot happen, is read as carrying
+// it: the safe answer keeps the stream out of "Data Recvd".
+func carriesStream(payload []byte, id uint64) bool {
+	for n := 0; n < len(payload); {
+		f, tail, err := parseFrame(payload[n:])
+		if err != nil {
+			return true
+		}
+		if f.IsStream() && f.StreamID == id {
+			return true
+		}
+		n = len(payload) - len(tail)
+	}
+	return false
+}
+
 // noteResetLocked records that this end reset stream id, for the replay
 // filter: the mark is the next application packet number, so that every
 // packet that may carry a STREAM frame of the stream is older than it — the
