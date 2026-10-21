@@ -272,3 +272,20 @@ const (
 	FrontendCopyDone      = 'c'
 	FrontendCopyFail      = 'f'
 )
+
+// KnownBackendType reports whether typ is a message type the backend may
+// send in protocol 3.x (PostgreSQL 18 §54.7). A type outside this set means
+// the message boundary is probably lost, and §54.2.9 says closing the
+// connection is then advisable — which is what the frontend's read loops do.
+func KnownBackendType(typ byte) bool {
+	switch typ {
+	case BackendErrorResponse, BackendNoticeResponse, BackendRowDescription, BackendDataRow,
+		BackendCommandComplete, BackendReadyForQuery, BackendParseComplete, BackendBindComplete,
+		BackendNoData, BackendPortalSuspended, BackendEmptyQuery, BackendAuthentication,
+		BackendParameterStatus, BackendBackendKeyData, BackendParameterDescription,
+		BackendNegotiateProtocolVersion, BackendCloseComplete, BackendNotificationResponse,
+		BackendCopyOutResponse, BackendCopyInResponse, BackendCopyData, BackendCopyDone:
+		return true
+	}
+	return false
+}

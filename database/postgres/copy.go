@@ -796,6 +796,13 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 			if serverErr == nil {
 				serverErr = e // the first error is the cause; later ones follow from it
 			}
+		default:
+			// As in query.resync: a type the backend defines is skipped on
+			// the way to ReadyForQuery, one it does not define has probably
+			// lost the message boundary (§54.2.9) and breaks the connection.
+			if !pgwire.KnownBackendType(m.Type) {
+				return rolledBack, c.breakConn(fmt.Errorf("%w: unexpected message type %q while recovering", ErrProtocol, m.Type))
+			}
 		}
 	}
 }

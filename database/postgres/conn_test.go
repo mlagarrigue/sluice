@@ -1666,3 +1666,42 @@ func TestBatchRowsOverUint32IsRefused(t *testing.T) {
 		t.Errorf("BatchRows 2^32-1 was refused: %v", err)
 	}
 }
+
+// PostgreSQL 18 §54.2.9: a message type the backend does not define means
+// the message boundary is probably lost, and closing the connection is
+// advisable. The two loops that drain to ReadyForQuery — a query stopped
+// early, a simple statement — used to skip such a type like any other; they
+// break the connection as the other read loops do.
+func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) {
+	t.Run("a query stopped early", func(t *testing.T) {
+		var head []byte
+		head = append(head, beSimple(pgwire.BackendParseComplete)...)
+		head = append(head, beSimple(pgwire.BackendBindComplete)...)
+		head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		head = append(head, beDataRow(int8Val(1))...)
+		head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
+		tail := append(frame('z', "invented"), beReadyForQuery()...)
+
+		conn := NewConn(&fakeServer{responses: [][]byte{head, tail}})
+		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
+		src.Stream()(func(sluice.Batch[Row]) bool { return false })
+
+		if err := conn.Err(); !errors.Is(err, ErrProtocol) {
+			t.Errorf("conn.Err() = %v, want ErrProtocol: an unknown type was skipped while resynchronising", err)
+		}
+	})
+	t.Run("a simple statement", func(t *testing.T) {
+		var script []byte
+		script = append(script, frame('z', "invented")...)
+		script = append(script, beCommandComplete("SELECT 1")...)
+		script = append(script, beReadyForQuery()...)
+
+		conn := NewConn(&fakeServer{responses: [][]byte{script}})
+		if err := conn.Exec(t.Context(), "SELECT 1"); !errors.Is(err, ErrProtocol) {
+			t.Errorf("Exec = %v, want ErrProtocol", err)
+		}
+		if conn.Err() == nil {
+			t.Error("the connection was left usable after an unknown message type")
+		}
+	})
+}

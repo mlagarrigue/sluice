@@ -1665,6 +1665,15 @@ func (q *query) resync() error {
 					serverErr = err
 				}
 			}
+		default:
+			// Every other type the backend defines is skipped on the way to
+			// ReadyForQuery. One it does not define says the message
+			// boundary is probably lost (§54.2.9), and the reader framed by
+			// a length that means nothing: broken, as every other read loop
+			// breaks on it.
+			if !pgwire.KnownBackendType(m.Type) {
+				return c.breakConn(fmt.Errorf("%w: unexpected message type %q while recovering", ErrProtocol, m.Type))
+			}
 		}
 	}
 }
