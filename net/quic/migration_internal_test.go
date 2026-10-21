@@ -2108,10 +2108,25 @@ func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc
 	return c, pc, newAddr, seal
 }
 
-// answerDCID is the destination identifier the n-th recorded datagram's
-// short header names, identifiers being 8 bytes in these tests.
-func answerDCID(pc *recordingPC, n int) []byte {
-	return pc.recorded()[n].data[1:9]
+// answerDCID is the destination identifier named by the short header of the
+// n-th datagram recorded toward to, identifiers being 8 bytes in these
+// tests. Filtered by address because the connection also writes to the
+// path in use on its own clock — the delayed ACK for the challenge, when
+// the test is stalled past ackTimerDelay — and that datagram is not an
+// answer.
+func answerDCID(t *testing.T, pc *recordingPC, to net.Addr, n int) []byte {
+	t.Helper()
+	for _, w := range pc.recorded() {
+		if !sameAddr(w.to, to) {
+			continue
+		}
+		if n == 0 {
+			return w.data[1:9]
+		}
+		n--
+	}
+	t.Fatalf("fewer than %d datagrams were written to %v", n+1, to)
+	return nil
 }
 
 // RFC 9000 §9.5: a peer probing a new path does so under a new identifier
@@ -2121,7 +2136,7 @@ func answerDCID(pc *recordingPC, n int) []byte {
 // and the migration that follows adopts it rather than burning another.
 func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
 	c, pc, newAddr, seal := challengeFromNewAddress(t, []byte("selfcid1"), 2)
-	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid1")) {
+	if got := answerDCID(t, pc, newAddr, 0); !bytes.Equal(got, []byte("peercid1")) {
 		t.Fatalf("answer to the new address names %q, want the never-used peercid1", got)
 	}
 	// The repeat (the first answer may have been lost) names the same one.
@@ -2131,7 +2146,7 @@ func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
 	if err := c.receive(seal(2, challenge), newAddr); err != nil {
 		t.Fatal(err)
 	}
-	if got := answerDCID(pc, 1); !bytes.Equal(got, []byte("peercid1")) {
+	if got := answerDCID(t, pc, newAddr, 1); !bytes.Equal(got, []byte("peercid1")) {
 		t.Fatalf("repeated answer names %q, want peercid1 again", got)
 	}
 	// The migration adopts the identifier the answers went under.
@@ -2159,8 +2174,8 @@ func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
 // the path in use already names is a NAT rebinding, and the current
 // identifier serves.
 func TestRebindChallengeIsAnsweredUnderTheCurrentCID(t *testing.T) {
-	_, pc, _, _ := challengeFromNewAddress(t, []byte("selfcid0"), 2)
-	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid0")) {
+	_, pc, newAddr, _ := challengeFromNewAddress(t, []byte("selfcid0"), 2)
+	if got := answerDCID(t, pc, newAddr, 0); !bytes.Equal(got, []byte("peercid0")) {
 		t.Fatalf("answer to the rebound address names %q, want the current peercid0", got)
 	}
 }
@@ -2168,8 +2183,8 @@ func TestRebindChallengeIsAnsweredUnderTheCurrentCID(t *testing.T) {
 // With no pooled identifier to take, the answer goes under the current one
 // rather than not at all: §9.3 owes it.
 func TestNewPathChallengeWithAnEmptyPoolIsStillAnswered(t *testing.T) {
-	_, pc, _, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
-	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid0")) {
+	_, pc, newAddr, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
+	if got := answerDCID(t, pc, newAddr, 0); !bytes.Equal(got, []byte("peercid0")) {
 		t.Fatalf("answer names %q, want peercid0, the only identifier the peer issued", got)
 	}
 }
