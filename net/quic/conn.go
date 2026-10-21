@@ -552,6 +552,19 @@ func spaceFor(l tls.QUICEncryptionLevel) int {
 	}
 }
 
+// checkTLSConfig refuses, before anything is written, a tls.Config that
+// crypto/tls or a conformant peer would refuse mid-handshake. Dial, Accept
+// and NewListener all pass here, so a hand-built Config fails once, with an
+// error naming the field, instead of failing every handshake: a Listener
+// whose Config is refused by crypto/tls answers each client with a
+// CONNECTION_CLOSE that says nothing about why.
+func checkTLSConfig(cfg *tls.Config) error {
+	if err := requireALPN(cfg); err != nil {
+		return err
+	}
+	return requireTLS13(cfg)
+}
+
 // requireALPN refuses a tls.Config that names no application protocol. QUIC
 // mandates ALPN (RFC 9001 §8.1): against a conformant peer the handshake
 // would fail anyway, mid-flight, with a bare no_application_protocol alert —
@@ -565,6 +578,21 @@ func requireALPN(cfg *tls.Config) error {
 	return nil
 }
 
+// requireTLS13 refuses a tls.Config whose MinVersion is below TLS 1.3 — the
+// zero value of a Config built by hand included. QUIC uses TLS 1.3 only
+// (RFC 9001 §4.2), and crypto/tls enforces it when the handshake starts
+// ([tls.QUICConn.Start]), where a Listener can only close the connection
+// and the client learns nothing of the cause. The Config is refused, not
+// corrected: it is the caller's, and may be shared with a TCP listener
+// that still wants TLS 1.2.
+func requireTLS13(cfg *tls.Config) error {
+	if cfg.MinVersion < tls.VersionTLS13 {
+		return fmt.Errorf("%w: tls.Config.MinVersion must be tls.VersionTLS13 — QUIC uses TLS 1.3 only "+
+			"(RFC 9001 §4.2), and crypto/tls refuses a lower minimum at handshake", ErrQUIC)
+	}
+	return nil
+}
+
 // Dial opens a connection to addr and completes the handshake.
 //
 // pc is any [net.PacketConn]; one from the net/quic/udp helper carries the
@@ -572,7 +600,11 @@ func requireALPN(cfg *tls.Config) error {
 // does not.
 //
 // cfg must name at least one application protocol in NextProtos — ALPN is
-// mandatory in QUIC (RFC 9001 §8.1). All three TLS 1.3 suites are spoken:
+// mandatory in QUIC (RFC 9001 §8.1) — and set MinVersion to
+// [tls.VersionTLS13]: QUIC uses TLS 1.3 only (RFC 9001 §4.2), and a Config
+// built by hand defaults to a lower minimum that crypto/tls would refuse
+// at handshake. Both are checked before anything is sent, by Dial, [Accept]
+// and [NewListener] alike. All three TLS 1.3 suites are spoken:
 // the AES-GCM pair from the standard library, ChaCha20-Poly1305 from
 // golang.org/x/crypto, the module's one dependency.
 //
@@ -603,7 +635,7 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	if err := params.check(); err != nil {
 		return nil, err
 	}
-	if err := requireALPN(cfg); err != nil {
+	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -680,7 +712,7 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 	if err := params.check(); err != nil {
 		return nil, err
 	}
-	if err := requireALPN(cfg); err != nil {
+	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
 	h, _, err := parseLongHeader(first.Payload)

@@ -349,7 +349,7 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err := params.check(); err != nil {
 		return nil, err
 	}
-	if err := requireALPN(cfg); err != nil {
+	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
 	lcfg, err := lcfg.resolve()
