@@ -24,12 +24,12 @@ var testSecret = []byte("a-secret-of-at-least-thirty-two-bytes!!")
 // forgery is expressible. A test that can only produce tokens through the
 // verifier's own helpers cannot forge one, and therefore cannot test the
 // boundary at all.
-func mint(t *testing.T, header, claims map[string]any, secret []byte) string {
-	t.Helper()
+func mint(tb testing.TB, header, claims map[string]any, secret []byte) string {
+	tb.Helper()
 	enc := func(v any) string {
 		b, err := json.Marshal(v)
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
@@ -47,8 +47,8 @@ func hs256(t *testing.T, claims map[string]any) string {
 	return mint(t, map[string]any{"alg": "HS256", "typ": "JWT"}, claims, testSecret)
 }
 
-func verifier(t *testing.T, cfg web.HMACConfig) *web.HMACVerifier {
-	t.Helper()
+func verifier(tb testing.TB, cfg web.HMACConfig) *web.HMACVerifier {
+	tb.Helper()
 	if cfg.Secret == nil {
 		cfg.Secret = testSecret
 	}
@@ -57,7 +57,7 @@ func verifier(t *testing.T, cfg web.HMACConfig) *web.HMACVerifier {
 	}
 	v, err := web.NewHMACVerifier(cfg)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return v
 }
@@ -654,5 +654,21 @@ func TestNewHMACVerifierRefusesANegativeLeeway(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Leeway -1s") || !strings.Contains(err.Error(), "zero means none") {
 		t.Errorf("err = %q, want the field, the value and what zero means", err)
+	}
+}
+
+// BenchmarkVerify is the cost of the check every authenticated request pays:
+// the byte scan, three base64url decodes, the header and claims parsed as
+// JSON, and one HMAC-SHA256 from a pooled keyed state.
+func BenchmarkVerify(b *testing.B) {
+	v := verifier(b, web.HMACConfig{Audience: "orders", Issuer: "auth.internal", TenantClaim: "tenant"})
+	token := mint(b, map[string]any{"alg": "HS256", "typ": "JWT"}, map[string]any{
+		"sub": "user-1", "exp": 1_700_000_600, "aud": "orders", "iss": "auth.internal", "tenant": "acme",
+	}, testSecret)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := v.Verify(token); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
