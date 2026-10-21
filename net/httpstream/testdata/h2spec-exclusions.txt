@@ -5,9 +5,11 @@
 # passage and the reason; an entry that starts passing fails the script so
 # the list cannot go stale.
 #
-# h2spec v2.6.0 encodes RFC 7540. RFC 9113 obsoletes it and relaxed or
-# removed four of the rules below; the fifth is a server design choice
-# the specification allows.
+# h2spec v2.6.0 encodes RFC 7540. RFC 9113 obsoletes it: it dropped the
+# self-dependency rule (5.3.1/1, 5.3.1/2) and the two "closed" cases below
+# take the other branch of a MAY both texts offer (5.1/8, 5.1/9, 5.1/12).
+# The preface case (3.5/2) is a design choice of this server — the preface
+# is sniffed on a bare listener — that RFC 7540 and RFC 9113 word the same.
 
 # RFC 9113 §3.4: an invalid preface is a connection error, and "a GOAWAY
 # frame MAY be omitted in this case, since an invalid preface indicates

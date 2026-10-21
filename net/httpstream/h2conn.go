@@ -184,6 +184,11 @@ type h2Stream struct {
 	gotTrailers bool
 
 	recvWind int32 // what we have granted the peer on this stream
+	// windowGrace is the overshoot tolerated above recvWind on a stream
+	// opened before the peer acknowledged this end's SETTINGS: the
+	// protocol's default window less the smaller one advertised (RFC 9113
+	// §6.9.3). Zero on every other stream.
+	windowGrace int32
 
 	// declared is the content-length the head stated, or -1 when it stated
 	// none. §8.1.1 makes a body disagreeing with it malformed, and checking
@@ -272,6 +277,11 @@ type h2Server struct {
 	// still advances lastID. Atomic because beginDrain runs on the drain's
 	// own goroutine while the reader may be sending an error's GOAWAY.
 	goAwayLast atomic.Uint32
+	// settingsAcked is set once the peer has acknowledged this end's
+	// SETTINGS. Before that, a stream the peer opens is sized by the
+	// protocol's default window, whatever InitialWindowSize says (§6.9.2),
+	// so its first flight may legitimately exceed a smaller one (§6.9.3).
+	settingsAcked bool
 	// opened is one bit per odd identifier, for the h2OpenedWindow most
 	// recent ones: set for a stream the client opened, clear for one it
 	// skipped. It is what tells a frame on a stream this end reset and has
@@ -909,6 +919,9 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 	switch f.Type {
 	case frameSettings:
 		if f.Flags&flagAck != 0 {
+			// The peer has processed this end's SETTINGS: streams it opens
+			// from here start at the advertised window (§6.9.2).
+			s.settingsAcked = true
 			return nil, nil
 		}
 		table, haveTable, err := s.applySettings(f.Payload)
@@ -1280,7 +1293,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	// The whole frame payload counts, padding included: that is what the peer
 	// debited (RFC 9113 §6.9.1).
 	used := int32(len(f.Payload)) //nolint:gosec // G115: bounded by MaxFrameSize
-	if used > st.recvWind {
+	if used > st.recvWind+st.windowGrace {
 		// §6.9.1 wants FLOW_CONTROL_ERROR for a peer that sends more than it
 		// was granted. Harmless here — the body is bounded by MaxBodyBytes
 		// whatever the window says — so it is conformance rather than safety,
@@ -1295,7 +1308,9 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
 	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by withDefaults
-	if !last && st.recvWind < initial/2 {
+	// Rounded up: at a window of 1, initial/2 is 0 and a window at 0 would
+	// never be granted back.
+	if !last && st.recvWind < (initial+1)/2 {
 		inc := initial - st.recvWind
 		st.recvWind = initial
 		if err := s.w.control32(frameWindowUpdate, st.id, uint32(inc)); err != nil { //nolint:gosec // G115: positive by construction
@@ -1437,6 +1452,16 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by withDefaults
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
+	if !s.settingsAcked && s.cfg.InitialWindowSize < defaultInitialWindow {
+		// RFC 9113 §6.9.3: "the receiver MUST be prepared to receive data
+		// that exceeds this window size, since the sender might send data
+		// that exceeds the lower limit prior to processing the SETTINGS
+		// frame". The window itself stays at the advertised size, so the
+		// WINDOW_UPDATE arithmetic matches the peer's once it has read the
+		// SETTINGS (§6.9.2 adjusts its active windows by the difference);
+		// the overshoot the default allowed is tolerated on top.
+		st.windowGrace = int32(defaultInitialWindow - s.cfg.InitialWindowSize) //nolint:gosec // G115: both under 2^31-1
+	}
 	s.streams[id] = st
 	s.open.Add(1)
 	s.w.open(id)
@@ -1577,7 +1602,19 @@ type h2Applied struct {
 // reusing call goroutines is the known way down if that ever matters more
 // than the p99 above.
 func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
+	answered := false
+	defer func() {
+		if !answered {
+			// runtime.Goexit in the handler (a t.FailNow, say) runs the
+			// deferred calls and ends this goroutine without a result;
+			// apply's recover sees no panic. Left unanswered, the batch
+			// keeps inFlight up for good: the connection never goes idle
+			// and its stream slots never come back.
+			out <- &h2Applied{b: b, err: errors.New("httpstream: the handler exited its goroutine without answering")}
+		}
+	}()
 	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
+	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}
 }
 

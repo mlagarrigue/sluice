@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -146,5 +147,68 @@ func TestH2ConnectionErrorIsToldBeforeHandlersReturn(t *testing.T) {
 	}
 	if code := goAwayCode(c.goAway); code != errProtocolError {
 		t.Errorf("GOAWAY code %#x, want PROTOCOL_ERROR", code)
+	}
+}
+
+// RFC 9113 §6.9.2: until it has processed this end's SETTINGS, a client
+// sends under the default window of 65,535; §6.9.3: "the receiver MUST be
+// prepared to receive data that exceeds this window size". A server
+// advertising 4096 used to reset a 16 KiB first frame with
+// FLOW_CONTROL_ERROR.
+func TestH2FirstFlightMayExceedASmallWindow(t *testing.T) {
+	addr, _ := serveH2(t, Config{InitialWindowSize: 4096}, echoTarget)
+	c := dialH2(t, addr)
+	// The client has not read, let alone acknowledged, the server's
+	// SETTINGS: its window is the default.
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock("POST", "/first")})
+	c.frame(h2Frame{Type: frameData, Flags: flagEndStream, StreamID: 1, Payload: make([]byte, 16384)})
+	c.flush()
+	if got := c.bodies(1)[1]; got != "/first" {
+		t.Errorf("stream 1 answered %q; a 16 KiB first flight against a 4096-byte window was refused (reset %#x)", got, c.resets[1])
+	}
+}
+
+// At a window of 1, initial/2 rounded down to 0 and the stream was never
+// granted anything back once its one byte was spent.
+func TestH2TinyWindowIsReplenished(t *testing.T) {
+	addr, _ := serveH2(t, Config{InitialWindowSize: 1}, echoTarget)
+	c := dialH2(t, addr)
+	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock("POST", "/tiny")})
+	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("a")})
+	c.flush()
+	c.pump(func() bool { return c.windows[1] > 0 })
+	if c.windows[1] == 0 {
+		t.Fatal("no WINDOW_UPDATE on stream 1 after its one-byte window was spent")
+	}
+	c.frame(h2Frame{Type: frameData, Flags: flagEndStream, StreamID: 1, Payload: []byte("b")})
+	c.flush()
+	if got := c.bodies(1)[1]; got != "/tiny" {
+		t.Errorf("stream 1 answered %q after the replenished byte (reset %#x)", got, c.resets[1])
+	}
+}
+
+// A handler that calls runtime.Goexit — a t.FailNow inside one, say — ends
+// its goroutine without a result. The batch is still answered, as a 500, so
+// the connection does not count it in flight for ever.
+func TestH2HandlerGoexitStillAnswers(t *testing.T) {
+	first := true
+	addr, _ := serveH2(t, Config{}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		if first {
+			first = false
+			runtime.Goexit()
+		}
+		return echoTarget(ctx, b)
+	})
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/exits")
+	c.flush()
+	c.bodies(1)
+	if got := h2Status(c.heads[1]); got != 500 {
+		t.Fatalf("status = %d for a handler that exited its goroutine, want 500", got)
+	}
+	c.request(3, "GET", "/after")
+	c.flush()
+	if got := c.bodies(2)[3]; got != "/after" {
+		t.Errorf("stream 3 answered %q; the connection was left counting the exited handler in flight", got)
 	}
 }
