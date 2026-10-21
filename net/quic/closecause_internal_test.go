@@ -72,3 +72,47 @@ func TestVersionNegotiationAfterARetryIsDiscarded(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// RFC 8999 §6: "An endpoint MUST ignore a packet that contains no Supported
+// Version fields or contains a truncated Supported Version value." Both
+// used to be read up to the truncation and judged — no version 1 found —
+// and ended the handshake. The identifiers echo the first flight's, so the
+// control shows the same packet with a well-formed list is still acted on.
+func TestVersionNegotiationEmptyOrTruncatedIsIgnored(t *testing.T) {
+	vnWith := func(tail ...byte) []byte {
+		vn := []byte{0x80, 0, 0, 0, 0}
+		vn = append(vn, byte(len("scid0000")))
+		vn = append(vn, "scid0000"...)
+		vn = append(vn, byte(len("dcid0000")))
+		vn = append(vn, "dcid0000"...)
+		return append(vn, tail...)
+	}
+	newClient := func() *Conn {
+		pcA, pcB := newLoopbackPair(t)
+		c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+		t.Cleanup(func() { _ = c.Close() })
+		c.mu.Lock()
+		c.initialDCID = []byte("dcid0000")
+		c.mu.Unlock()
+		return c
+	}
+	for name, vn := range map[string][]byte{
+		"no version":        vnWith(),
+		"truncated version": vnWith(0, 0, 0, 2, 0, 0),
+	} {
+		c := newClient()
+		_ = c.receive(vn, c.peer)
+		if err := c.Err(); err != nil {
+			t.Errorf("%s: the connection closed with %v; RFC 8999 §6 says ignore the packet", name, err)
+		}
+		if n := discardedCount(c); n != 1 {
+			t.Errorf("%s: discarded = %d, want 1", name, n)
+		}
+	}
+	// Control: the well-formed list without version 1 still ends the dial.
+	c := newClient()
+	_ = c.receive(vnWith(0, 0, 0, 2), c.peer)
+	if err := c.Err(); !errors.Is(err, ErrVersionNegotiation) {
+		t.Errorf("a well-formed Version Negotiation without version 1 left the connection with %v, want ErrVersionNegotiation", err)
+	}
+}

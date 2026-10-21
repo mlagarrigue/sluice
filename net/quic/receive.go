@@ -685,6 +685,13 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 		c.noteDiscard()
 		return
 	}
+	// RFC 8999 §6: a packet with no Supported Version field, or with a
+	// truncated one, is ignored whole — not read up to the truncation and
+	// then judged, which closed the connection on an empty list.
+	if len(b) == 0 || len(b)%4 != 0 {
+		c.noteDiscard()
+		return
+	}
 	for len(b) >= 4 {
 		v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 		if v == version1 {
