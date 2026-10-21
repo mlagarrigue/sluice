@@ -30,6 +30,14 @@ import (
 // like a handshake error rather than a protocol mismatch. DialTLS sends the
 // request, refuses an `N` rather than continue in clear — the downgrade an
 // attacker who can strip one byte is hoping for — and shakes hands.
+//
+// The example has no "// Output:" line, so go test compiles it and never
+// runs it: what it prints depends on the environment (no server, a server
+// behind a private CA the system roots do not hold, a server it reaches),
+// and an example that printed differently by machine would fail somewhere.
+// What it promises is held by TestIntegrationChannelBindingOverTLS in
+// tls_integration_test.go, against a real server, under the CI's own
+// certificates.
 func Example_tLS() {
 	addr := os.Getenv("SLUICE_PG")
 	if addr == "" {

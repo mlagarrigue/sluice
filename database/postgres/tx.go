@@ -670,6 +670,13 @@ func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 // anything a request carried. As on [Tx.Savepoint], release what is no longer
 // needed — the count still bounds what the backend tracks even when
 // establishing them is cheap.
+//
+// Every SAVEPOINT is written before any answer is read, and each answer is
+// about twenty bytes: the exchange leans on the socket buffers for
+// len(names) × 20 bytes, which both sides hold until the names run into the
+// hundreds of thousands. A batch that large is not what savepoints are for;
+// keep it to the hundreds the backend's subtransaction cache suits, and the
+// write-then-read is safe by a wide margin.
 func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	if err := tx.check(ctx); err != nil {
 		return err

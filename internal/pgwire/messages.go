@@ -31,6 +31,7 @@ const (
 	BackendAuthentication           = 'R'
 	BackendParameterStatus          = 'S'
 	BackendBackendKeyData           = 'K'
+	BackendParameterDescription     = 't'
 	BackendNegotiateProtocolVersion = 'v'
 	BackendCloseComplete            = '3'
 

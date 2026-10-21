@@ -10,7 +10,10 @@ package pgfake
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -73,17 +76,35 @@ func (b *Backend) exec(sql string, params [][]byte, settings map[string]string) 
 // connection on the other, closed when the test ends.
 func (b *Backend) Conn(tb testing.TB) *postgres.Conn {
 	tb.Helper()
+	return postgres.NewConn(b.pipe(tb, false))
+}
+
+// Dial is a [postgres.DialFunc] onto this backend, for the callers that go
+// through [postgres.Connect]: the connection then begins with a startup
+// packet, which the fake answers the way a trusting server does —
+// AuthenticationOk, the ParameterStatus a session starts with, BackendKeyData
+// and ReadyForQuery. No credential is checked: this is a fake.
+func (b *Backend) Dial(tb testing.TB) postgres.DialFunc {
+	tb.Helper()
+	return func(context.Context) (io.ReadWriteCloser, error) {
+		return b.pipe(tb, true), nil
+	}
+}
+
+// pipe starts a served connection and returns the client's end.
+func (b *Backend) pipe(tb testing.TB, startup bool) net.Conn {
+	tb.Helper()
 	client, server := net.Pipe()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		b.serve(server)
+		b.serve(server, startup)
 	}()
 	tb.Cleanup(func() {
 		_ = client.Close()
 		<-done
 	})
-	return postgres.NewConn(client)
+	return client
 }
 
 type portal struct {
@@ -93,7 +114,7 @@ type portal struct {
 	ran  bool // completed once
 }
 
-func (b *Backend) serve(nc net.Conn) {
+func (b *Backend) serve(nc net.Conn, startup bool) {
 	defer func() { _ = nc.Close() }()
 	rd := pgwire.NewReader(nc)
 	var (
@@ -123,6 +144,21 @@ func (b *Backend) serve(nc net.Conn) {
 	write := func() {
 		sent <- bytes.Clone(out)
 		out = out[:0]
+	}
+	if startup {
+		// The startup packet carries no type byte. Answered as a server
+		// that trusts the connection would: authenticated at once, the
+		// parameters every session is told, a cancellation key, ready.
+		if _, err := rd.NextStartup(); err != nil {
+			return
+		}
+		out = append(out, msg(pgwire.BackendAuthentication, []byte{0, 0, 0, 0})...)
+		for _, kv := range [][2]string{{"server_version", "18.0"}, {"client_encoding", "UTF8"}, {"server_encoding", "UTF8"}, {"DateStyle", "ISO, MDY"}, {"integer_datetimes", "on"}} {
+			out = append(out, msg(pgwire.BackendParameterStatus, append(append([]byte(kv[0]), 0), append([]byte(kv[1]), 0)...))...)
+		}
+		out = append(out, msg(pgwire.BackendBackendKeyData, []byte{0, 0, 0, 1, 0, 0, 0, 2})...)
+		out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
+		write()
 	}
 	fail := func(code, m string) {
 		out = append(out, errorResponse(code, m)...)
@@ -187,13 +223,26 @@ func (b *Backend) serve(nc net.Conn) {
 		}
 		switch m.Type {
 		case pgwire.FrontendQuery:
-			sql, _, _ := cut(m.Body)
-			if !refused(sql) {
-				if res := b.exec(sql, nil, settings); res.Err != "" {
-					fail(res.Code, res.Err)
-				} else {
-					out = append(out, commandComplete(complete(sql, res, len(res.Rows)))...)
+			// A simple Query may carry several statements; each answers
+			// in turn, and an error ends the run (the rest is skipped), with
+			// one ReadyForQuery for the whole string, as the server does.
+			text, _, _ := cut(m.Body)
+			for _, sql := range statements(text) {
+				if refused(sql) {
+					break
 				}
+				res := b.exec(sql, nil, settings)
+				if res.Err != "" {
+					fail(res.Code, res.Err)
+					break
+				}
+				if res.Columns != nil {
+					out = append(out, rowDescription(res.Columns, res.OIDs)...)
+					for _, r := range res.Rows {
+						out = append(out, dataRow(r)...)
+					}
+				}
+				out = append(out, commandComplete(complete(sql, res, len(res.Rows)))...)
 			}
 			out = append(out, msg(pgwire.BackendReadyForQuery, []byte{status})...)
 			write()
@@ -209,7 +258,14 @@ func (b *Backend) serve(nc net.Conn) {
 		case pgwire.FrontendBind:
 			_, rest, _ := cut(m.Body)
 			stmt, rest, _ := cut(rest)
-			sql := stmts[stmt]
+			sql, prepared := stmts[stmt]
+			if !prepared {
+				// The server's answer to a name it never parsed, SQLSTATE
+				// 26000 (invalid_sql_statement_name), not a silent success.
+				fail("26000", fmt.Sprintf("prepared statement %q does not exist", stmt))
+				skipping = true
+				continue
+			}
 			if refused(sql) {
 				skipping = true
 				continue
@@ -232,6 +288,25 @@ func (b *Backend) serve(nc net.Conn) {
 			cur = &portal{sql: sql, res: res}
 			out = append(out, msg(pgwire.BackendBindComplete, nil)...)
 		case pgwire.FrontendDescribe:
+			if len(m.Body) > 0 && m.Body[0] == 'S' {
+				// A statement: ParameterDescription (none typed here) then
+				// what a row of it would look like, as the server answers
+				// from the plan — not NoData whatever the statement.
+				name, _, _ := cut(m.Body[1:])
+				sql, prepared := stmts[name]
+				if !prepared {
+					fail("26000", fmt.Sprintf("prepared statement %q does not exist", name))
+					skipping = true
+					continue
+				}
+				out = append(out, msg(pgwire.BackendParameterDescription, []byte{0, 0})...)
+				if res := b.exec(sql, nil, settings); res.Columns != nil {
+					out = append(out, rowDescription(res.Columns, res.OIDs)...)
+				} else {
+					out = append(out, msg(pgwire.BackendNoData, nil)...)
+				}
+				continue
+			}
 			if cur == nil || cur.res.Columns == nil {
 				out = append(out, msg(pgwire.BackendNoData, nil)...)
 				continue
@@ -295,6 +370,29 @@ func (b *Backend) serve(nc net.Conn) {
 			return
 		}
 	}
+}
+
+// statements splits a simple Query's text on the semicolons outside single
+// quotes, dropping empty statements — the server's own split, for the
+// quoting this fake meets.
+func statements(text string) []string {
+	var out []string
+	start, quoted := 0, false
+	for i := range len(text) {
+		switch {
+		case text[i] == '\'':
+			quoted = !quoted
+		case text[i] == ';' && !quoted:
+			if s := strings.TrimSpace(text[start:i]); s != "" {
+				out = append(out, s)
+			}
+			start = i + 1
+		}
+	}
+	if s := strings.TrimSpace(text[start:]); s != "" {
+		out = append(out, s)
+	}
+	return out
 }
 
 // verb returns a statement's first two words, upper-cased.

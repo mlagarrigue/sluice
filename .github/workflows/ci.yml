@@ -264,7 +264,7 @@ jobs:
           SLUICE_PG_TLS_SIGALG: SHA256-RSA
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
-          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set' test.log; then
+          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set|SLUICE_PG_PASSWORD is not set|accepted a wrong password' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
             exit 1
           fi
