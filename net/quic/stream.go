@@ -551,6 +551,12 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	if err := s.recvQ.receive(finalSize); err != nil {
 		return 0, 0, fmt.Errorf("stream %d: %w", s.id, err)
 	}
+	// The reset's final size is the stream's final size from here on, held
+	// exactly as a FIN's: a later STREAM frame past it, a FIN elsewhere, or
+	// a second RESET_STREAM naming another size is FINAL_SIZE_ERROR through
+	// the checks above and deliver's. Until 2026-10-21 only a FIN set these,
+	// so a reset stream accepted a larger reset or data beyond its end.
+	s.fin, s.finAt = true, finalSize
 	s.readReset, s.readCode = true, code
 	s.recvDone = true
 	// Only bytes never delivered to the application are settled here. Bytes
