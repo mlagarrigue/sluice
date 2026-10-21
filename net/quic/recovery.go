@@ -187,6 +187,14 @@ type sentPacket struct {
 type sentTracker struct {
 	packets  []sentPacket
 	lossTime time.Time // when the earliest time-threshold candidate matures
+	// lost remembers the packets declared lost whose payload went to the
+	// retransmission queue, the newest last: a late acknowledgement of one
+	// — the packet arrived after all, reordered — takes its payload off the
+	// queue if it is still there (RFC 9000 §13.3: no retransmission of what
+	// was acknowledged, "including after being declared lost"). Bounded at
+	// lostMemory entries, the oldest forgotten first: by then the payload
+	// has long gone again, and a late acknowledgement has nothing to spare.
+	lost []lostRef
 	// largestAcked persists across ACK frames (RFC 9002 A.10): loss
 	// thresholds compare against everything the peer has ever acknowledged,
 	// not just what this one frame newly covered — an ACK that repeats old
@@ -314,6 +322,7 @@ type ackOutcome struct {
 	lostRanges      int
 	crossing        lostPacket
 	lost            [][]byte // payloads to queue for retransmission
+	lateAcked       [][]byte // payloads queued for packets the frame acknowledged after their loss (sentTracker.lost)
 	sawAckEliciting bool     // any newly acked packet was ack-eliciting
 	newlyAckedECT0  int      // newly acked packets that left marked ECT(0), for ECN validation
 	raisedLargest   bool     // the frame increased the largest acknowledged: validation may fail on it (§13.4.2.1)
@@ -397,6 +406,9 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 	}
 	if optimistic {
 		return out, errOptimisticAck
+	}
+	if len(s.lost) > 0 {
+		s.lateAcked(&out, largest, rangeData)
 	}
 
 	// The largest ever acknowledged persists (A.10); the one before this
@@ -666,6 +678,7 @@ func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryE
 	out.lostCount++
 	if len(p.payload) > 0 {
 		out.lost = append(out.lost, p.payload)
+		s.rememberLost(p.pn, p.payload)
 	}
 	if !onPath {
 		return false
@@ -688,6 +701,43 @@ func (s *sentTracker) declareLost(out *ackOutcome, p *sentPacket, est *deliveryE
 		out.lostRanges++
 	}
 	return p.ackEliciting
+}
+
+// lostRef is one entry of sentTracker.lost: a packet declared lost and the
+// payload queued in its name.
+type lostRef struct {
+	pn      uint64
+	payload []byte
+}
+
+// lostMemory bounds sentTracker.lost.
+const lostMemory = 64
+
+// rememberLost records a packet declared lost whose payload is queued for
+// retransmission, forgetting the oldest entry past lostMemory.
+func (s *sentTracker) rememberLost(pn uint64, payload []byte) {
+	if len(s.lost) == lostMemory {
+		copy(s.lost, s.lost[1:])
+		s.lost = s.lost[:lostMemory-1]
+	}
+	s.lost = append(s.lost, lostRef{pn: pn, payload: payload})
+}
+
+// lateAcked moves the entries of s.lost that the frame's ranges cover to
+// out.lateAcked: packets declared lost that arrived after all. Called only
+// when s.lost holds something, which no connection without loss does.
+func (s *sentTracker) lateAcked(out *ackOutcome, largest uint64, rangeData []byte) {
+	_ = decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
+		kept := s.lost[:0]
+		for _, l := range s.lost {
+			if lo <= l.pn && l.pn <= hi {
+				out.lateAcked = append(out.lateAcked, l.payload)
+				continue
+			}
+			kept = append(kept, l)
+		}
+		s.lost = kept
+	})
 }
 
 // oldestEliciting is what the probe timeout is armed on.

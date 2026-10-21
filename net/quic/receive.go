@@ -1287,6 +1287,27 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}
+	if len(out.lateAcked) > 0 {
+		// Packets declared lost that arrived after all: what is still
+		// queued in their name leaves the queue (RFC 9000 §13.3), told
+		// apart by the slice itself — the queue holds the payload
+		// declareLost handed it, not a copy.
+		kept := sp.retrans[:0]
+		for _, q := range sp.retrans {
+			late := false
+			for _, l := range out.lateAcked {
+				if len(q) > 0 && len(l) > 0 && &q[0] == &l[0] {
+					late = true
+					break
+				}
+			}
+			if !late {
+				kept = append(kept, q)
+			}
+		}
+		clear(sp.retrans[len(kept):])
+		sp.retrans = kept
+	}
 	if out.largestWasNew && out.largestEliciting {
 		var ackDelay time.Duration
 		if space == spaceApplication {
