@@ -356,6 +356,23 @@ to a separate module before a v1.
   middleboxes that ossify on version 1; none of this package's peers has
   shown one, and the day one does is the day to add it. In plain words:
   there is one dialect, and it is the one everybody speaks today.
+- **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
+  `go.mod` names as the floor, run through `tls.QUICClient` and
+  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
+  documentation says. Four of its positions depart from RFC 8446 and are
+  inherited as they are: the ClientHello's X25519 key share repeats the
+  key inside the hybrid X25519MLKEM768 share (§4.2.8, the one departure a
+  conformant peer can see); a `pre_shared_key` extension out of last place
+  or a version never offered end the handshake with decode_error or
+  protocol_version rather than illegal_parameter (§4.2.11, §4.2.1); an
+  extension known but forbidden in the message carrying it is ignored
+  rather than refused (§4.2, §4.3.1); a `pre_shared_key` without
+  `psk_key_exchange_modes` continues without the PSK rather than aborting
+  (§4.2.9). Rewriting the TLS stack is out of the question (ADR 0002:
+  the standard library owns the sensitive ground); these follow the Go
+  release, and a peer refused over one of them is the signal to revisit.
+  In plain words: the lock on the door is the one Go ships, quirks
+  included, and it is kept rather than copied.
 - **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's

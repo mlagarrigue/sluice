@@ -1,7 +1,7 @@
 # ADR 0014 — TLS stays in front of the experimental transport
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (recommended configuration documented), 2026-10-21 (the TLS requirements of RFC 9113 §9.2 are the host's)
+- **Revised:** 2026-10-15 (recommended configuration documented), 2026-10-21 (the TLS requirements of RFC 9113 §9.2 are the host's), 2026-10-21 (the same delegation holds inside `net/quic`)
 - **Theme:** quic
 
 ## Problem
@@ -19,7 +19,11 @@ prior-knowledge only, and nothing said whether that was a choice.
 surface here. ALPN (`NextProtos: ["h2", "http/1.1"]`) settles what the
 client speaks, and the existing preface sniff reads the decrypted stream
 exactly as it reads a plaintext one. HTTP/3 is unaffected: QUIC carries TLS
-1.3 inside the transport, and `net/quic` runs that handshake itself.
+1.3 inside the transport, and `net/quic` runs that handshake itself — with
+the same stack, `crypto/tls` through `tls.QUICClient` and `tls.QUICServer`,
+and the same consequence: the handshake's positions are the Go release's,
+inherited as they are and listed in the limits guide (`net/quic` TLS),
+never reimplemented here.
 
 ## Rationale
 
