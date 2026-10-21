@@ -598,3 +598,35 @@ func TestPumpFailsOnTLSErrorEvent(t *testing.T) {
 		t.Errorf("close code %#x for %v; want the TLS alert's crypto-range code", code, err)
 	}
 }
+
+// RFC 9002 §6.2.4: when a PTO fires in one space, the other spaces with
+// data in flight are probed too — the peer may hold receive keys for only
+// one of them, and the Handshake deadline, armed later than the Initial one,
+// would otherwise make it wait. The Handshake timer here is nowhere near
+// due; its space is probed because the Initial one fired.
+func TestPTOProbesTheOtherSpacesWithDataInFlight(t *testing.T) {
+	c := newIdleServerConn(t)
+	now := time.Now()
+	c.mu.Lock()
+	c.spaces[spaceHandshake].sealer = c.spaces[spaceInitial].sealer
+	for space, age := range map[int]time.Duration{spaceInitial: time.Minute, spaceHandshake: time.Millisecond} {
+		sp := &c.spaces[space]
+		sp.lastElicit = now.Add(-age)
+		sp.sent.record(sentPacket{pn: 0, sentAt: now.Add(-age), size: 100, ackEliciting: true, payload: []byte{framePing}})
+		sp.nextPN = 1
+	}
+	c.mu.Unlock()
+
+	c.actOnDeadlines(now)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ptoCount != 1 {
+		t.Errorf("ptoCount = %d, want 1: one expiry, the Initial space's", c.ptoCount)
+	}
+	for _, space := range []int{spaceInitial, spaceHandshake} {
+		if c.spaces[space].nextPN != 3 {
+			t.Errorf("space %d: nextPN = %d, want a two-packet probe sent (3)", space, c.spaces[space].nextPN)
+		}
+	}
+}

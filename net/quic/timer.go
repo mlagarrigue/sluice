@@ -185,9 +185,20 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		// a sender pausing between small writes restarts this timer at
 		// every send without a single acknowledgement (§7.6.1).
 		for space, fired := range expired {
+			sp := &c.spaces[space]
+			if !fired {
+				// RFC 9002 §6.2.4: a space whose own timer has not fired
+				// is probed along with the one that did when it has data
+				// in flight and may be probed at all (ptoDeadlineLocked
+				// says when: keys, handshake confirmed for 1-RTT, budget)
+				// — the peer may hold receive keys for only one of the
+				// two spaces, and would otherwise wait out the other's
+				// own, later deadline.
+				fired = !sp.discarded && sp.sealer != nil && !c.ptoDeadlineLocked(sp, space).IsZero()
+			}
 			if fired {
 				c.sendProbeLocked(space)
-				earlier(c.ptoDeadlineLocked(&c.spaces[space], space))
+				earlier(c.ptoDeadlineLocked(sp, space))
 			}
 		}
 	}
