@@ -383,6 +383,30 @@ to a separate module before a v1.
   release, and a peer refused over one of them is the signal to revisit.
   In plain words: the lock on the door is the one Go ships, quirks
   included, and it is kept rather than copied.
+- **`net/quic` secrets**: a secret or key is forgotten by becoming
+  unreachable, never by being overwritten. RFC 8446 §6 has endpoints
+  "forget" the keys of a failed connection and §7 would have each secret
+  erased once used; here the sealers and openers of a closed connection
+  are released to the garbage collector, a rotated key is replaced, and
+  no copy is cleared — Go gives no guarantee that clearing a slice erases
+  its bytes (the collector, stacks and registers keep copies), and
+  `crypto/tls` and `crypto/cipher` hold their own copies that this
+  package cannot reach. What that costs is a window the length of the
+  process, open only to whoever can read the process's memory, who has
+  everything else as well. To revisit the day Go or `crypto/tls` offers
+  guaranteed erasure. In plain words: keys are dropped, not shredded,
+  because the shredder does not exist.
+- **`net/quic` IPv6 flow label**: on Linux the kernel labels each flow
+  (`IPV6_AUTOFLOWLABEL`, set by `net/quic/udp`), by a hash of the
+  addresses and ports: the label changes when the peer's address does and
+  stays when only the connection identifier rotates, where RFC 9000 §9.7
+  would have the identifier counted in. Setting a label per datagram would
+  cost a control message on every send; and on a constant four-tuple the
+  packets are already linked for any observer, label or not. macOS and
+  Windows offer no control over the label at all. To revisit on a
+  measurement where the label alone tells two connections apart. In
+  plain words: the tag on the envelope is the postal service's, and the
+  address links the envelopes anyway.
 - **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
