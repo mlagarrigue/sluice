@@ -368,7 +368,13 @@ to a separate module before a v1.
   extension known but forbidden in the message carrying it is ignored
   rather than refused (§4.2, §4.3.1); a `pre_shared_key` without
   `psk_key_exchange_modes` continues without the PSK rather than aborting
-  (§4.2.9). Rewriting the TLS stack is out of the question (ADR 0002:
+  (§4.2.9). The TLS 1.3 compatibility mode is neither asked for by this
+  client nor policed by this server: `crypto/tls` sends no
+  `legacy_session_id` in QUIC and echoes one it receives without the
+  change_cipher_spec RFC 8446 Appendix D.4 would want — RFC 9001 §8.4
+  removes that record from QUIC — and the ClientHello field is not
+  exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
+  waits on `crypto/tls`. Rewriting the TLS stack is out of the question (ADR 0002:
   the standard library owns the sensitive ground); these follow the Go
   release, and a peer refused over one of them is the signal to revisit.
   In plain words: the lock on the door is the one Go ships, quirks
