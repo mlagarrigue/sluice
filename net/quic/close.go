@@ -408,10 +408,11 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 		frame = AppendVarint(frame, 0) // no reason phrase, deliberately
 
 		// closeSent is already set, so sendPacketLocked would refuse; write
-		// the packet directly. Best effort: a loss is repaired by the
-		// closing state when the connection holds one, and by the peer's
-		// idle timer otherwise.
-		_ = c.writePacketLocked(sp, space, frame, nil, sendOpts{ackOnly: true}, now)
+		// the packet directly, marked as the close so writePacketLocked
+		// lets it through. Best effort: a loss is repaired by the closing
+		// state when the connection holds one, and by the peer's idle
+		// timer otherwise.
+		_ = c.writePacketLocked(sp, space, frame, nil, sendOpts{ackOnly: true, close: true}, now)
 	}
 }
 

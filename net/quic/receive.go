@@ -727,13 +727,21 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// left, so the answer went without it (sendPacketLocked carries only a
 	// pending one) and the delayed ACK followed in a datagram of its own
 	// localMaxAckDelay later.
+	//
+	// RFC 9000 §13.2 (Table 3): ACK, PADDING and CONNECTION_CLOSE elicit no
+	// acknowledgement. parseFrames drops PADDING, so the two frame types
+	// left to skip are ACK and the close: a packet carrying nothing else is
+	// not ack-eliciting, and the close puts this end in the draining state,
+	// where nothing may leave anyway (§10.2.2).
 	for _, f := range frames {
-		if f.Type != frameACK && f.Type != frameACK|1 {
-			c.mu.Lock()
-			c.spaces[space].ack.onAckEliciting(space, now)
-			c.mu.Unlock()
-			break
+		switch f.Type {
+		case frameACK, frameACK | 1, frameConnectionClose, frameConnectionClose | 1:
+			continue
 		}
+		c.mu.Lock()
+		c.spaces[space].ack.onAckEliciting(space, now)
+		c.mu.Unlock()
+		break
 	}
 	if space == spaceApplication {
 		// The §9.3 decision point: a confirmed server whose client's

@@ -64,6 +64,10 @@ type sendOpts struct {
 	// acknowledgement proves the size and its loss moves to the next try,
 	// but released from flight without a congestion event when lost.
 	pmtuProbe bool
+	// close marks this end's own CONNECTION_CLOSE: the one packet
+	// writePacketLocked still writes once closeSent is set, and one that
+	// never coalesces — it must leave now.
+	close bool
 }
 
 // maxStreamChunk is how much stream payload fits one packet, leaving room
@@ -431,11 +435,22 @@ func (c *Conn) flushDatagramLocked() {
 // gathering, everything but the seal and the write, which
 // flushDatagramLocked finishes for the whole datagram at once.
 func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []byte, opts sendOpts, now time.Time) error {
+	// Every packet passes here — acknowledgements, probes, retransmissions
+	// and control frames included, not only what sendPacketLocked guards —
+	// so this is where the two closed states refuse them. RFC 9000 §10.2.1:
+	// once this end's CONNECTION_CLOSE left, it "MUST NOT send further
+	// packets" other than that close; §10.2.2: an endpoint in the draining
+	// state "MUST NOT send any packets". The close itself is the exception
+	// (sendCloseLocked sets closeSent before writing it, and the closing
+	// state replays the kept datagram without coming through here).
+	if c.draining || (c.closeSent && !opts.close) {
+		return errClosed
+	}
 	const pnLen = 4
 	// Only Initial and Handshake packets coalesce, and never a
 	// CONNECTION_CLOSE, which must leave now. Anything else first flushes
 	// what gathered, so order on the wire is the order of sending.
-	gathering := c.gather && space != spaceApplication && !c.closeSent
+	gathering := c.gather && space != spaceApplication && !opts.close
 	if !gathering {
 		c.flushDatagramLocked()
 	}
