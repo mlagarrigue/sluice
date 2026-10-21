@@ -3,6 +3,8 @@ package sluice
 import (
 	"iter"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -248,12 +250,22 @@ func TestSplitBounds(t *testing.T) {
 	if got := Split(Empty[int](), 0, nil); got != nil {
 		t.Error("Split with n<=0 must return nil")
 	}
-	// An out-of-range branch index is ignored, without panicking.
-	branches := Split(Of([]int{1, 2}, 1), 1, func(Batch[int]) []int {
-		return []int{0, 5, -1}
-	})
-	if got := collect(branches[0]); !slices.Equal(got, []int{1, 2}) {
-		t.Errorf("out-of-range indices mishandled: %v", got)
+	// An out-of-range branch index panics, naming the index and n: ignored,
+	// it dropped every batch a route off by one sent past the last branch.
+	for _, bad := range []int{1, 5, -1} {
+		func() {
+			defer func() {
+				msg, _ := recover().(string)
+				want := "returned branch " + strconv.Itoa(bad) + ", outside [0, 1)"
+				if !strings.Contains(msg, want) {
+					t.Errorf("index %d: panic %q, want one containing %q", bad, msg, want)
+				}
+			}()
+			branches := Split(Of([]int{1, 2}, 1), 1, func(Batch[int]) []int {
+				return []int{0, bad}
+			})
+			collect(branches[0])
+		}()
 	}
 }
 

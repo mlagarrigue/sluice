@@ -1,6 +1,8 @@
 package sluice
 
 import (
+	"strconv"
+
 	"github.com/mlagarrigue/sluice/internal/batch"
 )
 
@@ -36,8 +38,10 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 
 // Split routes each batch to one or more of n branches.
 //
-// route receives a batch and returns the indices of its destination branches;
-// indices outside [0, n) are ignored. This single primitive covers three uses:
+// route receives a batch and returns the indices of its destination branches,
+// each in [0, n); an index outside panics, naming it — a route off by one
+// would otherwise drop every batch it sends past the last branch, with
+// nothing to say so. This single primitive covers three uses:
 //
 //	partition — return one index, chosen from the contents
 //	balance   — return one index, round-robin
@@ -273,6 +277,11 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 			return false
 		}
 		held, holding, dests = b, true, route(b)
+		for _, dst := range dests {
+			if dst < 0 || dst >= n {
+				panic("sluice: Split route returned branch " + strconv.Itoa(dst) + ", outside [0, " + strconv.Itoa(n) + ")")
+			}
+		}
 		return place()
 	}
 
