@@ -31,10 +31,10 @@ func TestLongAckBesideFullChunkStaysUnderMaxDatagram(t *testing.T) {
 				for i := range uint64(ranges) {
 					sp.ack.record(1+i<<20, now)
 				}
-				sp.ack.onAckEliciting(spaceApplication, now)
+				sp.ack.onAckEliciting(spaceApplication, now, false)
 			} else {
 				sp.ack.record(1, now)
-				sp.ack.onAckEliciting(spaceApplication, now)
+				sp.ack.onAckEliciting(spaceApplication, now, false)
 			}
 			chunk := c.maxStreamChunk()
 			limit := c.maxDatagram

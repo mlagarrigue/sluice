@@ -145,10 +145,14 @@ func (a *ackTracker) trim() {
 // once and the first on a short timer (§13.2.1-2), which is what lets one
 // ACK cover a burst — except when the packet arrived out of order or opened
 // a gap, where §13.2.1 says to answer immediately so the peer's loss
-// detection sees the reordering now rather than a delayed-ACK period later.
-func (a *ackTracker) onAckEliciting(space int, now time.Time) {
+// detection sees the reordering now rather than a delayed-ACK period later,
+// and when the packet was marked CE by the network (ce), where the same
+// section says to answer immediately "to reduce the peer's response time to
+// congestion events": the mark is worth a round trip, not a delayed-ACK
+// period plus one.
+func (a *ackTracker) onAckEliciting(space int, now time.Time, ce bool) {
 	a.elicitingSinceAck++
-	if space != spaceApplication || a.elicitingSinceAck >= 2 || a.outOfOrder {
+	if space != spaceApplication || a.elicitingSinceAck >= 2 || a.outOfOrder || ce {
 		a.immediate = true
 		a.due = now
 		return

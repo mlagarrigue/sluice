@@ -777,7 +777,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			continue
 		}
 		c.mu.Lock()
-		c.spaces[space].ack.onAckEliciting(space, now)
+		c.spaces[space].ack.onAckEliciting(space, now, c.rxECN == ecnCE)
 		c.mu.Unlock()
 		break
 	}

@@ -79,14 +79,14 @@ func TestAckUrgencyPolicy(t *testing.T) {
 
 	var initial ackTracker
 	initial.record(0, now)
-	initial.onAckEliciting(spaceInitial, now)
+	initial.onAckEliciting(spaceInitial, now, false)
 	if !initial.owes(now) {
 		t.Error("an Initial packet was not acknowledged immediately")
 	}
 
 	var app ackTracker
 	app.record(0, now)
-	app.onAckEliciting(spaceApplication, now)
+	app.onAckEliciting(spaceApplication, now, false)
 	if app.owes(now) {
 		t.Error("the first application packet forced an immediate ACK")
 	}
@@ -97,7 +97,7 @@ func TestAckUrgencyPolicy(t *testing.T) {
 		t.Error("the delayed ACK never matured")
 	}
 	app.record(1, now)
-	app.onAckEliciting(spaceApplication, now)
+	app.onAckEliciting(spaceApplication, now, false)
 	if !app.owes(now) {
 		t.Error("the second ack-eliciting packet did not force an ACK")
 	}
@@ -149,5 +149,25 @@ func TestAckTrackerRefusesWhatItCanNoLongerVouchFor(t *testing.T) {
 	}
 	if a.record(3, now) {
 		t.Fatal("packet 3 was recorded twice")
+	}
+}
+
+// RFC 9000 §13.2.1: a packet marked ECN-CE by the network is acknowledged
+// immediately, so the peer hears of the congestion a round trip after the
+// mark rather than a delayed-ACK period later. A first application-space
+// packet otherwise waits for the delayed-ACK timer.
+func TestAckTrackerAnswersACEMarkedPacketAtOnce(t *testing.T) {
+	now := time.Now()
+	var plain ackTracker
+	plain.record(0, now)
+	plain.onAckEliciting(spaceApplication, now, false)
+	if plain.owes(now) {
+		t.Fatal("a first unmarked packet was owed an ACK at once; the delayed-ACK timer should hold it")
+	}
+	var marked ackTracker
+	marked.record(0, now)
+	marked.onAckEliciting(spaceApplication, now, true)
+	if !marked.owes(now) {
+		t.Error("a first CE-marked packet was not owed an ACK at once (§13.2.1)")
 	}
 }

@@ -95,28 +95,28 @@ func TestOutOfOrderPacketMakesTheAckImmediate(t *testing.T) {
 	now := time.Now()
 
 	a.record(0, now)
-	a.onAckEliciting(spaceApplication, now)
+	a.onAckEliciting(spaceApplication, now, false)
 	if a.immediate {
 		t.Fatal("the first in-order packet was answered immediately; it should ride the delayed-ACK timer")
 	}
 	a.appendAck(nil, now)
 
 	a.record(2, now) // skips 1: a gap
-	a.onAckEliciting(spaceApplication, now)
+	a.onAckEliciting(spaceApplication, now, false)
 	if !a.immediate {
 		t.Error("a packet that opened a gap did not make the ACK immediate")
 	}
 	a.appendAck(nil, now)
 
 	a.record(1, now) // below the largest: out of order
-	a.onAckEliciting(spaceApplication, now)
+	a.onAckEliciting(spaceApplication, now, false)
 	if !a.immediate {
 		t.Error("an out-of-order packet did not make the ACK immediate")
 	}
 	a.appendAck(nil, now)
 
 	a.record(3, now) // extends the run: in order again
-	a.onAckEliciting(spaceApplication, now)
+	a.onAckEliciting(spaceApplication, now, false)
 	if a.immediate {
 		t.Error("an in-order packet after the gap closed was answered immediately; the urgency should have cleared")
 	}
