@@ -642,14 +642,15 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle
 		return // silent past ReadTimeout, or gone: nothing to hand on
 	}
 	if isH2 {
-		// Busy until the reader has seen the first batch: a preface is
-		// followed by a request, and the reader keeps the phase from there.
-		// Marked HTTP/2 first: from here the shutdown tells it, never cuts
-		// it (see connState.h2).
+		// Idle until the reader opens a stream: the preface promises none,
+		// and a client that sends it and stops has nothing in flight — busy
+		// from here made 24 silent bytes count as a request a forced stop
+		// cut. Marked HTTP/2: from here the shutdown tells it, never cuts it
+		// (see connState.h2); one still short of its SETTINGS is told and
+		// closed at once (see beginDrain).
 		if st != nil {
 			st.h2.Store(true)
 		}
-		st.set(connBusy)
 		_ = serveH2Conn(ctx, prefixed(c, peek), st, cfg, handle)
 		return
 	}

@@ -348,9 +348,17 @@ type h2Server struct {
 	// the second GOAWAY sent. Written by the drain's function and the
 	// reader, read by the responder.
 	drainStep atomic.Int32
-	// drained is set by the responder just before it closes the socket of a
-	// drained connection, so the reader knows the error that unparks it is
-	// the close and not a failure.
+	// greeted settles the race between the peer's first frame and a drain
+	// that begins before it: greetPending until one of them takes it, then
+	// greetTaken when the reader has a SETTINGS to apply, greetRefused when
+	// the drain closed the connection first (see beginDrain). Whichever
+	// swaps first decides; the other steps back.
+	greeted atomic.Int32
+	// drained is set just before the socket of a drained connection is
+	// closed — by the responder after the last answer, by beginDrain for a
+	// peer that never got past its preface — so the reader knows the error
+	// that unparks it is the close and not a failure. Swapped, never stored:
+	// the two must not both close.
 	drained atomic.Bool
 
 	// readEnded is set by the reader once it has stopped reading — the peer
@@ -480,10 +488,13 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 //     is already true at the second GOAWAY, by the responder when it has
 //     written the last answer.
 //
+// A peer still short of the SETTINGS that ends its preface skips all three:
+// it is told GOAWAY naming stream 0 and closed at once (see beginDrain).
+//
 // The reader also keeps the state's phase: busy while a stream is open or in
-// flight, idle otherwise, so Serve's drain closes an idle HTTP/2 connection
-// at once as it does an idle HTTP/1.1 one; ServeH2 alone closes it at the
-// PING's acknowledgement. The phase is the reader's view at
+// flight, idle otherwise, which is what a forced stop counts as cut. The
+// drain tells every HTTP/2 connection rather than closing an idle one (ADR
+// 0017). The phase is the reader's view at
 // its last batch, which runs late when the last answer went out and the peer
 // has since said nothing: that connection is drained like a busy one and
 // closes one round trip after the cancellation rather than at it. Writing the
@@ -550,8 +561,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			// second GOAWAY, so both at zero is final. The writer goes first
 			// so the answer is on the wire before the socket closes under the
 			// reader.
-			if !s.drained.Load() && s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 {
-				s.drained.Store(true)
+			if s.drainStep.Load() == drainAnnounced && s.open.Load() == 0 && s.inFlight.Load() == 0 && s.drained.CompareAndSwap(false, true) {
 				s.w.stop()
 				<-s.w.done
 				_ = c.Close()
@@ -567,7 +577,16 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	// slowloris bound.
 	src := framesWith(c, cfg, func() bool { return s.inFlight.Load() > 0 })
 	var fatal error
+	greeted := false
 	src.Stream()(func(b sluice.Batch[h2Frame]) bool {
+		if !greeted && len(b.Items) > 0 {
+			if !s.greeted.CompareAndSwap(greetPending, greetTaken) {
+				// The drain closed the connection before this SETTINGS and
+				// told the peer no stream was taken: none may be now.
+				return false
+			}
+			greeted = true
+		}
 		ready, ids, err := s.consume(b.Items)
 		if err != nil {
 			fatal = err
@@ -2166,6 +2185,13 @@ const (
 	drainAnnounced
 )
 
+// The states of h2Server.greeted.
+const (
+	greetPending int32 = iota
+	greetTaken
+	greetRefused
+)
+
 // drainPing is the opaque data of the PING the shutdown sends after its
 // first GOAWAY, so its acknowledgement is told apart from any other.
 const drainPing = "shutdown"
@@ -2180,7 +2206,27 @@ const maxStreamID = 1<<31 - 1
 // acknowledgement will. Both are queued before the step is recorded, so the
 // second GOAWAY the reader sends at the acknowledgement cannot be queued
 // ahead of the first (§6.8: the identifier sent must never increase).
+//
+// A peer that has sent the preface and not yet the SETTINGS §3.4 makes follow
+// it has opened nothing, and its PING acknowledgement would come, if ever,
+// behind that SETTINGS: waiting for it held the shutdown to its grace for 24
+// silent bytes, where ADR 0017 closes an accepted and silent connection at
+// once. That connection is told GOAWAY naming stream 0 — nothing was
+// processed, so a request crossing the close may be retried as is — and
+// closed once the writer has sent it. The reader's first batch races this
+// decision on greeted, so a stream is either taken before the GOAWAY was
+// decided or never.
 func (s *h2Server) beginDrain() {
+	if s.greeted.CompareAndSwap(greetPending, greetRefused) {
+		s.goAwayWith(0, errNoError)
+		s.drainStep.Store(drainAnnounced)
+		if s.drained.CompareAndSwap(false, true) {
+			s.w.stop()
+			<-s.w.done
+			_ = s.w.conn.Close()
+		}
+		return
+	}
 	s.goAwayWith(maxStreamID, errNoError)
 	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
 	s.drainStep.Store(drainBegun)

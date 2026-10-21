@@ -313,3 +313,75 @@ func TestH2GoAwayLastStreamIdentifierNeverRises(t *testing.T) {
 		t.Errorf("the error's GOAWAY names stream %d, after a GOAWAY that named 1; §6.8 forbids raising it", last)
 	}
 }
+
+// A client that sends the 24 bytes of the HTTP/2 preface and nothing else —
+// not the SETTINGS RFC 9113 §3.4 says must follow — has opened no stream and
+// can have none in flight: it is the HTTP/2 form of an accepted, silent
+// connection, which ADR 0017 closes at once. It used to count as busy from
+// the preface on and wait for the acknowledgement of a PING it would never
+// send, so the shutdown ran to the end of its grace and reported requests in
+// flight. It is now told GOAWAY(0, NO_ERROR) — nothing was processed, so a
+// request crossing the close may be retried — and closed at once.
+func TestShutdownClosesAPrefaceOnlyH2ConnectionAtOnce(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Config: Config{ShutdownGrace: 1500 * time.Millisecond}, Handler: echoTarget}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := io.WriteString(c, Preface); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	// The server's SETTINGS says the preface was read and the connection is
+	// HTTP/2's; the shutdown starts from there.
+	if typ, _ := readRawFrame(t, c); typ != frameSettings {
+		t.Fatalf("first frame from the server is type %#x, want SETTINGS", typ)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v after %v, want nil: a preface-only connection held the drain", err, time.Since(start))
+	}
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("Shutdown returned after %v, want at once", took)
+	}
+	typ, payload := readRawFrame(t, c)
+	for typ != frameGoAway && typ != 0xff {
+		typ, payload = readRawFrame(t, c) // the rest of the server's greeting
+	}
+	if typ != frameGoAway || len(payload) < 8 {
+		t.Fatalf("after the shutdown: frame type %#x, want GOAWAY", typ)
+	}
+	if last, code := be32(payload[:4]), be32(payload[4:8]); last != 0 || code != errNoError {
+		t.Errorf("GOAWAY names stream %d with code %#x, want 0 and NO_ERROR", last, code)
+	}
+	if err := <-served; err != nil {
+		t.Errorf("Serve = %v", err)
+	}
+}
+
+// readRawFrame reads one frame off a raw HTTP/2 connection: its type and
+// payload, or type 0xff once the connection has ended.
+func readRawFrame(t *testing.T, c net.Conn) (byte, []byte) {
+	t.Helper()
+	var hdr [9]byte
+	if _, err := io.ReadFull(c, hdr[:]); err != nil {
+		return 0xff, nil
+	}
+	payload := make([]byte, int(hdr[0])<<16|int(hdr[1])<<8|int(hdr[2]))
+	if _, err := io.ReadFull(c, payload); err != nil {
+		return 0xff, nil
+	}
+	return hdr[3], payload
+}

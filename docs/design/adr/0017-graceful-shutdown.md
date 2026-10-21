@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is told GOAWAY 0 and closed at once)
 - **Theme:** httpstream
 
 ## Problem
@@ -81,7 +81,14 @@ cancellation.
      under `Serve` as under a `ServeH2` called directly: closing it at
      once, as an idle HTTP/1.1 one is, raced the GOAWAY its own goroutine
      was queuing and left a POST crossing the close unanswered and
-     unannounced — the case RFC 9113 §6.8 names for its SHOULD.
+     unannounced — the case RFC 9113 §6.8 names for its SHOULD. A client
+     that has sent only the preface, without the SETTINGS §3.4 makes
+     follow it, has opened no stream, and its acknowledgement would come,
+     if ever, behind that SETTINGS: it is the HTTP/2 form of the accepted
+     and silent connection of (4). It is told a GOAWAY naming stream 0 —
+     nothing was processed, so a request crossing the close may be
+     replayed as is — and closes once that is sent; a SETTINGS arriving
+     after the decision opens nothing.
    - HTTP/3: as on HTTP/2, a pair of GOAWAY frames on the control stream.
      The first names 2^62−4, the highest identifier a server may send: the
      client opens nothing more, and everything it already sent is still
