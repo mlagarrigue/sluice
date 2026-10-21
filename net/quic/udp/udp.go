@@ -13,10 +13,13 @@
 //
 // # What each platform does
 //
-//   - Linux: IP_MTU_DISCOVER / IPV6_MTU_DISCOVER set to the DO mode. The
-//     kernel sets DF and also refuses, with EMSGSIZE at send time, a
-//     datagram larger than the path MTU it has cached — the error reaches
-//     the caller's WriteTo rather than the wire. IPV6_AUTOFLOWLABEL is set
+//   - Linux: IP_MTU_DISCOVER / IPV6_MTU_DISCOVER set to the PROBE mode. The
+//     kernel sets DF and refuses, with EMSGSIZE at send time, a datagram
+//     larger than the outgoing interface MTU — the error reaches the
+//     caller's WriteTo rather than the wire — while ignoring the path MTU
+//     it has cached for the destination, which an unauthenticated ICMP
+//     writes and RFC 9000 §14.2.1 forbids acting on below 1200 bytes; the
+//     [quic] package searches the path itself. IPV6_AUTOFLOWLABEL is set
 //     on IPv6 sockets so the kernel assigns a flow label from the flow
 //     hash of each datagram, which gives one label per peer address and a
 //     fresh one when the peer moves (§9.7). Tested here.

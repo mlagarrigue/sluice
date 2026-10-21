@@ -671,8 +671,12 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // fails is a packet the network lost — recovery declares it so and resends
 // its payload, releasing the window it held, exactly as for a loss on the
 // wire. Nothing here is sized past maxDatagram (sendPacketLocked cuts the
-// queues to it), so the one failure a correct packet could cause itself,
-// EMSGSIZE, does not arise.
+// queues to it), but maxDatagram is what the path search believes, not what
+// the outgoing interface will carry: a probe above the interface MTU comes
+// back EMSGSIZE, since the socket forbids fragmenting (udp.Configure), and
+// that needs no special case either — the probe is never acknowledged, and
+// the search reads its loss and caps the path where the interface does
+// (pmtu.go).
 func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error) {
 	const pnLen = 4
 	sp := p.sp
