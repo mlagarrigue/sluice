@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut)
 - **Theme:** httpstream
 
 ## Problem
@@ -52,10 +52,12 @@ cancellation.
    `Config.Logger` receives a warning with the number of connections cut;
    a drain that ends within the grace returns `nil`.
 
-4. **What closes at once.** The listener, and every connection with no
-   request in flight: between two keep-alive requests, or accepted and
-   silent. Nothing is owed to it; waiting for it means returning one
-   `IdleTimeout` late.
+4. **What closes at once.** The listener, and every HTTP/1.1 connection
+   with no request in flight: between two keep-alive requests, or accepted
+   and silent. Nothing is owed to it; waiting for it means returning one
+   `IdleTimeout` late. An HTTP/2 connection is never cut by this pass,
+   idle or not: it is told first (6), and closes itself one round trip
+   later.
 
 5. **What finishes.** A connection on which a request has begun to arrive,
    is being handled or is being answered. The response goes out whole; no
@@ -74,9 +76,12 @@ cancellation.
      second GOAWAY with the last stream actually taken; a stream opened
      past it is refused `REFUSED_STREAM`, the open streams finish, the
      connection closes. A peer that never acknowledges the PING is closed
-     by the grace. Under `Serve`, a connection with no stream open closes
-     at once, like an idle HTTP/1.1 one; a `ServeH2` called directly closes
-     it at the PING's acknowledgement, one round trip later.
+     by the grace. A connection with no stream open is told the same way
+     and closes at the PING's acknowledgement, one round trip later,
+     under `Serve` as under a `ServeH2` called directly: closing it at
+     once, as an idle HTTP/1.1 one is, raced the GOAWAY its own goroutine
+     was queuing and left a POST crossing the close unanswered and
+     unannounced — the case RFC 9113 §6.8 names for its SHOULD.
    - HTTP/3: as on HTTP/2, a pair of GOAWAY frames on the control stream.
      The first names 2^62−4, the highest identifier a server may send: the
      client opens nothing more, and everything it already sent is still

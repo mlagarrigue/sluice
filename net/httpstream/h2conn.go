@@ -572,6 +572,15 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	})
 	s.readEnded.Store(true)
 
+	told := false
+	if fatal != nil {
+		// RFC 9113 §5.4.1: a connection error is told first, with GOAWAY,
+		// then the connection closes. Queued now, before the handlers in
+		// flight are waited for: a peer whose connection is condemned
+		// learns it at once, not when the slowest handler returns.
+		s.goAway(codeFor(fatal))
+		told = true
+	}
 	// The calls still running are answered before the responder goes, so
 	// that every request is answered once, as ever.
 	calls.Wait()
@@ -588,13 +597,21 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	if err != nil {
 		code = codeFor(err)
 	}
-	if err != nil || s.drainStep.Load() < drainAnnounced {
+	if !told && (err != nil || s.drainStep.Load() < drainAnnounced) {
 		// A drained connection has already said its last GOAWAY, and a
 		// third one would only repeat it; a failure after it is still told.
 		s.goAway(code)
 	}
 	s.w.stop()
 	<-s.w.done
+	if err != nil {
+		// The peer may still be writing — the frames behind the one that
+		// failed, or a flood. Closing a socket with unread bytes in it makes
+		// TCP answer the next segment with a reset, which can erase the
+		// GOAWAY the peer had not read yet: the two-stage close HTTP/1.1
+		// uses (RFC 9112 §9.6, tearDown) applies here too.
+		linger(c, cfg)
+	}
 	return errors.Join(err, s.w.failure())
 }
 

@@ -209,7 +209,14 @@ func (s *connSet) remoteIP(c net.Conn) (netip.Prefix, bool) {
 type connState struct {
 	phase atomic.Int32
 	drain context.Context
-	ip    netip.Prefix // the connection's key in connSet.byIP; invalid when it has none
+	// h2 is set once the preface has been read: an HTTP/2 connection is
+	// never closed by the shutdown's first pass, idle or not — it is told
+	// with the GOAWAY pair serveH2Conn sends when drain is cancelled, and
+	// closes itself at the PING's acknowledgement (RFC 9113 §6.8: a GOAWAY
+	// before closing, so that a POST crossing the close is not lost
+	// silently). A peer that never acknowledges is closed by the grace.
+	h2 atomic.Bool
+	ip netip.Prefix // the connection's key in connSet.byIP; invalid when it has none
 	// bodyToEOF is set while a close-delimited body — an HTTP/1.0 client's
 	// streamed response, see streamedFraming — is on the wire and not yet
 	// complete. A close in that state must not carry TLS's close_notify:
@@ -313,16 +320,18 @@ func (s *connSet) busy() int {
 // flight. The order matters against the reader, which marks itself idle
 // before it looks at draining: a reader that marked itself after this scan
 // sees the context cancelled; one that marked itself before is closed here.
-// Either way no idle connection outlives the call. An HTTP/2 connection with
-// a stream open is told instead (see serveH2Conn): the cancellation runs its
-// GOAWAY, and it closes itself once the stream is answered.
+// Either way no idle HTTP/1.1 connection outlives the call. An HTTP/2
+// connection is told instead, idle or not (see serveH2Conn): the
+// cancellation runs its GOAWAY pair, and it closes itself once the PING is
+// acknowledged and every stream answered — one round trip for an idle one,
+// where closing it here raced the GOAWAY its own goroutine was queuing.
 func (s *connSet) drain() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
 	s.beginDrain()
 	for c, st := range s.conns {
-		if st.phase.Load() != connBusy {
+		if st.phase.Load() != connBusy && !st.h2.Load() {
 			_ = c.Close()
 		}
 	}
@@ -456,7 +465,18 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 // cannot half-close (a pipe, a wrapper without CloseWrite) is closed in one
 // stage as before.
 func tearDown(c *prefixConn, cfg Config) {
-	cw, ok := c.Conn.(interface{ CloseWrite() error })
+	linger(c.Conn, cfg)
+}
+
+// linger is tearDown's two stages on any connection: the write side closed,
+// then what the peer still sends read and dropped until it closes in turn
+// or [Config.LingerTimeout] passes. A connection put behind a prefixConn is
+// unwrapped first, since the half-close is the underlying socket's.
+func linger(c net.Conn, cfg Config) {
+	if pc, ok := c.(*prefixConn); ok {
+		c = pc.Conn
+	}
+	cw, ok := c.(interface{ CloseWrite() error })
 	if !ok || cw.CloseWrite() != nil {
 		return
 	}
@@ -624,6 +644,11 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle
 	if isH2 {
 		// Busy until the reader has seen the first batch: a preface is
 		// followed by a request, and the reader keeps the phase from there.
+		// Marked HTTP/2 first: from here the shutdown tells it, never cuts
+		// it (see connState.h2).
+		if st != nil {
+			st.h2.Store(true)
+		}
 		st.set(connBusy)
 		_ = serveH2Conn(ctx, prefixed(c, peek), st, cfg, handle)
 		return
