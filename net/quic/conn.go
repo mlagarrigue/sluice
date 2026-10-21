@@ -1367,6 +1367,14 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		}
 	}
 	if c.isClient && p.preferredAddress != nil {
+		// §18.2: a server that chose a zero-length identifier for itself
+		// cannot offer a preferred address — nothing in its packets would
+		// tell the connection apart on the new path — and a client treats
+		// the offer as TRANSPORT_PARAMETER_ERROR. Refused before anything
+		// of the offer is kept.
+		if len(c.peerSCID) == 0 {
+			return parameterError(fmt.Errorf("%w: preferred_address from a server using a zero-length connection ID", ErrQUIC))
+		}
 		// §5.1.1: the identifier offered with preferred_address is sequence
 		// 1 of the peer's pool, token included, whether or not this end
 		// ever moves there. The move itself waits for confirmation

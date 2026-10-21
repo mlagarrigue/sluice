@@ -735,3 +735,36 @@ func TestPathResponseOffThePathCarriesNoAck(t *testing.T) {
 		t.Error("the acknowledgement owed is neither pending nor sent on the main socket: lost with the probe")
 	}
 }
+
+// §18.2: "A server that chooses a zero-length connection ID MUST NOT
+// provide a preferred address", and "A client MUST treat a violation of
+// these requirements as a connection error of type
+// TRANSPORT_PARAMETER_ERROR". Only a non-conformant server gets here (this
+// package's Listener always takes 8 bytes); the client refuses the offer
+// before pooling its identifier or remembering the address.
+func TestClientRefusesAPreferredAddressUnderAnEmptyServerCID(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("pref-empty:self")}
+	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1).To4(), Port: 443}
+	c := newConn(pc, peer, []byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = []byte("srv-cid0")
+	if !c.pinPeerSCID(nil) {
+		t.Fatal("an empty server SCID was not pinned; the test is checking the wrong thing")
+	}
+	pa := &preferredAddress{ipv4: &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2).To4(), Port: 4433}, cid: []byte("pref-cid"), statelessResetToken: [16]byte{7}}
+	err := c.handlePeerParameters(preferredParams(pa, nil, []byte("srv-cid0")))
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportParameterError {
+		t.Fatalf("handlePeerParameters = %v, want TRANSPORT_PARAMETER_ERROR for a preferred_address under a zero-length server identifier", err)
+	}
+	if got := c.preferredAddress(); got != nil {
+		t.Errorf("PreferredAddress() = %v after the refused offer, want nil", got)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.peerCIDs {
+		if e.seq == 1 {
+			t.Errorf("the refused offer's identifier %q was pooled as sequence 1", e.cid)
+		}
+	}
+}
