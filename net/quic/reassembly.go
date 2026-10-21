@@ -39,9 +39,45 @@ const (
 type rchunk struct {
 	off  uint64
 	data []byte
+	// buf is data's allocation from its start, and head the room in it
+	// before data[0]: data is buf[head:]. The room is zero until bytes land
+	// in front of the chunk (see prepend).
+	buf  []byte
+	head int
 }
 
 func (c rchunk) end() uint64 { return c.off + uint64(len(c.data)) }
+
+// newChunk parks a copy of p at off: frames borrow their packet's buffer,
+// and parked bytes outlive the packet.
+func newChunk(off uint64, p []byte) rchunk {
+	b := append([]byte(nil), p...)
+	return rchunk{off: off, data: b, buf: b}
+}
+
+// appendRight extends c with p, amortised O(len(p)) as append is.
+func (c *rchunk) appendRight(p []byte) {
+	c.buf = append(c.buf, p...)
+	c.data = c.buf[c.head:]
+}
+
+// prepend extends c leftward with p, into the room kept in front of its
+// data. With too little room the chunk moves to an allocation with as much
+// room in front as it will then hold, so frames walking backwards from a run
+// cost amortised O(len(p)) each, as appendRight's growth does on the right;
+// rebuilding the run around each one was a copy of everything parked.
+func (c *rchunk) prepend(p []byte) {
+	if c.head < len(p) {
+		room := len(p) + len(c.data)
+		nb := make([]byte, room+len(c.data))
+		copy(nb[room:], c.data)
+		c.buf, c.head = nb, room
+	}
+	c.head -= len(p)
+	copy(c.buf[c.head:], p)
+	c.data = c.buf[c.head:]
+	c.off -= uint64(len(p))
+}
 
 // reassembly holds out-of-order bytes until the gap before them fills.
 // The zero value is ready to use.
@@ -98,41 +134,23 @@ func (r *reassembly) add(off uint64, data []byte) error {
 	i := sort.Search(len(r.chunks), func(k int) bool { return r.chunks[k].end() >= off })
 	j := i + sort.Search(len(r.chunks)-i, func(k int) bool { return r.chunks[i+k].off > end })
 
-	switch {
-	case i == j: // touches nothing: a new hole's worth of bytes
+	if i == j { // touches nothing: a new hole's worth of bytes
 		r.chunks = append(r.chunks, rchunk{})
 		copy(r.chunks[i+1:], r.chunks[i:])
-		r.chunks[i] = rchunk{off: off, data: append([]byte(nil), data...)}
+		r.chunks[i] = newChunk(off, data)
 		r.held += len(data)
-	case j == i+1 && off >= r.chunks[i].off:
+	} else if c := &r.chunks[i]; j == i+1 && off >= c.off {
 		// One chunk, extended (if at all) only to the right: the shape of
-		// in-order bytes queuing behind a hole. Growing it in place is
-		// amortised O(len(data)); rebuilding it per frame was a full copy
-		// of everything parked, quadratic in the bytes behind the gap.
-		c := &r.chunks[i]
+		// in-order bytes queuing behind a hole, kept off merge's general
+		// path. Growing it in place is amortised O(len(data)); rebuilding it
+		// per frame was a full copy of everything parked, quadratic in the
+		// bytes behind the gap.
 		if ce := c.end(); end > ce {
-			c.data = append(c.data, data[ce-off:]...)
+			c.appendRight(data[ce-off:])
 			r.held += int(end - ce) //nolint:gosec // G115: bounded by len(data)
 		}
-	default:
-		lo := min(off, r.chunks[i].off)
-		hi := max(end, r.chunks[j-1].end())
-		merged := make([]byte, hi-lo)
-		copy(merged[off-lo:], data)
-		for _, c := range r.chunks[i:j] {
-			// Held bytes win over the new ones where they disagree; see the
-			// package comment on peers that contradict themselves.
-			copy(merged[c.off-lo:], c.data)
-			r.held -= len(c.data)
-		}
-		r.chunks[i] = rchunk{off: lo, data: merged}
-		n := len(r.chunks)
-		r.chunks = append(r.chunks[:i+1], r.chunks[j:]...)
-		// The tail beyond the new length still holds the merged chunks'
-		// data pointers in the backing array — retention, same reasoning
-		// as ring.pop.
-		clear(r.chunks[len(r.chunks):n])
-		r.held += len(merged)
+	} else {
+		r.merge(i, j, off, data)
 	}
 
 	if limit := r.chunkLimit(); len(r.chunks) > limit {
@@ -153,6 +171,71 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		}
 	}
 	return nil
+}
+
+// merge files data at off into the chunks [i, j) it touches or overlaps, which
+// become one. The result grows out of the largest of them, in place —
+// prepend on the left, appendRight on the right — so the work is the size of
+// everything but that chunk: rebuilding the run around each frame was a copy
+// of all of it, which a peer could ask for with one byte in front of a
+// parked run, or with a one-byte hole opened before it and filled, two
+// frames at a time. Held bytes win over the new ones where they disagree;
+// see the package comment on peers that contradict themselves.
+func (r *reassembly) merge(i, j int, off uint64, data []byte) {
+	end := off + uint64(len(data))
+	big := i
+	for k := i + 1; k < j; k++ {
+		if len(r.chunks[k].data) > len(r.chunks[big].data) {
+			big = k
+		}
+	}
+	lo, hi := min(off, r.chunks[i].off), max(end, r.chunks[j-1].end())
+	b := r.chunks[big]
+	bOff, bEnd := b.off, b.end()
+	for _, c := range r.chunks[i:j] {
+		r.held -= len(c.data)
+	}
+	if lo < bOff {
+		var left []byte
+		if j == i+1 {
+			left = data[:bOff-off] // nothing else lies in front of the one chunk
+		} else {
+			left = make([]byte, bOff-lo)
+			if off < bOff {
+				copy(left[off-lo:], data[:min(end, bOff)-off])
+			}
+			for _, c := range r.chunks[i:big] {
+				copy(left[c.off-lo:], c.data)
+			}
+		}
+		b.prepend(left)
+	}
+	if hi > bEnd {
+		var right []byte
+		if j == i+1 {
+			right = data[bEnd-off:] // in-order bytes queuing behind a hole
+		} else {
+			right = make([]byte, hi-bEnd)
+			if end > bEnd {
+				from := max(off, bEnd)
+				copy(right[from-bEnd:], data[from-off:])
+			}
+			for _, c := range r.chunks[big+1 : j] {
+				copy(right[c.off-bEnd:], c.data)
+			}
+		}
+		b.appendRight(right)
+	}
+	r.chunks[i] = b
+	if j > i+1 {
+		n := len(r.chunks)
+		r.chunks = append(r.chunks[:i+1], r.chunks[j:]...)
+		// The tail beyond the new length still holds the merged chunks'
+		// data pointers in the backing array — retention, same reasoning as
+		// ring.pop.
+		clear(r.chunks[len(r.chunks):n])
+	}
+	r.held += int(hi - lo) //nolint:gosec // G115: bounded by the bytes held and the frame
 }
 
 // takeReady appends the newly contiguous prefix to dst and advances past it.

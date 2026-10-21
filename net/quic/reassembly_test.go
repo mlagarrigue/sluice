@@ -3,6 +3,8 @@ package quic
 import (
 	"bytes"
 	"errors"
+	"math/rand/v2"
+	"runtime"
 	"testing"
 )
 
@@ -215,5 +217,126 @@ func BenchmarkReassemblyBehindGap(b *testing.B) {
 	b.SetBytes(1 << 20)
 	for b.Loop() {
 		reassembleBehindGap(b, 1<<20, 1000)
+	}
+}
+
+// A frame that lands just before a parked run used to rebuild the run around
+// itself — a copy of everything parked per frame, so a peer that sent a
+// mebibyte and then a thousand one-byte frames walking backwards from it made
+// this end copy a gibibyte. The same held for a frame that bridges two runs:
+// opening a one-byte hole in front of the big run and filling it cost the
+// whole run again, two frames at a time. Both now grow the larger run in
+// place, so the work is the size of what arrived.
+func TestReassemblyPrependIsLinear(t *testing.T) {
+	const parked, frames = 1 << 20, 1000
+	src := make([]byte, 2*frames+parked)
+	for i := range src {
+		src[i] = byte(i * 7)
+	}
+	base := uint64(2 * frames) // offset of the parked run: a gap before it
+
+	for _, tc := range []struct {
+		name string
+		feed func(r *reassembly) error
+	}{
+		{"prepend", func(r *reassembly) error {
+			for k := range uint64(frames) {
+				off := base - 1 - k
+				if err := r.add(off, src[off:off+1]); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+		{"open and fill a hole", func(r *reassembly) error {
+			for k := range uint64(frames / 2) {
+				// A byte one short of the run's start, then the byte between.
+				lo := base - 2*k - 2
+				if err := r.add(lo, src[lo:lo+1]); err != nil {
+					return err
+				}
+				if err := r.add(lo+1, src[lo+1:lo+2]); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r reassembly
+			if err := r.add(base, src[base:]); err != nil {
+				t.Fatal(err)
+			}
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			if err := tc.feed(&r); err != nil {
+				t.Fatal(err)
+			}
+			runtime.ReadMemStats(&after)
+			if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 4*(parked+frames) {
+				t.Errorf("%d bytes allocated for %d one-byte frames in front of %d parked, over 4×(parked+frames)", alloc, frames, parked)
+			}
+			if len(r.chunks) != 1 {
+				t.Fatalf("%d chunks parked, want the one run", len(r.chunks))
+			}
+			out, err := r.addThenTake(0, src[:base-frames], nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(out, src) || r.held != 0 || len(r.chunks) != 0 {
+				t.Fatalf("delivered %d/%d bytes (equal %v), held %d, chunks %d", len(out), len(src), bytes.Equal(out, src), r.held, len(r.chunks))
+			}
+		})
+	}
+}
+
+// Frames of every shape — overlapping, duplicated, in front of, behind and
+// bridging parked runs — in a seeded random order: after each one the chunks
+// are sorted, disjoint and non-touching, held counts exactly their bytes,
+// and once every byte has arrived the stream is the source.
+func TestReassemblyRandomFramesDeliverTheSource(t *testing.T) {
+	for seed := range uint64(200) {
+		rng := rand.New(rand.NewPCG(seed, 0x5eed)) //nolint:gosec // G404: a seeded generator is the point, so a failing seed replays
+		src := make([]byte, 64+rng.IntN(4096))
+		for i := range src {
+			src[i] = byte(rng.Uint32())
+		}
+		type frame struct{ off, end int }
+		var frames []frame
+		for off := 0; off < len(src); {
+			n := 1 + rng.IntN(300)
+			frames = append(frames, frame{off, min(off+n, len(src))})
+			off += n
+		}
+		for range frames {
+			a := rng.IntN(len(src))
+			frames = append(frames, frame{a, min(a+1+rng.IntN(600), len(src))}) // overlaps and duplicates
+		}
+		rng.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
+
+		var r reassembly
+		var out []byte
+		var err error
+		for _, f := range frames {
+			if out, err = r.addThenTake(uint64(f.off), src[f.off:f.end], out); err != nil {
+				t.Fatalf("seed %d: %v", seed, err)
+			}
+			held := 0
+			for k, c := range r.chunks {
+				held += len(c.data)
+				if k > 0 && r.chunks[k-1].end() >= c.off {
+					t.Fatalf("seed %d: chunks %d and %d touch or overlap", seed, k-1, k)
+				}
+				if c.off < r.consumed {
+					t.Fatalf("seed %d: chunk at %d below the delivered %d", seed, c.off, r.consumed)
+				}
+			}
+			if held != r.held {
+				t.Fatalf("seed %d: held %d, chunks hold %d", seed, r.held, held)
+			}
+		}
+		if !bytes.Equal(out, src) || r.held != 0 || len(r.chunks) != 0 {
+			t.Fatalf("seed %d: delivered %d/%d bytes (equal %v), held %d, chunks %d", seed, len(out), len(src), bytes.Equal(out, src), r.held, len(r.chunks))
+		}
 	}
 }
