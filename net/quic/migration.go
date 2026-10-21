@@ -855,17 +855,19 @@ func (c *Conn) startPathChallengeLocked(now time.Time) {
 // mu.
 func (c *Conn) sendPathChallengeLocked() {
 	full := c.pathProbe.target != nil || !c.amplActive || 3*c.amplRecv-c.amplSent >= 1200
-	switch {
-	case !c.pathProbe.sent:
-		c.pathProbe.full = full
-	case full && !c.pathProbe.full:
+	if c.pathProbe.sent {
+		// A resend carries fresh data: RFC 9000 §8.2.1 wants unpredictable
+		// data in every PATH_CHALLENGE frame, and §13.3 "a different
+		// payload each time". The response is matched against the latest
+		// data only (handlePathResponse): a late answer to an earlier
+		// challenge is ignored, and the next resend covers it. Until
+		// 2026-10-21 the data was renewed only when the amplification
+		// budget let the probe grow to full size.
 		if data, err := randomID(8); err == nil {
 			copy(c.pathProbe.data[:], data)
-			c.pathProbe.full = true
 		}
-	case !full:
-		c.pathProbe.full = false
 	}
+	c.pathProbe.full = full
 	c.pathProbe.sent = true
 	payload := AppendVarint(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.data[:]...)

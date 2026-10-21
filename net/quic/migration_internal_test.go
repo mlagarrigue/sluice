@@ -2318,3 +2318,43 @@ func TestRebindRefusesAPeerWithZeroLengthIDs(t *testing.T) {
 		t.Errorf("%d datagrams left on the new socket after a refused Rebind", n)
 	}
 }
+
+// RFC 9000 §8.2.1: unpredictable data in every PATH_CHALLENGE frame, resends
+// included (§13.3: "a different payload each time"). Two challenges of one
+// probe, the second a timer resend, carry different bytes.
+func TestPathChallengeResendsCarryFreshData(t *testing.T) {
+	old := &recordingPC{addr: fakeFuzzAddr("fresh:old")}
+	c := newConn(old, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+	c.mu.Unlock()
+
+	fresh := &recordingPC{addr: fakeFuzzAddr("fresh:new")}
+	if err := c.Rebind(fresh); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.pathProbeDeadlineLocked(c.pathProbe.sentAt.Add(time.Hour)) // past any backoff: one resend
+	c.mu.Unlock()
+	writes := fresh.recorded()
+	if len(writes) != 2 {
+		t.Fatalf("%d datagrams on the new socket, want the challenge and one resend", len(writes))
+	}
+	var data [2][]byte
+	for i, w := range writes {
+		for _, f := range openShort(t, w.data, len("peercid1")) {
+			if f.Type == framePathChallenge {
+				data[i] = append([]byte(nil), f.Data...)
+			}
+		}
+		if data[i] == nil {
+			t.Fatalf("datagram %d carries no PATH_CHALLENGE", i)
+		}
+	}
+	if bytes.Equal(data[0], data[1]) {
+		t.Errorf("the resent PATH_CHALLENGE repeats the first one's data %x; §8.2.1 wants fresh data in every frame", data[0])
+	}
+}
