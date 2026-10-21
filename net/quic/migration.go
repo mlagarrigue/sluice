@@ -133,6 +133,15 @@ type pathProbe struct {
 	// nothing to fall back to. A server's probe of a migrated client is
 	// never fatal — the idle timer owns that silence.
 	fatal bool
+	// retireOld, with retireSeq, marks a [Conn.Rebind] probe whose success
+	// retires the peer identifier the old path sent under (§5.1.2: retire
+	// what is no longer used on the address it was used on). Retired on
+	// validation rather than at once: a probe that fails ends the
+	// connection, and until then the old identifier may still be answering
+	// stragglers. The retirement is what makes the peer issue a fresh
+	// identifier for the next Rebind, which §9.5 requires (ErrNoFreshConnectionID).
+	retireOld bool
+	retireSeq uint64
 	// target and targetCID are set while a client probes the server's
 	// preferred address (§9.6.2): the challenge goes there, under that
 	// identifier, while everything else stays on the path in use. A
@@ -404,12 +413,27 @@ func (c *Conn) queueRetireLocked(seq uint64) error {
 
 // switchToFreshPeerCIDLocked moves this end's sends to a pooled peer
 // identifier, preferring one never used on any path (§9.5) and the lowest
-// sequence among those. Callers hold mu.
+// sequence among those, and falling back to a used one: its callers keep
+// the local address, where §9.5's MUST NOT does not bite. Callers hold mu.
 func (c *Conn) switchToFreshPeerCIDLocked() bool {
+	pick := c.pickPeerCIDLocked(false)
+	if pick < 0 {
+		return false
+	}
+	c.adoptPeerCIDAtLocked(pick)
+	return true
+}
+
+// pickPeerCIDLocked chooses the pooled peer identifier a switch would move
+// to — never the current one; one never used on any path before one that
+// was, the lowest sequence among equals — or -1 when there is none. With
+// unusedOnly, a used identifier is not a candidate: Rebind sends from a new
+// local address, where §9.5 forbids reusing one. Callers hold mu.
+func (c *Conn) pickPeerCIDLocked(unusedOnly bool) int {
 	pick := -1
 	for i := range c.peerCIDs {
 		e := &c.peerCIDs[i]
-		if e.seq == c.currentPeerSeq {
+		if e.seq == c.currentPeerSeq || (unusedOnly && e.used) {
 			continue
 		}
 		if pick == -1 ||
@@ -418,17 +442,43 @@ func (c *Conn) switchToFreshPeerCIDLocked() bool {
 			pick = i
 		}
 	}
-	if pick == -1 {
-		return false
-	}
-	e := &c.peerCIDs[pick]
+	return pick
+}
+
+// adoptPeerCIDAtLocked moves this end's sends to the pooled identifier at
+// index i. Callers hold mu.
+func (c *Conn) adoptPeerCIDAtLocked(i int) {
+	e := &c.peerCIDs[i]
 	e.used = true
 	c.dcid = e.cid
 	c.currentPeerSeq = e.seq
 	// A fresh identifier starts a fresh linkability epoch; a spin value
 	// carried across the rotation would tie the two (§17.4).
 	c.rollSpinLocked()
-	return true
+}
+
+// retirePeerCIDLocked retires one pooled peer identifier this end chose to
+// stop using (§5.1.2): the RETIRE_CONNECTION_ID is queued and the entry
+// leaves the pool, so nothing here sends under it again (§19.16). The
+// control queue's bound on retirements is the peer's budget, counted
+// against what its Retire Prior To forces; a retirement of this end's own
+// that would cross it is not queued, and the identifier stays pooled as
+// used — a Rebind never picks it, and the peer keeps one identifier more
+// than it would. Callers hold mu.
+func (c *Conn) retirePeerCIDLocked(seq uint64) {
+	if seq == c.currentPeerSeq {
+		return
+	}
+	if err := c.queueRetireLocked(seq); err != nil {
+		return
+	}
+	kept := c.peerCIDs[:0]
+	for _, e := range c.peerCIDs {
+		if e.seq != seq {
+			kept = append(kept, e)
+		}
+	}
+	c.peerCIDs = kept
 }
 
 // probingOnly reports whether a packet carried nothing but the frames §9.1
@@ -636,6 +686,15 @@ func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 // still sends to the address the handshake used.
 var ErrMigrationDisabled = errors.New("quic: the server announced disable_active_migration (RFC 9000 §18.2)")
 
+// ErrNoFreshConnectionID is returned by [Conn.Rebind] when the server has
+// issued no connection identifier this end has never sent under: RFC 9000
+// §9.5 forbids reusing one from another local address, so the connection
+// stays where it is. A server issues identifiers with NEW_CONNECTION_ID —
+// after the handshake, and again when this end retires the one a previous
+// Rebind left behind — so the caller waits and retries; a server that
+// issues none cannot be migrated to.
+var ErrNoFreshConnectionID = errors.New("quic: no connection identifier never used on another path; wait for the server's NEW_CONNECTION_ID (RFC 9000 §9.5)")
+
 // Rebind moves the connection onto pc: client-initiated migration (RFC
 // 9000 §9), for a client whose network changed under it or that chooses to
 // change it. The connection keeps every stream, its keys and its state; what
@@ -650,7 +709,11 @@ var ErrMigrationDisabled = errors.New("quic: the server announced disable_active
 // to close that socket. Use [Conn.Done] and [Conn.Err] to observe either
 // outcome. Congestion and round-trip state restart from their initial
 // values (§9.4), and sending moves to a connection identifier never used on
-// the old path when the server issued one (§9.5).
+// any other path (§9.5): without one, Rebind is refused with
+// [ErrNoFreshConnectionID] and nothing changes — the caller waits for the
+// server's next NEW_CONNECTION_ID and retries. Once the new path is
+// validated, the identifier the old path sent under is retired (§5.1.2),
+// which is what makes the server issue a replacement for the next Rebind.
 //
 // The old socket stays the caller's: Rebind stops reading it before it
 // returns, and the caller closes it afterwards. Passing the socket already
@@ -692,15 +755,28 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 		return errClosed
 	default:
 	}
+	// §9.5: a new local address sends under an identifier never used on
+	// another one. Decided before anything moves, so a refusal leaves the
+	// socket, the path state and the probe exactly as they were. Until
+	// 2026-10-21 the switch's result was ignored, and a pool with nothing
+	// fresh — before the server's NEW_CONNECTION_ID, or one Rebind past
+	// what it issued — sent from the new socket under an identifier the
+	// old path had already used.
+	fresh := c.pickPeerCIDLocked(true)
+	if fresh < 0 {
+		return ErrNoFreshConnectionID
+	}
 	now := time.Now()
 	old := c.pc
 	c.pc = pc
 	c.migrations++
 	// The old path's measurements say nothing about the new one (§9.4).
 	c.resetPathStateLocked(now)
-	c.switchToFreshPeerCIDLocked()
+	previous := c.currentPeerSeq
+	c.adoptPeerCIDAtLocked(fresh)
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
+	c.pathProbe.retireOld, c.pathProbe.retireSeq = true, previous
 	c.kickTimer()
 	// Jolt the read loop out of the old socket: it re-reads c.pc on its
 	// next iteration. Done under mu so the loop cannot re-arm a later
@@ -1031,6 +1107,13 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 		c.pathProbe.fatal = false
 		c.pathProbe.oldPending = false
 		c.amplActive = false
+		if c.pathProbe.retireOld {
+			// The new path answers: the identifier the old one sent under
+			// has no address left to serve (§5.1.2), and retiring it is
+			// what makes the peer issue the next one.
+			c.pathProbe.retireOld = false
+			c.retirePeerCIDLocked(c.pathProbe.retireSeq)
+		}
 		switch {
 		case c.pathProbe.target != nil:
 			c.adoptPreferredPathLocked(now)

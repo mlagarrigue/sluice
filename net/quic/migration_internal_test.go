@@ -1266,6 +1266,7 @@ func TestRebindToADeadPathEndsTheConnection(t *testing.T) {
 	installAppSealer(t, c)
 	c.mu.Lock()
 	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}) // what Rebind sends under (§9.5)
 	c.mu.Unlock()
 
 	fresh := &recordingPC{addr: fakeFuzzAddr("dead:new")}
@@ -1310,6 +1311,7 @@ func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
 	installAppSealer(t, c)
 	c.mu.Lock()
 	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}) // what Rebind sends under (§9.5)
 	c.mu.Unlock()
 	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("ok:new")}); err != nil {
 		t.Fatal(err)
@@ -1870,6 +1872,7 @@ func TestRebindRefusedWhenMigrationIsDisabled(t *testing.T) {
 	// adoptPreferredPathLocked leaves it — §18.2's last sentence applies.
 	c.mu.Lock()
 	c.peer = c.preferred
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}) // what Rebind sends under (§9.5)
 	c.mu.Unlock()
 	if err := c.Rebind(fresh); err != nil {
 		t.Fatalf("Rebind after acting on preferred_address: %v", err)
@@ -2167,5 +2170,91 @@ func TestNewPathChallengeWithAnEmptyPoolIsStillAnswered(t *testing.T) {
 	_, pc, _, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
 	if got := answerDCID(pc, 0); !bytes.Equal(got, []byte("peercid0")) {
 		t.Fatalf("answer names %q, want peercid0, the only identifier the peer issued", got)
+	}
+}
+
+// RFC 9000 §9.5: a new local address never sends under a connection
+// identifier another local address used. Rebind therefore needs an
+// identifier never used on any path, and is refused — nothing moved — when
+// the server issued none: before its NEW_CONNECTION_ID frames, and one
+// Rebind past what it issued. Until 2026-10-21 the switch's result was
+// ignored and the new socket sent under the old path's identifier.
+func TestRebindNeedsAFreshConnectionID(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("fresh:first")}
+	c := newConn(first, fakeFuzzAddr("fresh:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.mu.Unlock()
+
+	// The pool holds the handshake's identifier alone, already in use.
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("fresh:none")}); !errors.Is(err, ErrNoFreshConnectionID) {
+		t.Fatalf("Rebind with no fresh identifier: %v, want ErrNoFreshConnectionID", err)
+	}
+	c.mu.Lock()
+	if c.pc != first || c.currentPeerSeq != 0 || string(c.dcid) != "peercid0" || c.pathProbe.pending || c.migrations != 0 {
+		t.Fatalf("a refused Rebind moved state: pc=%v seq=%d dcid=%q probe=%v migrations=%d",
+			c.pc != first, c.currentPeerSeq, c.dcid, c.pathProbe.pending, c.migrations)
+	}
+	for i := 1; i <= 3; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: []byte("peercid" + string(rune('0'+i)))})
+	}
+	c.mu.Unlock()
+
+	seen := map[string]bool{"peercid0": true}
+	for i := 1; i <= 3; i++ {
+		if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("fresh:" + string(rune('0'+i)))}); err != nil {
+			t.Fatalf("Rebind %d with %d fresh identifiers left: %v", i, 4-i, err)
+		}
+		c.mu.Lock()
+		cid := string(c.dcid)
+		c.mu.Unlock()
+		if seen[cid] {
+			t.Fatalf("Rebind %d sends under %q, already used on another local address", i, cid)
+		}
+		seen[cid] = true
+	}
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("fresh:4")}); !errors.Is(err, ErrNoFreshConnectionID) {
+		t.Fatalf("the fourth Rebind on three identifiers: %v, want ErrNoFreshConnectionID", err)
+	}
+}
+
+// Once the new path is validated, the identifier the old path sent under
+// is retired (RFC 9000 §5.1.2): a RETIRE_CONNECTION_ID carrying its
+// sequence is queued and the entry leaves the pool, so the server issues a
+// replacement and the next Rebind has something fresh to send under.
+func TestRebindRetiresTheOldPathIdentifierOnceValidated(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("retire:first")}, fakeFuzzAddr("retire:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+	c.mu.Unlock()
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("retire:second")}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	data := c.pathProbe.data
+	retired := bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, 0))
+	c.mu.Unlock()
+	if retired {
+		t.Fatal("the old identifier was retired before the new path was validated")
+	}
+
+	c.handlePathResponse(Frame{Type: framePathResponse, Data: data[:]}, time.Now())
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, 0)) {
+		t.Fatal("no RETIRE_CONNECTION_ID for sequence 0 queued once the new path was validated")
+	}
+	for _, e := range c.peerCIDs {
+		if e.seq == 0 {
+			t.Fatal("the retired identifier is still pooled")
+		}
+	}
+	if c.currentPeerSeq != 1 {
+		t.Fatalf("sending under sequence %d, want 1", c.currentPeerSeq)
 	}
 }
