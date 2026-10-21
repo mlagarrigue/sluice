@@ -430,12 +430,16 @@ func BenchmarkProcessAck(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	s := sentTracker{packets: make([]sentPacket, inFlight)}
+	// The tracker's slice advances from the front as packets are freed, so
+	// each round starts again from the one allocation rather than reslicing
+	// what the last round left.
+	backing := make([]sentPacket, inFlight)
+	s := sentTracker{}
 	est := &deliveryEstimator{}
 	b.ReportAllocs()
 	for b.Loop() {
-		s.packets = s.packets[:inFlight]
-		copy(s.packets, template)
+		copy(backing, template)
+		s.packets = backing
 		s.hasLargestAcked = false
 		if _, err := s.processAck(now, f.largest, f.Data, &rtt, nil, est); err != nil {
 			b.Fatal(err)
@@ -1339,5 +1343,47 @@ func TestARetransmissionAfterAPauseIsApplicationLimited(t *testing.T) {
 	client.mu.Unlock()
 	if !limited {
 		t.Fatal("the probe's acknowledgement yielded a sample that is not application-limited")
+	}
+}
+
+// An ACK frame costs what it acknowledges, not the flight above it. An
+// ACK arrives a round trip after the largest packet it names was sent, so
+// a window's worth of packets sits above that largest; markAcked used to
+// step down through all of them to reach it, and release to move all of
+// them down over the packets it freed — O(window) per frame, O(window²) per
+// round trip on a long fat path, and the same for a peer that acknowledges
+// one old packet at a time on purpose. A flight sixteen times larger must
+// not make the same frames cost sixteen times more.
+func TestAckCostIsIndependentOfTheFlightAbove(t *testing.T) {
+	var rtt rttEstimator
+	rtt.sample(100*time.Millisecond, 0)
+	now := time.Now()
+	const frames = 1000
+	cost := func(inFlight int) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for range 5 {
+			s := sentTracker{packets: make([]sentPacket, inFlight)}
+			for pn := range uint64(inFlight) {
+				s.packets[pn] = sentPacket{pn: pn, sentAt: now, size: 1200, ackEliciting: true}
+			}
+			start := time.Now()
+			for pn := range uint64(frames) {
+				// One range, the one packet: count 0, first range 0.
+				out, err := s.processAck(now, pn, []byte{0, 0}, &rtt, nil, nil)
+				if err != nil || out.newlyAckedCount != 1 {
+					t.Fatalf("ack of %d: %d newly acked, err %v", pn, out.newlyAckedCount, err)
+				}
+			}
+			best = min(best, time.Since(start))
+			if len(s.packets) != inFlight-frames || s.packets[0].pn != frames {
+				t.Fatalf("%d packets left, first %d; want %d from %d", len(s.packets), s.packets[0].pn, inFlight-frames, frames)
+			}
+		}
+		return best
+	}
+	small, large := cost(2*frames), cost(32*frames)
+	if ratio := float64(large) / float64(small); ratio > 4 {
+		t.Errorf("%d one-packet ACKs cost %v under a flight of %d, %v under %d: %.1f×, want independent of the flight (under 4×)",
+			frames, small, 2*frames, large, 32*frames, ratio)
 	}
 }

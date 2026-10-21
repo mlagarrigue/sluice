@@ -390,9 +390,7 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 		if optimistic {
 			return
 		}
-		for i >= 0 && s.packets[i].pn > hi {
-			i--
-		}
+		i = s.below(i, hi)
 		for i >= 0 && s.packets[i].pn >= lo {
 			if p := &s.packets[i]; !p.acked {
 				p.acked = true
@@ -420,6 +418,33 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 		out.raisedLargest = true
 	}
 	return out, nil
+}
+
+// below returns the highest index at or under i whose packet number is at
+// most hi, or -1. It gallops down — steps of 1, 2, 4, … — then bisects the
+// last step, so it costs the logarithm of how far it moves: a step or two
+// when the peer is current, and no walk through the window above an old
+// largest. An ACK arrives a round trip after the largest packet it names
+// was sent, with a window's worth sent since, and stepping down through
+// those one at a time made every frame O(window) — O(window²) per round
+// trip on a long fat path, or on purpose from a peer acknowledging one old
+// packet per frame.
+func (s *sentTracker) below(i int, hi uint64) int {
+	top := i + 1 // every index from top up holds a number above hi
+	for step := 1; i >= 0 && s.packets[i].pn > hi; step <<= 1 {
+		top = i
+		i -= step
+	}
+	lo := max(i, 0) // the answer is in [lo-1, top-1]
+	for lo < top {
+		mid := int(uint(lo+top) >> 1)
+		if s.packets[mid].pn <= hi {
+			lo = mid + 1
+		} else {
+			top = mid
+		}
+	}
+	return lo - 1
 }
 
 // mark books one newly acknowledged packet. The merge walks down, so the
@@ -587,7 +612,23 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 			cc.onAcked(ev)
 		}
 	}
-	s.packets = append(kept, s.packets[i:]...)
+	// Close the gap the freed packets leave by moving whichever side is
+	// shorter. Moving the tail down — everything sent after the last packet
+	// freed — cost a window's worth of copying per ACK frame, since an ACK
+	// names packets a round trip old; the packets kept below the freed run
+	// are the few still waiting on reordering, so they move up instead and
+	// the slice advances from the front, as a queue does. The front slots
+	// are cleared for the payloads they still reference; append reallocates
+	// once the capacity behind the advanced front runs out, which amortises
+	// as any append does.
+	if tail := len(s.packets) - i; len(kept) < tail {
+		dst := i - len(kept)
+		copy(s.packets[dst:i], kept)
+		clear(s.packets[:dst])
+		s.packets = s.packets[dst:]
+	} else {
+		s.packets = append(kept, s.packets[i:]...)
+	}
 	if est != nil && out.newlyAckedCount > 0 {
 		est.finish(now, rtt.min)
 	}
