@@ -122,12 +122,13 @@ func TestH2OneMalformedRequestAmongManyCostsOne(t *testing.T) {
 	if code := c.waitReset(2*bad + 1); code != 0x1 {
 		t.Errorf("the malformed stream was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
 	}
-	got := c.bodies(n - 1)
+	got := c.bodies(n)
 	for i := range n {
 		id := uint32(2*i + 1) //nolint:gosec // G115: the loop is bounded by n
 		if i == bad {
-			if _, answered := got[id]; answered {
-				t.Errorf("the malformed request on stream %d was answered", id)
+			// Answered 400 (RFC 9113 §8.2.1) by the server, not by the handler.
+			if want := fmt.Sprintf("400 %s\n", reason(400)); got[id] != want {
+				t.Errorf("the malformed request on stream %d got %q, want %q", id, got[id], want)
 			}
 			continue
 		}

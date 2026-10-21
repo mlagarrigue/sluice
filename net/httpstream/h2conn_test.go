@@ -547,12 +547,16 @@ func TestH2RefusesMalformedRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The stream is reset with PROTOCOL_ERROR rather than answered
-			// (§8.1.1 asks for a stream error, not a connection error: one
-			// malformed request must not take the healthy ones with it),
-			// and the request never reaches the handler.
+			// The stream gets the 400 of §8.2.1 and is then reset with
+			// PROTOCOL_ERROR (§8.1.1 asks for a stream error, not a
+			// connection error: one malformed request must not take the
+			// healthy ones with it), and the request never reaches the
+			// handler.
 			if code := c.waitReset(1); code != 0x1 {
 				t.Errorf("reset code = %#x, want 0x1 PROTOCOL_ERROR", code)
+			}
+			if got := h2Status(c.heads[1]); got != 400 {
+				t.Errorf("status before the reset = %d, want 400 (RFC 9113 §8.2.1)", got)
 			}
 			if c.sawGoAway {
 				t.Error("one malformed request ended the whole connection")
@@ -942,7 +946,11 @@ func TestH2RefusesHostDisagreeingWithAuthority(t *testing.T) {
 	if code := c.waitReset(1); code != 0x1 {
 		t.Errorf("stream 1 was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
 	}
-	if got := c.bodies(1)[3]; got != "/b" {
+	if got := h2Status(c.heads[1]); got != 400 {
+		t.Errorf("status before the reset = %d, want 400 (RFC 9113 §8.2.1)", got)
+	}
+	// Two ended streams: the 400 ends stream 1, the echo ends stream 3.
+	if got := c.bodies(2)[3]; got != "/b" {
 		t.Errorf("stream 3 answered %q; a malformed neighbour took it down", got)
 	}
 	for _, n := range sizes() {
@@ -1735,7 +1743,10 @@ func TestH2ChecksContentLengthAgainstTheBody(t *testing.T) {
 		if code := c.waitReset(1); code != 0x1 {
 			t.Errorf("stream 1 was reset with %#x, want PROTOCOL_ERROR (0x1)", code)
 		}
-		if got := c.bodies(1)[3]; got != "/after" {
+		if got := h2Status(c.heads[1]); got != 400 {
+			t.Errorf("status before the reset = %d, want 400 (RFC 9113 §8.2.1)", got)
+		}
+		if got := c.bodies(2)[3]; got != "/after" {
 			t.Errorf("stream 3 answered %q; the length mismatch took its neighbour", got)
 		}
 		for _, n := range sizes() {
@@ -1807,6 +1818,9 @@ func TestH2RefusesInvalidPseudoHeaderValues(t *testing.T) {
 
 			if code := c.waitReset(1); code != 0x1 {
 				t.Errorf("reset code = %#x, want 0x1 PROTOCOL_ERROR", code)
+			}
+			if got := h2Status(c.heads[1]); got != 400 {
+				t.Errorf("status before the reset = %d, want 400", got)
 			}
 			if c.sawGoAway {
 				t.Error("one malformed request ended the whole connection")
@@ -3162,11 +3176,12 @@ func TestH2AnswersAWellFormedConnectWith501(t *testing.T) {
 			}
 			code, reset := c.resets[1]
 			if tt.status == 0 {
+				// Malformed: the 400 of §8.2.1, then §8.1.1's PROTOCOL_ERROR.
 				if !reset || code != errProtocolError {
 					t.Errorf("stream 1 reset = %v %#x, want PROTOCOL_ERROR for a malformed CONNECT", reset, code)
 				}
-				if _, answered := c.heads[1]; answered {
-					t.Error("a malformed CONNECT got a response head")
+				if got := h2Status(c.heads[1]); got != 400 {
+					t.Errorf("a malformed CONNECT got status %d, want 400", got)
 				}
 			} else {
 				if got := h2Status(c.heads[1]); got != tt.status {

@@ -105,6 +105,9 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 			if code := c.waitReset(1); code != 0x1 {
 				t.Errorf("reset code = %#x, want 0x1 PROTOCOL_ERROR", code)
 			}
+			if got := h2Status(c.heads[1]); got != 400 {
+				t.Errorf("status before the reset = %d, want 400 (RFC 9113 §8.2.1)", got)
+			}
 			if c.sawGoAway {
 				t.Error("one malformed request ended the whole connection")
 			}

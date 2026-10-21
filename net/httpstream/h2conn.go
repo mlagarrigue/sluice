@@ -113,8 +113,11 @@ type streamError struct {
 	// status, when set, is answered on the stream before it is reset: a
 	// request over one of the configured bounds gets 431 or 413 and then
 	// RST_STREAM NO_ERROR, which RFC 9113 §8.1 lets a server send after a
-	// complete response to stop a request it will not read. A client behind
-	// a proxy acts on a status; a bare reset tells it nothing (§10.5.1).
+	// complete response to stop a request it will not read; a malformed
+	// request gets the 400 §8.2.1 says a server SHOULD generate, then the
+	// RST_STREAM PROTOCOL_ERROR §8.1.1 requires (the response before it is
+	// §8.1.1's MAY). A client behind a proxy acts on a status; a bare reset
+	// tells it nothing (§10.5.1). The HTTP/1.1 reader answers 400 too.
 	status int
 	// head marks a refused request read as a HEAD: its status carries the
 	// body's length and type and no bytes (RFC 9110 §9.3.2). Unset when
@@ -139,6 +142,18 @@ func statusFail(id uint32, status int, method []byte, format string, args ...any
 		id: id, code: errNoError, status: status, head: bytes.Equal(method, headMethod),
 		err: fmt.Errorf(format, args...),
 	}
+}
+
+// malformedFail is a malformed request's stream error (RFC 9113 §8.1.1,
+// PROTOCOL_ERROR) with the 400 of §8.2.1 answered ahead of the reset. The
+// reset keeps PROTOCOL_ERROR rather than §8.1's NO_ERROR: §8.1.1 names the
+// code, and a client whose own END_STREAM closed the stream ignores a reset
+// on it (§5.1) — Go's does, so does h2spec's verifier, which reads past the
+// response to the RST_STREAM. The one §8.2.1 exception, a fault in a
+// trailer section, keeps the bare reset: the response has been written or
+// is being written by then.
+func malformedFail(id uint32, method []byte, err error) error {
+	return streamError{id: id, code: errProtocolError, status: 400, head: bytes.Equal(method, headMethod), err: err}
 }
 
 // h2State is where a stream is in RFC 9113 §5.1's lifecycle, kept to the three
@@ -795,7 +810,7 @@ func (s *h2Server) reset(se streamError) error {
 	s.retire(se.id, stateClosed)
 	s.w.forget(se.id)
 	if se.status != 0 {
-		return s.w.refuse(se.id, se.status, se.head)
+		return s.w.refuse(se.id, se.status, se.head, se.code)
 	}
 	return s.w.control32(frameRSTStream, se.id, se.code)
 }
@@ -939,6 +954,13 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 		if f.Flags&flagAck != 0 {
 			// The peer has processed this end's SETTINGS: streams it opens
 			// from here start at the advertised window (§6.9.2).
+			//
+			// No SETTINGS_TIMEOUT (§6.5.3's MAY): this end sends one SETTINGS,
+			// and every bound it carries is enforced here from the first
+			// byte, acknowledged or not — a peer that never acknowledges has
+			// its streams start at the default window, which slows it and
+			// costs this end nothing, until the idle timeout ends the
+			// connection as it would any silent one.
 			s.settingsAcked = true
 			return nil, nil
 		}
@@ -990,6 +1012,12 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 		return nil, s.w.credit(f.StreamID, inc)
 
 	case frameRSTStream:
+		// The error code the peer gives is not read, here or in GOAWAY
+		// below: no behaviour of this server depends on why a client
+		// cancelled, so an unknown code and INTERNAL_ERROR (§7's MAY) would
+		// be treated alike anyway — ignored, which is what §7 requires of
+		// an unknown one.
+		//
 		// Rapid reset: a client may legally cancel, and a client that cancels
 		// endlessly makes a server allocate stream state endlessly for free.
 		// CVE-2023-44487 is that, and the bound is the answer.
@@ -1072,6 +1100,8 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// fragment. Reading a pad length out of it instead would let the peer
 	// carve bytes out of the HPACK stream that this end's decoder sees and a
 	// conformant intermediary's does not, which is a dynamic-table desync.
+	//
+	// The pad's length is checked, its bytes are not — see data for why.
 	if f.Type == frameHeaders && f.Flags&flagPadded != 0 {
 		if len(block) == 0 {
 			return nil, fmt.Errorf("%w: a padded HEADERS with no pad length", ErrH2Protocol)
@@ -1199,8 +1229,16 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 		}
 		// §8.1.1: a malformed request is a stream error. It is the whole
 		// point of the per-stream path — one bad request among a hundred
-		// costs that one.
-		return nil, streamError{id: st.id, code: errProtocolError, err: err}
+		// costs that one. The method is looked up again for the 400's
+		// shape: buildRequest returned nothing.
+		var method []byte
+		for _, h := range fields {
+			if string(h.Name) == ":method" {
+				method = h.Value
+				break
+			}
+		}
+		return nil, malformedFail(st.id, method, err)
 	}
 	st.headers, st.declared, st.req = req.Headers, declared, req
 	st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
@@ -1275,6 +1313,12 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 
 	body := f.Payload
 	if f.Flags&flagPadded != 0 {
+		// The pad's length is checked, its bytes are not: §6.1 says a
+		// receiver "is not obligated to verify padding" and MAY make a
+		// non-zero byte a connection error. Verifying would cost a pass over
+		// every pad byte to catch a peer that is already non-conformant and
+		// gains nothing by it — the pad carries no semantic (§10.7 says what
+		// it is for) and is cut off the body whatever it holds.
 		if len(body) == 0 {
 			return nil, fmt.Errorf("%w: padded DATA with no pad length", ErrH2Protocol)
 		}
@@ -1379,8 +1423,8 @@ func (s *h2Server) finish(st *h2Stream) (*h2Stream, error) {
 	// the sum is final — it catches the short body, the long one, and the
 	// "content-length: 10" with END_STREAM on the HEADERS alike.
 	if st.declared >= 0 && st.declared != len(st.body) {
-		return nil, streamFail(st.id, errProtocolError,
-			"%w: content-length %d against a body of %d bytes", ErrH2Protocol, st.declared, len(st.body))
+		return nil, malformedFail(st.id, st.req.Method,
+			fmt.Errorf("%w: content-length %d against a body of %d bytes", ErrH2Protocol, st.declared, len(st.body)))
 	}
 	st.req.Body = st.body
 	s.served++ // what the rapid-reset bound is measured against

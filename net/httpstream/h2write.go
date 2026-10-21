@@ -766,9 +766,11 @@ func (w *h2Writer) appendTableUpdate(block []byte) []byte {
 
 // refuse answers a stream the reader refused with the status and its one
 // line of body (see [transportError]) — HEADERS, DATA with END_STREAM —
-// then RST_STREAM NO_ERROR, all in one critical section so that no other
-// head lands between them. head marks a request read as a HEAD: its answer
-// states the length and type and carries no DATA (RFC 9110 §9.3.2).
+// then RST_STREAM with code, all in one critical section so that no other
+// head lands between them. code is NO_ERROR for a request over a bound
+// (RFC 9113 §8.1) and PROTOCOL_ERROR for a malformed one (§8.1.1). head
+// marks a request read as a HEAD: its answer states the length and type and
+// carries no DATA (RFC 9110 §9.3.2).
 //
 // The DATA frame spends the connection's credit like any other, and the
 // stream's initial window: a peer that has granted less than the line — a
@@ -783,7 +785,7 @@ func (w *h2Writer) appendTableUpdate(block []byte) []byte {
 // untouched, and a size update the peer is owed goes out in front of this
 // block as it would in front of any other: nghttp2 answers its absence with
 // COMPRESSION_ERROR whatever block it is missing from.
-func (w *h2Writer) refuse(id uint32, status int, head bool) error {
+func (w *h2Writer) refuse(id uint32, status int, head bool, code uint32) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.waitCtrlLocked(); err != nil {
@@ -812,7 +814,7 @@ func (w *h2Writer) refuse(id uint32, status int, head bool) error {
 			return err
 		}
 	}
-	if err := w.appendCtrl32(frameRSTStream, id, errNoError); err != nil {
+	if err := w.appendCtrl32(frameRSTStream, id, code); err != nil {
 		return err
 	}
 	w.cond.Broadcast()
