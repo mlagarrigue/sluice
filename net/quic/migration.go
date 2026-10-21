@@ -295,6 +295,7 @@ func (c *Conn) handleRetireConnectionID(seq uint64) error {
 		if c.registrar != nil {
 			c.registrar.removeLocalCID(e.cid)
 		}
+		c.rxProgress = true
 		c.issueLocalCIDsLocked()
 		return nil
 	}
@@ -343,6 +344,7 @@ func (c *Conn) handleNewConnectionID(f Frame) error {
 		return c.queueRetireLocked(seq)
 	}
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: append([]byte(nil), cid...), token: token})
+	c.rxProgress = true
 	if err := c.retirePeerCIDsBeforeLocked(retire); err != nil {
 		return err
 	}
@@ -1173,8 +1175,10 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 		// The old path is alive. Nothing moves on that alone: the peer's
 		// non-probing packets there are what move the connection back.
 		c.pathProbe.oldPending = false
+		c.rxProgress = true
 	}
 	if c.pathProbe.pending && bytes.Equal(f.Data, c.pathProbe.data[:]) {
+		c.rxProgress = true
 		c.pathProbe.pending = false
 		c.pathProbe.fatal = false
 		c.pathProbe.oldPending = false

@@ -332,6 +332,9 @@ type Conn struct {
 	gone    chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
+	// nonProductive counts the authenticated ack-eliciting packets none of
+	// whose frames moved this end's state (RFC 9000 §21.9).
+	nonProductive uint64
 
 	// ku is the 1-RTT key-update state this end's send side keeps
 	// (RFC 9001 §6). Guarded by mu.
@@ -424,6 +427,11 @@ type Conn struct {
 	rxDatagramLen int
 	rxLocalCIDSeq uint64
 	rxHighest     bool
+	// rxProgress says whether a frame of the packet being processed moved
+	// this end's state; frames clears it per packet, the handlers set it,
+	// and a packet that ends without it is counted (RFC 9000 §21.9,
+	// nonProductive). The receive goroutine's alone.
+	rxProgress bool
 	// rxVia is the socket the datagram being processed arrived on, nil
 	// meaning pc. Only a Listener-fed server connection ever sees another
 	// one: the listener's preferred-address socket (§9.6).
@@ -1181,6 +1189,7 @@ func (c *Conn) confirmLocked() {
 	if c.handshakeConfirmed {
 		return
 	}
+	c.rxProgress = true
 	c.handshakeConfirmed = true
 	c.peerAddrValidated = true
 	c.discardSpaceLocked(spaceHandshake)
@@ -1591,6 +1600,22 @@ type Stats struct {
 	// load is an attacker probing, or a path corrupting datagrams.
 	DiscardedPackets uint64
 
+	// NonProductivePackets is how many authenticated, ack-eliciting packets
+	// carried no frame that moved this end's state: PING alone, a
+	// PATH_CHALLENGE, a MAX_DATA that raised nothing, bytes already
+	// received, a *_BLOCKED frame. RFC 9000 §21.9 asks an endpoint to track
+	// the cost of processing against progress and to read an excess of
+	// such packets as an attack; this is the tracking, and the reading is
+	// the operator's. Nothing is closed or dropped on it: each such packet
+	// costs this end what any packet costs — one AEAD open and a parse —
+	// and closing the connection would spare that only for packets still
+	// sent to a dead identifier, while the frames whose effect costs more
+	// than their bytes have bounds of their own. A rate that climbs while
+	// nothing else moves is the thing to look at. A limit, if a measurement
+	// ever shows such a flood costing more than the Initial flood a
+	// Listener already absorbs, would be a named Parameters field.
+	NonProductivePackets uint64
+
 	// ECT0Received, ECT1Received and CEReceived count the packets processed
 	// whose IP header carried that ECN codepoint (RFC 9000 §13.4.1), the
 	// counts this end reports back in its ACK frames. All zero where the
@@ -1738,6 +1763,7 @@ func (c *Conn) Stats() Stats {
 	defer c.mu.Unlock()
 	return Stats{
 		DiscardedPackets:      c.discarded,
+		NonProductivePackets:  c.nonProductive,
 		ECT0Received:          c.ecnReceived[ecnECT0],
 		ECT1Received:          c.ecnReceived[ecnECT1],
 		CEReceived:            c.ecnReceived[ecnCE],

@@ -793,16 +793,34 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	// left to skip are ACK and the close: a packet carrying nothing else is
 	// not ack-eliciting, and the close puts this end in the draining state,
 	// where nothing may leave anyway (§10.2.2).
+	eliciting := false
 	for _, f := range frames {
 		switch f.Type {
 		case frameACK, frameACK | 1, frameConnectionClose, frameConnectionClose | 1:
 			continue
 		}
+		eliciting = true
 		c.mu.Lock()
 		c.spaces[space].ack.onAckEliciting(space, now, c.rxECN == ecnCE)
 		c.mu.Unlock()
 		break
 	}
+	// RFC 9000 §21.9: an ack-eliciting packet none of whose frames moved
+	// this end's state is counted (Stats.NonProductivePackets says what is
+	// done with the count); the handlers set rxProgress when they move it.
+	// Saved and restored because this function re-enters itself — a CRYPTO
+	// frame replaying a deferred packet — and the inner packet is counted
+	// on its own without erasing what the outer one achieved so far.
+	outerProgress := c.rxProgress
+	c.rxProgress = false
+	defer func() {
+		if eliciting && !c.rxProgress {
+			c.mu.Lock()
+			c.nonProductive++
+			c.mu.Unlock()
+		}
+		c.rxProgress = outerProgress
+	}()
 	if space == spaceApplication {
 		// The §9.3 decision point: a confirmed server whose client's
 		// non-probing frames arrive from a new address follows it there
@@ -878,6 +896,9 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			delta := grown[len(scratch):]
 			scratch = grown
 			connGrowth += growth
+			if growth > 0 || len(delta) > 0 || finished {
+				c.rxProgress = true
+			}
 			if len(delta) > 0 || finished {
 				batch = append(batch, Frame{
 					Type: FrameStream, StreamID: f.StreamID,
@@ -900,6 +921,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			if err != nil {
 				return err
 			}
+			c.rxProgress = true
 			connGrowth += growth
 			if neverConsumed > 0 {
 				c.mu.Lock()
@@ -931,12 +953,14 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			// error — used to learn of it only at the next datagram that
 			// carried stream data.
 			if stopped {
+				c.rxProgress = true
 				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
 			}
 
 		case f.Type == frameMaxData:
 			c.mu.Lock()
 			if c.connSend.grant(f.value) {
+				c.rxProgress = true
 				c.cond.Broadcast()
 			}
 			c.mu.Unlock()
@@ -955,6 +979,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			if !tolerated {
 				c.mu.Lock()
 				if s.sendQ.grant(f.value) {
+					c.rxProgress = true
 					c.cond.Broadcast()
 				}
 				c.mu.Unlock()
@@ -966,10 +991,12 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 				if f.value > c.peerMaxStreamsBidi {
 					c.peerMaxStreamsBidi = f.value
 					c.bidiBlockedTold = false
+					c.rxProgress = true
 				}
 			} else if f.value > c.peerMaxStreamsUni {
 				c.peerMaxStreamsUni = f.value
 				c.uniBlockedTold = false
+				c.rxProgress = true
 			}
 			c.cond.Broadcast()
 			c.mu.Unlock()
@@ -999,6 +1026,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			c.mu.Unlock()
 
 		case f.Type == frameConnectionClose || f.Type == frameConnectionClose|1:
+			c.rxProgress = true
 			c.handlePeerClose(f)
 			return nil
 
@@ -1187,6 +1215,7 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 	if len(delta) == 0 {
 		return nil
 	}
+	c.rxProgress = true
 	if err := c.tls.HandleData(levelFor(space), delta); err != nil {
 		return fmt.Errorf("quic: the handshake refused data: %w", err)
 	}
@@ -1265,6 +1294,9 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// sides hold this phase, and the next rotation is permitted
 		// (RFC 9001 §6.1).
 		c.ku.acked = true
+	}
+	if out.newlyAckedCount > 0 {
+		c.rxProgress = true
 	}
 	if out.newlyAckedCount > 0 && space == spaceHandshake {
 		// An acknowledged Handshake packet is the client's proof the server
