@@ -889,3 +889,34 @@ func TestHugePeerIdleTimeoutKeepsTheLocalOne(t *testing.T) {
 		t.Errorf("blocked resend interval = %v, want a third of the local 30s", got)
 	}
 }
+
+// RFC 9002 §6.3: a client that receives a Retry "reset[s] congestion control
+// and loss recovery state, including resetting any pending timers". The PTO
+// backoff is part of that state: a probe timeout fired before the Retry
+// must not double the first PTO of the restarted connection.
+func TestRetryResetsThePTOBackoff(t *testing.T) {
+	dcid, scid := []byte("dcid0000"), []byte("scid0000")
+	c := newConn(&fuzzSink{addr: "retry:self"}, fakeFuzzAddr("retry:peer"), dcid, scid, true, DefaultParameters())
+	defer c.Close()
+	c.initialDCID = dcid
+	if err := c.installInitial(dcid); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.ptoCount = 3
+	c.mu.Unlock()
+
+	retry := appendRetryPacket(nil, scid, []byte("srv-cid0"), dcid, []byte("token"))
+	if err := c.receive(retry, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	retried, count := c.retried, c.ptoCount
+	c.mu.Unlock()
+	if !retried {
+		t.Fatal("the Retry was not accepted; the test is checking the wrong thing")
+	}
+	if count != 0 {
+		t.Errorf("ptoCount = %d after a Retry, want 0 (§6.3)", count)
+	}
+}

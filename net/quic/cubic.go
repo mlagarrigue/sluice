@@ -174,8 +174,8 @@ func (c *cubic) onAcked(ev ackEvent) {
 // The new stage starts at the reduced window.
 func (c *cubic) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
-	if ev.latestSent.Before(c.recoveryStart) {
-		return
+	if !c.recoveryStart.IsZero() && !ev.latestSent.After(c.recoveryStart) {
+		return // RFC 9002 B.5: sent at or before the start, inside the period
 	}
 	c.recoveryStart = ev.now
 	cwnd := float64(c.cwnd)

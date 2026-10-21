@@ -406,7 +406,7 @@ func (b *bbr3) onAcked(ev ackEvent) {
 	b.advanceLatestDeliverySignals(rs)
 	b.bw = min(b.maxBw, b.bwShortterm)
 
-	if b.inRecovery && !ev.sentAt.Before(b.recoveryStart) {
+	if b.inRecovery && ev.sentAt.After(b.recoveryStart) { // RFC 9002 B.5: strictly after the start
 		// BBRRestoreCwnd (§5.6.4.4): the period ends (RFC 9002 §7.3.2) and
 		// the window the loss interrupted comes back, bounded by the model
 		// in setCwnd right after.
@@ -734,6 +734,11 @@ func (b *bbr3) isTimeToProbeBW(now time.Time) bool {
 
 // renoCoexistenceProbeTime is BBRIsRenoCoexistenceProbeTime: as many
 // rounds as a Reno flow would take to grow back the window, 63 at most.
+// The draft's pseudo-code (§5.3.3.8.3) writes reno_rounds = TargetInflight()
+// and TargetInflight is in bytes, which the 63 bound would always win;
+// the intent §5.3.3.8.2 states is "min(reno_bdp, T_reno_bound) round
+// trips", a BDP counted in packets — Linux reads it that way too — so the
+// target is divided by the datagram size first.
 func (b *bbr3) renoCoexistenceProbeTime() bool {
 	rounds := min(b.targetInflight()/b.maxDatagram, bbr3RenoRoundsBound)
 	return b.roundsSinceBwProbe >= rounds
@@ -983,7 +988,9 @@ func (b *bbr3) onLost(ev lossEvent) {
 	b.noteCongestion()
 	b.lostInRound += ev.bytes
 	b.lostRangesInRound += ev.ranges
-	if !ev.latestSent.Before(b.recoveryStart) {
+	if b.recoveryStart.IsZero() || ev.latestSent.After(b.recoveryStart) {
+		// RFC 9002 B.5/B.6: a loss sent at or before the start is inside
+		// the running period; strictly after it opens a new one.
 		b.priorCwnd = b.saveCwnd()
 		b.inRecovery = true
 		b.recoveryStart = ev.now

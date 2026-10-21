@@ -15,14 +15,17 @@ func cubicInAvoidance(now time.Time) *cubic {
 	cc.cwnd = 120000
 	cc.ssthresh = cc.cwnd
 	cc.onSent(now, 120000)
-	cc.onLost(lossEvent{now: now, latestSent: now, bytes: 1200})
+	// The period opens an instant before now: RFC 9002 B.5 counts a packet
+	// sent at the start's very instant as inside it, and the tests below
+	// send from now on.
+	cc.onLost(lossEvent{now: now.Add(-time.Nanosecond), latestSent: now.Add(-time.Nanosecond), bytes: 1200})
 	return cc
 }
 
 // limitedAck acknowledges one datagram sent rtt ago, with the window the
 // limit this round: the send opened the round, a send of a whole window on
 // top of it was refused, and the acknowledgement closes it. Callers keep
-// now − rtt at or after the recovery start, or B.8 gates the packet.
+// now − rtt strictly after the recovery start, or B.5 gates the packet.
 func limitedAck(cc *cubic, now time.Time, rtt time.Duration) {
 	cc.onSent(now.Add(-rtt), 1200)
 	cc.canSend(cc.cwnd)

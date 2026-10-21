@@ -700,6 +700,11 @@ func (c *Conn) handleRetry(h longHeader) {
 	payloads, inFlight := sp.sent.takeAll()
 	sp.retrans = append(sp.retrans, payloads...)
 	c.cc.onLifted(inFlight)
+	// RFC 9002 §6.3: a Retry resets loss recovery state, pending timers
+	// included. The backoff is part of it: a probe timeout that fired before
+	// the Retry must not double the first PTO of the connection that
+	// restarts here, which has no RTT sample yet.
+	c.ptoCount = 0
 	c.mu.Unlock()
 
 	// New identifier, new Initial secrets (RFC 9001 §5.2).

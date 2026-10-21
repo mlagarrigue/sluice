@@ -241,8 +241,10 @@ func TestNewRenoWindow(t *testing.T) {
 	}
 
 	// A packet sent before a recovery start releases flight but earns
-	// nothing: the window must not move on it.
-	cc.recoveryStart = now
+	// nothing: the window must not move on it. The start is a second back,
+	// so the loss below, dated now, opens a new period (RFC 9002 B.5 counts
+	// a packet sent at the start's very instant as inside the period).
+	cc.recoveryStart = now.Add(-time.Second)
 	cc.onSent(now, 1200)
 	cc.onAcked(ackEvent{now: now, sentAt: now.Add(-time.Second), size: 1200})
 	if cc.cwnd != start+2400 {
@@ -1187,5 +1189,42 @@ func TestMarkDatedByAnUntrackedLargestStillReduces(t *testing.T) {
 				t.Fatalf("window %d before the CE mark, %d after: the event was dropped", before, cc.window())
 			}
 		})
+	}
+}
+
+// RFC 9002 B.5: InCongestionRecovery(sent_time) is sent_time <= start. A
+// packet sent at the very instant the period began is inside it — its loss
+// opens no new period and its acknowledgement earns no growth — and one
+// sent an instant later is outside, on every controller.
+func TestRecoveryPeriodIncludesItsStartInstant(t *testing.T) {
+	start := time.Now()
+	later := start.Add(time.Nanosecond)
+
+	reno := newNewReno(1200)
+	reno.onSent(start, 2400)
+	reno.onLost(lossEvent{now: start, latestSent: start, bytes: 1200})
+	half := reno.cwnd
+	reno.onLost(lossEvent{now: later, latestSent: start, bytes: 1200}) // sent at the start: inside
+	if reno.cwnd != half {
+		t.Errorf("Reno: a loss sent at the period's start instant shrank the window again (%d → %d)", half, reno.cwnd)
+	}
+	reno.limited = true
+	reno.onSent(start, 1200)
+	reno.onAcked(ackEvent{now: later, sentAt: start, size: 1200})
+	if reno.cwnd != half {
+		t.Errorf("Reno: an acknowledgement sent at the period's start instant grew the window (%d → %d)", half, reno.cwnd)
+	}
+	reno.onLost(lossEvent{now: later, latestSent: later, bytes: 1200}) // sent after: a new period
+	if reno.cwnd >= half {
+		t.Errorf("Reno: a loss sent after the start did not open a new period (%d)", reno.cwnd)
+	}
+
+	cub := newCubic(1200)
+	cub.onSent(start, 2400)
+	cub.onLost(lossEvent{now: start, latestSent: start, bytes: 1200})
+	after := cub.cwnd
+	cub.onLost(lossEvent{now: later, latestSent: start, bytes: 1200})
+	if cub.cwnd != after {
+		t.Errorf("CUBIC: a loss sent at the period's start instant shrank the window again (%d → %d)", after, cub.cwnd)
 	}
 }

@@ -175,9 +175,11 @@ func (c *Conn) maybeProbePMTULocked() {
 // pmtuProbeAckedLocked is the proof: the probe's size is the path's from
 // here on, and the search moves on to the next size. The congestion
 // controller's per-datagram unit follows (RFC 9002 §7.3.3 grows the window
-// by one datagram per window acknowledged); its initial window does not —
-// §7.2 fixed it at the start of the path, and re-deriving it now would be
-// a growth no acknowledgement earned. Callers hold mu.
+// by one datagram per window acknowledged); its initial window does not.
+// RFC 9002 §7.2 says it SHOULD be recalculated with the new size, and the
+// SHOULD is set aside on purpose: by the time a probe is acknowledged the
+// window has long left its initial value, and re-deriving it would be a
+// growth no acknowledgement earned. Callers hold mu.
 func (c *Conn) pmtuProbeAckedLocked(pn uint64) {
 	if !c.pmtu.inFlight || pn != c.pmtu.probePN {
 		return // a probe of the previous path, acknowledged late

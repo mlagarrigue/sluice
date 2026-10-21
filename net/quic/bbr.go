@@ -186,7 +186,7 @@ func (b *bbr) onLifted(bytes int) { b.inFlight = max(b.inFlight-bytes, 0) }
 // about the path's bandwidth, and the rate stays, as the version's loss
 // response leaves it. ProbeBW's probing phase ends on a mark as on a loss.
 func (b *bbr) onMarked(ev markEvent) {
-	if !ev.latestSent.Before(b.recoveryStart) {
+	if b.recoveryStart.IsZero() || ev.latestSent.After(b.recoveryStart) { // RFC 9002 B.5
 		b.enterRecovery(ev.now)
 	}
 	b.checkCyclePhase(ev.now, b.inFlight, true)
@@ -224,7 +224,7 @@ func (b *bbr) onAcked(ev ackEvent) {
 	b.inFlight = max(b.inFlight-ev.size, 0)
 	b.delivered += ev.size
 	rs := ev.rateSample()
-	if b.inRecovery && !ev.sentAt.Before(b.recoveryStart) {
+	if b.inRecovery && ev.sentAt.After(b.recoveryStart) { // RFC 9002 B.5: strictly after the start
 		// A packet sent in the recovery period is acknowledged: the period
 		// ends (RFC 9002 §7.3.2) and the window the loss interrupted comes
 		// back (§4.2.3.4, BBRRestoreCwnd).
@@ -475,7 +475,7 @@ func (b *bbr) setCwnd(acked int) {
 // probing phase ends on a loss once it has lasted its round trip.
 func (b *bbr) onLost(ev lossEvent) {
 	b.inFlight = max(b.inFlight-ev.bytes, 0)
-	if ev.latestSent.Before(b.recoveryStart) {
+	if !b.recoveryStart.IsZero() && !ev.latestSent.After(b.recoveryStart) { // RFC 9002 B.5: inside the period
 		if b.inRecovery {
 			b.cwnd = max(b.cwnd-ev.bytes, b.maxDatagram)
 		}

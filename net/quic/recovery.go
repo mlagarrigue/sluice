@@ -1186,10 +1186,13 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 // packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 
-// onMarked is a congestion event dated by the frame's largest acknowledged
-// packet (RFC 9002 §7.3.2, B.7 ProcessECN): the window halves and the
-// recovery period opens, as on a loss, unless one is already running. The
-// marked packets were delivered, so the flight does not move.
+// onMarked is a congestion event dated by the latest tracked packet the
+// frame acknowledges (RFC 9002 §7.3.2, B.7 ProcessECN): the window halves
+// and the recovery period opens, as on a loss, unless one is already
+// running. handleAck calls it before the losses are detected and the acked
+// packets released, which is A.7's order (ProcessECN, then
+// DetectAndRemoveLostPackets, then OnPacketsAcked). The marked packets were
+// delivered, so the flight does not move.
 func (c *newReno) onMarked(ev markEvent) {
 	c.onLost(lossEvent{now: ev.now, latestSent: ev.latestSent})
 }
@@ -1227,7 +1230,9 @@ func (c *newReno) absorb(ev ackEvent) bool {
 	if !c.roundMark.IsZero() && !ev.sentAt.Before(c.roundMark) {
 		c.roundMark = time.Time{}
 	}
-	return useful && !ev.sentAt.Before(c.recoveryStart)
+	// RFC 9002 B.5: in recovery iff sent_time <= recovery_start_time, so
+	// only a packet sent strictly after the period began earns growth.
+	return useful && (c.recoveryStart.IsZero() || ev.sentAt.After(c.recoveryStart))
 }
 
 // onAcked grows the window: by the packet's bytes in slow start, or what
@@ -1293,8 +1298,8 @@ func (c *newReno) slowStart(ev ackEvent, earns, closed bool) {
 // stragglers ride along.
 func (c *newReno) onLost(ev lossEvent) {
 	c.inFlight = max(c.inFlight-ev.bytes, 0)
-	if ev.latestSent.Before(c.recoveryStart) {
-		return
+	if !c.recoveryStart.IsZero() && !ev.latestSent.After(c.recoveryStart) {
+		return // B.5/B.6: sent at or before the start, inside the period
 	}
 	c.recoveryStart = ev.now
 	c.cwnd = max(c.cwnd/2, 2*c.maxDatagram)

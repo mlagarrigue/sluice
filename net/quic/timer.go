@@ -248,6 +248,11 @@ func (c *Conn) ptoDeadlineLocked(sp *space, space int) time.Time {
 	if space == spaceApplication {
 		maxAckDelay = c.peerMaxAckDelayLocked()
 	}
+	// RFC 9002 §6.2.1 doubles the PTO at every expiry; the shift is capped
+	// at 2^10 so it cannot overflow a Duration, which stops the doubling at
+	// the eleventh consecutive PTO. Reached only on a connection kept past
+	// its idle timeout with nothing ever acknowledged, and the cost is one
+	// probe pair per 1024 further PTOs instead of none.
 	interval := c.rtt.pto(maxAckDelay) << min(c.ptoCount, 10)
 	base := sp.lastElicit
 	if base.IsZero() {

@@ -330,6 +330,7 @@ func TestBBRLossRecovery(t *testing.T) {
 	if p.b.btlBw != btlBw {
 		t.Fatal("loss moved BtlBw")
 	}
+	p.now = p.now.Add(time.Nanosecond) // strictly after the period's start (RFC 9002 B.5)
 	p.send(10)
 	p.now = p.now.Add(p.rtt)
 	p.ack(57)
@@ -354,6 +355,7 @@ func TestBBRLossRecovery(t *testing.T) {
 	if p.b.window() != 4*1200 || !p.b.inRecovery {
 		t.Fatalf("window %d after a straggler, want the floor of four", p.b.window())
 	}
+	p.now = p.now.Add(time.Nanosecond) // strictly after the period's start (RFC 9002 B.5)
 	p.send(1)
 	p.now = p.now.Add(p.rtt)
 	p.ack(4)
