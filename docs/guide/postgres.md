@@ -65,12 +65,17 @@ Two options make the client demand what the server only offers by default.
 `RequireAuth` refuses a server that declares the connection authenticated
 without asking for anything: that is what a role configured for `trust`
 gets, and also what an impostor sends, since the message proves nothing
-about who sent it. `RequireChannelBinding` refuses every exchange that is
-not SCRAM-SHA-256-PLUS, the variant bound to the server's certificate: a
-recipe that does not return a `*tls.Conn`, a server that does not offer the
-variant, a password asked for in cleartext. Both refusals arrive as
-`ErrAuth`, before any credential has left the client, and the message names
-the option.
+about who sent it. `ChannelBinding` set to `ChannelBindingRequire` refuses
+every exchange that is not SCRAM-SHA-256-PLUS, the variant bound to the
+server's certificate: a recipe that does not return a `*tls.Conn`, a server
+that does not offer the variant, a password asked for in cleartext. Both
+refusals arrive as `ErrAuth`, before any credential has left the client,
+and the message names the option. The third value, `ChannelBindingDisable`,
+goes the other way: the exchange is never bound, and the client says so
+(libpq's `channel_binding=disable`). It exists for one server: the one
+whose certificate is signed by an algorithm with no hash, Ed25519, for
+which the binding is undefined (RFC 5929 §4.1). The default refuses that
+server rather than fall back without saying so.
 
 > **In plain terms: channel binding.** With SCRAM alone, the server proves
 > it knows your password and you prove you know it too, but neither side
@@ -78,8 +83,9 @@ the option.
 > terminates TLS between you and the server can relay the exchange. Channel
 > binding mixes a fingerprint of the server's certificate into the proof: a
 > relay holding another certificate fails. The server offers it when it has
-> a certificate (`ssl = on`); `RequireChannelBinding` makes its absence an
-> error instead of a silent fallback.
+> a certificate (`ssl = on`); `ChannelBindingRequire` makes its absence an
+> error instead of a silent fallback, `ChannelBindingDisable` turns it off
+> openly.
 
 > **In plain terms: no pool.** A *pool* is a reserve of open connections
 > shared by everyone. There is none here, because batching calls

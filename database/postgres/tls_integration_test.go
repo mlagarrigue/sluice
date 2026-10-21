@@ -63,7 +63,7 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 	})
 }
 
-// bindOverTLS connects through dial with RequireChannelBinding, checks the
+// bindOverTLS connects through dial with ChannelBindingRequire, checks the
 // certificate is the one the harness expects and that the server sees a TLS
 // session, and returns the connection.
 func bindOverTLS(t *testing.T, dial postgres.DialFunc, cfg postgres.Config) *postgres.Conn {
@@ -79,11 +79,11 @@ func bindOverTLS(t *testing.T, dial postgres.DialFunc, cfg postgres.Config) *pos
 		return rw, err
 	}
 
-	// RequireChannelBinding turns every way of not binding into an error: a
+	// ChannelBindingRequire turns every way of not binding into an error: a
 	// server that did not offer -PLUS, a role pg_hba lets in without SCRAM.
 	// Success here means the server verified a proof over its own hash of
 	// the certificate, and sent a signature that verified over ours.
-	cfg.RequireChannelBinding = true
+	cfg.ChannelBinding = postgres.ChannelBindingRequire
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	conn, err := postgres.Connect(ctx, recipe, cfg)

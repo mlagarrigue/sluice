@@ -233,7 +233,7 @@ func TestSCRAMBeginRefusals(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var s scram
-			_, _, err := s.begin([]byte(tc.mechanisms), tc.password, nil)
+			_, _, err := s.begin([]byte(tc.mechanisms), tc.password, nil, false)
 			if err == nil {
 				t.Fatal("begin accepted it")
 			}
@@ -273,7 +273,7 @@ func TestParseServerFinalRefusesMalformedAttributes(t *testing.T) {
 func runSCRAM(t *testing.T, s *scram) (mechanisms, serverFirst, serverFinal []byte) {
 	t.Helper()
 	mechanisms = []byte(mechSCRAMSHA256 + "\x00\x00")
-	if _, _, err := s.begin(mechanisms, rfcPassword, nil); err != nil {
+	if _, _, err := s.begin(mechanisms, rfcPassword, nil, false); err != nil {
 		t.Fatalf("begin: %v", err)
 	}
 	salt := []byte("0123456789abcdef")
@@ -307,7 +307,7 @@ func TestSCRAMRefusesAMessageOutOfSequence(t *testing.T) {
 		step func(s *scram, mechanisms, serverFirst, serverFinal []byte) error
 	}{
 		{"a second AuthenticationSASL", func(s *scram, mechanisms, _, _ []byte) error {
-			_, _, err := s.begin(mechanisms, rfcPassword, nil)
+			_, _, err := s.begin(mechanisms, rfcPassword, nil, false)
 			return err
 		}},
 		{"a second SASLContinue", func(s *scram, _, serverFirst, _ []byte) error {
@@ -334,7 +334,7 @@ func TestSCRAMRefusesAMessageOutOfSequence(t *testing.T) {
 // server must show.
 func TestSCRAMRefusesASecondChallenge(t *testing.T) {
 	var s scram
-	if _, _, err := s.begin([]byte(mechSCRAMSHA256+"\x00\x00"), rfcPassword, nil); err != nil {
+	if _, _, err := s.begin([]byte(mechSCRAMSHA256+"\x00\x00"), rfcPassword, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	serverFirst := []byte("r=" + s.nonce + "server,s=" + base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")) + ",i=4096")

@@ -87,6 +87,33 @@ const (
 	gs2HeaderPlus    = "p=tls-server-end-point,,"
 )
 
+// ChannelBindingMode is [Config.ChannelBinding]: whether the SCRAM exchange
+// binds to the server's certificate.
+type ChannelBindingMode int
+
+const (
+	// ChannelBindingPrefer binds when the server offers SCRAM-SHA-256-PLUS
+	// over TLS, and goes on unbound when it does not. The zero value.
+	ChannelBindingPrefer ChannelBindingMode = iota
+	// ChannelBindingRequire refuses every exchange that is not bound.
+	ChannelBindingRequire
+	// ChannelBindingDisable never binds, and declares as much ('n').
+	ChannelBindingDisable
+)
+
+// String names the mode as its constant is spelled.
+func (m ChannelBindingMode) String() string {
+	switch m {
+	case ChannelBindingPrefer:
+		return "ChannelBindingPrefer"
+	case ChannelBindingRequire:
+		return "ChannelBindingRequire"
+	case ChannelBindingDisable:
+		return "ChannelBindingDisable"
+	}
+	return fmt.Sprintf("ChannelBindingMode(%d)", int(m))
+}
+
 // tlsStater is what channel binding needs from a transport: *tls.Conn
 // satisfies it, and so does a wrapper that forwards the method.
 type tlsStater interface {
@@ -197,18 +224,22 @@ type Config struct {
 	// rather than hand queries to it.
 	RequireAuth bool
 
-	// RequireChannelBinding refuses a connection whose SCRAM exchange was
-	// not bound to the server's certificate (SCRAM-SHA-256-PLUS). The zero
-	// value binds when the server offers it and goes on without it
-	// otherwise, which protects against a stripped mechanism list only
-	// through the 'y' flag of RFC 5802 — a check the server makes, not this
-	// client. Set, it is this client that refuses: a connection that is not
-	// a *tls.Conn, before anything is sent; a server that offers
-	// SCRAM-SHA-256 without -PLUS, before the client's first SCRAM message;
-	// a server that asks for a cleartext password or asks for nothing at
-	// all. Each refusal is [ErrAuth] and names this field. It implies
-	// RequireAuth.
-	RequireChannelBinding bool
+	// ChannelBinding says whether the SCRAM exchange is bound to the
+	// server's certificate (SCRAM-SHA-256-PLUS), libpq's channel_binding.
+	// The zero value, [ChannelBindingPrefer], binds when the server offers
+	// it over TLS and goes on without it otherwise, which protects against
+	// a stripped mechanism list only through the 'y' flag of RFC 5802 — a
+	// check the server makes, not this client. [ChannelBindingRequire] makes
+	// this client the one that refuses: a connection that is not a
+	// *tls.Conn, before anything is sent; a server that offers SCRAM-SHA-256
+	// without -PLUS, before the client's first SCRAM message; a server that
+	// asks for a cleartext password or asks for nothing at all. Each refusal
+	// is [ErrAuth] and names this field. It implies RequireAuth.
+	// [ChannelBindingDisable] never binds, and says so to the server with
+	// the 'n' flag: the one way to reach a server whose certificate has no
+	// tls-server-end-point hash (RFC 5929 §4.1 defines none for Ed25519),
+	// which Prefer refuses rather than downgrade silently.
+	ChannelBinding ChannelBindingMode
 
 	// MinSCRAMIterations and MaxSCRAMIterations bound the PBKDF2 iteration
 	// count a server may ask for in its SCRAM first message. Zero means the
@@ -332,12 +363,12 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 	}
 
 	ts, _ := rw.(tlsStater)
-	if cfg.RequireChannelBinding && ts == nil {
+	if cfg.ChannelBinding == ChannelBindingRequire && ts == nil {
 		// Judged here rather than in startupBody because it is the transport,
 		// not the configuration, that is at fault — and before the startup
 		// packet, since no exchange over this connection could satisfy it.
 		_ = rw.Close()
-		return nil, fmt.Errorf("%w: Config.RequireChannelBinding is set and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so the DialFunc must return the *tls.Conn itself, not a wrapper around it — DialTLS does", ErrAuth)
+		return nil, fmt.Errorf("%w: Config.ChannelBinding is ChannelBindingRequire and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so the DialFunc must return the *tls.Conn itself, not a wrapper around it — DialTLS does", ErrAuth)
 	}
 
 	c := NewConn(rw)
@@ -387,6 +418,9 @@ func startupBody(cfg Config) ([]byte, error) {
 	// nothing a plain connection lacks.
 	if _, ok := cfg.Params["replication"]; ok {
 		return nil, errors.New(`postgres: Params["replication"] asks for a replication connection, which this package does not speak`)
+	}
+	if m := cfg.ChannelBinding; m < ChannelBindingPrefer || m > ChannelBindingDisable {
+		return nil, fmt.Errorf("postgres: Config.ChannelBinding %v is not one of ChannelBindingPrefer, ChannelBindingRequire, ChannelBindingDisable", m)
 	}
 	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
 		return nil, fmt.Errorf("postgres: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage)
@@ -500,7 +534,7 @@ type startupState struct {
 	asked bool
 
 	// bound is set once the SCRAM exchange began as SCRAM-SHA-256-PLUS. It is
-	// what Config.RequireChannelBinding requires.
+	// what Config.ChannelBinding == ChannelBindingRequire requires.
 	bound bool
 
 	// version is the protocol version in force: the one asked for, until a
@@ -609,8 +643,8 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			if cfg.RequireAuth && !st.asked {
 				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without asking for a credential and Config.RequireAuth is set — pg_hba.conf authenticates this role with trust, or this is not the server it claims to be", ErrAuth))
 			}
-			if cfg.RequireChannelBinding && !st.bound {
-				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and Config.RequireChannelBinding is set — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
+			if cfg.ChannelBinding == ChannelBindingRequire && !st.bound {
+				return c.breakConn(fmt.Errorf("%w: the server declared the connection ready without a SCRAM-SHA-256-PLUS exchange and Config.ChannelBinding is ChannelBindingRequire — pg_hba.conf authenticates this role with a method that cannot bind to the certificate (trust, password)", ErrAuth))
 			}
 			return nil
 
@@ -693,10 +727,10 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg Config, 
 		// unencrypted transport anyone on the path can ask the same question
 		// and keep the answer. The caller who knows the method and the
 		// transport are both sound says so with the flag.
-		if cfg.RequireChannelBinding {
+		if cfg.ChannelBinding == ChannelBindingRequire {
 			// A password method binds to nothing, so there is no answer that
 			// would satisfy the caller: refused before the credential moves.
-			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and Config.RequireChannelBinding is set — only a SCRAM-SHA-256-PLUS exchange satisfies it", ErrAuth))
+			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and Config.ChannelBinding is ChannelBindingRequire — only a SCRAM-SHA-256-PLUS exchange satisfies it", ErrAuth))
 		}
 		if !cfg.AllowCleartextPassword {
 			return c.breakConn(fmt.Errorf("%w: the server asked for a cleartext password and Config.AllowCleartextPassword is false — set it only over a transport the credential may cross, such as a verified *tls.Conn", ErrAuth))
@@ -720,18 +754,18 @@ func (c *Conn) authStep(st *startupState, code uint32, data []byte, cfg Config, 
 			state := ts.ConnectionState()
 			cs = &state
 		}
-		mech, msg, err := sc.begin(data, cfg.Password, cs)
+		mech, msg, err := sc.begin(data, cfg.Password, cs, cfg.ChannelBinding == ChannelBindingDisable)
 		if err != nil {
 			return c.breakConn(err)
 		}
 		st.asked, st.bound = true, mech == mechSCRAMSHA256Plus
-		if cfg.RequireChannelBinding && !st.bound {
+		if cfg.ChannelBinding == ChannelBindingRequire && !st.bound {
 			// Over TLS — a plain connection was refused in startup — and the
 			// unbound mechanism was chosen all the same: the server did not
 			// offer -PLUS, or this connection shows no certificate to bind
 			// to. Refused before the client's first message, which is what
 			// the 'y' flag would otherwise leave to the server to judge.
-			return c.breakConn(fmt.Errorf("%w: the server offers %s without %s and Config.RequireChannelBinding is set — the server has no certificate the exchange can bind to (ssl = off, a pooler terminating TLS), a man in the middle removed the mechanism, or this connection's handshake shows no peer certificate", ErrAuth, mechSCRAMSHA256, mechSCRAMSHA256Plus))
+			return c.breakConn(fmt.Errorf("%w: the server offers %s without %s and Config.ChannelBinding is ChannelBindingRequire — the server has no certificate the exchange can bind to (ssl = off, a pooler terminating TLS), a man in the middle removed the mechanism, or this connection's handshake shows no peer certificate", ErrAuth, mechSCRAMSHA256, mechSCRAMSHA256Plus))
 		}
 		c.w.SASLInitialResponse(mech, msg)
 		return c.flushAuth("starting the SCRAM exchange")

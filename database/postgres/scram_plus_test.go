@@ -14,7 +14,6 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -23,8 +22,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
 // RFC 5929 §4.1: the certificate is hashed with its signature's hash, except
@@ -140,59 +137,7 @@ func selfSigned(t *testing.T, key any, pub any) tls.Certificate {
 // values it computes itself: the channel binding from the certificate it
 // serves, the proof from scramProof (pinned against RFC 7677 elsewhere).
 func scramPlusServer(nc net.Conn, cert tls.Certificate, password string, wantCB []byte) error {
-	defer nc.Close()
-	srv := tls.Server(nc, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
-	rd := pgwire.NewReader(srv)
-	if _, err := rd.NextStartup(); err != nil {
-		return fmt.Errorf("startup: %w", err)
-	}
-	if _, err := srv.Write(beAuth(authSASL, mechSCRAMSHA256Plus+"\x00"+mechSCRAMSHA256+"\x00\x00")); err != nil {
-		return err
-	}
-	m, err := rd.Next()
-	if err != nil {
-		return fmt.Errorf("initial response: %w", err)
-	}
-	mech, rest, ok := cstring(m.Body)
-	if !ok || mech != mechSCRAMSHA256Plus {
-		return fmt.Errorf("mechanism %q, want %s", mech, mechSCRAMSHA256Plus)
-	}
-	first := string(rest[4:])
-	if !strings.HasPrefix(first, gs2HeaderPlus) {
-		return fmt.Errorf("client first message %q, want the gs2 header %q", first, gs2HeaderPlus)
-	}
-	clientFirstBare := strings.TrimPrefix(first, gs2HeaderPlus)
-	clientNonce := strings.TrimPrefix(clientFirstBare, "n=,r=")
-	serverNonce := clientNonce + "ServerHalf"
-	serverFirst := "r=" + serverNonce + ",s=" + rfcSalt + ",i=4096"
-	if _, err := srv.Write(beAuth(authSASLContinue, serverFirst)); err != nil {
-		return err
-	}
-	m, err = rd.Next()
-	if err != nil {
-		return fmt.Errorf("final response: %w", err)
-	}
-	final := string(m.Body)
-	wantC := "c=" + base64.StdEncoding.EncodeToString(append([]byte(gs2HeaderPlus), wantCB...))
-	withoutProof, proof, ok := strings.Cut(final, ",p=")
-	if !ok || withoutProof != wantC+",r="+serverNonce {
-		return fmt.Errorf("client final %q, want it to start %q", final, wantC+",r="+serverNonce)
-	}
-	salt, _ := base64.StdEncoding.DecodeString(rfcSalt)
-	authMessage := clientFirstBare + "," + serverFirst + "," + withoutProof
-	wantProof, serverSig, err := scramProof(password, salt, 4096, authMessage, defaultMinSaltLen)
-	if err != nil {
-		return err
-	}
-	if proof != base64.StdEncoding.EncodeToString(wantProof) {
-		return errors.New("the client's proof does not verify against the bound AuthMessage")
-	}
-	var tail []byte
-	tail = append(tail, beAuth(authSASLFinal, "v="+base64.StdEncoding.EncodeToString(serverSig))...)
-	tail = append(tail, beAuth(authOK, "")...)
-	tail = append(tail, beReady()...)
-	_, err = srv.Write(tail)
-	return err
+	return scramTLSServer(nc, cert, password, mechSCRAMSHA256Plus, gs2HeaderPlus, wantCB)
 }
 
 // Over a verified TLS connection to a server offering -PLUS, the exchange is
@@ -319,15 +264,15 @@ func TestStartupSCRAMWithoutTLSIgnoresPlus(t *testing.T) {
 	}
 }
 
-// RequireChannelBinding leaves the client nothing to decide: every exchange
+// ChannelBindingRequire leaves the client nothing to decide: every exchange
 // that is not SCRAM-SHA-256-PLUS is refused, and before any credential — or,
 // over a plain connection, before anything at all — is sent.
-func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
+func TestStartupChannelBindingRequireRefusesAnUnboundExchange(t *testing.T) {
 	leaf := &x509.Certificate{Raw: []byte("cert"), SignatureAlgorithm: x509.SHA256WithRSA}
 	overTLS := func(srv *fakeServer) io.ReadWriteCloser {
 		return tlsFake{srv, tls.ConnectionState{HandshakeComplete: true, PeerCertificates: []*x509.Certificate{leaf}}}
 	}
-	cfg := Config{User: "orders", Password: "pencil", RequireChannelBinding: true, AllowCleartextPassword: true}
+	cfg := Config{User: "orders", Password: "pencil", ChannelBinding: ChannelBindingRequire, AllowCleartextPassword: true}
 
 	cases := []struct {
 		name      string
@@ -350,7 +295,7 @@ func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
 		if !errors.Is(err, ErrAuth) {
 			t.Fatalf("%s: error = %v, want ErrAuth", tc.name, err)
 		}
-		if !strings.Contains(err.Error(), "RequireChannelBinding") {
+		if !strings.Contains(err.Error(), "ChannelBindingRequire") {
 			t.Errorf("%s: error = %v, want it to name the field", tc.name, err)
 		}
 		if bytes.Contains(srv.sent.Bytes(), []byte("pencil")) {
@@ -371,5 +316,5 @@ func TestStartupRequireChannelBindingRefusesAnUnboundExchange(t *testing.T) {
 // The exchange TestStartupSCRAMPlusOverTLS runs is exactly what both options
 // require, so with both set it is accepted unchanged.
 func TestStartupSCRAMPlusSatisfiesBothRequirements(t *testing.T) {
-	startupSCRAMPlusOverTLS(t, Config{User: "orders", Password: "pencil", RequireAuth: true, RequireChannelBinding: true})
+	startupSCRAMPlusOverTLS(t, Config{User: "orders", Password: "pencil", RequireAuth: true, ChannelBinding: ChannelBindingRequire})
 }

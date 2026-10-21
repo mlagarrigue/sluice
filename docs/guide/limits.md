@@ -62,7 +62,8 @@ Three reasons come up, and the difference matters:
 - **No connection pool** — on purpose. How many connections to open is
   your application's decision; batching does with one connection what a
   pool does with many.
-- **Authentication**: SCRAM-SHA-256 (with channel binding over TLS),
+- **Authentication**: SCRAM-SHA-256 (with channel binding over TLS, required
+  or disabled by `Config.ChannelBinding`),
   cleartext password on explicit request, and `trust`. **`md5` is refused**
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on

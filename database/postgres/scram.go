@@ -161,8 +161,11 @@ type scram struct {
 // SCRAM-SHA-256-PLUS is preferred whenever the server offers it: the proof is
 // then bound to the server's certificate, so a man in the middle holding a
 // different certificate cannot relay the exchange even if the client was
-// persuaded to trust it.
-func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionState) (mech string, first []byte, err error) {
+// persuaded to trust it. disabled is [ChannelBindingDisable]: the exchange
+// is never bound and the client says so with the 'n' flag — what RFC 5802
+// §6 asks of "a client that does not support channel binding", and what
+// libpq's channel_binding=disable sends — whatever cs holds.
+func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionState, disabled bool) (mech string, first []byte, err error) {
 	if s.step != scramIdle {
 		// One exchange per startup. A second AuthenticationSASL would restart
 		// it over a state that already holds a verified signature, which is
@@ -179,6 +182,9 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 	if cs != nil && (!cs.HandshakeComplete || len(cs.PeerCertificates) == 0) {
 		cs = nil // no certificate to bind to: as good as no TLS here
 	}
+	if disabled {
+		cs = nil // the caller chose not to bind: 'n', as over a plain socket
+	}
 	offersPlus := slices.Contains(names, mechSCRAMSHA256Plus)
 	mech = mechSCRAMSHA256
 	switch {
@@ -187,11 +193,17 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 		if err != nil {
 			// Refused rather than downgraded: the server offered binding over
 			// this connection, and a server that can bind and a client that
-			// will not is the shape a stripped binding takes.
+			// will not is the shape a stripped binding takes. A caller who
+			// knows the certificate (Ed25519, no hash defined) chooses
+			// ChannelBindingDisable and says 'n' openly instead.
 			return "", nil, err
 		}
 		mech, s.gs2, s.cbind = mechSCRAMSHA256Plus, gs2HeaderPlus, cbind
 	case !slices.Contains(names, mechSCRAMSHA256):
+		if offersPlus && disabled {
+			return "", nil, fmt.Errorf("%w: the server offers only %s and Config.ChannelBinding is ChannelBindingDisable — the server's policy requires the binding this client was told not to do (RFC 5802 §6)",
+				ErrAuthUnsupported, mechSCRAMSHA256Plus)
+		}
 		if offersPlus {
 			return "", nil, fmt.Errorf("%w: the server offers only %s, which binds the exchange to a TLS connection and this one is not TLS. It will not be downgraded silently, because a stripped mechanism list is what channel binding exists to detect",
 				ErrAuthUnsupported, mechSCRAMSHA256Plus)
