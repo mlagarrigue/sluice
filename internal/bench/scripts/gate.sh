@@ -99,7 +99,7 @@ fi
 # (+3.8%), DropWhile (+5.4%) and WindowNarrow (+19%), with 0 or 1 wins out of
 # 11 — the sign test reads a constant layout effect as a regression, and no
 # alternation of names or order (ab.sh) reaches inside the binary. A
-# benchmark is kept when a changed file sits in a package its own file
+# benchmark is kept when a changed Go file sits in a package its own file
 # imports, or in one of their dependencies; a change to internal/bench, to
 # go.mod or to go.sum keeps them all. What stays exposed is the layout effect
 # of a diff to a package a benchmark does depend on: a SLOWER there is worth
@@ -120,11 +120,15 @@ if [ -z "$REPLAY" ]; then
         while IFS= read -r pkg; do
           dir="${pkg#"$module"}"
           dir="${dir#/}"
+          # Go files only, directly in the package's directory: a README at
+          # the top of the tree is not the root package, and a docs-only
+          # commit was measured — and declared SLOWER on
+          # CoalescePassThrough (+6.7%, 0 wins of 11, fc73ffa) — for a
+          # binary whose code had not changed.
           if [ -z "$dir" ]; then
-            # The root package: the files at the top of the tree, not below.
-            grep -qvE '/' <<<"$changed" && touched=1
+            grep -qE '^[^/]+\.go$' <<<"$changed" && touched=1
           else
-            grep -q "^$dir/" <<<"$changed" && touched=1
+            grep -qE "^$dir/[^/]+\.go$" <<<"$changed" && touched=1
           fi
           [ -n "$touched" ] && break
         done < <(cd "$ROOT" && go list -deps $imports | grep "^$module")
