@@ -77,7 +77,7 @@ func extractInitial(dcid []byte) ([]byte, error) {
 	return initial, nil
 }
 
-// expandLabel is TLS 1.3's HKDF-Expand-Label (RFC 8446 §7.1) over SHA-256,
+// expandLabel is TLS 1.3's HKDF-Expand-Label (RFC 9846 §7.1) over SHA-256,
 // which the Initial keys always use (RFC 9001 §5.2) whatever suite the
 // handshake goes on to pick. The "tls13 " prefix is part of the label rather
 // than decoration: it is what keeps these keys from colliding with a TLS
