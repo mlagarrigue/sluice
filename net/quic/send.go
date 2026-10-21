@@ -1100,8 +1100,9 @@ func splitDataFrame(f Frame, room int) (first, second []byte) {
 // oldest unacknowledged payloads — they are the most likely lost — or, when
 // only one is left to resend, that one twice. A ping goes out alone when
 // there is nothing to resend but an answer is still owed. The queue of
-// declared losses goes first; the rest is lifted out of the flight record
-// (liftOldestResendable says why) and sent as new packets.
+// declared losses goes first; the rest is lifted from the oldest packets in
+// flight, which stay there (liftOldestResendable says why), and sent as new
+// packets counted on top of them (RFC 9002 §7.5).
 //
 // Two datagrams every time, not only when two payloads wait: a client whose
 // ClientHello spans two Initial packets and whose second one is lost holds
@@ -1144,17 +1145,16 @@ func (c *Conn) sendProbeLocked(space int) {
 		}
 	}
 	// Lifted before any is sent: the copies are recorded as they go, and
-	// the newest of them must not be the next one lifted.
+	// the newest of them must not be the next one lifted. The packets
+	// lifted from stay in flight and in the count (RFC 9002 §7.5: probes
+	// are additionally in flight); only their payloads travel.
 	for n < probes {
-		p, ok := sp.sent.liftOldestResendable()
+		payload, ok := sp.sent.liftOldestResendable()
 		if !ok {
 			break
 		}
-		if sp.sent.onPath(&p) { // a previous path's packet never counted here (RFC 9000 §9.4)
-			c.cc.onLifted(p.size)
-		}
 		var rest []byte
-		if payloads[n], rest = c.fitLocked(space, p.payload); rest != nil {
+		if payloads[n], rest = c.fitLocked(space, payload); rest != nil {
 			sp.retrans = append([][]byte{rest}, sp.retrans...)
 		}
 		if len(payloads[n]) > 0 {

@@ -770,12 +770,13 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 		t.Errorf("onSent called %d times for one packet, want 1", spy.sent)
 	}
 
-	// A probe timeout with nothing queued lifts that packet out of the
-	// record and resends its payload as new packets — two of them, the
-	// probe's fixed count (sendProbeLocked).
+	// A probe timeout with nothing queued resends that packet's payload as
+	// new packets — two of them, the probe's fixed count (sendProbeLocked)
+	// — and leaves the packet itself in flight: nothing is lifted from the
+	// count (RFC 9002 §7.5), the two sends are reported like any other.
 	c.sendProbeLocked(spaceInitial)
-	if spy.lifted != 1 {
-		t.Errorf("onLifted called %d times for one lifted packet, want 1", spy.lifted)
+	if spy.lifted != 0 {
+		t.Errorf("onLifted called %d times on a probe timeout, want 0: the probed packet stays in flight", spy.lifted)
 	}
 	if spy.sent != 3 {
 		t.Errorf("onSent called %d times after the probe resent the lifted packet twice, want 3", spy.sent)

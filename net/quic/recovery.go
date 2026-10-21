@@ -682,33 +682,33 @@ func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 	return sentPacket{}, false
 }
 
-// liftOldestResendable removes and returns the oldest packet whose payload
-// a probe can resend. The probe timeout lifts a packet out of the flight
-// record before sending its payload again as a new packet, so that the
-// copy's acknowledgement retires the data: with the original left in place,
-// a probe copy of the same payload is anonymous — acknowledged under its
-// own number, it tells the record nothing about the packet it copied, which
-// stays the oldest unacknowledged, is copied again on the next timeout, and
-// shadows every packet behind it. A server whose two-packet Initial flight
-// is lost then resends the first packet at every backoff step and never the
-// second, and the client, holding half a ServerHello, waits out the
-// handshake. RFC 9002 §6.2.4 permits either resending or marking in flight
-// as lost on a timeout; this does the first with the bookkeeping of the
-// second — minus the congestion event, which a timeout is not (§6.2,
-// §7.6: only a later acknowledgement proves what was lost).
+// liftOldestResendable takes the payload of the oldest packet a probe can
+// resend and leaves the packet itself in flight, now without a payload. The
+// probe timeout sends that payload again as new packets, and RFC 9002 §7.5
+// has them counted additionally in flight: the original stays in the
+// record and in the count until its own acknowledgement or its loss retires
+// it, like any other packet — a late acknowledgement of it is a sample, not
+// a number nobody knows. Its payload goes with the probe so that a loss
+// declared later does not queue the same frames a third time, and so that
+// the next timeout moves on: with the payload left in place a probe copy
+// would be anonymous — acknowledged under its own number, it would tell the
+// record nothing about the packet it copied, which would stay the oldest
+// resendable, be copied again at every backoff step, and shadow every
+// packet behind it. A server whose two-packet Initial flight is lost would
+// then resend the first packet forever and never the second, and the
+// client, holding half a ServerHello, would wait out the handshake.
 //
-// An acknowledgement of the original that arrives after it was lifted
-// names a number no longer recorded and is ignored; the copy then waits
-// for its own, or for the time threshold. A probe interval is what bounds
-// the acknowledgement's lateness, so that case is the rare one.
-func (s *sentTracker) liftOldestResendable() (sentPacket, bool) {
-	for i, p := range s.packets {
-		if p.ackEliciting && len(p.payload) > 0 {
-			s.packets = append(s.packets[:i], s.packets[i+1:]...)
-			return p, true
+// Until 2026-10-21 the packet was removed from the record instead, which
+// kept the flight the same size when §7.5 says it must grow.
+func (s *sentTracker) liftOldestResendable() ([]byte, bool) {
+	for i := range s.packets {
+		if p := &s.packets[i]; p.ackEliciting && len(p.payload) > 0 {
+			payload := p.payload
+			p.payload = nil
+			return payload, true
 		}
 	}
-	return sentPacket{}, false
+	return nil, false
 }
 
 // takeAll empties the tracker, returning every retransmittable payload — what
@@ -756,8 +756,9 @@ type congestionController interface {
 	// Controllers that read loss only ignore it.
 	onMarked(ev markEvent)
 	// onLifted releases bytes that leave the flight record without being
-	// acknowledged or lost: a probe timeout's lifted copy, a lost DPLPMTUD
-	// probe, a discarded space, a Retry.
+	// acknowledged or lost: a lost DPLPMTUD probe, a discarded space, a
+	// Retry. (Not a probe timeout's: what it resends stays in flight,
+	// RFC 9002 §7.5.)
 	onLifted(bytes int)
 	// pacingRate is how fast the pacer may release bytes, in bytes per
 	// second, given the current smoothed round trip (§7.7).
@@ -1178,11 +1179,10 @@ func (c *newReno) onSent(now time.Time, bytes int) {
 	c.maxInFlight = max(c.maxInFlight, c.inFlight)
 }
 
-// onLifted releases the bytes of a packet the probe timeout lifted from the
-// flight record to resend: its copy re-enters through onSent, so the flight
-// stays the same size, and the window does not move — a probe timeout is
-// not a congestion event (RFC 9002 §6.2). A lost DPLPMTUD probe leaves
-// the same way (RFC 9000 §14.4). Floored as a guard only: a previous path's
+// onLifted releases the bytes of a packet that leaves the flight record
+// without an acknowledgement or a loss — a lost DPLPMTUD probe (RFC 9000
+// §14.4), a discarded space, a Retry — and the window does not move: none
+// of these is a congestion event. Floored as a guard only: a previous path's
 // packets are filtered out before they reach here (sentTracker.pathStart).
 func (c *newReno) onLifted(bytes int) { c.inFlight = max(c.inFlight-bytes, 0) }
 

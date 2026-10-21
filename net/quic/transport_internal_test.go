@@ -402,12 +402,13 @@ func TestProbeSendsTheRetransmissionQueueFirst(t *testing.T) {
 	}
 }
 
-// A probe with nothing queued lifts the oldest unacknowledged packets out of
-// the flight record and resends their payloads as new packets: the copies
-// are what the record now tracks, so an acknowledgement of a copy retires
-// the data, and the next timeout moves on to what is still unacknowledged
+// A probe with nothing queued lifts the payloads of the oldest unacknowledged
+// packets and resends them as new packets. The originals stay in the flight
+// record, now without a payload, so that their own acknowledgement or loss
+// retires them and the next timeout moves on to what still has a payload
 // instead of copying the same packet again (liftOldestResendable). The
-// bytes in flight do not change: a timeout is not a loss.
+// bytes in flight grow by the two probes (RFC 9002 §7.5): a timeout is not
+// a loss, and the probes are additional load.
 func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	c := newIdleServerConn(t)
 	c.mu.Lock()
@@ -429,17 +430,20 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	for _, p := range sp.sent.packets {
 		pns = append(pns, p.pn)
 	}
-	if len(pns) != 3 || pns[0] != 2 || pns[1] != 3 || pns[2] != 4 {
-		t.Fatalf("packets tracked = %v, want the untouched 2 and the copies 3 and 4", pns)
+	if len(pns) != 5 || pns[0] != 0 || pns[1] != 1 || pns[2] != 2 || pns[3] != 3 || pns[4] != 4 {
+		t.Fatalf("packets tracked = %v, want the originals 0, 1 and 2 still in flight and the copies 3 and 4", pns)
 	}
-	if !bytes.Contains(sp.sent.packets[1].payload, []byte{framePing, 0}) || !bytes.Contains(sp.sent.packets[2].payload, []byte{framePing, 1}) {
-		t.Errorf("the copies do not carry the lifted payloads: %+v", sp.sent.packets[1:])
+	if len(sp.sent.packets[0].payload) != 0 || len(sp.sent.packets[1].payload) != 0 {
+		t.Errorf("the lifted packets kept their payloads, which the next timeout would copy again: %+v", sp.sent.packets[:2])
 	}
-	// 100 bytes of untouched packet 2, plus two probes that each left the
-	// record and re-entered at their sealed size.
-	want := 100 + sp.sent.packets[1].size + sp.sent.packets[2].size
+	if !bytes.Contains(sp.sent.packets[3].payload, []byte{framePing, 0}) || !bytes.Contains(sp.sent.packets[4].payload, []byte{framePing, 1}) {
+		t.Errorf("the copies do not carry the lifted payloads: %+v", sp.sent.packets[3:])
+	}
+	// The 300 bytes of the three originals, still in flight, plus the two
+	// probes at their sealed size: RFC 9002 §7.5, "additionally in flight".
+	want := 300 + sp.sent.packets[3].size + sp.sent.packets[4].size
 	if c.reno().inFlight != want {
-		t.Errorf("inFlight = %d, want %d: a probe timeout moves bytes, it is not a loss", c.reno().inFlight, want)
+		t.Errorf("inFlight = %d, want %d: the probes are counted on top of what they resend", c.reno().inFlight, want)
 	}
 }
 
