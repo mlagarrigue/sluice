@@ -116,6 +116,11 @@ func (c *cubic) startEpoch(now time.Time) {
 func (c *cubic) onAcked(ev ackEvent) {
 	inRound := !c.roundMark.IsZero()
 	earns := c.absorb(ev)
+	// Strict, as RFC 9002 §7.3.1 and §7.3.3 draw the line (slow start
+	// below ssthresh, avoidance at or above it). RFC 9438 §4.10 writes "no
+	// more than", which read to the letter would put a window just reduced
+	// to ssthresh (§4.6) back into slow start, against §4.2 and §4.6 of
+	// the same text; the difference is one growth step at equality.
 	if c.cwnd < c.ssthresh {
 		c.slowStart(ev, earns, inRound && c.roundMark.IsZero())
 		return
