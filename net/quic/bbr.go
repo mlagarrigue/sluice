@@ -173,8 +173,24 @@ func (b *bbr) onSent(now time.Time, bytes int) {
 
 func (b *bbr) onLifted(bytes int) { b.inFlight = max(b.inFlight-bytes, 0) }
 
-// onMarked is ignored: version 1 reads bandwidth and round trip only.
-func (b *bbr) onMarked(markEvent) {}
+// onMarked is the response draft-ietf-ccwg-bbr-06 §3.7 requires of a
+// connection that marks ECT(0) — the controller "MUST treat any CE marks
+// as congestion" — and leaves to the implementation. Version 1 has one
+// answer to congestion, the loss modulation (§4.2.3.4), and the marks take
+// it without the retransmission: a frame whose largest acknowledged packet
+// left after the current period began opens a new one — window saved and
+// cut to the flight plus one datagram, packet conservation for the round —
+// and a frame within the period is the same event, so nothing more moves:
+// the marked packets arrived, and no byte leaves the flight or the window.
+// The model is not touched, as it is not for loss: a mark says nothing
+// about the path's bandwidth, and the rate stays, as the version's loss
+// response leaves it. ProbeBW's probing phase ends on a mark as on a loss.
+func (b *bbr) onMarked(ev markEvent) {
+	if !ev.latestSent.Before(b.recoveryStart) {
+		b.enterRecovery(ev.now)
+	}
+	b.checkCyclePhase(ev.now, b.inFlight, true)
+}
 
 // pacingRate is the rate the model names, pacing_gain × BtlBw (§4.2.1),
 // kept in rate by setPacingRate. Before the first sample it is the
@@ -464,12 +480,19 @@ func (b *bbr) onLost(ev lossEvent) {
 			b.cwnd = max(b.cwnd-ev.bytes, b.maxDatagram)
 		}
 	} else {
-		b.priorCwnd = b.saveCwnd()
-		b.inRecovery, b.packetConservation = true, true
-		b.recoveryStart = ev.now
-		b.cwnd = b.inFlight + b.maxDatagram
+		b.enterRecovery(ev.now)
 	}
 	b.checkCyclePhase(ev.now, b.inFlight, true)
+}
+
+// enterRecovery opens a recovery period at now (§4.2.3.4): the window is
+// saved, cut to the flight plus one datagram, and packet conservation
+// holds for the round. Shared by loss and by CE marks (onMarked).
+func (b *bbr) enterRecovery(now time.Time) {
+	b.priorCwnd = b.saveCwnd()
+	b.inRecovery, b.packetConservation = true, true
+	b.recoveryStart = now
+	b.cwnd = b.inFlight + b.maxDatagram
 }
 
 // onPersistentCongestion is the draft's retransmission timeout (§4.2.3.4):

@@ -389,3 +389,47 @@ func TestBBRAppLimitedSamples(t *testing.T) {
 		t.Fatalf("a limited round above the estimate left BtlBw at %v, want 9.6e6", p.b.btlBw)
 	}
 }
+
+// A connection under version 1 marks ECT(0) like the others, so the CE marks
+// its peer reports are congestion (draft-ietf-ccwg-bbr-06 §3.7, RFC 9002
+// §7.1), and the version answers with its loss modulation minus the
+// retransmission: one recovery period per round trip — window saved, cut to
+// the flight plus one datagram — with the flight, the model and the rate
+// left where they were, the marked packets having arrived.
+func TestBBRMarksOpenARecoveryPeriod(t *testing.T) {
+	est := &deliveryEstimator{}
+	cc := newController(CongestionConfig{Algorithm: CongestionBBRv1}, 1200, est)
+	b, ok := cc.(*bbr)
+	if !ok {
+		t.Fatalf("CongestionBBRv1 selected %T", cc)
+	}
+	now := time.Now()
+	const srtt = 20 * time.Millisecond
+	for range 8 {
+		cc.onSent(now, 1200)
+	}
+	window, rate := cc.window(), cc.pacingRate(srtt)
+	// Three validated CE marks in one ACK frame, dated like handleAck does.
+	cc.onMarked(markEvent{now: now.Add(srtt), latestSent: now, packets: 3})
+	if cc.window() >= window {
+		t.Fatalf("after 3 CE marks the window went %d -> %d: the marks were ignored", window, cc.window())
+	}
+	if !b.inRecovery || b.priorCwnd != window || cc.window() != 8*1200+1200 {
+		t.Fatalf("after the marks: recovery %v, saved %d, window %d, want %d saved and the flight plus one", b.inRecovery, b.priorCwnd, cc.window(), window)
+	}
+	if cc.bytesInFlight() != 8*1200 || cc.pacingRate(srtt) != rate {
+		t.Fatalf("the marks moved the flight to %d and the rate to %.0f: nothing was lost", cc.bytesInFlight(), cc.pacingRate(srtt))
+	}
+	// A second report dated before the period began is the same event: the
+	// window stays, where a second loss batch would take its bytes off.
+	cc.onMarked(markEvent{now: now.Add(2 * srtt), latestSent: now.Add(-time.Millisecond), packets: 2})
+	if cc.window() != 8*1200+1200 {
+		t.Fatalf("a second report of the same event moved the window to %d", cc.window())
+	}
+	// A mark on a packet sent after the period began is a new event.
+	start := b.recoveryStart
+	cc.onMarked(markEvent{now: now.Add(3 * srtt), latestSent: start.Add(time.Millisecond), packets: 1})
+	if !b.recoveryStart.After(start) {
+		t.Fatal("a mark on a packet sent after the period began did not open a new one")
+	}
+}

@@ -237,9 +237,10 @@ const (
 	// more every eight round trips and draining the path for 200 ms every
 	// ten seconds to re-measure its propagation delay. Loss does not shrink
 	// its rate, so a path that drops a packet in a hundred is held at its
-	// bandwidth; the version has no bound on what it takes from a Reno or
-	// CUBIC flow sharing the link. Experimental: measured on this package's
-	// emulated paths only.
+	// bandwidth; a CE mark is read as a loss that arrived, which opens the
+	// same recovery period and shrinks the rate no more; the version has no
+	// bound on what it takes from a Reno or CUBIC flow sharing the link.
+	// Experimental: measured on this package's emulated paths only.
 	CongestionBBRv1
 
 	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr, the
