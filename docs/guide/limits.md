@@ -336,6 +336,17 @@ to a separate module before a v1.
   have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
   require them, and `net.PacketConn` does not deliver them). A lost probe
   is not a congestion event (§14.4).
+- **`net/quic` reassembly**: the bytes of a stream that arrive out of
+  order are kept until the gap before them fills, up to the flow-control
+  limit this end granted — and in at most `max(held / 1024, 256)` disjoint
+  fragments, 16,384 at the ceiling, `held` being the bytes parked. Past
+  that the connection closes with INTERNAL_ERROR, the reason naming the
+  bound. A conformant sender stays well under it: on a deep-buffered path
+  a 1.4 MB flight left 257 holes, each between whole packets, where the
+  bound by then allows 1,367. The bound is there for the peer that sends
+  one byte per frame, who would otherwise choose this end's bookkeeping
+  cost. In plain words: a stream may be delivered in any order, but not
+  as confetti.
 - **`net/quic/udp`**: follows `quic`.
 - **`web/stream`**: a real consumer of its stages. Its transport,
   `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's

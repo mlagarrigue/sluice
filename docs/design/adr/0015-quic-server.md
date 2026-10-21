@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated)
 - **Theme:** quic
 
 ## Problem
@@ -52,7 +52,12 @@ price of a bound one host cannot multiply; an operator serving many
 clients behind one /64 lengthens `IPv6PrefixBits`. The amplification limit is
 always on — sends past three times receipts are dropped until a
 Handshake-level packet decrypts; `AlwaysRetry` adds stateless Retry with an
-HMAC token for deployments under attack. `Close` ends pending and parked
+HMAC token for deployments under attack. Within a connection, a stream's
+out-of-order bytes are bounded in fragments as well as in bytes —
+`max(held / 1024, 256)` disjoint runs, 16,384 at most — and the connection
+closes with INTERNAL_ERROR past it, the one code RFC 9000 §20.1 gives an
+endpoint that cannot continue; the bound and its measure are in the
+limits guide. `Close` ends pending and parked
 connections and follows `net.Listener`'s line around accepted ones. On
 Linux a listener bound to the unspecified address answers from the address
 each datagram reached. Unroutable short-header datagrams get a stateless
