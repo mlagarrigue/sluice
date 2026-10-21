@@ -609,7 +609,7 @@ draft's later revisions add one, and that figure is the next step's
 criterion. Reno stays the default: nothing here is a measurement
 against a real client.
 
-**BBR as the IETF drafts it** (draft-ietf-ccwg-bbr-03, the version Linux
+**BBR as the IETF drafts it** (draft-ietf-ccwg-bbr-06, the version Linux
 ships as BBRv3, `CongestionBBR`) keeps version 1's model of the path and
 reads loss as evidence about how much the path holds: a round that loses
 more than 2% while probing bounds the volume in flight, with 15% of that
@@ -673,13 +673,13 @@ does not keep upward noise. Both criteria are rewritten as measured;
 nothing in the controller is tuned toward them. Reno stays the default:
 nothing here is a measurement against a real client.
 
-**BBR with ECN.** draft-ietf-ccwg-bbr-03 §3.7 specifies no response to
+**BBR with ECN.** draft-ietf-ccwg-bbr-06 §3.7 specifies no response to
 CE marks, only that a connection that marks its packets ECT MUST treat
 them as congestion. The response here reads a mark as a loss without the
 retransmission: a round that saw one between probes cuts the short-term
 model to 0.7, and while probing the marks count with the losses against
 the 2% that bounds `inflight_longterm`. Reno and CUBIC hear the same
-signal as RFC 9002 §7.3.2 and B.12 have it, a congestion event dated by
+signal as RFC 9002 §7.3.2 and B.7 have it, a congestion event dated by
 the frame's largest acknowledged packet: the window halves (Reno) or
 takes β (CUBIC), once per recovery period.
 `BenchmarkTransferDeepBufferECN` is `DeepBuffer` behind an AQM that marks
