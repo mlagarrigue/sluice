@@ -335,8 +335,12 @@ to a separate module before a v1.
   outage of three probe timeouts counts too, and costs one probe once the
   path is back. A completed search is not run again on a path that might
   have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
-  require them, and `net.PacketConn` does not deliver them). A lost probe
-  is not a congestion event (§14.4).
+  require them, and `net.PacketConn` does not deliver them). A path that
+  cannot carry 1200 bytes is therefore never detected: sending on it goes
+  on at probe-timeout pace, doubling each time, until the idle timeout
+  ends the connection; §14.2's "cease sending" has no trigger here, and
+  the backoff is the bound. A lost probe is not a congestion event
+  (§14.4).
 - **`net/quic` reassembly**: the bytes of a stream that arrive out of
   order are kept until the gap before them fills, up to the flow-control
   limit this end granted — and in at most `max(held / 1024, 256)` disjoint
