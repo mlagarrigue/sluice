@@ -487,6 +487,11 @@ func appendH3Control(dst []byte, maxFieldSection uint64) []byte {
 	// One setting from the reserved 0x1f*N+0x21 space, with a meaningless
 	// value — RFC 9114 §7.2.4.1's SHOULD. A peer that chokes on an unknown
 	// identifier is found out now, not when the protocol grows a real one.
+	// This setting, and the reserved close code of h3GracefulCode, are the
+	// only grease this end sends. The reserved frames and reserved streams
+	// of §4.1, §7.2.8 and §6.2.3 are read and ignored but never sent: a
+	// MAY that would cost a peer bytes to skip and this end a code path to
+	// keep, for a grease no peer of this package has shown to need.
 	settings = quic.AppendVarint(settings, 0x21+0x1f*rand.Uint64N(1<<16)) //nolint:gosec // G404: grease only has to vary, not be secret
 	settings = quic.AppendVarint(settings, rand.Uint64N(1<<16))           //nolint:gosec // G404: grease only has to vary, not be secret
 	return appendH3Frame(dst, h3Settings, settings)

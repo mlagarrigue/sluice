@@ -659,6 +659,11 @@ func (a *h3Assembler) reset(id uint64) error {
 		// The peer abandoned its request (§4.1.1): what arrived for it is
 		// dropped, and it is charged as a cancellation whether the request
 		// was complete or not — a complete one is in the handler's hands.
+		// No H3_REQUEST_REJECTED back: the client's RESET_STREAM already
+		// closed its direction, its STOP_SENDING (the other half of a
+		// cancellation) has the transport reset this end's, and the stream
+		// is gone on both sides — §4.1.1 makes the answer a MAY, and it
+		// would tell a client that stopped listening what it already knows.
 		a.Forget(id)
 		a.countCancel()
 	case 2:

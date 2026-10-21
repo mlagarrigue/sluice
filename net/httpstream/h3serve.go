@@ -332,7 +332,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		if err != nil {
 			// A connection error carries the code RFC 9114 §8 assigns it;
 			// anything else ends the connection through the transport's own
-			// teardown when this return reaches it.
+			// teardown when this return reaches it. No GOAWAY before this
+			// close: a connection error leaves nothing a GOAWAY would let
+			// the client retry (§5.3 MAY) — the drain above is where a
+			// GOAWAY earns its frame, when every request is still served.
 			if ce, ok := errors.AsType[h3ConnectionError](err); ok {
 				_ = c.CloseWithError(ce.Code)
 			}
