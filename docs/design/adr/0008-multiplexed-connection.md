@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code)
 - **Theme:** httpstream
 
 ## Problem
@@ -105,3 +105,17 @@ with an SSE workload on HTTP/2 is the signal to revisit, with per-stream
 writers as the known fix. A general write queue with its own memory bound
 was rejected: blocking hand-offs give exact back-pressure with no copy and
 no policy for a full queue.
+
+Three connection refusals carry PROTOCOL_ERROR where RFC 9113 names a more
+specific code: a PADDED HEADERS or DATA with no pad-length octet and a
+HEADERS flagged PRIORITY without its five octets (§4.2, FRAME_SIZE_ERROR),
+and a field block that is never decoded — one over `MaxHeaderBytes`, or one
+on a stream the closed-stream ring has forgotten (§4.3, COMPRESSION_ERROR).
+Kept generic on purpose: §5.4 says a generic error code such as
+PROTOCOL_ERROR can always be used in place of more specific error codes, no
+conformant peer sends the first group at all, and the peer's outcome — the
+connection ends, GOAWAY first — is the same whatever the code. One error
+path for framing faults is worth more than a code a diagnostician would
+read once. To revisit if an interoperability run shows a client that
+behaves differently on FRAME_SIZE_ERROR or COMPRESSION_ERROR than on
+PROTOCOL_ERROR.

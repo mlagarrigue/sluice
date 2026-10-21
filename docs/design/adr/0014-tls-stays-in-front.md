@@ -1,7 +1,7 @@
 # ADR 0014 — TLS stays in front of the experimental transport
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (recommended configuration documented)
+- **Revised:** 2026-10-15 (recommended configuration documented), 2026-10-21 (the TLS requirements of RFC 9113 §9.2 are the host's)
 - **Theme:** quic
 
 ## Problem
@@ -34,3 +34,15 @@ ever joined. The configuration to put in front — TLS 1.2 floor, AEAD
 suites, ALPN — lives in `docs/guide/experimental.md`, "Supported
 deployments", and `scripts/interop-http.sh` replays curl and h2spec
 through it.
+
+The TLS requirements RFC 9113 §9.2 puts on an HTTP/2 endpoint — TLS 1.2 at
+least, no compression, no renegotiation, the key-size floors and the
+prohibited cipher suites of Appendix A — are therefore met by the host and
+its `tls.Config`, never checked by the package, which reads neither the
+version, the suite nor the ALPN. `crypto/tls` never compresses and never
+renegotiates on the server side (`Renegotiation` defaults to
+`RenegotiateNever`), so where §9.2.1 asks for a connection error of type
+PROTOCOL_ERROR on a renegotiation the peer gets a TLS alert instead: the
+connection ends the same, one layer down and without a GOAWAY. The package
+cannot do otherwise without seeing the session, which this record says it
+does not.

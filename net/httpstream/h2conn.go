@@ -1101,7 +1101,9 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	// carve bytes out of the HPACK stream that this end's decoder sees and a
 	// conformant intermediary's does not, which is a dynamic-table desync.
 	//
-	// The pad's length is checked, its bytes are not — see data for why.
+	// The pad's length is checked, its bytes are not — see data for why. A
+	// missing pad length or priority block is PROTOCOL_ERROR rather than
+	// §4.2's FRAME_SIZE_ERROR: the generic code §5.4 allows, see ADR 0008.
 	if f.Type == frameHeaders && f.Flags&flagPadded != 0 {
 		if len(block) == 0 {
 			return nil, fmt.Errorf("%w: a padded HEADERS with no pad length", ErrH2Protocol)
