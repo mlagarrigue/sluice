@@ -94,11 +94,12 @@ func TestTrickleClientIsTimedOutDespiteRepeatedBytes(t *testing.T) {
 }
 
 // A client that never sends a byte is not slow about any request — there is
-// none — so the connection should simply close when IdleTimeout fires,
-// without a 408: that status answers a question nobody asked, which a
-// strict client may read as a protocol violation rather than a close.
+// none — so the connection should simply close when its clock fires
+// (ReadTimeout before the first request, see Config.IdleTimeout), without a
+// 408: that status answers a question nobody asked, which a strict client
+// may read as a protocol violation rather than a close.
 func TestIdleConnectionClosesWithoutAStatus(t *testing.T) {
-	addr, _ := serveTest(t, Config{IdleTimeout: 200 * time.Millisecond}, echoTarget)
+	addr, _ := serveTest(t, Config{ReadTimeout: 200 * time.Millisecond, IdleTimeout: 200 * time.Millisecond}, echoTarget)
 	c := dial(t, addr)
 
 	buf := make([]byte, 64)

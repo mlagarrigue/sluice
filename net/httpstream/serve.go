@@ -619,7 +619,7 @@ func (b writeBound) write(setDeadline func(time.Time) error, write func([]byte) 
 func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle Handler) {
 	peek, isH2, err := sniffPreface(c, cfg)
 	if err != nil {
-		return // silent past IdleTimeout, or gone: nothing to hand on
+		return // silent past ReadTimeout, or gone: nothing to hand on
 	}
 	if isH2 {
 		// Busy until the reader has seen the first batch: a preface is
@@ -649,7 +649,13 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle
 // than handing an undecided prefix to the HTTP/1.1 reader, which would wait
 // a second IdleTimeout on a client already found silent.
 func sniffPreface(c net.Conn, cfg Config) (peek []byte, isH2 bool, err error) {
-	if err := c.SetReadDeadline(time.Now().Add(cfg.IdleTimeout)); err != nil {
+	// A connection that has not spoken yet has ReadTimeout to do so — the
+	// bound a request gets, not the IdleTimeout a connection may rest
+	// between two requests: nothing has been asked yet, and two minutes of
+	// a goroutine, a buffer and a descriptor per silent dial is what a
+	// slowloris that never sends a byte would buy otherwise. The TLS
+	// handshake, driven by this first Read, is under the same bound.
+	if err := c.SetReadDeadline(time.Now().Add(cfg.ReadTimeout)); err != nil {
 		return nil, false, err
 	}
 	buf := make([]byte, len(Preface))

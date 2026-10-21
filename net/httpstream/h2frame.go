@@ -149,6 +149,16 @@ type frameReader struct {
 	// on httpstream's HTTP/1.1 reader for why a sliding deadline is not a
 	// timeout at all.
 	deadline time.Time
+	// idleAt is the absolute deadline of the idle clock, armed when a silent
+	// round begins with nothing owed and held until stream activity — a
+	// HEADERS, CONTINUATION or DATA frame — re-arms it. A PING, SETTINGS or
+	// WINDOW_UPDATE does not: a peer that sends nothing but those is holding
+	// the connection, not using it (see Config.IdleTimeout). streamSeen says
+	// whether any stream activity ever arrived; until it has, the clock is
+	// ReadTimeout's, the bound a connection that has not spoken yet gets.
+	idleAt         time.Time
+	streamActivity bool
+	streamSeen     bool
 
 	// continuations and headerBlock track an open header block across
 	// CONTINUATION frames, which is where the flood defence lives.
@@ -184,6 +194,12 @@ func (r *frameReader) next() ([]h2Frame, bool) {
 		}
 		if len(batch) > 0 {
 			r.pending = used
+			for i := range batch {
+				if t := batch[i].Type; t == frameHeaders || t == frameContinuation || t == frameData {
+					r.streamActivity, r.streamSeen = true, true
+					break
+				}
+			}
 			return batch, true
 		}
 		// The preface consumes bytes without producing a frame, so what it
@@ -297,9 +313,13 @@ func (r *frameReader) fill() error {
 	// re-arming race-free, where a responder re-arming it when its last
 	// answer goes out would race this goroutine's own SetReadDeadline — so a
 	// connection whose last answer just went out is reaped within two
-	// IdleTimeouts of it, rather than never.
+	// IdleTimeouts of it, rather than never. Once armed with nothing owed,
+	// the idle deadline holds across rounds that bring no stream activity:
+	// a PING every few seconds used to restart it, and a connection with no
+	// stream ever opened could be held for nothing at the price of 17 bytes
+	// per IdleTimeout.
 	for {
-		deadline := time.Now().Add(r.cfg.IdleTimeout)
+		var deadline time.Time
 		owed := false
 		switch {
 		case r.n > 0:
@@ -309,6 +329,21 @@ func (r *frameReader) fill() error {
 			deadline = r.deadline
 		case r.busy != nil && r.busy():
 			owed = true
+			r.idleAt = time.Time{}
+			deadline = time.Now().Add(r.cfg.IdleTimeout)
+		default:
+			if r.idleAt.IsZero() || r.streamActivity {
+				wait := r.cfg.IdleTimeout
+				if !r.streamSeen {
+					// Nothing has been asked of this connection yet: the
+					// bound is the one a request has to arrive in, not the
+					// one a connection may rest between two of them.
+					wait = r.cfg.ReadTimeout
+				}
+				r.idleAt = time.Now().Add(wait)
+				r.streamActivity = false
+			}
+			deadline = r.idleAt
 		}
 		if err := r.conn.SetReadDeadline(deadline); err != nil {
 			return err

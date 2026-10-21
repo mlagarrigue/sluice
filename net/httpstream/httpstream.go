@@ -394,7 +394,8 @@ type Config struct {
 	MaxRequestsPerConn int
 
 	// IdleTimeout is how long a connection may hold the socket open between
-	// requests. Zero means two minutes, as in package web: two minutes
+	// requests — after the first; a connection that has not sent one yet
+	// has ReadTimeout to do so. Zero means two minutes, as in package web: two minutes
 	// outlasts the idle timeout of the common proxies in front (60 seconds on
 	// most load balancers and on nginx's upstream pool), so the server is not
 	// the side that closes a connection the proxy is about to reuse; a proxy
@@ -408,18 +409,21 @@ type Config struct {
 	// response may take minutes during which a well-behaved client has
 	// nothing to send — and once the last answer is out the connection ends
 	// with GOAWAY(NO_ERROR) after between one and two IdleTimeouts of
-	// silence; over HTTP/3 the transport keeps it, as the
+	// silence, where silence means no stream activity: a PING, SETTINGS or
+	// WINDOW_UPDATE does not restart the clock, so a peer cannot hold a
+	// connection it never uses; over HTTP/3 the transport keeps it, as the
 	// max_idle_timeout that [Config.TransportParameters] derives from this
 	// field, so a connection ServeH3 serves on other parameters has the
 	// idle timeout those parameters say, not this one.
 	IdleTimeout time.Duration
 
 	// ReadTimeout is how long one request has to arrive in full once its
-	// first byte has. Zero means 10s. Every protocol. This is the bound
-	// that answers slowloris: a client that sends a header byte a minute is
-	// disconnected by the clock rather than tolerated; over HTTP/2 and
-	// HTTP/3 it is the stream still assembling that is reset, not the
-	// connection.
+	// first byte has, and how long a new connection has to send its first
+	// byte at all (the TLS handshake included). Zero means 10s. Every
+	// protocol. This is the bound that answers slowloris: a client that
+	// sends a header byte a minute is disconnected by the clock rather than
+	// tolerated; over HTTP/2 and HTTP/3 it is the stream still assembling
+	// that is reset, not the connection.
 	ReadTimeout time.Duration
 
 	// WriteTimeout is how long a response may go without progress: a write

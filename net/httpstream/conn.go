@@ -317,7 +317,14 @@ func (r *reader) fill() error {
 	// exactly ReadTimeout to arrive in full, not ReadTimeout since whenever
 	// it last sent a byte.
 	idle := r.n == 0 && (r.held == nil || !r.held.buffered())
-	deadline := time.Now().Add(r.cfg.IdleTimeout)
+	wait := r.cfg.IdleTimeout
+	if r.served == 0 {
+		// Before the first request the connection is not resting between
+		// two, it has not spoken: ReadTimeout is its bound, as in
+		// sniffPreface. The close is still the idle one, with no 408.
+		wait = r.cfg.ReadTimeout
+	}
+	deadline := time.Now().Add(wait)
 	if !idle {
 		if r.deadline.IsZero() {
 			r.deadline = time.Now().Add(r.cfg.ReadTimeout)

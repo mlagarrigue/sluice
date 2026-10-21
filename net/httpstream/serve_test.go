@@ -1114,12 +1114,13 @@ func TestWriteBatchRefusesConnectionSpecificFields(t *testing.T) {
 }
 
 // The sniff's deadline covers the whole preface, not each read of it: a
-// client dribbling the preface a byte at a time, each byte inside the idle
-// timeout, is closed once the timeout has passed since the connection began
-// rather than holding it for twenty-four of them.
+// client dribbling the preface a byte at a time, each byte inside the read
+// timeout (the bound before the first request, see Config.ReadTimeout), is
+// closed once the timeout has passed since the connection began rather than
+// holding it for twenty-four of them.
 func TestSniffDeadlineCoversTheWholePreface(t *testing.T) {
 	const idle = 300 * time.Millisecond
-	addr, _ := serveTest(t, Config{IdleTimeout: idle}, echoTarget)
+	addr, _ := serveTest(t, Config{ReadTimeout: idle}, echoTarget)
 	c := dial(t, addr)
 
 	closed := make(chan struct{})
