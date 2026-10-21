@@ -611,6 +611,13 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// ends with AEAD_LIMIT_REACHED instead of degrading the cipher. The
 	// check skips the CONNECTION_CLOSE itself (closeSent is set before it
 	// is written, and the refusal below reserved it a slot under the limit).
+	// §6.6 has an endpoint that reaches a limit "stop using the connection
+	// and only send stateless resets", and in the next sentence makes it
+	// RECOMMENDED to close with AEAD_LIMIT_REACHED before getting there:
+	// the second is what happens here, one CONNECTION_CLOSE under the keys
+	// in use and nothing more under them — the MUST describes the state of
+	// an endpoint that went past the limit without closing, which this one
+	// never does. The integrity limit (receive.go) reads §6.6 the same way.
 	if !c.closeSent && sp.sealer.sealed >= sp.sealer.k.confLimit-1 {
 		if space == spaceApplication {
 			if ok, err := c.initiateKeyUpdateLocked(); err != nil {

@@ -450,7 +450,10 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				// selected suite's once 1-RTT keys exist, Initial's before —
 				// the bound is worn out: the one case where unauthenticated
 				// bytes end the connection, because tolerating more
-				// forgeries would erode the AEAD's integrity bound.
+				// forgeries would erode the AEAD's integrity bound. Closed
+				// with AEAD_LIMIT_REACHED, the way §6.6 recommends, rather
+				// than falling silent: the same reading as send.go's
+				// confidentiality limit.
 				err := &transportError{
 					code: transportAEADLimitReached,
 					err:  fmt.Errorf("%w: the connection refused its %d forged packets", ErrQUIC, opener.k.intLimit),
