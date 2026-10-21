@@ -36,3 +36,39 @@ func TestVersionNegotiationIsReportedByItsSentinel(t *testing.T) {
 		t.Fatalf("Err = %v, want ErrVersionNegotiation", err)
 	}
 }
+
+// RFC 9000 §6.2: a Version Negotiation packet is discarded once any other
+// packet has been processed — a Retry included. The identifiers a Version
+// Negotiation echoes are the first flight's, which every observer of the
+// path saw, so a replay of them after the Retry must not end the handshake.
+func TestVersionNegotiationAfterARetryIsDiscarded(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	c.mu.Lock()
+	c.initialDCID = []byte("dcid0000")
+	c.mu.Unlock()
+
+	retry := appendRetryPacket(nil, []byte("scid0000"), []byte("server-scid-xyz"), []byte("dcid0000"), []byte("a-token"))
+	_ = c.receive(retry, pcB.LocalAddr())
+	c.mu.Lock()
+	retried := c.retried
+	c.mu.Unlock()
+	if !retried {
+		t.Fatal("the Retry was not honoured; the test needs one processed packet before the Version Negotiation")
+	}
+
+	vn := []byte{0x80, 0, 0, 0, 0}
+	vn = append(vn, byte(len("scid0000")))
+	vn = append(vn, "scid0000"...)
+	vn = append(vn, byte(len("dcid0000")))
+	vn = append(vn, "dcid0000"...)
+	vn = append(vn, 0, 0, 0, 2)
+	_ = c.receive(vn, pcB.LocalAddr())
+
+	select {
+	case <-c.Done():
+		t.Fatalf("the connection closed on a Version Negotiation received after a Retry: %v", c.Err())
+	case <-time.After(200 * time.Millisecond):
+	}
+}

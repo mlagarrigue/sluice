@@ -640,7 +640,12 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 		return
 	}
 	c.mu.Lock()
-	heardPeer := c.peerCIDSet
+	// §6.2: discarded once any other packet has been processed — a Retry
+	// is one (it is authenticated by its tag, and the identifiers a
+	// Version Negotiation has to echo are the ones every observer of the
+	// path saw in the first flight). Only peerCIDSet was read until
+	// 2026-10-21, so a replayed first flight could end a retried handshake.
+	heardPeer := c.peerCIDSet || c.retried
 	initialDCID := c.initialDCID
 	c.mu.Unlock()
 	if heardPeer {
