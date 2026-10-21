@@ -265,3 +265,51 @@ func TestServeShutdownDrainsH2Stream(t *testing.T) {
 		t.Fatal("Serve did not return once the stream was drained")
 	}
 }
+
+// RFC 9113 §6.8: "Endpoints MUST NOT increase the value they send in the
+// last stream identifier". A stream the client opens after the drain's
+// second GOAWAY is refused but still advances the highest identifier seen;
+// the GOAWAY a later connection error sends must keep naming the one the
+// second GOAWAY did, not the refused stream. Stream 1 is a POST whose body
+// never comes: open, so the drain cannot finish, and without a handler in
+// flight, so the error's GOAWAY is not held back by one.
+func TestH2GoAwayLastStreamIdentifierNeverRises(t *testing.T) {
+	addr, cancel, _ := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, echoTarget)
+
+	c := dialH2(t, addr)
+	c.frame(h2Frame{
+		Type: frameHeaders, Flags: flagEndHeaders,
+		StreamID: 1, Payload: headBlock("POST", "/slow"),
+	})
+	c.flush()
+	c.pump(func() bool { return len(c.settings) > 0 })
+	cancel()
+	c.pump(func() bool { return len(c.goAways) >= 1 && len(c.pinged) >= 1 })
+	if len(c.pinged) < 1 {
+		t.Fatal("no drain PING after the cancellation")
+	}
+	c.frame(h2Frame{Type: framePing, Flags: flagAck, Payload: c.pinged[0]})
+	c.flush()
+	c.pump(func() bool { return len(c.goAways) >= 2 })
+	if len(c.goAways) < 2 || goAwayLast(c.goAways[1]) != 1 {
+		t.Fatalf("second GOAWAY missing or naming %d, want stream 1", goAwayLast(c.goAways[len(c.goAways)-1]))
+	}
+
+	// Stream 3, opened past the second GOAWAY: refused, identifier seen.
+	c.request(3, "GET", "/late")
+	c.flush()
+	c.pump(func() bool { _, seen := c.resets[3]; return seen })
+	if _, seen := c.resets[3]; !seen {
+		t.Fatal("stream 3 was not refused after the second GOAWAY")
+	}
+	// Then a connection error — DATA on a stream nobody opened.
+	c.frame(h2Frame{Type: frameData, StreamID: 99, Payload: []byte("x")})
+	c.flush()
+	c.pump(func() bool { return len(c.goAways) >= 3 })
+	if len(c.goAways) < 3 {
+		t.Fatal("no GOAWAY for the connection error")
+	}
+	if last := goAwayLast(c.goAways[2]); last != 1 {
+		t.Errorf("the error's GOAWAY names stream %d, after a GOAWAY that named 1; §6.8 forbids raising it", last)
+	}
+}

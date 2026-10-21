@@ -266,6 +266,12 @@ type h2Server struct {
 	// must increase, and one that goes backwards is a client reusing a
 	// closed stream rather than opening a new one.
 	lastID uint32
+	// goAwayLast is the last stream identifier the connection has announced
+	// in a GOAWAY so far, 2^31-1 until one is sent: RFC 9113 §6.8 forbids
+	// raising it, and a stream refused after the drain's second GOAWAY
+	// still advances lastID. Atomic because beginDrain runs on the drain's
+	// own goroutine while the reader may be sending an error's GOAWAY.
+	goAwayLast atomic.Uint32
 	// opened is one bit per odd identifier, for the h2OpenedWindow most
 	// recent ones: set for a stream the client opened, clear for one it
 	// skipped. It is what tells a frame on a stream this end reset and has
@@ -464,6 +470,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		w:        newH2Writer(c, cfg),
 		settled:  make(chan struct{}, 1),
 	}
+	s.goAwayLast.Store(maxStreamID)
 	s.w.answered = s.answered
 	if st != nil {
 		stop := context.AfterFunc(st.drain, s.beginDrain)
@@ -2017,7 +2024,20 @@ func (s *h2Server) goAway(code uint32) {
 // goAwayWith is goAway with the last stream identifier chosen by the caller:
 // the graceful shutdown's first GOAWAY names 2^31−1, a stream the peer can
 // never have reached, before the reader knows the real one (RFC 9113 §6.8).
+// Whatever the caller names, the identifier sent never rises above one
+// already announced (§6.8 MUST NOT): the peer may have retried the streams
+// past it elsewhere.
 func (s *h2Server) goAwayWith(last, code uint32) {
+	for {
+		announced := s.goAwayLast.Load()
+		if last >= announced {
+			last = announced
+			break
+		}
+		if s.goAwayLast.CompareAndSwap(announced, last) {
+			break
+		}
+	}
 	payload := make([]byte, 8)
 	be32put(payload[:4], last)
 	be32put(payload[4:8], code)
