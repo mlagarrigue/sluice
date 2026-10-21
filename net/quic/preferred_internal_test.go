@@ -681,3 +681,57 @@ func TestListenerAnnouncesOneAddressPerFamily(t *testing.T) {
 		t.Error("an address the concretely bound socket does not answer at was accepted")
 	}
 }
+
+// RFC 9000 §9.1, §9.6.2: the datagram a server sends from its preferred
+// socket before that path is validated is a probing packet — PATH_RESPONSE,
+// PATH_CHALLENGE, PADDING — and an ACK frame would make it non-probing. An
+// acknowledgement owed to the client waits for the next packet on the path
+// in use.
+func TestPathResponseOffThePathCarriesNoAck(t *testing.T) {
+	c, main := newMigratableServer(t, "noack")
+	pref := &recordingPC{addr: fakeFuzzAddr("noack:preferred")}
+	tok := make([]byte, 16)
+	now := time.Now()
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.spaces[spaceApplication].ack.record(7, now) // an acknowledgement is owed
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = fakeFuzzAddr("noack:peerA"), pref, 1200, true
+	c.mu.Unlock()
+
+	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, now); err != nil {
+		t.Fatal(err)
+	}
+	writes := pref.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("%d datagrams left by the preferred socket, want 1", len(writes))
+	}
+	for _, f := range openShort(t, writes[0].data, len("cli-cid1")) {
+		switch f.Type {
+		case framePathResponse, framePathChallenge, framePadding:
+		default:
+			t.Errorf("the probing datagram from the preferred socket carries frame type %#x, want only PATH_RESPONSE, PATH_CHALLENGE and PADDING", f.Type)
+		}
+	}
+	// The acknowledgement is not lost with the probe: it is still pending
+	// for the next packet on the path in use — or the delayed-ACK timer,
+	// which runs on its own goroutine, has already sent it by the main
+	// socket. Either is right; the probe carrying it was not.
+	c.mu.Lock()
+	dcidLen := len(c.dcid)
+	stillPending := c.spaces[spaceApplication].ack.pending()
+	c.mu.Unlock()
+	sentOnPath := false
+	for _, w := range main.recorded() {
+		for _, f := range openShort(t, w.data, dcidLen) {
+			if f.Type == frameACK || f.Type == frameACK|1 {
+				sentOnPath = true
+			}
+		}
+	}
+	if !stillPending && !sentOnPath {
+		t.Error("the acknowledgement owed is neither pending nor sent on the main socket: lost with the probe")
+	}
+}

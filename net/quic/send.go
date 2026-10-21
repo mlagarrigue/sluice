@@ -170,7 +170,15 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	// HTTP/3.
 	now := time.Now()
 	var ack []byte
-	if owed := sp.ack.owes(now); owed || sp.ack.pending() {
+	// Not off the path in use: a datagram toward another address or from
+	// another socket is a probe — PATH_CHALLENGE, PATH_RESPONSE, PADDING
+	// (§9.1) — and an ACK would make it non-probing, which a server must
+	// not send toward an address it has seen no non-probing packet from
+	// (§9) nor from its preferred address before that path is validated
+	// (§9.6.2). The ACK waits for the next packet on the path; an answer
+	// on the path itself keeps it (§9.3.3 has that one non-probing).
+	offPath := (opts.via != nil && opts.via != c.pc) || (opts.to != nil && !sameAddr(opts.to, c.peer))
+	if owed := sp.ack.owes(now); !offPath && (owed || sp.ack.pending()) {
 		ack = sp.ack.encodeAck(c.ackScratch[:0], now)
 		c.ackScratch = ack
 		// An ACK that does not fit beside the payload under maxDatagram
