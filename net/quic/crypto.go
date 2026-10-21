@@ -373,6 +373,20 @@ func (o *packetOpener) rotated(pn uint64) (*packetOpener, error) {
 	}, nil
 }
 
+// noteCurrentPN records a packet number read under the current keys:
+// lowest becomes the smallest such number, so that openPhased never tries
+// the previous keys on a number above one already read under the newer
+// ones (RFC 9001 §6.5; the KEY_UPDATE_ERROR of §6.4 is for an endpoint
+// that does and succeeds — this one does not try, and the packet fails
+// under the next keys instead). Callers hold the connection's mu: the
+// receive goroutine is the only reader of lowest, outside the lock, but
+// withoutPrevious copies the phase under it from the timer loop.
+func (o *packetOpener) noteCurrentPN(pn uint64) {
+	if p := o.phase; p != nil && p.hasLowest && pn < p.lowest {
+		p.lowest = pn
+	}
+}
+
 // withoutPrevious is o with its previous phase's keys dropped (§6.5).
 func (o *packetOpener) withoutPrevious() *packetOpener {
 	p := *o.phase

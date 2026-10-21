@@ -469,6 +469,15 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			datagram = rest
 			continue
 		}
+		if space == spaceApplication && used == usedCurrent {
+			// A number read under the current keys bounds what the previous
+			// keys may still open (RFC 9001 §6.5, noteCurrentPN).
+			c.mu.Lock()
+			if sp.opener == opener {
+				opener.noteCurrentPN(pn)
+			}
+			c.mu.Unlock()
+		}
 		if used == usedNext {
 			// The peer moved to the next key phase (RFC 9001 §6.2): the
 			// read keys follow, and the send keys with them unless this end

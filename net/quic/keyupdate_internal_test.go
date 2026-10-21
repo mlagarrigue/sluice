@@ -336,3 +336,56 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 		t.Errorf("the server ended with %v", err)
 	}
 }
+
+// RFC 9001 §6.5: the previous keys serve only a packet number "lower than
+// any packet number from the current key phase" — any, not the one that
+// triggered the rotation. Once a lower number has been read under the new
+// keys, an old-phase packet above it is not tried under the old ones (so
+// §6.4's KEY_UPDATE_ERROR, for an endpoint that tries and succeeds, cannot
+// arise): it fails under the next keys and counts as a rejection. A delayed
+// old-phase packet below every number read under the new keys is still
+// read.
+func TestOldKeysNeverOpenAboveANumberReadUnderNewOnes(t *testing.T) {
+	c, peer := newKeyedConn(t)
+	dcid := []byte("scid0000")
+	pad := []byte{framePadding}
+	old := peer
+
+	if err := c.receive(shortPacket(t, old, 0, dcid, 0, pad), c.peer); err != nil {
+		t.Fatal(err)
+	}
+	next, err := peer.k.next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer = &packetSealer{k: next}
+	for _, pn := range []uint64{5, 3} {
+		if err := c.receive(shortPacket(t, peer, keyPhaseBit, dcid, pn, pad), c.peer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.mu.Lock()
+	lowest := c.spaces[spaceApplication].opener.phase.lowest
+	c.mu.Unlock()
+	if lowest != 3 {
+		t.Errorf("lowest number under the current keys = %d, want 3", lowest)
+	}
+
+	// An old-phase packet above a number already read under the new keys.
+	if err := c.receive(shortPacket(t, old, 0, dcid, 4, pad), c.peer); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.Stats().DiscardedPackets; n != 1 {
+		t.Errorf("discarded = %d after an old-phase packet numbered above one read under the new keys, want 1: it must not open under the old keys", n)
+	}
+	// Below every number read under the new keys, the old keys still serve.
+	if err := c.receive(shortPacket(t, old, 0, dcid, 2, pad), c.peer); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.Stats().DiscardedPackets; n != 1 {
+		t.Errorf("discarded = %d after a delayed old-phase packet below them, want 1 still: it is read", n)
+	}
+	if err := c.Err(); err != nil {
+		t.Errorf("the connection ended with %v; nothing here is a violation", err)
+	}
+}
