@@ -463,20 +463,36 @@ func controlStopped(code uint64) error {
 
 // h3CloseErr is what ServeH3 reports once the connection ended: nil for
 // the ends an HTTP/3 server treats as the client leaving — its H3_NO_ERROR
-// (RFC 9114 §8.1), its transport NO_ERROR, or silence past the idle timeout
-// — and the transport's cause for everything else. The transport reports
-// every peer close as a [quic.ConnectionError] because it does not know
-// what the codes mean; this is the layer that does.
+// (RFC 9114 §8.1), any application code this layer does not know (§8:
+// "receipt of an unknown error code MUST be treated as equivalent to
+// H3_NO_ERROR", which is how the reserved 0x1f·N+0x21 codes a peer SHOULD
+// send in its place arrive — h3GracefulCode sends them too), its transport
+// NO_ERROR, or silence past the idle timeout — and the transport's cause
+// for everything else. The transport reports every peer close as a
+// [quic.ConnectionError] because it does not know what the codes mean;
+// this is the layer that does.
 func h3CloseErr(err error) error {
 	if errors.Is(err, quic.ErrIdleTimeout) {
 		return nil
 	}
 	if ce, ok := errors.AsType[*quic.ConnectionError](err); ok {
-		if (ce.Application && ce.Code == h3NoError) || (!ce.Application && ce.Code == 0) {
+		if ce.Application && (ce.Code == h3NoError || !h3KnownCode(ce.Code)) {
+			return nil
+		}
+		if !ce.Application && ce.Code == 0 {
 			return nil
 		}
 	}
 	return err
+}
+
+// h3KnownCode reports whether code is an error code RFC 9114 §8.1
+// (H3_NO_ERROR to H3_VERSION_FALLBACK) or RFC 9204 §8.3 (the three QPACK
+// codes) defines. Every other value is unknown, H3_NO_ERROR's equivalent
+// on receipt (RFC 9114 §8).
+func h3KnownCode(code uint64) bool {
+	return (code >= h3NoError && code <= h3VersionFallback) ||
+		(code >= qpackDecompressionFailed && code <= qpackDecoderStreamError)
 }
 
 // h3ReleaseStreamBytes is the manual-credit release, a variable so a test

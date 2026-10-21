@@ -314,6 +314,10 @@ const (
 	h3RequestCancelled     = 0x010c
 	h3RequestIncomplete    = 0x010d
 	h3MessageError         = 0x010e
+	// h3ConnectError and h3VersionFallback close §8.1's table; neither is
+	// sent here (no CONNECT tunnel, no fallback), they bound h3KnownCode.
+	h3ConnectError    = 0x010f
+	h3VersionFallback = 0x0110
 )
 
 // qpackEncoderStreamError is RFC 9204 §8.3's connection error for an encoder
