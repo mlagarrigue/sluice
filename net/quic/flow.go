@@ -81,7 +81,15 @@ func (q *recvQuota) consume(n uint64) (grant bool) {
 	return q.max-q.consumed < q.window/2
 }
 
-// nextMax is the announcement consume asked for.
+// nextMax is the announcement consume asked for. It raises max here, as
+// the grant is computed, not when the MAX_DATA or MAX_STREAM_DATA carrying
+// it leaves — so the bound receive enforces can run a few microseconds
+// ahead of what the peer was told. RFC 9000 §19.9 and §19.10 word the
+// FLOW_CONTROL_ERROR against the value "it has sent"; a chosen deviation:
+// it spares only a peer already past what it was told, under the grant it
+// is about to receive, and a second bound (sent, computed) would double
+// the hot path's accounting to refuse a peer the next grant covers anyway.
+// returnStreamSlotLocked makes the same choice for MAX_STREAMS (§19.11).
 func (q *recvQuota) nextMax() uint64 {
 	q.max = q.consumed + q.window
 	return q.max

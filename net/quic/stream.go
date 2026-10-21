@@ -967,7 +967,8 @@ func (c *Conn) retireTaken(s *Stream) {
 // credit within an eighth of what one-per-stream would give it, and the
 // grant never waits on the peer saying it is blocked, which §4.6 forbids:
 // it follows retirements alone. A limit under 8 still returns every slot.
-// Callers hold c.mu.
+// The limit is raised as the grant is queued, not when it leaves — the
+// same choice as recvQuota.nextMax, with the same reason. Callers hold c.mu.
 func (c *Conn) returnStreamSlotLocked(uni bool) {
 	limit, retired, initial, typ := &c.localMaxStreamsBidi, &c.retiredBidi, c.params.InitialMaxStreamsBidi, uint64(frameMaxStreams)
 	if uni {
