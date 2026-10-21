@@ -164,9 +164,18 @@ type pathProbe struct {
 	sent, full bool
 	// oldPending and oldData are a server's §9.3.3 challenge on the path
 	// it migrated away from, which induces the legitimate peer to send
-	// there — what defeats a migration forged from copied packets.
-	oldPending bool
-	oldData    [8]byte
+	// there — what defeats a migration forged from copied packets. oldPeer,
+	// oldPC and oldSeq are that path and the identifier it used; it is the
+	// path left, validated or not (§9.3.3 names "the previously active
+	// path", and a chained migration leaves an unproven one), and
+	// oldValidated says which: an answer from an unproven one makes it the
+	// last validated path, §9.3.2's fallback.
+	oldPending   bool
+	oldData      [8]byte
+	oldPeer      net.Addr
+	oldPC        net.PacketConn
+	oldSeq       uint64
+	oldValidated bool
 }
 
 // preferredAddress reports the address the server asked this client to move
@@ -654,15 +663,22 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	}
 	if !unvalidated {
 		// The path being left is proven: it is what §9.3.2 falls back to
-		// if the new one never validates, and §9.3.3 has it challenged
-		// now, under the identifier it has always used, before anything
-		// moves.
+		// if the new one never validates.
 		c.lastValidatedPeer, c.lastValidatedPC, c.lastValidatedSeq = c.peer, c.pc, c.currentPeerSeq
-		if data, err := randomID(8); err == nil {
-			copy(c.pathProbe.oldData[:], data)
-			c.pathProbe.oldPending = true
-			c.sendOldPathChallengeLocked()
-		}
+	}
+	// §9.3.3 has the path being left challenged now, proven or not, under
+	// the identifier it used, before anything moves: the challenge makes
+	// the legitimate peer send there, which is what undoes a migration
+	// forged from copied packets, and "any subsequent migration to another
+	// path restarts this entire process". An unproven path left — a second
+	// migration before the first validated — is challenged the same way,
+	// and its answer makes it the path to fall back to.
+	if data, err := randomID(8); err == nil {
+		copy(c.pathProbe.oldData[:], data)
+		c.pathProbe.oldPending = true
+		c.pathProbe.oldPeer, c.pathProbe.oldPC, c.pathProbe.oldSeq = c.peer, c.pc, c.currentPeerSeq
+		c.pathProbe.oldValidated = !unvalidated
+		c.sendOldPathChallengeLocked()
 	}
 	c.peer = to
 	c.pc = newPC
@@ -1104,29 +1120,49 @@ func (c *Conn) adoptPeerCIDLocked(cid []byte) bool {
 	return false
 }
 
-// sendOldPathChallengeLocked sends the §9.3.3 challenge to the last
-// validated path, under the identifier that path used: expanded to 1200,
-// since that address is proven and no budget applies off the path in use.
-// Callers hold mu.
+// sendOldPathChallengeLocked sends the §9.3.3 challenge to the path the
+// connection left, under the identifier that path used — or, when the peer
+// has retired it since (Retire Prior To), under one never used on any path,
+// which links nothing (§9.5 forbids reusing an identifier across paths, not
+// taking a fresh one) and becomes the old path's for the resends; with no
+// fresh one in the pool the challenge is given up, since any other
+// identifier would tie the two paths. Expanded to 1200: a validated address
+// is under no budget, and an unproven one left behind got its 1200-byte
+// probe already. Callers hold mu.
 func (c *Conn) sendOldPathChallengeLocked() {
 	var dcid []byte
 	for i := range c.peerCIDs {
-		if c.peerCIDs[i].seq == c.lastValidatedSeq {
+		if c.peerCIDs[i].seq == c.pathProbe.oldSeq {
 			dcid = c.peerCIDs[i].cid
 		}
 	}
 	if dcid == nil {
-		// Retired since: sending under any other identifier would link
-		// the two paths (§9.5). The fallback on give-up still stands.
-		c.pathProbe.oldPending = false
-		return
+		var ok bool
+		if dcid, c.pathProbe.oldSeq, ok = c.takeFreshPeerCIDLocked(); !ok {
+			c.pathProbe.oldPending = false
+			return
+		}
 	}
 	payload := AppendVarint(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.oldData[:]...)
 	c.flushControlLocked()
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
-		noRetrans: true, to: c.lastValidatedPeer, via: c.lastValidatedPC, dcid: dcid, padTo: 1200,
+		noRetrans: true, to: c.pathProbe.oldPeer, via: c.pathProbe.oldPC, dcid: dcid, padTo: 1200,
 	})
+}
+
+// takeFreshPeerCIDLocked marks a pooled peer identifier never used on any
+// path as used and returns it with its sequence, without moving this end's
+// sends to it: for a packet that must leave on another path than the one in
+// use (§9.5). ok is false when the pool holds none. Callers hold mu.
+func (c *Conn) takeFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
+	pick := c.pickPeerCIDLocked(true)
+	if pick < 0 {
+		return nil, 0, false
+	}
+	e := &c.peerCIDs[pick]
+	e.used = true
+	return e.cid, e.seq, true
 }
 
 // revertToValidatedLocked is §9.3.2's fallback: sending returns to the last
@@ -1174,9 +1210,15 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 	c.mu.Lock()
 	if c.pathProbe.oldPending && bytes.Equal(f.Data, c.pathProbe.oldData[:]) {
 		// The old path is alive. Nothing moves on that alone: the peer's
-		// non-probing packets there are what move the connection back.
+		// non-probing packets there are what move the connection back. A
+		// path left unproven is proven by this answer, and from here it is
+		// the one §9.3.2 falls back to.
 		c.pathProbe.oldPending = false
 		c.rxProgress = true
+		if p := &c.pathProbe; !p.oldValidated {
+			p.oldValidated = true
+			c.lastValidatedPeer, c.lastValidatedPC, c.lastValidatedSeq = p.oldPeer, p.oldPC, p.oldSeq
+		}
 	}
 	if c.pathProbe.pending && bytes.Equal(f.Data, c.pathProbe.data[:]) {
 		c.rxProgress = true

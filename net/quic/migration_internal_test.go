@@ -2425,3 +2425,98 @@ func TestMigrationToLoopbackIsNotFollowed(t *testing.T) {
 		t.Errorf("peer = %v after a move within loopback, want %v followed", got, loop)
 	}
 }
+
+// §9.3.3 has the path left challenged at every apparent migration, "the
+// previously active path" — proven or not. A second migration before the
+// first validated used to leave the unproven path unchallenged, the
+// challenge being aimed at the last validated path only; now the path left
+// is challenged, and its answer makes it the path to fall back to (§9.3.2).
+func TestTheUnprovenPathLeftIsChallengedToo(t *testing.T) {
+	c, pc := newMigratableServer(t, "chain")
+	tok := make([]byte, 16)
+	for _, f := range [][]byte{ncidFrame(1, 0, []byte("cli-cid1"), tok), ncidFrame(2, 0, []byte("cli-cid2"), tok)} {
+		if err := c.frames(spaceApplication, f, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peerB, peerC := fakeFuzzAddr("chain:peerB"), fakeFuzzAddr("chain:peerC")
+	rxFromNewAddress(c, peerB, 1200, true)
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before := len(pc.recorded())
+	// B never answers; the peer shows up at C.
+	rxFromNewAddress(c, peerC, 1200, true)
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	peer, migrations := c.peer, c.migrations
+	old := c.pathProbe.oldData
+	c.mu.Unlock()
+	if !sameAddr(peer, peerC) || migrations != 2 {
+		t.Fatalf("after two moves the peer is %v with %d migrations, want %v and 2", peer, migrations, peerC)
+	}
+	challenged := false
+	for _, w := range pc.recorded()[before:] {
+		if sameAddr(w.to, peerB) && len(w.data) >= 1200 {
+			challenged = true
+		}
+	}
+	if !challenged {
+		t.Fatal("the unproven path left (B) got no PATH_CHALLENGE at the second migration (§9.3.3)")
+	}
+	// B answers: it is proven now, and the path to fall back to.
+	resp := AppendVarint(nil, framePathResponse)
+	resp = append(resp, old[:]...)
+	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	fallback := c.lastValidatedPeer
+	c.mu.Unlock()
+	if !sameAddr(fallback, peerB) {
+		t.Fatalf("the path to fall back to is %v after B answered its challenge, want %v", fallback, peerB)
+	}
+}
+
+// The §9.3.3 challenge to the path left goes on under a fresh identifier
+// when the peer has retired the one that path used: a never-used
+// identifier links the two paths no more than silence would (§9.5), where
+// the challenge used to be given up. Any other identifier would tie them.
+func TestThePathLeftIsChallengedUnderAFreshIDWhenItsOwnIsRetired(t *testing.T) {
+	c, pc := newMigratableServer(t, "retired")
+	tok := make([]byte, 16)
+	if err := c.frames(spaceApplication, ncidFrame(1, 0, []byte("cli-cid1"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	peerA, peerB := fakeFuzzAddr("retired:peerA"), fakeFuzzAddr("retired:peerB")
+	rxFromNewAddress(c, peerB, 1200, true)
+	if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The peer retires everything before sequence 1: the identifier A was
+	// used under is gone, and a fresh one (2) is in the pool.
+	if err := c.frames(spaceApplication, ncidFrame(2, 1, []byte("cli-cid2"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	before := len(pc.recorded())
+	c.mu.Lock()
+	c.pathProbeDeadlineLocked(time.Now().Add(10 * time.Second)) // the resend of both challenges
+	current := append([]byte(nil), c.dcid...)
+	c.mu.Unlock()
+	var toA [][]byte
+	for _, w := range pc.recorded()[before:] {
+		if sameAddr(w.to, peerA) && len(w.data) >= 1200 {
+			toA = append(toA, w.data)
+		}
+	}
+	if len(toA) == 0 {
+		t.Fatal("the path left (A) got no PATH_CHALLENGE once its identifier was retired (§9.3.3)")
+	}
+	for _, d := range toA {
+		if id := string(d[1:9]); id == "peercid0" || id == string(current) {
+			t.Fatalf("the challenge to A left under %q: a retired identifier or the new path's (§9.5)", id)
+		}
+	}
+}
