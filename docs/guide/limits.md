@@ -66,7 +66,9 @@ Three reasons come up, and the difference matters:
   or disabled by `Config.ChannelBinding`),
   cleartext password on explicit request, and `trust`. SCRAM-SHA-1, which
   RFC 5802 §4 requires of every SCRAM client, is not implemented: no
-  PostgreSQL server offers it. **`md5` is refused**
+  PostgreSQL server offers it. The SCRAM username field is sent empty, as
+  libpq sends it: PostgreSQL takes the role from the startup packet and
+  ignores it, where RFC 5802 §5.1 wants a name. **`md5` is refused**
   — on purpose: the hash stored server-side is as good as the password, and
   PostgreSQL has deprecated it. The error message says what to change on
   the server. The PBKDF2 iteration count the server asks for is accepted
