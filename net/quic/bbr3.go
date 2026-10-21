@@ -262,6 +262,11 @@ const (
 
 var _ congestionController = (*bbr3)(nil)
 
+// newBBR3 is BBROnInit (§5.2.1) for a controller born without a round-trip
+// sample — at connection start, and after a migration has reset the
+// estimator (RFC 9000 §9.4) — so min_rtt starts at the text's Infinity
+// (zero here) and bdpMultiple returns the initial window until the first
+// sample.
 func newBBR3(maxDatagram int, est *deliveryEstimator) *bbr3 {
 	b := &bbr3{
 		est:              est,
