@@ -45,6 +45,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -113,6 +114,16 @@ func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, 
 			return diagnostics.NewDiagnostic(diagnostics.Error, CodeBodyTooLarge, diagnostics.Path{}).
 				WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
 				WithOrigin(diagnostics.OriginProtocol), false
+		}
+		// The server's read deadline ran out under the body: the client
+		// stopped sending, which is not a syntax error and must not read as
+		// one. Its own message, under the transport code a malformed body
+		// carries: no code of its own before the API freeze.
+		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+			return diagnostics.NewDiagnostic(diagnostics.Error, CodeMalformedBody, diagnostics.Path{}).
+				WithMessage("RequestBodyTimeout", nil).
+				WithOrigin(diagnostics.OriginProtocol).
+				WithCause(err), false
 		}
 		return diagnostics.NewDiagnostic(diagnostics.Error, CodeMalformedBody, diagnostics.Path{}).
 			WithMessage("RequestBodyMalformed", reqbody.MalformedArgs(err)).

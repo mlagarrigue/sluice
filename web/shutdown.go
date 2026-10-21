@@ -217,6 +217,22 @@ const DefaultReadHeaderTimeout = 10 * time.Second
 // reuse; a proxy that keeps its connections longer wants a longer IdleTimeout.
 const DefaultIdleTimeout = 2 * time.Minute
 
+// DefaultReadTimeout is how long [Serve] and [ServeTLS] give a request to
+// arrive whole, body included, on a server whose ReadTimeout is zero. With
+// zero, net/http lifts every read deadline once the headers are in, so a
+// client that sends one byte of body and stops holds its handler inside
+// [DecodeJSON] until the forced Close. Thirty seconds carries a body of
+// several megabytes over a slow mobile link.
+const DefaultReadTimeout = 30 * time.Second
+
+// DefaultWriteTimeout is how long [Serve] and [ServeTLS] give a response, on
+// a server whose WriteTimeout is zero. net/http counts it from the end of the
+// request headers, so it bounds the handler's work as well as the write: a
+// client that stops reading cannot hold the connection and its handler past
+// it. A minute outlasts an ordinary query; a handler that streams for longer
+// moves its own deadline with [http.ResponseController.SetWriteDeadline].
+const DefaultWriteTimeout = time.Minute
+
 // Serve runs a server until ctx is cancelled, then shuts it down.
 //
 // It is the shape a main function wants: one call that blocks while the
@@ -251,6 +267,14 @@ const DefaultIdleTimeout = 2 * time.Minute
 // Serve sets IdleTimeout to [DefaultIdleTimeout] on a server with neither; a
 // negative IdleTimeout is left alone.
 //
+// And within a request: a zero ReadTimeout leaves the body unbounded once the
+// headers are read, a zero WriteTimeout the response. Serve sets them to
+// [DefaultReadTimeout] and [DefaultWriteTimeout]; a negative value is left
+// alone. A handler that streams, or reads a body slower than that on purpose,
+// moves its own deadlines with [http.NewResponseController] —
+// SetReadDeadline and SetWriteDeadline — rather than the server lifting them
+// for every request.
+//
 // What Serve runs is cleartext ListenAndServe. That is kept for
 // interoperability — a TLS-terminating proxy in front, a health check, local
 // tooling — and is not the recommended shape for anything that crosses a
@@ -280,8 +304,8 @@ func Serve(ctx context.Context, srv *http.Server, grace time.Duration, closers .
 // HTTP/1.1 do not — see [gateway]'s note on the pipelining client. HTTP/2
 // removes that trap rather than the library doing it.
 //
-// srv gets the same ReadHeaderTimeout and IdleTimeout defaults as under
-// [Serve].
+// srv gets the same ReadHeaderTimeout, IdleTimeout, ReadTimeout and
+// WriteTimeout defaults as under [Serve].
 //
 // certFile and keyFile are as [http.Server.ListenAndServeTLS] takes them, and
 // may be empty when srv.TLSConfig already carries the certificates.
@@ -304,6 +328,15 @@ func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen fu
 	// keep-alive connection waiting for its next request forever.
 	if srv.IdleTimeout == 0 && srv.ReadTimeout <= 0 {
 		srv.IdleTimeout = DefaultIdleTimeout
+	}
+	// Set after the two above, which read ReadTimeout as the caller left it:
+	// a zero there lifts the body's deadline once the headers are in, and a
+	// zero WriteTimeout bounds nothing at all.
+	if srv.ReadTimeout == 0 {
+		srv.ReadTimeout = DefaultReadTimeout
+	}
+	if srv.WriteTimeout == 0 {
+		srv.WriteTimeout = DefaultWriteTimeout
 	}
 	listenErr := make(chan error, 1)
 	go func() {

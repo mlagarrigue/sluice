@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/web"
 )
 
@@ -753,10 +754,11 @@ func TestServeTLSNegotiatesHTTP2(t *testing.T) {
 }
 
 // A server that bounds no read leaves header reception unbounded — the
-// slowloris shape — and a keep-alive connection that went quiet after its
-// response held forever. Serve gives it a header deadline and an idle
-// deadline; a server that already bounds its reads, or opted out with a
-// negative value, is left as it was.
+// slowloris shape — a keep-alive connection that went quiet after its
+// response held forever, a body that stops after its first byte held inside
+// DecodeJSON, and a response nobody reads held too. Serve gives it a header,
+// an idle, a read and a write deadline; a server that already bounds them,
+// or opted out with a negative value, is left as it was.
 func TestServeBoundsHeaderReadsAndIdleConnectionsByDefault(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -765,16 +767,18 @@ func TestServeBoundsHeaderReadsAndIdleConnectionsByDefault(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	for _, tc := range []struct {
-		name                         string
-		srv                          *http.Server
-		wantHeader, wantRd, wantIdle time.Duration
+		name                                    string
+		srv                                     *http.Server
+		wantHeader, wantRd, wantIdle, wantWrite time.Duration
 	}{
-		{"unbounded", &http.Server{}, web.DefaultReadHeaderTimeout, 0, web.DefaultIdleTimeout}, //nolint:gosec // the unbounded server is what is under test
-		{"own header bound", &http.Server{ReadHeaderTimeout: time.Second}, time.Second, 0, web.DefaultIdleTimeout},
-		{"read bound only", &http.Server{ReadTimeout: 3 * time.Second}, 0, 3 * time.Second, 0},
-		{"explicit header opt-out", &http.Server{ReadHeaderTimeout: -1}, -1, 0, web.DefaultIdleTimeout},
-		{"own idle bound", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: 5 * time.Second}, time.Second, 0, 5 * time.Second},
-		{"explicit idle opt-out", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: -1}, time.Second, 0, -1},
+		{"unbounded", &http.Server{}, web.DefaultReadHeaderTimeout, web.DefaultReadTimeout, web.DefaultIdleTimeout, web.DefaultWriteTimeout}, //nolint:gosec // the unbounded server is what is under test
+		{"own header bound", &http.Server{ReadHeaderTimeout: time.Second}, time.Second, web.DefaultReadTimeout, web.DefaultIdleTimeout, web.DefaultWriteTimeout},
+		{"read bound only", &http.Server{ReadTimeout: 3 * time.Second}, 0, 3 * time.Second, 0, web.DefaultWriteTimeout},
+		{"explicit header opt-out", &http.Server{ReadHeaderTimeout: -1}, -1, web.DefaultReadTimeout, web.DefaultIdleTimeout, web.DefaultWriteTimeout},
+		{"own idle bound", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: 5 * time.Second}, time.Second, web.DefaultReadTimeout, 5 * time.Second, web.DefaultWriteTimeout},
+		{"explicit idle opt-out", &http.Server{ReadHeaderTimeout: time.Second, IdleTimeout: -1}, time.Second, web.DefaultReadTimeout, -1, web.DefaultWriteTimeout},
+		{"explicit read and write opt-out", &http.Server{ReadHeaderTimeout: time.Second, ReadTimeout: -1, WriteTimeout: -1}, time.Second, -1, web.DefaultIdleTimeout, -1},
+		{"own write bound", &http.Server{ReadHeaderTimeout: time.Second, WriteTimeout: 5 * time.Second}, time.Second, web.DefaultReadTimeout, web.DefaultIdleTimeout, 5 * time.Second},
 	} {
 		// The port is taken, so the listen fails at once: what is under test
 		// is what Serve did to the server before it tried. That net/http then
@@ -784,10 +788,51 @@ func TestServeBoundsHeaderReadsAndIdleConnectionsByDefault(t *testing.T) {
 		if err := web.Serve(context.Background(), tc.srv, time.Second); err == nil {
 			t.Fatalf("%s: listening on a taken port succeeded", tc.name)
 		}
-		if tc.srv.ReadHeaderTimeout != tc.wantHeader || tc.srv.ReadTimeout != tc.wantRd || tc.srv.IdleTimeout != tc.wantIdle {
-			t.Errorf("%s: ReadHeaderTimeout=%v ReadTimeout=%v IdleTimeout=%v, want %v, %v and %v",
-				tc.name, tc.srv.ReadHeaderTimeout, tc.srv.ReadTimeout, tc.srv.IdleTimeout,
-				tc.wantHeader, tc.wantRd, tc.wantIdle)
+		if tc.srv.ReadHeaderTimeout != tc.wantHeader || tc.srv.ReadTimeout != tc.wantRd || tc.srv.IdleTimeout != tc.wantIdle || tc.srv.WriteTimeout != tc.wantWrite {
+			t.Errorf("%s: ReadHeaderTimeout=%v ReadTimeout=%v IdleTimeout=%v WriteTimeout=%v, want %v, %v, %v and %v",
+				tc.name, tc.srv.ReadHeaderTimeout, tc.srv.ReadTimeout, tc.srv.IdleTimeout, tc.srv.WriteTimeout,
+				tc.wantHeader, tc.wantRd, tc.wantIdle, tc.wantWrite)
 		}
+	}
+}
+
+// What the read deadline buys: a client that sends its headers and one byte
+// of body, then nothing, frees the handler inside DecodeJSON when the
+// deadline runs out, and the refusal says the body timed out rather than
+// calling a well-formed prefix malformed.
+func TestDecodeJSONReportsABodyThatStoppedArriving(t *testing.T) {
+	const readTimeout = 200 * time.Millisecond
+	got := make(chan web.Problem, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Qty int }
+		d, ok := web.DecodeJSON(r, 1<<16, &body)
+		if ok {
+			t.Error("a body that never finished decoded")
+		}
+		got <- web.Problems([]diagnostics.Diagnostic{d})[0]
+	}))
+	srv.Config.ReadTimeout = readTimeout
+	srv.Start()
+	defer srv.Close()
+
+	c, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	start := time.Now()
+	if _, err := io.WriteString(c, "POST / HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n{"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case p := <-got:
+		if took := time.Since(start); took > 2*readTimeout {
+			t.Errorf("the handler was freed after %v, want within 2×ReadTimeout (%v)", took, 2*readTimeout)
+		}
+		if p.Code != web.CodeMalformedBody || p.MessageID != "RequestBodyTimeout" {
+			t.Errorf("refusal %s / %s, want %s / RequestBodyTimeout", p.Code, p.MessageID, web.CodeMalformedBody)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler is still inside DecodeJSON after 5s")
 	}
 }

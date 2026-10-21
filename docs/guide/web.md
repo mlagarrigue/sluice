@@ -222,9 +222,16 @@ default: a client sending its headers one byte at a time cannot hold the
 process hostage. Likewise, a server with neither `IdleTimeout` nor
 `ReadTimeout` gets two minutes: a *keep-alive* connection (kept open for
 the next request) that goes quiet after its response is closed instead of
-holding a file descriptor forever. `Recover` turns a panic in a handler
-into a 500 response you observe, instead of killing the process and every
-request in flight.
+holding a file descriptor forever. And within a request: a server without
+`ReadTimeout` gets thirty seconds to read the whole request, body
+included, and a server without `WriteTimeout` a minute to answer — without
+them, a client that sends one byte of body and then goes quiet holds the
+handler inside `DecodeJSON` until the forced stop. A handler that streams
+for long, or reads a slow body on purpose, moves its own deadlines with
+`http.NewResponseController(w)` (`SetReadDeadline`, `SetWriteDeadline`); a
+negative value lifts the bound for the whole server. `Recover` turns a
+panic in a handler into a 500 response you observe, instead of killing the
+process and every request in flight.
 
 ## The complete example
 
