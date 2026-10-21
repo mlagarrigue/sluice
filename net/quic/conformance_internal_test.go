@@ -125,7 +125,7 @@ func TestAEADIntegrityLimitClosesTheConnection(t *testing.T) {
 	}
 
 	c.mu.Lock()
-	c.spaces[spaceInitial].opener.failed = c.spaces[spaceInitial].opener.k.intLimit - 1
+	c.failedOpens = c.spaces[spaceInitial].opener.k.intLimit - 1
 	c.mu.Unlock()
 
 	// A forged Initial addressed to this connection: parses, never

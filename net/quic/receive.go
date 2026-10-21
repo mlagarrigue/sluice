@@ -440,17 +440,20 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			// Failed authentication: anyone can send these bytes.
 			c.mu.Lock()
 			c.discarded++
-			opener.failed++
-			overIntegrity := opener.failed >= opener.k.intLimit
+			c.failedOpens++
+			overIntegrity := c.failedOpens >= opener.k.intLimit
 			c.mu.Unlock()
 			if overIntegrity {
-				// RFC 9001 §6.6: past 2^52 failed opens the key itself is
-				// worn out — the one case where unauthenticated bytes end
-				// the connection, because tolerating more forgeries would
-				// erode the AEAD's integrity bound.
+				// RFC 9001 §6.6: the failed opens are counted over the whole
+				// connection, every level and key together, and past the
+				// integrity limit of the AEAD that just refused one — the
+				// selected suite's once 1-RTT keys exist, Initial's before —
+				// the bound is worn out: the one case where unauthenticated
+				// bytes end the connection, because tolerating more
+				// forgeries would erode the AEAD's integrity bound.
 				err := &transportError{
 					code: transportAEADLimitReached,
-					err:  fmt.Errorf("%w: this key refused its 2^52 forged packets", ErrQUIC),
+					err:  fmt.Errorf("%w: the connection refused its %d forged packets", ErrQUIC, opener.k.intLimit),
 				}
 				c.abort(err)
 				return err

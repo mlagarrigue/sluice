@@ -309,16 +309,12 @@ type packetSealer struct {
 // Opener unprotects packets in one direction.
 type packetOpener struct {
 	k keys
-	// failed counts packets that did not authenticate under this key,
-	// against the key's own §6.6 integrity limit (keys.intLimit) — the one
-	// place unauthenticated bytes
-	// are allowed to end a connection, because §6.6 says the key is what
-	// they wear out. Guarded by the connection's lock.
-	failed uint64
 	// phase is the 1-RTT opener's key-update state (RFC 9001 §6); nil at
-	// the Initial and Handshake levels, whose keys never rotate. It is
-	// immutable once built: a rotation replaces the whole opener under the
-	// connection's lock, so openPhased reads it without one.
+	// the Initial and Handshake levels, whose keys never rotate. A rotation
+	// replaces the whole opener under the connection's lock, and the one
+	// field that moves between rotations, lowest, is written under that
+	// lock by noteCurrentPN and read by openPhased on the receive goroutine
+	// alone, so openPhased reads the phase without the lock.
 	phase *keyPhase
 }
 
@@ -355,8 +351,8 @@ const (
 // rotated is the opener that replaces o once a packet authenticated under
 // the next keys at packet number pn (RFC 9001 §6.2): the current keys
 // become the previous, the next the current, and a further next is derived
-// so the following rotation finds it ready. The forgery count carries
-// over, as §6.6 counts failures across the connection.
+// so the following rotation finds it ready. The forgery count lives on
+// the connection (failedOpens), as §6.6 counts failures across all keys.
 func (o *packetOpener) rotated(pn uint64) (*packetOpener, error) {
 	cur := o.k
 	next, err := o.phase.next.next()
@@ -364,8 +360,7 @@ func (o *packetOpener) rotated(pn uint64) (*packetOpener, error) {
 		return nil, err
 	}
 	return &packetOpener{
-		k:      o.phase.next,
-		failed: o.failed,
+		k: o.phase.next,
 		phase: &keyPhase{
 			bit: o.phase.bit ^ keyPhaseBit, next: next, prev: &cur,
 			lowest: pn, hasLowest: true,
@@ -391,7 +386,7 @@ func (o *packetOpener) noteCurrentPN(pn uint64) {
 func (o *packetOpener) withoutPrevious() *packetOpener {
 	p := *o.phase
 	p.prev = nil
-	return &packetOpener{k: o.k, failed: o.failed, phase: &p}
+	return &packetOpener{k: o.k, phase: &p}
 }
 
 // NewSealer and NewOpener build one direction's Initial protection from its

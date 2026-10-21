@@ -333,6 +333,9 @@ type Conn struct {
 	gone    chan struct{}
 
 	discarded uint64 // datagrams or packets dropped without processing
+	// failedOpens counts the packets that failed authentication over the
+	// connection's lifetime, every key and level together (RFC 9001 §6.6).
+	failedOpens uint64
 	// nonProductive counts the authenticated ack-eliciting packets none of
 	// whose frames moved this end's state (RFC 9000 §21.9).
 	nonProductive uint64
