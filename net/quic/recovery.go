@@ -1011,6 +1011,14 @@ func (c *Conn) writeEndLocked() {
 // other. With the window not full (RFC 9002 §7.8's underused window) and no
 // lost payload waiting to be resent, the samples of the next round trip
 // measure the application, not the path.
+//
+// BBR §4.1.2.1.1 tracks pending_transmissions, lost_out and retrans_out
+// for this check (§4.1.2.4). Here "no lost payload waiting" is lost_out <=
+// retrans_out, since a loss is resent through the retrans queue and nowhere
+// else; pending_transmissions, the bytes below the transport (the GSO
+// batch, the kernel), is not read: the batch is flushed before any wait on
+// the window, and the kernel's queue would cost a system call per sample
+// for a mark that is rarely wrong.
 func (c *Conn) checkAppLimitedLocked(now time.Time) {
 	if !c.writeSent.IsZero() {
 		gap := now.Sub(c.writeSent)
