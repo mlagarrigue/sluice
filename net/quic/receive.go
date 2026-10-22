@@ -986,6 +986,9 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			if stopped {
 				c.rxProgress = true
 				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
+				// Retired, if this ended its last direction, after the
+				// batch: see onStopSendingLocked.
+				ended = append(ended, s)
 			}
 
 		case f.Type == frameMaxData:

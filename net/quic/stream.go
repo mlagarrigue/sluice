@@ -594,6 +594,13 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 // requires. stopped reports that this STOP_SENDING is what abandoned it — not
 // a retransmission, nor one crossing this end's own reset — the one the
 // application is told of. Runs on the read loop, under conn.mu.
+//
+// The stream is not retired here, though the direction it ends may be its
+// last: the caller does it once the packet's stream data is dispatched.
+// STREAM frames ahead of this one in the same packet are still in the
+// caller's batch, and a stream retired now dropped them unread — a peer that
+// sent its answer, its FIN and a STOP_SENDING together (nginx does) left
+// the reader waiting for bytes that had arrived.
 func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	if s.writeReset {
 		return false, nil
@@ -609,7 +616,6 @@ func (s *Stream) onStopSendingLocked(code uint64) (stopped bool, err error) {
 	s.conn.noteResetLocked(s.id)
 	frame := appendFrame(nil, FrameResetStream, s.id, code, s.writeOff)
 	err = s.conn.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
-	s.conn.maybeRemoveLocked(s)
 	s.conn.cond.Broadcast()
 	return true, err
 }
