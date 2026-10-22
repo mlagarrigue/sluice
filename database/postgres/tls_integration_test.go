@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"os"
 	"strconv"
@@ -37,20 +38,10 @@ import (
 // DialTLSDirect's immediate handshake, which a server before PostgreSQL 17
 // does not take and the subtest skips.
 func TestIntegrationChannelBindingOverTLS(t *testing.T) {
-	addr, cfg := pgTarget(t)
-	caFile := os.Getenv("SLUICE_PG_TLS_CA")
-	if caFile == "" {
-		t.Skip("SLUICE_PG_TLS_CA is not set: no server certificate to trust")
+	addr, cfg, tlsCfg := tlsTarget(t)
+	if os.Getenv("SLUICE_PG_TLS_SIGALG") == "Ed25519" {
+		t.Skip("an Ed25519 certificate defines no binding hash: TestIntegrationChannelBindingEd25519 meets it")
 	}
-	ca, err := os.ReadFile(caFile) //nolint:gosec // G304: the path is the harness's own configuration, as SLUICE_PG is
-	if err != nil {
-		t.Fatal(err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(ca) {
-		t.Fatalf("%s holds no PEM certificate", caFile)
-	}
-	tlsCfg := &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
 	var major int
 	t.Run("SSLRequest", func(t *testing.T) {
 		conn := bindOverTLS(t, postgres.DialTLS(addr, tlsCfg), cfg)
@@ -95,6 +86,66 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 			t.Fatalf("%d of %d connections were TLS: a cancellation left in clear", overTLS.Load(), dials.Load())
 		}
 	})
+}
+
+// tlsTarget is pgTarget with the TLS configuration that trusts the server
+// certificate in SLUICE_PG_TLS_CA, or a skip when there is none.
+func tlsTarget(t *testing.T) (string, postgres.Config, *tls.Config) {
+	t.Helper()
+	addr, cfg := pgTarget(t)
+	caFile := os.Getenv("SLUICE_PG_TLS_CA")
+	if caFile == "" {
+		t.Skip("SLUICE_PG_TLS_CA is not set: no server certificate to trust")
+	}
+	ca, err := os.ReadFile(caFile) //nolint:gosec // G304: the path is the harness's own configuration, as SLUICE_PG is
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(ca) {
+		t.Fatalf("%s holds no PEM certificate", caFile)
+	}
+	return addr, cfg, &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+}
+
+// An Ed25519 certificate has no hash of its own, and RFC 5929 §4.1 defines
+// no tls-server-end-point binding for it; PostgreSQL's
+// be_tls_get_certificate_hash finds no digest and fails the exchange. The
+// server still offers -PLUS over TLS, so the default refuses with the reason
+// named — a client that silently dropped the binding is what a stripping
+// attack looks like — and ChannelBindingDisable connects, over TLS, saying
+// 'n'. Run only when CI presents such a certificate (SLUICE_PG_TLS_SIGALG).
+func TestIntegrationChannelBindingEd25519(t *testing.T) {
+	addr, cfg, tlsCfg := tlsTarget(t)
+	if os.Getenv("SLUICE_PG_TLS_SIGALG") != "Ed25519" {
+		t.Skip("the server's certificate is not Ed25519")
+	}
+	connect := func(cb postgres.ChannelBindingMode) (*postgres.Conn, error) {
+		c := cfg
+		c.ChannelBinding = cb
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		return postgres.Connect(ctx, postgres.DialTLS(addr, tlsCfg), c)
+	}
+	conn, err := connect(postgres.ChannelBindingPrefer)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("the default connected over an Ed25519 certificate: the binding the server offered was dropped")
+	}
+	if !errors.Is(err, postgres.ErrAuthUnsupported) || !strings.Contains(err.Error(), "Ed25519") {
+		t.Fatalf("the default answered %v, want ErrAuthUnsupported naming Ed25519", err)
+	}
+	conn, err = connect(postgres.ChannelBindingDisable)
+	if err != nil {
+		t.Fatalf("ChannelBindingDisable: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	version := queryOne(t, conn, "SELECT version FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl",
+		func(row postgres.Row) string {
+			v, _ := row.Value(0)
+			return postgres.DecodeText(v)
+		})
+	t.Logf("unbound, over %s", version)
 }
 
 // bindOverTLS connects through dial with ChannelBindingRequire, checks the

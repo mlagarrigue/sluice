@@ -4,7 +4,7 @@
 # is sure to meet that certificate. A service container takes no server
 # flags, so ssl = on cannot be set where the container is declared.
 #
-#   scripts/pg-tls.sh <container> <rsa|rsa-pss|rsa-pss-maxsalt> <dir>
+#   scripts/pg-tls.sh <container> <rsa|rsa-pss|rsa-pss-maxsalt|ecdsa|ed25519> <dir>
 #
 #   rsa              RSA key, PKCS #1 v1.5 signature with SHA-256: the common
 #                    case.
@@ -16,6 +16,9 @@
 #                    fits. crypto/x509 names a PSS signature only when the
 #                    salt is the hash length, so here the client reads the
 #                    hash from the parameters itself.
+#   ecdsa            P-256 key, ECDSA with SHA-256.
+#   ed25519          Ed25519 key: a signature with no hash of its own, for
+#                    which RFC 5929 §4.1 defines no binding at all.
 #
 # Writes <dir>/server.crt, self-signed for 127.0.0.1: it is also the root the
 # client trusts. The image's pg_hba.conf has host lines, which match TLS and
@@ -24,8 +27,12 @@ set -euo pipefail
 
 container=$1 kind=$2 dir=$3
 
+key=(-newkey rsa:2048)
 case $kind in
 rsa) sign=(-sha256) ;;
+ecdsa) key=(-newkey ec -pkeyopt ec_paramgen_curve:P-256) sign=(-sha256) ;;
+# Ed25519 signs the message itself: no digest option is accepted.
+ed25519) key=(-newkey ed25519) sign=() ;;
 # The salt length is the hash length, the only one crypto/x509 names
 # (SHA384-RSAPSS).
 rsa-pss) sign=(-sha384 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest) ;;
@@ -37,9 +44,9 @@ rsa-pss-maxsalt) sign=(-sha384 -sigopt rsa_padding_mode:pss) ;;
 esac
 
 mkdir -p "$dir"
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+openssl req -x509 "${key[@]}" -nodes -days 2 \
 	-keyout "$dir/server.key" -out "$dir/server.crt" \
-	-subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 "${sign[@]}"
+	-subj /CN=127.0.0.1 -addext subjectAltName=IP:127.0.0.1 ${sign[@]+"${sign[@]}"}
 
 remote=/var/lib/postgresql
 docker cp "$dir/server.crt" "$container:$remote/sluice-server.crt"

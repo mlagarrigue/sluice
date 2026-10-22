@@ -305,6 +305,12 @@ jobs:
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
             exit 1
           fi
+          for name in TestIntegrationProtocolNegotiated TestIntegrationMinProtocolRefusesAnOlderServer TestIntegrationDeclinedProtocolOption; do
+            if ! grep -- "--- PASS: $name " test.log; then
+              echo "::error::$name did not pass against PostgreSQL $PG_MAJOR" >&2
+              exit 1
+            fi
+          done
           if ! grep -- '--- PASS: TestIntegrationSessionOptions ' test.log; then
             echo "::error::the session options were not all met against PostgreSQL $PG_MAJOR" >&2
             exit 1
@@ -354,6 +360,35 @@ jobs:
           go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
           if [ "$PG_MAJOR" -ge 17 ]; then grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; fi
           grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
+
+      # ECDSA: an elliptic-curve key whose signature names its hash, bound
+      # like the RSA ones.
+      - name: Turn TLS on, ECDSA P-256 certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} ecdsa "$RUNNER_TEMP/pg-ecdsa"
+      - name: Channel binding, ECDSA P-256 certificate
+        shell: bash
+        env:
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-ecdsa/server.crt
+          SLUICE_PG_TLS_SIGALG: ECDSA-SHA256
+          PG_MAJOR: ${{ matrix.postgres }}
+        run: |
+          go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
+          if [ "$PG_MAJOR" -ge 17 ]; then grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; fi
+          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
+
+      # Ed25519: no hash, no binding defined. The server fails the -PLUS
+      # exchange it offers; the client refuses first, by name, and connects
+      # unbound only when told to.
+      - name: Turn TLS on, Ed25519 certificate
+        run: scripts/pg-tls.sh ${{ job.services.postgres.id }} ed25519 "$RUNNER_TEMP/pg-ed25519"
+      - name: Channel binding, Ed25519 certificate
+        shell: bash
+        env:
+          SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-ed25519/server.crt
+          SLUICE_PG_TLS_SIGALG: Ed25519
+        run: |
+          go test -race -count=1 -v -run '^TestIntegrationChannelBindingEd25519$' ./database/postgres/ | tee test.log
+          grep -- '--- PASS: TestIntegrationChannelBindingEd25519 ' test.log
 
       # The tables the comparison benchmarks read, by the program a developer
       # runs, so the two cannot drift. It speaks through this repository's
