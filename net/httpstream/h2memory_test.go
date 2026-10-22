@@ -91,11 +91,27 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 	h2Settings, _ := appendH2Frame(nil, h2Frame{Type: frameSettings})
 	h2Ack, _ := appendH2Frame(nil, h2Frame{Type: frameSettings, Flags: flagAck})
 
+	// Each pass waits, once its connections are closed, until the server's
+	// goroutines are back to where they were: the server tears a closed
+	// connection down on its own goroutines, and a pass that started while
+	// the last one's were still alive counted their release against its own
+	// connections — on macOS a second HTTP/1.1 pass read 2,180 bytes where
+	// the first read 10,881, and the ratio 5.44×. Back to within a handful:
+	// the first connection starts one goroutine of the server's that then
+	// stays, where a connection's own are one or more per connection.
 	measure := func(name string, depth int, open func(c net.Conn, depth int) error) uint64 {
 		held := make([]net.Conn, 0, conns)
+		base := runtime.NumGoroutine()
 		defer func() {
 			for _, c := range held {
 				_ = c.Close()
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for runtime.NumGoroutine() > base+8 {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s: %d goroutines 10 s after closing, %d before opening", name, runtime.NumGoroutine(), base)
+				}
+				time.Sleep(time.Millisecond)
 			}
 		}()
 		before := liveHeap()
