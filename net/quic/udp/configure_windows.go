@@ -16,8 +16,10 @@ const (
 	sioUDPConnReset = syscall.IOC_IN | syscall.IOC_VENDOR | 12 // 0x9800000C
 )
 
-// disableConnReset turns SIO_UDP_CONNRESET off. Left on — Winsock's
-// default, which package net does not change — an ICMP port-unreachable
+// disableConnReset turns SIO_UDP_CONNRESET off. Package net already does
+// on every UDP socket it opens (go.dev/issue/5834); turning it off again
+// costs one ioctl and keeps the guarantee [Configure] documents from
+// resting on that. Left on — Winsock's default — an ICMP port-unreachable
 // answering any earlier send surfaces as WSAECONNRESET on the socket's
 // next read: one peer that went away makes a socket shared by a whole
 // listener report a read error, and a dialled connection's read loop

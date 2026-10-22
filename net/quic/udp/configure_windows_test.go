@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
@@ -28,6 +29,27 @@ func getsockopt(t *testing.T, c *net.UDPConn, level, opt int) int {
 		t.Fatalf("getsockopt(%d,%d): %v", level, opt, opErr)
 	}
 	return v
+}
+
+// setConnReset sets SIO_UDP_CONNRESET on c: 1 reports an ICMP
+// port-unreachable as WSAECONNRESET on the next read, 0 does not.
+func setConnReset(t *testing.T, c *net.UDPConn, on uint32) {
+	t.Helper()
+	rc, err := c.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opErr error
+	if err := rc.Control(func(fd uintptr) {
+		var returned uint32
+		opErr = syscall.WSAIoctl(syscall.Handle(fd), syscall.SIO_UDP_CONNRESET,
+			(*byte)(unsafe.Pointer(&on)), uint32(unsafe.Sizeof(on)), nil, 0, &returned, nil, 0)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if opErr != nil {
+		t.Fatalf("SIO_UDP_CONNRESET %d: %v", on, opErr)
+	}
 }
 
 // Winsock names (ws2ipdef.h), spelled again here because the package's
@@ -122,8 +144,14 @@ func TestDontFragmentRefusesOversize(t *testing.T) {
 // With SIO_UDP_CONNRESET on (Winsock's default), a datagram sent to a
 // closed loopback port draws an ICMP port-unreachable that the next read
 // reports as WSAECONNRESET. Configure turns it off, so the same read just
-// waits for a datagram and times out. A plain socket is the control: if
-// it does not see the reset, this host cannot show the difference.
+// waits for a datagram and times out.
+//
+// Package net already turns it off on every UDP socket it opens
+// (go.dev/issue/5834), so a socket from net.ListenUDP cannot show the
+// difference: this one is turned back on first, its reset seen, and only
+// then given to Configure. The control used to be a plain socket from
+// net.ListenUDP, which never reported the reset, and the test skipped on
+// every run.
 func TestConfigureDisablesConnReset(t *testing.T) {
 	// A port nobody listens on: bind one, note it, release it.
 	hole, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -142,20 +170,19 @@ func TestConfigureDisablesConnReset(t *testing.T) {
 		return err
 	}
 
-	plain, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer plain.Close()
-	if err := readAfterSend(plain); !errors.Is(err, syscall.Errno(10054)) { // WSAECONNRESET
-		t.Skipf("plain socket did not report WSAECONNRESET (%v); nothing to compare against", err)
-	}
-
-	c, err := udp.Listen("udp4", "127.0.0.1:0")
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	setConnReset(t, c, 1)
+	if err := readAfterSend(c); !errors.Is(err, syscall.Errno(10054)) { // WSAECONNRESET
+		t.Fatalf("with SIO_UDP_CONNRESET on, the read reported %v, want WSAECONNRESET", err)
+	}
+
+	if err := udp.Configure(c); err != nil {
+		t.Fatal(err)
+	}
 	err = readAfterSend(c)
 	var ne net.Error
 	if !errors.As(err, &ne) || !ne.Timeout() {
