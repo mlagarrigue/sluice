@@ -377,56 +377,6 @@
       "connectionmigration": "unsupported: quiche's image does not implement the case"
     }
   },
-  "quinn": {
-    "server": {
-      "handshake": "succeeded",
-      "transfer": "succeeded",
-      "longrtt": "succeeded",
-      "chacha20": "succeeded",
-      "multiplexing": "succeeded",
-      "retry": "succeeded",
-      "resumption": "unsupported: the server issues no session ticket",
-      "zerortt": "unsupported: the server issues no session ticket",
-      "http3": "succeeded",
-      "blackhole": "succeeded",
-      "keyupdate": "succeeded",
-      "ecn": "succeeded",
-      "amplificationlimit": "succeeded",
-      "handshakeloss": "succeeded",
-      "transferloss": "succeeded",
-      "handshakecorruption": "failed: held by the anti-amplification limit, the server waits for the client (RFC 9002 §6.2.2.1), and quinn's client resends only after the 10 s handshake deadline, which quic-go applies too",
-      "transfercorruption": "succeeded",
-      "ipv6": "succeeded",
-      "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "succeeded",
-      "rebind-addr": "succeeded",
-      "connectionmigration": "failed: quinn's client never migrates to the server's preferred address, so the runner sees one path"
-    },
-    "client": {
-      "handshake": "succeeded",
-      "transfer": "succeeded",
-      "longrtt": "succeeded",
-      "chacha20": "unsupported: the endpoint's client does not implement the case",
-      "multiplexing": "succeeded",
-      "retry": "succeeded",
-      "resumption": "unsupported: the client keeps no session ticket",
-      "zerortt": "unsupported: the client keeps no session ticket",
-      "http3": "unsupported: the endpoint's client does not implement the case",
-      "blackhole": "succeeded",
-      "keyupdate": "unsupported: the endpoint's client does not implement the case",
-      "ecn": "succeeded",
-      "amplificationlimit": "succeeded",
-      "handshakeloss": "succeeded",
-      "transferloss": "succeeded",
-      "handshakecorruption": "succeeded",
-      "transfercorruption": "succeeded",
-      "ipv6": "succeeded",
-      "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "succeeded",
-      "rebind-addr": "succeeded",
-      "connectionmigration": "unsupported: quinn's image does not implement the case"
-    }
-  },
   "xquic": {
     "server": {
       "handshake": "succeeded",
