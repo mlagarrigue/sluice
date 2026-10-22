@@ -149,9 +149,14 @@ Three reasons come up, and the difference matters:
 
 ## Web and gateway
 
-- **No router, no adapter, no middleware** — on purpose. `http.ServeMux`
-  routes since Go 1.22; the handler stays eight lines you can read; an
-  adapter would hide the status code and the encoding.
+- **On the `net/http` path, no router and no adapter** — on purpose.
+  `http.ServeMux` routes since Go 1.22; the handler stays eight lines you
+  can read; an adapter would hide the status code and the encoding. Two
+  wrappers exist, and neither picks the status or the encoding of an
+  ordinary response: `web.Recover` turns a panic into an observed 500, and
+  `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental
+  `web/stream` path has its own router (`stream.NewRouter`), because
+  `http.ServeMux` does not see a batch.
 - **One token verifier provided**: HMAC (a symmetric signature with a
   shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
   not yet; the `Verifier` interface is the extension point.
