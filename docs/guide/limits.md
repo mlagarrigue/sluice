@@ -241,18 +241,19 @@ to a separate module before a v1.
   itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
   the `Interop runner` workflow). Since 2026-10-11 the endpoint's image,
   `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
-  (the `Interop image` workflow). Each run of the `Interop runner`
-  workflow, not this paragraph, is the record: its log holds the table of
-  cases, its artifact the captures and each side's logs, kept seven days.
-  The workflow runs by hand only — nothing schedules it yet — and has run
-  four times: twice on 2026-10-19, for chacha20 and ecn alone, and twice on
-  2026-10-20 against quic-go with every case. `interop/expected-results.json`
-  records that last pass, case by case and in each direction, with the
-  cause of every failure; a pass that departs from it, either way, fails
-  the script and the job. Against ngtcp2 the cases below were read from
-  `scripts/interop-runner.sh` run by hand between 2026-10-10 and
-  2026-10-19, of which no log is kept: until a complete pass is recorded,
-  they are a dated reading, not a CI result.
+  (the `Interop image` workflow). Since 2026-10-22 the `Interop runner`
+  workflow crosses every implementation in the runner's list every
+  Sunday, on each side its role allows — 31 peer-directions; the table of
+  its latest complete pass, peer by case, is on the
+  [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results),
+  and each run keeps the captures and each side's logs as artifacts for
+  seven days. A case that fails is run once more, and the table shows both
+  results. `interop/expected-results.json` records, for quic-go and
+  ngtcp2, every case in each direction with the cause of every failure; a
+  pass that departs from it, either way, fails the job. The other peers
+  are reported, not judged, until their results are read and written
+  down. The cases below are those of the passes of 2026-10-22 against
+  quic-go and ngtcp2.
   As a server, sluice passes handshake,
   transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
   amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,

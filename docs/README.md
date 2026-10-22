@@ -33,6 +33,9 @@ place.
   the decision, the rationale.
 - [Measurements](benchmarks.md) — the method, the ceiling, the current
   figures.
+- [QUIC interop results](https://github.com/mlagarrigue/sluice/tree/interop-results)
+  — the latest weekly pass of the QUIC Interop Runner, sluice against every
+  implementation, peer by case.
 
 ## I am contributing
 
