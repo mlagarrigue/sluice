@@ -82,7 +82,8 @@ jobs:
       - name: Corpus at the start
         env:
           DIR: ${{ steps.corpus.outputs.dir }}
-        run: echo "corpus at the start: $(find "$DIR" -type f 2>/dev/null | wc -l) inputs"
+        run: |
+          echo "corpus at the start: $(find "$DIR" -type f 2>/dev/null | wc -l) inputs"
 
       - name: Fuzz every target in ${{ matrix.package }}
         env:
