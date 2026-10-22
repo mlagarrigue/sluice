@@ -37,10 +37,13 @@ func TestReadDeadlinePassesWithNothingToRead(t *testing.T) {
 	client, server, _, _ := handshakePair(t, serverTLS(t), clientTLS())
 	_, ss := openAccepted(t, client, server)
 
-	if err := ss.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+	// The clock is read before the deadline is set, so the measured wait
+	// covers the whole deadline: read after, a coarse Windows clock made
+	// the wait look 0.4 ms short.
+	start := time.Now()
+	if err := ss.SetReadDeadline(start.Add(50 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
 	n, err := ss.Read(make([]byte, 16))
 	if n != 0 || !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("Read = %d, %v; want 0, os.ErrDeadlineExceeded", n, err)
