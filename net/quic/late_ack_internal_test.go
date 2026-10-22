@@ -20,6 +20,12 @@ func TestALateAcknowledgementTakesThePayloadOffTheResendQueue(t *testing.T) {
 	c.mu.Lock()
 	sp := &c.spaces[spaceApplication]
 	s.sendQ.max, c.connSend.max = 1<<20, 1<<20 // the peer's credit, as if granted
+	// A round trip of a second already measured, so the ACK below, whose own
+	// sample is a few microseconds, leaves the time threshold (§6.1.2) far
+	// above the gaps between the four sends. Without it the threshold was a
+	// millisecond, and a Windows clock that ticked 15 ms between two writes
+	// declared packet 1 lost by time as well (2026-10-22, twice).
+	c.rtt.sample(time.Second, 0)
 	c.mu.Unlock()
 	for i := range 4 { // packets 0 to 3, one byte each
 		if _, err := s.Write([]byte{byte('a' + i)}); err != nil {
