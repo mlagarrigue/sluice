@@ -447,6 +447,64 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	}
 }
 
+// RFC 9000 §13.2.1: a packet sent for any reason SHOULD carry an ACK frame
+// if one has not been sent recently. In the handshake spaces every packet
+// does once anything was received there: the ACK already paid for may have
+// been lost, and a probe is the only packet the peer will see for a PTO.
+func TestAHandshakeProbeCarriesTheAckAlreadySent(t *testing.T) {
+	pc := &recordingPC{addr: fakeFuzzAddr("probeack:self")}
+	c := assembleConn(pc, fakeFuzzAddr("probeack:peer"), []byte("dcid0000"), []byte("scid0000"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	if err := c.installInitial([]byte("dcid0000")); err != nil {
+		t.Fatal(err)
+	}
+	sec, err := initialSecrets([]byte("dcid0000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.mu.Lock()
+	c.amplActive = false
+	sp := &c.spaces[spaceInitial]
+	sp.ack.record(4, now)
+	sp.ack.onAckEliciting(spaceInitial, now, false)
+	sp.ack.settle() // the ACK of packet 4 already left, and was lost
+	sp.sent.record(sentPacket{pn: 0, sentAt: now, size: 100, ackEliciting: true, payload: []byte{framePing}})
+	sp.nextPN = 1
+	c.sendProbeLocked(spaceInitial)
+	c.mu.Unlock()
+
+	writes := pc.recorded()
+	if len(writes) == 0 {
+		t.Fatal("the probe sent nothing")
+	}
+	for i, w := range writes {
+		h, _, err := parseLongHeader(w.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			t.Fatalf("probe %d does not open: %v", i, err)
+		}
+		frames, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acked := false
+		for _, f := range frames {
+			acked = acked || f.Type == frameACK || f.Type == frameACK|1
+		}
+		if !acked {
+			t.Errorf("probe %d carries no ACK: the peer learns nothing of packet 4 until another of its packets is answered", i)
+		}
+	}
+}
+
 // A certificate chain the anti-amplification budget holds back leaves in
 // offset order once the budget lifts. Each withheld packet goes back to the
 // head of the queue; a chain sent chunk by chunk came out reversed, its

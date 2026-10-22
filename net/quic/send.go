@@ -187,7 +187,18 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	// (§9.6.2). The ACK waits for the next packet on the path; an answer
 	// on the path itself keeps it (§9.3.3 has that one non-probing).
 	offPath := (opts.via != nil && opts.via != c.pc) || (opts.to != nil && !sameAddr(opts.to, c.peer))
-	if owed := sp.ack.owes(now); !offPath && (owed || sp.ack.pending()) {
+	// In the Initial and Handshake spaces an ACK rides every packet once
+	// anything was received there, owed or not — §13.2.1's "when sending a
+	// packet for any reason, an endpoint SHOULD attempt to include an ACK
+	// frame if one has not been sent recently". A handshake whose one ACK
+	// was lost otherwise leaves the peer blind until it next elicits one:
+	// runner handshakeloss against quiche, the client's two ACKs of the
+	// ServerHello's first half both dropped while four of its probes got
+	// through bare, and quiche's PTO resending only that first half, never
+	// the lost tail, until Dial expired. A few bytes in packets that leave
+	// rarely, and the client's Initials are padded to 1200 anyway.
+	resend := space != spaceApplication && len(sp.ack.ranges) > 0
+	if owed := sp.ack.owes(now); !offPath && (owed || sp.ack.pending() || resend) {
 		ack = sp.ack.encodeAck(c.ackScratch[:0], now)
 		c.ackScratch = ack
 		// An ACK that does not fit beside the payload under maxDatagram
