@@ -281,8 +281,11 @@ func (s *Server) Close() error {
 	for _, c := range h3 {
 		_ = c.CloseWithError(h3GracefulCode())
 	}
-	s.force()
+	// The sockets close before the handlers are cancelled: the other order
+	// let a cancelled handler return and its error answer reach the client
+	// ahead of the close, a forced stop that still answered.
 	s.live.closeAll()
+	s.force()
 	if cut > 0 {
 		s.cfg.logger().Warn("httpstream: server closed with requests in flight", "connections", cut)
 	}

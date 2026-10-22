@@ -602,15 +602,18 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			fatal = err
 			return false
 		}
-		if len(ready) > 0 {
-			b := h2Batch{reqs: ready, ids: ids}
-			calls.Go(func() { s.call(b, in) })
-		}
+		// The phase is set before the handler starts: marked after, a
+		// handler could be running while a forced stop read the connection
+		// as idle and reported no cut.
 		live := s.open.Load() > 0 || s.inFlight.Load() > 0
 		if live {
 			st.set(connBusy)
 		} else {
 			st.set(connIdle)
+		}
+		if len(ready) > 0 {
+			b := h2Batch{reqs: ready, ids: ids}
+			calls.Go(func() { s.call(b, in) })
 		}
 		if !live && s.drainStep.Load() == drainAnnounced {
 			// Drained with nothing left to answer: the second GOAWAY is out
