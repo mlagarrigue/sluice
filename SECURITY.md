@@ -34,7 +34,8 @@ reproducible breach of any of them is a vulnerability, in particular:
   bound — memory exhaustion from a stream the caller did not size
 - **a panic crossing a public boundary**, which turns a data problem into a
   process crash — excepting the documented sentinel panics (`ErrUnsorted`,
-  `ErrOverflow` under `Fail`, and the `Split` sentinels), which are the stated
+  `ErrOverflow` under `Fail`, the two `Split` sentinels and
+  `parallel.ErrState`), which are the stated
   contract and are what `Try` exists to catch at the boundary
 - **goroutine leaks**, or an `iter.Pull` whose `stop` is never reached
 - **internal detail leaking to a client** through an error path

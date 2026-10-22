@@ -206,6 +206,9 @@ decoded := parallel.Ordered(rows, 4, func(b sluice.Batch[Row]) sluice.Batch[Enti
 enriched := parallel.WithState(rows, 4,
     func() (*Reader, error) { return OpenReader(path) },
     func(r *Reader, b sluice.Batch[Row]) sluice.Batch[Entity] { return r.hydrate(b) })
+// A factory that fails stops the pipeline with a panic, parallel.ErrState,
+// which wraps its error: Try turns it into an error, and errors.Is answers
+// for either.
 
 // Reading the file goes on while the rest works: up to four batches of lead.
 rows := parallel.Async(readCSV(path), 4)

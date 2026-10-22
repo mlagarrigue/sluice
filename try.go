@@ -32,7 +32,7 @@ import (
 //
 // The re-raised panic unwinds from this frame, so the trace shows Try between
 // the crash site and the caller; the panic value is untouched. The converted
-// error is the panic value as raised — for [ErrParallelInit] that is the
+// error is the panic value as raised — for parallel.ErrState that is the
 // wrapping error, so errors.Is reaches both the sentinel and the cause.
 //
 // Try panics if consume is nil.

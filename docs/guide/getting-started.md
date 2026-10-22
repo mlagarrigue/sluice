@@ -236,11 +236,13 @@ decide to stop (`TakeWhile`, or a terminal returning `false`).
 ## When a panic is really an error
 
 A Go iterator has no way to return an error in the middle of a walk.
-Sluice.go therefore uses a *panic* (Go's abrupt stop) for a few precise,
+Sluice.go therefore uses a *panic* (Go's abrupt stop) for five precise,
 named situations: a bounded operator overflowing under the "fail" policy
 (`ErrOverflow`), data that should have been sorted and is not
 (`ErrUnsorted`), the branches of a `Split` read in the wrong order
-(`ErrSplitStalled`).
+(`ErrSplitStalled`, and `ErrSplitDrained` for a branch read after the
+source ran out), and the state factory of `parallel.WithState` failing
+(`parallel.ErrState`, which wraps the factory's error too).
 
 In a script run overnight, crashing is the right behaviour: you want to
 know. In a server serving a thousand users, it is not. `Try` converts those
