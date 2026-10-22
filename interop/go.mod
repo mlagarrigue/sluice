@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/mlagarrigue/sluice v0.0.0
-	github.com/quic-go/quic-go v0.63.0
+	github.com/quic-go/quic-go v0.64.1
 )
 
 require (
