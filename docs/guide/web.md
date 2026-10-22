@@ -152,11 +152,13 @@ start in front of a database.
 > the client's wait, not the batch's work.
 
 > **In plain terms: when it pays.** The gateway only saves round trips.
-> Measured: ×6.9 against one query per call in front of a database, ×8.2
-> with parallelism inside the pipeline — and ×65 *slower* when there is
-> nothing behind to amortize. Without a database or a remote service, no
-> gateway. And under WSL2, a `Within` below one millisecond is rounded up to
-> 1.12 ms by the system clock; a test measures it.
+> Measured in front of a resource that serves 16 queries at once: 11.9 times
+> the throughput of one query per call, 15.4 with parallelism inside the
+> pipeline. With nothing behind it, it only costs: one call every 3.7 µs at
+> best, where a direct call is free. Without a database or a remote service,
+> no gateway. And under WSL2, a `Within` below one millisecond is rounded up
+> by the system clock: 500 µs cost a lone call 1.11 ms. The benchmarks are in
+> [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend).
 
 ## Authenticating, authorizing
 

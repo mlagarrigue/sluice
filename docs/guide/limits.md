@@ -160,9 +160,9 @@ Three reasons come up, and the difference matters:
   your service. For an external identity provider, implement `Authorizer`
   against whatever knows the policy.
 - **The gateway only amortises round trips.** Without a database or a
-  remote service behind it, it costs more than it saves (measured: ×65
-  slower). And under WSL2, any `Within` under a millisecond is worth
-  1.12 ms.
+  remote service behind it, it costs more than it saves (measured: one call
+  every 3.7 µs at best, for nothing). And under WSL2, a `Within` of 500 µs
+  is worth 1.11 ms.
 - **`gateway.Partitions` is experimental**: the mechanism (grouping a batch
   by key) works and is tested, but no measurement yet says when it pays.
 - **No HTTP compression** (`Content-Encoding: gzip`…) — not yet, on either

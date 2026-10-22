@@ -147,3 +147,57 @@ func BenchmarkBatchedParallelRoundTrip(b *testing.B) {
 		sink = n
 	})
 }
+
+// BenchmarkBatchedNothingBehind is BenchmarkBatchedRoundTrip with no backend:
+// each call is answered in place. With no round trip to amortise, the
+// gateway's rendezvous, batch and reply channel are all it adds, against a
+// direct call that costs nothing — the case where it costs more than it
+// saves. Its per-call figure is the gateway's own price.
+func BenchmarkBatchedNothingBehind(b *testing.B) {
+	gw := echo()
+	defer func() { _ = gw.Close() }()
+
+	ctx := context.Background()
+	b.SetParallelism(clients)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		n := 0
+		for pb.Next() {
+			if _, err := gw.Do(ctx, n); err != nil {
+				b.Error(err)
+				return
+			}
+			n++
+		}
+		sink = n
+	})
+}
+
+// BenchmarkLoneCall is one caller and nothing behind, so every call waits out
+// Within alone: its ns/op is what a Within of 500 µs costs on the machine's
+// timer, which may round a short wait up.
+func BenchmarkLoneCall(b *testing.B) {
+	gw := echo()
+	defer func() { _ = gw.Close() }()
+
+	ctx := context.Background()
+	for i := 0; b.Loop(); i++ {
+		if _, err := gw.Do(ctx, i); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// echo is a gateway with nothing behind it: each call is answered with its
+// own input.
+func echo() *gateway.Gateway[int, int] {
+	return gateway.New(gateway.Config{Size: 64, Within: 500 * time.Microsecond},
+		func(calls sluice.Stream[*gateway.Call[int, int]]) {
+			calls(func(bt sluice.Batch[*gateway.Call[int, int]]) bool {
+				for _, c := range bt.Items {
+					c.Reply(c.In)
+				}
+				return true
+			})
+		})
+}

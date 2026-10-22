@@ -1192,6 +1192,29 @@ reason.
 | `BenchmarkWebDBSluiceOneConn` | 898204 ns | ±6% | 470318 B | 2251 |
 <!-- /consolidate -->
 
+### The gateway, against a bounded backend
+
+The benchmarks of `gateway/`, outside the paired gate: they measure the
+scheduler as much as the code. A resource serves 16 queries at once and each
+sleeps 100 µs; 256 callers. Under WSL2 that sleep lasts close to a
+millisecond, the same rounding that hits `Within`, so the ratios below are
+those of a query of about 1 ms. Three runs of 2 s, median, 2026-10-22,
+15 cores.
+
+| benchmark | ns per call | throughput ratio |
+|---|---|---|
+| `BenchmarkPerCallRoundTrip` | 63,988 | 1 |
+| `BenchmarkBatchedRoundTrip` | 5,389 | 11.9 |
+| `BenchmarkBatchedParallelRoundTrip` | 4,142 | 15.4 |
+| `BenchmarkBatchedNothingBehind` | 3,688 | — |
+| `BenchmarkLoneCall` | 1,110,493 | — |
+
+`BatchedNothingBehind` is the gateway's own price, with nothing to
+amortise. `LoneCall` is one caller under a `Within` of 500 µs: it waits for
+the clock, not for company. The "65 times slower" of earlier versions came
+from a first benchmark with no bound on the resource, since removed; the
+benchmark's comment tells why.
+
 ## Partitioning by principal
 
 <!-- consolidate: partitioning -->
