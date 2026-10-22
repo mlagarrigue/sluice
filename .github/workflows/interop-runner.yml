@@ -120,11 +120,21 @@ jobs:
   # One table for the whole pass, peer by case, each cell the runner's word
   # for sluice as server and as client; a job that produced no results (a
   # timeout, a broken image) shows as a dash rather than vanishing.
+  #
+  # A complete pass — the Sunday one, or one started by hand for every peer
+  # and every case — is also published on the interop-results branch, the
+  # address docs/README.md links: its README.md is the table, cases.jsonl
+  # the runner's word for each case. The branch holds the latest pass only.
   aggregate:
     needs: interop
     if: always() && needs.interop.result != 'skipped'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: interop-*
@@ -135,25 +145,43 @@ jobs:
           find passes -name 'results_*.json' ! -name 'results_none.json' ! -name '*-again.json' -exec jq -c '
             input_filename as $f
             | (.results[0] // [])[] as $r
-            | { server: .servers[0], client: .clients[0], name: $r.name, result: $r.result }
+            | { server: .servers[0], client: .clients[0], name: $r.name, result: $r.result, first: $r.first }
           ' {} + > matrix/cases.jsonl || true
-          jq -rs '
-            map(if .server == "sluice" then {peer: .client, side: "server"} + . else {peer: .server, side: "client"} + . end)
-            | (map(.name) | unique) as $cases
-            | group_by(.peer)
-            | "| peer | " + ($cases | join(" | ")) + " |",
-              "|---" + ($cases | map("|---") | join("")) + "|",
-              (.[] | . as $rows
-                | ($rows | map({key: "\(.side)/\(.name)", value: .result[0:1]}) | from_entries) as $m
-                | "| \($rows[0].peer) | " + ($cases | map("\($m["server/" + .] // "-")/\($m["client/" + .] // "-")") | join(" | ")) + " |")
-          ' matrix/cases.jsonl > matrix/matrix.md
           {
-            echo "Each cell: sluice as server / sluice as client; s succeeded, f failed, u unsupported, - not run."
+            echo "# QUIC Interop Runner: sluice against every implementation"
             echo
-            cat matrix/matrix.md
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Pass of $(date -u +%Y-%m-%d), sluice at ${GITHUB_SHA::7}, runner at" \
+              "$(sed -n 's/^RUNNER_REF=\${RUNNER_REF:-\([0-9a-f]\{7\}\).*/\1/p' scripts/interop-runner.sh)" \
+              "([run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}))."
+            echo "Each cell: sluice as server / sluice as client; s succeeded, f failed," \
+              "u unsupported, - not run; f>s failed, then succeeded when run once more."
+            echo
+            jq -rs '
+              map(if .server == "sluice" then {peer: .client, side: "server"} + . else {peer: .server, side: "client"} + . end)
+              | (map(.name) | unique) as $cases
+              | group_by(.peer)
+              | "| peer | " + ($cases | join(" | ")) + " |",
+                "|---" + ($cases | map("|---") | join("")) + "|",
+                (.[] | . as $rows
+                  | ($rows | map({key: "\(.side)/\(.name)",
+                      value: (if .first then .first[0:1] + ">" + .result[0:1] else .result[0:1] end)}) | from_entries) as $m
+                  | "| \($rows[0].peer) | " + ($cases | map("\($m["server/" + .] // "-")/\($m["client/" + .] // "-")") | join(" | ")) + " |")
+            ' matrix/cases.jsonl
+          } > matrix/README.md
+          tee -a "$GITHUB_STEP_SUMMARY" < matrix/README.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: interop-matrix
           path: matrix/
           retention-days: 90
+      - name: Publish a complete pass
+        if: github.event_name == 'schedule' || (inputs.peer == 'all' && inputs.tests == '' && inputs.image == '')
+        run: |
+          cd matrix
+          git init -q -b interop-results
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md cases.jsonl
+          git commit -q -m "ci: interop pass at ${GITHUB_SHA::7}"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" interop-results
