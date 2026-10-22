@@ -205,3 +205,71 @@ func majorMinor(v string) string {
 	}
 	return v
 }
+
+// ciPromises lists what the repository's rules promise CI runs, which no
+// other test would notice going missing: the latest stable toolchain beside
+// the floor, the UDP code on Windows and macOS (test-udp), and the stage
+// budget's absolute ceiling, which TestStageBudget skips under -race and so
+// holds only in a step without it. It returns one message per broken
+// promise.
+func ciPromises(workflow string) []string {
+	var broken []string
+	job := func(name string) string {
+		i := strings.Index(workflow, "\n  "+name+":\n")
+		if i < 0 {
+			return ""
+		}
+		rest := workflow[i+len(name)+4:]
+		if j := regexp.MustCompile(`\n {2}[a-z][a-z0-9-]*:\n`).FindStringIndex(rest); j != nil {
+			rest = rest[:j[0]]
+		}
+		return rest
+	}
+	if !regexp.MustCompile(`(?m)^\s+go: \[[^\]]*'stable'`).MatchString(job("test")) {
+		broken = append(broken, "the test job no longer runs the latest stable Go beside the floor")
+	}
+	udp := job("test-udp")
+	for _, platform := range []string{"windows-latest", "macos-latest"} {
+		if !regexp.MustCompile(`(?m)^\s+os: \[[^\]]*` + platform).MatchString(udp) {
+			broken = append(broken, "test-udp no longer runs on "+platform)
+		}
+	}
+	budget := false
+	for line := range strings.SplitSeq(job("test"), "\n") {
+		if strings.Contains(line, "run:") && strings.Contains(line, "TestStageBudget") && !strings.Contains(line, "-race") {
+			budget = true
+		}
+	}
+	if !budget {
+		broken = append(broken, "no step of the test job runs TestStageBudget without -race, where its ceiling is the only one played")
+	}
+	return broken
+}
+
+// The rules promise CI three things nothing else checks. Each promise is
+// held here, and each is cut from a copy of the workflow to prove the check
+// sees it go: a check that stays green on a broken workflow is no check.
+func TestCIKeepsItsPromises(t *testing.T) {
+	src, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("reading the CI workflow: %v", err)
+	}
+	workflow := string(src)
+	for _, msg := range ciPromises(workflow) {
+		t.Error(msg)
+	}
+	for _, cut := range []struct{ old, new string }{
+		{"go: ['1.26', 'stable']", "go: ['1.26']"},
+		{"os: [windows-latest, macos-latest,", "os: [windows-latest,"},
+		{"os: [windows-latest, macos-latest,", "os: [macos-latest,"},
+		{"run: go test -run 'TestStageBudget", "run: go test -race -run 'TestStageBudget"},
+	} {
+		if !strings.Contains(workflow, cut.old) {
+			t.Errorf("the workflow no longer contains %q: update this test's amputations with it", cut.old)
+			continue
+		}
+		if len(ciPromises(strings.Replace(workflow, cut.old, cut.new, 1))) == 0 {
+			t.Errorf("replacing %q with %q broke a promise and nothing noticed", cut.old, cut.new)
+		}
+	}
+}
