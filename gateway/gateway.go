@@ -112,6 +112,9 @@ import (
 )
 
 // ErrClosed reports a call submitted to a gateway that is closed or closing.
+// Do returns it once Close has begun — or the pipeline's own error, when
+// that came first. Answer it as a service shutting down answers, 503, and
+// submit nothing more to this gateway.
 var ErrClosed = errors.New("gateway: closed")
 
 // ErrNoReply reports a call the pipeline consumed without answering — it was

@@ -101,7 +101,9 @@ const (
 	oidBpchar   uint32 = 1042
 )
 
-// ErrNullValue reports a NULL where a scanner was asked for a value.
+// ErrNullValue reports a NULL where a scanner was asked for a value. A
+// column that can be NULL is scanned into a [Null] of its type, which reads
+// NULL as absent, or selected through COALESCE with the value it stands for.
 var ErrNullValue = fmt.Errorf("%w: NULL in a column scanned as not-null", ErrCodec)
 
 // ScanNulls appends the NULL mask of a column: one bool per row.

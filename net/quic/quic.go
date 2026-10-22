@@ -223,7 +223,11 @@ import (
 	"fmt"
 )
 
-// ErrQUIC reports bytes this package will not parse.
+// ErrQUIC marks the errors this package reports about QUIC itself: bytes it
+// will not parse, and a connection or stream used in a state that does not
+// allow it. errors.Is(err, ErrQUIC) tells them from a context's and the
+// socket's own errors; the message says which, and [Conn.Err] whether the
+// connection ended. Nothing is gained by retrying the same call.
 var ErrQUIC = errors.New("quic: malformed")
 
 // ErrTruncated reports a buffer that ends inside what it was describing. It

@@ -54,7 +54,9 @@ import (
 // expired token means refresh and retry, a bad signature means something is
 // wrong that retrying will not fix.
 var (
-	// ErrTokenMalformed reports a token that is not a well-formed JWT.
+	// ErrTokenMalformed reports a token that is not a well-formed JWT. It is
+	// answered 401 with the challenge [BearerChallenge] builds, as
+	// web/stream's Authenticate does; the client has to obtain a new token.
 	ErrTokenMalformed = errors.New("web: the bearer token is not a well-formed token")
 
 	// ErrTokenAlgorithm reports a token whose algorithm this verifier will not
@@ -68,7 +70,8 @@ var (
 	ErrTokenSignature = errors.New("web: the token's signature does not verify")
 
 	// ErrTokenExpired reports a token past its `exp`, or not yet valid by its
-	// `nbf`.
+	// `nbf`. It is answered 401 with the challenge [BearerChallenge] builds; a
+	// client that holds a way to renew its token renews it and asks again.
 	ErrTokenExpired = errors.New("web: the token is outside its validity window")
 
 	// ErrTokenClaims reports a token whose claims are missing or do not match

@@ -21,7 +21,9 @@ import (
 // `example/orders/integration_test.go`, where the application-side filter is
 // removed and the row count must not change.
 
-// ErrForbidden reports a principal that has no grant for what it asked.
+// ErrForbidden reports a principal that has no grant for what it asked. It
+// is answered 403, not 401: the caller is known, and asking again with the
+// same credentials changes nothing — web/stream's Authorize answers it so.
 var ErrForbidden = errors.New("web: the principal is not authorised for this")
 
 // CodeForbidden is the diagnostic code for a request the principal was

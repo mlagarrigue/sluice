@@ -229,7 +229,12 @@ import (
 // other wire protocol in this repository.
 var ErrMalformed = errors.New("httpstream: malformed request")
 
-// ErrTooLarge reports a request past one of [Config]'s bounds.
+// ErrTooLarge reports a request past one of [Config]'s bounds. The server
+// answers it itself, before any handler runs — 413, or 414 for the request
+// line and 431 for the header fields, where the protocol has a status for
+// them — so a handler never sees it. When legitimate requests reach it,
+// raise the [Config] bound the refused part runs into: the body, the
+// request line or the header fields.
 var ErrTooLarge = errors.New("httpstream: request exceeds a configured bound")
 
 // errRequestLineTooLong and errHeadersTooLarge are internal: the two bounds
