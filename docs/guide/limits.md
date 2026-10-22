@@ -312,10 +312,10 @@ to a separate module before a v1.
   ([`testcases_quic.py`](https://github.com/quic-interop/quic-interop-runner/blob/ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6/testcases_quic.py#L1023-L1029)).
   No client that validates first can satisfy it (ngtcp2's own client
   probes the same way, `conn_write_path_challenge`), and the public matrix
-  shows it: in the
-  [run of 15 October 2026](https://interop.seemann.io/logs/quic/2026-10-15T19:05/result.json),
-  ngtcp2's server fails CM against each of the 14 clients that attempt it
-  (Chrome does not). ngtcp2's code read at revision `4822893`, the
+  showed it: in its run of 15 October 2026, ngtcp2's server failed CM
+  against each of the 14 clients that attempt it (Chrome does not). The
+  matrix keeps only its latest runs, so that page is gone: this is a dated
+  reading, not a link to check. ngtcp2's code read at revision `4822893`, the
   runner's at revision `ab039a4`. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
