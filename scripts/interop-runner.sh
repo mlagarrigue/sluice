@@ -109,8 +109,25 @@ run() {
   (
     cd "$RUNNER_DIR"
     # The runner refuses a log directory that exists: one per direction.
-    rm -rf "logs/$1_$2"
+    rm -rf "logs/$1_$2" "logs/$1_$2-again"
     .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
+    # A failed case is run once more and keeps both results: the runner's
+    # own capture sometimes misses a handshake both ends completed
+    # ("Expected exactly one version. Got []", a quarter-size pcap on one
+    # side), and a weekly matrix red for that says nothing. A case red twice
+    # stays red; the table shows both words, so a case that needed the
+    # second try is seen, not hidden.
+    [ -f "results_$1_$2.json" ] || return 0
+    failed=$(jq -r '[.results[0][] | select(.result == "failed") | .name] | join(",")' "results_$1_$2.json")
+    [ -n "$failed" ] || return 0
+    echo "## server $1, client $2, once more: $failed"
+    .venv/bin/python run.py -d -s "$1" -c "$2" -t "$failed" -l "logs/$1_$2-again" -j "results_$1_$2-again.json" || true
+    [ -f "results_$1_$2-again.json" ] || return 0
+    jq --slurpfile again "results_$1_$2-again.json" '
+      ($again[0].results[0] | map({(.name): .result}) | add // {}) as $a
+      | .results[0] |= map(if $a[.name] then {first: .result} + . + {result: $a[.name]} else . end)
+    ' "results_$1_$2.json" >"results_$1_$2.tmp"
+    mv "results_$1_$2.tmp" "results_$1_$2.json"
   )
 }
 # A direction not run stands as a pass with no cases, so the table and the
@@ -133,8 +150,9 @@ echo "## results"
 jq -r --arg peer "$peer" -n '
   ($peer) as $p
   | [input, input] as [$asServer, $asClient]
-  | ($asServer.results[0] | map({(.name): .result}) | add // {}) as $s
-  | ($asClient.results[0] | map({(.name): .result}) | add // {}) as $c
+  | def word: if .first then "\(.first), then \(.result)" else .result end;
+  ($asServer.results[0] | map({(.name): word}) | add // {}) as $s
+  | ($asClient.results[0] | map({(.name): word}) | add // {}) as $c
   | "| case | sluice server, \($p) client | \($p) server, sluice client |",
     "|---|---|---|",
     ($s + $c | keys_unsorted[] | "| \(.) | \($s[.] // "-") | \($c[.] // "-") |")

@@ -132,7 +132,7 @@ jobs:
       - name: Join the tables
         run: |
           mkdir matrix
-          find passes -name 'results_*.json' ! -name 'results_none.json' -exec jq -c '
+          find passes -name 'results_*.json' ! -name 'results_none.json' ! -name '*-again.json' -exec jq -c '
             input_filename as $f
             | (.results[0] // [])[] as $r
             | { server: .servers[0], client: .clients[0], name: $r.name, result: $r.result }
