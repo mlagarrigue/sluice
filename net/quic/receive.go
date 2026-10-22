@@ -275,6 +275,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 	c.rxDatagramLen = len(datagram)
 	c.rxLocalCIDSeq = 0
 	c.rxHighest = false
+	c.rxStaleCrypto = false
 	c.mu.Unlock()
 	datagramLen := len(datagram)
 	// RFC 9000 §12.2: every packet coalesced into a datagram names the
@@ -564,6 +565,10 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	}
 
 	c.mu.Lock()
+	if c.rxStaleCrypto {
+		c.rxStaleCrypto = false
+		c.resendEarlyLocked()
+	}
 	c.flushAcksLocked(now)
 	c.retransmitLocked()
 	// Control frames queued while processing — grants, mostly — usually ride
@@ -1240,6 +1245,9 @@ const maxCryptoBuffer = 64 << 10
 func (c *Conn) handleCrypto(space int, f Frame) error {
 	c.mu.Lock()
 	sp := &c.spaces[space]
+	if space == spaceInitial && len(f.Data) > 0 && f.offset+uint64(len(f.Data)) <= sp.crypto.consumed {
+		c.rxStaleCrypto = true
+	}
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
 	held := sp.crypto.held
 	c.mu.Unlock()

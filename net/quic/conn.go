@@ -444,6 +444,12 @@ type Conn struct {
 	// and a packet that ends without it is counted (RFC 9000 §21.9,
 	// nonProductive). The receive goroutine's alone.
 	rxProgress bool
+	// rxStaleCrypto says the packet being processed repeated Initial
+	// CRYPTO bytes already taken: a client resending its ClientHello has
+	// not seen this end's answer (RFC 9002 §6.2.3). earlyResends counts
+	// the flights resent early for it. The receive goroutine's alone.
+	rxStaleCrypto bool
+	earlyResends  int
 	// rxVia is the socket the datagram being processed arrived on, nil
 	// meaning pc. Only a Listener-fed server connection ever sees another
 	// one: the listener's preferred-address socket (§9.6).

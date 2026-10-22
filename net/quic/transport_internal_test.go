@@ -549,6 +549,43 @@ func TestAWithheldCertificateChainLeavesInOrder(t *testing.T) {
 	}
 }
 
+// RFC 9002 §6.2.3: a server that receives Initial CRYPTO bytes it already
+// took learns that its own Initial answer did not arrive, and resends it
+// before the probe timeout — twice per connection at most, so that a client
+// whose every packet repeats itself cannot make each one draw a flight.
+func TestARepeatedClientHelloDrawsAnEarlyResend(t *testing.T) {
+	c := newIdleServerConn(t)
+	c.mu.Lock()
+	sp := &c.spaces[spaceInitial]
+	sp.crypto.consumed = 100 // the ClientHello's bytes, taken
+	sp.sent.record(sentPacket{pn: 0, sentAt: time.Now(), size: 1200, ackEliciting: true, payload: appendFrame(nil, frameCrypto, 0, 0)})
+	sp.nextPN = 1
+	c.mu.Unlock()
+
+	stale := append(appendFrame(nil, frameCrypto, 0, 50), make([]byte, 50)...)
+	for i, want := range []int{1, 2, 2} {
+		pkt := sealedInitialCarrying(t, false, []byte("dcid0000"), []byte("scid0000"), []byte("dcid0000"), uint64(i), stale, true)
+		c.mu.Lock()
+		before := sp.nextPN
+		c.mu.Unlock()
+		if err := c.receive(pkt, c.peer); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		got, sent := c.earlyResends, sp.nextPN-before
+		c.mu.Unlock()
+		if got != want {
+			t.Fatalf("after repeat %d: %d early resends, want %d", i+1, got, want)
+		}
+		if want > i && sent < 2 {
+			t.Errorf("repeat %d sent %d packets, want the two probe datagrams", i+1, sent)
+		}
+		if want <= i && sent != 1 {
+			t.Errorf("repeat %d past the limit sent %d packets, want the ACK alone", i+1, sent)
+		}
+	}
+}
+
 // Manual credit: delivery to the batch consumer earns the peer nothing, and
 // only ReleaseStreamBytes reopens the window — at both levels.
 func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {

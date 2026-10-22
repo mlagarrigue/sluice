@@ -16,6 +16,12 @@ import (
 // datagram §14.1 asks of a client unless padded is false.
 func sealedInitialFrom(tb testing.TB, fromServer bool, keyID, dcid, scid []byte, pn uint64, padded bool) []byte {
 	tb.Helper()
+	return sealedInitialCarrying(tb, fromServer, keyID, dcid, scid, pn, []byte{framePing}, padded)
+}
+
+// sealedInitialCarrying is sealedInitialFrom with the frames given.
+func sealedInitialCarrying(tb testing.TB, fromServer bool, keyID, dcid, scid []byte, pn uint64, frames []byte, padded bool) []byte {
+	tb.Helper()
 	secrets, err := initialSecrets(keyID)
 	if err != nil {
 		tb.Fatal(err)
@@ -37,7 +43,7 @@ func sealedInitialFrom(tb testing.TB, fromServer bool, keyID, dcid, scid []byte,
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
 	header = AppendVarint(header, 0) // no token
-	payload := []byte{framePing}
+	payload := append([]byte(nil), frames...)
 	if padded {
 		if pad := initialPadding(len(header), pnLen, len(payload)); pad > 0 {
 			payload = append(payload, make([]byte, pad)...)

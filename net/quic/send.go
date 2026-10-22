@@ -1267,6 +1267,42 @@ func (c *Conn) sendProbeLocked(space int) {
 	}
 }
 
+// earlyResendLimit is how many times a server resends its Initial flight
+// ahead of the probe timeout (RFC 9002 §6.2.3). The RFC finds once enough
+// for a single loss; the runner's handshakecorruption case corrupts in
+// bursts of up to three, and quinn's client resent its ClientHello five
+// times while all seven of this end's ServerHello datagrams arrived
+// corrupted and the 10 s handshake deadline ran out on a PTO backoff of
+// 1, 2 and 4 s. Twice keeps the §6.2.3 warning — a server that answers
+// every packet it cannot use risks an endless exchange — and each resend
+// still spends the anti-amplification budget like any other.
+const earlyResendLimit = 2
+
+// resendEarlyLocked is §6.2.3's early resend: a client repeating Initial
+// CRYPTO bytes this end already took has not received this end's Initial
+// answer, so a server with Initial data still unacknowledged resends it now
+// as a probe would, instead of waiting out the timer. Only the server: a
+// client's Initial flight is the ClientHello, which the server's own
+// answer acknowledges. Callers hold mu.
+func (c *Conn) resendEarlyLocked() {
+	if c.isClient || c.earlyResends >= earlyResendLimit {
+		return
+	}
+	sp := &c.spaces[spaceInitial]
+	if sp.discarded || sp.sealer == nil {
+		return
+	}
+	pending := len(sp.retrans) > 0
+	for i := range sp.sent.packets {
+		pending = pending || (sp.sent.packets[i].ackEliciting && len(sp.sent.packets[i].payload) > 0)
+	}
+	if !pending {
+		return
+	}
+	c.earlyResends++
+	c.sendProbeLocked(spaceInitial)
+}
+
 // waitForCreditLocked parks the caller until credit arrives, the connection
 // ends, or deadline passes (zero: never; os.ErrDeadlineExceeded when it
 // does). The read loop must never call it: the read loop is what delivers
