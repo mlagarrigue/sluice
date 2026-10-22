@@ -413,6 +413,12 @@ func fetchAll(requests []string, kl io.Writer) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := fetch(c, u.Path); err != nil {
+				// The stream's error says the connection is gone; the
+				// connection's says why — the peer's close code, an idle
+				// timeout — which is what a failed case needs read.
+				if cerr := c.Err(); cerr != nil {
+					err = fmt.Errorf("%w (%w)", err, cerr)
+				}
 				fail(fmt.Errorf("%s: %w", u.Path, err))
 			}
 		}()
