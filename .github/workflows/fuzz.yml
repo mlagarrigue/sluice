@@ -4,7 +4,10 @@ on:
   schedule:
     # Nightly. The seed corpora already run on every push as ordinary tests;
     # this is the part that searches beyond them, which no PR run has time for.
-    - cron: '43 2 * * *'
+    # Thirty seconds a target on weekdays; on Sunday five minutes, the night
+    # that goes further (the first cron's days exclude it).
+    - cron: '43 2 * * 1-6'
+    - cron: '43 2 * * 0'
   workflow_dispatch:
     inputs:
       fuzztime:
@@ -17,10 +20,14 @@ permissions:
 jobs:
   # Targets are discovered, not listed by hand: a fuzz target added without
   # touching this file is fuzzed the next night rather than never.
+  # The study's module, comparison/sluice, is listed beside the root's: its
+  # packages are outside the root's ./... and carry a target of their own.
   discover:
     runs-on: ubuntu-latest
+    env:
+      GOWORK: off
     outputs:
-      packages: ${{ steps.list.outputs.packages }}
+      targets: ${{ steps.list.outputs.targets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -30,20 +37,28 @@ jobs:
           go-version: 'stable'
       - id: list
         run: |
-          packages=$(.github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u | jq -R . | jq -sc .)
-          echo "packages=$packages" >> "$GITHUB_OUTPUT"
-          echo "$packages"
+          {
+            .github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u | jq -R '{module: ".", package: .}'
+            MODULE=comparison/sluice .github/scripts/fuzz.sh --list | cut -d' ' -f1 | sort -u |
+              jq -R '{module: "comparison/sluice", package: .}'
+          } | jq -sc . > targets.json
+          echo "targets=$(cat targets.json)" >> "$GITHUB_OUTPUT"
+          cat targets.json
 
   # One job per package so the largest corpus (postgres) does not serialise
   # behind the others, and one package's finding does not cancel the rest.
+  # Sunday's five minutes a target take postgres's thirty-six past three
+  # hours, hence the longer bound that night.
   fuzz:
     needs: discover
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ github.event.schedule == '43 2 * * 0' && 240 || 60 }}
+    env:
+      GOWORK: off
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(needs.discover.outputs.packages) }}
+        include: ${{ fromJSON(needs.discover.outputs.targets) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -52,11 +67,30 @@ jobs:
         with:
           go-version: 'stable'
 
+      # The corpus a night grows lives in the build cache's fuzz directory,
+      # not in testdata/: kept from one night to the next, the coverage
+      # accumulates instead of starting from the seeds every time. A key per
+      # run, restored by prefix, so each night saves what it reached and the
+      # next one starts from the latest.
+      - id: corpus
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-${{ matrix.package }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.package }}-
+      - name: Corpus at the start
+        env:
+          DIR: ${{ steps.corpus.outputs.dir }}
+        run: echo "corpus at the start: $(find "$DIR" -type f 2>/dev/null | wc -l) inputs"
+
       - name: Fuzz every target in ${{ matrix.package }}
         env:
-          FUZZTIME: ${{ inputs.fuzztime || '30s' }}
+          FUZZTIME: ${{ inputs.fuzztime || (github.event.schedule == '43 2 * * 0' && '5m') || '30s' }}
           FUZZ_OUT: fuzz-failures
-        run: .github/scripts/fuzz.sh '${{ matrix.package }}'
+          MODULE: ${{ matrix.module }}
+          PKG: ${{ matrix.package }}
+        run: .github/scripts/fuzz.sh "$PKG"
 
       # The reproducers only — the files the run added under testdata/fuzz.
       # Committing one turns it into a regression test that runs on every push.

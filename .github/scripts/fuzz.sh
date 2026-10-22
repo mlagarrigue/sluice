@@ -16,7 +16,12 @@
 # reproducers and not the committed seed corpus beside them.
 #
 # --list prints "package target" pairs and runs nothing.
+#
+# MODULE names the module the packages belong to, as a directory (default
+# the root): the study's module comparison/sluice is a module of its own,
+# outside the root's ./..., and carries a target of its own.
 set -euo pipefail
+mod="${MODULE:-.}"
 
 list_only=false
 if [ "${1:-}" = "--list" ]; then
@@ -32,7 +37,7 @@ out="${FUZZ_OUT:-fuzz-failures}"
 # packages without tests print "? <pkg> [no test files]" and are dropped.
 # A compile error makes it exit non-zero, which fails the run loudly instead
 # of fuzzing nothing.
-targets=$(go test -list '^Fuzz' "$@" | awk '
+targets=$(go -C "$mod" test -list '^Fuzz' "$@" | awk '
   /^ok[ \t]/ { for (i = 0; i < n; i++) print $2, names[i]; n = 0; next }
   /^Fuzz/    { names[n++] = $1 }
 ')
@@ -50,7 +55,7 @@ fi
 failed=()
 while read -r pkg target; do
   echo "::group::$pkg $target"
-  if ! go test -run '^$' -fuzz "^${target}\$" -fuzztime "$fuzztime" "$pkg"; then
+  if ! go -C "$mod" test -run '^$' -fuzz "^${target}\$" -fuzztime "$fuzztime" "$pkg"; then
     failed+=("$pkg $target")
   fi
   echo "::endgroup::"
