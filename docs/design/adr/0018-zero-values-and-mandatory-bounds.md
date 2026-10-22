@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21
+- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test)
 - **Theme:** httpstream
 
 ## Problem
@@ -49,10 +49,12 @@ never removed.**
    waiting to be bounded.
 
 2. **The bound is mandatory.** No field removes a bound by its absence.
-   The exception is named: `MaxConns`, whose zero means "no bound",
-   because it is the deployer's memory budget and a default would be a
-   guess; the per-connection bounds hold without it, and its godoc says a
-   public socket sets it.
+   The exceptions are named: `MaxConns` and `MaxConnsPerIP`, whose zero
+   means "no bound", because they are the deployer's memory budget and the
+   share of it one client may take, and a default would be a guess; the
+   per-connection bounds hold without them, and their godoc says a public
+   socket sets them. `TestADR0018ListsMatchConfig` holds this list and the
+   next one to the fields' own documentation.
 
 3. **One configuration, one default, one place.** The three protocols read
    the same `Config`, and each default is chosen once, in `Config.resolve`.
@@ -64,7 +66,8 @@ never removed.**
 
 4. **A field says which protocols read it.** A field read by one protocol
    stays in `Config` and says so ("HTTP/1.1 only": `MaxRequestLineBytes`,
-   `MaxRequestsPerBatch`, `MaxRequestsPerConn`; "HTTP/2 only":
+   `MaxRequestsPerBatch`, `MaxRequestsPerConn`, `LingerTimeout`; "HTTP/2
+   and HTTP/3 only": `MaxConcurrentStreams`; "HTTP/2 only":
    `MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`,
    `InitialWindowSize`, `MaxPendingControlBytes`, `MaxWriteBufferBytes`;
    "HTTP/3 only": `QPACKStatic`). A field that reaches a protocol through another object

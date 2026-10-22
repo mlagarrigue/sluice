@@ -236,7 +236,12 @@ httpstream.ServeH3Conn(ctx, quicConn, httpstream.Config{}, handle)              
 
 `Config` bounds everything a client controls — length of the request line,
 of the headers, of the body, number of requests per batch and per
-connection, timeouts — and has no usable zero value: you write the limits.
+connection, timeouts — and each field left at zero takes the default its
+documentation states: `httpstream.Config{}` is a bounded server. Two fields
+are the exception, `MaxConns` and `MaxConnsPerIP`, whose zero means "no
+bound": they are the deployer's memory budget and one client's share of it,
+and a server facing the public sets them
+([ADR 0018](../design/adr/0018-zero-values-and-mandatory-bounds.md)).
 Request bodies are bounded and read whole before being handed over.
 Responses, on the other hand, can be **streamed**: `Response.Stream` lets
 your code supply batches of bytes that the transport pulls at the client's

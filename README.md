@@ -215,8 +215,9 @@ handles it changing.
 
 The other rules follow:
 
-- **Bounded memory** — every limit is a parameter you write, never a hidden
-  default.
+- **Bounded memory** — an operator that retains something takes its bound
+  as a parameter, with no default; a transport setting has a default its
+  documentation states, and zero picks it.
 - **Loud failure** — a silently wrong answer is worse than a crash; an
   overflow raises a diagnostic and a visible counter, never an OOM.
 - **Immediate release** — a `break` frees the source at once; it is a tested
