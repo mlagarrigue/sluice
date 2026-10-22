@@ -41,8 +41,11 @@ func TestPingWaitsForTheAcknowledgement(t *testing.T) {
 	hooked.filterWrite = func([]byte) [][]byte { return nil }
 	hooked.mu.Unlock()
 	const wait = 150 * time.Millisecond
-	ctx, cancel := context.WithTimeout(t.Context(), wait)
+	// The clock is read before the context starts its own: read after, it
+	// missed the moments between the two, and Windows measured 149.9 ms for
+	// a 150 ms deadline that had fired on time.
 	start := time.Now()
+	ctx, cancel := context.WithTimeout(t.Context(), wait)
 	err = conn.Ping(ctx)
 	cancel()
 	if !errors.Is(err, context.DeadlineExceeded) {
