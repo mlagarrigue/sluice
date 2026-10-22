@@ -83,6 +83,13 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 		// against 1.30× without: the CI job without -race holds the bound.
 		t.Skip("the race detector's per-goroutine state is heap the server does not hold")
 	}
+	if testing.CoverMode() != "" {
+		// Under the coverage job's instrumentation the ratio went red twice on
+		// 2026-10-22: 1.54× in a burst, and 4.14× one at a time where an
+		// HTTP/1.1 pass measured 2981 bytes against its usual 10 KB. The jobs
+		// without -cover hold the bound.
+		t.Skip("coverage instrumentation moves the live heap this compares")
+	}
 	const conns, requests = 256, defaultMaxConcurrency
 	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, b.Len())
