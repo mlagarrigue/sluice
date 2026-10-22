@@ -319,7 +319,7 @@ var (
 )
 
 // benchAlgorithmNamed reads SLUICE_QUIC_CC: unset or reno for the default,
-// cubic for CUBIC, bbr1 for BBR version 1, bbr for the IETF draft. Any
+// cubic for CUBIC, bbr for the IETF draft of BBR. Any
 // other value is an error rather than the default, which would measure
 // Reno under the misspelt name.
 func benchAlgorithmNamed(name string) (quic.CongestionAlgorithm, error) {
@@ -328,12 +328,10 @@ func benchAlgorithmNamed(name string) (quic.CongestionAlgorithm, error) {
 		return quic.CongestionNewReno, nil
 	case "cubic":
 		return quic.CongestionCubic, nil
-	case "bbr1":
-		return quic.CongestionBBRv1, nil
 	case "bbr":
 		return quic.CongestionBBR, nil
 	}
-	return 0, fmt.Errorf("SLUICE_QUIC_CC=%s names no controller (reno, cubic, bbr1, bbr)", name)
+	return 0, fmt.Errorf("SLUICE_QUIC_CC=%s names no controller (reno, cubic, bbr)", name)
 }
 
 // benchSlowStartNamed reads SLUICE_QUIC_SS: unset for the algorithm's
@@ -351,7 +349,7 @@ func benchSlowStartNamed(name string) (quic.SlowStart, error) {
 }
 
 func TestBenchNamesRefuseTheUnknown(t *testing.T) {
-	for name, want := range map[string]quic.CongestionAlgorithm{"": quic.CongestionNewReno, "reno": quic.CongestionNewReno, "cubic": quic.CongestionCubic, "bbr1": quic.CongestionBBRv1, "bbr": quic.CongestionBBR} {
+	for name, want := range map[string]quic.CongestionAlgorithm{"": quic.CongestionNewReno, "reno": quic.CongestionNewReno, "cubic": quic.CongestionCubic, "bbr": quic.CongestionBBR} {
 		if got, err := benchAlgorithmNamed(name); err != nil || got != want {
 			t.Errorf("SLUICE_QUIC_CC=%q: %v, %v; want %v", name, got, err, want)
 		}

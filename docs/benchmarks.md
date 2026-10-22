@@ -557,8 +557,11 @@ for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
 done; done
 ```
 
-**BBR version 1** (draft-cardwell-iccrg-bbr-congestion-control-00,
-`CongestionBBRv1`) is the first model-based controller of the palette:
+**BBR version 1** (draft-cardwell-iccrg-bbr-congestion-control-00) is no
+longer in the palette: the IETF draft below beats it on every benchmark of
+this file, and version 1 never went past an individual draft, now expired.
+The figures that follow are the ones that decided it. It was the first
+model-based controller of the palette:
 it paces at the highest delivery rate measured over the last ten round
 trips and keeps about two bandwidth-delay products of window, probing
 for more bandwidth one round in eight and draining the path for 200 ms
@@ -712,14 +715,11 @@ against a real client, and the marking AQM is the emulator's: a step at
 a threshold, not CoDel's or PIE's.
 
 The gate (`gate-path.sh`) runs once per controller: CI sets
-`SLUICE_QUIC_CC` to reno, cubic, bbr1 and bbr in four parallel jobs, and
+`SLUICE_QUIC_CC` to reno, cubic and bbr in three parallel jobs, and
 both sides of the A/B run the same controller. A controller nobody
 measures is one whose regressions pass green. On an identical tree
 (2026-10-16, eight rounds each) the eight rows hold within 0.978–1.012 for
-Reno, 0.991–1.011 for CUBIC and 0.990–1.013 for BBR. BBRv1 holds six,
-within 0.993–1.019; its `RTT80` (1.151) and `Loss1pct` (0.855) leave its
-gate only: one transfer there spreads over 1.26–1.68 s and 314–390 ms on
-a single binary.
+Reno, 0.991–1.011 for CUBIC and 0.990–1.013 for BBR.
 
 Under CUBIC, two rows still turned the job red on CI on commits that
 touched no Go code: `Bottleneck` (1.076) and `TwoFlows` (1.083). Eighty
@@ -758,7 +758,7 @@ of `RTT80Shallow` within 1.09–1.12 in `gate-cc.sh` — and leaves the reno
 job green (0.991 to 1.007).
 
 **The CI gate watches the rows of its `GATED` list per controller** —
-eight, six on BBRv1 — through a second script,
+eight on each — through a second script,
 `internal/bench/scripts/gate-path.sh`, run by its own CI job beside
 `gate.sh`'s on every pull request and every push to `main`. It differs
 from `gate.sh` in the three ways these rows require: it builds

@@ -41,7 +41,7 @@ func TestReorderUnderThresholdIsNoLoss(t *testing.T) {
 		reorderDepth: 2,
 		reorderDelay: 250 * time.Microsecond,
 	}
-	for _, cc := range []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBRv1, quic.CongestionBBR} {
+	for _, cc := range []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBR} {
 		t.Run(cc.String(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				tr, err := transferOnce(t, &netemLink{prof: prof, cc: cc}, 4<<20)

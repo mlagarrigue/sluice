@@ -4,7 +4,7 @@
 # median transfer is more than 6% slower (10% for the few a controller
 # spreads wider, listed below).
 #
-#   SLUICE_QUIC_CC=<reno|cubic|bbr1|bbr> internal/bench/scripts/gate-path.sh <base-ref> [rounds]
+#   SLUICE_QUIC_CC=<reno|cubic|bbr> internal/bench/scripts/gate-path.sh <base-ref> [rounds]
 #
 # Both sides run the controller SLUICE_QUIC_CC names (netem_bench_test.go
 # reads it), Reno when it is unset: CI runs the script once per controller,
@@ -41,9 +41,9 @@ PKG="./net/quic"
 # refuses it too (benchAlgorithmNamed); refusing here fails before two builds.
 CC="${SLUICE_QUIC_CC:-reno}"
 case "$CC" in
-  reno | cubic | bbr1 | bbr) ;;
+  reno | cubic | bbr) ;;
   *)
-    echo "path gate: SLUICE_QUIC_CC=$CC names no controller (reno, cubic, bbr1, bbr)"
+    echo "path gate: SLUICE_QUIC_CC=$CC names no controller (reno, cubic, bbr)"
     exit 1
     ;;
 esac
@@ -62,13 +62,9 @@ GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurst
 # The same rule per controller: a name whose median does not hold within 5%
 # of itself on an identical tree under that controller leaves its gate, and
 # only its gate. Measured 2026-10-16, eight rounds each: Reno 0.978-1.012,
-# CUBIC 0.991-1.011, BBR 0.990-1.013. BBRv1 kept six names within
-# 0.993-1.019; RTT80 came out at 1.151 and Loss1pct at 0.855, one transfer
-# spreading over 1.26-1.68 s and 314-390 ms on one binary, so out.
-case "$CC" in
-  bbr1) UNSTABLE='BenchmarkTransferLoss1pct$|BenchmarkTransferRTT80$' ;;
-  *) UNSTABLE='' ;;
-esac
+# CUBIC 0.991-1.011, BBR 0.990-1.013: every controller keeps the eight
+# names, and the list of those it leaves out is empty today.
+UNSTABLE=''
 GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | paste -sd'|')"
 
 # 6%: four times the widest upward spread measured on an identical tree, and

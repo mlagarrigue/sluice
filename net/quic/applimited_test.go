@@ -32,7 +32,7 @@ func TestBulkTransferIsApplicationLimitedOnce(t *testing.T) {
 		{"Bottleneck", netemProfile{owd: 10 * time.Millisecond, rate: 50_000_000 / 8, queue: 5 * time.Millisecond}},
 		{"DeepBuffer", netemProfile{owd: 10 * time.Millisecond, rate: 50_000_000 / 8, queue: 200 * time.Millisecond}},
 	}
-	controllers := []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBRv1, quic.CongestionBBR}
+	controllers := []quic.CongestionAlgorithm{quic.CongestionNewReno, quic.CongestionCubic, quic.CongestionBBR}
 	for _, p := range profiles {
 		for _, cc := range controllers {
 			t.Run(p.name+"/"+cc.String(), func(t *testing.T) {

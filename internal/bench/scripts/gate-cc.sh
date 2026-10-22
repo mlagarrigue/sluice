@@ -5,15 +5,15 @@
 # that never met its own criterion, nor one that drifts by less than 6% a
 # commit. These are absolute bounds, read on one tree:
 #
-#   SLUICE_QUIC_CC=<cubic|bbr1|bbr> internal/bench/scripts/gate-cc.sh [rounds]
+#   SLUICE_QUIC_CC=<cubic|bbr> internal/bench/scripts/gate-cc.sh [rounds]
 #
 # - every one: BenchmarkTransferTwoFlowsVsReno, the controller's flow against
 #   a Reno flow on one bottleneck. The median of share, the controller's part
 #   of the delivered rate, is at most MAXSHARE. 0.70 is the bound BBR was
 #   held to (docs/benchmarks.md), and the one a controller sold as fair to
 #   loss-based flows must keep. Measured 2026-10-14: BBR 0.46-0.61 across
-#   eight rounds, BBRv1 0.60-0.69 — the round, not the median, can touch
-#   the bound, so the median is what is judged.
+#   eight rounds — the round, not the median, can touch the bound, so the
+#   median is what is judged.
 # - cubic: BenchmarkTransferRTT80Shallow, the long avoidance transfer CUBIC's
 #   window function was designed for, run on CUBIC and on Reno in the same
 #   round. The median over the rounds of Reno's time over CUBIC's is at
@@ -45,9 +45,9 @@ MAXRTTX="${MAXRTTX:-1.5}"
 
 CC="${SLUICE_QUIC_CC:-}"
 case "$CC" in
-  cubic | bbr1 | bbr) ;;
+  cubic | bbr) ;;
   *)
-    echo "controller gate: SLUICE_QUIC_CC=$CC names no controller held to a criterion (cubic, bbr1, bbr)"
+    echo "controller gate: SLUICE_QUIC_CC=$CC names no controller held to a criterion (cubic, bbr)"
     exit 1
     ;;
 esac

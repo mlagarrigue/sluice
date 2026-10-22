@@ -218,16 +218,6 @@ func TestNewControllerByAlgorithm(t *testing.T) {
 	if !cc.hs.armed {
 		t.Error("CUBIC's initial slow start has HyStart++ disarmed (RFC 9438 §4.10)")
 	}
-	b, ok := newController(CongestionConfig{Algorithm: CongestionBBRv1}, 1200, &deliveryEstimator{}).(*bbr)
-	if !ok {
-		t.Fatal("CongestionBBRv1 did not build a BBR controller")
-	}
-	if b.window() != newNewReno(1200).cwnd || b.state != bbrStartup || b.pacingGain != bbrHighGain {
-		t.Errorf("BBR starts with window %d, state %d, gain %v: want Reno's window, Startup, 2/ln 2", b.window(), b.state, b.pacingGain)
-	}
-	if CongestionBBRv1.String() != "bbr1" {
-		t.Errorf("CongestionBBRv1 prints as %q", CongestionBBRv1)
-	}
 	b3, ok := newController(CongestionConfig{Algorithm: CongestionBBR}, 1200, &deliveryEstimator{}).(*bbr3)
 	if !ok {
 		t.Fatal("CongestionBBR did not build a draft-ietf-ccwg-bbr controller")

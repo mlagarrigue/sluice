@@ -11,7 +11,7 @@ import (
 func newBBR3Path() (*bbrPath, *bbr3) {
 	est := &deliveryEstimator{}
 	b := newBBR3(1200, est)
-	return &bbrPath{cc: b, b: nil, now: time.Unix(1000, 0), rtt: 20 * time.Millisecond, link: 4.8e6, est: est}, b
+	return &bbrPath{cc: b, now: time.Unix(1000, 0), rtt: 20 * time.Millisecond, link: 4.8e6, est: est}, b
 }
 
 // bbr3AtLink is a controller four doubling rounds in, the last at the
@@ -676,14 +676,6 @@ func TestBBRProbeRTTKeepsTheDeliveryRate(t *testing.T) {
 				cc.(*bbr3).probeRTTMinStamp = now.Add(-bbr3ProbeRTTInterval - time.Second)
 			},
 			func(cc congestionController) bool { return cc.(*bbr3).state == bbr3ProbeRTT },
-		},
-		{
-			"BBRv1",
-			func(est *deliveryEstimator) congestionController { return newBBR(1200, est) },
-			func(cc congestionController, now time.Time) {
-				cc.(*bbr).rtpropStamp = now.Add(-bbrRTpropFilterLen - time.Second)
-			},
-			func(cc congestionController) bool { return cc.(*bbr).state == bbrProbeRTT },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

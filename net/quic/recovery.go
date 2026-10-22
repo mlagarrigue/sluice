@@ -1215,8 +1215,6 @@ func newController(cfg CongestionConfig, maxDatagram int, est *deliveryEstimator
 		}
 		c.noFastConvergence = cfg.DisableFastConvergence
 		return c
-	case CongestionBBRv1:
-		return newBBR(maxDatagram, est)
 	case CongestionBBR:
 		return newBBR3(maxDatagram, est)
 	default:

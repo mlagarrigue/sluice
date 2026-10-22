@@ -695,7 +695,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cc: [reno, cubic, bbr1, bbr]
+        cc: [reno, cubic, bbr]
     env:
       SLUICE_QUIC_CC: ${{ matrix.cc }}
     steps:

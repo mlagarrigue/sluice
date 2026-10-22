@@ -253,24 +253,10 @@ const (
 	// Experimental: measured on this package's emulated paths only.
 	CongestionCubic
 
-	// CongestionBBRv1 is BBR version 1
-	// (draft-cardwell-iccrg-bbr-congestion-control-00): the sender paces
-	// at the highest delivery rate measured over the last ten round trips
-	// and keeps about one bandwidth-delay product in flight, probing for
-	// more every eight round trips and draining the path for 200 ms every
-	// ten seconds to re-measure its propagation delay. Loss does not shrink
-	// its rate, so a path that drops a packet in a hundred is held at its
-	// bandwidth; a CE mark is read as a loss that arrived, which opens the
-	// same recovery period and shrinks the rate no more; the version has no
-	// bound on what it takes from a Reno or CUBIC flow sharing the link.
-	// Experimental: measured on this package's emulated paths only.
-	CongestionBBRv1
-
 	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr, the
-	// version Linux ships as BBRv3): the same model of the path as
-	// CongestionBBRv1 — the highest delivery rate and the lowest round trip
-	// seen recently — with loss read as evidence about how much the path
-	// holds. A round that loses more than 2% while probing bounds the
+	// version Linux ships as BBRv3): a model of the path — the highest
+	// delivery rate and the lowest round trip seen recently — with loss read
+	// as evidence about how much the path holds. A round that loses more than 2% while probing bounds the
 	// volume in flight, 15% of which is then left free for other flows;
 	// a loss between probes cuts the rate and the volume to 0.7 of what
 	// they were, until the next probe, two to three seconds later or as
@@ -280,16 +266,13 @@ const (
 	CongestionBBR
 )
 
-// String is the name the dashboard prints: "newreno", "cubic", "bbr1",
-// "bbr".
+// String is the name the dashboard prints: "newreno", "cubic", "bbr".
 func (a CongestionAlgorithm) String() string {
 	switch a {
 	case CongestionNewReno:
 		return "newreno"
 	case CongestionCubic:
 		return "cubic"
-	case CongestionBBRv1:
-		return "bbr1"
 	case CongestionBBR:
 		return "bbr"
 	}
