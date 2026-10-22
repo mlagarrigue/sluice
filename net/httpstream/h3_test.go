@@ -989,10 +989,10 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bad.Write(h3Request("GET", "/bad", [2]string{"X-Uppercase", "1"})); err != nil {
-		t.Fatal(err)
-	}
-	if err := bad.CloseWrite(); err != nil {
+	// The request and its FIN in one call: written apart, the server could
+	// refuse the headers and reset the stream before the FIN went, and
+	// CloseWrite would report the very refusal this test is waiting for.
+	if _, err := bad.WriteClose(h3Request("GET", "/bad", [2]string{"X-Uppercase", "1"})); err != nil {
 		t.Fatal(err)
 	}
 
