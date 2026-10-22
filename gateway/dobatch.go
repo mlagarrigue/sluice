@@ -38,7 +38,7 @@ type Outcome[Out any] struct {
 // Expiring ctx abandons the wait, not the work. A call already handed to the
 // gateway stays in the pipeline and is still executed — a query run, a write
 // applied — with its answer then discarded: the pipeline sees elements, not
-// their callers' contexts (ADR 0003). An element whose effect must not
+// their callers' contexts (ADR 0005). An element whose effect must not
 // happen after its caller gave up has to carry its own deadline in In and
 // have the pipeline check it.
 func (g *Gateway[In, Out]) DoBatch(ctx context.Context, ins []In) []Outcome[Out] {

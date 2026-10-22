@@ -6,7 +6,7 @@ import "fmt"
 //
 // Sending honours the peer's limits: stream data stops at what MAX_DATA and
 // MAX_STREAM_DATA granted, and the writer *waits* for more credit rather than
-// refusing — the same decision the HTTP/2 side records in ADR 0004, made at
+// refusing — the same decision the HTTP/2 side records in ADR 0008, made at
 // the transport here. Receiving enforces this endpoint's own limits: a peer
 // that sends past what it was granted has violated an authenticated protocol
 // rule, and that is one of the few things that legitimately ends a
