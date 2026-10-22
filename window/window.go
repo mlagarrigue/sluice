@@ -74,7 +74,7 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 // That ordering is also what keeps the state at one window: element times
 // never decrease, so window indices never decrease either, and a new index
 // means every earlier window is complete. Memory is O(elements in one window),
-// which is why n bounds that count.
+// which is why maxPerWindow bounds that count.
 //
 // # sluice.Empty windows are not emitted
 //
@@ -87,7 +87,7 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 //
 // # Bound and overflow
 //
-// n bounds the elements held for the open window, per S1, and policy says what
+// maxPerWindow bounds the elements held for the open window, per S1, and policy says what
 // happens when it is reached: [sluice.Fail] panics with [sluice.ErrOverflow], [sluice.DropNewest]
 // discards the arriving element and keeps the window as it stands — a pane
 // that is short, never one that is wrong. [sluice.DropOldest] is rejected at
@@ -113,16 +113,16 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 // figure is the same work plus the per-pane copy, which is what buys [Pane]'s
 // ownership and shows only when windows are small enough to be numerous.
 //
-// Tumbling panics if ts is nil, if size is zero or negative, if n is zero or
+// Tumbling panics if ts is nil, if size is zero or negative, if maxPerWindow is zero or
 // negative, or if policy is not [sluice.Fail] or [sluice.DropNewest].
-func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duration, n int, policy sluice.Overflow) sluice.Stream[Pane[T]] {
+func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duration, maxPerWindow int, policy sluice.Overflow) sluice.Stream[Pane[T]] {
 	if ts == nil {
 		panic("sluice: Tumbling requires a non-nil ts function")
 	}
 	if size <= 0 {
 		panic("sluice: Tumbling requires a positive size")
 	}
-	if n <= 0 {
+	if maxPerWindow <= 0 {
 		panic("sluice: Tumbling requires a positive n")
 	}
 	if policy != sluice.Fail && policy != sluice.DropNewest {
@@ -180,7 +180,7 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 					open = true
 					buf = buf[:0]
 				}
-				if len(buf) == n {
+				if len(buf) == maxPerWindow {
 					if policy == sluice.Fail {
 						panic(sluice.ErrOverflow)
 					}

@@ -6,13 +6,13 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// By drops elements whose key was among the last n distinct keys seen.
+// By drops elements whose key was among the last maxKeys distinct keys seen.
 //
 //	unique := By(orders, 1000, func(o Order) string { return o.Ref }, sluice.DropOldest)
 //
 // # This is a window, not a global deduplication
 //
-// It remembers n keys. An element whose key left that window passes again, so
+// It remembers maxKeys keys. An element whose key left that window passes again, so
 // the output is deduplicated locally and not globally. That is the whole point:
 // global deduplication over a stream needs a set that grows with the number of
 // distinct keys, which is unbounded by construction and is why §7.1 rules out
@@ -22,14 +22,14 @@ import (
 // Two consequences worth stating plainly, because assuming the other behaviour
 // is the trap this doc exists to close:
 //
-//   - duplicates further apart than n distinct keys are not caught;
-//   - the output is exact when the stream holds at most n distinct keys, which
+//   - duplicates further apart than maxKeys distinct keys are not caught;
+//   - the output is exact when the stream holds at most maxKeys distinct keys, which
 //     is the case most callers actually have.
 //
 // If exact global deduplication is required and the key space is genuinely
 // unbounded, sort the stream and use [MergeJoinBy] — the sort-merge strategy —
 // or accept O(distinct) memory outside this package. Do not reach for a larger
-// n and hope.
+// maxKeys and hope.
 //
 // # sluice.Overflow
 //
@@ -47,8 +47,8 @@ import (
 //
 // # Cost
 //
-// O(n) memory for the window, one map lookup per element. The map is claimed on
-// first use, so a large n costs nothing on a stream that yields nothing.
+// O(maxKeys) memory for the window, one map lookup per element. The map is claimed on
+// first use, so a large maxKeys costs nothing on a stream that yields nothing.
 //
 // Measured on int64 keys with a window of 1024: ~57 ns/element when every key
 // is distinct — every element inserts and evicts — and ~4.3 ns/element when
@@ -66,20 +66,20 @@ import (
 // unrolled loops cost more instruction cache than they save.
 //
 // A window of zero remembers nothing and passes every element through; a
-// negative n panics. By also panics if key is nil or if policy is not a
+// negative maxKeys panics. By also panics if key is nil or if policy is not a
 // declared [sluice.Overflow].
-func By[T any, K comparable](s sluice.Stream[T], n int, key func(T) K, policy sluice.Overflow) sluice.Stream[T] {
+func By[T any, K comparable](s sluice.Stream[T], maxKeys int, key func(T) K, policy sluice.Overflow) sluice.Stream[T] {
 	if key == nil {
 		panic("sluice: By requires a non-nil key function")
 	}
 	if !policy.Valid() {
 		panic("sluice: By requires a declared Overflow policy")
 	}
-	if n < 0 {
-		panic("sluice: By window " + strconv.Itoa(n) + " is negative — zero means nothing remembered")
+	if maxKeys < 0 {
+		panic("sluice: By window " + strconv.Itoa(maxKeys) + " is negative — zero means nothing remembered")
 	}
 	return func(yield func(sluice.Batch[T]) bool) {
-		if n == 0 {
+		if maxKeys == 0 {
 			// A window of zero remembers nothing, so nothing is ever a
 			// duplicate. Passing everything through is the honest reading, and
 			// it keeps By(s, 0, ...) from silently becoming a filter that
@@ -93,7 +93,7 @@ func By[T any, K comparable](s sluice.Stream[T], n int, key func(T) K, policy sl
 		// position here and never read it, paying a word per entry for a field
 		// nothing consulted.
 		var seen map[K]struct{}
-		order := newRing[K](n)
+		order := newRing[K](maxKeys)
 
 		var out []T
 		s(func(b sluice.Batch[T]) bool {
@@ -101,12 +101,12 @@ func By[T any, K comparable](s sluice.Stream[T], n int, key func(T) K, policy sl
 			for _, v := range b.Items {
 				k := key(v)
 				if seen == nil {
-					seen = make(map[K]struct{}, min(n, initialDistinct))
+					seen = make(map[K]struct{}, min(maxKeys, initialDistinct))
 				}
 				if _, dup := seen[k]; dup {
 					continue
 				}
-				if len(seen) == n {
+				if len(seen) == maxKeys {
 					switch policy {
 					case sluice.DropOldest:
 						delete(seen, order.pop())
