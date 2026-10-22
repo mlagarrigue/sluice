@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,39 @@ func TestIntegrationChannelBindingOverTLS(t *testing.T) {
 			t.Skipf("PostgreSQL %d takes TLS only after an SSLRequest; direct TLS needs 17", major)
 		}
 		bindOverTLS(t, postgres.DialTLSDirect(addr, tlsCfg), cfg)
+	})
+	// The CancelRequest opens a second connection by the recipe the first
+	// one was made with, so a session over TLS is cancelled over TLS: a
+	// cancellation key sent in clear beside it is what an observer on the
+	// path would need to cancel the session's statements at will. Every
+	// connection the recipe opens is counted, and each must be a TLS one.
+	t.Run("cancel", func(t *testing.T) {
+		var dials, overTLS atomic.Int32
+		viaTLS := postgres.DialTLS(addr, tlsCfg)
+		recipe := func(ctx context.Context) (io.ReadWriteCloser, error) {
+			rw, err := viaTLS(ctx)
+			if err == nil {
+				dials.Add(1)
+				if _, ok := rw.(*tls.Conn); ok {
+					overTLS.Add(1)
+				}
+			}
+			return rw, err
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		conn, err := postgres.Connect(ctx, recipe, cfg)
+		if err != nil {
+			t.Fatalf("connecting over TLS: %v", err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		cancelInterrupts(t, conn)
+		if dials.Load() < 2 {
+			t.Fatalf("%d connection(s) opened: the cancellation did not dial", dials.Load())
+		}
+		if overTLS.Load() != dials.Load() {
+			t.Fatalf("%d of %d connections were TLS: a cancellation left in clear", overTLS.Load(), dials.Load())
+		}
 	})
 }
 
