@@ -22,12 +22,20 @@ import (
 // arithmetic predicts (1 MiB against 65535 bytes per round trip); the test
 // asks for 4, which the default window cannot reach against itself — the
 // same comparison with 65535 on both sides measured a ratio of 1 — and
-// leaves the rest to noise.
+// leaves the rest to noise. The large window gets up to three tries, the
+// best one kept: a shared CI runner stalled one upload to 0.46 MB/s, below
+// what even the default window allows (2026-10-22, twice in a day), which is
+// the runner and not the window; a window that lifted nothing fails all three.
 func TestH2UploadThroughputAtRTT(t *testing.T) {
 	const size = 4 << 20
 	slow := uploadThroughput(t, 0, size)
-	fast := uploadThroughput(t, 1<<20, size)
-	ratio := fast / slow
+	var fast, ratio float64
+	for range 3 {
+		fast = max(fast, uploadThroughput(t, 1<<20, size))
+		if ratio = fast / slow; ratio >= 4 {
+			break
+		}
+	}
 	t.Logf("default window %.2f MB/s, 1 MiB window %.2f MB/s, ratio %.1f",
 		slow/1e6, fast/1e6, ratio)
 	if ratio < 4 {
