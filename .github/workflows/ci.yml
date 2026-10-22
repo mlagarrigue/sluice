@@ -94,10 +94,12 @@ jobs:
 
       # Without SLUICE_PG the integration tests skip, so the figure is the
       # scripted-server suite's: the same code paths the test job measures,
-      # minus the few lines that only a live server reaches.
+      # minus the few lines that only a live server reaches. Under -race and
+      # -shuffle like the test job, so that the run the figure comes from is
+      # one that would also have caught a race or an order dependence.
       - name: Measure
         run: |
-          go test -coverprofile=cover.out ./...
+          go test -race -shuffle=on -coverprofile=cover.out ./...
           total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')
           echo "total=$total" >> "$GITHUB_ENV"
           echo "coverage: $total%"
@@ -120,17 +122,19 @@ jobs:
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" badges
 
-  # net/quic/udp is the package whose code differs per operating system:
-  # socket options with a different name and errno on each, which a Linux
-  # run never executes. This job runs that package on the two other
-  # platforms, and from net/quic the tests of its one other per-system file,
-  # the segmented send (gso_windows.go). Not the whole suite: PostgreSQL is
-  # not there, and the rest of the module is covered by the Linux job above.
+  # The network packages on the platforms a Linux amd64 run never executes:
+  # net/quic/udp carries socket options with a different name and errno on
+  # each system, net/quic a segmented send per system (gso_windows.go), and
+  # both, with net/httpstream above them, run their goroutines on another
+  # scheduler and another memory model on arm64. Both ends of the supported
+  # Go range, as in the test job. Not the whole suite: PostgreSQL is not
+  # there, and the rest of the module is covered by the Linux job above.
   test-udp:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-24.04-arm]
+        go: ['1.26', 'stable']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -138,7 +142,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: ${{ env.GO_LATEST }}
+          go-version: ${{ matrix.go }}
       # macOS has 127.0.0.1 alone on lo0; the packet-information test needs
       # a second local address per family to tell a reply's source apart.
       - name: Second loopback addresses
@@ -156,8 +160,8 @@ jobs:
           netsh interface ipv6 add address "Loopback Pseudo-Interface 1" fd00::2
       - name: Test
         run: go test -race -shuffle=on -v ./net/quic/udp/...
-      - name: Test segmented send
-        run: go test -race -shuffle=on -v -run 'Segment' ./net/quic
+      - name: Test net/quic and net/httpstream
+        run: go test -race -shuffle=on ./net/quic/ ./net/httpstream/...
 
   # The comparison modules live beside the root module and are excluded from
   # the root's ./... on purpose: benchmarks/ pins pgx, gin, echo, chi and
@@ -189,15 +193,17 @@ jobs:
       - name: Bench once
         working-directory: benchmarks
         run: go test -run '^$' -bench . -benchtime 1x ./...
-      # The study's modules run nothing here: a campaign needs a server, a
-      # database and a load generator. A requirement left untidy, or code that
-      # no longer builds, goes red instead of waiting for the next campaign.
-      - name: Vet and tidy (comparison/sluice)
+      # The study's modules measure nothing here: a campaign needs a server,
+      # a database and a load generator. A requirement left untidy, or code
+      # that no longer builds, goes red instead of waiting for the next
+      # campaign; their tests run too — the server's skip without SLUICE_PG,
+      # the generator's are its calibration and need nothing.
+      - name: Vet, tidy and test (comparison/sluice)
         working-directory: comparison/sluice
-        run: go vet ./... && go mod tidy -diff
-      - name: Vet and tidy (comparison/loadgen)
+        run: go vet ./... && go mod tidy -diff && go test -race ./...
+      - name: Vet, tidy and test (comparison/loadgen)
         working-directory: comparison/loadgen
-        run: go vet ./... && go mod tidy -diff
+        run: go vet ./... && go mod tidy -diff && go test -race ./...
 
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about

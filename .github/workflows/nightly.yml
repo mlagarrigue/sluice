@@ -1,0 +1,28 @@
+# The whole suite under the race detector at one and at four processors,
+# nightly. One processor serialises every goroutine, which is where an
+# ordering a test silently relied on shows; four lets them truly interleave.
+# Too slow for every push, which the CI test job runs at the runner's own
+# processor count.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  race-cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 'stable'
+      - name: Test at one and four processors
+        run: go test -race -shuffle=on -cpu 1,4 ./...
