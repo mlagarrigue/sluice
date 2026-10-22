@@ -20,6 +20,17 @@ func FuzzDecodePacketNumber(f *testing.F) {
 			return
 		}
 		got, ok := decodePacketNumber(largest, truncated, pnLen)
+		// RFC 9000 §A.3: the number is the one value with the wire's low
+		// bytes in (expected-half, expected+half], whenever that value is a
+		// packet number at all. Computed here by a modulus rather than the
+		// decoder's branches, every term stays under 2^63.
+		window := int64(1) << (8 * pnLen)
+		top := int64(largest) + 1 + window/2                        //nolint:gosec // G115: largest ≤ 2^62-1
+		want := top - ((top-int64(truncated))%window+window)%window //nolint:gosec // G115: truncated < 2^32
+		if want >= 0 && want <= MaxVarint && (!ok || got != uint64(want)) {
+			t.Fatalf("decode(largest=%d, truncated=%#x, len=%d) = %d, %v; want %d, the value in the window",
+				largest, truncated, pnLen, got, ok, want)
+		}
 		if !ok {
 			return
 		}
