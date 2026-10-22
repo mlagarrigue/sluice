@@ -239,7 +239,8 @@ type Gateway[In, Out any] struct {
 // treat it as the long-lived object it is, one per route or per service, built
 // at startup rather than per request.
 //
-// New panics if pipeline is nil or if Within is not positive.
+// New panics if pipeline is nil, if Size is not positive, or if Within is
+// not positive.
 func New[In, Out any](cfg Config, pipeline func(sluice.Stream[*Call[In, Out]])) *Gateway[In, Out] {
 	if pipeline == nil {
 		panic("gateway: New requires a non-nil pipeline")

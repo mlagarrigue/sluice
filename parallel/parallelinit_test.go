@@ -41,7 +41,7 @@ func TestParallelInit(t *testing.T) {
 		return sluice.Batch[int]{Items: out}
 	}
 
-	got := sluice.Collect(WithState(sluice.Of(src, 2), 4, mk, double))
+	got := sluice.Collect(OrderedWithState(sluice.Of(src, 2), 4, mk, double))
 	want := []int{2, 4, 6, 8, 10, 12, 14, 16}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -54,7 +54,7 @@ func TestParallelInit(t *testing.T) {
 	}
 }
 
-// WithState(s, 1, mk, f) and Ordered(s, 1, wrap(f)) must agree: the inline
+// OrderedWithState(s, 1, mk, f) and Ordered(s, 1, wrap(f)) must agree: the inline
 // no-op is the same path with a state threaded through.
 func TestParallelInitOneMatchesParallel(t *testing.T) {
 	src := []int{3, 1, 4, 1, 5}
@@ -70,12 +70,12 @@ func TestParallelInitOneMatchesParallel(t *testing.T) {
 		return sluice.Batch[int]{Items: out}
 	}
 
-	init := sluice.Collect(WithState(sluice.Of(src, 2), 1, mk, f))
+	init := sluice.Collect(OrderedWithState(sluice.Of(src, 2), 1, mk, f))
 	plain := sluice.Collect(Ordered(sluice.Of(src, 2), 1, func(b sluice.Batch[int]) sluice.Batch[int] {
 		return f(&closableState{closed: &closed}, b)
 	}))
 	if !slices.Equal(init, plain) {
-		t.Errorf("inline WithState %v differs from Ordered %v", init, plain)
+		t.Errorf("inline OrderedWithState %v differs from Ordered %v", init, plain)
 	}
 	if closed.Load() == 0 {
 		t.Error("the inline path never closed its state")
@@ -111,7 +111,7 @@ func TestParallelInitFactoryFailure(t *testing.T) {
 					t.Errorf("the cause is not reachable through errors.Is: %v", err)
 				}
 			}()
-			WithState(sluice.Of([]int{1, 2, 3}, 1), 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
+			OrderedWithState(sluice.Of([]int{1, 2, 3}, 1), 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
 				return b
 			})(func(sluice.Batch[int]) bool { return true })
 		}()
@@ -135,7 +135,7 @@ func TestParallelInitFactoryFailureInline(t *testing.T) {
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
-		WithState(src, 1,
+		OrderedWithState(src, 1,
 			func() (*closableState, error) { return nil, causeErr },
 			func(*closableState, sluice.Batch[int]) sluice.Batch[int] {
 				called = true
@@ -165,7 +165,7 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 	}{
 		{"early stop", func(s sluice.Stream[int], mk func() (*closableState, error)) {
 			n := 0
-			WithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
+			OrderedWithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
 				return b
 			})(func(sluice.Batch[int]) bool {
 				n++
@@ -174,13 +174,13 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 		}},
 		{"panic in f", func(s sluice.Stream[int], mk func() (*closableState, error)) {
 			defer func() { _ = recover() }()
-			WithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
+			OrderedWithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
 				panic("f boom")
 			})(func(sluice.Batch[int]) bool { return true })
 		}},
 		{"panic in consumer", func(s sluice.Stream[int], mk func() (*closableState, error)) {
 			defer func() { _ = recover() }()
-			WithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
+			OrderedWithState(s, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] {
 				return b
 			})(func(sluice.Batch[int]) bool { panic("consumer boom") })
 		}},
@@ -206,7 +206,7 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 }
 
 // The S10 contract: an early stop reaches the source promptly and its deferred
-// cleanup runs before WithState returns.
+// cleanup runs before OrderedWithState returns.
 func TestParallelInitPropagatesEarlyStop(t *testing.T) {
 	finalized := false
 	src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {
@@ -221,7 +221,7 @@ func TestParallelInitPropagatesEarlyStop(t *testing.T) {
 	mk := func() (*closableState, error) { return &closableState{closed: &closed}, nil }
 
 	n := 0
-	WithState(src, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] { return b })(
+	OrderedWithState(src, 4, mk, func(w *closableState, b sluice.Batch[int]) sluice.Batch[int] { return b })(
 		func(sluice.Batch[int]) bool {
 			n++
 			return n < 3
@@ -232,7 +232,7 @@ func TestParallelInitPropagatesEarlyStop(t *testing.T) {
 	}
 }
 
-// The S14 composition: WithState downstream of a buffer-reusing upstream
+// The S14 composition: OrderedWithState downstream of a buffer-reusing upstream
 // must be race-free and sum correctly — the input copy is inherited from the
 // shared machinery, and this pins it for the second entry point.
 func TestParallelInitCopiesInputBatch(t *testing.T) {
@@ -246,7 +246,7 @@ func TestParallelInitCopiesInputBatch(t *testing.T) {
 
 	conv := sluice.Convert(sluice.Of(src, 512), func(v int64) int64 { return v })
 	mk := func() (*[]int64, error) { s := make([]int64, 0, 512); return &s, nil }
-	sums := WithState(conv, 4, mk, func(w *[]int64, b sluice.Batch[int64]) sluice.Batch[int64] {
+	sums := OrderedWithState(conv, 4, mk, func(w *[]int64, b sluice.Batch[int64]) sluice.Batch[int64] {
 		// The worker's scratch absorbs the batch — reused, unsynchronized —
 		// then a fresh single-element result goes out, per the output rule.
 		*w = append((*w)[:0], b.Items...)
@@ -279,9 +279,9 @@ func TestParallelInitNilArguments(t *testing.T) {
 		f()
 	}
 	assertPanics("nil mkState", func() {
-		WithState[int, int, int](sluice.Empty[int](), 2, nil, func(int, sluice.Batch[int]) sluice.Batch[int] { return sluice.Batch[int]{} })
+		OrderedWithState[int, int, int](sluice.Empty[int](), 2, nil, func(int, sluice.Batch[int]) sluice.Batch[int] { return sluice.Batch[int]{} })
 	})
 	assertPanics("nil f", func() {
-		WithState[int, int, int](sluice.Empty[int](), 2, func() (int, error) { return 0, nil }, nil)
+		OrderedWithState[int, int, int](sluice.Empty[int](), 2, func() (int, error) { return 0, nil }, nil)
 	})
 }

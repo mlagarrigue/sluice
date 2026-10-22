@@ -191,7 +191,7 @@ because it waits on disk or network, you want several running at once.
 |---|---|---|
 | `parallel.Ordered(s, workers, f)` | `workers` goroutines and a small buffer to put batches back in order | `f` is **genuinely** expensive (decoding, hashing, compression) and order matters |
 | `parallel.Unordered(s, workers, f)` | `workers` goroutines, nothing to reorder | `f` is expensive, order does not matter, and its cost varies from batch to batch |
-| `parallel.WithState(s, workers, mkState, f)` | a private state per goroutine, closed at the end | `f` needs a cache or a table you do not want to share |
+| `parallel.OrderedWithState(s, workers, mkState, f)` | a private state per goroutine, closed at the end | `f` needs a cache or a table you do not want to share |
 | `parallel.Async(s, depth)` | one goroutine and `depth` batches of lead | decoupling a stage that waits (reading, writing) from what follows |
 
 ```go
@@ -205,7 +205,7 @@ decoded := parallel.Ordered(rows, 4, func(b sluice.Batch[Row]) sluice.Batch[Enti
 })
 
 // One reader per goroutine, opened once, closed at the end.
-enriched := parallel.WithState(rows, 4,
+enriched := parallel.OrderedWithState(rows, 4,
     func() (*Reader, error) { return OpenReader(path) },
     func(r *Reader, b sluice.Batch[Row]) sluice.Batch[Entity] { return r.hydrate(b) })
 // A factory that fails stops the pipeline with a panic, parallel.ErrState,

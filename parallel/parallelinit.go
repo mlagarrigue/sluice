@@ -8,19 +8,19 @@ import (
 	"github.com/mlagarrigue/sluice/internal/batch"
 )
 
-// ErrState reports that a [WithState] state factory failed.
+// ErrState reports that a [OrderedWithState] state factory failed.
 //
 // It is panicked rather than returned, for the reason [sluice.ErrOverflow] is: an
 // iter.Seq has nowhere to put an error, and a state factory that fails is a
 // pipeline that cannot run at all — not a datum that is missing. The panic
 // value wraps both this sentinel and the factory's error, so a recover
 // boundary can test errors.Is against either.
-var ErrState = batch.NewSentinel("sluice: WithState state factory failed")
+var ErrState = batch.NewSentinel("sluice: OrderedWithState state factory failed")
 
-// WithState is [Ordered] with a private state per worker, built once by
+// OrderedWithState is [Ordered] with a private state per worker, built once by
 // mkState before that worker processes anything.
 //
-//	enriched := WithState(rows, 4,
+//	enriched := OrderedWithState(rows, 4,
 //	    func() (*Reader, error) { return OpenReader(path) },
 //	    func(r *Reader, b sluice.Batch[Row]) sluice.Batch[Entity] { ... })
 //
@@ -38,7 +38,7 @@ var ErrState = batch.NewSentinel("sluice: WithState state factory failed")
 //
 // What the private state is worth, measured: an f needing a batch-sized
 // workspace ran at 532 µs and 150 allocs/op under [Ordered] — the workspace
-// allocated on every batch — against 360 µs and 98 under WithState with the
+// allocated on every batch — against 360 µs and 98 under OrderedWithState with the
 // workspace owned by the worker: −32% time and −45% memory for the same work
 // (BenchmarkParallelFreshScratch / BenchmarkParallelInitReusedScratch).
 //
@@ -80,25 +80,25 @@ var ErrState = batch.NewSentinel("sluice: WithState state factory failed")
 //
 // workers of 0 or 1 is the explicit no-op, like [Ordered]: mkState is
 // called exactly once, f is applied inline on the calling goroutine, and the
-// state is closed when the stream ends. WithState(s, 1, mk, f) is the way
+// state is closed when the stream ends. OrderedWithState(s, 1, mk, f) is the way
 // to turn the concurrency off, not a slower way to keep it. A negative workers
 // count panics.
 //
-// WithState panics if mkState or f is nil.
-func WithState[A, B, W any](
+// OrderedWithState panics if mkState or f is nil.
+func OrderedWithState[A, B, W any](
 	s sluice.Stream[A],
 	workers int,
 	mkState func() (W, error),
 	f func(W, sluice.Batch[A]) sluice.Batch[B],
 ) sluice.Stream[B] {
 	if mkState == nil {
-		panic("sluice: WithState requires a non-nil mkState function")
+		panic("sluice: OrderedWithState requires a non-nil mkState function")
 	}
 	if f == nil {
-		panic("sluice: WithState requires a non-nil f function")
+		panic("sluice: OrderedWithState requires a non-nil f function")
 	}
 	if workers < 0 {
-		panic(negativeWorkers("WithState", workers))
+		panic(negativeWorkers("OrderedWithState", workers))
 	}
 	if workers <= 1 {
 		return func(yield func(sluice.Batch[B]) bool) {

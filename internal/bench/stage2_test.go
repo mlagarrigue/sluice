@@ -190,7 +190,7 @@ func BenchmarkParallelInitReusedScratch(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		parallel.WithState(sluice.Of(src, 1024), 4,
+		parallel.OrderedWithState(sluice.Of(src, 1024), 4,
 			func() (*[]int64, error) { s := make([]int64, 0, 1024); return &s, nil },
 			func(w *[]int64, bt sluice.Batch[int64]) sluice.Batch[int64] {
 				var out []int64

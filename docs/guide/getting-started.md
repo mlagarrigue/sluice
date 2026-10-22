@@ -241,7 +241,7 @@ named situations: a bounded operator overflowing under the "fail" policy
 (`ErrOverflow`), data that should have been sorted and is not
 (`ErrUnsorted`), the branches of a `Split` read in the wrong order
 (`ErrSplitStalled`, and `ErrSplitDrained` for a branch read after the
-source ran out), and the state factory of `parallel.WithState` failing
+source ran out), and the state factory of `parallel.OrderedWithState` failing
 (`parallel.ErrState`, which wraps the factory's error too).
 
 In a script run overnight, crashing is the right behaviour: you want to

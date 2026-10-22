@@ -676,7 +676,7 @@ build side entirely, under a required bound.
 goroutine.
 
 **Retains goroutines — `parallel`.** `parallel.Ordered`, `parallel.Unordered`,
-`parallel.WithState` and `parallel.Async` own the goroutines they start and
+`parallel.OrderedWithState` and `parallel.Async` own the goroutines they start and
 stop them before returning, on every path out.
 
 **Retains keys — `distinct`.** `distinct.By(n)` remembers the last *n* keys.
@@ -847,7 +847,7 @@ coordination cost is amortized.
 > batches: ordered fan-out ×1.03 over serial (the fan-out nearly cancelled by
 > its own ordering), unordered ×2.75. Uniform work gains ×1.59 too, since
 > ordered emission turns scheduling jitter into window stalls. Ordered stays
-> the default. `parallel.WithState` completes the family: per-worker private
+> the default. `parallel.OrderedWithState` completes the family: per-worker private
 > state, built up front on the consuming goroutine, closed through `io.Closer`
 > on every exit path — the operator for the decoder table or reader cache that
 > is neither shareable nor worth a mutex (−32% time, −45% memory against

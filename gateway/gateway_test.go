@@ -426,3 +426,38 @@ func TestSweepInDiscardsWhatTheRunLoopWillNeverTake(t *testing.T) {
 	// It returns on an empty channel rather than waiting for one more.
 	g.sweepIn()
 }
+
+// New's documentation lists every panic, and each is raised at construction
+// with a message naming what to fix; a usable configuration constructs.
+func TestNewPanicsAsDocumented(t *testing.T) {
+	pipeline := func(sluice.Stream[*Call[int, int]]) {}
+	usable := Config{Size: 8, Within: time.Millisecond}
+	for _, tc := range []struct {
+		name     string
+		cfg      Config
+		pipeline func(sluice.Stream[*Call[int, int]])
+		want     string
+	}{
+		{"nil pipeline", usable, nil, "non-nil pipeline"},
+		{"zero Size", Config{Within: time.Millisecond}, pipeline, "Size must be positive"},
+		{"negative Size", Config{Size: -1, Within: time.Millisecond}, pipeline, "Size must be positive"},
+		{"zero Within", Config{Size: 8}, pipeline, "Within must be positive"},
+		{"negative Within", Config{Size: 8, Within: -time.Millisecond}, pipeline, "Within must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				msg, _ := recover().(string)
+				if !strings.Contains(msg, tc.want) {
+					t.Errorf("New panicked with %q, want a message containing %q", msg, tc.want)
+				}
+			}()
+			New(tc.cfg, tc.pipeline)
+		})
+	}
+	drain := func(s sluice.Stream[*Call[int, int]]) {
+		s(func(sluice.Batch[*Call[int, int]]) bool { return true })
+	}
+	if err := New(usable, drain).Close(); err != nil {
+		t.Errorf("a usable configuration: Close = %v", err)
+	}
+}

@@ -23,7 +23,7 @@ func TestNegativeDepthOrWorkersPanics(t *testing.T) {
 		{"Async", func() { Async(src, -1) }},
 		{"Ordered", func() { Ordered(src, -1, f) }},
 		{"Unordered", func() { Unordered(src, -1, f) }},
-		{"WithState", func() { WithState(src, -1, mk, fw) }},
+		{"OrderedWithState", func() { OrderedWithState(src, -1, mk, fw) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {

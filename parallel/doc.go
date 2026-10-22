@@ -1,5 +1,5 @@
 // Package parallel holds the operators that run goroutines: Ordered and
-// Unordered spread batches over a pool of workers, WithState gives each
+// Unordered spread batches over a pool of workers, OrderedWithState gives each
 // worker a private state built once, and Async runs the upstream on its own
 // goroutine so that reading overlaps what follows.
 //

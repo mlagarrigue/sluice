@@ -24,7 +24,7 @@ func TestTryEndToEnd(t *testing.T) {
 	t.Run("parallel init", func(t *testing.T) {
 		cause := errors.New("dictionary missing")
 		err := sluice.Try(func() {
-			sluice.Collect(parallel.WithState(sluice.Of([]int{1}, 1), 4,
+			sluice.Collect(parallel.OrderedWithState(sluice.Of([]int{1}, 1), 4,
 				func() (int, error) { return 0, cause },
 				func(int, sluice.Batch[int]) sluice.Batch[int] { return sluice.Batch[int]{} }))
 		})

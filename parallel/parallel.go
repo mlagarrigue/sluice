@@ -164,7 +164,7 @@ type job[A, B any] struct {
 // emitter by more than the pool can hold.
 //
 // It takes one function per worker rather than one for the pool: [Ordered]
-// passes the same f len(fs) times, [WithState] passes one closure per
+// passes the same f len(fs) times, [OrderedWithState] passes one closure per
 // worker, each owning that worker's private state. The machinery is identical
 // either way, so the ordering, shutdown and panic contracts are written — and
 // tested — once.
