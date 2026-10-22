@@ -63,7 +63,7 @@ other (how much data, how many streams, what idle timeout). Start from
 `DefaultParameters()`; the zero value is refused, because it would announce
 a connection with no credit at all, unable to send anything.
 
-> **In plain terms: the one dependency.** QUIC's encryption needs an
+> **In plain terms: the dependency QUIC needs.** QUIC's encryption needs an
 > algorithm (ChaCha20-Poly1305) that `crypto/tls` uses but does not expose.
 > It is for this that the project depends on `golang.org/x/crypto`, the only
 > module outside the standard library that QUIC uses.

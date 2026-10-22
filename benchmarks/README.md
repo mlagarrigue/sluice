@@ -1,9 +1,9 @@
 # benchmarks — measuring against the libraries people actually use
 
 This directory is a **second Go module**. It depends on the framework; nothing
-in the framework depends on it. That is what lets a project with one production
-dependency (`golang.org/x/crypto`) be compared against `pgx`, `gin`, `echo`,
-`chi` and `fiber` without acquiring any of them.
+in the framework depends on it. That is what lets a project with two production
+dependencies (`golang.org/x/crypto` and `golang.org/x/text`) be compared
+against `pgx`, `gin`, `echo`, `chi` and `fiber` without acquiring any of them.
 
 ```
 cd benchmarks

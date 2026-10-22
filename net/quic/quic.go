@@ -191,8 +191,8 @@
 // None of it is invented here. The key schedule is HKDF from [crypto/hkdf]
 // with the labels RFC 9001 §5.1 publishes, the packet protection is the
 // AEAD of the negotiated suite — AES-GCM from [crypto/cipher], or
-// ChaCha20-Poly1305 from golang.org/x/crypto, the module's one dependency
-// (ADR 0002) — and the header protection is one block of the same suite's
+// ChaCha20-Poly1305 from golang.org/x/crypto, the only module outside the
+// standard library this package imports (ADR 0002) — and the header protection is one block of the same suite's
 // cipher over a sample, as §5.4 specifies. What this package contributes is
 // the plumbing, and the plumbing is pinned two ways: Appendix A.1's
 // published derivation vectors, and seal/open round trips for what the

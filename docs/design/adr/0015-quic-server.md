@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name)
 - **Theme:** quic
 
 ## Problem
@@ -123,7 +123,7 @@ A client that wants the preferred address issues a spare identifier
 Each tier is the RFC's own obligation, taken when the deployment model
 stopped tolerating its absence: a server behind one UDP port, a client
 behind a NAT. Two cipher suites come from the standard library and the
-third, ChaCha20-Poly1305, from the project's one dependency (ADR 0002).
+third, ChaCha20-Poly1305, from `golang.org/x/crypto` (ADR 0002).
 Costs: a timer goroutine per connection, a dispatch goroutine per listener,
 one copy per inbound datagram at the demux point, and one address
 comparison on the packet hot path. Sharing `TokenKey` between instances

@@ -18,7 +18,7 @@ body:
       description: >
         Every production dependency is a recorded decision, and the goal is
         the least useless code. Can this be built on the standard library
-        (plus golang.org/x/crypto)? If not, which maintained module would it
+        (plus golang.org/x/crypto and golang.org/x/text)? If not, which maintained module would it
         need, what does that module pull in, and why is writing it here the
         worse option?
     validations:

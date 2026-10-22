@@ -1,8 +1,9 @@
 # interop — sluice against peers that share none of its code
 
 This directory is a **second Go module**. It depends on the framework;
-nothing in the framework depends on it. That is what lets a project with one
-production dependency (`golang.org/x/crypto`) be confronted with `quic-go`
+nothing in the framework depends on it. That is what lets a project with two
+production dependencies (`golang.org/x/crypto` and `golang.org/x/text`) be
+confronted with `quic-go`
 without acquiring it: a nested module is excluded from the root's `./...`,
 so `quic-go` never enters the graph the CI `deps` job checks.
 

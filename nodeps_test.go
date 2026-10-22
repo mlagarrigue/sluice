@@ -25,16 +25,64 @@ import (
 // golang.org/x/sys is on the list because x/crypto brings it (CPU feature
 // detection for the assembly), not because anything here imports it.
 func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
-	src, err := os.ReadFile("go.mod")
-	if err != nil {
-		t.Fatalf("reading go.mod: %v", err)
-	}
 	allowed := map[string]bool{
 		"golang.org/x/crypto": true,
 		"golang.org/x/sys":    true,
 		"golang.org/x/text":   true,
 	}
 	seen := map[string]bool{}
+	for _, r := range goModRequires(t) {
+		seen[r.mod] = true
+		if !allowed[r.mod] {
+			t.Errorf("go.mod:%d requires %q.\n"+
+				"the recorded dependencies are golang.org/x/crypto (and the x/sys it brings) "+
+				"and golang.org/x/text. "+
+				"If this came from measuring against another library, the measurement "+
+				"belongs in the comparison module in benchmarks/, which depends on this one and is "+
+				"never depended on by it.", r.line, r.mod)
+		}
+	}
+	if !seen["golang.org/x/crypto"] {
+		t.Error("go.mod no longer requires golang.org/x/crypto; quic needs its ChaCha20-Poly1305")
+	}
+}
+
+// The root package's doc is the first page pkg.go.dev shows, and it states
+// the dependency graph: every module go.mod requires directly must be named
+// there. It named golang.org/x/crypto alone for a release after golang.org/x/text
+// had joined, beside the test above that listed both.
+func TestPackageDocNamesEveryDirectDependency(t *testing.T) {
+	src, err := os.ReadFile("sluice.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _, ok := strings.Cut(string(src), "\npackage sluice")
+	if !ok {
+		t.Fatal("sluice.go has no package clause")
+	}
+	for _, r := range goModRequires(t) {
+		if !r.indirect && !strings.Contains(doc, r.mod) {
+			t.Errorf("go.mod:%d requires %s, which the package doc in sluice.go does not name", r.line, r.mod)
+		}
+	}
+}
+
+// requirement is a module go.mod requires.
+type requirement struct {
+	line     int
+	mod      string
+	indirect bool
+}
+
+// goModRequires reads the require directives of go.mod, single-line and
+// block alike.
+func goModRequires(t *testing.T) []requirement {
+	t.Helper()
+	src, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	var out []requirement
 	inBlock := false
 	lineNo := 0
 	for line := range strings.Lines(string(src)) {
@@ -54,20 +102,9 @@ func TestGoModRequiresOnlyTheAllowlist(t *testing.T) {
 		case !inBlock:
 			continue
 		}
-		mod := f[0]
-		seen[mod] = true
-		if !allowed[mod] {
-			t.Errorf("go.mod:%d requires %q.\n"+
-				"the recorded dependencies are golang.org/x/crypto (and the x/sys it brings) "+
-				"and golang.org/x/text. "+
-				"If this came from measuring against another library, the measurement "+
-				"belongs in the comparison module in benchmarks/, which depends on this one and is "+
-				"never depended on by it.", lineNo, mod)
-		}
+		out = append(out, requirement{line: lineNo, mod: f[0], indirect: strings.Contains(line, "// indirect")})
 	}
-	if !seen["golang.org/x/crypto"] {
-		t.Error("go.mod no longer requires golang.org/x/crypto; quic needs its ChaCha20-Poly1305")
-	}
+	return out
 }
 
 // The nested modules — the comparison module (benchmarks/) and the interop

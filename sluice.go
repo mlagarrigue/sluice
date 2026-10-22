@@ -29,10 +29,12 @@
 // # Dependencies
 //
 // Every production dependency is a recorded decision. Today the graph is the
-// standard library plus one module, golang.org/x/crypto, for the
+// standard library plus two modules: golang.org/x/crypto, for the
 // ChaCha20-Poly1305 cipher that crypto/tls negotiates but does not export
-// (the net/quic package needs it to protect packets). CI fails on any module
-// outside the recorded list.
+// (the net/quic package needs it to protect packets), and golang.org/x/text,
+// for the Unicode normalisation SASLprep requires (the database/postgres
+// package needs it to send a password). CI fails on any module outside the
+// recorded list.
 package sluice
 
 import (

@@ -115,8 +115,8 @@ func expandLabelHash(h func() hash.Hash, secret []byte, label string, length int
 // The AES suites come whole from the standard library.
 // TLS_CHACHA20_POLY1305_SHA256 cannot (crypto/tls uses the cipher
 // internally without exporting it), so its AEAD and raw cipher come from
-// golang.org/x/crypto — the module's one production dependency, taken for
-// this and nothing else.
+// golang.org/x/crypto — the only module outside the standard library this
+// package imports, taken for this and nothing else.
 type suite struct {
 	hash      func() hash.Hash
 	keyLen    int

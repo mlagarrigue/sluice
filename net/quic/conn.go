@@ -715,7 +715,8 @@ func requireTLS13(cfg *tls.Config) error {
 // at handshake. Both are checked before anything is sent, by Dial, [Accept]
 // and [NewListener] alike. All three TLS 1.3 suites are spoken:
 // the AES-GCM pair from the standard library, ChaCha20-Poly1305 from
-// golang.org/x/crypto, the module's one dependency.
+// golang.org/x/crypto, the only module outside the standard library this
+// package imports.
 //
 // A cfg with a [tls.ClientSessionCache] resumes a session the server has
 // issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
