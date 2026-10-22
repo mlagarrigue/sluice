@@ -122,7 +122,17 @@ if [ -z "$REPLAY" ]; then
     kept=""
     while IFS= read -r name; do
       file="$(grep -l "^func $name(" "$ROOT"/internal/bench/*_test.go | head -1)"
-      imports="$(sed -n '/^import/,/^)/p' "$file" | grep -o "\"$module[^\"]*\"" | tr -d '"' | sort -u)"
+      imports="$(sed -n '/^import/,/^)/p' "$file" | { grep -o "\"$module[^\"]*\"" || true; } | tr -d '"' | sort -u)"
+      # A file that imports nothing of the module reaches it through the
+      # package's helpers in other files — SeqStages and SelectiveFilter
+      # build their stages that way — so it depends on whatever the package
+      # imports. Read as "depends on nothing", it was never measured; and
+      # before the `|| true` above, the grep's empty match stopped the whole
+      # script under pipefail, without a word, on every diff outside
+      # internal/bench.
+      if [ -z "$imports" ]; then
+        imports="$(cd "$ROOT" && go list -f '{{join .Imports "\n"}}{{"\n"}}{{join .TestImports "\n"}}' ./internal/bench | grep "^$module" | sort -u || true)"
+      fi
       touched=""
       if [ -n "$imports" ]; then
         while IFS= read -r pkg; do
