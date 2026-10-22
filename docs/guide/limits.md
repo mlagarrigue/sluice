@@ -248,11 +248,16 @@ to a separate module before a v1.
   [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results),
   and each run keeps the captures and each side's logs as artifacts for
   seven days. A case that fails is run once more, and the table shows both
-  results. `interop/expected-results.json` records, for quic-go and
-  ngtcp2, every case in each direction with the cause of every failure; a
-  pass that departs from it, either way, fails the job. The other peers
-  are reported, not judged, until their results are read and written
-  down. The cases below are those of the passes of 2026-10-22 against
+  results. `interop/expected-results.json` records, for quic-go, ngtcp2
+  and msquic, every case in each direction with the cause of every
+  failure; a pass that departs from it, either way, fails the job. The
+  other peers are reported, not judged, until their results are read and
+  written down. Against msquic's server four cases fail on the client side
+  for a reason outside sluice: msquic sometimes answers first with an ACK
+  alone, under the client's own connection ID as its Source Connection ID,
+  then changes it, and RFC 9000 §7.2 has the client discard every later
+  packet, ServerHello included, so the handshake never completes. The
+  cases below are those of the passes of 2026-10-22 against
   quic-go and ngtcp2.
   As a server, sluice passes handshake,
   transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
