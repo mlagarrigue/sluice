@@ -234,7 +234,20 @@ Three reasons come up, and the difference matters:
 ## Experimental: the exit conditions
 
 These packages leave the label only by meeting these conditions, or move
-to a separate module before a v1.
+to a separate module before a v1. One condition per package, each one
+checkable:
+
+- **`web/stream`**: a first real consumer, an application outside this
+  repository, serves its requests through these stages, and what it
+  needed changed has been changed. The figures against third-party
+  clients (HTTP/1.1, HTTP/2, HTTP/3) are already in
+  [the benchmarks](../benchmarks.md).
+- **`net/quic/udp`**: it leaves with `net/quic`, not before. Its options
+  are the socket half of the transport and are judged by the same passes;
+  the `test-udp` job already runs it on Windows, macOS and Linux ARM.
+- **`net/quic`, the measurement**: throughput and latency measured against
+  a real third-party client, beside the interop. Interop proves agreement,
+  not cost.
 
 - **`net/quic`**: being green in the *QUIC Interop Runner* against
   quic-go and ngtcp2, on each side of the handshake, in our own continuous
