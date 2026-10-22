@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strconv"
 	"unicode/utf8"
 )
@@ -58,8 +59,8 @@ const hexDigits = "0123456789abcdef"
 // appendJSONString quotes s as encoding/json does with its HTML escaping
 // on, which is json.Marshal's default: `"` and `\` escaped, the control
 // characters as \n \r \t \b \f or \u00XX, `<` `>` `&` as \u00XX, U+2028
-// and U+2029 as   and  , every invalid byte as �. Runs of
-// safe bytes are copied in one append.
+// and U+2029 as \u2028 and \u2029, every invalid byte as invalidUTF8. Runs
+// of safe bytes are copied in one append.
 func appendJSONString(dst []byte, s string) []byte {
 	dst = append(dst, '"')
 	start := 0
@@ -94,12 +95,12 @@ func appendJSONString(dst []byte, s string) []byte {
 		c, size := utf8.DecodeRuneInString(s[i:])
 		if c == utf8.RuneError && size == 1 {
 			dst = append(dst, s[start:i]...)
-			dst = append(dst, '\\', 'u', 'f', 'f', 'f', 'd')
+			dst = append(dst, invalidUTF8...)
 			i++
 			start = i
 			continue
 		}
-		if c == ' ' || c == ' ' {
+		if c == '\u2028' || c == '\u2029' {
 			dst = append(dst, s[start:i]...)
 			dst = append(dst, '\\', 'u', '2', '0', '2', hexDigits[c&0xF])
 			i += size
@@ -111,6 +112,19 @@ func appendJSONString(dst []byte, s string) []byte {
 	dst = append(dst, s[start:]...)
 	return append(dst, '"')
 }
+
+// invalidUTF8 is what this toolchain's encoding/json writes for a byte that
+// is not UTF-8: the escape � up to Go 1.26, the replacement character
+// itself from Go 1.27. Read once from json.Marshal rather than assumed, so
+// the encoder writes what the json.Marshal it stands in for writes, under
+// either.
+var invalidUTF8 = func() string {
+	b, err := json.Marshal("\xff")
+	if err != nil {
+		panic(err) // a string always marshals
+	}
+	return string(b[1 : len(b)-1])
+}()
 
 // jsonSafe marks the ASCII bytes encoding/json copies as they are: the
 // printable ones but `"`, `\`, `<`, `>` and `&`.
