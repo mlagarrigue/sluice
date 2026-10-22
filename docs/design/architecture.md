@@ -17,8 +17,8 @@ each choice: that is what lets a choice be contested with an argument
 rather than a preference.
 
 Read it in order to understand everything; otherwise each section stands
-alone. The quoted blocks (`>`) are what the implementation learned while
-building the section: figures, traps, decisions taken against intuition.
+alone. The quoted blocks (`>`) hold what each section rests on in the
+code: the figures, the traps and the decisions taken against intuition.
 The **ADR** links lead to the formal decision (the problem, the decision,
 the alternatives rejected).
 
@@ -1090,19 +1090,17 @@ Framing is trivial: ~20 useful message types, 1 type byte + an int32 length.
 
 Budget the codecs, not the parsing.
 
-> **The estimate held.** `postgres.Connect` is the startup packet
-> and the SASL exchange over `crypto/hmac`, `crypto/sha256`, `crypto/subtle`,
-> `crypto/rand` and `crypto/pbkdf2` — the last of which arrived in the standard
-> library in Go 1.24, so even the key derivation this section budgeted for did
-> not have to be written. The work that was actually expensive was not the
-> cryptography, which is prescribed to the byte by RFC 5802 and pinned by RFC
-> 7677's published vector: it was deciding what to *refuse* — a nonce that does
+> **Connecting is small; refusing is the work.** `postgres.Connect` is the
+> startup packet and the SASL exchange over `crypto/hmac`, `crypto/sha256`,
+> `crypto/subtle`, `crypto/rand` and `crypto/pbkdf2`, in the standard library
+> since Go 1.24, so the key derivation is not written here. The expensive part
+> is not the cryptography, which is prescribed to the byte by RFC 5802 and
+> pinned by RFC 7677's published vector: it is deciding what to *refuse* — a nonce that does
 > not extend the client's, an iteration count chosen by the server and paid for
 > by the client, a mechanism list offering only channel binding to a client
 > without TLS, `md5`. Channel binding itself, `SCRAM-SHA-256-PLUS` over
 > `tls-server-end-point`, is in. Each of those refusals is one line of code
-> and a paragraph of reasoning, which is the ratio this section did not
-> predict.
+> and a paragraph of reasoning.
 
 ### The "LINQ-style trick": `= ANY($1)`
 
@@ -1207,8 +1205,7 @@ for the best effort-to-gain ratio in the project.
 > returns `io.ErrUnexpectedEOF`, because a truncated response is not an empty
 > one. And the length prefix is read as the signed `int32` the protocol
 > declares, so a negative length is reported as malformed rather than as an
-> implausibly large message — a test caught that, and the fix was to the
-> diagnostic rather than to the safety, which was already correct.
+> implausibly large message.
 >
 > **The message layer above it decodes results flat, which is
 > [hydration](#hydration)'s layout arriving early.** `Rows` packs every field of a batch end to end in one buffer with a
@@ -1248,12 +1245,10 @@ for the best effort-to-gain ratio in the project.
 > round-trip test ever written. A vector stating what the bytes must be does
 > not.
 >
-> Two vectors disagreed with the encoder on their first run, and **both times
-> the encoder was right**: an IEEE 754 mantissa and a microsecond count across
-> twenty-four years are not values a person derives by eye. The lesson is in
-> the test file: a golden vector is only as good as the independence of its
-> derivation, and one that cannot be derived structurally must say where it
-> came from.
+> An IEEE 754 mantissa and a microsecond count across twenty-four years are
+> not values a person derives by eye, so **a golden vector is only as good as
+> the independence of its derivation**, and one that cannot be derived
+> structurally says where it came from — the test file does.
 >
 > **`= ANY($1)` works end to end, and the pull reaches the server.** `Conn.Query`
 > sends Parse, Bind, Describe and Execute together — [Pipelining and COPY](#pipelining-and-copy)'s pipelining, two
@@ -1312,7 +1307,7 @@ reflection works **row by row and field by field**, which breaks vectorization.
 - **zero `interface{}`** in the hot path; **binary** format mandatory;
 - pre-allocation at batch size, buffer reuse between batches.
 
-> **Measured, and the columnar half is wrong.** The argument against
+> **Measured: reflection costs ×1.8, and columnar decoding loses.** The argument against
 > reflection holds, though it is smaller than it looks: a naive measurement
 > that boxes every field through `reflect.Value.Interface` charges the boxing
 > to reflection (×5.6). Written the way a careful mapper writes it — a
@@ -1321,7 +1316,7 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > against 37 ns/row (`BenchmarkHydrateReflect` against
 > `BenchmarkHydrateRowMajor` in `database/postgres`). ×1.8 on the hydration
 > step, with by-name binding and bind-time type checks on top, still justifies
-> a generator. The argument *for* columnar decoding does not hold. One scanner
+> a generator. Columnar decoding does not pay. One scanner
 > per column then a pass to assemble measures **34.7 ns/row against row-major's 31.2**,
 > and at batch = 1 — the web vertical's shape — 37.6 against 26.3. The columnar
 > form makes two passes over the values, and the extra memory traffic costs
@@ -1330,8 +1325,7 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > is nothing to vectorize when the per-value work is a bounds check and an
 > eight-byte load.
 >
-> So the generator this section asks for is still worth building, and **it
-> should emit row-major code**. The column scanners ship anyway, for what they
+> So the generator is worth building, and **it emits row-major code**. The column scanners ship anyway, for what they
 > are genuinely for: extracting a column, which is what feeds the next
 > `= ANY($1)` in a batched pipeline. Their documentation says which of the two
 > they are good at.

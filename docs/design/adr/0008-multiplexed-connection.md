@@ -30,14 +30,14 @@ that arrives while another is being answered does not wait for it. Each
 call holds stream slots, so the calls in flight are bounded by
 `MaxConcurrentStreams`. HTTP/3 has no responder: its read callback hands
 each batch to a call on a goroutine of its own, which writes each answer on
-a goroutine per request stream (since 2026-10-04), so a slow call holds only
+a goroutine per request stream, so a slow call holds only
 its batch and a slow body only its stream. Its bound is the assembler's own
 count of requests in flight — from a stream's first frame until its response
 is written — not the transport's stream slot, which QUIC gives back as soon
 as both directions are done: a client's STOP_SENDING on a complete request
 (RFC 9114 §4.1.1) frees the slot at once, with the handler call still
-running, and counting slots let one call run per cancellation (fixed
-2026-10-20). Both servers close a connection whose cancellations and refusals
+running, and counting slots would let one call run per cancellation.
+Both servers close a connection whose cancellations and refusals
 outrun a flat allowance plus two per request answered — four batches of
 frames on HTTP/2, four times `MaxConcurrentStreams` on HTTP/3 — with
 ENHANCE_YOUR_CALM or H3_EXCESSIVE_LOAD: the rapid-reset bound
@@ -90,23 +90,24 @@ Streamed responses of any size, a connection that stays responsive, one
 request's failure costing one request, and cancellation that reaches the
 handler. The cost is three goroutines per connection plus one per call in
 flight, and their synchronisation, which
-`TestH2ConnectionsLeaveNoGoroutines` keeps honest. The calls were serialised
-per connection until 2026-10-19: a handler that waits on something per
-call — a gateway's window, a round trip — made a stream that arrived during
-a call wait twice, for that call and then for its own, where HTTP/1.1
-carries the same request on a connection of its own and waits once.
-Measured on the comparison study's unit scenario (a 2 ms gateway window,
-8,000 requests per second, 256 and 1,024 connections, three paired
-rounds), the HTTP/2 p99 went from 1.35-1.63 times the HTTP/1.1 figure to
-0.96-1.06, and the p50 from 1.12-1.22 to 0.96-1.00. Merging the batches
-queued behind a busy call, without parallel calls, changed nothing there.
+`TestH2ConnectionsLeaveNoGoroutines` keeps honest. Calls run in parallel
+because serialised ones make a stream wait twice: a handler that waits on
+something per call — a gateway's window, a round trip — holds a stream that
+arrives during the call until that call ends, then its own runs, where
+HTTP/1.1 carries the same request on a connection of its own and waits
+once. Measured on the comparison study's unit scenario (a 2 ms gateway
+window, 8,000 requests per second, 256 and 1,024 connections, three paired
+rounds), the HTTP/2 p99 is 0.96-1.06 times the HTTP/1.1 figure with
+parallel calls and 1.35-1.63 serialised, the p50 0.96-1.00 against
+1.12-1.22. Merging the batches queued behind a busy call, without parallel
+calls, changes nothing there.
 Starting the goroutine costs 2.3% of a request answered alone
 (`BenchmarkH2FromNetHTTP/plain` on one core, about half a microsecond);
 reusing call goroutines is the known way down if a handler that waits on
-nothing ever makes that the larger cost. HTTP/3 had the same serialisation
-and lost it the same day: at the same point its p99 went from 1.48-2.32
-times the HTTP/1.1 figure to 1.13-1.57, and its p50 from 1.19-1.35 to
-1.07-1.18. The goroutine costs 1.7% of a request answered alone
+nothing ever makes that the larger cost. HTTP/3 measures the same way at
+the same point: its p99 is 1.13-1.57 times the HTTP/1.1 figure with
+parallel calls and 1.48-2.32 serialised, its p50 1.07-1.18 against
+1.19-1.35. The goroutine costs 1.7% of a request answered alone
 (`BenchmarkH3FromQuicGo/plain`, median of twelve paired rounds, within the
 noise of a sign test).
 

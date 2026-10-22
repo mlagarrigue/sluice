@@ -81,8 +81,7 @@ routing resets connections at will. In plain words: one key for all
 instances only when the balancer routes by connection identifier;
 otherwise one key per instance, whose resets then cover the connections it
 held itself — enough for a restart.
-What the listener used to fix in constants is tuned the way its bounds
-are: `ConnQueueLen` (64), `RetryTokenTTL` (10 s), `MaxSpentRetryTokens`
+The listener's tuning is set the way its bounds are: `ConnQueueLen` (64), `RetryTokenTTL` (10 s), `MaxSpentRetryTokens`
 (16,384), zero for the default, negative refused (ADR 0018). The number
 of identifiers a connection issues for itself is the minimum of the
 peer's limit and its own `ActiveConnIDLimit`: each identifier is an entry
@@ -103,11 +102,10 @@ validates is abandoned and the last validated one restored (§9.3.2); with
 none known, the connection closes silently. The client has `Conn.Rebind`
 (a new socket, a fatal probe), and moves to a server's preferred address on
 its own after the handshake. The server half is `ListenerConfig.
-PreferredAddress`, a second socket the listener reads and announces: it
-was kept private by the surface pass of 2026-10-04, which exported nothing
-only the package's own tests used, and is public since the feature is
-otherwise unreachable and the parameter's whole point (§9.6) is a server
-behind a shared address — a deployment, not a test. The preferred address
+PreferredAddress`, a second socket the listener reads and announces: it is
+public because the feature is otherwise unreachable, and the parameter's
+whole point (§9.6) is a server behind a shared address — a deployment, not
+a test. The preferred address
 is announced by `PreferredIPv4` and `PreferredIPv6`, one `netip.Addr`
 each: the transport parameter carries one address per family (§18.2), and
 the type enforces it instead of a list being checked. A client's
@@ -159,7 +157,7 @@ Known residuals, stated rather than hidden: interoperation against a
 foreign implementation remains the missing proof — the harness drops,
 reorders and forges datagrams, but only a peer sharing no code catches a
 shared wrong assumption; key update (RFC 9001 §6) rotates in both
-directions since 2026-10-10, but the only rotation this end initiates is
+directions, but the only rotation this end initiates is
 the one the AEAD limit forces, and the §6.2 refusal of a double rotation
 is applied strictly where the RFC says MAY; RTT samples from an abandoned
 path can inflate the probe timeout after a migration, in the conservative

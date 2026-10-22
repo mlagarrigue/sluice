@@ -1,6 +1,6 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
-- **Created:** 2026-10-07 (the rule predates the record; this writes it down)
+- **Created:** 2026-10-07
 - **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories, and what `scripts/check.sh` and the `lint` job check in them)
 - **Theme:** ci
 
@@ -54,8 +54,7 @@ Four such modules exist, all on `main`:
 - `benchmarks/`, where `pgx`, `gin` or `echo` are compared — and
   `TestPGContendersAgree` asserts that the connector reads the same rows as
   `pgx`;
-- `interop/`, where `net/quic` is confronted with `quic-go` on every push
-  (since 2026-10-10);
+- `interop/`, where `net/quic` is confronted with `quic-go` on every push;
 - `comparison/sluice` and `comparison/loadgen`, the server and the load
   generator of the comparison study.
 
@@ -63,9 +62,9 @@ Four such modules exist, all on `main`:
 tree. The root's `go test ./...` does not see them; `scripts/check.sh` runs
 `go vet` and golangci-lint (the root's linters, with its configuration) in
 each of them, without their tests, which want PostgreSQL, a `quic-go` peer
-or a load campaign. The comparison module moved to `main` on 2026-10-19: on its own branch it had fallen 201
-commits behind, and a measurement of code that is no longer the code proves
-nothing about it — the very argument that had put interop on `main`. The
+or a load campaign. The comparison module lives on `main` for the reason
+interop does: on a branch of its own it falls behind, and a measurement of
+code that is no longer the code proves nothing about it. The
 measurements are still taken on purpose, not on every push; what runs on
 every push is `go vet` and one pass of every benchmark in the
 `benchmarks-module` job, `go vet` and `go mod tidy -diff` of the study's two

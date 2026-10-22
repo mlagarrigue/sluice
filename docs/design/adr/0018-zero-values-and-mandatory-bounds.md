@@ -87,11 +87,11 @@ never removed.**
    `CancelTimeout` 5 s, `MinSCRAMIterations` 4096, `MaxSCRAMIterations`
    1,048,576, `MinSCRAMSaltLen` 16), a negative value or one outside what
    the protocol allows is refused by `Connect` before anything is sent,
-   with the field named, and no bound is removed by its absence — the SCRAM
-   bounds were constants with no setting until 2026-10-21, which refused a
-   role stored at `scram_iterations = 1000` with no remedy; they became
-   fields rather than a widened constant, because a floor that suits a test
-   fixture does not suit a public socket. A new bound in a periphery
+   with the field named, and no bound is removed by its absence. The SCRAM
+   bounds are fields rather than a widened constant: a constant with no
+   setting refuses a role stored at `scram_iterations = 1000` with no
+   remedy, and a floor that suits a test fixture does not suit a public
+   socket. A new bound in a periphery
    package follows this point, with no new decision.
 
 ## Rationale
@@ -119,28 +119,23 @@ found by reading; two default functions that each choose diverge at the
 first edit. The shared constant makes a divergence a compile error or a red
 test.
 
-**Why one `Config`.** The previous version of rule 5 kept the HTTP/2
-settings in `H2Config`, by the name on the wire. The result: `Serve` and
-`Server`, what a deployment calls, could set none of them — neither the ×11
-window nor the frame size — and `h2ConfigOf` was a mirror to maintain:
-every shared bound added had to be copied into it, every HTTP/2 field added
-raised the question of whether `Serve` would reach it, and `ShutdownGrace`
-and `Logger`, which `ServeH2` needs to stop cleanly, would have grown it
-further. The name on the wire says how a bound travels, not who sets it.
-The API break (`!`) is accepted in 0.x, grouped with the others of the
-breaking release.
+**Why one `Config`.** HTTP/2 settings kept in a struct of their own, by the
+name on the wire, would leave `Serve` and `Server`, what a deployment
+calls, unable to set any of them — neither the ×11 window nor the frame
+size — and need a mirror to maintain: every shared bound copied into it,
+every HTTP/2 field raising the question of whether `Serve` reaches it, and
+`ShutdownGrace` and `Logger`, which `ServeH2` needs to stop cleanly,
+growing it further. The name on the wire says how a bound travels, not who
+sets it.
 
-**What is lost.** `H2Config` is gone: a `ServeH2` caller writes `Config{…}`
-instead of `H2Config{…}` and `MaxHeaderBytes` instead of
-`MaxHeaderBlockBytes`. `Config` has six fields an HTTP/1.1-only deployment
-never sets; each says "HTTP/2 only". `ServeH2` on an empty configuration
-bounds the header block at 32 KiB, instead of the 64 KiB before this
-decision — a client that sent blocks between the two is
-refused; under `Serve` it already was. `MaxConcurrentStreams` goes from 64
-to 100 over HTTP/3: more assembly state per connection, but the aggregate
-stays bounded by `4 × MaxBodyBytes`. A configuration that started with a
-negative or out-of-range value no longer starts: an API break, announced
-as one, and the error says what to fix.
+**What is lost.** `Config` has six fields an HTTP/1.1-only deployment never
+sets; each says "HTTP/2 only". `ServeH2` on an empty configuration bounds
+the header block at 32 KiB, the figure `Serve` applies, so a client that
+sends larger blocks is refused there too. `MaxConcurrentStreams` is 100
+over HTTP/3 as over HTTP/2: more assembly state per connection, but the
+aggregate stays bounded by `4 × MaxBodyBytes`. A configuration with a
+negative or out-of-range value does not start, and the error says what to
+fix.
 
 **Revision.** A real client sensitive to a 32 KiB header block; a bound
 that would mean two things under one name depending on the protocol, which

@@ -23,10 +23,10 @@ literal segments match byte for byte (`/%68ealth` does not match
 `/health`) and wildcard values are handed over as sent; the query is split
 off before matching and never matched on. A method mismatch on an existing
 path is 405 with `Allow`; an unmatched path is 404; both are refusals
-recorded on the exchange. Since 2026-10-04 `NewRouter` refuses a row an
-earlier row fully covers (`/orders/{id}` before `/orders/new`), naming both
-patterns, instead of compiling a route that silently never answers. Since
-2026-10-09 every refusal is a panic rather than a returned error: the table
+recorded on the exchange. `NewRouter` refuses a row an earlier row fully
+covers (`/orders/{id}` before `/orders/new`), naming both patterns, instead
+of compiling a route that silently never answers. Every refusal is a panic
+rather than a returned error: the table
 is written in the program, so a bad row is a programming error, and an
 error a caller may ignore (`rt, _ :=`) is a route that quietly never
 answers — the constructor rule in `CONTRIBUTING.md` and `ServeMux`'s own
