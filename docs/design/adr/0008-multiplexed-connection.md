@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor)
 - **Theme:** httpstream
 
 ## Problem
@@ -106,10 +106,29 @@ reusing call goroutines is the known way down if a handler that waits on
 nothing ever makes that the larger cost. HTTP/3 had the same serialisation
 and lost it the same day: at the same point its p99 went from 1.48-2.32
 times the HTTP/1.1 figure to 1.13-1.57, and its p50 from 1.19-1.35 to
-1.07-1.18; what remains of the p99 gap no longer comes from the calls. The
-goroutine costs 1.7% of a request answered alone
+1.07-1.18. The goroutine costs 1.7% of a request answered alone
 (`BenchmarkH3FromQuicGo/plain`, median of twelve paired rounds, within the
 noise of a sign test).
+
+What remains of the HTTP/3 p99 gap is mostly the apparatus, and partly the
+server. Against the load generator's trivial server, which answers with
+quic-go from documents prepared at startup, the static scenario's HTTP/3 p99
+is 2.3-3.0 times the HTTP/1.1 figure at 256 connections and 1.9-3.3 at
+1,024; Sluice.go's is 0.93-0.98 times the trivial server's at 256, and 0.53
+then 1.20 at 1,024, where the tail is noise. The quic-go client and UDP on
+the loopback set that floor whatever the server. On the unit scenario,
+HTTP/2 holds HTTP/1.1 (1.01-1.05) and HTTP/3 stays at 1.34-1.62 times it at
+256 connections (1.26 and 2.76 at 1,024); four cores instead of two change
+nothing, so it is not CPU. The server's share follows the size of the
+bursts the gateway releases: at 64 keys, HTTP/3 is 0.43 ms over HTTP/1.1 at
+the p50; at 4 keys, 0.20 ms, the apparatus' own gap. The responses one
+window releases all leave through the listener's UDP socket, and writes on
+one descriptor go one after the other, where HTTP/1.1 and HTTP/2 each write
+on a TCP socket of their own. The HTTP/3 p99 is therefore judged against
+the trivial server's HTTP/3 p99, not against HTTP/1.1; what can still lower
+the server's share is sending across connections in one batch. Measured
+locally on 2026-10-22, the server on two cores, 8,000 requests per second,
+two or three alternated rounds.
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies
