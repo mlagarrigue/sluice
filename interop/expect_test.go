@@ -69,6 +69,55 @@ func TestExpectedResultsGuard(t *testing.T) {
 	}
 }
 
+// A case marked random in the file accepts either outcome the losses can
+// draw, and still refuses one the case never yields: unsupported means the
+// image changed, not the dice.
+func TestExpectedResultsGuardTakesRandom(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed")
+	}
+	var want map[string]map[string]map[string]string
+	b, err := os.ReadFile("expected-results.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &want); err != nil {
+		t.Fatal(err)
+	}
+	want["quic-go"]["server"]["handshake"] = "random: the test's own"
+	dir := t.TempDir()
+	expected := filepath.Join(dir, "expected.json")
+	b, err = json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(expected, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	asServer := readResults(t, "testdata/results_sluice_quic-go.json")
+	asClient := readResults(t, "testdata/results_quic-go_sluice.json")
+	for _, tc := range []struct {
+		result string
+		accept bool
+	}{{"succeeded", true}, {"failed", true}, {"unsupported", false}} {
+		t.Run(tc.result, func(t *testing.T) {
+			s := clone(t, asServer)
+			setResult(s, "handshake", tc.result)
+			sf := writeResults(t, t.TempDir(), "server.json", s)
+			cf := writeResults(t, t.TempDir(), "client.json", asClient)
+			cmd := exec.Command("sh", "../scripts/interop-expect.sh", "quic-go", sf, cf) //nolint:gosec // G204: the script is the repository's, the arguments this test's
+			cmd.Env = append(os.Environ(), "EXPECTED="+expected)
+			out, err := cmd.CombinedOutput()
+			if tc.accept && err != nil {
+				t.Fatalf("a random case that %s was refused: %v\n%s", tc.result, err, out)
+			}
+			if !tc.accept && err == nil {
+				t.Fatalf("a random case that came out %s was accepted:\n%s", tc.result, out)
+			}
+		})
+	}
+}
+
 func readResults(t *testing.T, path string) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path) //nolint:gosec // G304: a testdata path, not input

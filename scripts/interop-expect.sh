@@ -14,7 +14,10 @@
 # (TESTS narrowed it) is not checked.
 #
 # An expected value is the runner's own word — succeeded, unsupported or
-# failed — and, after a colon, why: a failed case carries its cause.
+# failed — and, after a colon, why: a failed case carries its cause. One
+# word is the file's own: random, for a case whose outcome follows the
+# losses the simulator draws, accepts succeeded and failed alike and
+# carries its cause the same way; unsupported is still refused there.
 set -eu
 [ $# -eq 3 ] || {
   echo "usage: interop-expect.sh <peer> <results as server> <results as client>" >&2
@@ -34,6 +37,8 @@ jq -r -n --arg peer "$1" --slurpfile want "$expected" '
         | (($w[$side] // {})[.name]) as $e
         | if $e == null then
             "interop-expect: \($peer), sluice \($side), \(.name): \(.result), which the file does not list"
+          elif ($e | split(":")[0]) == "random" and (.result == "succeeded" or .result == "failed") then
+            empty
           elif ($e | split(":")[0]) != .result then
             "interop-expect: \($peer), sluice \($side), \(.name): \(.result), expected \($e)"
           else empty end )
