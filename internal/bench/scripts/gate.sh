@@ -56,6 +56,14 @@ GATED="$GATED|BenchmarkIntervalJoinNarrow$|BenchmarkIntervalJoinWide$"
 GATED="$GATED|BenchmarkWindowWide$|BenchmarkWindowNarrow$"
 GATED="$GATED|BenchmarkTake$|BenchmarkDrop$|BenchmarkTakeWhile$|BenchmarkDropWhile$"
 GATED="$GATED|BenchmarkSplitPartition$|BenchmarkSplitBroadcast$|BenchmarkInterleave2$|BenchmarkConcat$"
+# The element-wise stages: Peek is the bare indirect call every one of them
+# pays, Scan writes one output per input, SelectiveFilter drops most of them,
+# and SeqStages chains Map and Filter — the one place Map is held to a
+# paired comparison rather than only to TestStageBudget's ceiling of twice
+# the budget. Convert has no benchmark of its own: the three stages of
+# WebBatchOne below are Convert. PipeSinglePass is not gated either: it is
+# the hand-fused loop the stages are compared with, not an operator.
+GATED="$GATED|BenchmarkPeek$|BenchmarkScan$|BenchmarkSelectiveFilter$|BenchmarkSeqStages$"
 # The request path, which is the figure a web workload actually feels.
 GATED="$GATED|BenchmarkWebBatchOne$|BenchmarkWebHandwritten$"
 # The connector's read loop, which is upstream of every operator above: it runs
@@ -167,10 +175,11 @@ echo "$out"
 # verdict, no "need >=" — and the gate passed on the strength of the
 # benchmarks that did resolve. A name that produced no line was never
 # measured, and that is a failure of the gate rather than a finding about
-# the code.
+# the code. A benchmark with sub-benchmarks reports under its sub-names
+# (BenchmarkSeqStages/stages=2), and any one of them counts as its line.
 silent=""
 while IFS= read -r name; do
-  grep -qE "^$name(-[0-9]+)? " <<<"$out" || silent="$silent $name"
+  grep -qE "^$name(/[^ ]+)?(-[0-9]+)? " <<<"$out" || silent="$silent $name"
 done < <(tr '|' '\n' <<<"$GATED" | sed 's/\$$//')
 if [ -n "$silent" ]; then
   echo "regression gate: these gated benchmarks produced no verdict and no 'need >=' line:$silent"
