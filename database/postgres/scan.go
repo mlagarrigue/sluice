@@ -56,7 +56,7 @@ import (
 //     the per-value width checks are what stand guard. That is deliberate: a
 //     domain over int8 is sent as int8 and scans as int8, and its OID is
 //     assigned per database, so no fixed list could name it.
-//   - A [Rows] built with [NewRows] carries no description, so there is
+//   - A [Rows] built with newRows carries no description, so there is
 //     nothing to compare and the scan goes ahead on width alone.
 
 // firstNormalObjectID is PostgreSQL's FirstNormalObjectId: every OID below it

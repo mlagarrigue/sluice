@@ -83,16 +83,14 @@ const (
 // refuse it before buffering a byte.
 const maxUint16 = math.MaxUint16
 
-// CheckParamCounts refuses parameter and OID counts the protocol cannot
-// carry. Written once so every caller reports the same limit
-// with the same advice, and the next 16-bit count needing the guard has a
-// place to join.
-func CheckParamCounts(params [][]byte, oids []uint32) error {
-	if len(params) > maxUint16 {
-		return fmt.Errorf("postgres: %d parameters, and the protocol carries at most %d — pass them as an array parameter", len(params), maxUint16)
-	}
-	if len(oids) > maxUint16 {
-		return fmt.Errorf("postgres: %d parameter OIDs, and the protocol carries at most %d", len(oids), maxUint16)
+// CheckParamCount refuses a parameter count the protocol cannot carry.
+// Written once so every caller reports the same limit with the same advice,
+// and the next 16-bit count needing the guard has a place to join. The types
+// a Parse declares are never more than the parameters, so the one count
+// bounds both.
+func CheckParamCount(n int) error {
+	if n > maxUint16 {
+		return fmt.Errorf("postgres: %d parameters, and the protocol carries at most %d — pass them as an array parameter", n, maxUint16)
 	}
 	return nil
 }

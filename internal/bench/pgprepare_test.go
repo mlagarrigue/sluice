@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"context"
+	"io"
 	"strconv"
 	"testing"
 
@@ -42,9 +44,18 @@ type countingServer struct {
 	script  []byte
 	pos     int
 	written int
+
+	// startup is answered once, before the script: what a server says to a
+	// startup packet under trust. See connectCounting.
+	startup []byte
 }
 
 func (s *countingServer) Read(p []byte) (int, error) {
+	if len(s.startup) > 0 {
+		n := copy(p, s.startup)
+		s.startup = s.startup[n:]
+		return n, nil
+	}
 	if s.pos >= len(s.script) {
 		s.pos = 0
 	}
@@ -55,6 +66,25 @@ func (s *countingServer) Read(p []byte) (int, error) {
 
 func (s *countingServer) Write(p []byte) (int, error) { s.written += len(p); return len(p), nil }
 func (s *countingServer) Close() error                { return nil }
+
+// connectCounting builds a connection over srv through Connect, the one
+// constructor that sizes the statement cache, and forgets the bytes of the
+// startup exchange so they are not counted against the queries.
+func connectCounting(b *testing.B, srv *countingServer, cacheSize int) *postgres.Conn {
+	b.Helper()
+	srv.startup = []byte{
+		'R', 0, 0, 0, 8, 0, 0, 0, 0, // AuthenticationOk
+		'Z', 0, 0, 0, 5, 'I', // ReadyForQuery, idle
+	}
+	conn, err := postgres.Connect(b.Context(),
+		func(context.Context) (io.ReadWriteCloser, error) { return srv, nil },
+		postgres.Config{User: "bench", StatementCacheSize: cacheSize})
+	if err != nil {
+		b.Fatal(err)
+	}
+	srv.written = 0
+	return conn
+}
 
 // A statement long enough to be worth not re-sending — a join with a handful
 // of predicates, which is what a real query looks like and what the short
@@ -84,7 +114,7 @@ func runQuery(b *testing.B, conn *postgres.Conn, sql string) {
 // carries its full text and the server re-parses it.
 func BenchmarkPGPrepareOff(b *testing.B) {
 	srv := &countingServer{script: pgScript(8)}
-	conn := postgres.NewConn(srv)
+	conn := connectCounting(b, srv, -1)
 	for b.Loop() {
 		runQuery(b, conn, longSQL)
 	}
@@ -97,18 +127,15 @@ func BenchmarkPGPrepareOff(b *testing.B) {
 // the shape of the feature on the client side.
 func BenchmarkPGPrepareHit(b *testing.B) {
 	srv := &countingServer{script: pgScript(8)}
-	conn := postgres.NewConn(srv)
-	if err := conn.PrepareStatements(16); err != nil {
-		b.Fatal(err)
-	}
+	conn := connectCounting(b, srv, 16)
 	for b.Loop() {
 		runQuery(b, conn, longSQL)
 	}
 	b.StopTimer()
 	reportBytesPerQuery(b, srv.written)
 
-	if _, hits, misses := conn.StatementCacheStats(); hits == 0 || misses > 1 {
-		b.Fatalf("this is meant to be the hit case: %d hits, %d misses", hits, misses)
+	if st := conn.StatementCacheStats(); st.Hits == 0 || st.Misses > 1 {
+		b.Fatalf("this is meant to be the hit case: %d hits, %d misses", st.Hits, st.Misses)
 	}
 }
 
@@ -128,12 +155,9 @@ func BenchmarkPGPrepareHit(b *testing.B) {
 // The direction is what matters and this harness understates it.
 func BenchmarkPGPrepareMissUnbounded(b *testing.B) {
 	srv := &countingServer{script: pgScript(8)}
-	conn := postgres.NewConn(srv)
 	// Deliberately unbounded in practice: nothing is ever evicted, so the map
 	// grows for the whole run and its growth is part of the figure.
-	if err := conn.PrepareStatements(1 << 20); err != nil {
-		b.Fatal(err)
-	}
+	conn := connectCounting(b, srv, 1<<20)
 	var n int
 	for b.Loop() {
 		n++
@@ -142,7 +166,7 @@ func BenchmarkPGPrepareMissUnbounded(b *testing.B) {
 	b.StopTimer()
 	reportBytesPerQuery(b, srv.written)
 
-	if _, hits, _ := conn.StatementCacheStats(); hits != 0 {
+	if hits := conn.StatementCacheStats().Hits; hits != 0 {
 		b.Fatalf("this is meant to be the miss case and it hit %d times", hits)
 	}
 }

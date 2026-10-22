@@ -50,7 +50,7 @@ type column struct {
 	Decode     string   // expression decoding `b` into the field's type
 	OIDs       []string // acceptable type OIDs, by their constant names
 	Nullable   bool     // the Go field is a pointer or a Null[T], so NULL is expressible
-	Present    string   // expression wrapping a decoded `v` for a nullable field: &v or postgres.Some(v)
+	Present    string   // expression wrapping a decoded `v` for a nullable field: &v or a valid postgres.Null
 	GoType     string   // the Go type, for the nullable branch
 	Infallible bool     // Decode cannot fail, so no error branch is rendered
 }
@@ -312,7 +312,7 @@ func typeExpr(e ast.Expr) (goType string, nullable bool, present string) {
 	}
 	if inner, ok := nullOf(e); ok {
 		t, _, _ := typeExpr(inner)
-		return t, true, "postgres.Some(v)"
+		return t, true, "postgres.Null[" + t + "]{Value: v, Valid: true}"
 	}
 	// ExprString renders any type expression as written, so a field the
 	// mapping does not cover is named in the error — a map or a [N]byte with

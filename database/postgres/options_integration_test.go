@@ -82,7 +82,7 @@ func optionRow(t *testing.T, addr string, cfg postgres.Config, sql string, param
 	}
 	defer conn.Close()
 	var out [][]byte
-	src := conn.Query(ctx, sql, [][]byte{param}, postgres.QueryConfig{BatchRows: 1, ParamOIDs: []uint32{postgres.OIDText}})
+	src := conn.Query(ctx, sql, []postgres.Param{{OID: postgres.OIDText, Value: param}}, postgres.QueryConfig{BatchRows: 1})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			if out != nil {

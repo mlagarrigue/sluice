@@ -322,6 +322,53 @@ type Config struct {
 	// does not speak in either field, and a MinProtocol above MaxProtocol.
 	MinProtocol ProtocolVersion
 
+	// StatementCacheSize bounds the connection's statement cache: the
+	// largest number of statements kept prepared on the server at once.
+	// Beyond it, the least recently used one is closed in the same write
+	// that prepares the new one, so an eviction costs no round trip of its
+	// own, and what this bounds is real memory in a backend rather than a
+	// map in this process. [Conn.StatementCacheStats] reports how the cache
+	// has behaved.
+	//
+	// Zero, the default, is 512 statements — the bound pgx uses. A
+	// negative value turns the cache off: every query uses the unnamed
+	// statement, the server re-parses it, nothing is held between queries,
+	// and every read is fetched in batches. That is the right setting for a
+	// connection running mostly-distinct SQL, and for one behind a pooler
+	// that does not keep named statements across transactions.
+	//
+	// # Why the cache is on by default
+	//
+	// Every driver has a statement cache because parsing the same SQL for
+	// every batch measures the parser rather than the transport. This one
+	// also carries what makes a point read cost one round trip rather than
+	// two: the cache remembers how many rows each statement's last
+	// execution produced, and a statement known to fit in one batch is
+	// asked for whole (see [FetchAuto]). Without the cache that knowledge
+	// has nowhere to live, and every read pays the second trip.
+	//
+	// The size is a bound and not a boolean because a prepared statement is
+	// server-side state, and an unbounded cache is a backend growing a plan
+	// per distinct query text until something notices — which, for
+	// generated SQL, is never.
+	//
+	// # Where it loses, which is not a footnote
+	//
+	// Two places, both real:
+	//
+	//   - **Distinct SQL.** A workload that never repeats a statement pays
+	//     the naming, the cache lookup and the server-side memory, and
+	//     reuses nothing. Measured in the benchmarks module: see
+	//     BenchmarkPGPrepareMiss.
+	//   - **The generic plan.** After five executions PostgreSQL may replan
+	//     a prepared statement without looking at the parameters, and keep
+	//     that plan for the connection's life. On a column with skewed
+	//     values that is how a query that was fast for four calls becomes
+	//     slow forever, and no amount of client-side caching will show it.
+	//     It is not a reason to avoid the cache; it is a reason to know that
+	//     "prepared" is a planning decision and not only a parsing one.
+	StatementCacheSize int
+
 	// CancelTimeout bounds each cancellation the connection sends on its
 	// own when a context ends mid-statement: opening the second
 	// connection, writing the [CancelRequest], and waiting for the server
@@ -375,6 +422,12 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 	}
 
 	c := NewConn(rw)
+	switch n := cfg.StatementCacheSize; {
+	case n < 0:
+		c.stmts = nil
+	case n > 0:
+		c.stmts = newStmtCache(n)
+	}
 	_, c.encodingChosen = cfg.Params["client_encoding"]
 	c.cancelTimeout, c.logger = cfg.CancelTimeout, cfg.Logger
 	c.r.SetMaxMessage(maxStartupMessage)

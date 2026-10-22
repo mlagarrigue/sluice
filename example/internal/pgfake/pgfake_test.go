@@ -52,7 +52,7 @@ func TestExactBatchSuspends(t *testing.T) {
 			t.Errorf("BatchRows %d over 3 rows: %d Executes, want more than one: %v", tc.batch, n, tc.suspends)
 		}
 		// Whatever was asked for ahead has been read: the connection is in step.
-		if tag, err := conn.ExecParams(t.Context(), "SELECT n FROM t", nil, nil); err != nil || tag != "SELECT 3" {
+		if tag, err := conn.ExecParams(t.Context(), "SELECT n FROM t", nil); err != nil || tag != "SELECT 3" {
 			t.Errorf("BatchRows %d, next statement: %q, %v; want SELECT 3", tc.batch, tag, err)
 		}
 	}
@@ -77,17 +77,17 @@ func TestAbortedBlock(t *testing.T) {
 	if err := tx.Exec(ctx, "INSERT INTO t VALUES (1)"); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("failing INSERT: %v; want the simulated SQLSTATE 23505", err)
 	}
-	if _, err := tx.ExecParams(ctx, "UPDATE t SET n = 2", nil, nil); !errors.As(err, &pgErr) || pgErr.Code != "25P02" {
+	if _, err := tx.ExecParams(ctx, "UPDATE t SET n = 2", nil); !errors.As(err, &pgErr) || pgErr.Code != "25P02" {
 		t.Errorf("statement in the aborted block: %v; want 25P02", err)
 	}
 	if slices.Contains(b.Statements(), "UPDATE t SET n = 2") {
 		t.Errorf("the aborted block ran a statement: %q", b.Statements())
 	}
-	tag, err := tx.ExecParams(ctx, "COMMIT", nil, nil)
+	tag, err := tx.ExecParams(ctx, "COMMIT", nil)
 	if tag != "ROLLBACK" || !errors.Is(err, postgres.ErrTxCommitRollback) {
 		t.Fatalf("COMMIT in the aborted block: %q, %v; want ROLLBACK and ErrTxCommitRollback", tag, err)
 	}
-	if tag, err := conn.ExecParams(ctx, "UPDATE t SET n = 2", nil, nil); err != nil || tag != "UPDATE 0" {
+	if tag, err := conn.ExecParams(ctx, "UPDATE t SET n = 2", nil); err != nil || tag != "UPDATE 0" {
 		t.Errorf("after the block: %q, %v; want UPDATE 0", tag, err)
 	}
 }

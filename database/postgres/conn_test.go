@@ -217,7 +217,7 @@ func TestConnQuery(t *testing.T) {
 
 	keys := AppendInt8Array(nil, []int64{1, 2})
 	src := conn.Query(t.Context(), "SELECT id, total FROM orders WHERE id = ANY($1)",
-		[][]byte{keys}, QueryConfig{BatchRows: 16})
+		[]Param{{Value: keys}}, QueryConfig{BatchRows: 16})
 
 	type got struct {
 		id     int64
@@ -593,7 +593,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 		keys[i] = int64(i)
 	}
 	src := conn.Query(t.Context(), "SELECT id FROM orders WHERE id = ANY($1)",
-		[][]byte{AppendInt8Array(nil, keys)}, QueryConfig{})
+		[]Param{{Value: AppendInt8Array(nil, keys)}}, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
 		t.Fatalf("Err = %v", err)
@@ -1337,7 +1337,6 @@ func TestWireTouchingCallsInsideAConsumerAreRefused(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		nested["Exec"] = conn.Exec(ctx, "SELECT 1")
 		_, nested["Begin"] = conn.Begin(ctx, TxConfig{})
-		nested["PrepareStatements"] = conn.PrepareStatements(4)
 		nested["WriteTuples"] = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
@@ -1541,7 +1540,7 @@ func TestExecParamsCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{first, second}}
 	conn := NewConn(srv)
 
-	_, err := conn.ExecParams(t.Context(), "COPY t FROM STDIN", nil, nil)
+	_, err := conn.ExecParams(t.Context(), "COPY t FROM STDIN", nil)
 	if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
 		t.Fatalf("error = %v, want a refusal naming Conn.CopyFrom", err)
 	}

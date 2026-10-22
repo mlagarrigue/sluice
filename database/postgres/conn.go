@@ -160,7 +160,7 @@ type Conn struct {
 	txGen uint64
 
 	// stmts is the prepared-statement cache, nil when off. See
-	// [Conn.PrepareStatements] — including the two places where it loses.
+	// [Config.StatementCacheSize] — including the two places where it loses.
 	stmts *stmtCache
 
 	// pendingParse marks a cache entry recorded by prepareFor whose Parse the
@@ -213,6 +213,11 @@ type Conn struct {
 	// aliasing-sensitive, and two hand-rolled copies of it would drift.
 	rowsScratch  Rows
 	itemsScratch []Row
+	// oidsScratch and valuesScratch lay a query's parameters out the way the
+	// wire carries them, types in the Parse and values in the Bind, without
+	// an allocation per query. See [Conn.declaredOIDs] and [Conn.writeBind].
+	oidsScratch   []uint32
+	valuesScratch [][]byte
 	// cutLogged records that the current result's byte-bound cut has been
 	// logged, so a wide result warns once rather than once per batch. Reset
 	// by [Conn.beginResult].
@@ -321,7 +326,7 @@ func (c *Conn) execBusy(sql string) error {
 // per query, against the accumulator's buffers — the expensive part — which
 // are reused.
 func (c *Conn) beginResult(desc []Field, batchRows, batchBytes int) (*Rows, []Row) {
-	c.rowsScratch.Init(desc, batchRows, batchBytes)
+	c.rowsScratch.start(desc, batchRows, batchBytes)
 	c.cutLogged = false
 	return &c.rowsScratch, c.itemsScratch[:0]
 }
@@ -355,7 +360,7 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 	}
 	c.itemsScratch = items
 	ok := deliver(sluice.Batch[Row]{Items: items})
-	rows.Reset()
+	rows.reset()
 	return items, ok
 }
 
@@ -375,8 +380,10 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // client_encoding in its Params: a later announcement of any encoding other
 // than UTF8 breaks it.
 //
-// It starts with the statement cache on; [Conn.PrepareStatements] changes the
-// bound or turns it off.
+// Its statement cache has the default bound, 512 statements. A connection
+// that needs another bound, or none, is built by [Connect] with
+// [Config.StatementCacheSize]: its [DialFunc] may return any
+// io.ReadWriteCloser, a scripted server included.
 //
 // rw is read on one goroutine while it is written on another during a
 // [Copier]'s COPY, as a [net.Conn] allows: the server's notices and errors
@@ -459,8 +466,9 @@ const (
 	// trip, as with FetchAll, from their second execution on. A statement run
 	// for the first time, one whose last result was larger, or one whose last
 	// execution was stopped early or failed is fetched in batches, so a scan
-	// keeps its cheap early stop. With the cache off ([Conn.PrepareStatements]
-	// with zero) nothing is known and every query is fetched in batches.
+	// keeps its cheap early stop. With the cache off (a negative
+	// [Config.StatementCacheSize]) nothing is known and every query is fetched
+	// in batches.
 	//
 	// # Where it loses, which is not a footnote
 	//
@@ -546,7 +554,7 @@ const defaultBatchBytes = 64 << 20
 // maxBatchBytes is the largest byte bound a batch accepts. A batch closes
 // with the row that crossed its bound in it, and that row is at most
 // [maxMaxMessage], so a bound of 1 GiB keeps the batch under the 2 GiB its
-// int32 offsets allow: past it, [Rows.Append] would refuse a row the bound
+// int32 offsets allow: past it, Rows.appendRow would refuse a row the bound
 // was meant to cut, not fail on.
 const maxBatchBytes = 1 << 30
 
@@ -575,6 +583,61 @@ func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 		size = defaultBatchBytes
 	}
 	return rows, size, nil
+}
+
+// Param is one parameter of a statement — the value of a $1, a $2 — in the
+// binary encoding the codec functions write ([AppendInt8], [AppendText] and
+// their siblings), with its type beside it.
+//
+//	params := []postgres.Param{
+//		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, id)},
+//		{Value: postgres.AppendText(nil, name)}, // the server infers the type
+//	}
+//
+// A nil Value is NULL: the protocol tells a missing value from an empty one,
+// and so does this. An OID of zero leaves the type to the server, which
+// infers it from where the parameter appears. Inference is usually right and
+// occasionally surprising: an integer literal compared against a bigint
+// column can be inferred as int4, and the query then fails on a value that
+// does not fit. State the OID where the type matters.
+//
+// The type travels with its value so the two cannot disagree in number or
+// in order, which two parallel lists allowed.
+type Param struct {
+	OID   uint32
+	Value []byte
+}
+
+// declaredOIDs returns the types a Parse of params declares, in the
+// connection's scratch, valid until the next call. The protocol lets a
+// frontend declare the types of a prefix of the parameters and leaves the
+// rest to inference, so the declaration stops at the last nonzero OID, and a
+// query that states none declares none. With the SQL text, the declared
+// types name the statement in the cache.
+func (c *Conn) declaredOIDs(params []Param) []uint32 {
+	n := len(params)
+	for n > 0 && params[n-1].OID == 0 {
+		n--
+	}
+	oids := c.oidsScratch[:0]
+	for _, p := range params[:n] {
+		oids = append(oids, p.OID)
+	}
+	c.oidsScratch = oids
+	return oids
+}
+
+// writeBind queues a Bind of the unnamed portal to stmt with the values of
+// params. The scratch is cleared once the values are buffered, so the
+// connection does not keep the caller's bytes alive until its next query.
+func (c *Conn) writeBind(stmt string, params []Param) {
+	values := c.valuesScratch[:0]
+	for _, p := range params {
+		values = append(values, p.Value)
+	}
+	c.w.BindBinary("", stmt, values)
+	clear(values)
+	c.valuesScratch = values[:0]
 }
 
 // QueryConfig states the bounds a query runs under. They are the caller's,
@@ -643,13 +706,6 @@ type QueryConfig struct {
 	// all at once. The zero value, [FetchAuto], asks for everything when the
 	// statement is known to fit in one batch, and in batches otherwise.
 	Fetch Fetch
-
-	// ParamOIDs gives the types of the parameters, when the server should not
-	// infer them. Inference is usually right and occasionally surprising: an
-	// integer literal compared against a bigint column can be inferred as
-	// int4, and the query then fails on a value that does not fit. State the
-	// OIDs where the types matter.
-	ParamOIDs []uint32
 
 	// Demand, when set, lets the consumer tell this query what it no longer
 	// needs. It is consulted once per batch — one atomic load, the mechanism
@@ -807,7 +863,7 @@ type QueryConfig struct {
 // is the other reason the server is asked a batch at a time. A query fetched
 // whole drains the rest of its result instead; [FetchAuto] says when that
 // happens without being asked.
-func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
+func (c *Conn) Query(ctx context.Context, sql string, params []Param, cfg QueryConfig) sluice.Source[Row] {
 	// queryErr is what Source.Err reports. It is written by the stream below
 	// and read after consumption, on the same goroutine: a Stream is
 	// synchronous, so there is nothing to synchronise.
@@ -831,7 +887,7 @@ func (c *Conn) Query(ctx context.Context, sql string, params [][]byte, cfg Query
 // runQuery is one execution of [Conn.Query], delivering to yield. A non-nil
 // [QueryConfig.Tag] receives the statement's CommandComplete tag; nil copies
 // nothing, so a streamed query pays for no tag it was not asked for.
-func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg QueryConfig, yield func(sluice.Batch[Row]) bool) error {
+func (c *Conn) runQuery(ctx context.Context, sql string, params []Param, cfg QueryConfig, yield func(sluice.Batch[Row]) bool) error {
 	if c.broken != nil {
 		return c.broken
 	}
@@ -860,7 +916,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	}
 	w := c.watchCancel(ctx)
 	defer w.disarm()
-	queryErr := c.settleCancel(ctx, w, q.run(sql, params, cfg.ParamOIDs, yield))
+	queryErr := c.settleCancel(ctx, w, q.run(sql, params, yield))
 	q.recordRows(queryErr)
 	// Settled after the deferred resync has read to ReadyForQuery, so the
 	// cache's provisional entry is confirmed or dropped on the server's
@@ -875,7 +931,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	// the caller's own retry re-prepares and succeeds. The server still
 	// holds the statement, so its Close is queued for that retry.
 	if isStalePlan(queryErr) {
-		c.forgetStatement(sql, cfg.ParamOIDs, true)
+		c.forgetStatement(sql, q.oids, true)
 		queryErr = fmt.Errorf("%w: %w", ErrStalePlan, queryErr)
 	}
 	// A statement the server says it does not hold is dropped for the
@@ -885,7 +941,7 @@ func (c *Conn) runQuery(ctx context.Context, sql string, params [][]byte, cfg Qu
 	// forever. Nothing to close: the server has no statement under the
 	// name. See [isMissingStatement].
 	if isMissingStatement(queryErr) {
-		c.forgetStatement(sql, cfg.ParamOIDs, false)
+		c.forgetStatement(sql, q.oids, false)
 	}
 	return queryErr
 }
@@ -919,7 +975,8 @@ type query struct {
 	demand     *pushdown.Reader
 	keyParam   int
 	stmt       string
-	params     [][]byte
+	params     []Param
+	oids       []uint32 // the types the Parse declared; see [Conn.declaredOIDs]
 	bound      []byte
 	rowsWanted int
 	allowed    int64
@@ -976,12 +1033,12 @@ func (q *query) recordRows(err error) {
 	c.stmts.entries[q.entry].lastRows = n
 }
 
-func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluice.Batch[Row]) bool) (err error) {
+func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bool) (err error) {
 	c := q.conn
 
 	// Refused before a byte is buffered: a count past uint16 would be written
 	// truncated, which is stream corruption rather than an error.
-	if err := pgwire.CheckParamCounts(params, oids); err != nil {
+	if err := pgwire.CheckParamCount(len(params)); err != nil {
 		return err
 	}
 	if err := checkSQLText(sql); err != nil {
@@ -1002,7 +1059,8 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	// statement the server already parsed and planned — which is the whole
 	// point, since re-parsing the same SQL for every batch measures the parser
 	// rather than the transport.
-	stmt, needsParse, entry := c.prepareFor(sql, oids)
+	q.oids = c.declaredOIDs(params)
+	stmt, needsParse, entry := c.prepareFor(sql, q.oids)
 	q.entry = entry
 	// The fetch is decided here, once the cache has said what it knows. A
 	// statement whose last complete execution fit in one batch is asked for
@@ -1022,7 +1080,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 	// eleven. No Sync yet — Sync ends the sequence, and the portal must stay
 	// open for the Executes that follow.
 	if needsParse {
-		c.w.Parse(stmt, sql, oids)
+		c.w.Parse(stmt, sql, q.oids)
 	}
 	q.stmt, q.params, q.rowsWanted = stmt, params, q.batchRows
 	if q.demand != nil {
@@ -1032,7 +1090,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 		// is folded into the one Bind that was going out anyway.
 		q.replan()
 	}
-	c.w.BindBinary("", stmt, q.params)
+	c.writeBind(stmt, q.params)
 	c.w.Describe('P', "")
 	if q.allRows {
 		// No row limit and a Sync rather than a Flush: the backend produces
@@ -1151,7 +1209,7 @@ func (q *query) run(sql string, params [][]byte, oids []uint32, yield func(sluic
 				q.stale, q.held, q.rows = true, q.rows, nil
 			}
 			q.moved = true
-			c.w.BindBinary("", q.stmt, q.params)
+			c.writeBind(q.stmt, q.params)
 		case q.allowed >= 0:
 			// A limit asks for one batch at a time, sized to what is still
 			// wanted, so the server produces no row past it. Batches asked
@@ -1279,10 +1337,10 @@ func (q *query) replan() (rebind bool) {
 	// The caller's slice is not written to: the bound replaces one value
 	// in a copy, taken once, that the query then owns.
 	if q.bound == nil {
-		q.params = append([][]byte(nil), q.params...)
+		q.params = append([]Param(nil), q.params...)
 	}
 	q.bound = snap.LowerBound
-	q.params[q.keyParam-1] = q.bound
+	q.params[q.keyParam-1].Value = q.bound
 	return true
 }
 
@@ -1321,7 +1379,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 				// at the wrong offset, not that the server forgot.
 				return false, c.breakConn(fmt.Errorf("%w: DataRow before any RowDescription", ErrProtocol))
 			}
-			if err := q.rows.Append(m.Body); err != nil {
+			if err := q.rows.appendRow(m.Body); err != nil {
 				// A DataRow the reader framed whole but this package could
 				// not read — a column wider than its description said, a
 				// field count that disagrees — or, in the batched fetch, a
@@ -1340,7 +1398,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			// server knows nothing of it. Polling here, on the per-row loop
 			// the regression gate watches, measured within noise of the
 			// error path it replaced in a paired A/B of BenchmarkPGReadRows.
-			if q.rows.Full() && (q.allRows || q.rows.fullOnBytes()) {
+			if q.rows.full() && (q.allRows || q.rows.fullOnBytes()) {
 				if !q.emit(yield) {
 					q.stopped = true
 					return true, nil // the consumer stopped; the deferred resync tidies up

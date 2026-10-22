@@ -65,7 +65,7 @@ func TestExecParamsReturnsTheTag(t *testing.T) {
 
 	const hostile = "acme'; DROP TABLE orders; --"
 	tag, err := conn.ExecParams(t.Context(), "UPDATE orders SET shipped = true WHERE customer = $1",
-		[][]byte{AppendText(nil, hostile)}, []uint32{OIDText})
+		[]Param{{OID: OIDText, Value: AppendText(nil, hostile)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestExecParamsReturnsTheTag(t *testing.T) {
 func TestExecParamsDropsRowsAndKeepsTheCount(t *testing.T) {
 	conn := NewConn(&fakeServer{responses: setConfigCycle()})
 	tag, err := conn.ExecParams(t.Context(), "SELECT set_config($1, $2, false)",
-		[][]byte{AppendText(nil, "a.b"), AppendText(nil, "c")}, nil)
+		[]Param{{Value: AppendText(nil, "a.b")}, {Value: AppendText(nil, "c")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 	conn := NewConn(&fakeServer{responses: [][]byte{failed, extendedCycle("INSERT 0 1", "I")}})
 	ctx := t.Context()
 
-	tag, err := conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", [][]byte{AppendInt8(nil, 1)}, []uint32{OIDInt8})
+	tag, err := conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: OIDInt8, Value: AppendInt8(nil, 1)}})
 	var pgErr *Error
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("err = %v, want the server's 23505", err)
@@ -119,7 +119,7 @@ func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 	if tag != "" {
 		t.Errorf("tag = %q after a failure, want empty", tag)
 	}
-	tag, err = conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", [][]byte{AppendInt8(nil, 2)}, []uint32{OIDInt8})
+	tag, err = conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: OIDInt8, Value: AppendInt8(nil, 2)}})
 	if err != nil || tag != "INSERT 0 1" {
 		t.Fatalf("the next statement returned %q, %v", tag, err)
 	}
@@ -138,7 +138,7 @@ func TestExecParamsCommitInAbortedBlockReportsRollback(t *testing.T) {
 	if err := tx.Exec(ctx, "SELECT nope"); err == nil {
 		t.Fatal("the failing statement reported success")
 	}
-	tag, err := tx.ExecParams(ctx, "COMMIT", nil, nil)
+	tag, err := tx.ExecParams(ctx, "COMMIT", nil)
 	if !errors.Is(err, ErrTxCommitRollback) {
 		t.Fatalf("Tx.ExecParams(COMMIT) in an aborted block returned %v, want ErrTxCommitRollback", err)
 	}
@@ -147,7 +147,7 @@ func TestExecParamsCommitInAbortedBlockReportsRollback(t *testing.T) {
 	}
 	// The server left the block: the Tx must not run the next statement in
 	// autocommit.
-	if _, err := tx.ExecParams(ctx, "SELECT 1", nil, nil); !errors.Is(err, ErrTxDone) {
+	if _, err := tx.ExecParams(ctx, "SELECT 1", nil); !errors.Is(err, ErrTxDone) {
 		t.Fatalf("Tx.ExecParams after a SQL-level COMMIT returned %v, want ErrTxDone", err)
 	}
 }
@@ -159,7 +159,7 @@ func TestExecParamsRollbackInAbortedBlockSucceeds(t *testing.T) {
 	ctx := t.Context()
 	_ = conn.Exec(ctx, "BEGIN")
 	_ = conn.Exec(ctx, "SELECT nope")
-	tag, err := conn.ExecParams(ctx, "ROLLBACK", nil, nil)
+	tag, err := conn.ExecParams(ctx, "ROLLBACK", nil)
 	if err != nil || tag != "ROLLBACK" {
 		t.Errorf("ExecParams(ROLLBACK) in an aborted block = %q, %v; want ROLLBACK, nil", tag, err)
 	}
@@ -178,7 +178,7 @@ func TestTxExecParamsAfterEndIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := srv.sent.Len()
-	if _, err := tx.ExecParams(ctx, "UPDATE t SET x = $1", [][]byte{AppendInt8(nil, 1)}, nil); !errors.Is(err, ErrTxDone) {
+	if _, err := tx.ExecParams(ctx, "UPDATE t SET x = $1", []Param{{Value: AppendInt8(nil, 1)}}); !errors.Is(err, ErrTxDone) {
 		t.Fatalf("Tx.ExecParams after Commit returned %v, want ErrTxDone", err)
 	}
 	if srv.sent.Len() != before {

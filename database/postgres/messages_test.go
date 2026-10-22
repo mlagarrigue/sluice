@@ -198,11 +198,11 @@ func dataRow(values ...[]byte) []byte {
 }
 
 func TestRowsAppend(t *testing.T) {
-	r := NewRows(3, 16, 0)
-	if err := r.Append(dataRow([]byte("a"), nil, []byte("ccc"))); err != nil {
+	r := newRows(3, 16, 0)
+	if err := r.appendRow(dataRow([]byte("a"), nil, []byte("ccc"))); err != nil {
 		t.Fatalf("Append returned %v", err)
 	}
-	if err := r.Append(dataRow([]byte(""), []byte("b"), nil)); err != nil {
+	if err := r.appendRow(dataRow([]byte(""), []byte("b"), nil)); err != nil {
 		t.Fatalf("Append returned %v", err)
 	}
 	if r.Len() != 2 {
@@ -238,19 +238,19 @@ func TestRowsAppend(t *testing.T) {
 // Reset keeps the storage and empties the content, which is what makes a batch
 // cost no allocation after the first.
 func TestRowsResetReusesStorage(t *testing.T) {
-	r := NewRows(1, 8, 0)
+	r := newRows(1, 8, 0)
 	for range 8 {
-		if err := r.Append(dataRow([]byte("value"))); err != nil {
+		if err := r.appendRow(dataRow([]byte("value"))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	capBefore := cap(r.buf)
-	r.Reset()
+	r.reset()
 	if r.Len() != 0 {
 		t.Errorf("Len after Reset = %d, want 0", r.Len())
 	}
 	for range 8 {
-		if err := r.Append(dataRow([]byte("value"))); err != nil {
+		if err := r.appendRow(dataRow([]byte("value"))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -266,11 +266,11 @@ func TestRowsResetReusesStorage(t *testing.T) {
 // at the wrong offset: every value after it would be plausible nonsense, so it
 // must fail rather than be interpreted.
 func TestRowsRejectsWrongWidth(t *testing.T) {
-	r := NewRows(2, 8, 0)
-	if err := r.Append(dataRow([]byte("only one"))); !errors.Is(err, ErrProtocol) {
+	r := newRows(2, 8, 0)
+	if err := r.appendRow(dataRow([]byte("only one"))); !errors.Is(err, ErrProtocol) {
 		t.Errorf("got %v, want ErrProtocol", err)
 	}
-	if err := r.Append(dataRow([]byte("a"), []byte("b"), []byte("c"))); !errors.Is(err, ErrProtocol) {
+	if err := r.appendRow(dataRow([]byte("a"), []byte("b"), []byte("c"))); !errors.Is(err, ErrProtocol) {
 		t.Errorf("got %v, want ErrProtocol", err)
 	}
 }
@@ -291,8 +291,8 @@ func TestRowsRejectsMalformed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := NewRows(1, 8, 0)
-			if err := r.Append(tt.body); !errors.Is(err, ErrProtocol) {
+			r := newRows(1, 8, 0)
+			if err := r.appendRow(tt.body); !errors.Is(err, ErrProtocol) {
 				t.Errorf("got %v, want ErrProtocol", err)
 			}
 		})
@@ -302,16 +302,16 @@ func TestRowsRejectsMalformed(t *testing.T) {
 // The row limit is S1 applied to a result set: a query returning more than the
 // caller budgeted must fail rather than grow until the process dies.
 func TestRowsBounded(t *testing.T) {
-	r := NewRows(1, 2, 0)
+	r := newRows(1, 2, 0)
 	for range 2 {
-		if err := r.Append(dataRow([]byte("x"))); err != nil {
+		if err := r.appendRow(dataRow([]byte("x"))); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if !r.Full() {
+	if !r.full() {
 		t.Error("Full is false at the limit")
 	}
-	if err := r.Append(dataRow([]byte("x"))); !errors.Is(err, ErrTooManyRows) {
+	if err := r.appendRow(dataRow([]byte("x"))); !errors.Is(err, ErrTooManyRows) {
 		t.Errorf("got %v, want ErrTooManyRows", err)
 	}
 }
@@ -320,38 +320,38 @@ func TestRowsBounded(t *testing.T) {
 // past it is accepted and the batch reports itself full, even when that row
 // is wider than the bound on its own. Only the row limit refuses.
 func TestRowsFullAtTheByteBound(t *testing.T) {
-	r := NewRows(1, 100, 32)
+	r := newRows(1, 100, 32)
 	value := make([]byte, 20)
-	if err := r.Append(dataRow(value)); err != nil {
+	if err := r.appendRow(dataRow(value)); err != nil {
 		t.Fatalf("the first row: %v", err)
 	}
-	if r.Full() {
+	if r.full() {
 		t.Fatal("Full with 20 of 32 bytes held")
 	}
-	if err := r.Append(dataRow(value)); err != nil {
+	if err := r.appendRow(dataRow(value)); err != nil {
 		t.Fatalf("the row that crosses the bound returned %v, want it accepted", err)
 	}
-	if !r.Full() || !r.fullOnBytes() {
-		t.Errorf("Full = %v, fullOnBytes = %v with 40 of 32 bytes held, want both", r.Full(), r.fullOnBytes())
+	if !r.full() || !r.fullOnBytes() {
+		t.Errorf("Full = %v, fullOnBytes = %v with 40 of 32 bytes held, want both", r.full(), r.fullOnBytes())
 	}
 	if got := r.largestRow(); got != 20 {
 		t.Errorf("largestRow = %d, want 20", got)
 	}
-	r.Reset()
-	if err := r.Append(dataRow(make([]byte, 40))); err != nil {
+	r.reset()
+	if err := r.appendRow(dataRow(make([]byte, 40))); err != nil {
 		t.Fatalf("a row wider than the bound, alone in its batch: %v", err)
 	}
 	if !r.fullOnBytes() {
 		t.Error("a row wider than the bound does not fill its batch")
 	}
 
-	unbounded := NewRows(1, 100, 0)
+	unbounded := newRows(1, 100, 0)
 	for range 3 {
-		if err := unbounded.Append(dataRow(value)); err != nil {
+		if err := unbounded.appendRow(dataRow(value)); err != nil {
 			t.Fatalf("with no byte bound: %v", err)
 		}
 	}
-	if unbounded.Full() {
+	if unbounded.full() {
 		t.Error("Full with no byte bound and 3 of 100 rows")
 	}
 }
@@ -418,8 +418,8 @@ func TestBindBinaryEncodesNull(t *testing.T) {
 // The panic carries the indices as a value rather than a formatted sentence,
 // so whoever recovers one can read them. This test pins that shape.
 func TestRowsValueOutOfRangePanics(t *testing.T) {
-	r := NewRows(2, 4, 0)
-	if err := r.Append(dataRow(AppendInt8(nil, 1), AppendInt8(nil, 2))); err != nil {
+	r := newRows(2, 4, 0)
+	if err := r.appendRow(dataRow(AppendInt8(nil, 1), AppendInt8(nil, 2))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -476,11 +476,11 @@ func TestRowsValueOutOfRangePanics(t *testing.T) {
 // reads a value from the wrong offset, which is a plausible wrong answer
 // rather than an error.
 func TestRowsNullDoesNotShiftTheFieldAfterIt(t *testing.T) {
-	rows := NewRows(4, 8, 0)
+	rows := newRows(4, 8, 0)
 
 	// A value, a NULL, an empty value, a value. The empty one matters: it and
 	// the NULL both have end == start, and only the marker tells them apart.
-	if err := rows.Append(dataRow([]byte("first"), nil, []byte(""), []byte("last"))); err != nil {
+	if err := rows.appendRow(dataRow([]byte("first"), nil, []byte(""), []byte("last"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -507,9 +507,9 @@ func TestRowsNullDoesNotShiftTheFieldAfterIt(t *testing.T) {
 // Two NULLs in a row, and a value after them: the start has to walk back
 // through a marker that is itself a marker.
 func TestRowsConsecutiveNulls(t *testing.T) {
-	rows := NewRows(4, 8, 0)
+	rows := newRows(4, 8, 0)
 
-	if err := rows.Append(dataRow([]byte("x"), nil, nil, []byte("y"))); err != nil {
+	if err := rows.appendRow(dataRow([]byte("x"), nil, nil, []byte("y"))); err != nil {
 		t.Fatal(err)
 	}
 	if v, isNull := rows.Value(0, 3); isNull || string(v) != "y" {
@@ -525,12 +525,12 @@ func TestRowsConsecutiveNulls(t *testing.T) {
 // A NULL at the very start of a row: there is no previous field to walk back
 // to, and the row before it ended somewhere.
 func TestRowsNullAtTheStartOfASecondRow(t *testing.T) {
-	rows := NewRows(2, 8, 0)
+	rows := newRows(2, 8, 0)
 
-	if err := rows.Append(dataRow([]byte("one"), []byte("two"))); err != nil {
+	if err := rows.appendRow(dataRow([]byte("one"), []byte("two"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := rows.Append(dataRow(nil, []byte("four"))); err != nil {
+	if err := rows.appendRow(dataRow(nil, []byte("four"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, isNull := rows.Value(1, 0); !isNull {
@@ -555,12 +555,12 @@ func TestRowsRefuseABatchPastTheOffsetRange(t *testing.T) {
 	maxRowBytes = 32 // the same arithmetic, without allocating two gigabytes
 	defer func() { maxRowBytes = saved }()
 
-	r := NewRows(1, 100, 0)
+	r := newRows(1, 100, 0)
 	value := make([]byte, 20)
-	if err := r.Append(dataRow(value)); err != nil {
+	if err := r.appendRow(dataRow(value)); err != nil {
 		t.Fatalf("the first row did not fit under the bound: %v", err)
 	}
-	err := r.Append(dataRow(value))
+	err := r.appendRow(dataRow(value))
 	if !errors.Is(err, ErrTooManyRows) {
 		t.Fatalf("Append past the offset range returned %v, want ErrTooManyRows", err)
 	}
@@ -575,7 +575,7 @@ func TestRowsRefuseABatchPastTheOffsetRange(t *testing.T) {
 
 // A RowDescription with bytes after its last column is being read at the
 // wrong offset, and every field above it is then plausible nonsense —
-// the same refusal Rows.Append makes for a DataRow.
+// the same refusal Rows.appendRow makes for a DataRow.
 func TestParseRowDescriptionRefusesTrailingBytes(t *testing.T) {
 	body := append(rowDesc([]string{"id"}, []uint32{OIDInt8}), 0xff)
 	if _, err := ParseRowDescription(nil, body); !errors.Is(err, ErrProtocol) {
@@ -591,10 +591,32 @@ func TestRowsPanicsOnAnOutOfRangeByteBound(t *testing.T) {
 		func() {
 			defer func() {
 				if recover() == nil {
-					t.Errorf("NewRows with a byte bound of %d did not panic", n)
+					t.Errorf("newRows with a byte bound of %d did not panic", n)
 				}
 			}()
-			NewRows(1, 4, n)
+			newRows(1, 4, n)
 		}()
+	}
+}
+
+// BenchmarkRowsAppend is what decoding a result's rows into a batch costs:
+// 1 000 DataRow bodies of three columns — two bigints and a label of about
+// twenty bytes, the shape of the comparison's bench_orders — appended to
+// one accumulator, reused from round to round as a connection reuses it.
+func BenchmarkRowsAppend(b *testing.B) {
+	const n = 1000
+	bodies := make([][]byte, n)
+	for i := range bodies {
+		bodies[i] = dataRow(AppendInt8(nil, int64(i)), AppendInt8(nil, int64(i)*7), []byte("order label number 0"))
+	}
+	r := newRows(3, n, 0)
+	b.ReportAllocs()
+	for b.Loop() {
+		r.reset()
+		for _, body := range bodies {
+			if err := r.appendRow(body); err != nil {
+				b.Fatal(err)
+			}
+		}
 	}
 }

@@ -32,12 +32,9 @@ type Part struct {
 	Setting string
 	Value   string
 
-	// SQL is the statement, and Params its binary parameters.
+	// SQL is the statement, and Params its parameters.
 	SQL    string
-	Params [][]byte
-
-	// ParamOIDs declares the parameter types, as [QueryConfig.ParamOIDs] does.
-	ParamOIDs []uint32
+	Params []Param
 }
 
 // Pipeline runs one query per part in a single round trip.
@@ -144,7 +141,7 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 				return fmt.Errorf("pipeline part %d: %w", i, err)
 			}
 		}
-		if err := pgwire.CheckParamCounts(p.Params, p.ParamOIDs); err != nil {
+		if err := pgwire.CheckParamCount(len(p.Params)); err != nil {
 			return fmt.Errorf("pipeline part %d: %w", i, err)
 		}
 		if err := checkSQLText(p.SQL); err != nil {
@@ -173,8 +170,8 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 			// onto the part before it.
 			c.w.Execute("", 0)
 		}
-		c.w.Parse("", p.SQL, p.ParamOIDs)
-		c.w.BindBinary("", "", p.Params)
+		c.w.Parse("", p.SQL, c.declaredOIDs(p.Params))
+		c.writeBind("", p.Params)
 		c.w.Describe('P', "")
 		// Zero means every row: a suspended portal would need another Execute,
 		// and asking for one mid-pipeline is a second round trip — the thing
@@ -304,10 +301,10 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 			if inSetting || rows == nil || stopped {
 				continue
 			}
-			if err := rows.Append(m.Body); err != nil {
+			if err := rows.appendRow(m.Body); err != nil {
 				return c.abortPipeline(err)
 			}
-			if rows.Full() && !emit() {
+			if rows.full() && !emit() {
 				stopped = true
 			}
 

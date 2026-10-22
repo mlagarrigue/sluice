@@ -86,7 +86,7 @@ type stmtEntry struct {
 }
 
 // defaultStatementCacheBound is the cache a connection starts with — the
-// bound pgx uses. See [Conn.PrepareStatements] for why there is one at all.
+// bound pgx uses. See [Config.StatementCacheSize] for why there is one at all.
 const defaultStatementCacheBound = 512
 
 func newStmtCache(bound int) *stmtCache {
@@ -203,152 +203,26 @@ func (c *stmtCache) moveToFront(i int) {
 	c.pushFront(i)
 }
 
-// PrepareStatements sets the bound of this connection's statement cache: the
-// largest number of statements kept prepared on the server at once. Beyond
-// it, the least recently used one is closed in the same write that prepares
-// the new one, so an eviction costs no round trip of its own.
-//
-//	conn.PrepareStatements(64) // a tighter bound than the default
-//	conn.PrepareStatements(0)  // no cache: every query re-parsed
-//
-// # The default, and why there is one
-//
-// A connection starts with the cache on, bounded at 512 statements — the
-// bound pgx uses. Every driver has a statement cache because parsing the same
-// SQL for every batch measures the parser rather than the transport. This one
-// also carries what makes a point read cost one round trip rather than two:
-// the cache remembers how many rows each statement's last execution
-// produced, and a statement known to fit in one batch is asked for whole (see
-// [FetchAuto]). Without the cache that knowledge has nowhere to live, and
-// every read pays the second trip.
-//
-// The bound is a bound and not a boolean because a prepared statement is
-// server-side state, and an unbounded cache is a backend growing a plan per
-// distinct query text until something notices — which, for generated SQL, is
-// never.
-//
-// Zero or less disables the cache: every query uses the unnamed statement, the
-// server re-parses it, nothing is held between queries, and every read is
-// fetched in batches. That is the right setting for a connection running
-// mostly-distinct SQL, and for one behind a pooler that does not keep named
-// statements across transactions.
-//
-// # Where it loses, which is not a footnote
-//
-// Two places, both real:
-//
-//   - **Distinct SQL.** A workload that never repeats a statement pays the
-//     naming, the cache lookup and the server-side memory, and reuses nothing.
-//     Measured in the benchmarks module: see BenchmarkPGPrepareMiss.
-//   - **The generic plan.** After five executions PostgreSQL may replan a
-//     prepared statement without looking at the parameters, and keep that plan
-//     for the connection's life. On a column with skewed values that is how a
-//     query that was fast for four calls becomes slow forever, and no amount
-//     of client-side caching will show it. It is not a reason to avoid the
-//     cache; it is a reason to know that "prepared" is a planning decision and
-//     not only a parsing one.
-//
-// It is a method rather than a [Config] field because it applies to a
-// [Conn] however it was built — including one from [NewConn], which never saw
-// a startup exchange. Calling it with a smaller bound evicts down to it;
-// calling it with zero closes everything and turns the cache off. A negative
-// bound is refused and changes nothing.
-//
-// The statements are closed on the server as they are evicted, so what this
-// bounds is real memory in a backend rather than a map in this process.
-func (c *Conn) PrepareStatements(bound int) error {
-	if bound < 0 {
-		return fmt.Errorf("postgres: PrepareStatements bound %d is negative — zero turns the cache off", bound)
-	}
-	if c.broken != nil {
-		return c.broken
-	}
-	// Eviction and shutdown below talk to the server, so this is a
-	// wire-touching entry point like Exec: refused while a result is being
-	// consumed. The eviction inside prepareFor is not routed through here —
-	// it runs while query.run legitimately holds the guard.
-	if err := c.beginBusy(); err != nil {
-		return err
-	}
-	defer c.endBusy()
-	if bound == 0 {
-		err := c.closeAllStatements()
-		c.stmts = nil
-		return err
-	}
-	if c.stmts == nil {
-		c.stmts = newStmtCache(bound)
-		return nil
-	}
-	c.stmts.max = bound
-	for len(c.stmts.byKey) > bound {
-		key, name, ok := c.stmts.evictee()
-		if !ok {
-			break
-		}
-		if err := c.closeStatement(name); err != nil {
-			return err
-		}
-		c.stmts.remove(key)
-	}
-	return nil
-}
-
-// StatementCacheStats reports how the cache has behaved: how many statements
-// are prepared, and how often a query found one.
+// StatementCacheStats is how a connection's statement cache has behaved:
+// how many statements it holds prepared on the server, and how often a query
+// found its statement there or had to prepare it. See
+// [Config.StatementCacheSize].
 //
 // It exists so a benchmark can show the cache losing rather than assert that
 // it wins — a hit rate near zero on a workload of distinct SQL is the honest
 // half of the feature.
-func (c *Conn) StatementCacheStats() (prepared int, hits, misses uint64) {
-	if c.stmts == nil {
-		return 0, 0, 0
-	}
-	return len(c.stmts.byKey), c.stmts.hits, c.stmts.misses
+type StatementCacheStats struct {
+	Prepared     int
+	Hits, Misses uint64
 }
 
-// closeStatement tells the server to release a prepared statement.
-func (c *Conn) closeStatement(name string) error {
-	c.w.Close('S', name)
-	c.w.Sync()
-	if err := c.w.Flush(); err != nil {
-		return c.breakConn(fmt.Errorf("closing prepared statement %s: %w", name, err))
-	}
-	return c.drainToReady()
-}
-
-// closeAllStatements releases every statement this connection prepared. Best
-// effort past the first failure: the connection is being reconfigured or torn
-// down, and stopping halfway would leave more behind than carrying on.
-func (c *Conn) closeAllStatements() error {
+// StatementCacheStats reports how the cache has behaved; all zero when it
+// is off.
+func (c *Conn) StatementCacheStats() StatementCacheStats {
 	if c.stmts == nil {
-		return nil
+		return StatementCacheStats{}
 	}
-	var first error
-	// Evicted names whose pipelined Close was never confirmed are closed here
-	// too: the server may still hold them, and this is the last chance.
-	for _, name := range c.stmts.closing {
-		if c.broken == nil {
-			if err := c.closeStatement(name); err != nil && first == nil {
-				first = err
-			}
-		}
-	}
-	c.stmts.closing = c.stmts.closing[:0]
-	for key, i := range c.stmts.byKey {
-		// Once the connection is broken nothing more goes to the wire: the
-		// remaining statements die with the backend session anyway.
-		if c.broken == nil {
-			if err := c.closeStatement(c.stmts.entries[i].name); err != nil && first == nil {
-				first = err
-			}
-		}
-		delete(c.stmts.byKey, key)
-	}
-	c.stmts.entries = c.stmts.entries[:0]
-	c.stmts.free = c.stmts.free[:0]
-	c.stmts.head, c.stmts.tail = -1, -1
-	return first
+	return StatementCacheStats{Prepared: len(c.stmts.byKey), Hits: c.stmts.hits, Misses: c.stmts.misses}
 }
 
 // prepareFor returns the statement name to bind against, preparing one if the
@@ -451,7 +325,7 @@ func (c *Conn) settleParse(queryErr error) error {
 // which lasts until the session ends or a Close releases it (PostgreSQL 18
 // §54.2.3). Forgetting it here alone would leave one more statement on the
 // backend per schema change under a live connection, outside the bound
-// PrepareStatements promises on the server as well. So the name is queued in
+// StatementCacheSize promises on the server as well. So the name is queued in
 // stmtCache.closing and travels in front of the next miss's Parse, as an
 // eviction does: no round trip of its own. After 26000 the server holds
 // nothing under the name — a pooler's DISCARD ALL, a swapped backend — and a

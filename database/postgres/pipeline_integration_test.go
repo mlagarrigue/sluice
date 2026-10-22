@@ -223,9 +223,8 @@ func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
 	ps := make([]postgres.Part, parts)
 	for i := range ps {
 		ps[i] = postgres.Part{
-			SQL:       `SELECT repeat('r', 200000), length($1)`,
-			Params:    [][]byte{param},
-			ParamOIDs: []uint32{postgres.OIDText},
+			SQL:    `SELECT repeat('r', 200000), length($1)`,
+			Params: []postgres.Param{{OID: postgres.OIDText, Value: param}},
 		}
 	}
 

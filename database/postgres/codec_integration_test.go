@@ -24,8 +24,8 @@ import (
 // server whether it equals the literal. It reports what the server said.
 func serverAgrees(t *testing.T, conn *postgres.Conn, sql string, oid uint32, value []byte) bool {
 	t.Helper()
-	src := conn.Query(t.Context(), sql, [][]byte{value},
-		postgres.QueryConfig{BatchRows: 1, ParamOIDs: []uint32{oid}})
+	src := conn.Query(t.Context(), sql, []postgres.Param{{OID: oid, Value: value}},
+		postgres.QueryConfig{BatchRows: 1})
 
 	var agreed bool
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -140,7 +140,7 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 
 	t.Run("int8[] with a NULL", func(t *testing.T) {
 		v := postgres.AppendNullableInt8Array(nil, []postgres.Null[int64]{
-			postgres.Some(int64(1)), postgres.None[int64](), postgres.Some(int64(3)),
+			{Value: 1, Valid: true}, {}, {Value: 3, Valid: true},
 		})
 		if !serverAgrees(t, conn, "SELECT $1::bigint[] = ARRAY[1, NULL, 3]::bigint[] IS NOT FALSE",
 			postgres.OIDInt8Array, v) {
@@ -157,7 +157,7 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 
 	t.Run("text[] keeps empty distinct from NULL", func(t *testing.T) {
 		v := postgres.AppendNullableTextArray(nil, []postgres.Null[string]{
-			postgres.Some(""), postgres.None[string](),
+			{Value: "", Valid: true}, {},
 		})
 		if !serverAgrees(t, conn,
 			"SELECT ($1::text[])[1] = '' AND ($1::text[])[2] IS NULL",
@@ -168,7 +168,7 @@ func TestIntegrationNullBearingArrays(t *testing.T) {
 
 	t.Run("all NULL", func(t *testing.T) {
 		v := postgres.AppendNullableInt8Array(nil, []postgres.Null[int64]{
-			postgres.None[int64](), postgres.None[int64](),
+			{}, {},
 		})
 		if !serverAgrees(t, conn,
 			"SELECT cardinality($1::bigint[]) = 2 AND $1::bigint[] IS NOT NULL",

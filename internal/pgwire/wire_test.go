@@ -313,20 +313,16 @@ func TestReaderGrowsItsBufferWithHeadroom(t *testing.T) {
 	}
 }
 
-// Both counts the protocol carries as 16-bit fields are refused before a byte
-// is buffered. Writing them truncated would leave a Bind whose declared and
-// actual parameter counts disagree, which the server reads as a corrupt
+// A parameter count the protocol carries as a 16-bit field is refused before
+// a byte is buffered. Writing it truncated would leave a Bind whose declared
+// and actual parameter counts disagree, which the server reads as a corrupt
 // stream rather than as an error.
 func TestParameterCountsPastTheProtocolsFieldAreRefused(t *testing.T) {
-	tooMany := make([][]byte, maxUint16+1)
-	if err := CheckParamCounts(tooMany, nil); err == nil {
+	if err := CheckParamCount(maxUint16 + 1); err == nil {
 		t.Error("a parameter count past uint16 was accepted")
 	}
-	if err := CheckParamCounts(nil, make([]uint32, maxUint16+1)); err == nil {
-		t.Error("an OID count past uint16 was accepted")
-	}
 	// The boundary itself fits: the field holds maxUint16 exactly.
-	if err := CheckParamCounts(make([][]byte, maxUint16), make([]uint32, maxUint16)); err != nil {
+	if err := CheckParamCount(maxUint16); err != nil {
 		t.Errorf("the largest count the protocol can carry was refused: %v", err)
 	}
 }

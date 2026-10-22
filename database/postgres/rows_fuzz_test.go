@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Rows.Append is where the connector spends most of its time and takes most of
+// Rows.appendRow is where the connector spends most of its time and takes most of
 // its input: one call per row, on bytes the far end chose.
 //
 // The framing layer bounds how long a DataRow may be and says nothing about
@@ -48,8 +48,8 @@ func FuzzRowsAppendReproducesTheRow(f *testing.F) {
 			return
 		}
 
-		r := NewRows(fields, 4, 0)
-		if err := r.Append(body); err != nil {
+		r := newRows(fields, 4, 0)
+		if err := r.appendRow(body); err != nil {
 			if !errors.Is(err, ErrProtocol) && !errors.Is(err, ErrTooManyRows) {
 				t.Fatalf("unclassified error %v for %x", err, body)
 			}
@@ -100,11 +100,11 @@ func FuzzRowsAppendBatchReproducesEachRow(f *testing.F) {
 			return
 		}
 
-		r := NewRows(fields, 4, 0)
-		if err := r.Append(first); err != nil {
+		r := newRows(fields, 4, 0)
+		if err := r.appendRow(first); err != nil {
 			return
 		}
-		if err := r.Append(second); err != nil {
+		if err := r.appendRow(second); err != nil {
 			return
 		}
 		if r.Len() != 2 {
@@ -132,7 +132,7 @@ func FuzzRowsAppendBatchReproducesEachRow(f *testing.F) {
 		// And Reset must leave nothing readable behind: the byte buffer is
 		// reused without clearing, so a stale tail must be unreachable rather
 		// than merely unlikely.
-		r.Reset()
+		r.reset()
 		if r.Len() != 0 {
 			t.Fatalf("Reset left %d rows", r.Len())
 		}

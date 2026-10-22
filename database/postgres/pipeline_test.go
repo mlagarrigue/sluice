@@ -415,7 +415,7 @@ func TestPipelineReadsWhileItStillWrites(t *testing.T) {
 	tx := &Tx{conn: conn}
 	ps := make([]Part, parts)
 	for i := range ps {
-		ps[i] = Part{SQL: "SELECT $1", Params: [][]byte{param}, ParamOIDs: []uint32{OIDText}}
+		ps[i] = Part{SQL: "SELECT $1", Params: []Param{{OID: OIDText, Value: param}}}
 	}
 	var got []int
 	err := tx.Pipeline(t.Context(), ps, QueryConfig{}, func(i int, b sluice.Batch[Row]) bool {

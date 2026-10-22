@@ -72,8 +72,8 @@ func TestFetchAutoReadsAKnownSmallStatementInOneWrite(t *testing.T) {
 	if got := srv.writes - writes; got != 1 {
 		t.Errorf("second execution took %d writes, want 1", got)
 	}
-	if prepared, hits, misses := conn.StatementCacheStats(); prepared != 1 || hits != 1 || misses != 1 {
-		t.Errorf("stats = %d/%d/%d, want 1/1/1: the cache is on without PrepareStatements", prepared, hits, misses)
+	if st, want := conn.StatementCacheStats(), (StatementCacheStats{Prepared: 1, Hits: 1, Misses: 1}); st != want {
+		t.Errorf("stats = %+v, want %+v: the cache is on without being configured", st, want)
 	}
 }
 

@@ -199,7 +199,7 @@ func ParseRowDescription(dst []Field, body []byte) ([]Field, error) {
 		body = rest[fixed:]
 	}
 	if len(body) != 0 {
-		// The same refusal as [Rows.Append]: a message with bytes past its
+		// The same refusal as Rows.appendRow: a message with bytes past its
 		// declared content is being read at the wrong offset, and every field
 		// above would be plausible nonsense.
 		return nil, fmt.Errorf("%w: RowDescription has %d bytes after its last column", ErrProtocol, len(body))
@@ -218,7 +218,10 @@ func ParseRowDescription(dst []Field, body []byte) ([]Field, error) {
 // loop a CPU predicts.
 //
 // A Rows is reset and refilled per batch, so the bytes it hands out are valid
-// only until the next [Rows.Reset] — the same rule as everything else here.
+// only until the next batch — the same rule as everything else here.
+//
+// A caller does not build one: a query does, and every [Row] of a batch
+// reaches it through [Row.Rows].
 type Rows struct {
 	buf []byte // every field's bytes, concatenated
 
@@ -236,14 +239,14 @@ type Rows struct {
 	rows    int
 	maxRows int
 	// maxBytes is the byte bound on a batch's values, resolved to
-	// maxRowBytes when the caller set none, so Full pays one comparison.
+	// maxRowBytes when the caller set none, so full pays one comparison.
 	maxBytes int
 
 	// gen counts the results this accumulator has been initialised for. A
 	// [Row] view captures it and refuses to read once it moves on: the
 	// accumulator is reused across queries by the connection's scratch, and
 	// without the check a view retained past its query would silently read
-	// the next query's bytes. Bumped by [Rows.Init], not by [Rows.Reset] —
+	// the next query's bytes. Bumped by Rows.start, not by Rows.reset —
 	// within one result, batch-to-batch reuse is the ordinary buffer
 	// contract.
 	gen uint32
@@ -276,13 +279,13 @@ var maxRowBytes = math.MaxInt32
 // dies (S1).
 var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 
-// NewRows returns an accumulator for results of the given width, holding at
+// newRows returns an accumulator for results of the given width, holding at
 // most maxRows rows per batch, and full once its values reach maxBytes bytes.
 // A maxBytes of zero means the 2 GiB the offsets allow, alone; a negative one,
 // or one above that ceiling, panics — the bound is the caller's code, not
 // data, so a wrong one is a programming error, as an out-of-range
 // [Rows.Value] is.
-func NewRows(fields, maxRows, maxBytes int) *Rows {
+func newRows(fields, maxRows, maxBytes int) *Rows {
 	return &Rows{fields: fields, maxRows: maxRows, maxBytes: rowBytes(maxBytes)}
 }
 
@@ -298,16 +301,16 @@ func rowBytes(n int) int {
 	return n
 }
 
-// Init readies the accumulator for a new result described by desc, keeping
-// its storage — [NewRows] for the caller that already holds one. A connection
+// start readies the accumulator for a new result described by desc, keeping
+// its storage — newRows for the caller that already holds one. A connection
 // runs one query at a time, so reusing one accumulator across queries turns
 // the row buffer's growth into a one-time cost instead of a per-query one.
 //
-// It clears through [Rows.Reset] rather than by hand, so a field Reset learns
+// It clears through Rows.reset rather than by hand, so a field reset learns
 // to clear cannot be missed here — the two staying in step is what keeps a
 // reused accumulator from carrying one query's state into the next.
-func (r *Rows) Init(desc []Field, maxRows, maxBytes int) {
-	r.Reset()
+func (r *Rows) start(desc []Field, maxRows, maxBytes int) {
+	r.reset()
 	r.desc = desc
 	r.fields = len(desc)
 	r.maxRows = maxRows
@@ -315,7 +318,7 @@ func (r *Rows) Init(desc []Field, maxRows, maxBytes int) {
 	r.gen++
 }
 
-// Reset empties the accumulator, keeping its storage for the next batch —
+// reset empties the accumulator, keeping its storage for the next batch —
 // unless that storage outgrew what an ordinary batch needs and
 // rowsShrinkAfter batches in a row have fitted the retained sizes, in which
 // case it is given back and the next batch starts small. Only the
@@ -325,7 +328,7 @@ func (r *Rows) Init(desc []Field, maxRows, maxBytes int) {
 // The byte buffer is not cleared: every byte it hands out is covered by an
 // offset written when it was filled, so a stale tail is unreachable rather
 // than merely unlikely.
-func (r *Rows) Reset() {
+func (r *Rows) reset() {
 	if r.rows > 0 && (cap(r.buf) > rowsRetainBytes || cap(r.ends) > rowsRetainEnds) {
 		if len(r.buf) <= rowsRetainBytes && len(r.ends) <= rowsRetainEnds {
 			r.small++
@@ -347,15 +350,15 @@ func (r *Rows) Len() int { return r.rows }
 // Fields reports the number of columns per row.
 func (r *Rows) Fields() int { return r.fields }
 
-// Full reports whether the accumulator has reached its row limit or its byte
-// bound, which is what a caller polls after each [Rows.Append] to decide when
+// full reports whether the accumulator has reached its row limit or its byte
+// bound, which is what a caller polls after each Rows.appendRow to decide when
 // to hand the batch downstream.
 //
 // The byte bound is a threshold, not a refusal: the row that takes the values
 // past it is accepted, and the batch is full with it in. So a batch holds at
 // most maxBytes plus one row, and a single row wider than the bound still
 // travels, in a batch of its own.
-func (r *Rows) Full() bool { return r.rows >= r.maxRows || len(r.buf) >= r.maxBytes }
+func (r *Rows) full() bool { return r.rows >= r.maxRows || len(r.buf) >= r.maxBytes }
 
 // fullOnBytes reports whether the byte bound, not the row limit, is what
 // filled the batch: the cut a reader logs.
@@ -380,8 +383,8 @@ func (r *Rows) largestRow() int {
 	return widest
 }
 
-// Append decodes one DataRow body into the accumulator.
-func (r *Rows) Append(body []byte) error {
+// appendRow decodes one DataRow body into the accumulator.
+func (r *Rows) appendRow(body []byte) error {
 	if len(body) < 2 {
 		return fmt.Errorf("%w: DataRow shorter than its field count", ErrProtocol)
 	}
@@ -396,7 +399,7 @@ func (r *Rows) Append(body []byte) error {
 		return fmt.Errorf("%w: %d rows", ErrTooManyRows, r.maxRows)
 	}
 	// The byte bound (QueryConfig.BatchBytes) is not checked here: it is a
-	// threshold [Rows.Full] reports once crossed, and the reader closes the
+	// threshold Rows.full reports once crossed, and the reader closes the
 	// batch on it. What is checked is the ceiling the int32 offsets in ends
 	// allow, and the nolint annotations below lean on it: past 2 GiB
 	// int32(len(r.buf)) wraps negative, which [Rows.Value] reads as NULL —
@@ -455,7 +458,7 @@ func (r *Rows) truncate(n int) {
 }
 
 // Value returns the bytes of one field, and whether it is NULL. The slice
-// borrows the accumulator's buffer and is valid until the next [Rows.Reset].
+// borrows the accumulator's buffer and is valid until the next batch.
 //
 // It panics on an out-of-range row or column, like a slice index: those are
 // programming errors, and returning a zero value for them would let a typo in

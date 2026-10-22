@@ -292,7 +292,7 @@ without an extra round trip.
 var d pushdown.Demand                      // the zero value means "everything"
 src := conn.Query(ctx,
     "SELECT id, total FROM orders WHERE id > $1 ORDER BY id",
-    [][]byte{postgres.AppendInt8(nil, 0)},
+    []postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 0)}},
     postgres.QueryConfig{Demand: &d, KeyParam: 1})
 rows := pushdown.AdvanceBy(src.Stream(), &d, keyOf) // publishes the key reached
 ```

@@ -236,12 +236,11 @@ func (s *Service) serveGroup(ctx context.Context, tx *postgres.Tx, tenant string
 
 	s.roundTrips.Add(1)
 	lines := make(map[[2]int64]Line, len(group))
-	src := tx.Query(ctx, readLines, [][]byte{
-		postgres.AppendInt8Array(nil, orderIDs),
-		postgres.AppendInt4Array(nil, indexes),
+	src := tx.Query(ctx, readLines, []postgres.Param{
+		{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, orderIDs)},
+		{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, indexes)},
 	}, postgres.QueryConfig{
 		BatchRows: 256, Fetch: postgres.FetchAll,
-		ParamOIDs: []uint32{postgres.OIDInt8Array, postgres.OIDInt4Array},
 	})
 	var decodeErr error
 	src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {

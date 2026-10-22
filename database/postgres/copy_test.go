@@ -406,7 +406,7 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tags := []Null[int64]{Some(int64(10)), None[int64](), Some(int64(30))}
+	tags := []Null[int64]{present(int64(10)), {}, present(int64(30))}
 
 	var buf []byte
 	// Row one: an array with a NULL inside it, written straight into the tuple.

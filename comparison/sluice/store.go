@@ -131,8 +131,8 @@ func (s *sluiceStore) createWriteTable(ctx context.Context) error {
 // trip.
 func (s *sluiceStore) unit(ctx context.Context, ids []int64, found map[int64]orderRow) error {
 	s.buf = postgres.AppendInt8Array(s.buf[:0], ids)
-	src := s.gwConn.Query(ctx, unitQuery, [][]byte{s.buf},
-		postgres.QueryConfig{BatchRows: s.size + 1, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+	src := s.gwConn.Query(ctx, unitQuery, []postgres.Param{{OID: postgres.OIDInt8Array, Value: s.buf}},
+		postgres.QueryConfig{BatchRows: s.size + 1})
 	src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
 		for _, r := range rows.Items {
 			row, err := decodeOrder(r)
@@ -153,10 +153,13 @@ func (s *sluiceStore) listBatches(ctx context.Context, from int64, limit int, yi
 	conn := <-s.pool
 	defer func() { s.pool <- conn }()
 
-	params := [][]byte{postgres.AppendInt8(nil, from), postgres.AppendInt8(nil, int64(limit))}
+	params := []postgres.Param{
+		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, from)},
+		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, int64(limit))},
+	}
 	rows := make([]orderRow, 0, listBatchRows)
 	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{
-		BatchRows: listBatchRows, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
+		BatchRows: listBatchRows,
 	})
 	for b := range src.Stream() {
 		rows = rows[:0]
@@ -184,9 +187,12 @@ func (s *sluiceStore) write(ctx context.Context, key, total int64) error {
 	conn := <-s.pool
 	defer func() { s.pool <- conn }()
 
-	params := [][]byte{postgres.AppendInt8(nil, key), postgres.AppendInt8(nil, total)}
+	params := []postgres.Param{
+		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, key)},
+		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, total)},
+	}
 	src := conn.Query(ctx, writeQuery, params, postgres.QueryConfig{
-		BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8, postgres.OIDInt8},
+		BatchRows: 2,
 	})
 	for range src.Stream() {
 	}

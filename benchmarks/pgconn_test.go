@@ -130,8 +130,8 @@ func BenchmarkPGPointSluice(b *testing.B) {
 	report := countReport(b)
 	for b.Loop() {
 		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, [][]byte{key},
-			postgres.QueryConfig{BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8}})
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+			postgres.QueryConfig{BatchRows: 2})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
@@ -154,16 +154,13 @@ func BenchmarkPGPointSluice(b *testing.B) {
 // and that is a difference in work, not in speed.
 func BenchmarkPGPointSluiceCached(b *testing.B) {
 	conn := sluiceConn(b)
-	if err := conn.PrepareStatements(16); err != nil {
-		b.Fatal(err)
-	}
 	key := make([]byte, 0, 8)
 	var acc int64
 	b.ReportAllocs()
 	for b.Loop() {
 		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, [][]byte{key},
-			postgres.QueryConfig{BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8}})
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+			postgres.QueryConfig{BatchRows: 2})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
@@ -184,16 +181,13 @@ func BenchmarkPGPointSluiceCached(b *testing.B) {
 // cheap early stop, and a point read is never abandoned half way.
 func BenchmarkPGPointSluiceFetchAll(b *testing.B) {
 	conn := sluiceConn(b)
-	if err := conn.PrepareStatements(16); err != nil {
-		b.Fatal(err)
-	}
 	key := make([]byte, 0, 8)
 	var acc int64
 	b.ReportAllocs()
 	for b.Loop() {
 		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, [][]byte{key},
-			postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchAll, ParamOIDs: []uint32{postgres.OIDInt8}})
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+			postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchAll})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
@@ -211,17 +205,14 @@ func BenchmarkPGPointSluiceFetchAll(b *testing.B) {
 
 func BenchmarkPGAnySluiceFetchAll(b *testing.B) {
 	conn := sluiceConn(b)
-	if err := conn.PrepareStatements(16); err != nil {
-		b.Fatal(err)
-	}
 	keys := thousandKeys()
 	buf := make([]byte, 0, 1024*12+64)
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
 		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, [][]byte{buf},
-			postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+			postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
 			return true
@@ -289,8 +280,8 @@ func BenchmarkPGAnySluice(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, [][]byte{buf},
-			postgres.QueryConfig{BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
 			return true
@@ -304,17 +295,14 @@ func BenchmarkPGAnySluice(b *testing.B) {
 
 func BenchmarkPGAnySluiceCached(b *testing.B) {
 	conn := sluiceConn(b)
-	if err := conn.PrepareStatements(16); err != nil {
-		b.Fatal(err)
-	}
 	keys := thousandKeys()
 	buf := make([]byte, 0, 1024*12+64)
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
 		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, [][]byte{buf},
-			postgres.QueryConfig{BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
 			return true
@@ -616,8 +604,8 @@ func TestPGContendersAgree(t *testing.T) {
 
 	sc := sluiceConn(t)
 	got := map[int64]int64{}
-	src := sc.Query(t.Context(), anySQL, [][]byte{postgres.AppendInt8Array(nil, keys)},
-		postgres.QueryConfig{BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+	src := sc.Query(t.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}},
+		postgres.QueryConfig{BatchRows: 1024})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, r := range b.Items {
 			idBytes, _ := r.Value(0)

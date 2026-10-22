@@ -222,7 +222,7 @@ func HydrateProduct(dst []Product, rows *postgres.Rows, p ProductPlan) ([]Produc
 				if err != nil {
 					return dst[:before], fmt.Errorf("row %d, column %q: %w", i, "weight", err)
 				}
-				e.Weight = postgres.Some(v)
+				e.Weight = postgres.Null[float64]{Value: v, Valid: true}
 			}
 		}
 		dst = append(dst, e)

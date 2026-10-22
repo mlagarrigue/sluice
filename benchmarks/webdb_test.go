@@ -69,18 +69,14 @@ func sluiceDBHandler(tb testing.TB) http.Handler {
 func sluiceDBHandlerCounted(tb testing.TB) (http.Handler, *atomic.Int64) {
 	tb.Helper()
 	conn := sluiceConn(tb)
-	if err := conn.PrepareStatements(8); err != nil {
-		tb.Fatal(err)
-	}
 	buf := make([]byte, 0, 64*12+64)
 	return dbGatewayHandler(tb, func(ids []int64, found map[int64]int64) error {
 		// The whole thesis, in one statement: every id in the batch leaves
 		// as one array parameter and comes back in one result.
 		buf = postgres.AppendInt8Array(buf[:0], ids)
-		src := conn.Query(context.Background(), dbQuery, [][]byte{buf},
+		src := conn.Query(context.Background(), dbQuery, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{
 				BatchRows: 128, Fetch: postgres.FetchAll,
-				ParamOIDs: []uint32{postgres.OIDInt8Array},
 			})
 		src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
 			for _, r := range rows.Items {

@@ -105,7 +105,7 @@ type TxConfig struct {
 // row-level security usable from a pooled or reused connection at all. See
 // [Tx.SetLocal].
 //
-//	tx, err := conn.Begin(ctx, postgres.TxOptions{Timeout: 5 * time.Second})
+//	tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
 //	if err != nil {
 //	    return err
 //	}
@@ -262,13 +262,13 @@ func resultTag(body []byte, suspended int) CommandTag {
 // rows it touched:
 //
 //	tag, err := conn.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-//		[][]byte{postgres.AppendText(nil, customer)}, []uint32{postgres.OIDText})
+//		[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, customer)}})
 //	n, _ := tag.RowsAffected()
 //
 // The values travel in binary on the extended-query path, as they do for
-// [Conn.Query], so none of them can be read as SQL; oids gives their types
-// as [QueryConfig.ParamOIDs] does, and nil lets the server infer them. The
-// text is one statement: the extended protocol takes no more.
+// [Conn.Query], so none of them can be read as SQL; each [Param] carries its
+// type, or zero to let the server infer it. The text is one statement: the
+// extended protocol takes no more.
 //
 // Rows the statement returns — a SELECT, an UPDATE ... RETURNING — are read
 // and dropped; the tag still counts them. Use [Conn.Query] to see them.
@@ -276,7 +276,7 @@ func resultTag(body []byte, suspended int) CommandTag {
 // A COMMIT sent here inside an aborted block returns [ErrTxCommitRollback]
 // with the tag "ROLLBACK", as [Conn.Exec] does. On any other error the tag is
 // empty: the statement did not complete.
-func (c *Conn) ExecParams(ctx context.Context, sql string, params [][]byte, oids []uint32) (CommandTag, error) {
+func (c *Conn) ExecParams(ctx context.Context, sql string, params []Param) (CommandTag, error) {
 	failed := c.txFailed
 	var tag CommandTag
 	// FetchAll, not a row limit, and not FetchAuto either: the first
@@ -287,7 +287,7 @@ func (c *Conn) ExecParams(ctx context.Context, sql string, params [][]byte, oids
 	// path adds the Sync as a round trip of its own — three trips where
 	// FetchAll takes one. On the per-transaction RLS path that tax lands on
 	// every SetLocal, which is every principal.
-	err := c.runQuery(ctx, sql, params, QueryConfig{Fetch: FetchAll, ParamOIDs: oids, Tag: &tag},
+	err := c.runQuery(ctx, sql, params, QueryConfig{Fetch: FetchAll, Tag: &tag},
 		func(sluice.Batch[Row]) bool { return true })
 	// The rule of [Conn.execUser]: in an aborted block the server answers a
 	// COMMIT with "ROLLBACK" and no error, and only the caller's text says a
@@ -502,11 +502,11 @@ func (tx *Tx) Exec(ctx context.Context, sql string) error {
 
 // ExecParams is [Conn.ExecParams] inside the transaction: bound parameters,
 // the command tag back.
-func (tx *Tx) ExecParams(ctx context.Context, sql string, params [][]byte, oids []uint32) (CommandTag, error) {
+func (tx *Tx) ExecParams(ctx context.Context, sql string, params []Param) (CommandTag, error) {
 	if err := tx.check(ctx); err != nil {
 		return "", err
 	}
-	tag, err := tx.conn.ExecParams(ctx, sql, params, oids)
+	tag, err := tx.conn.ExecParams(ctx, sql, params)
 	tx.endedBySQL()
 	return tag, err
 }
@@ -533,7 +533,7 @@ func (tx *Tx) endedBySQL() {
 // than the transaction's, which with [Tx.SetLocal] in the picture means under
 // nobody's tenant. That is a wrong answer with no error, so this returns
 // [ErrTxDone] instead.
-func (tx *Tx) Query(ctx context.Context, sql string, params [][]byte, cfg QueryConfig) sluice.Source[Row] {
+func (tx *Tx) Query(ctx context.Context, sql string, params []Param, cfg QueryConfig) sluice.Source[Row] {
 	// The tag of an earlier run must not stand next to ErrTxDone, here or
 	// at consumption below.
 	clearTag := func() {
@@ -596,9 +596,10 @@ func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 	if err := validSettingName(name); err != nil {
 		return err
 	}
-	return tx.conn.execParams(ctx, "SELECT set_config($1, $2, true)",
-		[][]byte{AppendText(nil, name), AppendText(nil, value)},
-		[]uint32{OIDText, OIDText})
+	return tx.conn.execParams(ctx, "SELECT set_config($1, $2, true)", []Param{
+		{OID: OIDText, Value: AppendText(nil, name)},
+		{OID: OIDText, Value: AppendText(nil, value)},
+	})
 }
 
 // SetLocalTimeout bounds how long any single statement in this transaction may
@@ -800,8 +801,8 @@ func validSettingName(name string) error {
 
 // execParams is [Conn.ExecParams] for this package's own statements, which
 // want no tag and name the statement in the error.
-func (c *Conn) execParams(ctx context.Context, sql string, params [][]byte, oids []uint32) error {
-	if _, err := c.ExecParams(ctx, sql, params, oids); err != nil {
+func (c *Conn) execParams(ctx context.Context, sql string, params []Param) error {
+	if _, err := c.ExecParams(ctx, sql, params); err != nil {
 		return fmt.Errorf("running %q: %w", sql, err)
 	}
 	return nil

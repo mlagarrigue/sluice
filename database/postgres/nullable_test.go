@@ -8,13 +8,17 @@ import (
 	"testing"
 )
 
+// present is a valid Null, spelled short for the tables of these tests. The
+// package has no constructor: a literal is the one way to build a Null.
+func present[T any](v T) Null[T] { return Null[T]{Value: v, Valid: true} }
+
 // The header's flags word says whether any element is NULL, and the server
 // sets it. An encoder that always wrote zero would produce arrays PostgreSQL
 // accepts and never generates — the same asymmetry the empty-array header once
 // had, and the reason that one was found late.
 func TestNullableArrayHeaderDeclaresNulls(t *testing.T) {
-	withNull := AppendNullableInt8Array(nil, []Null[int64]{Some(int64(1)), None[int64]()})
-	without := AppendNullableInt8Array(nil, []Null[int64]{Some(int64(1)), Some(int64(2))})
+	withNull := AppendNullableInt8Array(nil, []Null[int64]{present(int64(1)), {}})
+	without := AppendNullableInt8Array(nil, []Null[int64]{present(int64(1)), present(int64(2))})
 
 	if got := binary.BigEndian.Uint32(withNull[4:8]); got != 1 {
 		t.Errorf("flags = %d for an array containing a NULL, want 1", got)
@@ -28,7 +32,7 @@ func TestNullableArrayHeaderDeclaresNulls(t *testing.T) {
 // four billion, which is why nextElement exists rather than each decoder
 // checking for itself.
 func TestNullableArrayNullElementIsMinusOne(t *testing.T) {
-	raw := AppendNullableInt8Array(nil, []Null[int64]{None[int64]()})
+	raw := AppendNullableInt8Array(nil, []Null[int64]{{}})
 	body := raw[arrayHeaderSize:]
 	if len(body) != 4 {
 		t.Fatalf("a NULL element occupies %d bytes, want 4 (its length and nothing else)", len(body))
@@ -44,11 +48,11 @@ func TestNullableInt8ArrayRoundTrip(t *testing.T) {
 		in   []Null[int64]
 	}{
 		{"empty", nil},
-		{"no nulls", []Null[int64]{Some(int64(1)), Some(int64(-2))}},
-		{"leading null", []Null[int64]{None[int64](), Some(int64(7))}},
-		{"trailing null", []Null[int64]{Some(int64(7)), None[int64]()}},
-		{"all null", []Null[int64]{None[int64](), None[int64](), None[int64]()}},
-		{"zero is not null", []Null[int64]{Some(int64(0)), None[int64]()}},
+		{"no nulls", []Null[int64]{present(int64(1)), present(int64(-2))}},
+		{"leading null", []Null[int64]{{}, present(int64(7))}},
+		{"trailing null", []Null[int64]{present(int64(7)), {}}},
+		{"all null", []Null[int64]{{}, {}, {}}},
+		{"zero is not null", []Null[int64]{present(int64(0)), {}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := AppendNullableInt8Array(nil, tc.in)
@@ -66,7 +70,7 @@ func TestNullableInt8ArrayRoundTrip(t *testing.T) {
 // The distinction that earns the type its keep: in Go an empty string and a
 // missing one are both "", and in SQL they are different values.
 func TestNullableTextArrayKeepsEmptyDistinctFromNull(t *testing.T) {
-	in := []Null[string]{Some(""), None[string](), Some("x")}
+	in := []Null[string]{present(""), {}, present("x")}
 	out, err := DecodeNullableTextArray(nil, AppendNullableTextArray(nil, in))
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +84,7 @@ func TestNullableTextArrayKeepsEmptyDistinctFromNull(t *testing.T) {
 }
 
 func TestNullableInt4AndUUIDArrayRoundTrip(t *testing.T) {
-	ints := []Null[int32]{Some(int32(3)), None[int32](), Some(int32(-4))}
+	ints := []Null[int32]{present(int32(3)), {}, present(int32(-4))}
 	gotInts, err := DecodeNullableInt4Array(nil, AppendNullableInt4Array(nil, ints))
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +94,7 @@ func TestNullableInt4AndUUIDArrayRoundTrip(t *testing.T) {
 	}
 
 	u := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	uuids := []Null[[16]byte]{Some(u), None[[16]byte]()}
+	uuids := []Null[[16]byte]{present(u), {}}
 	gotUUIDs, err := DecodeNullableUUIDArray(nil, AppendNullableUUIDArray(nil, uuids))
 	if err != nil {
 		t.Fatal(err)
@@ -105,25 +109,25 @@ func TestNullableInt4AndUUIDArrayRoundTrip(t *testing.T) {
 // adding them would be a silent change of meaning for every existing caller.
 func TestNonNullableDecodersStillRefuseNull(t *testing.T) {
 	t.Run("text", func(t *testing.T) {
-		raw := AppendNullableTextArray(nil, []Null[string]{None[string]()})
+		raw := AppendNullableTextArray(nil, []Null[string]{{}})
 		if _, err := DecodeTextArray(nil, raw); err == nil {
 			t.Fatal("DecodeTextArray accepted a NULL element")
 		}
 	})
 	t.Run("int8", func(t *testing.T) {
-		raw := AppendNullableInt8Array(nil, []Null[int64]{None[int64]()})
+		raw := AppendNullableInt8Array(nil, []Null[int64]{{}})
 		if _, err := DecodeInt8Array(nil, raw); err == nil {
 			t.Fatal("DecodeInt8Array accepted a NULL element")
 		}
 	})
 	t.Run("int4", func(t *testing.T) {
-		raw := AppendNullableInt4Array(nil, []Null[int32]{None[int32]()})
+		raw := AppendNullableInt4Array(nil, []Null[int32]{{}})
 		if _, err := DecodeInt4Array(nil, raw); err == nil {
 			t.Fatal("DecodeInt4Array accepted a NULL element")
 		}
 	})
 	t.Run("uuid", func(t *testing.T) {
-		raw := AppendNullableUUIDArray(nil, []Null[[16]byte]{None[[16]byte]()})
+		raw := AppendNullableUUIDArray(nil, []Null[[16]byte]{{}})
 		if _, err := DecodeUUIDArray(nil, raw); err == nil {
 			t.Fatal("DecodeUUIDArray accepted a NULL element")
 		}
@@ -135,7 +139,7 @@ func TestNonNullableDecodersStillRefuseNull(t *testing.T) {
 // ways and only one of them would have been tested against it.
 func TestNullableEncodingMatchesPlainWhenNothingIsNull(t *testing.T) {
 	plain := AppendInt8Array(nil, []int64{1, 2, 3})
-	nullable := AppendNullableInt8Array(nil, []Null[int64]{Some(int64(1)), Some(int64(2)), Some(int64(3))})
+	nullable := AppendNullableInt8Array(nil, []Null[int64]{present(int64(1)), present(int64(2)), present(int64(3))})
 	if !bytes.Equal(plain, nullable) {
 		t.Errorf("the two encoders disagree:\n plain    % x\n nullable % x", plain, nullable)
 	}
@@ -150,7 +154,7 @@ func TestNullableEncodingMatchesPlainWhenNothingIsNull(t *testing.T) {
 // A length that overruns the buffer must be refused, not trusted — the decoder
 // reads a length from bytes the server chose and then indexes with it.
 func TestNullableArrayRejectsAnOverlongElement(t *testing.T) {
-	raw := AppendNullableTextArray(nil, []Null[string]{Some("ab")})
+	raw := AppendNullableTextArray(nil, []Null[string]{present("ab")})
 	// Claim sixteen bytes where two arrived.
 	binary.BigEndian.PutUint32(raw[arrayHeaderSize:], 16)
 	if _, err := DecodeNullableTextArray(nil, raw); !errors.Is(err, ErrCodec) {
@@ -160,7 +164,7 @@ func TestNullableArrayRejectsAnOverlongElement(t *testing.T) {
 
 // A negative length that is not -1 is not a NULL, it is corruption.
 func TestNullableArrayRejectsANegativeLength(t *testing.T) {
-	raw := AppendNullableInt8Array(nil, []Null[int64]{Some(int64(1))})
+	raw := AppendNullableInt8Array(nil, []Null[int64]{present(int64(1))})
 	binary.BigEndian.PutUint32(raw[arrayHeaderSize:], ^uint32(1)) // -2
 	if _, err := DecodeNullableInt8Array(nil, raw); !errors.Is(err, ErrCodec) {
 		t.Fatalf("error = %v, want ErrCodec", err)
@@ -174,7 +178,7 @@ func TestZeroNullIsAbsent(t *testing.T) {
 	if n.Valid {
 		t.Error("the zero Null reports itself as present")
 	}
-	if got := Some(int64(0)); !got.Valid {
-		t.Error("Some(0) reports itself as absent")
+	if got := present(int64(0)); !got.Valid {
+		t.Error("present[int64](0) reports itself as absent")
 	}
 }

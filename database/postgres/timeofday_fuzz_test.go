@@ -140,7 +140,7 @@ func FuzzDecodeBits(f *testing.F) {
 // have to agree. A decoder that read -1 as unsigned would take it for four
 // billion bytes and index with it.
 func FuzzDecodeNullableInt8Array(f *testing.F) {
-	f.Add(AppendNullableInt8Array(nil, []Null[int64]{Some(int64(1)), None[int64]()}))
+	f.Add(AppendNullableInt8Array(nil, []Null[int64]{present(int64(1)), {}}))
 	f.Add(AppendNullableInt8Array(nil, nil))
 	f.Add(AppendInt8Array(nil, []int64{1, 2}))
 	f.Add(make([]byte, 12))
@@ -190,7 +190,7 @@ func FuzzDecodeNullableInt8Array(f *testing.F) {
 }
 
 func FuzzDecodeNullableTextArray(f *testing.F) {
-	f.Add(AppendNullableTextArray(nil, []Null[string]{Some(""), None[string](), Some("x")}))
+	f.Add(AppendNullableTextArray(nil, []Null[string]{present(""), {}, present("x")}))
 	f.Add(AppendTextArray(nil, []string{"a"}))
 	f.Add(make([]byte, 12))
 

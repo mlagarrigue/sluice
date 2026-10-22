@@ -304,8 +304,8 @@ to consult afterwards (see [Getting started](getting-started.md) for
 keys := []int64{1, 2, 3 /* … a thousand */}
 src := conn.Query(ctx,
     "SELECT id, total FROM orders WHERE id = ANY($1)",
-    [][]byte{postgres.AppendInt8Array(nil, keys)},                       // the parameter, encoded
-    postgres.QueryConfig{BatchRows: 1024, ParamOIDs: []uint32{postgres.OIDInt8Array}},
+    []postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}}, // the parameter: its type, its encoded value
+    postgres.QueryConfig{BatchRows: 1024},
 )
 for b := range src.Stream() {
     for _, row := range b.Items {
@@ -322,7 +322,11 @@ Three ideas in this code.
 **Values never go into the query text.** The `$1` is a **parameter**: a
 slot the server fills with the value sent separately, in binary. That is
 what makes **SQL injection** (slipping SQL into a value to hijack the
-query) impossible by construction, not by vigilance.
+query) impossible by construction, not by vigilance. Each parameter is a
+`postgres.Param`: its value encoded in binary, and its type as an **OID**
+(the number PostgreSQL gives each type, here `OIDInt8Array` for
+`bigint[]`). An OID of zero lets the server infer the type from where the
+parameter appears; name it when the inference could guess wrong.
 
 **`= ANY($1)` rather than `IN (…)`.** With `IN`, a thousand values make a
 thousand slots and a different query shape for every number of values,
@@ -339,7 +343,9 @@ trip per batch.
 > **In plain terms: one round trip for a small read.** A read that fits in
 > one batch (a row by its identifier) costs a single round trip from its
 > second execution on, with nothing to set. The connection keeps the
-> queries it has seen (up to 512, prepared on the server) and remembers how
+> queries it has seen (up to 512, prepared on the server;
+> `Config.StatementCacheSize` changes the bound, and a negative value turns
+> the cache off) and remembers how
 > many rows the last execution returned: if they fit in one batch, the
 > query asks for everything at once. The first execution, or a query that
 > returned more than a batch, is read batch by batch. What this gives up,
@@ -527,7 +533,7 @@ defer tx.Rollback() // a no-op if Commit succeeded: the safety net
 
 if err := tx.SetLocal(ctx, "app.tenant_id", tenant); err != nil { return err } // visible to row-level security
 tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-	[][]byte{postgres.AppendText(nil, customer)}, []uint32{postgres.OIDText})
+	[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, customer)}})
 if err != nil { return err }
 n, _ := tag.RowsAffected() // how many rows changed, by the server's count
 return tx.Commit(ctx)

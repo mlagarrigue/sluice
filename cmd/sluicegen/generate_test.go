@@ -127,7 +127,7 @@ type Thing struct {
 		{"no tag means snake_case", `case "total_cost":`, true},
 		{"an acronym stays whole", `case "customer_id":`, true},
 		{"a pointer field is nullable", "e.Note = &v", true},
-		{"a Null[T] field is nullable without a pointer", "e.Score = postgres.Some(v)", true},
+		{"a Null[T] field is nullable without a pointer", "e.Score = postgres.Null[int32]{Value: v, Valid: true}", true},
 		{"a Null[T] field decodes as T", "postgres.DecodeInt4(b)", true},
 		{`db:"-" opts out`, "Skipped", false},
 		{"an unexported field is not a column", "hidden", false},

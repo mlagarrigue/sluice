@@ -37,7 +37,7 @@ type order struct {
 
 // orderRows builds a batch of n rows matching order's five columns.
 func orderRows(n int) *Rows {
-	rows := NewRows(5, n, 0)
+	rows := newRows(5, n, 0)
 	for i := range n {
 		body := dataRow(
 			AppendInt8(nil, int64(i)),
@@ -46,7 +46,7 @@ func orderRows(n int) *Rows {
 			AppendBool(nil, i%2 == 0),
 			AppendTimestampTZ(nil, time.Unix(int64(i), 0).UTC()),
 		)
-		if err := rows.Append(body); err != nil {
+		if err := rows.appendRow(body); err != nil {
 			panic(err)
 		}
 	}
@@ -415,9 +415,9 @@ func BenchmarkHydrateRowMajorBatchOne(b *testing.B) {
 // batch reaches the same Rows, and a view retained past its query panics the
 // same way Value does rather than reading the next result's bytes.
 func TestRowReachesItsRows(t *testing.T) {
-	rows := NewRows(1, 4, 0)
+	rows := newRows(1, 4, 0)
 	for i := range 3 {
-		if err := rows.Append(dataRow(AppendInt8(nil, int64(i)))); err != nil {
+		if err := rows.appendRow(dataRow(AppendInt8(nil, int64(i)))); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -148,8 +148,8 @@ func TestIntegrationAnyArray(t *testing.T) {
 
 	src := conn.Query(t.Context(),
 		"SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1) ORDER BY k",
-		[][]byte{postgres.AppendInt8Array(nil, keys)},
-		postgres.QueryConfig{BatchRows: 256, ParamOIDs: []uint32{postgres.OIDInt8Array}},
+		[]postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}},
+		postgres.QueryConfig{BatchRows: 256},
 	)
 
 	var got []int64
@@ -244,8 +244,8 @@ func TestIntegrationNumericRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			src := conn.Query(t.Context(), "SELECT $1::numeric", [][]byte{postgres.AppendNumeric(nil, n)},
-				postgres.QueryConfig{BatchRows: 4, ParamOIDs: []uint32{postgres.OIDNumeric}})
+			src := conn.Query(t.Context(), "SELECT $1::numeric", []postgres.Param{{OID: postgres.OIDNumeric, Value: postgres.AppendNumeric(nil, n)}},
+				postgres.QueryConfig{BatchRows: 4})
 
 			var got string
 			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -586,8 +586,8 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 			if tc.oid == postgres.OIDJSON {
 				expr = "SELECT $1::text = " + tc.literal
 			}
-			src := conn.Query(t.Context(), expr, [][]byte{tc.param},
-				postgres.QueryConfig{ParamOIDs: []uint32{tc.oid}})
+			src := conn.Query(t.Context(), expr, []postgres.Param{{OID: tc.oid, Value: tc.param}},
+				postgres.QueryConfig{})
 
 			var equal, got bool
 			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -988,8 +988,8 @@ func TestIntegrationNumericMatchesTheServersEncoding(t *testing.T) {
 			// numeric_send is the function the server itself uses to put a
 			// value on the wire, so this is the encoder judging the encoder.
 			src := conn.Query(t.Context(), "SELECT numeric_send($1::text::numeric)",
-				[][]byte{postgres.AppendText(nil, lit)},
-				postgres.QueryConfig{ParamOIDs: []uint32{postgres.OIDText}})
+				[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, lit)}},
+				postgres.QueryConfig{})
 
 			var theirs []byte
 			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -1195,8 +1195,8 @@ func TestIntegrationAnyOverAnEmptyArray(t *testing.T) {
 	conn := dial(t)
 
 	src := conn.Query(t.Context(), "SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1)",
-		[][]byte{postgres.AppendInt8Array(nil, nil)},
-		postgres.QueryConfig{BatchRows: 16, ParamOIDs: []uint32{postgres.OIDInt8Array}})
+		[]postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, nil)}},
+		postgres.QueryConfig{BatchRows: 16})
 
 	rows := 0
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool { rows += len(b.Items); return true })
@@ -1641,7 +1641,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 	}
 
 	tag, err := conn.ExecParams(ctx, "INSERT INTO sluice_exec_params SELECT $1, 'a' FROM generate_series(1, 3)",
-		[][]byte{postgres.AppendInt8(nil, 7)}, []uint32{postgres.OIDInt8})
+		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 7)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1655,8 +1655,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	tag, err = tx.ExecParams(ctx, "UPDATE sluice_exec_params SET v = $2 WHERE x = $1",
-		[][]byte{postgres.AppendInt8(nil, 7), postgres.AppendText(nil, "b'; DROP TABLE x; --")},
-		[]uint32{postgres.OIDInt8, postgres.OIDText})
+		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 7)}, {OID: postgres.OIDText, Value: postgres.AppendText(nil, "b'; DROP TABLE x; --")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1664,7 +1663,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 		t.Errorf("UPDATE: tag %q, RowsAffected() = %d, %v; want UPDATE 3, 3, true", tag, n, ok)
 	}
 	tag, err = tx.ExecParams(ctx, "DELETE FROM sluice_exec_params WHERE x = $1",
-		[][]byte{postgres.AppendInt8(nil, 8)}, []uint32{postgres.OIDInt8})
+		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 8)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1675,7 +1674,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tag, err = conn.ExecParams(ctx, "SET application_name = 'sluice_exec_params'", nil, nil)
+	tag, err = conn.ExecParams(ctx, "SET application_name = 'sluice_exec_params'", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1695,8 +1694,8 @@ func TestIntegrationQueryTagOfAStreamedUpdate(t *testing.T) {
 
 	var tag postgres.CommandTag
 	src := conn.Query(ctx, "UPDATE sluice_query_tag SET x = x + $1 RETURNING x",
-		[][]byte{postgres.AppendInt8(nil, 10)},
-		postgres.QueryConfig{BatchRows: 2, ParamOIDs: []uint32{postgres.OIDInt8}, Tag: &tag})
+		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 10)}},
+		postgres.QueryConfig{BatchRows: 2, Tag: &tag})
 	var rows int64
 	for b := range src.Stream() {
 		rows += int64(len(b.Items))
@@ -1909,7 +1908,7 @@ func TestIntegrationCopyFromStdinThroughExecParamsReturnsAtOnce(t *testing.T) {
 		var err error
 		switch path {
 		case "ExecParams":
-			_, err = conn.ExecParams(ctx, "COPY sluice_copy_execparams FROM STDIN", nil, nil)
+			_, err = conn.ExecParams(ctx, "COPY sluice_copy_execparams FROM STDIN", nil)
 		case "FetchAll":
 			src := conn.Query(ctx, "COPY sluice_copy_execparams FROM STDIN", nil, postgres.QueryConfig{Fetch: postgres.FetchAll})
 			for range src.Stream() {
@@ -1997,7 +1996,7 @@ func TestStalePlanStatementIsClosedOnTheServer(t *testing.T) {
 		}
 	}
 	held := names()
-	cached, _, _ := conn.StatementCacheStats()
+	cached := conn.StatementCacheStats().Prepared
 	if len(held) != cached {
 		t.Errorf("the server holds %d statements %q, the cache %d: the stale statement was forgotten, not closed", len(held), held, cached)
 	}

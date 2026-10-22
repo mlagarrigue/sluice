@@ -63,13 +63,12 @@ func (s *PGStore) LoadLines(ctx context.Context, keys []LineKey) (map[LineKey]Li
 	}
 
 	src := s.conn.Query(ctx, loadSQL,
-		[][]byte{
-			postgres.AppendInt8Array(nil, s.orderIDs),
-			postgres.AppendInt4Array(nil, s.indexes),
+		[]postgres.Param{
+			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, s.orderIDs)},
+			{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, s.indexes)},
 		},
 		postgres.QueryConfig{
 			BatchRows: len(keys),
-			ParamOIDs: []uint32{postgres.OIDInt8Array, postgres.OIDInt4Array},
 		})
 
 	out := make(map[LineKey]Line, len(keys))
@@ -168,14 +167,13 @@ func (s *PGStore) SaveLines(ctx context.Context, lines []Line) error {
 	}
 
 	src := s.conn.Query(ctx, saveSQL,
-		[][]byte{
-			postgres.AppendInt8Array(nil, s.orderIDs),
-			postgres.AppendInt4Array(nil, s.indexes),
-			postgres.AppendInt8Array(nil, qty),
+		[]postgres.Param{
+			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, s.orderIDs)},
+			{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, s.indexes)},
+			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, qty)},
 		},
 		postgres.QueryConfig{
 			BatchRows: 1,
-			ParamOIDs: []uint32{postgres.OIDInt8Array, postgres.OIDInt4Array, postgres.OIDInt8Array},
 		})
 
 	// An UPDATE returns no rows; consuming the stream is what runs it.

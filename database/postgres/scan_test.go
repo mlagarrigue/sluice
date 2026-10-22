@@ -34,17 +34,17 @@ func TestScanners(t *testing.T) {
 		AppendTimestampTZ(nil, at),
 	}
 
-	rows := NewRows(len(values), 4, 0)
-	if err := rows.Append(dataRow(values...)); err != nil {
+	rows := newRows(len(values), 4, 0)
+	if err := rows.appendRow(dataRow(values...)); err != nil {
 		t.Fatal(err)
 	}
-	if err := rows.Append(dataRow(make([][]byte, len(values))...)); err != nil {
+	if err := rows.appendRow(dataRow(make([][]byte, len(values))...)); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("values come out in row order", func(t *testing.T) {
-		one := NewRows(len(values), 4, 0)
-		if err := one.Append(dataRow(values...)); err != nil {
+		one := newRows(len(values), 4, 0)
+		if err := one.appendRow(dataRow(values...)); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := ScanInt8(nil, one, 0); err != nil || len(got) != 1 || got[0] != -1234567890123 {
@@ -91,8 +91,8 @@ func TestScanners(t *testing.T) {
 	// disagree, and reading it anyway is how one bad row makes every later
 	// value plausible nonsense.
 	t.Run("a value of the wrong width is refused", func(t *testing.T) {
-		narrow := NewRows(1, 4, 0)
-		if err := narrow.Append(dataRow([]byte{1, 2, 3})); err != nil {
+		narrow := newRows(1, 4, 0)
+		if err := narrow.appendRow(dataRow([]byte{1, 2, 3})); err != nil {
 			t.Fatal(err)
 		}
 		scanners := map[string]func() error{
@@ -148,8 +148,8 @@ func TestScanners(t *testing.T) {
 	// A float column carrying values a caller cannot compare with == still has
 	// to survive the scan.
 	t.Run("NaN survives a float scan", func(t *testing.T) {
-		one := NewRows(1, 4, 0)
-		if err := one.Append(dataRow(AppendFloat8(nil, math.NaN()))); err != nil {
+		one := newRows(1, 4, 0)
+		if err := one.appendRow(dataRow(AppendFloat8(nil, math.NaN()))); err != nil {
 			t.Fatal(err)
 		}
 		got, err := ScanFloat8(nil, one, 0)
@@ -163,9 +163,9 @@ func TestScanners(t *testing.T) {
 // one row holding value.
 func described(t *testing.T, oid uint32, value []byte) *Rows {
 	t.Helper()
-	rows := NewRows(1, 4, 0)
-	rows.Init([]Field{{Name: "c", TypeOID: oid}}, 4, 0)
-	if err := rows.Append(dataRow(value)); err != nil {
+	rows := newRows(1, 4, 0)
+	rows.start([]Field{{Name: "c", TypeOID: oid}}, 4, 0)
+	if err := rows.appendRow(dataRow(value)); err != nil {
 		t.Fatal(err)
 	}
 	return rows
@@ -252,19 +252,19 @@ func TestGenericScanners(t *testing.T) {
 		AppendUUID(nil, uuid), AppendNumeric(nil, price),
 		AppendTimestamp(nil, at), AppendDate(nil, day),
 	}
-	rows := NewRows(len(values), 4, 0)
-	rows.Init(fields, 4, 0)
-	if err := rows.Append(dataRow(values...)); err != nil {
+	rows := newRows(len(values), 4, 0)
+	rows.start(fields, 4, 0)
+	if err := rows.appendRow(dataRow(values...)); err != nil {
 		t.Fatal(err)
 	}
-	if err := rows.Append(dataRow(make([][]byte, len(values))...)); err != nil {
+	if err := rows.appendRow(dataRow(make([][]byte, len(values))...)); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("values come out in row order", func(t *testing.T) {
-		one := NewRows(len(values), 4, 0)
-		one.Init(fields, 4, 0)
-		if err := one.Append(dataRow(values...)); err != nil {
+		one := newRows(len(values), 4, 0)
+		one.start(fields, 4, 0)
+		if err := one.appendRow(dataRow(values...)); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := ScanInt2(nil, one, 0); err != nil || len(got) != 1 || got[0] != -12345 {
@@ -317,8 +317,8 @@ func TestGenericScanners(t *testing.T) {
 	})
 
 	t.Run("a value of the wrong width is refused", func(t *testing.T) {
-		narrow := NewRows(1, 4, 0)
-		if err := narrow.Append(dataRow([]byte{1, 2, 3})); err != nil {
+		narrow := newRows(1, 4, 0)
+		if err := narrow.appendRow(dataRow([]byte{1, 2, 3})); err != nil {
 			t.Fatal(err)
 		}
 		for name, scan := range scanners {

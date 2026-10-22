@@ -61,8 +61,8 @@ func readDemandAhead(t *testing.T, d *pushdown.Demand, publish func(), rest func
 			rest(read, write)
 		}()
 		conn := NewConn(client)
-		src := conn.Query(t.Context(), demandAheadSQL, [][]byte{int8Val(0)},
-			QueryConfig{BatchRows: 2, ParamOIDs: []uint32{OIDInt8}, Demand: d, KeyParam: 1})
+		src := conn.Query(t.Context(), demandAheadSQL, []Param{{OID: OIDInt8, Value: int8Val(0)}},
+			QueryConfig{BatchRows: 2, Demand: d, KeyParam: 1})
 		src.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
@@ -158,17 +158,17 @@ func TestReplanNeverAsksForEveryRowWhenTheLimitFallsToZero(t *testing.T) {
 // message buffer: kept, a 60 MB batch held 60 MB for the connection's life.
 func TestRowsGivesBackTheStorageOfALargeBatch(t *testing.T) {
 	var r Rows
-	r.Init(nil, 1<<20, 1<<30)
+	r.start(nil, 1<<20, 1<<30)
 	r.buf = append(r.buf, make([]byte, 60<<20)...)
 	r.ends = append(r.ends, 0)
 	r.rows = 1
-	r.Reset()
+	r.reset()
 	for range 300 {
-		r.Init(nil, 1<<20, 1<<30)
+		r.start(nil, 1<<20, 1<<30)
 		r.buf = append(r.buf, 1)
 		r.ends = append(r.ends, 1)
 		r.rows = 1
-		r.Reset()
+		r.reset()
 	}
 	if c := cap(r.buf); c > rowsRetainBytes {
 		t.Errorf("after 300 one-byte batches the row buffer keeps %d bytes, over %d", c, rowsRetainBytes)

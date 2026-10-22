@@ -153,7 +153,7 @@ func TestScalarArrayRoundTrips(t *testing.T) {
 // that collapsed either into the other would make a query about missing data
 // answer about undefined arithmetic.
 func TestFloat8ArrayKeepsNaNDistinctFromNull(t *testing.T) {
-	in := []Null[float64]{Some(math.NaN()), None[float64](), Some(0.0)}
+	in := []Null[float64]{present(math.NaN()), {}, present[float64](0.0)}
 	got, err := DecodeNullableFloat8Array(nil, AppendNullableFloat8Array(nil, in))
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestFloat8ArrayKeepsNaNDistinctFromNull(t *testing.T) {
 // SQL's boolean has three states and Go's has two. Flattening unknown into
 // false would answer a different question.
 func TestNullableBoolArrayKeepsUnknown(t *testing.T) {
-	in := []Null[bool]{Some(true), None[bool](), Some(false)}
+	in := []Null[bool]{present(true), {}, present(false)}
 	got, err := DecodeNullableBoolArray(nil, AppendNullableBoolArray(nil, in))
 	if err != nil {
 		t.Fatal(err)
@@ -191,11 +191,11 @@ func TestNullableBoolArrayKeepsUnknown(t *testing.T) {
 // The non-nullable generic decoders refuse a NULL rather than producing a
 // zero, matching the hand-written ones.
 func TestGenericDecodersRefuseNull(t *testing.T) {
-	raw := appendNullableArrayOf(nil, OIDFloat8, []Null[float64]{None[float64]()}, AppendFloat8)
+	raw := appendNullableArrayOf(nil, OIDFloat8, []Null[float64]{{}}, AppendFloat8)
 	if _, err := DecodeFloat8Array(nil, raw); !errors.Is(err, ErrCodec) {
 		t.Fatalf("DecodeFloat8Array accepted a NULL: %v", err)
 	}
-	rawBool := appendNullableArrayOf(nil, OIDBool, []Null[bool]{None[bool]()}, AppendBool)
+	rawBool := appendNullableArrayOf(nil, OIDBool, []Null[bool]{{}}, AppendBool)
 	if _, err := DecodeBoolArray(nil, rawBool); !errors.Is(err, ErrCodec) {
 		t.Fatalf("DecodeBoolArray accepted a NULL: %v", err)
 	}
@@ -294,18 +294,18 @@ func TestArrayDecodersKeepTheBufferOnError(t *testing.T) {
 	keepsBuffer(t, "int2", AppendInt2Array(nil, []int16{1, 2}), DecodeInt2Array)
 	keepsBuffer(t, "float8", AppendFloat8Array(nil, []float64{1, 2}), DecodeFloat8Array)
 	keepsBuffer(t, "timestamptz", AppendTimestampTZArray(nil, []time.Time{ts, ts}), DecodeTimestampTZArray)
-	keepsBuffer(t, "nullable int8", AppendNullableInt8Array(nil, []Null[int64]{Some[int64](1), {}, Some[int64](2)}), DecodeNullableInt8Array)
-	keepsBuffer(t, "nullable int4", AppendNullableInt4Array(nil, []Null[int32]{Some[int32](1), {}, Some[int32](2)}), DecodeNullableInt4Array)
-	keepsBuffer(t, "nullable text", AppendNullableTextArray(nil, []Null[string]{Some("a"), {}, Some("bc")}), DecodeNullableTextArray)
-	keepsBuffer(t, "nullable uuid", AppendNullableUUIDArray(nil, []Null[[16]byte]{Some(u), {}, Some(u)}), DecodeNullableUUIDArray)
-	keepsBuffer(t, "nullable int2", AppendNullableInt2Array(nil, []Null[int16]{Some[int16](1), {}, Some[int16](2)}), DecodeNullableInt2Array)
-	keepsBuffer(t, "nullable float8", AppendNullableFloat8Array(nil, []Null[float64]{Some(1.5), {}, Some(2.5)}), DecodeNullableFloat8Array)
+	keepsBuffer(t, "nullable int8", AppendNullableInt8Array(nil, []Null[int64]{present[int64](1), {}, present[int64](2)}), DecodeNullableInt8Array)
+	keepsBuffer(t, "nullable int4", AppendNullableInt4Array(nil, []Null[int32]{present[int32](1), {}, present[int32](2)}), DecodeNullableInt4Array)
+	keepsBuffer(t, "nullable text", AppendNullableTextArray(nil, []Null[string]{present("a"), {}, present("bc")}), DecodeNullableTextArray)
+	keepsBuffer(t, "nullable uuid", AppendNullableUUIDArray(nil, []Null[[16]byte]{present(u), {}, present(u)}), DecodeNullableUUIDArray)
+	keepsBuffer(t, "nullable int2", AppendNullableInt2Array(nil, []Null[int16]{present[int16](1), {}, present[int16](2)}), DecodeNullableInt2Array)
+	keepsBuffer(t, "nullable float8", AppendNullableFloat8Array(nil, []Null[float64]{present[float64](1.5), {}, present[float64](2.5)}), DecodeNullableFloat8Array)
 }
 
 // int2[] with NULLs: the round trip, the header's NULL flag, and a NULL
 // element landing as an invalid Null rather than as a zero.
 func TestNullableInt2ArrayRoundTrip(t *testing.T) {
-	in := []Null[int16]{Some[int16](math.MinInt16), {}, Some[int16](0), Some[int16](math.MaxInt16), {}}
+	in := []Null[int16]{present[int16](math.MinInt16), {}, present[int16](0), present[int16](math.MaxInt16), {}}
 	enc := AppendNullableInt2Array(nil, in)
 	if flags := binary.BigEndian.Uint32(enc[4:8]); flags != 1 {
 		t.Errorf("has-NULL flag = %d, want 1", flags)
@@ -322,7 +322,7 @@ func TestNullableInt2ArrayRoundTrip(t *testing.T) {
 	}
 
 	// No NULLs: the flag is clear, and the non-nullable decoder reads it too.
-	plain := AppendNullableInt2Array(nil, []Null[int16]{Some[int16](7), Some[int16](-7)})
+	plain := AppendNullableInt2Array(nil, []Null[int16]{present[int16](7), present[int16](-7)})
 	if flags := binary.BigEndian.Uint32(plain[4:8]); flags != 0 {
 		t.Errorf("has-NULL flag = %d without NULLs, want 0", flags)
 	}
@@ -341,7 +341,7 @@ func TestNullableInt2ArrayRoundTrip(t *testing.T) {
 	}
 
 	// Wrong element type is refused, not reinterpreted.
-	if _, err := DecodeNullableInt2Array(nil, AppendNullableInt4Array(nil, []Null[int32]{Some[int32](1)})); !errors.Is(err, ErrCodec) {
+	if _, err := DecodeNullableInt2Array(nil, AppendNullableInt4Array(nil, []Null[int32]{present[int32](1)})); !errors.Is(err, ErrCodec) {
 		t.Errorf("int4[] decoded as int2[]: %v, want ErrCodec", err)
 	}
 	// An element of the wrong width is refused.
@@ -381,7 +381,7 @@ func TestGenericArraysMatchTheServerBytes(t *testing.T) {
 	})
 	t.Run("nullable float8", func(t *testing.T) {
 		wire := mustHex(t, header+"00000001"+"000002bd"+"0000000200000001"+"000000083ff8000000000000"+"ffffffff")
-		in := []Null[float64]{Some(1.5), {}}
+		in := []Null[float64]{present[float64](1.5), {}}
 		if got := AppendNullableFloat8Array(nil, in); !bytes.Equal(got, wire) {
 			t.Errorf("AppendNullableFloat8Array = % x\n                          want % x", got, wire)
 		}
@@ -425,38 +425,38 @@ func TestNullableArrayRoundTrips(t *testing.T) {
 	}
 
 	nullableRoundTrip(t, "float4", OIDFloat4,
-		[]Null[float32]{Some[float32](1.5), {}, Some[float32](-math.MaxFloat32)},
+		[]Null[float32]{present[float32](1.5), {}, present[float32](-math.MaxFloat32)},
 		AppendNullableFloat4Array, DecodeNullableFloat4Array, DecodeFloat4Array,
 		func(a, b float32) bool { return a == b })
 	nullableRoundTrip(t, "bytea", OIDBytea,
-		[]Null[[]byte]{Some([]byte{1, 2, 3}), {}, Some([]byte{})},
+		[]Null[[]byte]{present([]byte{1, 2, 3}), {}, present([]byte{})},
 		AppendNullableByteaArray, DecodeNullableByteaArray, DecodeByteaArray,
 		bytes.Equal)
 	nullableRoundTrip(t, "timestamptz", OIDTimestampTZ,
-		[]Null[time.Time]{Some(at), {}, Some(InfinityTime())},
+		[]Null[time.Time]{present(at), {}, present(InfinityTime())},
 		AppendNullableTimestampTZArray, DecodeNullableTimestampTZArray, DecodeTimestampTZArray,
 		time.Time.Equal)
 	nullableRoundTrip(t, "timestamp", OIDTimestamp,
-		[]Null[time.Time]{Some(at), {}, Some(at.Add(time.Hour))},
+		[]Null[time.Time]{present(at), {}, present(at.Add(time.Hour))},
 		AppendNullableTimestampArray, DecodeNullableTimestampArray, DecodeTimestampArray,
 		time.Time.Equal)
 	nullableRoundTrip(t, "date", OIDDate,
-		[]Null[time.Time]{Some(day), {}, Some(day.AddDate(0, 0, 1))},
+		[]Null[time.Time]{present(day), {}, present(day.AddDate(0, 0, 1))},
 		AppendNullableDateArray, DecodeNullableDateArray, DecodeDateArray,
 		time.Time.Equal)
 	nullableRoundTrip(t, "numeric", OIDNumeric,
-		[]Null[Numeric]{Some(price), {}, Some(Numeric{Sign: NumericNaN})},
+		[]Null[Numeric]{present(price), {}, present(Numeric{Sign: NumericNaN})},
 		AppendNullableNumericArray, DecodeNullableNumericArray, DecodeNumericArray,
 		func(a, b Numeric) bool { return a.String() == b.String() })
 
 	// An empty bytea element and a NULL one are both zero-length and must
 	// not be confused: the first is a value, the second is not.
-	got, err := DecodeNullableByteaArray(nil, AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{}), {}}))
+	got, err := DecodeNullableByteaArray(nil, AppendNullableByteaArray(nil, []Null[[]byte]{present([]byte{}), {}}))
 	if err != nil || len(got) != 2 || !got[0].Valid || got[1].Valid {
 		t.Errorf("bytea empty-vs-NULL = %v, %v; want [valid empty, invalid]", got, err)
 	}
 	// What comes back is a copy, not a window on the wire buffer.
-	raw := AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{7})})
+	raw := AppendNullableByteaArray(nil, []Null[[]byte]{present([]byte{7})})
 	got, _ = DecodeNullableByteaArray(nil, raw)
 	raw[len(raw)-1] = 9
 	if got[0].Value[0] != 7 {
@@ -464,12 +464,12 @@ func TestNullableArrayRoundTrips(t *testing.T) {
 	}
 
 	// The buffer survives a bad batch, like every other decoder's.
-	keepsBuffer(t, "nullable float4", AppendNullableFloat4Array(nil, []Null[float32]{Some[float32](1), {}, Some[float32](2)}), DecodeNullableFloat4Array)
-	keepsBuffer(t, "nullable bytea", AppendNullableByteaArray(nil, []Null[[]byte]{Some([]byte{1}), {}, Some([]byte{2})}), DecodeNullableByteaArray)
-	keepsBuffer(t, "nullable timestamptz", AppendNullableTimestampTZArray(nil, []Null[time.Time]{Some(at), {}, Some(at)}), DecodeNullableTimestampTZArray)
-	keepsBuffer(t, "nullable timestamp", AppendNullableTimestampArray(nil, []Null[time.Time]{Some(at), {}, Some(at)}), DecodeNullableTimestampArray)
-	keepsBuffer(t, "nullable date", AppendNullableDateArray(nil, []Null[time.Time]{Some(day), {}, Some(day)}), DecodeNullableDateArray)
-	keepsBuffer(t, "nullable numeric", AppendNullableNumericArray(nil, []Null[Numeric]{Some(price), {}, Some(price)}), DecodeNullableNumericArray)
+	keepsBuffer(t, "nullable float4", AppendNullableFloat4Array(nil, []Null[float32]{present[float32](1), {}, present[float32](2)}), DecodeNullableFloat4Array)
+	keepsBuffer(t, "nullable bytea", AppendNullableByteaArray(nil, []Null[[]byte]{present([]byte{1}), {}, present([]byte{2})}), DecodeNullableByteaArray)
+	keepsBuffer(t, "nullable timestamptz", AppendNullableTimestampTZArray(nil, []Null[time.Time]{present(at), {}, present(at)}), DecodeNullableTimestampTZArray)
+	keepsBuffer(t, "nullable timestamp", AppendNullableTimestampArray(nil, []Null[time.Time]{present(at), {}, present(at)}), DecodeNullableTimestampArray)
+	keepsBuffer(t, "nullable date", AppendNullableDateArray(nil, []Null[time.Time]{present(day), {}, present(day)}), DecodeNullableDateArray)
+	keepsBuffer(t, "nullable numeric", AppendNullableNumericArray(nil, []Null[Numeric]{present(price), {}, present(price)}), DecodeNullableNumericArray)
 }
 
 func nullableRoundTrip[T any](t *testing.T, name string, elem uint32, in []Null[T],

@@ -51,7 +51,7 @@ func FuzzParseRowDescription(f *testing.F) {
 	})
 }
 
-// Rows.Append is fed the one message whose contents a caller may not control:
+// Rows.appendRow is fed the one message whose contents a caller may not control:
 // whatever the server sends, it must fail cleanly or hold exactly what it was
 // given, never index past its own buffer.
 func FuzzRowsAppend(f *testing.F) {
@@ -64,8 +64,8 @@ func FuzzRowsAppend(f *testing.F) {
 		if fields < 0 || fields > 64 {
 			t.Skip("a width outside what a fuzzer can usefully explore")
 		}
-		r := NewRows(fields, 4, 0)
-		if err := r.Append(body); err != nil {
+		r := newRows(fields, 4, 0)
+		if err := r.appendRow(body); err != nil {
 			if !errors.Is(err, ErrProtocol) && !errors.Is(err, ErrTooManyRows) {
 				t.Fatalf("unclassified error %v", err)
 			}

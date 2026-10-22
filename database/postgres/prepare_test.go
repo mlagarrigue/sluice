@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -85,11 +87,6 @@ func oneRow() [][]byte {
 	return [][]byte{first, beReadyForQuery()}
 }
 
-// closeCycle is what the server answers to a Close plus Sync.
-func closeCycle() []byte {
-	return append(beSimple(pgwire.BackendCloseComplete), beReadyForQuery()...)
-}
-
 func drain(t *testing.T, src sluice.Source[Row]) error {
 	t.Helper()
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
@@ -101,19 +98,30 @@ func drain(t *testing.T, src sluice.Source[Row]) error {
 // they test is the cache, not how FetchAuto would fetch a statement it knows.
 var batched = QueryConfig{Fetch: FetchBatches}
 
-// A negative bound is a mistake, not a way to say "off": zero is. It is
-// refused before anything reaches the socket, and the cache stays as it was.
-func TestStatementCacheRefusesANegativeBound(t *testing.T) {
-	conn := NewConn(&fakeServer{})
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
-	err := conn.PrepareStatements(-1)
-	if err == nil || !strings.Contains(err.Error(), "-1") {
-		t.Fatalf("PrepareStatements(-1) = %v, want a refusal naming -1", err)
-	}
-	if conn.stmts == nil || conn.stmts.max != 8 {
-		t.Errorf("the refused call changed the cache: %+v", conn.stmts)
+// The cache is sized once, by the configuration Connect is given: zero is the
+// default bound, a negative size turns the cache off, a positive one is the
+// bound.
+func TestStatementCacheSizeComesFromTheConfig(t *testing.T) {
+	for _, tc := range []struct {
+		size int
+		want int // the bound, or -1 for no cache
+	}{
+		{0, defaultStatementCacheBound},
+		{-1, -1},
+		{8, 8},
+	} {
+		srv := &fakeServer{responses: [][]byte{trustScript()}}
+		conn, err := startup(srv, Config{User: "orders", StatementCacheSize: tc.size})
+		if err != nil {
+			t.Fatalf("StatementCacheSize %d: startup returned %v", tc.size, err)
+		}
+		got := -1
+		if conn.stmts != nil {
+			got = conn.stmts.max
+		}
+		if got != tc.want {
+			t.Errorf("StatementCacheSize %d: bound %d, want %d", tc.size, got, tc.want)
+		}
 	}
 }
 
@@ -122,9 +130,7 @@ func TestStatementCacheRefusesANegativeBound(t *testing.T) {
 func TestStatementCacheOff(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(0); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = nil // what a negative Config.StatementCacheSize leaves
 
 	for range 2 {
 		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
@@ -139,8 +145,8 @@ func TestStatementCacheOff(t *testing.T) {
 	if got := len(parsed(t, srv)); got != 2 {
 		t.Errorf("%d Parse messages, want 2: with no cache every query re-parses", got)
 	}
-	if prepared, hits, misses := conn.StatementCacheStats(); prepared != 0 || hits != 0 || misses != 0 {
-		t.Errorf("stats = %d/%d/%d with the cache off", prepared, hits, misses)
+	if st := conn.StatementCacheStats(); st != (StatementCacheStats{}) {
+		t.Errorf("stats = %+v with the cache off", st)
 	}
 }
 
@@ -149,9 +155,7 @@ func TestStatementCacheOff(t *testing.T) {
 func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 
 	for range 2 {
 		if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
@@ -173,9 +177,8 @@ func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 		t.Errorf("Binds went to %q, want both to %q", bs, name)
 	}
 
-	prepared, hits, misses := conn.StatementCacheStats()
-	if prepared != 1 || hits != 1 || misses != 1 {
-		t.Errorf("stats = prepared %d, hits %d, misses %d; want 1/1/1", prepared, hits, misses)
+	if st, want := conn.StatementCacheStats(), (StatementCacheStats{Prepared: 1, Hits: 1, Misses: 1}); st != want {
+		t.Errorf("stats = %+v, want %+v", st, want)
 	}
 }
 
@@ -185,17 +188,15 @@ func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 func TestStatementCacheKeyIncludesTheParameterTypes(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id WHERE k = $1"
-	if err := drain(t, conn.Query(t.Context(), sql, [][]byte{nil},
-		QueryConfig{Fetch: FetchBatches, ParamOIDs: []uint32{OIDInt8}})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: OIDInt8, Value: nil}},
+		QueryConfig{Fetch: FetchBatches})); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), sql, [][]byte{nil},
-		QueryConfig{Fetch: FetchBatches, ParamOIDs: []uint32{OIDInt4}})); err != nil {
+	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: OIDInt4, Value: nil}},
+		QueryConfig{Fetch: FetchBatches})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,9 +222,7 @@ func TestStatementCacheEvictsLeastRecentlyUsedAndClosesIt(t *testing.T) {
 		append(beSimple(pgwire.BackendCloseComplete), oneRow()[0]...), oneRow()[1],
 	}}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(2); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(2)
 
 	for _, sql := range []string{"SELECT a", "SELECT b", "SELECT a", "SELECT c"} {
 		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -249,7 +248,7 @@ func TestStatementCacheEvictsLeastRecentlyUsedAndClosesIt(t *testing.T) {
 	if cs[0] != bName {
 		t.Errorf("closed %q, want %q — the least recently used was not the one evicted", cs[0], bName)
 	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 2 {
+	if prepared := conn.StatementCacheStats().Prepared; prepared != 2 {
 		t.Errorf("%d statements prepared, want the bound of 2", prepared)
 	}
 	// The Close travels with C's Parse: nothing that makes the server answer
@@ -284,9 +283,7 @@ func TestStatementCacheRetriesAnUnconfirmedClose(t *testing.T) {
 		append(append(beSimple(pgwire.BackendCloseComplete), beSimple(pgwire.BackendCloseComplete)...), oneRow()[0]...), oneRow()[1], // C
 	}}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(1); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(1)
 	if err := drain(t, conn.Query(t.Context(), "SELECT a", nil, batched)); err != nil {
 		t.Fatal(err)
 	}
@@ -321,9 +318,7 @@ func TestStatementCacheBreaksOnACloseTheServerAnsweredAround(t *testing.T) {
 	}
 	srv := &fakeServer{responses: responses}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(2); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(2)
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
 		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatal(err)
@@ -356,9 +351,7 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 		append(beSimple(pgwire.BackendCloseComplete), oneRow()[0]...), oneRow()[1],
 	}}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id"
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -372,7 +365,7 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	if conn.Err() != nil {
 		t.Fatalf("the connection was broken by a stale plan: %v", conn.Err())
 	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
+	if prepared := conn.StatementCacheStats().Prepared; prepared != 0 {
 		t.Errorf("%d statements still cached after the server rejected one", prepared)
 	}
 
@@ -413,68 +406,13 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 	}
 }
 
-// Turning the cache off must release what it holds on the server, not just
-// forget about it here.
-func TestPrepareStatementsZeroClosesEverything(t *testing.T) {
-	srv := &fakeServer{responses: [][]byte{
-		oneRow()[0], oneRow()[1],
-		closeCycle(),
-	}}
-	conn := NewConn(srv)
-	if err := conn.PrepareStatements(4); err != nil {
-		t.Fatal(err)
-	}
-	if err := drain(t, conn.Query(t.Context(), "SELECT id", nil, batched)); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.PrepareStatements(0); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := len(closed(t, srv)); got != 1 {
-		t.Errorf("%d statements closed when the cache was turned off, want 1", got)
-	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
-		t.Errorf("%d statements still reported after the cache was turned off", prepared)
-	}
-}
-
-// Shrinking the bound must evict down to it on the server too.
-func TestPrepareStatementsShrinkEvicts(t *testing.T) {
-	srv := &fakeServer{responses: [][]byte{
-		oneRow()[0], oneRow()[1],
-		oneRow()[0], oneRow()[1],
-		closeCycle(),
-	}}
-	conn := NewConn(srv)
-	if err := conn.PrepareStatements(4); err != nil {
-		t.Fatal(err)
-	}
-	for _, sql := range []string{"SELECT a", "SELECT b"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := conn.PrepareStatements(1); err != nil {
-		t.Fatal(err)
-	}
-	if got := len(closed(t, srv)); got != 1 {
-		t.Errorf("%d statements closed when shrinking 4 → 1, want 1", got)
-	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 1 {
-		t.Errorf("%d statements prepared after shrinking to 1", prepared)
-	}
-}
-
 // Statement names are generated here and never taken from a caller: they are
 // concatenated into SQL-adjacent protocol fields, and a name from a request
 // would be the one place this package builds an identifier it did not choose.
 func TestStatementNamesAreGenerated(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
 		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 			t.Fatal(err)
@@ -553,15 +491,13 @@ func TestStatementCacheForgetsAStatementTheServerRefused(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{refused, beReadyForQuery()}}
 	srv.responses = append(srv.responses, oneRow()...)
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 
 	const sql = "SELCT id"
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err == nil {
 		t.Fatal("the refused query reported no error")
 	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
+	if prepared := conn.StatementCacheStats().Prepared; prepared != 0 {
 		t.Errorf("%d statements cached after the server refused the only Parse", prepared)
 	}
 
@@ -587,9 +523,7 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	srv.responses = append(srv.responses, gone, beReadyForQuery())
 	srv.responses = append(srv.responses, oneRow()...)
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id"
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -598,7 +532,7 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err == nil {
 		t.Fatal("the query against the vanished statement reported no error")
 	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 0 {
+	if prepared := conn.StatementCacheStats().Prepared; prepared != 0 {
 		t.Errorf("%d statements cached after the server said it holds none", prepared)
 	}
 
@@ -616,29 +550,6 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	// under the name, and a Close of it would be a message for nothing.
 	if cs := closed(t, srv); len(cs) != 0 {
 		t.Errorf("closed %q after the server said it holds no such statement", cs)
-	}
-}
-
-// Closing every statement stops at the first broken connection: the rest die
-// with the backend session, and writing their Close messages is talking on a
-// socket whose position nobody knows.
-func TestCloseAllStatementsStopsOnceBroken(t *testing.T) {
-	w := &tripwire{fakeServer: &fakeServer{responses: append(oneRow(), oneRow()...)}}
-	conn := NewConn(w)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
-	for _, sql := range []string{"SELECT a", "SELECT b"} {
-		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The script is exhausted: the first Close reads EOF and breaks.
-	if err := conn.PrepareStatements(0); !errors.Is(err, ErrConnBroken) {
-		t.Fatalf("PrepareStatements(0) returned %v, want ErrConnBroken", err)
-	}
-	if w.after != 0 {
-		t.Errorf("closing statements touched the socket %d more times after it failed", w.after)
 	}
 }
 
@@ -676,9 +587,7 @@ func TestStatementCacheKeepsEntryOnOtherFeatureNotSupported(t *testing.T) {
 
 	srv := &fakeServer{responses: [][]byte{oneRow()[0], oneRow()[1], refused, beReadyForQuery()}}
 	conn := NewConn(srv)
-	if err := conn.PrepareStatements(8); err != nil {
-		t.Fatal(err)
-	}
+	conn.stmts = newStmtCache(8)
 	const sql = "SELECT id"
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
 		t.Fatal(err)
@@ -691,7 +600,85 @@ func TestStatementCacheKeepsEntryOnOtherFeatureNotSupported(t *testing.T) {
 	if errors.Is(err, ErrStalePlan) {
 		t.Errorf("an unrelated 0A000 was reported as a stale plan: %v", err)
 	}
-	if prepared, _, _ := conn.StatementCacheStats(); prepared != 1 {
+	if prepared := conn.StatementCacheStats().Prepared; prepared != 1 {
 		t.Errorf("%d statements cached, want the healthy entry kept", prepared)
 	}
+}
+
+// A Param carries its type, and a Parse declares the types of a prefix of the
+// parameters: every OID up to the last stated one, zero for those between
+// that the server infers, and none at all when no type is stated — the Parse
+// a query without types always sent. The values go out in the Bind, a nil
+// one as NULL, and the connection keeps none of them past the query.
+func TestParseDeclaresTheStatedTypes(t *testing.T) {
+	val := []byte{0, 0, 0, 0, 0, 0, 0, 7}
+	for _, tc := range []struct {
+		params []Param
+		want   []uint32
+	}{
+		{[]Param{{Value: val}, {Value: nil}}, nil},
+		{[]Param{{OID: OIDInt8, Value: val}, {Value: val}}, []uint32{OIDInt8}},
+		{[]Param{{Value: val}, {OID: OIDText, Value: nil}}, []uint32{0, OIDText}},
+	} {
+		srv := &fakeServer{responses: oneRow()}
+		conn := NewConn(srv)
+		if err := drain(t, conn.Query(t.Context(), "SELECT id WHERE k = $1 AND v = $2", tc.params, batched)); err != nil {
+			t.Fatal(err)
+		}
+		var oids []uint32
+		var values [][]byte
+		rd := pgwire.NewReader(bytes.NewReader(srv.sent.Bytes()))
+		for {
+			m, err := rd.Next()
+			if err != nil {
+				break
+			}
+			switch m.Type {
+			case pgwire.FrontendParse:
+				_, rest, _ := cstring(m.Body)
+				_, rest, _ = cstring(rest)
+				for n, i := int(binary.BigEndian.Uint16(rest)), 0; i < n; i++ {
+					oids = append(oids, binary.BigEndian.Uint32(rest[2+4*i:]))
+				}
+			case pgwire.FrontendBind:
+				values = bindValues(t, m.Body)
+			}
+		}
+		if !slices.Equal(oids, tc.want) {
+			t.Errorf("params %+v: Parse declared %v, want %v", tc.params, oids, tc.want)
+		}
+		if len(values) != len(tc.params) {
+			t.Fatalf("params %+v: Bind carried %d values", tc.params, len(values))
+		}
+		for i, p := range tc.params {
+			if (values[i] == nil) != (p.Value == nil) || !bytes.Equal(values[i], p.Value) {
+				t.Errorf("params %+v: value %d went out as %v", tc.params, i, values[i])
+			}
+		}
+		for i, v := range conn.valuesScratch[:cap(conn.valuesScratch)] {
+			if v != nil {
+				t.Errorf("the connection still holds value %d of the last query", i)
+			}
+		}
+	}
+}
+
+// bindValues parses the parameter values out of a Bind body, nil for NULL.
+func bindValues(t *testing.T, body []byte) [][]byte {
+	t.Helper()
+	_, rest, _ := cstring(body) // portal
+	_, rest, _ = cstring(rest)  // statement
+	rest = rest[2+2*int(binary.BigEndian.Uint16(rest)):]
+	n := int(binary.BigEndian.Uint16(rest))
+	rest = rest[2:]
+	values := make([][]byte, n)
+	for i := range n {
+		size := int32(binary.BigEndian.Uint32(rest))
+		rest = rest[4:]
+		if size < 0 {
+			continue
+		}
+		values[i], rest = rest[:size:size], rest[size:]
+	}
+	return values
 }

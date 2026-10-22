@@ -127,7 +127,7 @@ func decodeNullableArrayOf[T any](dst []Null[T], b []byte, elem uint32, dec func
 		if err != nil {
 			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
 		}
-		dst = append(dst, Some(v))
+		dst = append(dst, Null[T]{Value: v, Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst[:0], err

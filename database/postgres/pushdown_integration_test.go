@@ -20,8 +20,8 @@ func int8Key(v int64) []byte { return binary.BigEndian.AppendUint64(nil, uint64(
 func pushdownQuery(t *testing.T, conn *postgres.Conn, d *pushdown.Demand) sluice.Source[postgres.Row] {
 	t.Helper()
 	return conn.Query(t.Context(), pushdownSQL,
-		[][]byte{int8Key(0)}, // the floor: every key is above it until a bound says otherwise
-		postgres.QueryConfig{BatchRows: 100, ParamOIDs: []uint32{postgres.OIDInt8}, Demand: d, KeyParam: 1},
+		[]postgres.Param{{OID: postgres.OIDInt8, Value: int8Key(0)}}, // the floor: every key is above it until a bound says otherwise
+		postgres.QueryConfig{BatchRows: 100, Demand: d, KeyParam: 1},
 	)
 }
 

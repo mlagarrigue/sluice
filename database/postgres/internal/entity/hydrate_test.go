@@ -1,7 +1,9 @@
 package entity_test
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,79 @@ import (
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/internal/entity"
 )
+
+// replay is a backend that has already answered: it drops what the client
+// sends and hands back one scripted result. The tests below reach a
+// *postgres.Rows the way every caller does, through a query, so what they
+// hydrate is the connection's own accumulator, reused from batch to batch.
+type replay struct{ *bytes.Reader }
+
+func (replay) Write(p []byte) (int, error) { return len(p), nil }
+func (replay) Close() error                { return nil }
+
+// eachBatch runs a query against a backend whose result has the given
+// columns and arrives as the given batches of DataRow bodies, and calls fn
+// with each batch's rows, valid only for the call. Every batch but the last
+// is as long as the first: the server cuts a result at the row limit the
+// client asks for, and the first batch's length is that limit.
+func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn func(rows *postgres.Rows)) {
+	tb.Helper()
+	var script []byte
+	msg := func(typ byte, body []byte) {
+		script = append(script, typ)
+		script = binary.BigEndian.AppendUint32(script, uint32(4+len(body)))
+		script = append(script, body...)
+	}
+	msg('1', nil) // ParseComplete
+	msg('2', nil) // BindComplete
+	msg('T', rowDescription(fields))
+	total := 0
+	for i, batch := range batches {
+		if i < len(batches)-1 && len(batch) != len(batches[0]) {
+			tb.Fatalf("batch %d holds %d rows, and only the last may be shorter than the first's %d", i, len(batch), len(batches[0]))
+		}
+		for _, row := range batch {
+			msg('D', row)
+		}
+		total += len(batch)
+		if i < len(batches)-1 {
+			msg('s', nil) // PortalSuspended
+		}
+	}
+	msg('C', fmt.Appendf(nil, "SELECT %d\x00", total))
+	msg('Z', []byte("I"))
+
+	conn := postgres.NewConn(replay{bytes.NewReader(script)})
+	src := conn.Query(tb.Context(), "SELECT", nil, postgres.QueryConfig{
+		BatchRows: len(batches[0]),
+		Fetch:     postgres.FetchBatches,
+	})
+	for b := range src.Stream() {
+		if b.Len() > 0 {
+			fn(b.Items[0].Rows())
+		}
+	}
+	if err := src.Err(); err != nil {
+		tb.Fatalf("the scripted query failed: %v", err)
+	}
+}
+
+// rowDescription builds a RowDescription body for fields, every column in
+// binary.
+func rowDescription(fields []postgres.Field) []byte {
+	b := binary.BigEndian.AppendUint16(nil, uint16(len(fields)))
+	for _, f := range fields {
+		b = append(b, f.Name...)
+		b = append(b, 0)
+		b = binary.BigEndian.AppendUint32(b, 0) // table OID
+		b = binary.BigEndian.AppendUint16(b, 0) // column number
+		b = binary.BigEndian.AppendUint32(b, f.TypeOID)
+		b = binary.BigEndian.AppendUint16(b, 0) // type size
+		b = binary.BigEndian.AppendUint32(b, 0) // type modifier
+		b = binary.BigEndian.AppendUint16(b, 1) // binary
+	}
+	return b
+}
 
 // dataRow builds a DataRow body; a nil value is NULL.
 func dataRow(values ...[]byte) []byte {
@@ -60,18 +135,15 @@ func TestGeneratedHydrator(t *testing.T) {
 
 	at := time.Date(2024, 5, 4, 10, 0, 0, 0, time.UTC)
 	note := "urgent"
-	rows := postgres.NewRows(6, 8, 0)
-	if err := rows.Append(orderRow(1, 12.5, at, &note, true, "first")); err != nil {
-		t.Fatal(err)
-	}
-	if err := rows.Append(orderRow(2, 0, at, nil, false, "second")); err != nil {
-		t.Fatal(err)
-	}
-
-	orders, err := entity.HydrateOrder(nil, rows, plan)
-	if err != nil {
-		t.Fatalf("HydrateOrder returned %v", err)
-	}
+	var orders []entity.Order
+	eachBatch(t, orderFields(), [][][]byte{{
+		orderRow(1, 12.5, at, &note, true, "first"),
+		orderRow(2, 0, at, nil, false, "second"),
+	}}, func(rows *postgres.Rows) {
+		if orders, err = entity.HydrateOrder(orders, rows, plan); err != nil {
+			t.Fatalf("HydrateOrder returned %v", err)
+		}
+	})
 	if len(orders) != 2 {
 		t.Fatalf("got %d orders, want 2", len(orders))
 	}
@@ -159,7 +231,6 @@ func TestHydrateRejectsUnexpectedNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := postgres.NewRows(6, 4, 0)
 	// A NULL id, which Order declares as a plain int64.
 	body := dataRow(
 		postgres.AppendTimestampTZ(nil, time.Now()),
@@ -169,10 +240,10 @@ func TestHydrateRejectsUnexpectedNull(t *testing.T) {
 		postgres.AppendBool(nil, true),
 		[]byte("x"),
 	)
-	if err := rows.Append(body); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := entity.HydrateOrder(nil, rows, plan); err == nil {
+	eachBatch(t, orderFields(), [][][]byte{{body}}, func(rows *postgres.Rows) {
+		_, err = entity.HydrateOrder(nil, rows, plan)
+	})
+	if err == nil {
 		t.Fatal("a NULL in a non-nullable column was accepted")
 	} else if !strings.Contains(err.Error(), "id") {
 		t.Errorf("error = %v, want it to name the column", err)
@@ -195,38 +266,40 @@ func TestHydrateKeepsTheCallersBufferWhenARowFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// One good batch, so the caller has a buffer worth keeping.
-	rows := postgres.NewRows(6, 4, 0)
-	if err := rows.Append(orderRow(1, 10, time.Now().UTC(), nil, true, "a")); err != nil {
-		t.Fatal(err)
-	}
-	dst, err := entity.HydrateOrder(nil, rows, plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(dst) != 1 {
-		t.Fatalf("the first batch produced %d orders, want 1", len(dst))
-	}
-	before, capBefore := len(dst), cap(dst)
-
-	// A second batch whose second row is unhydratable.
-	rows.Reset()
-	if err := rows.Append(orderRow(2, 20, time.Now().UTC(), nil, true, "b")); err != nil {
-		t.Fatal(err)
-	}
+	// One good batch, so the caller has a buffer worth keeping, then a second
+	// whose second row is unhydratable.
+	at := time.Now().UTC()
 	bad := dataRow(
-		postgres.AppendTimestampTZ(nil, time.Now().UTC()),
+		postgres.AppendTimestampTZ(nil, at),
 		postgres.AppendFloat8(nil, 30),
 		nil, // a NULL id, which Order cannot hold
 		nil,
 		postgres.AppendBool(nil, true),
 		[]byte("c"),
 	)
-	if err := rows.Append(bad); err != nil {
-		t.Fatal(err)
+	var dst []entity.Order
+	var before, capBefore int
+	batch := 0
+	eachBatch(t, orderFields(), [][][]byte{
+		{orderRow(1, 10, at, nil, true, "a"), orderRow(2, 15, at, nil, true, "b")},
+		{orderRow(3, 20, at, nil, true, "c"), bad},
+	}, func(rows *postgres.Rows) {
+		batch++
+		if batch == 1 {
+			if dst, err = entity.HydrateOrder(dst, rows, plan); err != nil {
+				t.Fatal(err)
+			}
+			if len(dst) != 2 {
+				t.Fatalf("the first batch produced %d orders, want 2", len(dst))
+			}
+			before, capBefore = len(dst), cap(dst)
+			return
+		}
+		dst, err = entity.HydrateOrder(dst, rows, plan)
+	})
+	if batch != 2 {
+		t.Fatalf("the query delivered %d batches, want 2", batch)
 	}
-
-	dst, err = entity.HydrateOrder(dst, rows, plan)
 	if err == nil {
 		t.Fatal("the unhydratable row was accepted")
 	}
@@ -254,21 +327,21 @@ func BenchmarkGeneratedHydrate(b *testing.B) {
 	const n = 1024
 	at := time.Now().UTC()
 	note := "n"
-	rows := postgres.NewRows(6, n, 0)
+	bodies := make([][]byte, n)
 	for i := range n {
-		if err := rows.Append(orderRow(int64(i), float64(i), at, &note, i%2 == 0, "label")); err != nil {
-			b.Fatal(err)
-		}
+		bodies[i] = orderRow(int64(i), float64(i), at, &note, i%2 == 0, "label")
 	}
 
 	dst := make([]entity.Order, 0, n)
-	b.ReportAllocs()
-	for b.Loop() {
-		dst, err = entity.HydrateOrder(dst[:0], rows, plan)
-		if err != nil {
-			b.Fatal(err)
+	eachBatch(b, orderFields(), [][][]byte{bodies}, func(rows *postgres.Rows) {
+		b.ReportAllocs()
+		for b.Loop() {
+			dst, err = entity.HydrateOrder(dst[:0], rows, plan)
+			if err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*n), "ns/row")
 }
 
@@ -299,31 +372,52 @@ func TestGeneratedProductHydrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
-	rows := postgres.NewRows(7, 4, 0)
-	if err := rows.Append(dataRow(
-		[]byte("AB-1  "), []byte("postgres"), []byte{1, 2, 3}, nil,
-		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
-		postgres.AppendFloat8(nil, 1.25),
-	)); err != nil {
-		t.Fatal(err)
+	first := [][]byte{
+		dataRow(
+			[]byte("AB-1  "), []byte("postgres"), []byte{1, 2, 3}, nil,
+			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+			postgres.AppendFloat8(nil, 1.25),
+		),
+		dataRow(
+			[]byte("AB-2  "), []byte("postgres"), []byte{1, 2, 3}, nil,
+			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+			nil,
+		),
 	}
-	if err := rows.Append(dataRow(
-		[]byte("AB-2  "), []byte("postgres"), []byte{1, 2, 3}, nil,
-		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
-		nil,
-	)); err != nil {
-		t.Fatal(err)
+	// The second batch overwrites the connection's row buffer, which is what
+	// the bytea check below needs.
+	second := [][]byte{dataRow(
+		[]byte("ZZ-9  "), []byte("other"), []byte{9, 9, 9}, []byte{7},
+		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), nil,
+	)}
+
+	var got []entity.Product
+	var p entity.Product
+	batch := 0
+	eachBatch(t, productFields(postgres.OIDDate), [][][]byte{first, second}, func(rows *postgres.Rows) {
+		batch++
+		if batch > 1 {
+			// The bytes are the field's own: the row buffer is reused for
+			// the next batch, and a []byte that aliased it would have
+			// changed under the caller by now.
+			if string(p.Image) != "\x01\x02\x03" {
+				t.Errorf("Image changed with the row buffer: %v", p.Image)
+			}
+			return
+		}
+		if got, err = entity.HydrateProduct(nil, rows, plan); err != nil {
+			t.Fatalf("HydrateProduct returned %v", err)
+		}
+		p = got[0]
+	})
+	if batch != 2 {
+		t.Fatalf("the query delivered %d batches, want 2", batch)
 	}
-	got, err := entity.HydrateProduct(nil, rows, plan)
-	if err != nil {
-		t.Fatalf("HydrateProduct returned %v", err)
-	}
-	p := got[0]
 	if p.SKU != "AB-1  " || p.Owner != "postgres" {
 		t.Errorf("text fields = %q, %q", p.SKU, p.Owner)
 	}
-	if string(p.Image) != "\x01\x02\x03" || p.Thumbnail != nil {
-		t.Errorf("bytea fields = %v, %v", p.Image, p.Thumbnail)
+	if p.Thumbnail != nil {
+		t.Errorf("Thumbnail = %v, want nil for a NULL", p.Thumbnail)
 	}
 	if p.Price.String() != "19.90" {
 		t.Errorf("Price = %s, want 19.90 with its scale", p.Price)
@@ -331,26 +425,13 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	if !p.Released.Equal(day) {
 		t.Errorf("Released = %v, want %v", p.Released, day)
 	}
-	// A Null[T] field: present as Some(v), absent as the zero Null — never a
-	// zero value that reads as present.
-	if p.Weight != postgres.Some(1.25) {
-		t.Errorf("Weight = %+v, want Some(1.25)", p.Weight)
+	// A Null[T] field: present as a valid value, absent as the zero Null —
+	// never a zero value that reads as present.
+	if want := (postgres.Null[float64]{Value: 1.25, Valid: true}); p.Weight != want {
+		t.Errorf("Weight = %+v, want %+v", p.Weight, want)
 	}
 	if got[1].Weight.Valid {
 		t.Errorf("Weight of a NULL row = %+v, want an invalid Null", got[1].Weight)
-	}
-
-	// The bytes are the field's own: the row buffer is reused for the next
-	// batch, and a []byte that aliased it would change under the caller.
-	rows.Reset()
-	if err := rows.Append(dataRow(
-		[]byte("ZZ-9  "), []byte("other"), []byte{9, 9, 9}, []byte{7},
-		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), nil,
-	)); err != nil {
-		t.Fatal(err)
-	}
-	if string(p.Image) != "\x01\x02\x03" {
-		t.Errorf("Image changed with the row buffer: %v", p.Image)
 	}
 
 	// A timestamp column is refused for the date field: the bytes differ.
@@ -369,26 +450,22 @@ func TestNullFieldDoesNotAllocate(t *testing.T) {
 	}
 	price, _ := postgres.ParseNumeric("1")
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
-	row := func(weight []byte) *postgres.Rows {
-		rows := postgres.NewRows(7, 4, 0)
-		if err := rows.Append(dataRow(
+	dst := make([]entity.Product, 0, 1)
+	allocs := func(weight []byte) float64 {
+		var n float64
+		eachBatch(t, productFields(postgres.OIDDate), [][][]byte{{dataRow(
 			[]byte("A"), []byte("o"), []byte{1}, nil,
 			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), weight,
-		)); err != nil {
-			t.Fatal(err)
-		}
-		return rows
-	}
-	present, absent := row(postgres.AppendFloat8(nil, 1)), row(nil)
-	dst := make([]entity.Product, 0, 1)
-	allocs := func(rows *postgres.Rows) float64 {
-		return testing.AllocsPerRun(100, func() {
-			if _, err := entity.HydrateProduct(dst[:0], rows, plan); err != nil {
-				t.Fatal(err)
-			}
+		)}}, func(rows *postgres.Rows) {
+			n = testing.AllocsPerRun(100, func() {
+				if _, err := entity.HydrateProduct(dst[:0], rows, plan); err != nil {
+					t.Fatal(err)
+				}
+			})
 		})
+		return n
 	}
-	if extra := allocs(present) - allocs(absent); extra != 0 {
+	if extra := allocs(postgres.AppendFloat8(nil, 1)) - allocs(nil); extra != 0 {
 		t.Errorf("a present Null[float64] costs %v allocations per row, want 0", extra)
 	}
 }

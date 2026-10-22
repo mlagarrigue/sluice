@@ -251,7 +251,8 @@ The per-round ratio pgx/sluice runs from 0.99 to 1.15, with one wild round at
 1.63 that the sign test counts as a single win; the interquartile range is
 1.02 to 1.11. A pre-signal, not the study's figure: in process, on a laptop
 sharing one machine with its PostgreSQL container, with the connector's
-`PrepareStatements(8)` and `FetchAll` against pgx's default statement cache.
+statement cache bounded at eight statements and `FetchAll` against pgx's
+default statement cache.
 What it says is modest and useful — at equal grouping, the driver is not
 where the ×13 above comes from, and the connector costs nothing the study
 would have to explain away.

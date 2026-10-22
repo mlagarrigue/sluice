@@ -490,7 +490,7 @@ func TestCommitRefusesARollbackTagWithoutAFailedStatus(t *testing.T) {
 	}
 }
 
-// TxOptions.Timeout must actually reach the server, and a transaction that
+// TxConfig.Timeout must actually reach the server, and a transaction that
 // could not be bounded must not be handed back as if it had been.
 func TestBeginTimeoutIsAppliedAndFailsClosed(t *testing.T) {
 	srv := &fakeServer{responses: append([][]byte{cmdCycle("BEGIN")}, setConfigCycle()...)}
@@ -501,7 +501,7 @@ func TestBeginTimeoutIsAppliedAndFailsClosed(t *testing.T) {
 	}
 	defer tx.Rollback() //nolint:errcheck // asserting on the wire, not the teardown
 	if !bytes.Contains(srv.sent.Bytes(), []byte("statement_timeout")) {
-		t.Error("TxOptions.Timeout never reached the server")
+		t.Error("TxConfig.Timeout never reached the server")
 	}
 	if !bytes.Contains(srv.sent.Bytes(), []byte("5000")) {
 		t.Error("the timeout was not sent in milliseconds")
@@ -1011,18 +1011,17 @@ func TestBrokenConnectionRefusesEveryEntryPoint(t *testing.T) {
 	}
 
 	calls := map[string]func() error{
-		"Conn.Exec":              func() error { return conn.Exec(ctx, "SELECT 1") },
-		"Conn.Begin":             func() error { _, err := conn.Begin(ctx, TxConfig{}); return err },
-		"Conn.Query":             func() error { return drain(t, conn.Query(ctx, "SELECT 1", nil, QueryConfig{})) },
-		"Conn.PrepareStatements": func() error { return conn.PrepareStatements(4) },
-		"Conn.CopyFrom":          func() error { _, err := conn.CopyFrom(ctx, "COPY t FROM STDIN", CopyConfig{RowsPerTx: 1}); return err },
-		"Tx.Exec":                func() error { return tx.Exec(ctx, "SELECT 1") },
-		"Tx.Query":               func() error { return drain(t, tx.Query(ctx, "SELECT 1", nil, QueryConfig{})) },
-		"Tx.SetLocal":            func() error { return tx.SetLocal(ctx, "app.tenant", "a") },
-		"Tx.Savepoint":           func() error { return tx.Savepoint(ctx, "s") },
-		"Tx.Savepoints":          func() error { return tx.Savepoints(ctx, "s", "t") },
-		"Tx.RollbackTo":          func() error { return tx.RollbackTo(ctx, "s") },
-		"Tx.Release":             func() error { return tx.Release(ctx, "s") },
+		"Conn.Exec":     func() error { return conn.Exec(ctx, "SELECT 1") },
+		"Conn.Begin":    func() error { _, err := conn.Begin(ctx, TxConfig{}); return err },
+		"Conn.Query":    func() error { return drain(t, conn.Query(ctx, "SELECT 1", nil, QueryConfig{})) },
+		"Conn.CopyFrom": func() error { _, err := conn.CopyFrom(ctx, "COPY t FROM STDIN", CopyConfig{RowsPerTx: 1}); return err },
+		"Tx.Exec":       func() error { return tx.Exec(ctx, "SELECT 1") },
+		"Tx.Query":      func() error { return drain(t, tx.Query(ctx, "SELECT 1", nil, QueryConfig{})) },
+		"Tx.SetLocal":   func() error { return tx.SetLocal(ctx, "app.tenant", "a") },
+		"Tx.Savepoint":  func() error { return tx.Savepoint(ctx, "s") },
+		"Tx.Savepoints": func() error { return tx.Savepoints(ctx, "s", "t") },
+		"Tx.RollbackTo": func() error { return tx.RollbackTo(ctx, "s") },
+		"Tx.Release":    func() error { return tx.Release(ctx, "s") },
 		"Tx.Pipeline": func() error {
 			return tx.Pipeline(ctx, []Part{{SQL: "SELECT 1"}}, QueryConfig{}, func(int, sluice.Batch[Row]) bool { return true })
 		},

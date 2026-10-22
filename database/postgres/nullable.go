@@ -35,13 +35,6 @@ type Null[T any] struct {
 	Valid bool
 }
 
-// Some returns a present value.
-func Some[T any](v T) Null[T] { return Null[T]{Value: v, Valid: true} }
-
-// None returns an absent value. It is the zero Null, named so a caller writing
-// a literal list does not have to know that.
-func None[T any]() Null[T] { return Null[T]{} }
-
 // # NULL inside an array
 //
 // PostgreSQL's binary array format says NULL twice, and both have to agree:
@@ -138,7 +131,7 @@ func DecodeNullableInt8Array(dst []Null[int64], b []byte) ([]Null[int64], error)
 		if err != nil {
 			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
 		}
-		dst = append(dst, Some(v))
+		dst = append(dst, Null[int64]{Value: v, Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst[:0], err
@@ -182,7 +175,7 @@ func DecodeNullableInt4Array(dst []Null[int32], b []byte) ([]Null[int32], error)
 		if err != nil {
 			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
 		}
-		dst = append(dst, Some(v))
+		dst = append(dst, Null[int32]{Value: v, Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst[:0], err
@@ -228,7 +221,7 @@ func DecodeNullableTextArray(dst []Null[string], b []byte) ([]Null[string], erro
 			dst = append(dst, Null[string]{})
 			continue
 		}
-		dst = append(dst, Some(string(val)))
+		dst = append(dst, Null[string]{Value: string(val), Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst[:0], err
@@ -272,7 +265,7 @@ func DecodeNullableUUIDArray(dst []Null[[16]byte], b []byte) ([]Null[[16]byte], 
 		if err != nil {
 			return dst[:0], fmt.Errorf("array element %d: %w", i, err)
 		}
-		dst = append(dst, Some(u))
+		dst = append(dst, Null[[16]byte]{Value: u, Valid: true})
 	}
 	if err := trailing(body); err != nil {
 		return dst[:0], err
