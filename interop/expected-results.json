@@ -48,5 +48,55 @@
       "rebind-addr": "succeeded",
       "connectionmigration": "unsupported"
     }
+  },
+  "ngtcp2": {
+    "server": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "succeeded",
+      "multiplexing": "succeeded",
+      "retry": "succeeded",
+      "resumption": "unsupported: the server issues no session ticket",
+      "zerortt": "unsupported: the server issues no session ticket",
+      "http3": "succeeded",
+      "blackhole": "succeeded",
+      "keyupdate": "succeeded",
+      "ecn": "succeeded",
+      "amplificationlimit": "succeeded",
+      "handshakeloss": "succeeded",
+      "transferloss": "succeeded",
+      "handshakecorruption": "succeeded",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "succeeded"
+    },
+    "client": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "unsupported: the endpoint's client does not implement the case",
+      "multiplexing": "succeeded",
+      "retry": "succeeded",
+      "resumption": "unsupported: the client keeps no session ticket",
+      "zerortt": "unsupported: the client keeps no session ticket",
+      "http3": "unsupported: the endpoint's client does not implement the case",
+      "blackhole": "succeeded",
+      "keyupdate": "unsupported: the endpoint's client does not implement the case",
+      "ecn": "succeeded",
+      "amplificationlimit": "succeeded",
+      "handshakeloss": "succeeded",
+      "transferloss": "succeeded",
+      "handshakecorruption": "succeeded",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "failed: ngtcp2's server probes a new path only after a non-probing packet, and the runner wants a PATH_CHALLENGE in its first packet there"
+    }
   }
 }
