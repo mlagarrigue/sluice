@@ -94,12 +94,15 @@ jobs:
 
       # Without SLUICE_PG the integration tests skip, so the figure is the
       # scripted-server suite's: the same code paths the test job measures,
-      # minus the few lines that only a live server reaches. Under -race and
-      # -shuffle like the test job, so that the run the figure comes from is
-      # one that would also have caught a race or an order dependence.
+      # minus the few lines that only a live server reaches. Under -shuffle
+      # like the test job, so that an order dependence fails here too; not
+      # under -race, which the test, test-udp and nightly jobs run: this is
+      # the one pass of the suite without it, where the tests that measure
+      # heap and allocations, and skip under the race detector because it
+      # inflates both, hold their bounds.
       - name: Measure
         run: |
-          go test -race -shuffle=on -coverprofile=cover.out ./...
+          go test -shuffle=on -coverprofile=cover.out ./...
           total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $NF); print $NF}')
           echo "total=$total" >> "$GITHUB_ENV"
           echo "coverage: $total%"

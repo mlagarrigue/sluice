@@ -78,6 +78,11 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 	if testing.Short() {
 		t.Skip("opens 512 connections")
 	}
+	if raceEnabled {
+		// 1.56× in a burst under -race, where the coverage job measured it,
+		// against 1.30× without: the CI job without -race holds the bound.
+		t.Skip("the race detector's per-goroutine state is heap the server does not hold")
+	}
 	const conns, requests = 256, defaultMaxConcurrency
 	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, b.Len())
