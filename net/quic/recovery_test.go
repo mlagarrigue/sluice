@@ -1097,15 +1097,19 @@ func TestSpacedWritesAreApplicationLimited(t *testing.T) {
 		}
 		prevStart = start
 	}
-	if got := marks(); got < 1 || got > 1+allowed {
-		t.Fatalf("%d marks over three writes in a row, want 1 (and up to %d more for the writes the clock saw apart)", got, allowed)
+	base := marks()
+	if base < 1 || base > 1+allowed {
+		t.Fatalf("%d marks over three writes in a row, want 1 (and up to %d more for the writes the clock saw apart)", base, allowed)
 	}
+	// Counted from what the writes in a row left, which may be one more
+	// than 1 on a stalled runner (2026-10-22, a third time): each spaced
+	// write opens exactly one phase.
 	for i := range 3 {
 		time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
 		if _, err := s.Write(make([]byte, 100)); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := marks(), i+2; got != want {
+		if got, want := marks(), base+i+1; got != want {
 			t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
 		}
 	}
