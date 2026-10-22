@@ -1182,6 +1182,7 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 		if !accepted {
 			l.forget(c)
 			_ = c.Close()
+			c.endTLS()
 		}
 	}()
 

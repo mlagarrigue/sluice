@@ -879,6 +879,7 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 	c.amplActive = true
 	c.mu.Unlock()
 	if err := c.receiveGathered(rawDatagram{data: first.Payload, from: first.Peer, ecn: first.ECN}); err != nil {
+		c.endTLS()
 		return nil, err // receive only fails through abort, which closed
 	}
 	if err := c.handshake(context.Background()); err != nil {
@@ -1097,6 +1098,20 @@ func (c *Conn) start() error {
 	return nil
 }
 
+// endTLS stops crypto/tls's handshake goroutine. Start runs the handshake on
+// a goroutine of its own, which returns when the handshake completes and
+// otherwise waits for data until [tls.QUICConn.Close]: a connection
+// abandoned mid-handshake — a client that sent one Initial and left, a
+// Dial that timed out — kept that goroutine and the TLS state it holds for
+// the life of the process. Called by the goroutine that feeds TLS (QUICConn
+// is not safe for concurrent use), once nothing more will be fed; a no-op
+// on a completed handshake, one never started, or a second call.
+func (c *Conn) endTLS() {
+	if c.tls != nil {
+		_ = c.tls.Close()
+	}
+}
+
 // handshake runs until TLS says it is done, carrying CRYPTO both ways. Lost
 // flights are the timer loop's problem — its probe timeout retransmits them —
 // so this loop only has to keep reading.
@@ -1104,6 +1119,16 @@ func (c *Conn) start() error {
 // ctx's deadline replaces the default one, and its cancellation closes the
 // connection, which every wait below already watches for.
 func (c *Conn) handshake(ctx context.Context) error {
+	err := c.driveHandshake(ctx)
+	if err != nil {
+		c.endTLS()
+	}
+	return err
+}
+
+// driveHandshake is handshake's body; every error it returns has closed the
+// connection.
+func (c *Conn) driveHandshake(ctx context.Context) error {
 	if c.isClient {
 		if err := c.start(); err != nil {
 			_ = c.Close()
