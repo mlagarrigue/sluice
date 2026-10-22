@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it)
 - **Theme:** quic
 
 ## Problem
@@ -24,8 +24,13 @@ variable when credit runs out. The read loop never waits for credit,
 because it is what delivers it. Unauthenticated input never ends a
 connection: it is counted (`Stats`) and dropped; fatality is reserved for
 what an authenticated packet proves the peer did. Recovery is RFC 9002's —
-packet- and time-threshold loss detection, probe timeouts, NewReno — with
-persistent congestion approximated as three unanswered probes. Flow control
+packet- and time-threshold loss detection, probe timeouts — and congestion
+control is the controller the caller picks (`TransportParameters.Congestion`):
+NewReno by default (RFC 9002 §7), `CongestionCubic` (RFC 9438) and
+`CongestionBBR` (draft-ietf-ccwg-bbr), the last two experimental.
+Persistent congestion is the one §7.6 defines: two ack-eliciting losses
+further apart than three probe intervals, with nothing acknowledged between
+them; only an ACK establishes it, never a probe timeout. Flow control
 waits instead of refusing, grants follow consumption, retired streams give
 their slots back with `MAX_STREAMS`. The batch seam, `OnStreamFrames`,
 delivers each packet's newly contiguous bytes per stream, so the layer

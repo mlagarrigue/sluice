@@ -1,8 +1,9 @@
 // Package quic is an experimental QUIC version 1 implementation: the packet
 // layer — variable-length integers, frames, headers, RFC 9001 packet
 // protection — and a connection on top of it, with the transport machinery
-// of RFC 9002: acknowledgements, loss detection, retransmission, NewReno
-// congestion control, and flow control enforced in both directions.
+// of RFC 9002: acknowledgements, loss detection, retransmission, congestion
+// control (NewReno by default, CUBIC and the IETF draft of BBR to choose),
+// and flow control enforced in both directions.
 //
 // # Read this before using it
 //
@@ -42,7 +43,8 @@
 //     latter following the peer across a migration.
 //   - Recovery per RFC 9002: ACK generation with delayed acknowledgements,
 //     packet- and time-threshold loss detection, probe timeouts,
-//     retransmission, NewReno with slow start and recovery periods.
+//     retransmission; NewReno with slow start and recovery periods by
+//     default, CUBIC or BBR through [TransportParameters.Congestion].
 //   - Flow control per RFC 9000 §4, both levels and both directions:
 //     senders wait for credit, receivers grant it as data is consumed, and
 //     a peer that overruns its grant loses the connection.
