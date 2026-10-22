@@ -552,10 +552,18 @@ outside the transaction under nobody's identity.
 
 ## What is not there
 
-No connection pool, no automatic resumption of an interrupted load, no
-LISTEN/NOTIFY and no `COPY ... TO STDOUT`, `md5`
-refused, no `money` or `tsvector` types, arrays and column scanners for
-and thirteen types only (the table above). The detail: [Limits](limits.md).
+- **No connection pool**: a `Conn` is one connection; holding several is
+  the caller's.
+- **No automatic resumption of an interrupted load**: delivery is
+  at-least-once, and the resumption point lives in your schema.
+- **No LISTEN/NOTIFY** (PostgreSQL's built-in publish and subscribe, by
+  which a session learns of an event another one signalled), **and no
+  `COPY ... TO STDOUT`**.
+- **`md5` authentication is refused.**
+- **Types**: no `money` or `tsvector`; arrays and column scanners for the
+  first thirteen types of the table above only.
+
+The detail: [Limits](limits.md).
 
 ## Measured
 
