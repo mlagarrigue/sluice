@@ -446,9 +446,11 @@ to a separate module before a v1.
 
 ## Measurements: what is missing
 
-- **No end-to-end measurement with a real remote client**: the network
-  figures are on loopback, and the ETL bench simulates its I/O. A
-  "to the browser" bench is to be built.
+- **No end-to-end measurement with a real remote client is published**:
+  the network figures are on loopback, and the ETL bench simulates its I/O.
+  The client exists — `comparison/loadgen`, in a process of its own,
+  HTTP/1.1, HTTP/2 and HTTP/3 over TLS, every answer checked — but it has
+  run on loopback only, and none of its figures is published.
 - **No comparison with other languages**: it is framed and specified, but
   nothing is measured; its results will be published with their method,
   not before.
@@ -460,5 +462,9 @@ to a separate module before a v1.
 In the order the roadmap takes them: the connector inventory and
 prioritisation, the phase runner for long jobs, the end-to-end bench, the
 comparative study, streaming compression, and the exit from experimental
-of what meets its conditions. None of it is started; each needs a written
-decision first.
+of what meets its conditions. The end-to-end bench and the comparative
+study have their apparatus in `comparison/` (the study's server, one flag
+per axis, and its load generator); what they lack is the campaign on the
+machines the protocol names, and its results. The exit from experimental
+has begun: `pushdown` and `net/httpstream` left it on 2026-10-10. The rest
+is not started, and each item needs a written decision first.
