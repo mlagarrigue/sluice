@@ -3,7 +3,8 @@ package sluice
 import "github.com/mlagarrigue/sluice/internal/batch"
 
 // ErrUnsorted reports that an ordered-input operator saw its key go backwards
-// — [Merge]'s join key, or [Interval]'s event time.
+// — the join key of [github.com/mlagarrigue/sluice/join.Merge], or the event
+// time of [github.com/mlagarrigue/sluice/join.Interval].
 //
 // These operators walk their inputs once and never look back, so an
 // out-of-order key silently produces a wrong result — rows that should have

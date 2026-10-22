@@ -1,7 +1,7 @@
 // The comparative benchmarks live in their own module, on purpose.
 //
-// The root module has exactly one production dependency, golang.org/x/crypto,
-// and CI enforces the allowlist two ways: go.mod requiring nothing else, and
+// The root module has two production dependencies, golang.org/x/crypto and
+// golang.org/x/text, and CI enforces the allowlist two ways: go.mod requiring nothing else, and
 // `go list -deps ./...` finding no other non-stdlib module in the graph.
 // Measuring against pgx, gin, echo, chi or fiber means importing
 // them, so the honest way to do it is a second module that depends on the

@@ -1,7 +1,7 @@
 version: 2
 updates:
   # The production dependencies (golang.org/x/crypto, with the x/sys it
-  # brings). A bump that raises the go directive past the oldest version CI
+  # brings, and golang.org/x/text). A bump that raises the go directive past the oldest version CI
   # builds is caught by TestGoModVersionMatchesTheOldestCIBuild, not merged
   # blindly.
   - package-ecosystem: gomod

@@ -457,7 +457,8 @@ jobs:
 
   # Every production dependency is a recorded decision (ADR 0002): today the
   # standard library plus golang.org/x/crypto (which brings golang.org/x/sys
-  # for CPU feature detection), nothing else. Checked two ways: go.mod may
+  # for CPU feature detection) and golang.org/x/text (SASLprep, in
+  # database/postgres alone), nothing else. Checked two ways: go.mod may
   # require nothing beyond that allowlist, and no non-test package in the
   # build graph may come from anywhere else.
   deps:
