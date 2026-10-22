@@ -876,8 +876,15 @@ func TestProbeTimeoutsAloneLeaveTheWindow(t *testing.T) {
 	sp.nextPN = 1
 	c.mu.Unlock()
 
+	// Steps of 5 s: past each backoff of the initial PTO (1, 2, then 4 s),
+	// and the third ends well short of the 30 s idle timeout. Each probe
+	// pushes the idle deadline to the real clock plus 30 s; at steps of
+	// 10 s, the third landed on it exactly whenever the clock had not moved
+	// between the test's first read and the probe's — on Windows, which
+	// reads it at the system timer's resolution — and the connection closed
+	// as idle instead of probing.
 	for i := 1; i <= 3; i++ {
-		now = now.Add(10 * time.Second) // past any backoff of the initial PTO
+		now = now.Add(5 * time.Second)
 		c.actOnDeadlines(now)
 	}
 	c.mu.Lock()

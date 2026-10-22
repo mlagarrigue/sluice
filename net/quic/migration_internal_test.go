@@ -1155,11 +1155,14 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	})
 
 	// The client confirms on HANDSHAKE_DONE, which may still be in flight
-	// when Dial returns; Rebind refuses until then, so wait for it.
-	waitFor(t, "the client to confirm the handshake", func() bool {
+	// when Dial returns, and needs an identifier of the server's never used
+	// on the old path, which a NEW_CONNECTION_ID in a later packet brings;
+	// Rebind refuses until both, so wait for both. Waiting on the first
+	// alone failed on arm64, where that later packet had not been read yet.
+	waitFor(t, "the client to confirm the handshake and hold a fresh identifier", func() bool {
 		client.mu.Lock()
 		defer client.mu.Unlock()
-		return client.handshakeConfirmed
+		return client.handshakeConfirmed && client.pickPeerCIDLocked(true) >= 0
 	})
 
 	second, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -2036,8 +2039,14 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 	sp.nextPN = base + 10
 	c.cc.onSent(after, 12_000)
 	c.mu.Unlock()
-	peer.record(base+9, time.Now())
-	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), time.Now()); err != nil {
+	// Read 10 ms after the send: Windows reads the monotonic clock at the
+	// system timer's resolution, so an acknowledgement read on the send's
+	// tick measures a round trip of zero, which is no sample. (Sending
+	// earlier instead would date the packets before the move, onto the old
+	// path.)
+	acked := after.Add(10 * time.Millisecond)
+	peer.record(base+9, acked)
+	if err := c.handleAck(spaceApplication, ackFrameFor(t, &peer), acked); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
