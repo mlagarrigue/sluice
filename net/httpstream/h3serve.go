@@ -187,7 +187,8 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// failure a live connection produces here is the client's
 		// STOP_SENDING on the control stream landing between Stream(3)
 		// and this write: the §6.2.1 error the callback below names,
-		// which used to leave the connection open with nobody serving it.
+		// which, unanswered, would leave the connection open with nobody
+		// serving it.
 		if code, reset := control.WasReset(); reset {
 			_ = c.CloseWithError(h3ClosedCriticalStream)
 			return controlStopped(code)
@@ -256,8 +257,8 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// Each batch is one call to the handler on a goroutine of its own,
 	// launched from the read callback: a request that arrives while the
 	// handler is busy with an earlier batch is not held behind it — the
-	// head-of-line block one responder per connection used to impose, which
-	// HTTP/2 lifted the same way (ADR 0008). The handler is called
+	// head-of-line block one responder per connection would impose, which
+	// HTTP/2 lifts the same way (ADR 0008). The handler is called
 	// concurrently on one connection, as [Handler] states. Launching never
 	// blocks, and that matters more than it looks: the read goroutine is the
 	// goroutine that delivers the flow-control credit a stalled response is
@@ -375,10 +376,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			}
 		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own
-		// loop: a separate pass here used to run every Forget before the
-		// datagram's STREAM deltas, which resurrected assembly state for
-		// streams the transport had already abandoned — entries that could
-		// never complete, each burning an admission slot for good.
+		// loop: a separate pass here would run every Forget before the
+		// datagram's STREAM deltas, and resurrect assembly state for streams
+		// the transport has already abandoned — entries that could never
+		// complete, each burning an admission slot for good.
 		batch, ids, failed, err := a.Frames(frames)
 		if err != nil {
 			// A connection error carries the code RFC 9114 §8 assigns it;

@@ -232,7 +232,7 @@ const (
 	// CongestionCubic is RFC 9438's controller: after a loss the window
 	// shrinks to seven tenths and grows back along a cubic curve, flat
 	// around the size the loss happened at and steep away from it, so a
-	// long round trip no longer costs a window a datagram at a time.
+	// long round trip does not cost a window a datagram at a time.
 	// Experimental: measured on this package's emulated paths only.
 	CongestionCubic
 

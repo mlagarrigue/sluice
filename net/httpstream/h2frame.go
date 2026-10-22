@@ -328,9 +328,8 @@ func (r *frameReader) fill() error {
 	// connection whose last answer just went out is reaped within two
 	// IdleTimeouts of it, rather than never. Once armed with nothing owed,
 	// the idle deadline holds across rounds that bring no stream activity:
-	// a PING every few seconds used to restart it, and a connection with no
-	// stream ever opened could be held for nothing at the price of 17 bytes
-	// per IdleTimeout.
+	// were a PING to restart it, a connection with no stream ever opened
+	// could be held for nothing at the price of 17 bytes per IdleTimeout.
 	for {
 		var deadline time.Time
 		owed := false

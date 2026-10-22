@@ -475,10 +475,10 @@ func (w *h2Writer) emit(j *h2Job) (int, error) {
 // deliver queues a batch of buffered answers and returns, without waiting
 // for the wire.
 //
-// It used to wait, and that was the connection's backpressure; it was also a
-// head-of-line block: one stream waiting for its window held every later
-// batch behind it for up to WriteTimeout, the streams with credit to spare
-// included. What bounds a connection now is what bounds HTTP/3: one
+// Waiting would be the connection's backpressure, and a head-of-line block
+// too: one stream waiting for its window would hold every later batch
+// behind it for up to WriteTimeout, the streams with credit to spare
+// included. What bounds a connection is what bounds HTTP/3: one
 // unfinished answer per stream the reader admitted,
 // [Config.MaxConcurrentStreams] of them at most, since a stream counts
 // against that bound until its answer has left the writer's hands (see

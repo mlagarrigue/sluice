@@ -101,8 +101,8 @@ func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, r
 			// "MUST NOT be sent, and their receipt MUST be treated as a
 			// connection error of type H3_FRAME_UNEXPECTED". Refused on the
 			// type alone, before the payload is waited for: there is nothing
-			// in it this layer would read. They used to be skipped with the
-			// GREASE types, which the same section wants ignored.
+			// in it this layer would read. Not skipped with the GREASE
+			// types, which the same section wants ignored.
 			return dst, nil, 0, fmt.Errorf("%w: frame type %#x is an HTTP/2 type with no HTTP/3 meaning",
 				errH3FrameUnexpected, typ)
 		}
@@ -168,9 +168,8 @@ func h3Identifier(payload []byte) (uint64, error) {
 // it is. Copying it onto itself is not free: runtime.memmove has no shortcut
 // for dst == src, and a DATA frame declared at MaxBodyBytes parks a buffer
 // that grows to rawStreamBound while its payload trickles in — fed one byte
-// per datagram, each byte used to cost a copy of the whole buffer
-// (RFC 9114 §10.5: the work a peer can cause must stay bounded by what it
-// sends).
+// per datagram, each byte would cost a copy of the whole buffer (RFC 9114
+// §10.5: the work a peer can cause must stay bounded by what it sends).
 func keepRest(buf, rest []byte) []byte {
 	if len(rest) == len(buf) {
 		return buf
@@ -352,7 +351,7 @@ func (d *qpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 			}
 
 		case b&0xe0 == 0x20: // §4.5.6 literal with a literal name
-			// The pattern is 001NHxxx: masking with 0xf0 used to drop the
+			// The pattern is 001NHxxx: masking with 0xf0 would drop the
 			// N=1 half (0x30–0x3F), which is exactly what encoders set on
 			// sensitive fields like authorization — a never-indexed literal
 			// MUST decode like any other (RFC 9204 §4.5.6).

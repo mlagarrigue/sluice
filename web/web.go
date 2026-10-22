@@ -425,7 +425,7 @@ func WriteJSON(w http.ResponseWriter, status int, body any) error {
 	if _, err := w.Write(buf); err != nil {
 		return fmt.Errorf("web: writing the response body after status %d: %w", status, err)
 	}
-	// The trailing newline json.Encoder used to write, as its own write
+	// The trailing newline json.Encoder writes, as its own write
 	// rather than appended: an append onto a marshal result whose length
 	// landed on a size class would copy the whole body to add one byte, and
 	// net/http buffers the two writes into one flush anyway.

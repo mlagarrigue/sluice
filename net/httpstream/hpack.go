@@ -226,7 +226,7 @@ func (d *hpackDecoder) Decode(dst []Header, block []byte) ([]Header, error) {
 			}
 			if idx <= uint64(len(staticTable)) {
 				// A static hit appends the immutable package copy as-is: no
-				// clone, where this case used to cost two per field.
+				// clone.
 				e := staticTableBytes[idx-1]
 				listSize += len(e.Name) + len(e.Value) + hpackEntrySize
 				if listSize > d.maxListSize {
@@ -548,9 +548,9 @@ var (
 // QPACK decoder meet ("MUST be able to decode integers up to and including
 // 62 bits long"): a QUIC stream identifier is 62 bits wide, so a Stream
 // Cancellation naming a stream opened late in a long connection needs the
-// whole width. It used to stop at 28, which protected the allocations
-// downstream but killed a connection over a legal instruction. The bound now
-// guards only the arithmetic — nine continuation octets cannot overflow a
+// whole width. Stopping at 28 would protect the allocations downstream but
+// kill a connection over a legal instruction. The bound guards only the
+// arithmetic — nine continuation octets cannot overflow a
 // uint64 — and each caller checks the value against what it can allocate,
 // which is where that check belonged.
 func hpackInt(block []byte, n uint8) (v uint64, rest []byte, err error) {

@@ -242,7 +242,7 @@ func timestampMicros(t time.Time) int64 {
 	// database legitimately holds.
 	secs := t.Unix() - pgEpoch.Unix()
 	us := int64(t.Nanosecond()) / 1000
-	// Past int64 microseconds the product used to wrap to a plausible value
+	// Past int64 microseconds the product would wrap to a plausible value
 	// on the other side. It saturates instead, one short of the infinity
 	// sentinel: still far outside PostgreSQL's range, so the server refuses
 	// it as out of range rather than storing an infinity nobody wrote.

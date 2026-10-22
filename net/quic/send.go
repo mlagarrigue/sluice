@@ -928,8 +928,8 @@ func (c *Conn) armPaceLocked(until time.Time) {
 // next ACK opens it again; what the pacer's bucket does not hold whole goes
 // at the pace deadline, when the timer loop runs the next pass. One pass
 // therefore sends at most one bucket — the initial window, the burst RFC
-// 9002 §7.7 permits — where it used to send whatever the window left after
-// an ACK that released most of a large flight and declared the rest lost.
+// 9002 §7.7 permits — rather than whatever the window leaves after an ACK
+// that releases most of a large flight and declares the rest lost.
 // Nothing parks here: the read and timer loops are the callers.
 func (c *Conn) retransmitLocked() {
 	rate := c.cc.pacingRate(c.rtt.current())

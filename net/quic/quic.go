@@ -122,7 +122,7 @@
 //   - Key update (RFC 9001 §6): a peer's rotation is followed, old read
 //     keys are kept three probe timeouts for stragglers, and this end
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)
-//     rather than closing — a long-lived connection no longer dies of its
+//     rather than closing — a long-lived connection does not die of its
 //     packet count. [Stats.KeyUpdates] counts the rotations.
 //   - ECN (§13.4), on Linux: the field is read off every datagram and
 //     reported in ACK frames, this end marks its own packets ECT(0) once

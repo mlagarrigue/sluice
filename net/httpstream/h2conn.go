@@ -625,12 +625,12 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		// what you have and close" got its streams killed instead. Once
 		// nothing is owed it keeps reading too, until the peer hangs up or
 		// IdleTimeout does, and the GOAWAY this end owes (§6.8) goes out at
-		// that close as on every other. It used to close here: found by
-		// h2spec (generic/3.8/1), a peer whose PING follows its GOAWAY on
-		// the wire had the PING sitting unread in the socket when the close
-		// happened, which TCP answers with a reset — the peer saw ECONNRESET
-		// on a connection it had ended cleanly, or a clean close, depending
-		// on which arrived first. New streams are refused either way (see
+		// that close as on every other. Closing here instead fails h2spec
+		// (generic/3.8/1): a peer whose PING follows its GOAWAY on the wire
+		// has the PING sitting unread in the socket when the close happens,
+		// which TCP answers with a reset — the peer sees ECONNRESET on a
+		// connection it ended cleanly, or a clean close, depending on which
+		// arrives first. New streams are refused either way (see
 		// stream).
 		return true
 	})

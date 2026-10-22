@@ -8,7 +8,8 @@ import "github.com/mlagarrigue/sluice"
 // remaining count, so a source could stop producing rather than be stopped
 // after producing. It was written, benchmarked against the core operator over
 // a scan, and removed: **8.63 µs against 8.35, a 3% cost and no gain**
-// (BenchmarkScanWithoutPushdown / WithPushdown, before removal).
+// (BenchmarkScanWithoutPushdown against WithPushdown, which left with the
+// operator).
 //
 // The reason is structural rather than incidental. A source whose unit of work
 // *is* the batch it yields cannot do less than one batch of work for the last

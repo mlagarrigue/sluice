@@ -337,8 +337,8 @@ const qpackDecoderStreamError = 0x0202
 // meaning (§7.2.8). Every one of those sections makes it a *connection*
 // error of type H3_FRAME_UNEXPECTED, and Frames returns it as one — unlike a
 // malformed message, which is the stream's fault alone (H3_MESSAGE_ERROR).
-// It used to be answered on the stream; a peer that frames a stream wrongly
-// has a broken framer, not one bad request, and §4.1's MUST says so.
+// Not answered on the stream: a peer that frames a stream wrongly has a
+// broken framer, not one bad request, and §4.1's MUST says so.
 var errH3FrameUnexpected = fmt.Errorf("%w: a frame out of sequence", ErrH3Protocol)
 
 // qpackDecompressionFailed is RFC 9204 §6's code for a field section the
@@ -570,7 +570,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// §4.1: a stream that ends "without enough of the HTTP
 				// message to provide a complete response" is aborted with
 				// H3_REQUEST_INCOMPLETE — a message that is short, not one
-				// that is malformed. It used to be H3_MESSAGE_ERROR.
+				// that is malformed, which H3_MESSAGE_ERROR would say.
 				a.fail(f.StreamID, h3RequestIncomplete, fmt.Errorf("%w: a stream ended before its HEADERS", ErrH3Protocol))
 				continue
 			}
@@ -1162,7 +1162,7 @@ func (a *h3Assembler) decoderInstructions(u *h3Uni) error {
 		// nothing for an encoder without a table to do about it. The
 		// identifier is a QUIC stream ID, 62 bits wide (RFC 9000 §2.1), and
 		// hpackInt admits the whole width: a decoder that stopped at 28 bits
-		// used to close the connection over the cancellation of stream
+		// would close the connection over the cancellation of stream
 		// 2^28 — a legal instruction a long-lived client reaches, since
 		// HTTP/3 caps no request count.
 		_, rest, err := hpackInt(buf, 6)
@@ -1427,9 +1427,9 @@ const h3FramesKept = 256
 // a dynamic reference, an index past the static table, a truncated string —
 // is a connection error of type QPACK_DECOMPRESSION_FAILED (RFC 9204 §2.2.3,
 // §3.1): the decoder "is not able to continue decoding that field section",
-// and the section's stream is not the fault. It used to be served as a
-// malformed request on the stream, which left a client whose encoder is
-// broken retrying the same bytes on the next one.
+// and the section's stream is not the fault. Served as a malformed request
+// on the stream, it would leave a client whose encoder is broken retrying
+// the same bytes on the next one.
 func sectionRefused(err error) error {
 	switch {
 	case errors.Is(err, errHeadersTooLarge):

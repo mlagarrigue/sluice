@@ -840,9 +840,9 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 	// table entry, even a Retry. Initial keys derive from the packet's own
 	// destination identifier, so the check needs no state and costs one
 	// key schedule; what it buys is that a flood of sealed-looking noise
-	// cannot occupy MaxPendingConns slots for the price of sending it
-	// (every slot used to hold TLS state and two goroutines for the full
-	// 10-second handshake deadline, decryptable or not).
+	// cannot occupy MaxPendingConns slots for the price of sending it:
+	// each slot holds TLS state and two goroutines for up to the
+	// 10-second handshake deadline.
 	keys, ok := initialPacketDecrypts(h)
 	if !ok {
 		l.noteDiscard()

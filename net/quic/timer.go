@@ -188,9 +188,9 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		// The window is not touched: a timeout proves nothing about the
 		// path (RFC 9002 §6.2), and persistent congestion is a span of
 		// losses an ACK establishes (§7.6, handleAck), not a count of
-		// probes — three unanswered probes used to collapse it here, and
-		// a sender pausing between small writes restarts this timer at
-		// every send without a single acknowledgement (§7.6.1).
+		// probes: a count would collapse it under a sender that pauses
+		// between small writes, which restarts this timer at every send
+		// without a single acknowledgement (§7.6.1).
 		for space, fired := range expired {
 			sp := &c.spaces[space]
 			if !fired {
@@ -249,9 +249,9 @@ func (c *Conn) ptoDeadlineLocked(sp *space, space int) time.Time {
 	// limit that stops it — until the client's next datagram reopens the
 	// budget; that datagram kicks the timer (receive), and a deadline then
 	// found in the past fires at once. The count is left alone meanwhile:
-	// it used to climb here with every probe the budget withheld, doubling
-	// the interval of probes that never left, and the first one to leave
-	// was a pile of PINGs.
+	// climbing with every probe the budget withholds would double the
+	// interval of probes that never leave, and make the first one to leave
+	// a pile of PINGs.
 	if c.amplActive && c.amplSent >= 3*c.amplRecv {
 		return time.Time{}
 	}

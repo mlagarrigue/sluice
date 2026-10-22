@@ -300,9 +300,9 @@ type Conn struct {
 	// whole memory of which streams closed: an identifier below what has
 	// been opened (seenPeer*, opened*) that is not in the table belongs to
 	// a stream that closed, however long ago. No bounded list of closed
-	// identifiers stands beside it — the one that used to let the 1025th
-	// closure forget the first, so a late or forged frame on that stream
-	// reopened it, delivered an HTTP/3 request twice and credited
+	// identifiers stands beside it: one of 1,024 would let the 1025th
+	// closure forget the first, so that a late or forged frame on that
+	// stream reopened it, delivered an HTTP/3 request twice and credited
 	// MAX_STREAMS twice (see streamFor).
 	streams map[uint64]*Stream
 	// resetIDs holds the streams this end has reset and whose STREAM frames

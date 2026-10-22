@@ -981,8 +981,8 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			// Handed up even when it is all the packet carries: an
 			// application whose stream the peer refuses to read — HTTP/3's
 			// control stream, which RFC 9114 §6.2.1 makes a connection
-			// error — used to learn of it only at the next datagram that
-			// carried stream data.
+			// error — learns of it now, not at the next datagram that
+			// carries stream data.
 			if stopped {
 				c.rxProgress = true
 				batch = append(batch, Frame{Type: FrameStopSending, StreamID: f.StreamID, value: f.value})
@@ -1002,7 +1002,7 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			// seen yet opens it, and §19.10 makes one for a stream the peer
 			// could never grant on — a receive-only stream, or a
 			// locally-initiated one never opened — a STREAM_STATE_ERROR,
-			// where both used to be silently ignored.
+			// not a frame to ignore.
 			s, tolerated, err := c.streamFor(f.StreamID, space, true)
 			if err != nil {
 				return err
@@ -1036,9 +1036,10 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			// §8.2: must be answered, on pain of the peer concluding the
 			// path is dead. The answers to one packet's challenges leave
 			// together once its frames are read (answerPathChallengesLocked
-			// says how): one datagram, not one per frame — a packet of k
-			// challenges from an address off the path used to earn k
-			// datagrams of 1200 bytes, many times what it cost to send.
+			// says how): one datagram, not one per frame — answered one
+			// by one, a packet of k challenges from an address off the
+			// path would earn k datagrams of 1200 bytes, many times what
+			// it cost to send.
 			pathResponses = AppendVarint(pathResponses, framePathResponse)
 			pathResponses = append(pathResponses, f.Data...)
 
@@ -1531,10 +1532,10 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 	// a stream no frame would ever reach.
 	//
 	// Outside batch mode each goes to the accept queue, which never blocks
-	// this loop: MAX_STREAMS bounds it (see AcceptStream). A bounded channel
-	// used to stand here, 64 deep under a default limit of 100: the 65th
-	// stream stopped the read loop, and with it the acknowledgements every
-	// other stream's writer was waiting on.
+	// this loop: MAX_STREAMS bounds it (see AcceptStream). A bounded
+	// channel here, 64 deep under a default limit of 100, would let the
+	// 65th stream stop the read loop, and with it the acknowledgements
+	// every other stream's writer waits on.
 	var last *Stream
 	for n := *seen + 1; n <= count; n++ {
 		nid := (n-1)*4 + id&0x03

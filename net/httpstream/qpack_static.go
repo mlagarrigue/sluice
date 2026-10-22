@@ -6,9 +6,9 @@ package httpstream
 // assumed to share without being told. Unlike HPACK's table it is
 // **zero-based**: the first entry is index 0 on the wire.
 //
-// A lookup table has no algebraic property a transcription error would break
-// — that was the reason this package once refused to carry it — so it is
-// checked the way hpack_static.go is instead: diffed cell by cell against the
+// A lookup table has no algebraic property a transcription error would
+// break, so it is checked the way hpack_static.go is: diffed cell by cell
+// against the
 // published RFC when written, then held by tests — shape (count, name
 // syntax, value bytes), the indices RFC 9204's own encoded example pins, and
 // a fixture of the field section a real client sends. See

@@ -484,9 +484,10 @@ func (out *ackOutcome) mark(p *sentPacket, onPath bool, largest uint64) {
 // than the time threshold — which the round-trip sample this frame just
 // took sets, A.7 sampling before it detects. Whatever is too young for
 // either arms the loss timer instead. The scan runs on every ACK, not just
-// the ones with news: the timer was cleared here, and an ACK that repeats
-// old news used to disarm a pending loss deadline for good — the loss then
-// surfaced only on a later new ACK, or on the PTO. Nothing past the
+// the ones with news: the timer is cleared here, and an ACK that repeats
+// old news, left unscanned, would disarm a pending loss deadline for good —
+// the loss then surfacing only on a later new ACK, or on the PTO. Nothing
+// past the
 // largest acknowledged can be lost, so the scan stops there. It marks and
 // moves nothing: release removes the lost with the acknowledged, in one
 // compaction.
@@ -640,12 +641,12 @@ func (s *sentTracker) release(now time.Time, rtt *rttEstimator, cc congestionCon
 // Only packets sent before the largest acknowledged one are candidates
 // (RFC 9002 §6.1, A.10's DetectAndRemoveLostPackets): a packet sent after
 // the ACK that armed the timer has nothing newer delivered to prove it
-// missing, however old it grows. The sweep used to go by age alone, on the
-// reasoning that an early loss only costs a duplicate; it also costs a
-// congestion event, and on a clean loopback it halved the window one run
-// in ten: a DPLPMTUD probe's hole armed the timer, and the transfer behind
-// it — older than the 1 ms floor, acknowledged a moment later — was swept
-// up as lost (TestLossTimerSparesPacketsPastLargestAcked).
+// missing, however old it grows. Age alone is not enough: an early loss
+// costs a duplicate and a congestion event, and a sweep by age halves the
+// window one run in ten on a clean loopback — a DPLPMTUD probe's hole arms
+// the timer, and the transfer behind it, older than the 1 ms floor and
+// acknowledged a moment later, is swept up as lost
+// (TestLossTimerSparesPacketsPastLargestAcked).
 //
 // A DPLPMTUD probe that matured is reported apart (probeLost and the
 // probe's bytes), never in lostBytes: its loss is no congestion event.

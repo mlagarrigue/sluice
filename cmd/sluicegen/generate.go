@@ -316,8 +316,8 @@ func typeExpr(e ast.Expr) (goType string, nullable bool, present string) {
 	}
 	// ExprString renders any type expression as written, so a field the
 	// mapping does not cover is named in the error — a map or a [N]byte with
-	// a named length used to come out as "?" or as "[]byte", the latter
-	// matching the bytea decoder for a type it cannot assign to.
+	// a named length, not "?" or "[]byte", the latter matching the bytea
+	// decoder for a type it cannot assign to.
 	return types.ExprString(e), false, ""
 }
 

@@ -31,8 +31,7 @@ type Row struct {
 	// accumulator is the connection's scratch, reused by the next query on
 	// the same connection: without the check below, a Row retained past its
 	// query would silently read that next query's bytes — under row-level
-	// security, another tenant's — where it used to hit a freshly allocated,
-	// already-reset accumulator and panic. The check keeps the violation a
+	// security, another tenant's. The check keeps the violation a
 	// deterministic crash rather than plausible wrong data.
 	gen uint32
 }
@@ -487,7 +486,7 @@ const (
 	// batches and 155 µs all at once — the difference is exactly one trip.
 	//
 	// A batched read of SELECT, VALUES or TABLE outside a transaction block
-	// no longer waits for that trip: it sends its Sync and returns, and the
+	// does not wait for that trip: it sends its Sync and returns, and the
 	// answer is read behind whatever the connection sends next. A statement
 	// that may write, and any read inside a block, still pays it, because
 	// an error can follow the last row there: see the function-that-writes
@@ -1594,11 +1593,11 @@ func (q *query) resync() error {
 			return c.breakConn(fmt.Errorf("resynchronising: %w", err))
 		}
 	}
-	// A server error met on the way is kept rather than skipped. The drain
-	// used to discard it, and the discard was not neutral: a consumer that
-	// stopped early left the error that aborted its transaction unread here,
-	// the query reported success, and every later statement failed 25P02 with
-	// nothing client-side to explain why.
+	// A server error met on the way is kept rather than skipped. Discarding
+	// it is not neutral: a consumer that stopped early would leave the error
+	// that aborted its transaction unread here, the query would report
+	// success, and every later statement would fail 25P02 with nothing
+	// client-side to explain why.
 	var serverErr error
 	var cancel *cancelWatch
 	aheadRows, aheadBytes := q.ahead*q.batchRows, q.ahead*q.batchBytes

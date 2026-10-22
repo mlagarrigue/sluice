@@ -124,10 +124,10 @@ func DecodeNumeric(b []byte) (Numeric, error) {
 			return Numeric{}, fmt.Errorf("%w: numeric %#04x carries %d digits", ErrCodec, uint16(n.Sign), ndigits)
 		}
 		// The header is the whole value, so anything after it means the stream
-		// is being read at the wrong offset. This branch used to return before
-		// the length check below and so accepted any amount of trailing
-		// padding — the one place in this package that took a prefix it found
-		// agreeable and ignored the rest.
+		// is being read at the wrong offset. This branch returns before the
+		// length check further down, so it checks the length itself: without
+		// it, it would accept any amount of trailing padding — a prefix taken
+		// as agreeable and the rest ignored.
 		if len(b) != numericHeaderSize {
 			return Numeric{}, fmt.Errorf("%w: numeric %#04x is %d bytes, want %d", ErrCodec, uint16(n.Sign), len(b), numericHeaderSize)
 		}
