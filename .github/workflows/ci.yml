@@ -305,6 +305,10 @@ jobs:
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
             exit 1
           fi
+          if ! grep -- '--- PASS: TestIntegrationSessionOptions ' test.log; then
+            echo "::error::the session options were not all met against PostgreSQL $PG_MAJOR" >&2
+            exit 1
+          fi
           if ! grep -- '--- PASS: TestIntegrationAuthMethods ' test.log; then
             echo "::error::the md5, password and trust methods were not all met against PostgreSQL $PG_MAJOR" >&2
             exit 1
