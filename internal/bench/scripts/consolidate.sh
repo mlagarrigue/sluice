@@ -2,7 +2,19 @@
 # Re-run every published figure in one session, on one machine, and write the
 # result with the conditions attached.
 #
-#   internal/bench/scripts/consolidate.sh > docs/benchmarks.md
+#   internal/bench/scripts/consolidate.sh > /tmp/b.md && mv /tmp/b.md docs/benchmarks.md
+#
+# It rewrites only the tables, each between two markers that name it, and
+# prints the rest of docs/benchmarks.md as it found it:
+#
+#   <!-- consolidate: connector -->
+#   | benchmark | median | ...
+#   <!-- /consolidate -->
+#
+# The first version printed the whole page from a head file kept beside this
+# script. The page was then edited where it is read and the head file was
+# not, so the next run would have erased three sections measured by hand and
+# reverted two of the method's paragraphs.
 #
 # This exists because the repository's own rule says absolute figures do not
 # transfer across sessions or machines (docs/benchmarks.md, "Measuring on a
@@ -21,6 +33,39 @@ ROOT="$(git rev-parse --show-toplevel)"
 BENCHTIME="${BENCHTIME:-1s}"
 COUNT="${COUNT:-3}"
 CORE="${CORE:-$(($(nproc) - 1))}"
+PAGE="$ROOT/docs/benchmarks.md"
+BLOCKS="conditions connector codec web socket gateway-db partitioning statement-cache verdicts"
+
+# The page must hold each block once, closed before the next one opens, and
+# no block this script does not produce. Checked here before anything is
+# measured, so a lost marker costs a second rather than a run, and on every
+# commit by TestBenchmarksPageHoldsEveryConsolidatedBlock, which reads
+# BLOCKS from this file.
+markers() {
+  local status=0 name n
+  for name in $BLOCKS; do
+    n="$(grep -c "^<!-- consolidate: $name -->\$" "$PAGE" || true)"
+    if [ "$n" != 1 ]; then
+      echo "consolidate: docs/benchmarks.md has $n '<!-- consolidate: $name -->' markers, not one" >&2
+      status=1
+    fi
+  done
+  while IFS= read -r name; do
+    case " $BLOCKS " in
+      *" $name "*) ;;
+      *)
+        echo "consolidate: docs/benchmarks.md names a block this script does not produce: $name" >&2
+        status=1
+        ;;
+    esac
+  done < <(sed -n 's/^<!-- consolidate: \(.*\) -->$/\1/p' "$PAGE")
+  awk '
+    /^<!-- consolidate: / { if (open) { print "consolidate: line " NR " opens a block inside another"; bad = 1 } open = 1 }
+    /^<!-- \/consolidate -->$/ { if (!open) { print "consolidate: line " NR " closes no block"; bad = 1 } open = 0 }
+    END { if (open) { print "consolidate: the last block is never closed"; bad = 1 } exit bad }' "$PAGE" >&2 || status=1
+  return $status
+}
+markers
 
 # A loaded machine produces a table that is uniformly wrong rather than
 # obviously wrong. One run of this script at load 3.3 came out 7-28% above the
@@ -121,22 +166,20 @@ section() { # section <name> <module> <packages> <regex> [pinned]
   printf '%s\n' "$rows"
 }
 
-# The hand-written head of the page — method, ceiling, how to read the
-# tables — lives beside this script so that regenerating the figures never
-# erases it.
-cat "$ROOT/internal/bench/scripts/benchmarks-head.md"
+# Each block is produced into a file of its own, then written into the page
+# by the fill below; the prose around the tables belongs to the page.
+OUT="$(mktemp -d)"
+trap 'rm -rf "$OUT"' EXIT
 
-cat <<HEADER
-## Measured in one session
+table() { # table <name> <module> <packages> <regex> [pinned]
+  {
+    echo '| benchmark | median | spread | B/op | allocs/op |'
+    echo '|---|---|---|---|---|'
+    section "$@"
+  } >"$OUT/$1"
+}
 
-Produced by \`internal/bench/scripts/consolidate.sh\` in one session, on one
-machine. That is the point of this file: the repository's rule is that absolute
-figures do not transfer across sessions, and the tables it replaced had been
-assembled from a dozen runs over several hours — each honest, none comparable
-to the next.
-
-## Conditions
-
+cat >"$OUT/conditions" <<CONDITIONS
 | | |
 |---|---|
 | Date | $(date -u '+%Y-%m-%d %H:%M UTC') |
@@ -148,114 +191,37 @@ to the next.
 | Server | $SLUICE_PG (loopback) |
 | benchtime | $BENCHTIME × $COUNT, median reported, spread = (max-min)/median |
 | Pinned | core $CORE, GOMAXPROCS=1, except where concurrency is the point |
-HEADER
+CONDITIONS
 
-# Quoted, because everything below is prose with markdown code spans in it and
-# an unquoted heredoc runs those as commands. The first version of this script
-# did exactly that: `BENCHTIME` in the text executed a command of that name,
-# left an empty string behind, and killed the run after the first table.
-cat <<'PROSE'
+table connector benchmarks . 'BenchmarkPGPoint|BenchmarkPGAny|BenchmarkPGWide|BenchmarkPGCopy'
+table codec benchmarks . 'BenchmarkPGEncodeInt8Array|BenchmarkPGDecodeInt8Array'
+table web benchmarks . 'BenchmarkWebNetHTTP$|BenchmarkWebSluice$|BenchmarkWebGin$|BenchmarkWebEcho$|BenchmarkWebChi$'
+table socket benchmarks . 'BenchmarkSocket' free
+table gateway-db benchmarks . 'BenchmarkWebDB' free
+table partitioning . ./gateway/ 'BenchmarkPartition'
+table statement-cache . './database/postgres/ ./internal/bench/' 'BenchmarkStmtCache|BenchmarkPGPrepare'
 
-**This is a laptop under WSL2, not a measurement rig.** Linux neither sees nor
-controls the host clock here; two sequential runs of the same binary differ by
-up to 14%, and the network-bound rows are worse than that at a short benchtime.
-Read ratios rather than absolutes, and prefer the paired verdicts at the end
-over any single row above them.
+{
+  echo '```'
+  for pair in \
+    "BenchmarkSocketNetHTTP BenchmarkSocketSluice" \
+    "BenchmarkSocketGin BenchmarkSocketSluice" \
+    "BenchmarkSocketNetHTTP BenchmarkSocketFiberFasthttp"; do
+    "$ROOT/internal/bench/scripts/versus.sh" $pair 13 2>/dev/null | tail -1
+  done
+  echo '```'
+} >"$OUT/verdicts"
 
-A **spread** over 15% is flagged with `**`. Those rows should not be quoted:
-the run-to-run variation is larger than most of the differences the table is
-being read for. Raise `BENCHTIME` and re-run before believing them — a point
-read measured 127 µs in one run and 318 µs in another at `BENCHTIME=300ms`,
-and settled at 285-298 µs across five runs of 1s.
-
-## Connector, against pgx / lib/pq / database/sql
-
-One connection each, since this connector has no pool and a comparison that
-ignores that measures pooling.
-
-| benchmark | median | spread | B/op | allocs/op |
-|---|---|---|---|---|
-PROSE
-section connector benchmarks . 'BenchmarkPGPoint|BenchmarkPGAny|BenchmarkPGWide|BenchmarkPGCopy'
-
-cat <<'SECTION'
-
-## Codec, in isolation
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section codec benchmarks . 'BenchmarkPGEncodeInt8Array|BenchmarkPGDecodeInt8Array'
-
-cat <<'SECTION'
-
-## Web pipeline, in process
-
-No socket, no kernel. See the socket table below before drawing anything from
-the ordering here.
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section web benchmarks . 'BenchmarkWebNetHTTP$|BenchmarkWebSluice$|BenchmarkWebGin$|BenchmarkWebEcho$|BenchmarkWebChi$'
-
-cat <<'SECTION'
-
-## Web pipeline, over a socket
-
-Not pinned: a socket benchmark needs a client and a server at once, and pinning
-both to one core measures their contention.
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section socket benchmarks . 'BenchmarkSocket' free
-
-cat <<'SECTION'
-
-## The gateway, with a database behind it
-
-Sixty-four concurrent requests, each needing one row. Not pinned, for the same
-reason.
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section gateway-db benchmarks . 'BenchmarkWebDB' free
-
-cat <<'SECTION'
-
-## Partitioning by principal
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section partitioning . ./gateway/ 'BenchmarkPartition'
-
-cat <<'SECTION'
-
-## Statement cache
-
-SECTION
-echo '| benchmark | median | spread | B/op | allocs/op |'
-echo '|---|---|---|---|---|'
-section statement-cache . './database/postgres/ ./internal/bench/' 'BenchmarkStmtCache|BenchmarkPGPrepare'
-
-cat <<'SECTION'
-
-## Paired verdicts
-
-A single run of each contender produces numbers in an order, which invites
-ranking. The sign test says which of those differences survive interleaving.
-
-```
-SECTION
-for pair in \
-  "BenchmarkSocketNetHTTP BenchmarkSocketSluice" \
-  "BenchmarkSocketGin BenchmarkSocketSluice" \
-  "BenchmarkSocketNetHTTP BenchmarkSocketFiberFasthttp"; do
-  "$ROOT/internal/bench/scripts/versus.sh" $pair 13 2>/dev/null | tail -1
-done
-cat <<'SECTION'
-```
-SECTION
+# The fill: the page with what lies between each pair of markers replaced by
+# the block of that name, and every other line as it was.
+awk -v dir="$OUT" '
+  /^<!-- consolidate: [a-z-]+ -->$/ {
+    print
+    file = dir "/" $3
+    while ((getline line < file) > 0) print line
+    close(file)
+    skip = 1
+    next
+  }
+  /^<!-- \/consolidate -->$/ { skip = 0 }
+  !skip { print }' "$PAGE"

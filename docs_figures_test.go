@@ -149,3 +149,56 @@ func TestREADMEDoesNotQuoteUnstableRows(t *testing.T) {
 		t.Logf("%d rows flagged as unstable, none of them quoted: %v", len(unstable), unstable)
 	}
 }
+
+// consolidate.sh rewrites only what lies between the markers of a block, and
+// the page is edited where it is read. A block the page lost would make the
+// next run fail after an hour of measuring, and a block written twice, or
+// one left open, would have it overwrite the prose that follows. The list of
+// blocks is read from the script, the one place it is written.
+func TestBenchmarksPageHoldsEveryConsolidatedBlock(t *testing.T) {
+	script, err := os.ReadFile("internal/bench/scripts/consolidate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^BLOCKS="([a-z -]+)"$`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal(`consolidate.sh has no BLOCKS="…" line; the script changed shape`)
+	}
+	blocks := strings.Fields(string(m[1]))
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	open := regexp.MustCompile(`^<!-- consolidate: (\S+) -->$`)
+	count := map[string]int{}
+	inside := ""
+	for i, line := range strings.Split(string(page), "\n") {
+		if o := open.FindStringSubmatch(line); o != nil {
+			if inside != "" {
+				t.Errorf("docs/benchmarks.md:%d opens block %q inside %q", i+1, o[1], inside)
+			}
+			inside = o[1]
+			count[o[1]]++
+			continue
+		}
+		if line == "<!-- /consolidate -->" {
+			if inside == "" {
+				t.Errorf("docs/benchmarks.md:%d closes no block", i+1)
+			}
+			inside = ""
+		}
+	}
+	if inside != "" {
+		t.Errorf("docs/benchmarks.md: block %q is never closed", inside)
+	}
+	for _, b := range blocks {
+		if count[b] != 1 {
+			t.Errorf("docs/benchmarks.md holds block %q %d times, not once", b, count[b])
+		}
+		delete(count, b)
+	}
+	for b := range count {
+		t.Errorf("docs/benchmarks.md holds block %q, which consolidate.sh does not produce", b)
+	}
+}

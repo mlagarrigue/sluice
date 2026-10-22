@@ -67,11 +67,12 @@ Regenerate it with:
 ```
 eval "$(internal/bench/scripts/pgdev.sh start)"
 go run ./internal/bench/cmd/pgfixtures
-internal/bench/scripts/consolidate.sh > consolidated.md
+internal/bench/scripts/consolidate.sh > /tmp/b.md && mv /tmp/b.md docs/benchmarks.md
 ```
 
-Its sections replace those under "Measured in one session" in
-`docs/benchmarks.md`. In the devcontainer, `SLUICE_PG` and its neighbours are already set: skip the
+It rewrites the tables under "Measured in one session" in
+`docs/benchmarks.md`, each between the two markers that name it, and leaves
+every other line of the page as it was. In the devcontainer, `SLUICE_PG` and its neighbours are already set: skip the
 first line.
 
 ## What is measured, and what each figure means

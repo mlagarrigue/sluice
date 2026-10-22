@@ -3,9 +3,10 @@
 Every performance figure in the repository has a benchmark and a
 denominator. This page says how the figures are produced, what they are read
 against, and why a figure taken alone is worth nothing on the machine that
-produces them. The tables after this head are regenerated in one session by
-`internal/bench/scripts/consolidate.sh`; the session's conditions are written
-with them.
+produces them. The tables of "Measured in one session" are regenerated in one
+session by `internal/bench/scripts/consolidate.sh`, which rewrites only what
+lies between their `consolidate` markers; the session's conditions are
+written with them, and every other line of this page is edited by hand.
 
 ## The ceiling and the budget
 
@@ -795,6 +796,7 @@ to the next.
 
 ## Conditions
 
+<!-- consolidate: conditions -->
 | | |
 |---|---|
 | Date | 2026-08-21 12:05 UTC |
@@ -806,6 +808,7 @@ to the next.
 | Server | 127.0.0.1:5433 (loopback) |
 | benchtime | 1s × 3, median reported, spread = (max-min)/median |
 | Pinned | core 14, GOMAXPROCS=1, except where concurrency is the point |
+<!-- /consolidate -->
 
 **This is a laptop under WSL2, not a measurement rig.** Linux neither sees nor
 controls the host clock here; two sequential runs of the same binary differ by
@@ -838,6 +841,7 @@ timer: the two COPY rows no longer measure the server writing the WAL, which
 is the same work for both clients. The tables are loaded by
 `go run ./internal/bench/cmd/pgfixtures`, which reads `SLUICE_PG*`.
 
+<!-- consolidate: connector -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkPGAnyPgxSQL` | 326525 ns | ±3% | 96169 B | 3486 |
@@ -858,6 +862,7 @@ is the same work for both clients. The tables are loaded by
 | `BenchmarkPGWidePgx` | 9382291 ns | ±2% | 6740578 B | 280008 |
 | `BenchmarkPGWideSluiceFetchAll` | 9777159 ns | ±3% | 6394 B | 23 |
 | `BenchmarkPGWideSluice` | 10178372 ns | ±3% | 6711 B | 23 |
+<!-- /consolidate -->
 
 **Point read with no option (measured 2026-10-13).** A connection now keeps
 its prepared statements by default (up to 512) and asks for the whole result
@@ -1101,6 +1106,7 @@ depth costs a consumer that stops. `FetchAll` and pgx are the controls.
 
 ## Codec, in isolation
 
+<!-- consolidate: codec -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkPGDecodeInt8ArrayPgxFlat` | 5204 ns | ±2% | 8256 B | 4 |
@@ -1109,12 +1115,14 @@ depth costs a consumer that stops. `FetchAll` and pgx are the controls.
 | `BenchmarkPGEncodeInt8ArrayPgxFlat` | 13933 ns | ±0% | 7736 B | 965 |
 | `BenchmarkPGEncodeInt8ArrayPgx` | 14484 ns | ±1% | 7760 B | 966 |
 | `BenchmarkPGEncodeInt8ArraySluice` | 492 ns | ±4% | 0 B | 0 |
+<!-- /consolidate -->
 
 ## Web pipeline, in process
 
 No socket, no kernel. See the socket table below before drawing anything from
 the ordering here.
 
+<!-- consolidate: web -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkWebChi` | 1927 ns | ±4% | 2584 B | 23 |
@@ -1122,12 +1130,14 @@ the ordering here.
 | `BenchmarkWebGin` | 1642 ns | ±0% | 1864 B | 19 |
 | `BenchmarkWebNetHTTP` | 1676 ns | ±1% | 1928 B | 21 |
 | `BenchmarkWebSluice` | 1764 ns | ±0% | 1952 B | 22 |
+<!-- /consolidate -->
 
 ## Web pipeline, over a socket
 
 Not pinned: a socket benchmark needs a client and a server at once, and pinning
 both to one core measures their contention.
 
+<!-- consolidate: socket -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkSocketChi` | 187419 ns | ±4% | 10902 B | 113 |
@@ -1139,6 +1149,7 @@ both to one core measures their contention.
 | `BenchmarkSocketGin` | 183640 ns | ±1% | 10171 B | 109 |
 | `BenchmarkSocketNetHTTP` | 170371 ns | ±14% | 10113 B | 111 |
 | `BenchmarkSocketSluice` | 184708 ns | ±1% | 10120 B | 112 |
+<!-- /consolidate -->
 
 ### The connection budget and the batch bound (2026-10-14)
 
@@ -1171,6 +1182,7 @@ measured pipelining more than 64 deep is the condition to revisit it.
 Sixty-four concurrent requests, each needing one row. Not pinned, for the same
 reason.
 
+<!-- consolidate: gateway-db -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkWebDBLibPQOneConn` | 24689962 ns | ±2% | 483135 B | 3264 |
@@ -1178,16 +1190,20 @@ reason.
 | `BenchmarkWebDBPgxPool16` | 1915795 ns | ±3% | 455170 B | 2094 |
 | `BenchmarkWebDBPgxPool64` | 1279128 ns | ±8% | 449370 B | 1962 |
 | `BenchmarkWebDBSluiceOneConn` | 898204 ns | ±6% | 470318 B | 2251 |
+<!-- /consolidate -->
 
 ## Partitioning by principal
 
+<!-- consolidate: partitioning -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkPartitionAllDistinct` | 1243 ns | ±2% | 0 B | 0 |
 | `BenchmarkPartitionSingleTenant` | 454 ns | ±3% | 0 B | 0 |
+<!-- /consolidate -->
 
 ## Statement cache
 
+<!-- consolidate: statement-cache -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
 | `BenchmarkPGPrepareHit` | 786 ns | ±0% |  B |  |
@@ -1195,14 +1211,17 @@ reason.
 | `BenchmarkPGPrepareOff` | 783 ns | ±1% |  B |  |
 | `BenchmarkStmtCacheChurn` | 136 ns | ±2% | 55 B | 3 |
 | `BenchmarkStmtCacheHit` | 16 ns | ±0% | 0 B | 0 |
+<!-- /consolidate -->
 
 ## Paired verdicts
 
 A single run of each contender produces numbers in an order, which invites
 ranking. The sign test says which of those differences survive interleaving.
 
+<!-- consolidate: verdicts -->
 ```
 BenchmarkSocketNetHTTP vs BenchmarkSocketSluice                                     183857.0000 -> 183752.5000  noise            wins=5/12 (need 10)
 BenchmarkSocketGin vs BenchmarkSocketSluice                                     177060.0000 -> 177126.0000  noise            wins=8/12 (need 10)
 BenchmarkSocketNetHTTP vs BenchmarkSocketFiberFasthttp                                     175211.0000 -> 191202.0000  SLOWER +8.8%     wins=0/12 (need 10)
 ```
+<!-- /consolidate -->
