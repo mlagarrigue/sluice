@@ -832,8 +832,18 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 		// loop that is sending this, during the handshake. What does not fit
 		// queues behind the lost payloads, and retransmitLocked drains it as
 		// acknowledgements reopen the window.
-		if !c.cc.canSend(len(frame) + 64) {
-			sp := &c.spaces[space]
+		//
+		// Behind them whatever stopped them: once a chunk waits, every later
+		// one queues after it, in offset order. The anti-amplification
+		// budget withholds a packet by putting it back at the head of the
+		// queue, which is right for the head retransmitLocked just took and
+		// reversed a fresh certificate chain chunk by chunk: the budget
+		// lifted, the server sent its Handshake CRYPTO from offset 8870
+		// down to 4326, and kwik, which buffers the 4096 out-of-order bytes
+		// RFC 9000 §7.5 requires and no more, closed with
+		// CRYPTO_BUFFER_EXCEEDED on the first (runner amplificationlimit).
+		sp := &c.spaces[space]
+		if len(sp.retrans) > 0 || !c.cc.canSend(len(frame)+64) {
 			sp.retrans = append(sp.retrans, frame)
 			continue
 		}

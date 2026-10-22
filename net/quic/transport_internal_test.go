@@ -447,6 +447,50 @@ func TestProbeLiftsTheOldestPacketsIntoNewOnes(t *testing.T) {
 	}
 }
 
+// A certificate chain the anti-amplification budget holds back leaves in
+// offset order once the budget lifts. Each withheld packet goes back to the
+// head of the queue; a chain sent chunk by chunk came out reversed, its
+// first packet thousands of bytes past what the client held contiguous —
+// past the 4096 out-of-order bytes RFC 9000 §7.5 obliges a peer to buffer.
+func TestAWithheldCertificateChainLeavesInOrder(t *testing.T) {
+	c := newIdleServerConn(t)
+	c.mu.Lock()
+	c.spaces[spaceHandshake].sealer = c.spaces[spaceInitial].sealer
+	c.amplActive = true
+	c.amplRecv = 1200 // one client Initial's worth: 3600 bytes may leave
+	c.mu.Unlock()
+
+	if err := c.sendCrypto(tls.QUICEncryptionLevelHandshake, make([]byte, 10000)); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.amplRecv = 1 << 20 // the client's next datagrams validate nothing yet but raise the budget
+	c.retransmitLocked()
+
+	sp := &c.spaces[spaceHandshake]
+	var offsets []uint64
+	for _, p := range sp.sent.packets {
+		frames, err := parseFrames(nil, p.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range frames {
+			if f.Type == frameCrypto {
+				offsets = append(offsets, f.offset)
+			}
+		}
+	}
+	if len(offsets) < 5 || len(sp.retrans) != 0 {
+		t.Fatalf("sent CRYPTO at %v with %d payloads still queued; want the whole chain sent", offsets, len(sp.retrans))
+	}
+	for i := 1; i < len(offsets); i++ {
+		if offsets[i] < offsets[i-1] {
+			t.Fatalf("CRYPTO left at offsets %v: out of order once the budget lifted", offsets)
+		}
+	}
+}
+
 // Manual credit: delivery to the batch consumer earns the peer nothing, and
 // only ReleaseStreamBytes reopens the window — at both levels.
 func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
