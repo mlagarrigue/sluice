@@ -149,6 +149,7 @@ func TestDistinctRejectsBadArguments(t *testing.T) {
 	}{
 		{"nil key", func() { By[int, int](sluice.Empty[int](), 4, nil, sluice.DropOldest) }},
 		{"undeclared policy", func() { By(sluice.Empty[int](), 4, identityKey, sluice.Overflow(99)) }},
+		{"unset policy", func() { By(sluice.Empty[int](), 4, identityKey, sluice.Overflow(0)) }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

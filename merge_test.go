@@ -171,10 +171,11 @@ func TestMergeOrdersRoundRobin(t *testing.T) {
 	}
 }
 
-// An undeclared Completion must not read as WhenAll in silence: Merge refuses
+// An undeclared Completion must not pick a policy in silence: Merge refuses
 // it at construction, before any stream is touched, with or without sources.
+// The zero value is one of them — the field a caller forgot to set.
 func TestMergeRejectsUndeclaredCompletion(t *testing.T) {
-	for _, done := range []Completion{Completion(255), Completion(2), Completion(7)} {
+	for _, done := range []Completion{0, Completion(255), Completion(3), Completion(7)} {
 		for _, n := range []int{0, 2} {
 			func() {
 				defer func() {

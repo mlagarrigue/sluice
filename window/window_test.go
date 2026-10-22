@@ -256,6 +256,7 @@ func TestWindowArgumentValidation(t *testing.T) {
 		{"zero n", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 0, sluice.Fail) }},
 		{"DropOldest rejected", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.DropOldest) }},
 		{"undeclared policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(9)) }},
+		{"unset policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(0)) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

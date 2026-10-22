@@ -370,6 +370,10 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: 10, OnOverflow: sluice.Overflow(99)})
 		}},
+		{"unset policy", func() {
+			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
+				BuildLimit{MaxEntries: 10})
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

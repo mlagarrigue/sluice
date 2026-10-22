@@ -11,6 +11,7 @@ func TestOverflowString(t *testing.T) {
 		{DropNewest, "DropNewest"},
 		{Fail, "Fail"},
 		{Overflow(9), "Overflow(9)"},
+		{0, "Overflow(0)"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.want, func(t *testing.T) {

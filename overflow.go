@@ -29,14 +29,16 @@ var ErrOverflow = batch.NewSentinel("sluice: bounded operator reached its limit 
 //
 // There is no default. A policy nobody chose is a policy nobody owns, and the
 // right answer differs per pipeline: a metrics feed drops, a payment stream
-// fails, a file read blocks. The caller states it.
+// fails, a file read blocks. The caller states it, and the zero value is none
+// of the constants: a field left unset is refused at construction like any
+// other undeclared value, rather than read as one of them.
 type Overflow uint8
 
 const (
 	// DropOldest discards the oldest retained element to make room. The stream
 	// stays current at the cost of completeness — the choice for a feed where
 	// the latest value is the useful one.
-	DropOldest Overflow = iota
+	DropOldest Overflow = iota + 1
 
 	// DropNewest discards the arriving element and keeps what is held. The
 	// choice when the first observation of something matters more than the
@@ -68,5 +70,6 @@ func (o Overflow) String() string {
 // Valid reports whether the policy is one of the declared constants. An
 // operator checks this at construction rather than on overflow: a typo in a
 // configuration value must not lie dormant until the day the bound is reached,
-// which is the day the pipeline is already under stress.
-func (o Overflow) Valid() bool { return o <= Fail }
+// which is the day the pipeline is already under stress. The zero value is not
+// valid: it is the field nobody set.
+func (o Overflow) Valid() bool { return o >= DropOldest && o <= Fail }

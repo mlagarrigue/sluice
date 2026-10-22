@@ -5,7 +5,8 @@ import "strconv"
 // Completion decides when a merged stream ends. There is no sensible default:
 // stopping at the first exhausted source silently drops the rest, and waiting
 // for all of them stalls a pipeline whose point was the first result. The
-// caller states which one it wants.
+// caller states which one it wants, and the zero value is neither: Merge
+// refuses it, as it refuses any undeclared value.
 type Completion uint8
 
 const (
@@ -18,7 +19,7 @@ const (
 	// stops it. That is the requested semantics, not a defect, but it shows up on
 	// a profile as CPU with no allocation and no output; use [WhenAny] when a
 	// source running dry is meant to end the merge.
-	WhenAll Completion = iota
+	WhenAll Completion = iota + 1
 
 	// WhenAny ends the merged stream as soon as one source is exhausted, and
 	// releases the others. Batches already pulled from the other sources in the
@@ -39,8 +40,9 @@ func (c Completion) String() string {
 }
 
 // valid reports whether c is one of the declared constants. Merge checks it at
-// construction: an undeclared value would otherwise read as [WhenAll] in
-// silence, which is the one choice this type exists to make explicit.
+// construction: an undeclared value — the zero value of a field nobody set
+// among them — would otherwise pick a policy in silence, which is the one
+// choice this type exists to make explicit.
 func (c Completion) valid() bool { return c == WhenAll || c == WhenAny }
 
 // Merge interleaves several streams, one batch at a time from each.
