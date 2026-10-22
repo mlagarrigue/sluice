@@ -40,8 +40,11 @@ func benchIntervalJoin(b *testing.B, lower, upper time.Duration) {
 		var acc int64
 		join.Interval(
 			sluice.Of(left, 1024), sluice.Of(right, 1024),
-			key, key, ts, ts, lower, upper,
-			func(l, r int64) int64 { return l + r },
+			join.IntervalSpec[int64, int64, int64, int64]{
+				KeyL: key, KeyR: key, TimeL: ts, TimeR: ts,
+				Lower: lower, Upper: upper,
+				Merge: func(l, r int64) int64 { return l + r },
+			},
 			limit,
 		)(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {

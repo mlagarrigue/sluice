@@ -6,32 +6,48 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
+// IntervalSpec says how [Interval] pairs a left row with a right row: by
+// equal keys, and by the right row's timestamp falling within [Lower, Upper]
+// of the left row's. Every function is required; the zero Lower and Upper
+// pair rows of the same instant only.
+type IntervalSpec[L, R any, K comparable, Out any] struct {
+	KeyL  func(L) K
+	KeyR  func(R) K
+	TimeL func(L) time.Time
+	TimeR func(R) time.Time
+	// Lower and Upper bound TimeR(r) - TimeL(l), inclusive at both ends.
+	Lower, Upper time.Duration
+	Merge        func(L, R) Out
+}
+
 // Interval joins two time-ordered streams on a key and a temporal
 // predicate, in memory bounded by the caller — the stream-stream join for
 // infinite inputs that §9.3 specifies.
 //
 //	attributed := Interval(clicks, impressions,
-//	    func(c Click) string { return c.UserID },
-//	    func(i Impression) string { return i.UserID },
-//	    func(c Click) time.Time { return c.At },
-//	    func(i Impression) time.Time { return i.At },
-//	    -15*time.Minute, 0, // impression at most 15 minutes before the click
-//	    func(c Click, i Impression) Attribution { ... },
+//	    IntervalSpec[Click, Impression, string, Attribution]{
+//	        KeyL:  func(c Click) string { return c.UserID },
+//	        KeyR:  func(i Impression) string { return i.UserID },
+//	        TimeL: func(c Click) time.Time { return c.At },
+//	        TimeR: func(i Impression) time.Time { return i.At },
+//	        Lower: -15 * time.Minute, // impression at most 15 minutes before the click
+//	        Merge: func(c Click, i Impression) Attribution { ... },
+//	    },
 //	    BuildLimit{MaxEntries: 100_000, OnOverflow: sluice.Fail})
 //
 // A left row l and a right row r match when their keys are equal and
 //
-//	tsR(r) - tsL(l) is within [lower, upper]
+//	TimeR(r) - TimeL(l) is within [Lower, Upper]
 //
-// so lower and upper say where the right side may sit relative to the left:
-// a negative lower reaches into the right's past, a positive upper into its
-// future, and lower <= upper is required. Every matching pair is emitted
+// so Lower and Upper say where the right side may sit relative to the left:
+// a negative Lower reaches into the right's past, a positive Upper into its
+// future, and Lower <= Upper is required. Every matching pair is emitted
 // exactly once, inner-join only: a window that would need to know when to
 // give up finding a partner is a watermark, and without one the semantics of
 // an outer emission is undefined — the restriction is taken from Flink and
 // stated rather than lied about. The window bounds are computed with
 // [time.Time.Add], which wraps silently near the extremes a time.Time can
-// represent — timestamps within |lower| or |upper| of those extremes will
+// represent — timestamps within |Lower| or |Upper| of those extremes will
 // match wrongly, so keep sentinel times (zero, math.MaxInt64 epochs) out of
 // the inputs.
 //
@@ -82,19 +98,16 @@ import (
 // it requires a copy. Rows accumulate until a batch fills, so an early stop
 // takes effect at the next batch boundary.
 //
-// Interval panics if a key, timestamp or merge function is nil, if
-// lower > upper, or if limit is not usable.
+// Interval panics if a key, timestamp or merge function of spec is nil, if
+// spec.Lower > spec.Upper, or if limit is not usable.
 func Interval[L, R any, K comparable, Out any](
 	left sluice.Stream[L],
 	right sluice.Stream[R],
-	keyL func(L) K,
-	keyR func(R) K,
-	tsL func(L) time.Time,
-	tsR func(R) time.Time,
-	lower, upper time.Duration,
-	merge func(L, R) Out,
+	spec IntervalSpec[L, R, K, Out],
 	limit BuildLimit,
 ) sluice.Stream[Out] {
+	keyL, keyR, tsL, tsR := spec.KeyL, spec.KeyR, spec.TimeL, spec.TimeR
+	lower, upper, merge := spec.Lower, spec.Upper, spec.Merge
 	if keyL == nil || keyR == nil {
 		panic("sluice: Interval requires non-nil key functions")
 	}

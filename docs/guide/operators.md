@@ -61,7 +61,7 @@ streams.
 |---|---|---|
 | `join.Merge(left, right, keyL, keyR, cmp)` | only the current run of equal keys | both streams are **sorted** on the key |
 | `join.ZipLongest(left, right)` | nothing beyond the two current batches | pairing by position: the first with the first, and so on |
-| `join.Interval(left, right, …, lower, upper, …, limit)` | a bounded time window of both sides | two streams **ordered by time**, possibly infinite |
+| `join.Interval(left, right, spec, limit)` | a bounded time window of both sides | two streams **ordered by time**, possibly infinite |
 | `join.StreamTable(probe, build, …, limit)` | **all** of the `build` side in memory | `build` is finite (a reference table), `probe` may not be |
 
 ### Two sorted streams: the merge join
@@ -126,12 +126,14 @@ pair what happened "within 15 seconds":
 
 ```go
 attributed := join.Interval(clicks, impressions,
-    func(c Click) string { return c.UserID },         // the key
-    func(i Impression) string { return i.UserID },
-    func(c Click) time.Time { return c.At },          // the time on each side
-    func(i Impression) time.Time { return i.At },
-    -15*time.Second, 0,                               // the impression between 15 s before and the click
-    func(c Click, i Impression) Attribution { return Attribution{c, i} },
+    join.IntervalSpec[Click, Impression, string, Attribution]{
+        KeyL:  func(c Click) string { return c.UserID },      // the key
+        KeyR:  func(i Impression) string { return i.UserID },
+        TimeL: func(c Click) time.Time { return c.At },       // the time on each side
+        TimeR: func(i Impression) time.Time { return i.At },
+        Lower: -15 * time.Second,                             // the impression between 15 s before and the click
+        Merge: func(c Click, i Impression) Attribution { return Attribution{c, i} },
+    },
     join.BuildLimit{MaxEntries: 10_000, OnOverflow: sluice.DropNewest,
         Report: func(limit, held int) { log.Printf("interval join truncated at %d", held) }})
 ```

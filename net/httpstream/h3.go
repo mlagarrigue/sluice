@@ -222,9 +222,9 @@ func appendH3Frame(dst []byte, typ uint64, payload []byte) []byte {
 // structural checks, and by a fixture of what a real client sends. What the
 // argument was right about is recorded in ADR 0013.
 //
-// The parameter remains as the override [join.StreamTableWith] would
-// be: pass a table to replace the shipped one, or an empty non-nil table to
-// refuse indexed field lines entirely.
+// The parameter remains as an override: pass a table to replace the
+// shipped one, or an empty non-nil table to refuse indexed field lines
+// entirely.
 //
 // The dynamic table is a different matter and needs no seam. Advertising
 // SETTINGS_QPACK_MAX_TABLE_CAPACITY of zero — which [h3Settings] does — means

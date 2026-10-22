@@ -370,10 +370,6 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 			StreamTable(probe, build, orderCustomer, customerID, joinLabel,
 				BuildLimit{MaxEntries: 10, OnOverflow: sluice.Overflow(99)})
 		}},
-		{"nil table", func() {
-			StreamTableWith[order, customer, int, string](probe, build,
-				orderCustomer, customerID, joinLabel, okLimit(10), nil)
-		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -384,36 +380,6 @@ func TestJoinRejectsBadArguments(t *testing.T) {
 			}()
 			tc.call()
 		})
-	}
-}
-
-// countingTable proves the storage seam is real: a caller can supply their own
-// and the join uses it rather than its default.
-type countingTable[K comparable, B any] struct {
-	inner *mapTable[K, B]
-	puts  int
-	gets  int
-}
-
-func (t *countingTable[K, B]) Put(k K, v B) { t.puts++; t.inner.Put(k, v) }
-func (t *countingTable[K, B]) Get(k K) []B  { t.gets++; return t.inner.Get(k) }
-func (t *countingTable[K, B]) Len() int     { return t.inner.Len() }
-
-func TestJoinStreamTableWithCustomTable(t *testing.T) {
-	table := &countingTable[int, customer]{inner: newMapTable[int, customer](8)}
-
-	got := sluice.Collect(StreamTableWith(
-		sluice.Of([]order{{10, 1}, {11, 2}}, 2), sluice.Of([]customer{{1, "ana"}, {2, "bo"}}, 2),
-		orderCustomer, customerID, joinLabel, okLimit(10), table))
-
-	if want := []string{"ana:10", "bo:11"}; !slices.Equal(got, want) {
-		t.Errorf("join = %v, want %v", got, want)
-	}
-	if table.puts != 2 {
-		t.Errorf("the supplied table saw %d puts, want 2: the join used its own storage instead", table.puts)
-	}
-	if table.gets != 2 {
-		t.Errorf("the supplied table saw %d gets, want 2", table.gets)
 	}
 }
 
@@ -439,9 +405,8 @@ func TestMapTable(t *testing.T) {
 	}
 }
 
-// The default table addresses its chain with int32, so a limit past that range
-// is rejected at construction rather than left to overflow silently. A caller
-// who needs more supplies their own table.
+// The table addresses its chain with int32, so a limit past that range is
+// rejected at construction rather than left to overflow silently.
 func TestJoinRejectsLimitPastTheChainRange(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -454,30 +419,18 @@ func TestJoinRejectsLimitPastTheChainRange(t *testing.T) {
 		BuildLimit{MaxEntries: maxBuildEntries + 1, OnOverflow: sluice.Fail})
 }
 
-// The ceiling is the default table's, not the join's: a caller-supplied table
-// is the documented way past it, so StreamTableWith must accept the limit
-// StreamTable refuses, and the refusal must name the ceiling it applied.
-func TestJoinLimitCeilingBelongsToTheDefaultTable(t *testing.T) {
+// The refusal names the ceiling it applied, so a caller who hits it knows
+// it is the table's int32 range and not a misreading of their limit.
+func TestJoinLimitCeilingIsNamed(t *testing.T) {
 	big := BuildLimit{MaxEntries: maxBuildEntries + 1, OnOverflow: sluice.Fail}
-
-	func() {
-		defer func() {
-			msg, _ := recover().(string)
-			if !strings.Contains(msg, "2^31-1") {
-				t.Errorf("StreamTable panicked with %q, want a message naming the 2^31-1 ceiling", msg)
-			}
-		}()
-		StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
-			orderCustomer, customerID, joinLabel, big)
+	defer func() {
+		msg, _ := recover().(string)
+		if !strings.Contains(msg, "2^31-1") {
+			t.Errorf("StreamTable panicked with %q, want a message naming the 2^31-1 ceiling", msg)
+		}
 	}()
-
-	table := &countingTable[int, customer]{inner: newMapTable[int, customer](8)}
-	got := sluice.Collect(StreamTableWith(
-		sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "ana"}}, 1),
-		orderCustomer, customerID, joinLabel, big, table))
-	if want := []string{"ana:10"}; !slices.Equal(got, want) {
-		t.Errorf("join over a custom table = %v, want %v", got, want)
-	}
+	StreamTable(sluice.Of([]order{{10, 1}}, 1), sluice.Of([]customer{{1, "a"}}, 1),
+		orderCustomer, customerID, joinLabel, big)
 }
 
 // The build table doubles its map toward the caller's limit rather than

@@ -71,14 +71,16 @@ func ExampleInterval() {
 	// later, which is what "the impression that led to this click" means.
 	attributed := join.Interval(
 		sluice.Of(clicks, 4), sluice.Of(impressions, 4),
-		func(c click) string { return c.user },
-		func(i impression) string { return i.user },
-		func(c click) time.Time { return c.at },
-		func(i impression) time.Time { return i.at },
-		-15*time.Second, 0,
-		func(c click, i impression) string {
-			return fmt.Sprintf("%s clicked %ds after seeing the ad",
-				c.user, int(c.at.Sub(i.at).Seconds()))
+		join.IntervalSpec[click, impression, string, string]{
+			KeyL:  func(c click) string { return c.user },
+			KeyR:  func(i impression) string { return i.user },
+			TimeL: func(c click) time.Time { return c.at },
+			TimeR: func(i impression) time.Time { return i.at },
+			Lower: -15 * time.Second,
+			Merge: func(c click, i impression) string {
+				return fmt.Sprintf("%s clicked %ds after seeing the ad",
+					c.user, int(c.at.Sub(i.at).Seconds()))
+			},
 		},
 		join.BuildLimit{MaxEntries: 1000, OnOverflow: sluice.Fail},
 	)

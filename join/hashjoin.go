@@ -52,13 +52,13 @@ type BuildLimit struct {
 
 // valid reports whether the limit is usable, checked at construction so that a
 // misconfigured join fails where it is wired rather than when the data arrives.
-// It knows nothing of any table's capacity: that ceiling belongs to the
-// default table, and a caller-supplied one is not bound by it.
+// It knows nothing of the table's capacity: that ceiling belongs to the
+// table, and the interval join has one of its own.
 func (l BuildLimit) valid() bool {
 	return l.MaxEntries > 0 && (l.OnOverflow == sluice.Fail || l.OnOverflow == sluice.DropNewest)
 }
 
-// maxBuildEntries is the largest table the default [BuildTable] addresses.
+// maxBuildEntries is the largest table a hash join addresses.
 //
 // Its chain indices are int32, which halves the memory the chain costs against
 // int on a 64-bit platform. Two billion rows in one join is far past where a
@@ -66,37 +66,13 @@ func (l BuildLimit) valid() bool {
 // limit is a budget shared across the plan — so the ceiling is stated and
 // rejected at construction rather than left to overflow silently.
 //
-// A caller who genuinely needs more supplies their own [BuildTable] through
-// [StreamTableWith], which is what the seam is for.
+// The table is in memory and has no storage seam: spill to disk, the reason
+// one would exist (§9.1, and Kafka Streams' foreign-key join mandating
+// RocksDB as the counter-example), has neither a consumer nor a measure.
+// Adding the seam back is a compatible change the day one does.
 const maxBuildEntries = 1<<31 - 1
 
-// BuildTable holds the materialised side of a hash join.
-//
-// It is an interface so that the in-memory map below is a default rather than a
-// decision baked into the operator. §9.1 is explicit about the counter-example:
-// Kafka Streams ended up mandating RocksDB in its foreign-key join, in
-// contradiction with its own agnosticism goal. A caller who needs spill to disk
-// — radix partitioning is the reference implementation — supplies it here
-// instead of forking the join.
-//
-// Implementations are used from a single goroutine and need no synchronisation
-// of their own.
-type BuildTable[K comparable, B any] interface {
-	// Put adds a value under a key. Several values may share a key; Get
-	// returns them all.
-	Put(k K, v B)
-
-	// Get returns the values stored under a key, or nil. The slice must not be
-	// retained by the caller past the next Put.
-	Get(k K) []B
-
-	// Len reports how many values are stored, which is what [BuildLimit]
-	// bounds — values, not distinct keys, since a skewed key is exactly what
-	// makes a table grow unexpectedly.
-	Len() int
-}
-
-// mapTable is the default [BuildTable]: every value in one flat slice, with a
+// mapTable holds the materialised side of a hash join: every value in one flat slice, with a
 // map from key to the index of that key's most recent value and a parallel
 // slice chaining each value to the previous one under the same key.
 //
@@ -109,7 +85,7 @@ type BuildTable[K comparable, B any] interface {
 //
 // Values under one key come back in insertion order, which the chain reverses,
 // so Get walks it and then reverses into a reused buffer. That buffer is why
-// [BuildTable.Get] forbids retaining the result past the next Put.
+// Get's result must not be retained past the next Put.
 type mapTable[K comparable, B any] struct {
 	// head maps a key to the index in vals of its most recently added value,
 	// or -1 for none.
@@ -158,7 +134,7 @@ func newMapTable[K comparable, B any](hint int) *mapTable[K, B] {
 // initialBuildTable caps the map pre-sizing on a hash join's build side.
 const initialBuildTable = 64
 
-// Put implements [BuildTable]. It appends the value and chains it to the
+// Put appends the value and chains it to the
 // previous one under the same key, growing the map toward the limit rather
 // than letting the runtime grow it one insertion at a time.
 func (t *mapTable[K, B]) Put(k K, v B) {
@@ -203,7 +179,7 @@ func (t *mapTable[K, B]) reserve() {
 	t.head, t.reserved = grown, next
 }
 
-// Get implements [BuildTable]. The returned slice is reused by the next call,
+// Get returns the values under a key, or nil. The returned slice is reused by the next call,
 // which is why the interface forbids retaining it past the next Put.
 func (t *mapTable[K, B]) Get(k K) []B {
 	i, seen := t.head[k]
@@ -229,7 +205,7 @@ func (t *mapTable[K, B]) Get(k K) []B {
 	return t.scratch
 }
 
-// Len implements [BuildTable], counting values rather than distinct keys: a
+// Len reports how many values are stored, counting values rather than distinct keys: a
 // skewed key is exactly what makes a table grow unexpectedly.
 func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 
@@ -302,7 +278,7 @@ func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 // Materialising a side is what you do when you cannot sort, not a default.
 //
 // StreamTable panics if keyA, keyB or merge is nil, or if limit is not
-// usable — which includes a MaxEntries past 2^31-1, the default table's index
+// usable — which includes a MaxEntries past 2^31-1, the table's index
 // range.
 func StreamTable[A, B any, K comparable, R any](
 	probe sluice.Stream[A],
@@ -314,37 +290,11 @@ func StreamTable[A, B any, K comparable, R any](
 ) sluice.Stream[R] {
 	checkJoinArgs(keyA, keyB, merge, limit)
 	if limit.MaxEntries > maxBuildEntries {
-		panic("sluice: StreamTable requires MaxEntries <= 2^31-1, the default table's " +
-			"int32 index range; supply a BuildTable through StreamTableWith for more")
+		panic("sluice: StreamTable requires MaxEntries <= 2^31-1, the table's " +
+			"int32 index range")
 	}
 	return joinStreamTable(probe, build, keyA, keyB, merge, limit,
 		newMapTable[K, B](limit.MaxEntries))
-}
-
-// StreamTableWith is [StreamTable] over a caller-supplied table.
-//
-// It exists so that spill-to-disk, or any other storage policy, is something a
-// caller adds rather than something this package chooses for them. table must
-// be empty; it is filled from build and not reset afterwards, so a table reused
-// across joins carries its previous contents.
-//
-// StreamTableWith panics under the same conditions as [StreamTable],
-// except the default table's MaxEntries ceiling, which a supplied table is
-// not bound by — and additionally if table is nil.
-func StreamTableWith[A, B any, K comparable, R any](
-	probe sluice.Stream[A],
-	build sluice.Stream[B],
-	keyA func(A) K,
-	keyB func(B) K,
-	merge func(A, B) R,
-	limit BuildLimit,
-	table BuildTable[K, B],
-) sluice.Stream[R] {
-	checkJoinArgs(keyA, keyB, merge, limit)
-	if table == nil {
-		panic("sluice: StreamTableWith requires a non-nil table")
-	}
-	return joinStreamTable(probe, build, keyA, keyB, merge, limit, table)
 }
 
 // checkJoinArgs rejects a misconfigured join where it is wired rather than when
@@ -379,7 +329,7 @@ func joinStreamTable[A, B any, K comparable, R any](
 	keyB func(B) K,
 	merge func(A, B) R,
 	limit BuildLimit,
-	table BuildTable[K, B],
+	table *mapTable[K, B],
 ) sluice.Stream[R] {
 	return func(yield func(sluice.Batch[R]) bool) {
 		fillTable(build, keyB, limit, table)
@@ -413,7 +363,7 @@ func fillTable[K comparable, B any](
 	build sluice.Stream[B],
 	keyB func(B) K,
 	limit BuildLimit,
-	table BuildTable[K, B],
+	table *mapTable[K, B],
 ) {
 	build(func(b sluice.Batch[B]) bool {
 		for _, v := range b.Items {

@@ -1430,8 +1430,9 @@ sub-partitioning causes *I/O thrashing*.
 > table has no oldest entry, and quietly behaving as `DropNewest` would offer a
 > choice that does nothing.
 >
-> `join.StreamTableWith` is the storage seam: a caller supplying their own
-> `BuildTable` gets spill, or any other policy, without forking the operator.
+> The table is in memory, with no storage seam: spill to disk, the reason one
+> would exist, has neither a consumer nor a measure, and adding the seam
+> back is a compatible change the day it does.
 >
 > **The default table is not `map[K][]B`.** That shape allocates a slice per
 > distinct key, which dominates on a build side with many keys: measured at
