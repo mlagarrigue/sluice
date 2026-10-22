@@ -740,8 +740,8 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	// congestion can be judged: pto = 100ms + 1ms + 25ms, the duration is
 	// three of those, 378ms.
 	// min below latest, so that the reset §5.2 asks for after persistent
-	// congestion is visible: the sixth packet's own sample is zero and
-	// discarded, so latest stays at 100ms.
+	// congestion is visible: the sixth packet's own sample is 100ms, sent
+	// that long before its ACK, so latest stays at 100ms.
 	c.rtt = rttEstimator{latest: 100 * time.Millisecond, min: 80 * time.Millisecond, smoothed: 100 * time.Millisecond, sampled: true, firstAt: now.Add(-2 * time.Second)}
 	sp := &c.spaces[spaceInitial]
 	// Five ack-eliciting packets spread over 400ms, all about to be lost,
@@ -749,7 +749,7 @@ func TestEverySiteReportsToTheController(t *testing.T) {
 	for pn := range uint64(5) {
 		sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-time.Second + time.Duration(pn)*100*time.Millisecond), size: 1200, ackEliciting: true, payload: []byte{framePing, byte(pn)}})
 	}
-	sp.sent.record(sentPacket{pn: 5, sentAt: now, size: 100, ackEliciting: true})
+	sp.sent.record(sentPacket{pn: 5, sentAt: now.Add(-100 * time.Millisecond), size: 100, ackEliciting: true})
 	sp.nextPN = 6
 	c.mu.Unlock()
 
@@ -1408,4 +1408,71 @@ func clockTick() time.Duration {
 		tick = min(tick, next.Sub(start))
 	}
 	return tick
+}
+
+// A round trip shorter than the clock's tick is measured at zero; it is a
+// sample of kGranularity, not none, or a connection on such a clock would
+// keep the initial RTT for its whole life. A negative one is still refused.
+func TestZeroRTTSampleCountsAsGranularity(t *testing.T) {
+	var r rttEstimator
+	r.sample(-time.Millisecond, 0)
+	if r.sampled {
+		t.Fatal("a negative round trip was taken as a sample")
+	}
+	r.sample(0, 0)
+	if !r.sampled || r.latest != granularity || r.smoothed != granularity {
+		t.Fatalf("after a zero sample: sampled %v, latest %v, smoothed %v; want a sample of %v",
+			r.sampled, r.latest, r.smoothed, granularity)
+	}
+	if pto := r.pto(0); pto >= kInitialPTOForTest {
+		t.Fatalf("PTO %v after a zero sample, want well under the initial RTT's %v", pto, kInitialPTOForTest)
+	}
+}
+
+// kInitialPTOForTest is the PTO of an estimator that never sampled: 333 ms
+// plus four times half of it, with no peer delay.
+const kInitialPTOForTest = 333*time.Millisecond + 4*333*time.Millisecond/2
+
+// A handshake over the loopback leaves both ends with a round-trip sample —
+// on Windows too, where the loopback round trip is shorter than the clock's
+// tick and every sample it takes reads zero.
+func TestLoopbackHandshakeSamplesTheRTT(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := NewListener(pc, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan *Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- c
+	}()
+	cpc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := Dial(cpc, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	server, ok := <-accepted
+	if !ok {
+		t.Fatal("Accept failed")
+	}
+	for name, c := range map[string]*Conn{"client": client, "server": server} {
+		waitFor(t, "the "+name+" to sample the round trip", func() bool {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return c.rtt.sampled
+		})
+	}
 }

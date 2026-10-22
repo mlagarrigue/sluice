@@ -736,7 +736,9 @@ func TestPersistentCongestionIsASpanOfLosses(t *testing.T) {
 			sp.sent.record(sentPacket{pn: pn, sentAt: now.Add(-time.Second + time.Duration(pn)*spacing), size: 1200, ackEliciting: true, payload: []byte{byte(pn)}})
 			c.cc.onSent(now, 1200)
 		}
-		sp.sent.record(sentPacket{pn: 5, sentAt: now, ackEliciting: true}) // sized 0: its ACK grows nothing
+		// Sent 100 ms before its ACK: a round trip of the RTT already held,
+		// which leaves the estimate where the case set it.
+		sp.sent.record(sentPacket{pn: 5, sentAt: now.Add(-100 * time.Millisecond), ackEliciting: true}) // sized 0: its ACK grows nothing
 		sp.nextPN = 6
 		c.mu.Unlock()
 

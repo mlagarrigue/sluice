@@ -57,9 +57,20 @@ type rttEstimator struct {
 // peer's declared hold — subtracted so its ACK pacing does not read as path
 // latency, but never below the smallest round trip seen, which is the RFC's
 // guard against a peer whose declared delay swallows the path entirely.
+//
+// A round trip measured at zero is one shorter than the clock's tick, not an
+// absent one: Windows reads the monotonic clock at the system timer's
+// period, and a loopback or LAN round trip falls inside it. Discarded, it
+// would leave such a connection on the initial 333 ms for good — a PTO near
+// a second and a closing period near three. It counts as kGranularity, the
+// timer granularity RFC 9002 §6.1.2 recommends (1 ms), the smallest interval
+// this end can tell from nothing.
 func (r *rttEstimator) sample(rtt, ackDelay time.Duration) {
-	if rtt <= 0 {
+	if rtt < 0 {
 		return
+	}
+	if rtt == 0 {
+		rtt = granularity
 	}
 	r.latest = rtt
 	if !r.sampled {
