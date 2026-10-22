@@ -95,8 +95,7 @@ type Principal struct {
 
 	// Tenant is the claim naming the security principal for row-level
 	// security, when the verifier was told which claim that is. It is the
-	// value that becomes part of the batching key — see the brief's §0.3 —
-	// so getting it from a *verified* token rather than from a header is the
+	// value that becomes part of the batching key, so getting it from a *verified* token rather than from a header is the
 	// whole point of this type existing.
 	Tenant string
 

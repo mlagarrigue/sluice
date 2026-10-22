@@ -9,7 +9,8 @@ import (
 
 // Split drives one shared traversal and hands each branch a slot of one batch
 // (docs/design/architecture.md, "Split — a single primitive"; ADR 0003). The
-// O(1) backlog was stated but never measured; these benchmarks measure it.
+// O(1) bound on what a branch holds back was stated but never measured;
+// these benchmarks measure it.
 //
 // The reference point is a plain batched pipeline over the same data: whatever
 // Split adds over that is the price of the fan-out.

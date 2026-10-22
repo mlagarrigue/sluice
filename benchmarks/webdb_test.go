@@ -30,7 +30,7 @@ import (
 //
 // # Equal connections, and then honest about it
 //
-// The brief says to run at equal connection counts, because this connector has
+// The comparison runs at equal connection counts, because this connector has
 // no pool and a comparison that ignores that measures pooling. So the first
 // reading gives everyone **one** connection.
 //
@@ -278,7 +278,7 @@ func serveConcurrently(b *testing.B, h http.Handler, n int) {
 
 const concurrency = 64
 
-// One connection each: the configuration the brief demands, and the one where
+// One connection each: the configuration a fair comparison demands, and the one where
 // batching does what it was built to do.
 func BenchmarkWebDBSluiceOneConn(b *testing.B) {
 	serveConcurrently(b, sluiceDBHandler(b), concurrency)

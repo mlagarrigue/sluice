@@ -17,8 +17,8 @@ import (
 // a README quoting 152 µs beside a table saying 139 µs, both produced by the
 // same script on the same machine, neither wrong when it was written.
 //
-// Numbers in two places is how one of them goes stale. Since the brief asks
-// the README to carry the comparisons — a pointer to a table is not a
+// Numbers in two places is how one of them goes stale. Since the README is
+// meant to carry the comparisons — a pointer to a table is not a
 // comparison a reader will follow — the duplication stays and this checks it.
 
 // figure is one quoted number and the benchmark it must come from.

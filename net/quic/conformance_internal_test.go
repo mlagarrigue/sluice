@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Conformance regression tests for the 2026-10-03 audit's findings: each one
+// Conformance regression tests: each one
 // pins a specific RFC requirement the implementation used to miss, and each
 // fails against the pre-fix behaviour it documents.
 

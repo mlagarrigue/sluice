@@ -18,10 +18,10 @@ import (
 // A round-trip test — encode, decode, compare — cannot catch a codec that is
 // consistently wrong: the encoder and the decoder agree with each other about
 // a mistake, and the property holds while every byte on the wire is
-// unreadable to anyone else. That is not hypothetical. The field report this
-// project keeps records a production pipeline whose version had to be bumped
-// because a geometry codec truncated floats at six decimals: same input,
-// different bytes, no error anywhere, caught two milestones late.
+// unreadable to anyone else. That is not hypothetical: a production
+// pipeline had its version bumped because a geometry codec truncated floats
+// at six decimals — same input, different bytes, no error anywhere, caught
+// two milestones late.
 //
 // So each vector below states what PostgreSQL's binary format actually is. If
 // one of them disagrees with a real server, the vector is what gets corrected

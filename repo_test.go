@@ -259,9 +259,9 @@ var (
 // through on that one shape of subject and refused on every other. The
 // trailer is also let through when the author is dependabot[bot]: GitHub
 // writes the squash message of its pull requests, and adds a
-// Co-authored-by line for every author the branch carried (2026-10-11,
-// fbbf143, after an update of the branch from main). A person's commit
-// with that trailer is still refused.
+// Co-authored-by line for every author the branch carried, as it does after
+// an update of the branch from main. A person's commit with that trailer is
+// still refused.
 func commitMessageFaults(author, subj, body string) (faults []string) {
 	m := commitSubject.FindStringSubmatch(subj)
 	if m == nil {

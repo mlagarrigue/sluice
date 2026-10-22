@@ -13,7 +13,7 @@ import (
 
 // What a savepoint per element costs, which §0.3 names and nobody had measured.
 //
-// The brief's warning: each savepoint is a subtransaction, PostgreSQL caches a
+// The warning behind it: each savepoint is a subtransaction, PostgreSQL caches a
 // fixed number of them per backend, and past that the cache overflows and
 // visibility checks start going to shared storage. With a batch size of
 // sixty-four and one savepoint per principal, a batch sits exactly on the edge.

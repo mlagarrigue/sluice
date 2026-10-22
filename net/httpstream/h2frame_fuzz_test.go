@@ -38,7 +38,7 @@ func FuzzParseFrame(f *testing.F) {
 		// What was accepted must frame back to the same bytes — except the
 		// reserved bit, which RFC 9113 §4.1 requires be ignored on receipt
 		// and which therefore cannot survive a round trip. The fuzzer found
-		// that exact case, and the exception is the spec's rather than a
+		// that exact case, and the exception is the RFC's rather than a
 		// weakening of the property: everything else must be identical.
 		back, err := appendH2Frame(nil, fr)
 		if err != nil {

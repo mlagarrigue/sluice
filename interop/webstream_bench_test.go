@@ -15,7 +15,7 @@ import (
 	"github.com/mlagarrigue/sluice/web/stream"
 )
 
-// BenchmarkWebStream is the measurement the backlog names as one of the two
+// BenchmarkWebStream is the measurement docs/guide/limits.md names as one of the two
 // exit conditions of web/stream's experimental label: a third-party client
 // — net/http over HTTP/1.1 and HTTP/2, quic-go over HTTP/3 — requests one
 // order through a handler built from web/stream's stages (routing,

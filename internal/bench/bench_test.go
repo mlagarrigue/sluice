@@ -138,7 +138,8 @@ func mapBatch[T any](s BatchSeq[T], f func(T) T) BatchSeq[T] {
 }
 
 // BenchmarkBatchVsElement compares the two models at an equal number of stages.
-// This is the measurement that validates or invalidates §2.1 of the spec.
+// This is the measurement that validates or invalidates the central decision
+// of docs/design/architecture.md ("Decision: a single shape, the batch").
 func BenchmarkBatchVsElement(b *testing.B) {
 	for _, stages := range []int{1, 2, 4} {
 		b.Run(fmt.Sprintf("element/stages=%d", stages), func(b *testing.B) {
@@ -184,7 +185,8 @@ func BenchmarkBatchVsElement(b *testing.B) {
 }
 
 // BenchmarkBatchSize sweeps the batch size to locate the optimal plateau.
-// The spec settles on 1024; DuckDB uses 2048, DataFusion 8192.
+// docs/design/architecture.md settles on 1024; DuckDB uses 2048, DataFusion
+// 8192.
 func BenchmarkBatchSize(b *testing.B) {
 	sizes := []int{1, 8, 64, 256, 512, 1024, 2048, 4096, 8192, 65536, N}
 	for _, size := range sizes {
@@ -212,7 +214,8 @@ func BenchmarkBatchSize(b *testing.B) {
 
 // ---------------------------------------------------------------------------
 // Q3 — iter.Pull: the real cost per value, and its amortization per batch.
-// The spec quotes ~20ns/next() from a community source, undocumented by Go.
+// The ~20 ns per next() often quoted comes from a community source,
+// undocumented by Go.
 // ---------------------------------------------------------------------------
 
 func BenchmarkPullPerElement(b *testing.B) {

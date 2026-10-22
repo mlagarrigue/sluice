@@ -56,7 +56,7 @@ type ListenerConfig struct {
 	// completed, and sizes the queue of completed ones waiting for
 	// [Listener.Accept]. A completed connection that finds that queue full
 	// keeps its pending slot until it gets in: the queue is the accept
-	// backlog, and an application that stops accepting must push back on
+	// queue, and an application that stops accepting must push back on
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
@@ -862,9 +862,9 @@ func (l *Listener) handleNewInitial(datagram []byte, from net.Addr, h longHeader
 		// RFC 9000 §5.2.2: a server with no room SHOULD say so — a
 		// stateless CONNECTION_REFUSED close costs one sealed packet
 		// against a decrypted ≥1200-byte Initial and spares the client its
-		// whole handshake timeout. (This used to be a silent drop, argued
-		// as "no different from a listen backlog dropping a SYN" — but TCP
-		// has RST for the loud variant, and QUIC's equivalent is this.)
+		// whole handshake timeout. (A silent drop would pass for "no
+		// different from a listen queue dropping a SYN" — but TCP has RST
+		// for the loud variant, and QUIC's equivalent is this.)
 		l.sendStatelessClose(from, h, &keys, transportConnectionRefused, via)
 		return
 	}

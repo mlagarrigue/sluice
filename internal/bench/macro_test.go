@@ -10,7 +10,7 @@ import (
 	"github.com/mlagarrigue/sluice/parallel"
 )
 
-// The macro benchmark the field report asks for: a reference ETL measured end
+// The macro benchmark: a reference ETL measured end
 // to end, reporting an **overlap factor** — the busiest stage's own time
 // divided by the wall clock. It tends to 1.0 when the pipeline is perfectly
 // pipelined and to 1/n when n stages run strictly one after another.

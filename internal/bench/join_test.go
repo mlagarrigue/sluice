@@ -9,8 +9,8 @@ import (
 )
 
 // MergeJoinBy walks both inputs once in O(1) memory. These benchmarks establish
-// what that costs against the ceiling, and — the point that was arbitrated
-// against the spec — what the always-on sort check costs.
+// what that costs against the ceiling, and what the always-on sort check
+// costs — the check docs/design/architecture.md keeps on in every build.
 
 func idInt64(v int64) int64 { return v }
 
@@ -72,8 +72,8 @@ func BenchmarkJoinNoMatch(b *testing.B) {
 }
 
 // BenchmarkJoinSortCheckBaseline is the denominator for what the always-on
-// monotonicity check costs. The spec wanted the check behind a debug flag; this
-// is the measurement that decides whether that complexity is worth it.
+// monotonicity check costs. A debug flag is the alternative; this is the
+// measurement that decides whether that complexity is worth it.
 //
 // It runs Merge over the same two sorted inputs as [BenchmarkJoinNoMatch] — the
 // same work without the check — so the difference between the two is the check

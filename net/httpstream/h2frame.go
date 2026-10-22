@@ -402,7 +402,7 @@ func parseFrame(buf []byte, maxFrameSize int) (h2Frame, int, error) {
 	}
 	f.Type, f.Flags = buf[3], buf[4]
 	// The top bit is reserved and must be ignored rather than rejected
-	// (RFC 9113 §4.1), which is one of the few places the spec asks for
+	// (RFC 9113 §4.1), which is one of the few places the RFC asks for
 	// tolerance instead of refusal.
 	f.StreamID = binary.BigEndian.Uint32(buf[5:9]) & 0x7fffffff
 

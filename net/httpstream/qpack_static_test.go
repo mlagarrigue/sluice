@@ -85,7 +85,7 @@ func TestQPACKStaticTablePinnedEntries(t *testing.T) {
 
 // RFC 9204 Appendix B.1's encoded field section, byte for byte. The first
 // field line is a literal with a name reference to static index 1, so the RFC
-// itself pins that entry to :path — the one row of the table the spec proves
+// itself pins that entry to :path — the one row of the table the RFC proves
 // rather than lists.
 func TestQPACKStaticTableAgainstRFC9204Example(t *testing.T) {
 	block := []byte{

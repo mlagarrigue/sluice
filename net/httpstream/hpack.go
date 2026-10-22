@@ -34,8 +34,8 @@ import (
 // HPACK failure with COMPRESSION_ERROR and a framing failure with
 // PROTOCOL_ERROR, and [codeFor] tells them apart with errors.Is. The names
 // follow the RFCs' own words, which is why HPACK, a format, carries no
-// "Protocol" suffix while the two protocol versions do. Decided before v1
-// and not to be revisited: renaming any of the three is an API break.
+// "Protocol" suffix while the two protocol versions do. Renaming any of the
+// three is an API break.
 var ErrHPACK = errors.New("httpstream: HPACK decoding failed")
 
 // hpackEntrySize is the per-entry overhead RFC 7541 §4.1 defines, so that an

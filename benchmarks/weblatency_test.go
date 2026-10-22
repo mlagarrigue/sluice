@@ -23,7 +23,7 @@ import (
 // Batching trades latency for throughput by construction: a call waits for
 // company before anything happens. An average hides that completely — the mean
 // of "most calls fast, some waiting for a batch to fill" looks like a small
-// constant. §2 of the brief asks for p50, p99 and p99.9 for exactly this
+// constant. The figures are p50, p99 and p99.9 for exactly this
 // reason, and a throughput-only chart would hide the one thing a reader needs
 // in order to judge whether the trade suits them.
 //

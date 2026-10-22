@@ -417,8 +417,7 @@ func TestParallelPanicInBothFAndConsumer(t *testing.T) {
 // worker reads it, so it must copy at the hand-off. sluice.Convert is the upstream
 // that proves it — its output buffer is rewritten on every batch, which is
 // legitimate under the batch-ownership rule. Before the copy existed, this
-// exact composition raced under -race and summed to a silently wrong total
-// (docs/FIELD-REPORT-cartobuilder.md §10).
+// exact composition raced under -race and summed to a silently wrong total.
 func TestParallelCopiesInputBatch(t *testing.T) {
 	const n = 1 << 16
 	src := make([]int64, n)

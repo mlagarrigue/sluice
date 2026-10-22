@@ -7,8 +7,8 @@
 // # Read this before using it
 //
 // Interoperability is proven against exactly one peer that shares no code:
-// quic-go, on each side of the handshake, in continuous integration since
-// 2026-10-10 (the interop/ module — handshake, an echo across flow-control
+// quic-go, on each side of the handshake, in continuous integration (the
+// interop/ module — handshake, an echo across flow-control
 // windows, a close the peer sees). Everything else is checked against
 // itself, against RFC 9001 Appendix A's published vectors, and against a
 // test harness that drops, reorders and forges datagrams. The QUIC Interop

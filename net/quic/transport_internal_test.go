@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// Regression tests for the transport-layer findings of the October 2026
-// audit pass: each fails against the behaviour it documents.
+// Regression tests for the transport layer: each fails against the
+// behaviour it documents.
 
 // newIdleServerConn is a server-side Conn with Initial keys and no
 // amplification limit — a bare transport for driving the timer and send

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Regression tests for the 2026-10 backlog items: each pins an RFC 9000/9001/
+// Regression tests: each pins an RFC 9000/9001/
 // 9002 requirement (or a flow-control accounting invariant) the
 // implementation used to miss, and each fails against the pre-fix behaviour
 // it documents.
@@ -20,7 +20,7 @@ import (
 // credited the same delta a second time, over-granting the connection window
 // by exactly one packet's worth.
 func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	c.OnStreamFrames(func([]Frame) error { return nil })
@@ -126,7 +126,7 @@ func TestOutOfOrderPacketMakesTheAckImmediate(t *testing.T) {
 // PROTOCOL_VIOLATION. A payload of nothing but PADDING contains frames and
 // stays legal.
 func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 
@@ -146,7 +146,7 @@ func TestFramelessPacketIsAProtocolViolation(t *testing.T) {
 // than processing it.
 func TestClientDiscardsAServerInitialCarryingAToken(t *testing.T) {
 	dcid, scid := []byte("dcid0000"), []byte("scid0000")
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"), dcid, scid, true, DefaultParameters())
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"), dcid, scid, true, DefaultParameters())
 	defer c.Close()
 	if err := c.installInitial(dcid); err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestTransportParameterRefusals(t *testing.T) {
 		return extra(appendParameters(nil, p))
 	}
 	serverConn := func() *Conn {
-		c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+		c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 		t.Cleanup(func() { _ = c.Close() })
 		return c
@@ -397,7 +397,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 // received retracts data the peer provably sent — FINAL_SIZE_ERROR, exactly
 // as a RESET_STREAM below the high-water mark has always been.
 func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	c.OnStreamFrames(func([]Frame) error { return nil })
@@ -481,7 +481,7 @@ func TestProcessAckWithSeveralRanges(t *testing.T) {
 // time into the round-trip estimate.
 func TestAckDelayClampWaitsForHandshakeConfirmation(t *testing.T) {
 	run := func(confirmed bool) time.Duration {
-		c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+		c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 		defer c.Close()
 		c.mu.Lock()
@@ -737,7 +737,7 @@ func streamFrameBytes(id, offset uint64, data []byte) []byte {
 // buffers away: everything past the sixteenth packet vanished — a request
 // stream truncated mid-frame, nothing counted — after being credited.
 func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 
@@ -788,7 +788,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 	params := DefaultParameters()
 	params.InitialMaxData = 6000
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()
 	c.SetManualCredit(true)
@@ -832,7 +832,7 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 // Reading before registering is unsupported mixing, but it loses nothing:
 // what no Read took is replayed, and credited once.
 func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
-	c := newConn(&fuzzSink{addr: "backlog:self"}, fakeFuzzAddr("backlog:peer"),
+	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	for i := range 30 {

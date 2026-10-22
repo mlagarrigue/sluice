@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// The packet-path harness the backlog's quic allocation inventory waits on:
+// The packet-path harness an allocation inventory of net/quic is taken on:
 // one benchmark per direction, each counting ns and allocations per packet
 // with the socket stubbed out (fuzzSink), so the inventory's candidates —
 // payload copies on send, ParseFrames and Open copies on receive, the lock
@@ -196,8 +196,8 @@ var _ net.Addr = fakeFuzzAddr("")
 // BenchmarkCreditGrantHerd measures what one stream's MAX_STREAM_DATA costs
 // as a function of how many OTHER writers are parked on the connection's
 // one sync.Cond: every grant broadcasts, every parked writer wakes, re-takes
-// mu, finds nothing for it and sleeps again. The backlog's thundering-herd
-// suggestion stands or falls on how this number scales with the herd.
+// mu, finds nothing for it and sleeps again. A fix for that thundering herd
+// stands or falls on how this number scales with the herd.
 func BenchmarkCreditGrantHerd(b *testing.B) {
 	for _, parked := range []int{0, 64, 512} {
 		b.Run(fmt.Sprintf("parked=%d", parked), func(b *testing.B) {

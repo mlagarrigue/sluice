@@ -17,7 +17,7 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
-// The loss/latency harness the congestion-control backlog items wait on:
+// The loss/latency harness congestion control is measured on:
 // a middlebox between two dgram pairs that charges every datagram a one-way
 // delay and, per profile, a random or bursty loss, a late delivery that
 // reorders it behind its successors, and a drop-tail bottleneck queue that
@@ -682,7 +682,7 @@ func benchTwoFlowsAgainst(b *testing.B, prof netemProfile, total int, second qui
 // BenchmarkTransferClean is the ramp benchmark: 20 ms RTT, no loss, no
 // bottleneck. Time here is dominated by how fast the congestion window
 // grows (slow start, then the per-ACK increase RFC 9002 B.5 aggregates),
-// which is exactly what the per-packet cwnd-growth backlog item changes.
+// which is exactly what a per-packet cwnd growth would change.
 func BenchmarkTransferClean(b *testing.B) {
 	benchTransfer(b, netemProfile{owd: 10 * time.Millisecond}, 8<<20)
 }
