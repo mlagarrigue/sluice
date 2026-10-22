@@ -25,7 +25,7 @@ import (
 // The frame layer is complete: RFC 9114 §7's types, bounded, refusing rather
 // than guessing. Request assembly is complete. QPACK is complete over the
 // static table this package now ships; the dynamic table is declined by
-// SETTINGS rather than missing — see [QPACKDecoder].
+// SETTINGS rather than missing.
 
 // HTTP/3 frame types (RFC 9114 §7.2). The type is a variable-length integer,
 // so the reserved and greasing types are large numbers rather than a fixed

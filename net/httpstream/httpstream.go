@@ -210,8 +210,8 @@
 // takes a batch of complete requests, and an element that is not complete is
 // not an element. Every limit is a number the caller sets in [Config]; none
 // of them has a value that suits every deployment, so none has a default
-// that pretends otherwise beyond the modest ones [Config.resolve] fills
-// in.
+// that pretends otherwise beyond the modest ones a zero field takes, each
+// named in the field's own documentation.
 package httpstream
 
 import (
@@ -638,7 +638,7 @@ type Config struct {
 	MaxWriteBufferBytes int
 
 	// QPACKStatic overrides RFC 9204 Appendix A's static table, which this
-	// package ships — see [QPACKDecoder]. Nil means the shipped table, which
+	// package ships. Nil means the shipped table, which
 	// is what every real client assumes; an empty non-nil table refuses
 	// indexed field lines outright. HTTP/3 only.
 	//
@@ -650,7 +650,7 @@ type Config struct {
 }
 
 // The defaults a bound takes when its field is zero, named because more than
-// [Config.resolve] reads them.
+// Config.resolve reads them.
 const (
 	defaultMaxHeaderBytes = 32 << 10
 	defaultMaxHeaders     = 64

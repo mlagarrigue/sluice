@@ -400,8 +400,8 @@ type h2Server struct {
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
 const maxWindow = 1<<31 - 1
 
-// ServeH2 runs one HTTP/2 connection whose preface has already been read by
-// [h2Frames], or is about to be.
+// ServeH2 runs one HTTP/2 connection whose client preface has already been
+// read, or is about to be.
 //
 // It is prior-knowledge HTTP/2: the client has been told to speak HTTP/2
 // straight away, by ALPN or by configuration, and there is no upgrade dance.
@@ -413,7 +413,7 @@ const maxWindow = 1<<31 - 1
 // listener arrives here already decrypted.
 //
 // The cancellation of ctx stops the connection normally, as [Serve] stops
-// the connections it accepted (ADR 0017, serveH2Conn says how): a GOAWAY
+// the connections it accepted (ADR 0017): a GOAWAY
 // and a PING, the streams already open answered whole, then the close. When
 // [Config.ShutdownGrace] passes before the drain ends, the connection is
 // closed under its handler, whose context is cancelled, the [Config.Logger]

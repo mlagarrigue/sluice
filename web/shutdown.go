@@ -233,6 +233,11 @@ const DefaultReadTimeout = 30 * time.Second
 // moves its own deadline with [http.ResponseController.SetWriteDeadline].
 const DefaultWriteTimeout = time.Minute
 
+// DefaultShutdownGrace is how long [Serve] and [ServeTLS] wait for the
+// requests in flight once their context is cancelled, when grace is zero:
+// the same 5s as httpstream's Config.ShutdownGrace.
+const DefaultShutdownGrace = 5 * time.Second
+
 // Serve runs a server until ctx is cancelled, then shuts it down.
 //
 // It is the shape a main function wants: one call that blocks while the
@@ -246,9 +251,12 @@ const DefaultWriteTimeout = time.Minute
 //	}
 //
 // grace bounds the drain, counted from the moment ctx is cancelled — not from
-// the process start, and not from the first signal handler. A zero or negative
-// grace means no bound, which is a choice rather than a default: a deploy that
-// waits forever for one stuck request is a deploy that does not finish.
+// the process start, and not from the first signal handler. Zero means
+// [DefaultShutdownGrace], 5s, the zero of httpstream's Config.ShutdownGrace
+// too: a main that serves both with one setting left unset waits the same
+// on each side. A negative grace means no bound, which is a choice rather
+// than a default: a deploy that waits forever for one stuck request is a
+// deploy that does not finish.
 //
 // [http.ErrServerClosed] is not an error here. It is what ListenAndServe
 // returns when Shutdown was called, which is precisely the successful path.
@@ -357,6 +365,9 @@ func serve(ctx context.Context, srv *http.Server, grace time.Duration, listen fu
 	}
 
 	drain := context.Background()
+	if grace == 0 {
+		grace = DefaultShutdownGrace
+	}
 	if grace > 0 {
 		var cancel context.CancelFunc
 		drain, cancel = context.WithTimeout(drain, grace)

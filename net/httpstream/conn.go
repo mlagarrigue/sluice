@@ -24,7 +24,7 @@ import (
 // same rule as every other batch in this library.
 //
 // A client's Expect: 100-continue is answered here too, with the interim
-// response [write100Continue] sends, before the body that follows is read —
+// response 100 (Continue), sent before the body that follows is read —
 // not something the caller asks for or sees.
 //
 // The stream ends when the client closes, when [Config.MaxRequestsPerConn] is

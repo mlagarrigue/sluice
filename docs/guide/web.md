@@ -219,7 +219,8 @@ if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
 `Serve` blocks while the server runs and returns when it is properly
 stopped: on context cancellation, it gives in-flight requests ten seconds
 to finish, then closes what it was handed — the gateway, the database
-connection. A server without `ReadHeaderTimeout` gets ten seconds by
+connection. A grace of zero means five seconds, as an `httpstream`
+`ShutdownGrace` left at zero does, and a negative grace means no bound. A server without `ReadHeaderTimeout` gets ten seconds by
 default: a client sending its headers one byte at a time cannot hold the
 process hostage. Likewise, a server with neither `IdleTimeout` nor
 `ReadTimeout` gets two minutes: a *keep-alive* connection (kept open for

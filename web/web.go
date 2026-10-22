@@ -30,6 +30,20 @@
 //
 // The status is still chosen on a visible line. That is the point.
 //
+// # Two return shapes, on purpose
+//
+// [DecodeJSON], [PathInt], [PathInt64], [QueryInt64] and [Bearer] end in
+// (diagnostics.Diagnostic, bool); [Authenticate] and [Authorize] end in
+// (diagnostics.Diagnostic, error). The bool says "refused, and the
+// diagnostic is all there is": a malformed body or a missing wildcard has
+// nothing more to tell than what goes back to the requester. The error says
+// the same refusal and carries what must not go back: which half of a
+// credential was wrong, which dimension of a grant fell short, for the
+// caller to log. It also tells cases apart that a route may treat
+// differently — errors.Is(err, [ErrCredentialsMissing]) is an anonymous
+// caller, not a forged one. In both shapes the diagnostic is what the
+// response carries.
+//
 // # Routing
 //
 // There is no router either. `http.ServeMux` has matched method, path and

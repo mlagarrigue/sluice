@@ -185,7 +185,7 @@ func newHPACKDecoder(maxSize, maxListSize int) *hpackDecoder {
 // Decode appends the fields of one header block to dst.
 //
 // The block must be complete: HEADERS plus every CONTINUATION that followed
-// it, which is what [h2Frames] tracks and bounds. Names and values never alias
+// it, which is what h2Frames tracks and bounds. Names and values never alias
 // the block. A field resolved from a table — the static one, or an entry of
 // the dynamic one — is a view of that entry's bytes, which are never written
 // after they are decoded: a later eviction drops the table's reference and
