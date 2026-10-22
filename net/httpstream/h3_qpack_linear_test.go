@@ -23,20 +23,31 @@ func TestQPACKInstructionStreamsAreLinear(t *testing.T) {
 		{"decoder", 0x40, a.decoderInstructions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The cost of one delivery of n bytes, timed over as many
+			// deliveries as fill 20 ms of the clock: Windows reads the
+			// monotonic clock at the system timer's resolution, half a
+			// millisecond or coarser, where one 4 KiB delivery takes
+			// microseconds and timed alone reads zero — which made the
+			// ratio 2,000× there, for a walk that was linear.
 			cost := func(n int) time.Duration {
+				src := bytes.Repeat([]byte{tc.insn}, n)
 				best := time.Duration(1<<63 - 1)
-				for range 5 {
-					u := &h3Uni{buf: bytes.Repeat([]byte{tc.insn}, n)}
+				for range 3 {
+					rounds := 0
 					start := time.Now()
-					if err := tc.consume(u); err != nil {
-						t.Fatal(err)
+					for rounds == 0 || time.Since(start) < 20*time.Millisecond {
+						u := &h3Uni{buf: append([]byte(nil), src...)}
+						if err := tc.consume(u); err != nil {
+							t.Fatal(err)
+						}
+						if len(u.buf) != 0 {
+							t.Fatalf("%d bytes left after %d whole instructions", len(u.buf), n)
+						}
+						rounds++
 					}
-					best = min(best, time.Since(start))
-					if len(u.buf) != 0 {
-						t.Fatalf("%d bytes left after %d whole instructions", len(u.buf), n)
-					}
+					best = min(best, time.Since(start)/time.Duration(rounds))
 				}
-				return max(best, time.Microsecond)
+				return best
 			}
 			small, large := cost(4<<10), cost(64<<10)
 			if ratio := float64(large) / float64(small); ratio > 64 {
