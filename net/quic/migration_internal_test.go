@@ -287,6 +287,40 @@ func TestRetireOnAConnectionThatIssuedNothing(t *testing.T) {
 	wantViolation(t, err, transportProtocolViolation, "retiring a sequence never issued")
 }
 
+// A spare is any active identifier the peer has not sent under. lsquic
+// moves to the newest first: with 1 and 2 still unused, a packet under 3
+// forces no retirement — one sent then retired the identifier of the path
+// lsquic was leaving, and its own retirement of it failed an assertion.
+func TestAPeerOnTheNewestIdentifierStillHasSpares(t *testing.T) {
+	self := &recordingPC{addr: fakeFuzzAddr("newest:self")}
+	c, peer := newKeyedConnOn(t, self, &recordingPC{addr: fakeFuzzAddr("newest:peer")})
+	c.mu.Lock()
+	c.registrar = newTestRegistrar()
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 4
+	c.issueLocalCIDsLocked()
+	c.control, c.controlNewCIDs = nil, 0
+	var seq3 []byte
+	for _, e := range c.localCIDs {
+		if e.seq == 3 {
+			seq3 = e.cid
+		}
+	}
+	c.mu.Unlock()
+	if seq3 == nil {
+		t.Fatal("no sequence 3 issued under a limit of 4")
+	}
+	ping := append([]byte{framePing}, make([]byte, 40)...)
+	if err := c.receive(shortPacket(t, peer, 0, seq3, 0, ping), c.peer); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.localRetirePrior != 0 || c.nextLocalSeq != 4 {
+		t.Errorf("Retire Prior To %d, next sequence %d after a packet under 3 with 1 and 2 unused; want 0 and 4, nothing forced", c.localRetirePrior, c.nextLocalSeq)
+	}
+}
+
 // A peer with active_connection_id_limit 2 holds sequences 0 and 1. Once its
 // packets arrive under 1 it has no spare, and nginx, which neither reuses
 // the current identifier on a rebound address nor retires the abandoned

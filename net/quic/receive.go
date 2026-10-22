@@ -533,8 +533,13 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	c.rxHighest = pn == sp.largest
 	// Recorded only once the packet authenticated: the identifier a peer
 	// sends under is what tells this end it has consumed a spare.
-	if space == spaceApplication && c.rxLocalCIDSeq > c.peerLocalSeq {
-		c.peerLocalSeq = c.rxLocalCIDSeq
+	if space == spaceApplication {
+		c.peerLocalSeq = max(c.peerLocalSeq, c.rxLocalCIDSeq)
+		for i := range c.localCIDs {
+			if c.localCIDs[i].seq == c.rxLocalCIDSeq {
+				c.localCIDs[i].used = true
+			}
+		}
 	}
 	if c.idleTimeout != 0 {
 		// Never backwards: a deferred packet's arrival time can predate a

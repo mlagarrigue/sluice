@@ -107,6 +107,10 @@ func (r *ownerRegistrar) resetTokenFor(cid []byte) [16]byte {
 type localCID struct {
 	seq uint64
 	cid []byte
+	// used says an authenticated packet of the peer's arrived under it:
+	// an active identifier not used yet is the peer's spare, whatever its
+	// sequence — a peer may move to the newest first.
+	used bool
 }
 
 // peerCID is one identifier the peer issued for itself, pooled until this
@@ -254,8 +258,8 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // tops up after every processed packet.
 //
 // The peer is also kept with a spare when it holds on to identifiers it has
-// stopped using. Once its packets arrive under the highest sequence issued,
-// with the active set full, it has nothing left for the next new path, and
+// stopped using. Once it has sent under every active identifier, with the
+// set full, it has nothing left for the next new path, and
 // a peer that will not reuse the current identifier on a rebound address
 // (§9.5 only lets it) stops following this end: nginx logs "no available
 // client ids for new path" and keeps sending to the port the NAT
@@ -265,7 +269,12 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // (§5.1.2), which §5.1.1 lets exceed the peer's limit for as long as the
 // retirements take; the entries below it stop counting as active but keep
 // routing until the peer retires them. The value is raised again only
-// once those have all left, as §5.1.2 asks, so at most one set waits.
+// once those have all left, as §5.1.2 asks, so at most one set waits. A
+// spare is any active identifier the peer has not sent under, not only a
+// higher sequence: lsquic moves to the newest first, and a Retire Prior To
+// sent while it still held unused ones retired the identifier of the path
+// it was leaving, which its own retirement then tripped over (an assertion
+// in maybe_retire_dcid, runner rebind-port).
 // Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
@@ -279,7 +288,7 @@ func (c *Conn) issueLocalCIDsLocked() {
 	if c.peerLocalSeq > c.localRetirePrior && c.activeLocalCIDsLocked() >= limit {
 		spare, pending := false, false
 		for _, e := range c.localCIDs {
-			spare = spare || e.seq > c.peerLocalSeq
+			spare = spare || (e.seq >= c.localRetirePrior && !e.used)
 			pending = pending || e.seq < c.localRetirePrior
 		}
 		if !spare && !pending {
