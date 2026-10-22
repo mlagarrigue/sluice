@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 )
 
@@ -18,6 +19,8 @@ func FuzzRoute(f *testing.F) {
 		f.Add("GET", s)
 		f.Add("PATCH", s)
 		f.Add("HEAD", s)
+		f.Add("OPTIONS", s)
+		f.Add("BREW", s)
 	}
 	rt := NewRouter(
 		Route{Method: "PATCH", Pattern: "/orders/{order}/lines/{line}"},
@@ -31,7 +34,20 @@ func FuzzRoute(f *testing.F) {
 		rt.Route(ex)
 		e := &ex[0]
 		if e.Refused() {
-			if e.Status != 404 && e.Status != 405 {
+			// 501 exactly for a method neither the table nor the standard
+			// names, 204 only for an OPTIONS the router answers itself,
+			// 404 or 405 for the rest.
+			known := slices.Contains(rt.methods, method) || slices.Contains(standardMethods, method)
+			switch {
+			case !known:
+				if e.Status != 501 {
+					t.Fatalf("unknown method %q on %q answered %d, want 501", method, target, e.Status)
+				}
+			case e.Status == 204:
+				if method != "OPTIONS" {
+					t.Fatalf("%s %q answered 204", method, target)
+				}
+			case e.Status != 404 && e.Status != 405:
 				t.Fatalf("refused %s %q with %d", method, target, e.Status)
 			}
 			return
