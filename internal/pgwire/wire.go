@@ -117,6 +117,9 @@ func NewReaderSize(r io.Reader, size int) *Reader {
 	return &Reader{r: r, max: DefaultMaxMessage, win: make([]byte, size)}
 }
 
+// MaxMessage reports the limit [Reader.SetMaxMessage] set.
+func (rd *Reader) MaxMessage() int { return rd.max }
+
 // SetMaxMessage sets the largest message the reader will accept. A value of
 // zero or less restores [DefaultMaxMessage] rather than removing the limit:
 // there is no legitimate way to ask this package for an unbounded read.
@@ -125,9 +128,6 @@ func NewReaderSize(r io.Reader, size int) *Reader {
 // to fit the largest one met. It does not stay there: after a run of
 // messages that fit in 1 MiB, a larger buffer is released, so one oversized
 // row costs its memory for a while rather than for the connection's life.
-// MaxMessage reports the limit [Reader.SetMaxMessage] set.
-func (rd *Reader) MaxMessage() int { return rd.max }
-
 func (rd *Reader) SetMaxMessage(n int) {
 	if n <= 0 {
 		n = DefaultMaxMessage

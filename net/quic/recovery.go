@@ -357,10 +357,10 @@ type ackOutcome struct {
 // detectLost declares what the new largest acknowledged leaves behind, and
 // the connection reports those losses — the congestion event, then
 // persistent congestion; release hands each acknowledged packet to the
-// controller last. The order is what the window sees: one pass used to
-// grow the window by a slow-start flight and then halve the result, where
-// A.7 halves first and grows nothing sent before the recovery period the
-// losses just opened (B.5).
+// controller last. The order is what the window sees: one pass would grow
+// the window by a slow-start flight and then halve the result, where A.7
+// halves first and grows nothing sent before the recovery period the losses
+// just opened (B.5).
 
 // markAcked marks what the ranges cover and reads the frame's
 // acknowledgement side into the outcome: what it newly acknowledges, and

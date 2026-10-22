@@ -581,7 +581,7 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// already delivered but not yet credited — this packet's own STREAM delta
 	// when STREAM and RESET_STREAM share a packet, or bytes parked in the read
 	// buffer — are credited by whoever consumes them (settleBatchConsumption,
-	// or Read draining to the reset error). Counting them here too used to
+	// or Read draining to the reset error). Counting them here too would
 	// over-grant the connection window by exactly that delta.
 	neverConsumed = finalSize - s.rasm.consumed
 	s.recvQ.consumed += neverConsumed

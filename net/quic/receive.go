@@ -1088,8 +1088,8 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 			// Through streamFor like STREAM, since the peer is sending on
 			// this stream: §3.2 has the frame open it, §4.6 makes one past
 			// the stream limit a STREAM_LIMIT_ERROR and §19.13 one for a
-			// send-only stream a STREAM_STATE_ERROR. Used to be inert with
-			// the other *_BLOCKED frames, which let both pass. What it says
+			// send-only stream a STREAM_STATE_ERROR, which treating it as
+			// inert like the other *_BLOCKED frames would let pass. What it says
 			// — our grant is the bottleneck — consumption already answers
 			// with fresh grants, so the stream it names has nothing to do.
 			if _, _, err := c.streamFor(f.StreamID, space, false); err != nil {
