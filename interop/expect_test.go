@@ -42,7 +42,7 @@ func TestExpectedResultsGuard(t *testing.T) {
 			edit:   func(_, c map[string]any) { addResult(c, "multiconnect", "succeeded") },
 			refuse: "sluice client, multiconnect: succeeded, which the file does not list",
 		},
-		{name: "a peer the file does not list", peer: "ngtcp2", refuse: "no expected results for ngtcp2"},
+		{name: "a peer the file does not list", peer: "no-such-peer", refuse: "no expected results for no-such-peer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
