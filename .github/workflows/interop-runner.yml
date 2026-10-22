@@ -99,7 +99,10 @@ jobs:
           set -o pipefail
           if [ -n "$IN_TESTS" ]; then export TESTS="$IN_TESTS"; fi
           if [ -n "$IN_IMAGE" ]; then export IMAGE="$IN_IMAGE"; fi
-          scripts/interop-runner.sh "$PEER" | tee "$RUNNER_DIR-output.txt"
+          # Both streams into the artifact: the runner's debug output and any
+          # traceback go to stderr, and the job log is cut long before a
+          # full pass ends.
+          scripts/interop-runner.sh "$PEER" 2>&1 | tee "$RUNNER_DIR-output.txt"
       - name: Keep the runner's logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
