@@ -1291,11 +1291,14 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 	}
 
 	// Closing the first lets the listener forget it, which gives the
-	// slot back — to the total and to the address alike.
+	// slot back — to the total and to the address alike — once the server's
+	// closing period of three PTOs has run. On Windows no loopback round
+	// trip is sampled, the clock being coarser than it, so that period runs
+	// on the initial RTT's PTO: about three seconds.
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		l.mu.Lock()
 		carried, perIP := len(l.keysOf), len(l.connsByIP)
@@ -1304,7 +1307,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 			break
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("2 s after the close the listener still carries %d connections, %d addresses", carried, perIP)
+			t.Fatalf("5 s after the close the listener still carries %d connections, %d addresses", carried, perIP)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
