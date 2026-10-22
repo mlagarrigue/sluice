@@ -33,8 +33,8 @@
 //	handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 //	    ex := stream.Exchanges(nil, b)
 //	    rt.Route(ex)
-//	    stream.Authenticate(verifier, ex)
-//	    stream.Authorize(authorizer, ex)
+//	    stream.Authenticate(ex, verifier)
+//	    stream.Authorize(ex, authorizer)
 //	    for i := range ex {
 //	        // decode, run the business stage, remember its answer
 //	    }
@@ -92,7 +92,7 @@ const (
 	CodeMethodNotImplemented = "Transport.Request.MethodNotImplemented"
 )
 
-// RouteNone is [Exchange.Route] before routing has run or matched.
+// RouteNone is [Exchange.RouteIndex] before routing has run or matched.
 const RouteNone = -1
 
 // Exchange is one request travelling the handler: the element the middle
@@ -105,11 +105,11 @@ type Exchange struct {
 	// body. Every field borrows the connection's read buffer.
 	Request httpstream.Request
 
-	// Route is the index of the matched [Route] in the table given to
+	// RouteIndex is the index of the matched [Route] in the table given to
 	// [NewRouter], or [RouteNone]. Params holds the wildcard values in
 	// pattern order, undecoded, borrowing Request.Target.
-	Route  int
-	Params [][]byte
+	RouteIndex int
+	Params     [][]byte
 
 	// Principal and Grant are what [Authenticate] and [Authorize] establish.
 	Principal web.Principal
@@ -147,7 +147,7 @@ func (e *Exchange) Refused() bool { return e.Status != 0 }
 // requests and follow the same lifetime.
 func Exchanges(dst []Exchange, b sluice.Batch[httpstream.Request]) []Exchange {
 	for i := range b.Items {
-		dst = append(dst, Exchange{Request: b.Items[i], Route: RouteNone})
+		dst = append(dst, Exchange{Request: b.Items[i], RouteIndex: RouteNone})
 	}
 	return dst
 }

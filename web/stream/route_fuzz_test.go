@@ -56,7 +56,7 @@ func FuzzRoute(f *testing.F) {
 		if q := bytes.IndexByte(path, '?'); q >= 0 {
 			path = path[:q]
 		}
-		c := rt.routes[e.Route]
+		c := rt.routes[e.RouteIndex]
 		if c.method != method && (method != "HEAD" || c.method != "GET") {
 			t.Fatalf("%s %q routed to a %s route", method, target, c.method)
 		}
@@ -79,7 +79,7 @@ func FuzzRoute(f *testing.F) {
 			rebuilt = append(rebuilt, seg.literal...)
 		}
 		if !bytes.Equal(rebuilt, path) {
-			t.Fatalf("%q matched route %d, which rebuilds as %q", target, e.Route, rebuilt)
+			t.Fatalf("%q matched route %d, which rebuilds as %q", target, e.RouteIndex, rebuilt)
 		}
 	})
 }

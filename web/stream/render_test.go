@@ -144,8 +144,8 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	ex := Exchanges(nil, reqs)
 	rt.Route(ex)
-	Authenticate(acceptToken{}, ex)
-	Authorize(grantTenant{}, ex)
+	Authenticate(ex, acceptToken{})
+	Authorize(ex, grantTenant{})
 	out := Render(ex, func(i int) (int, any) {
 		return 200, map[string]any{"ok": true, "tenant": ex[i].Grant.Tenant}
 	})

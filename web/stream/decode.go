@@ -29,7 +29,7 @@ import (
 // distinct from "malformed" because they need different fixes. Here the
 // stage also picks the refusal's status — 413 past the limit, 400 otherwise
 // — where web leaves that to its net/http caller.
-func DecodeJSON(e *Exchange, limit int, dst any) bool {
+func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	if limit <= 0 {
 		panic("stream: DecodeJSON needs a positive byte limit; an unbounded body is not a default")
 	}
@@ -41,7 +41,7 @@ func DecodeJSON(e *Exchange, limit int, dst any) bool {
 		return false
 	}
 	body := e.Request.Body
-	if len(body) > limit {
+	if int64(len(body)) > limit {
 		e.Refuse(413, diagnostics.NewDiagnostic(diagnostics.Error, web.CodeBodyTooLarge, diagnostics.Path{}).
 			WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
 			WithOrigin(diagnostics.OriginProtocol))

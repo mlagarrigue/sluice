@@ -95,7 +95,7 @@ func TestAuthenticate(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ex := []Exchange{withAuthz(tc.header)}
-			Authenticate(acceptToken{}, ex)
+			Authenticate(ex, acceptToken{})
 			e := &ex[0]
 			if tc.wantSubject != "" {
 				if e.Refused() {
@@ -121,8 +121,8 @@ func TestAuthenticate(t *testing.T) {
 func TestAuthenticateDoesNotSayWhichHalfFailed(t *testing.T) {
 	forged := []Exchange{withAuthz("Bearer forged")}
 	missing := []Exchange{withAuthz("")}
-	Authenticate(acceptToken{}, forged)
-	Authenticate(acceptToken{}, missing)
+	Authenticate(forged, acceptToken{})
+	Authenticate(missing, acceptToken{})
 	if forged[0].Diagnostics[0].Code != missing[0].Diagnostics[0].Code {
 		t.Errorf("a forged token and a missing one carry different codes: %q vs %q",
 			forged[0].Diagnostics[0].Code, missing[0].Diagnostics[0].Code)
@@ -132,7 +132,7 @@ func TestAuthenticateDoesNotSayWhichHalfFailed(t *testing.T) {
 func TestAuthenticateSkipsARefusedExchange(t *testing.T) {
 	ex := []Exchange{withAuthz("Bearer good")}
 	ex[0].Status = 404
-	Authenticate(acceptToken{}, ex)
+	Authenticate(ex, acceptToken{})
 	if ex[0].Principal.Subject != "" {
 		t.Error("a refused exchange was authenticated")
 	}
@@ -152,8 +152,8 @@ func (grantTenant) Authorize(p web.Principal) (web.Grant, error) {
 func TestAuthorize(t *testing.T) {
 	t.Run("a principal with a tenant gets its grant", func(t *testing.T) {
 		ex := []Exchange{withAuthz("Bearer good")}
-		Authenticate(acceptToken{}, ex)
-		Authorize(grantTenant{}, ex)
+		Authenticate(ex, acceptToken{})
+		Authorize(ex, grantTenant{})
 		e := &ex[0]
 		if e.Refused() {
 			t.Fatalf("refused with %d: %v", e.Status, e.Diagnostics)
@@ -165,7 +165,7 @@ func TestAuthorize(t *testing.T) {
 
 	t.Run("a declined principal is 403", func(t *testing.T) {
 		ex := []Exchange{exchangeFor("GET", "/health")} // never authenticated: zero principal
-		Authorize(grantTenant{}, ex)
+		Authorize(ex, grantTenant{})
 		e := &ex[0]
 		if e.Status != 403 {
 			t.Fatalf("status = %d, want 403", e.Status)
@@ -178,7 +178,7 @@ func TestAuthorize(t *testing.T) {
 	t.Run("a refused exchange is stepped over", func(t *testing.T) {
 		ex := []Exchange{withAuthz("Bearer good")}
 		ex[0].Status = 401
-		Authorize(grantTenant{}, ex)
+		Authorize(ex, grantTenant{})
 		if ex[0].Grant.Tenant != "" {
 			t.Error("a refused exchange was authorized")
 		}
@@ -206,7 +206,7 @@ func TestAuthenticateRefusesDuplicateAuthorization(t *testing.T) {
 				{Name: []byte("authorization"), Value: []byte(tc.second)},
 			}
 			ex := []Exchange{e}
-			Authenticate(acceptToken{}, ex)
+			Authenticate(ex, acceptToken{})
 			if ex[0].Status != 401 {
 				t.Fatalf("status = %d, want 401", ex[0].Status)
 			}
@@ -249,7 +249,7 @@ func TestAuthenticateChallengesWithBearer(t *testing.T) {
 			e := exchangeFor("GET", "/health")
 			e.Request.Headers = tc.headers
 			ex := []Exchange{e}
-			Authenticate(acceptToken{}, ex)
+			Authenticate(ex, acceptToken{})
 			out := RenderOpen(ex, func(_, _ int) (int, any) { return 200, nil })
 			r := out.Items[0]
 			if r.Status != 401 {

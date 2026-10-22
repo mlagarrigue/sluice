@@ -187,8 +187,8 @@ rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
 handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
     ex := stream.Exchanges(nil, b)       // one envelope per request
     rt.Route(ex)                         // which route for each
-    stream.Authenticate(verifier, ex)    // who is calling
-    stream.Authorize(authorizer, ex)     // what they may do
+    stream.Authenticate(ex, verifier)    // who is calling
+    stream.Authorize(ex, authorizer)     // what they may do
     for i := range ex {
         order, _ := stream.PathInt64(&ex[i], 0, "order") // the route's first wildcard
         // the business stage, one batch at a time

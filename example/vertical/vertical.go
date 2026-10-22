@@ -401,8 +401,8 @@ func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Du
 	return func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		ex := stream.Exchanges(nil, b)
 		rt.Route(ex)
-		stream.Authenticate(v, ex)
-		stream.Authorize(a, ex)
+		stream.Authenticate(ex, v)
+		stream.Authorize(ex, a)
 
 		// Decode what is still open: every exchange either is refused, its
 		// diagnostics staying in ex, or contributes exactly one call. That is

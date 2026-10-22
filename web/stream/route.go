@@ -143,7 +143,7 @@ func (c compiledRoute) covers(later compiledRoute) bool {
 }
 
 // Route resolves every open exchange against the table, filling
-// [Exchange.Route] and [Exchange.Params] or refusing: 501 when the method
+// [Exchange.RouteIndex] and [Exchange.Params] or refusing: 501 when the method
 // is one neither the table nor the standard names, which the server then
 // recognises for no resource (RFC 9110 §9.1, §15.6.2); 404 when no pattern
 // matches the target's path; 405 — with the Allow field RFC 9110 §10.2.1
@@ -213,7 +213,7 @@ func (rt *Router) Route(exchanges []Exchange) {
 				continue
 			}
 			if method == rt.routes[r].method {
-				e.Route, e.Params = r, params
+				e.RouteIndex, e.Params = r, params
 				matched = true
 				break
 			}
@@ -223,7 +223,7 @@ func (rt *Router) Route(exchanges []Exchange) {
 			allowed = appendMethod(allowed, rt.routes[r].method)
 		}
 		if !matched && getRoute >= 0 {
-			e.Route, e.Params = getRoute, getParams
+			e.RouteIndex, e.Params = getRoute, getParams
 			matched = true
 		}
 		switch {

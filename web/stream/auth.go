@@ -24,7 +24,7 @@ import (
 // right is telling them how to fix it. What web's version returns as an error
 // for the caller to log is not surfaced here — a verifier that must observe
 // its rejections wraps itself.
-func Authenticate(v web.Verifier, exchanges []Exchange) {
+func Authenticate(exchanges []Exchange, v web.Verifier) {
 	for i := range exchanges {
 		e := &exchanges[i]
 		if e.Refused() {
@@ -113,7 +113,7 @@ var wwwAuthenticateName = []byte("www-authenticate")
 // refusing with 403 the ones the authorizer declines. It is [web.Authorize]
 // applied along the batch — same authorizer, same diagnostic, same silence
 // about which dimension fell short.
-func Authorize(a web.Authorizer, exchanges []Exchange) {
+func Authorize(exchanges []Exchange, a web.Authorizer) {
 	for i := range exchanges {
 		e := &exchanges[i]
 		if e.Refused() {

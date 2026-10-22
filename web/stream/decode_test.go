@@ -47,7 +47,7 @@ func TestDecodeJSON(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := withBody(tc.body)
 			var p patch
-			limit := 1 << 10
+			limit := int64(1 << 10)
 			if tc.status == 413 {
 				limit = 8
 			}

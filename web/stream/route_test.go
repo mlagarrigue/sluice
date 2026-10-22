@@ -9,8 +9,8 @@ import (
 
 func exchangeFor(method, target string) Exchange {
 	return Exchange{
-		Request: httpstream.Request{Method: []byte(method), Target: []byte(target)},
-		Route:   RouteNone,
+		Request:    httpstream.Request{Method: []byte(method), Target: []byte(target)},
+		RouteIndex: RouteNone,
 	}
 }
 
@@ -44,8 +44,8 @@ func TestRouteMatches(t *testing.T) {
 			if e.Refused() {
 				t.Fatalf("refused with %d: %v", e.Status, e.Diagnostics)
 			}
-			if e.Route != tc.route {
-				t.Errorf("route = %d, want %d", e.Route, tc.route)
+			if e.RouteIndex != tc.route {
+				t.Errorf("route = %d, want %d", e.RouteIndex, tc.route)
 			}
 			if len(e.Params) != len(tc.params) {
 				t.Fatalf("%d params, want %d", len(e.Params), len(tc.params))
@@ -125,8 +125,8 @@ func TestRouteOptionsAnswersWithAllow(t *testing.T) {
 	rt.Route(ex)
 	for i, want := range []string{"GET, HEAD, OPTIONS", "PATCH, GET, HEAD, OPTIONS", "GET, HEAD, OPTIONS"} {
 		e := &ex[i]
-		if e.Status != 204 || len(e.Diagnostics) != 0 || e.Route != RouteNone {
-			t.Errorf("OPTIONS %s: status %d, diagnostics %v, route %d; want a bare 204", e.Request.Target, e.Status, e.Diagnostics, e.Route)
+		if e.Status != 204 || len(e.Diagnostics) != 0 || e.RouteIndex != RouteNone {
+			t.Errorf("OPTIONS %s: status %d, diagnostics %v, route %d; want a bare 204", e.Request.Target, e.Status, e.Diagnostics, e.RouteIndex)
 		}
 		if got := allowOf(e); got != want {
 			t.Errorf("OPTIONS %s: allow = %q, want %q", e.Request.Target, got, want)
@@ -135,8 +135,8 @@ func TestRouteOptionsAnswersWithAllow(t *testing.T) {
 	own := NewRouter(Route{Method: "OPTIONS", Pattern: "/orders/{order}"}, Route{Method: "GET", Pattern: "/orders/{order}"})
 	ex = []Exchange{exchangeFor("OPTIONS", "/orders/12")}
 	own.Route(ex)
-	if e := &ex[0]; e.Refused() || e.Route != 0 {
-		t.Errorf("OPTIONS with its own route: status %d, route %d; want route 0", e.Status, e.Route)
+	if e := &ex[0]; e.Refused() || e.RouteIndex != 0 {
+		t.Errorf("OPTIONS with its own route: status %d, route %d; want route 0", e.Status, e.RouteIndex)
 	}
 }
 
@@ -155,8 +155,8 @@ func TestRouteHeadFollowsGet(t *testing.T) {
 	rt := table(t)
 	ex := []Exchange{exchangeFor("HEAD", "/orders/12"), exchangeFor("HEAD", "/orders/12/lines/3")}
 	rt.Route(ex)
-	if e := &ex[0]; e.Refused() || e.Route != 1 || len(e.Params) != 1 || string(e.Params[0]) != "12" {
-		t.Errorf("HEAD on a GET route: status %d, route %d, params %q; want route 1 with param 12", e.Status, e.Route, e.Params)
+	if e := &ex[0]; e.Refused() || e.RouteIndex != 1 || len(e.Params) != 1 || string(e.Params[0]) != "12" {
+		t.Errorf("HEAD on a GET route: status %d, route %d, params %q; want route 1 with param 12", e.Status, e.RouteIndex, e.Params)
 	}
 	// HEAD stands in for GET only: a PATCH-only path still answers 405.
 	if e := &ex[1]; e.Status != 405 {
@@ -191,8 +191,8 @@ func TestRouteHeadPrefersItsOwnRoute(t *testing.T) {
 	)
 	ex := []Exchange{exchangeFor("HEAD", "/a")}
 	rt.Route(ex)
-	if ex[0].Route != 1 {
-		t.Errorf("route = %d, want the HEAD route 1", ex[0].Route)
+	if ex[0].RouteIndex != 1 {
+		t.Errorf("route = %d, want the HEAD route 1", ex[0].RouteIndex)
 	}
 }
 
@@ -206,11 +206,11 @@ func TestRouteFirstMatchWins(t *testing.T) {
 	)
 	ex := []Exchange{exchangeFor("GET", "/a/b/c"), exchangeFor("GET", "/a/b/d")}
 	rt.Route(ex)
-	if ex[0].Route != 0 {
-		t.Errorf("route = %d; the table is ordered and the first match wins", ex[0].Route)
+	if ex[0].RouteIndex != 0 {
+		t.Errorf("route = %d; the table is ordered and the first match wins", ex[0].RouteIndex)
 	}
-	if ex[1].Route != 1 {
-		t.Errorf("route = %d; the second row is reachable where the first does not match", ex[1].Route)
+	if ex[1].RouteIndex != 1 {
+		t.Errorf("route = %d; the second row is reachable where the first does not match", ex[1].RouteIndex)
 	}
 }
 
@@ -219,8 +219,8 @@ func TestRouteSkipsARefusedExchange(t *testing.T) {
 	ex := []Exchange{exchangeFor("GET", "/health")}
 	ex[0].Status = 401
 	rt.Route(ex)
-	if ex[0].Route != RouteNone {
-		t.Errorf("a refused exchange was routed to %d", ex[0].Route)
+	if ex[0].RouteIndex != RouteNone {
+		t.Errorf("a refused exchange was routed to %d", ex[0].RouteIndex)
 	}
 }
 
