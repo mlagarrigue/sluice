@@ -132,7 +132,12 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 			}
 		}
 		per := (liveHeap() - before) / conns
-		t.Logf("%s, %d at a time: %d bytes of live heap per connection", name, depth, per)
+		// Goroutines alongside the bytes: each one's descriptor is heap,
+		// and a CI runner read 6 KB more per HTTP/2 connection than any
+		// local machine (three times on 2026-10-21 and 22) — this says
+		// whether that is goroutines still running or buffers held.
+		t.Logf("%s, %d at a time: %d bytes of live heap and %.1f goroutines per connection",
+			name, depth, per, float64(runtime.NumGoroutine()-base)/conns)
 		return per
 	}
 
