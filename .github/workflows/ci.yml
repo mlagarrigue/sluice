@@ -229,9 +229,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 17 speaks protocol 3.0 only and negotiates a 3.2 request down; 18
-        # speaks 3.2, and with it the long cancellation key.
-        postgres: ["17", "18"]
+        # Every major the PostgreSQL project still supports. 14 to 16 take
+        # TLS only after an SSLRequest; 17 also takes it directly, and speaks
+        # protocol 3.0 only, negotiating a 3.2 request down; 18 speaks 3.2,
+        # and with it the long cancellation key.
+        postgres: ["14", "15", "16", "17", "18"]
     services:
       postgres:
         # Pinned majors: a new major changes catalogs and error texts, and
@@ -293,8 +295,12 @@ jobs:
             echo "::error::protocol 3.2 did not run against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
-          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
+          if [ "$PG_MAJOR" -ge 17 ] && ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
+            exit 1
+          fi
+          if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/cancel' test.log; then
+            echo "::error::a cancellation over TLS did not pass against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
           if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log; then
@@ -312,9 +318,10 @@ jobs:
         env:
           SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa-pss/server.crt
           SLUICE_PG_TLS_SIGALG: SHA384-RSAPSS
+          PG_MAJOR: ${{ matrix.postgres }}
         run: |
           go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
-          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log
+          if [ "$PG_MAJOR" -ge 17 ]; then grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; fi
           grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
 
       # OpenSSL's default PSS salt, the longest that fits: crypto/x509 leaves
@@ -328,9 +335,10 @@ jobs:
         env:
           SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa-pss-maxsalt/server.crt
           SLUICE_PG_TLS_SIGALG: "0"
+          PG_MAJOR: ${{ matrix.postgres }}
         run: |
           go test -race -count=1 -v -run '^TestIntegrationChannelBindingOverTLS$' ./database/postgres/ | tee test.log
-          grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log
+          if [ "$PG_MAJOR" -ge 17 ]; then grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; fi
           grep -- '--- PASS: TestIntegrationChannelBindingOverTLS ' test.log
 
       # The tables the comparison benchmarks read, by the program a developer
