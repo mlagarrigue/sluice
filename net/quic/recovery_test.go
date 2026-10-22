@@ -1078,13 +1078,26 @@ func TestSpacedWritesAreApplicationLimited(t *testing.T) {
 		defer client.mu.Unlock()
 		return client.appLimitedMarks
 	}
-	for range 3 {
+	// "In a row" is a clock reading, not a promise: the rule opens a phase
+	// after a gap past granularity, and a Windows runner stalled between
+	// two writes for longer than that (2026-10-22, twice). Each write's
+	// span is measured; a pair of writes whose spans, end to end, stayed
+	// within granularity can open no phase, and each pair that did not may
+	// open one.
+	var allowed int
+	var prevStart time.Time
+	for i := range 3 {
+		start := time.Now()
 		if _, err := s.Write(make([]byte, 100)); err != nil {
 			t.Fatal(err)
 		}
+		if i > 0 && time.Since(prevStart) > granularity {
+			allowed++
+		}
+		prevStart = start
 	}
-	if got := marks(); got != 1 {
-		t.Fatalf("%d marks over three writes in a row, want 1", got)
+	if got := marks(); got < 1 || got > 1+allowed {
+		t.Fatalf("%d marks over three writes in a row, want 1 (and up to %d more for the writes the clock saw apart)", got, allowed)
 	}
 	for i := range 3 {
 		time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
