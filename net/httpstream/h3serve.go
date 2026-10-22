@@ -14,7 +14,7 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
-// ServeH3 serves HTTP/3 over a QUIC connection, with the same [Handler] the
+// ServeH3Conn serves HTTP/3 over a QUIC connection, with the same [Handler] the
 // other two protocols take.
 //
 // This is where the three meet. A batch of requests goes in and a batch of
@@ -72,12 +72,12 @@ import (
 //
 // The cancellation of ctx stops the connection normally, as below; when
 // [Config.ShutdownGrace] passes before the drain ends, the connection is
-// closed under its handler, whose context is cancelled, and ServeH3 returns
+// closed under its handler, whose context is cancelled, and ServeH3Conn returns
 // [ErrShutdownForced]. The handler's context carries ctx's values but not
 // its cancellation, which is the normal stop and not the handler's to see.
-func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
+func ServeH3Conn(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
-		panic("httpstream: ServeH3 requires a handler")
+		panic("httpstream: ServeH3Conn requires a handler")
 	}
 	cfg, err := cfg.resolve()
 	if err != nil {
@@ -96,7 +96,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	})
 	defer func() {
 		stop()
-		// Stopped once ServeH3 has returned, when nobody reads it.
+		// Stopped once ServeH3Conn has returned, when nobody reads it.
 		if t := graceTimer.Load(); t != nil {
 			t.Stop()
 		}
@@ -109,7 +109,7 @@ func ServeH3(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) erro
 	return err
 }
 
-// serveH3 is [ServeH3] with its two stops apart, as a [Server] drives them:
+// serveH3 is [ServeH3Conn] with its two stops apart, as a [Server] drives them:
 // the cancellation of drain is the normal stop, that of forced the forced
 // one, and forced is also the handler's context. cfg is resolved.
 func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
@@ -118,11 +118,11 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// capped. A connection whose announced stream limit exceeds it is
 	// refused outright rather than served with a bound nobody chose. The
 	// connection is closed with the refusal, as on every other way out of
-	// ServeH3: left open, the client would wait on a server nobody runs.
+	// ServeH3Conn: left open, the client would wait on a server nobody runs.
 	if lim := c.LocalParameters().InitialMaxStreamsBidi; lim > h3MaxServeStreams {
 		_ = c.CloseWithError(h3InternalError)
 		return fmt.Errorf(
-			"httpstream: InitialMaxStreamsBidi %d is over the %d streams ServeH3 serves on one connection",
+			"httpstream: InitialMaxStreamsBidi %d is over the %d streams ServeH3Conn serves on one connection",
 			lim, h3MaxServeStreams)
 	}
 	// RFC 9114 §6.2: the transport parameters MUST let the peer create at
@@ -146,7 +146,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// refused and closed, like the limit above.
 	if proto := c.ConnectionState().NegotiatedProtocol; proto != "h3" {
 		_ = c.CloseWithError(h3InternalError)
-		return fmt.Errorf("httpstream: ServeH3 on a connection that negotiated %q, not h3", proto)
+		return fmt.Errorf("httpstream: ServeH3Conn on a connection that negotiated %q, not h3", proto)
 	}
 	if cfg.KeepAlive > 0 {
 		_ = c.SetKeepAlive(cfg.KeepAlive) // positive: SetKeepAlive refuses only a negative period
@@ -529,7 +529,7 @@ func controlStopped(code uint64) error {
 		"%w: the client asked the control stream to stop (STOP_SENDING %#x)", ErrH3Protocol, code)}
 }
 
-// h3CloseErr is what ServeH3 reports once the connection ended: nil for
+// h3CloseErr is what ServeH3Conn reports once the connection ended: nil for
 // the ends an HTTP/3 server treats as the client leaving — its H3_NO_ERROR
 // (RFC 9114 §8.1), any application code this layer does not know (§8:
 // "receipt of an unknown error code MUST be treated as equivalent to
@@ -599,23 +599,23 @@ type h3Batch struct {
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
-// configuration's own admission bounds, for the connection ServeH3 will
+// configuration's own admission bounds, for the connection ServeH3Conn will
 // serve: stream windows that fit a full request (MaxBodyBytes plus header
 // room), a connection window that fits the 4×MaxBodyBytes aggregate
-// assembly cap, the stream count ServeH3 admits, and [Config.IdleTimeout]
+// assembly cap, the stream count ServeH3Conn admits, and [Config.IdleTimeout]
 // as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
 // own above the transport's, so this is the one place the field reaches an
 // HTTP/3 connection, and a zero field is the two minutes every protocol
-// defaults to. Serving a connection built with these lets ServeH3 run the transport
+// defaults to. Serving a connection built with these lets ServeH3Conn run the transport
 // under manual flow-control credit, where a peer's window only reopens for
 // bytes this server has actually stopped retaining — the strongest memory
 // bound the layer offers. Any other parameters work too; below these
-// windows ServeH3 falls back to delivery-time crediting, bounded by the
+// windows ServeH3Conn falls back to delivery-time crediting, bounded by the
 // assembler's caps, and the idle timeout is whatever those parameters say.
 //
 // It returns an error for a configuration [Config] refuses, and for a
-// MaxConcurrentStreams over the 4096 streams ServeH3 serves on one
-// connection: announced, that limit would have ServeH3 refuse every
+// MaxConcurrentStreams over the 4096 streams ServeH3Conn serves on one
+// connection: announced, that limit would have ServeH3Conn refuse every
 // connection built on these parameters.
 func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	c, err := c.resolve()
@@ -623,7 +623,7 @@ func (c Config) TransportParameters() (quic.TransportParameters, error) {
 		return quic.TransportParameters{}, err
 	}
 	if c.MaxConcurrentStreams > h3MaxServeStreams {
-		return quic.TransportParameters{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3 serves on one connection",
+		return quic.TransportParameters{}, fmt.Errorf("httpstream: Config.MaxConcurrentStreams %d is over the %d streams ServeH3Conn serves on one connection",
 			c.MaxConcurrentStreams, h3MaxServeStreams)
 	}
 	p := quic.DefaultParameters()
@@ -634,9 +634,9 @@ func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	return p, nil
 }
 
-// h3MaxServeStreams caps the stream limit ServeH3 will serve. One connection
+// h3MaxServeStreams caps the stream limit ServeH3Conn will serve. One connection
 // runs up to a handler call and a writer goroutine per admitted stream (see
-// the hand-off comment in ServeH3); past this cap ServeH3 refuses the
+// the hand-off comment in ServeH3Conn); past this cap ServeH3Conn refuses the
 // connection rather than let one stream limit pin that many goroutines.
 const h3MaxServeStreams = 4096
 
@@ -670,7 +670,7 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 	}
 
 	// The request bodies stop being retained by this layer the moment the
-	// handler returns — the release half of the manual credit ServeH3 runs
+	// handler returns — the release half of the manual credit ServeH3Conn runs
 	// the transport under. Held across the handler call deliberately: a
 	// slow handler holding a batch of bodies is exactly the memory the
 	// window should not re-open for.
@@ -696,7 +696,7 @@ func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb w
 				}
 				// Retired at the goroutine's very end, a streamed producer's
 				// pull included: the drain waits for the body it is writing,
-				// bounded by the grace, where ServeH3's own return does not.
+				// bounded by the grace, where ServeH3Conn's own return does not.
 				if b.retire != nil {
 					b.retire()
 				}
@@ -758,7 +758,7 @@ var h3ScratchPool = sync.Pool{New: func() any { return &h3Scratch{} }}
 //
 // detach is called once the response's own writes are done and a streamed
 // producer is about to be pulled: from there on the goroutine runs the
-// caller's code, which ServeH3 does not wait for.
+// caller's code, which ServeH3Conn does not wait for.
 //
 // It reports whether the whole response left, FIN included — a request
 // answered, in the rapid-reset allowance's terms. A stream the peer reset or

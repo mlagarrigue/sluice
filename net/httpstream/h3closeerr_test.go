@@ -7,7 +7,7 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
-// ServeH3 reports the connection's end the way an HTTP/3 server reads it:
+// ServeH3Conn reports the connection's end the way an HTTP/3 server reads it:
 // the client leaving — H3_NO_ERROR, a transport NO_ERROR, silence past the
 // idle timeout — is nil; any other cause is the transport's own error,
 // unchanged, so the caller still reads it with errors.As.

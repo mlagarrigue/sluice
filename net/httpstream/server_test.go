@@ -273,7 +273,7 @@ func TestServerCloseCancelsTheHandler(t *testing.T) {
 // A Server reaches the HTTP/2 bounds through its one Config: the stream
 // window that carried an upload eleven times faster at 100 ms of RTT
 // (h2rtt_test.go) is advertised as set. A Server and Serve used to be held
-// to the 65535-byte default, the field being reachable through ServeH2
+// to the 65535-byte default, the field being reachable through ServeH2Conn
 // alone.
 func TestServerHonoursInitialWindowSize(t *testing.T) {
 	srv := &Server{Config: Config{InitialWindowSize: 1 << 20}, Handler: echoTarget}
@@ -339,7 +339,7 @@ func TestServeReportsAForcedShutdown(t *testing.T) {
 }
 
 // serveForError runs Serve until cancel and hands over what it returned.
-// serveH2Direct runs ServeH2 on the first connection to the address it
+// serveH2Direct runs ServeH2Conn on the first connection to the address it
 // returns, under a context carrying stopKey, and cancel is that context's.
 func serveH2Direct(t *testing.T, cfg Config, h Handler) (addr string, cancel context.CancelFunc, served <-chan error) {
 	t.Helper()
@@ -358,14 +358,14 @@ func serveH2Direct(t *testing.T, cfg Config, h Handler) (addr string, cancel con
 			return
 		}
 		defer func() { _ = c.Close() }()
-		out <- ServeH2(ctx, c, cfg, h)
+		out <- ServeH2Conn(ctx, c, cfg, h)
 	}()
 	return ln.Addr().String(), cancel, out
 }
 
 type stopKey struct{}
 
-// ServeH2 called directly stops as Serve does: the cancellation of its
+// ServeH2Conn called directly stops as Serve does: the cancellation of its
 // context is a GOAWAY, the request in flight answered whole, the handler's
 // context neither cancelled nor stripped of ctx's values, and nil. It used
 // to close the socket at the cancellation, under the handler.
@@ -388,7 +388,7 @@ func TestServeH2DrainsOnCancellation(t *testing.T) {
 		}
 		select {
 		case err := <-served:
-			t.Fatalf("ServeH2 returned %v with a request in flight", err)
+			t.Fatalf("ServeH2Conn returned %v with a request in flight", err)
 		case <-time.After(100 * time.Millisecond):
 		}
 		close(h.release)
@@ -404,10 +404,10 @@ func TestServeH2DrainsOnCancellation(t *testing.T) {
 		select {
 		case err := <-served:
 			if err != nil {
-				t.Errorf("ServeH2 returned %v, want nil for a stop", err)
+				t.Errorf("ServeH2Conn returned %v, want nil for a stop", err)
 			}
 		case <-time.After(10 * time.Second):
-			t.Fatal("ServeH2 did not return once the request was answered")
+			t.Fatal("ServeH2Conn did not return once the request was answered")
 		}
 	})
 	t.Run("idle", func(t *testing.T) {
@@ -424,17 +424,17 @@ func TestServeH2DrainsOnCancellation(t *testing.T) {
 		select {
 		case err := <-served:
 			if err != nil {
-				t.Errorf("ServeH2 returned %v, want nil for a stop", err)
+				t.Errorf("ServeH2Conn returned %v, want nil for a stop", err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("an idle ServeH2 did not return at the PING's acknowledgement")
+			t.Fatal("an idle ServeH2Conn did not return at the PING's acknowledgement")
 		}
 	})
 }
 
-// ServeH2's grace passing with a request in flight is a forced stop: the
+// ServeH2Conn's grace passing with a request in flight is a forced stop: the
 // connection is closed, the handler's context cancelled, the Logger told,
-// and ServeH2 returns ErrShutdownForced.
+// and ServeH2Conn returns ErrShutdownForced.
 func TestServeH2ReportsAForcedShutdown(t *testing.T) {
 	h := newStopHandler()
 	defer close(h.release)
@@ -448,10 +448,10 @@ func TestServeH2ReportsAForcedShutdown(t *testing.T) {
 	select {
 	case err := <-served:
 		if !errors.Is(err, ErrShutdownForced) {
-			t.Errorf("ServeH2 returned %v, want ErrShutdownForced", err)
+			t.Errorf("ServeH2Conn returned %v, want ErrShutdownForced", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH2 did not return after the grace")
+		t.Fatal("ServeH2Conn did not return after the grace")
 	}
 	if err := <-h.handlerErr; err == nil {
 		t.Error("the handler's context was not cancelled when the grace passed")
@@ -625,7 +625,7 @@ func TestServeH2SendsSettingsBeforeAnyGoAway(t *testing.T) {
 			}
 			go func() {
 				defer c.Close()
-				_ = ServeH2(ctx, c, Config{ShutdownGrace: time.Second, Logger: discardLogger()}, echoTarget)
+				_ = ServeH2Conn(ctx, c, Config{ShutdownGrace: time.Second, Logger: discardLogger()}, echoTarget)
 			}()
 		}
 	}()

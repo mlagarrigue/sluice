@@ -885,7 +885,7 @@ func BenchmarkListenerForget(b *testing.B) {
 }
 
 // One connection whose consumer stops draining — a stream callback applying
-// back-pressure, as a slow ServeH3 handler does — must not freeze the
+// back-pressure, as a slow ServeH3Conn handler does — must not freeze the
 // listener's single dispatch loop, and with it every other connection and
 // handshake on the socket.
 func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {

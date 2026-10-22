@@ -73,7 +73,7 @@ import (
 // # The context
 //
 // ctx is cancelled when the server stops by force — [Server.Close], or the
-// grace of [Serve] or [ServeH3] passing with the handler still running — and
+// grace of [Serve] or [ServeH3Conn] passing with the handler still running — and
 // not when it stops normally, which lets the requests in flight finish. It is
 // the context a handler hands to what it calls on the batch's behalf, a
 // database query or an upstream request, so that a forced stop reaches them
@@ -115,7 +115,7 @@ type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Res
 // prior-knowledge HTTP/2 sniffed from the preface. Cleartext is kept for
 // interoperability — a terminating proxy, a health check, local tooling —
 // not recommended: anything that crosses a network boundary belongs behind
-// TLS or on [ServeH3], whose transport encrypts by construction. Over a TLS
+// TLS or on [ServeH3Conn], whose transport encrypts by construction. Over a TLS
 // listener the same preface sniff still picks the protocol — Serve does not
 // read the negotiated ALPN — so a client that negotiated h2 and sends the
 // preface is served HTTP/2, and one that did not is served HTTP/1.1.

@@ -12,7 +12,7 @@ import (
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
-// ErrShutdownForced is what [Serve], [ServeH2] and [ServeH3] return when
+// ErrShutdownForced is what [Serve], [ServeH2Conn] and [ServeH3Conn] return when
 // [Config.ShutdownGrace] passed before the requests in flight were answered,
 // and the connections still carrying them were closed under their handlers.
 // A drain that ends within the grace returns nil.
@@ -150,8 +150,8 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 // ServeQUIC accepts HTTP/3 connections on ln and serves each one as
-// [ServeH3] does, until the server stops. Its stops are the server's: at
-// Shutdown each connection drains as ServeH3's does at the cancellation of
+// [ServeH3Conn] does, until the server stops. Its stops are the server's: at
+// Shutdown each connection drains as ServeH3Conn's does at the cancellation of
 // its context, at Close each is closed under its handler. A connection that
 // completes its handshake once the server is stopping is closed at once.
 //

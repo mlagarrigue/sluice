@@ -22,7 +22,7 @@ func (c Config) mustResolve() Config {
 	return r
 }
 
-// testAssembler is newH3Assembler on a configuration resolved as ServeH3
+// testAssembler is newH3Assembler on a configuration resolved as ServeH3Conn
 // resolves it.
 func testAssembler(cfg Config) *h3Assembler { return newH3Assembler(cfg.mustResolve()) }
 
@@ -116,14 +116,14 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 			h2c, h2s := net.Pipe()
 			_ = h2c.Close()
 			defer func() { _ = h2s.Close() }()
-			if err := ServeH2(t.Context(), h2s, tc.cfg, nopHandler); err == nil || !strings.Contains(err.Error(), want) {
-				t.Errorf("ServeH2: %v, want an error naming %q", err, want)
+			if err := ServeH2Conn(t.Context(), h2s, tc.cfg, nopHandler); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("ServeH2Conn: %v, want an error naming %q", err, want)
 			}
 		})
 	}
 }
 
-// TransportParameters refuses a stream limit ServeH3 would refuse every
+// TransportParameters refuses a stream limit ServeH3Conn would refuse every
 // connection for, rather than lowering it to the one it serves.
 func TestTransportParametersRefusesMoreStreamsThanServeH3Serves(t *testing.T) {
 	if _, err := (Config{MaxConcurrentStreams: h3MaxServeStreams + 1}).TransportParameters(); err == nil || !strings.Contains(err.Error(), "Config.MaxConcurrentStreams 4097") {

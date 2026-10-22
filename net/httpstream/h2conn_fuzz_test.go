@@ -12,7 +12,7 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// FuzzH2Connection drives [ServeH2] itself, not just [parseFrame]: bytes go
+// FuzzH2Connection drives [ServeH2Conn] itself, not just [parseFrame]: bytes go
 // through the frame layer, HPACK, padding and priority stripping
 // (h2conn.go's headers, around the block that removes PADDED and PRIORITY),
 // stream lifecycle and window accounting — the whole assembly a real
@@ -51,7 +51,7 @@ func FuzzH2Connection(f *testing.F) {
 		// t.Fatal, which unwinds through runtime.Goexit and would skip a
 		// plain defer-free "close after waiting" placed after the select.
 		// Cleanup still runs, and closing both ends unblocks whichever
-		// goroutine (ServeH2 or the drain loop) was parked on an I/O read
+		// goroutine (ServeH2Conn or the drain loop) was parked on an I/O read
 		// that will never see the client's pipe write a byte — rather than
 		// leaking it past this subtest, to accumulate across a long -fuzz
 		// run that keeps hitting the watchdog.
@@ -73,9 +73,9 @@ func FuzzH2Connection(f *testing.F) {
 		}
 
 		done := make(chan error, 1)
-		go func() { done <- ServeH2(ctx, server, cfg, fuzzH2Handler) }()
+		go func() { done <- ServeH2Conn(ctx, server, cfg, fuzzH2Handler) }()
 
-		// A net.Pipe is synchronous and unbuffered: ServeH2's writer would
+		// A net.Pipe is synchronous and unbuffered: ServeH2Conn's writer would
 		// block forever on a response nobody reads. Draining in the
 		// background is what lets the fuzzed bytes actually flow instead of
 		// deadlocking on the first frame that provokes an answer.
@@ -102,10 +102,10 @@ func FuzzH2Connection(f *testing.F) {
 		select {
 		case err := <-done:
 			if !fuzzH2AcceptableErr(err) {
-				t.Fatalf("ServeH2 returned an unexpected error: %v", err)
+				t.Fatalf("ServeH2Conn returned an unexpected error: %v", err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("ServeH2 did not return: a livelock somewhere in frame or HPACK assembly")
+			t.Fatal("ServeH2Conn did not return: a livelock somewhere in frame or HPACK assembly")
 		}
 		<-drained
 	})
@@ -123,7 +123,7 @@ func fuzzH2Handler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Resp
 	return sluice.Batch[Response]{Items: out}
 }
 
-// fuzzH2AcceptableErr is what [ServeH2] may return for arbitrary input
+// fuzzH2AcceptableErr is what [ServeH2Conn] may return for arbitrary input
 // without that being a bug: one of this package's own named refusals, or the
 // ordinary shutdown of a pipe this test closed from its own end.
 func fuzzH2AcceptableErr(err error) bool {
@@ -149,7 +149,7 @@ func fuzzH2AcceptableErr(err error) bool {
 	return false
 }
 
-// A peer that stops mid-frame is cut off by ReadTimeout, and ServeH2 says so
+// A peer that stops mid-frame is cut off by ReadTimeout, and ServeH2Conn says so
 // with the socket's deadline error. That is the bound working, and the
 // fuzzer used to report it as a bug.
 func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
@@ -157,7 +157,7 @@ func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeH2(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
+		done <- ServeH2Conn(t.Context(), server, Config{ReadTimeout: 50 * time.Millisecond}, fuzzH2Handler)
 	}()
 	go func() { _, _ = io.Copy(io.Discard, client) }()
 
@@ -169,13 +169,13 @@ func TestFuzzH2AcceptsAReadTimeout(t *testing.T) {
 	select {
 	case err := <-done:
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
-			t.Fatalf("ServeH2 returned %v, want the read deadline", err)
+			t.Fatalf("ServeH2Conn returned %v, want the read deadline", err)
 		}
 		if !fuzzH2AcceptableErr(err) {
 			t.Errorf("fuzzH2AcceptableErr refuses %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH2 did not time out")
+		t.Fatal("ServeH2Conn did not time out")
 	}
 }
 

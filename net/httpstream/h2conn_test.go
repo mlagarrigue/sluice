@@ -368,7 +368,7 @@ func serveH2(t *testing.T, cfg Config, h Handler) (addr string, sizes func() []i
 			}
 			wg.Go(func() {
 				defer func() { _ = c.Close() }()
-				_ = ServeH2(ctx, c, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+				_ = ServeH2Conn(ctx, c, cfg, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 					mu.Lock()
 					seen = append(seen, b.Len())
 					mu.Unlock()
@@ -2736,7 +2736,7 @@ func TestH2StreamedEmptyBatchesStopWhenTheConnectionCloses(t *testing.T) {
 }
 
 // Config.MaxConcurrentStreams reaches an HTTP/2 connection [Serve] accepts,
-// not only HTTP/3 ones: it used to be dropped on the way to ServeH2, so the
+// not only HTTP/3 ones: it used to be dropped on the way to ServeH2Conn, so the
 // h2 side always advertised its own default whatever the caller set. Zero
 // still means HTTP/2's own default of 100.
 func TestServeAppliesMaxConcurrentStreamsToHTTP2(t *testing.T) {
@@ -3258,9 +3258,9 @@ func TestH2AcceptsTETrailersInAnyCase(t *testing.T) {
 }
 
 // RFC 9113 §5.4.1: after the GOAWAY of a connection error, the endpoint MUST
-// close the TCP connection. ServeH2 called directly does it itself: the peer
+// close the TCP connection. ServeH2Conn called directly does it itself: the peer
 // reads the GOAWAY and then the end of the stream, and the socket is closed
-// on this side once ServeH2 has returned, without the caller doing anything.
+// on this side once ServeH2Conn has returned, without the caller doing anything.
 func TestServeH2ClosesTheConnectionAfterAnErrorGoAway(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -3274,7 +3274,7 @@ func TestServeH2ClosesTheConnectionAfterAnErrorGoAway(t *testing.T) {
 			return
 		}
 		// No deferred Close: that is what the test is about.
-		_ = ServeH2(t.Context(), c, Config{Logger: discardLogger()}, echoTarget)
+		_ = ServeH2Conn(t.Context(), c, Config{Logger: discardLogger()}, echoTarget)
 		served <- c
 	}()
 
@@ -3295,10 +3295,10 @@ func TestServeH2ClosesTheConnectionAfterAnErrorGoAway(t *testing.T) {
 	case sc := <-served:
 		if err := sc.SetReadDeadline(time.Now().Add(time.Second)); err == nil {
 			if _, err = sc.Read(tail[:]); !errors.Is(err, net.ErrClosed) {
-				t.Errorf("the server's socket is still open after ServeH2 returned: read gave %v", err)
+				t.Errorf("the server's socket is still open after ServeH2Conn returned: read gave %v", err)
 			}
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH2 did not return after the connection error")
+		t.Fatal("ServeH2Conn did not return after the connection error")
 	}
 }

@@ -269,13 +269,13 @@ func TestH2RefusesMalformedTrailers(t *testing.T) {
 
 // A connection's goroutines are the connection's: they end when it does.
 //
-// Three per connection is a design decision (see ServeH2), and a design
+// Three per connection is a design decision (see ServeH2Conn), and a design
 // decision about goroutines is only worth anything if they are all joined —
 // otherwise it is three leaks per connection, which a server discovers under
 // load and not before.
 //
 // The server is driven through serveH2, whose per-connection goroutine is the
-// test's own: once ServeH2 has returned, no goroutine should be running — or
+// test's own: once ServeH2Conn has returned, no goroutine should be running — or
 // have been created by — a function of this package. That is checked by
 // name rather than against a goroutine count, so there is no baseline to
 // guess and no settling to wait for.

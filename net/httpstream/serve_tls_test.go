@@ -257,7 +257,7 @@ func TestServeBehindATLSListener(t *testing.T) {
 		c := client(t, "h2")
 		// The preface and an empty SETTINGS, which is how an h2 connection
 		// opens; the server's own SETTINGS coming back is the proof the sniff
-		// routed the decrypted stream to ServeH2.
+		// routed the decrypted stream to ServeH2Conn.
 		if _, err := c.Write([]byte(Preface)); err != nil {
 			t.Fatal(err)
 		}

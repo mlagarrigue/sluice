@@ -93,7 +93,7 @@ library is called by your code; a framework calls your code and owns the
 loop. Here the caller owns `main`, its goroutines, its sockets and its
 lifecycle. Nothing requires a global registry, a mandatory init, or a
 callback to enroll in; every blocking convenience (`httpstream.Serve`,
-`httpstream.ServeH3`) has the direct alternative under it (`quic.Dial` and
+`httpstream.ServeH3Conn`) has the direct alternative under it (`quic.Dial` and
 `quic.Listener.Accept` return a `*quic.Conn` you drive yourself; `httpstream.Requests`
 reads a connection you opened). Composition is with the standard library —
 `net.PacketConn`, `tls.Config`, `io`, `iter.Seq` — never a substitute for

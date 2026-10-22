@@ -427,7 +427,7 @@ func DefaultParameters() TransportParameters {
 		InitialMaxStreamDataBidiLocal:  1 << 18,
 		InitialMaxStreamDataBidiRemote: 1 << 18,
 		// RFC 9114 §6.1: an HTTP/3 server SHOULD grant at least 100 request
-		// streams, and this transport default is what ServeH3 inherits.
+		// streams, and this transport default is what ServeH3Conn inherits.
 		InitialMaxStreamsBidi: 100,
 		InitialMaxStreamsUni:  8,
 		// Enough identifiers for a NAT rebind and a deliberate rotation to

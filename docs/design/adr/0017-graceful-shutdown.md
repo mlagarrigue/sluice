@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2Conn` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed)
 - **Theme:** httpstream
 
 ## Problem
@@ -16,7 +16,7 @@ down in which order a process that serves streams stops: if the gateway
 handlers in flight see their calls refused; if the connection pools close
 before the gateway, its last batches fail. Last, a grace that passed did not
 show: `Serve` returned `nil` whether it had answered everything or cut
-requests, and a `ServeH2` called directly still cut the socket at the
+requests, and a `ServeH2Conn` called directly still cut the socket at the
 cancellation.
 
 ## Decision
@@ -43,12 +43,12 @@ cancellation.
    first, `Server.Close` the second; a deployment calls the first on the
    first signal and the second on the next, or when `Shutdown`'s `ctx`
    ends. `Serve(ctx)` is that sequence with `ShutdownGrace` between the
-   two, and `ServeH2` and `ServeH3`, called directly on one connection,
+   two, and `ServeH2Conn` and `ServeH3Conn`, called directly on one connection,
    keep the same contract: the cancellation of `ctx` is the normal stop,
    the grace passing the forced one. Their handler receives a context that
    carries `ctx`'s values but not its cancellation: the normal stop is not
    the handler's business, only the forced one cancels it. When the grace
-   passes, `Serve`, `ServeH2` and `ServeH3` return `ErrShutdownForced` and
+   passes, `Serve`, `ServeH2Conn` and `ServeH3Conn` return `ErrShutdownForced` and
    `Config.Logger` receives a warning with the number of connections cut;
    a drain that ends within the grace returns `nil`.
 
@@ -78,7 +78,7 @@ cancellation.
      connection closes. A peer that never acknowledges the PING is closed
      by the grace. A connection with no stream open is told the same way
      and closes at the PING's acknowledgement, one round trip later,
-     under `Serve` as under a `ServeH2` called directly: closing it at
+     under `Serve` as under a `ServeH2Conn` called directly: closing it at
      once, as an idle HTTP/1.1 one is, raced the GOAWAY its own goroutine
      was queuing and left a POST crossing the close unanswered and
      unannounced — the case RFC 9113 §6.8 names for its SHOULD. A client
@@ -111,7 +111,7 @@ cancellation.
      acknowledged, which `quic.Conn.ShutdownWithError` waits for: an
      application close sent at once can overtake the response it follows.
      Past the grace the connection is closed under its handler and
-     `ServeH3` returns without waiting for it, as `Serve` does (§2).
+     `ServeH3Conn` returns without waiting for it, as `Serve` does (§2).
    - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
      `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
      `Shutdown(context.Context) error`, which `*http.Server` already has;
@@ -144,7 +144,7 @@ add one.
 A forced stop that returns `nil` cannot be told from a clean one: the
 operator does not learn that responses were lost. Hence a sentinel,
 `ErrShutdownForced`, which `errors.Is` recognises, and a warning to the
-`Logger` giving the number of connections cut. A `ServeH2` that cut where
+`Logger` giving the number of connections cut. A `ServeH2Conn` that cut where
 `Serve` drains gave one protocol two contracts depending on the entry
 point: one contract, the drain, holds for all three functions.
 

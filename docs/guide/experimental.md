@@ -89,18 +89,18 @@ not supported yet.
 | Situation | Supported? | Where it is decided |
 |---|---|---|
 | HTTP/1.1 exposed directly, with no proxy in front | Yes, by construction: parsing refuses anything two hops could read differently (obsolete line folding, a space before the colon, control characters, `Transfer-Encoding` next to `Content-Length`); an absolute-form target is served as the origin-form it holds, its authority taking the Host's place. A proxy that re-splits chunks is not required. | `net/httpstream/request.go`, `splitRequestLine` and `parseHeaders` |
-| HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2` |
+| HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2Conn` |
 | HTTP/1.1 behind nginx or Envoy, upstream connections reused | Yes. The rule: the proxy's upstream idle timeout must be **shorter** than `IdleTimeout`, so that the proxy closes first instead of reusing a connection this server is closing and reporting a 502. nginx keeps its upstream connections 60 s by default, below the 2 min default of `IdleTimeout`: nothing to set as long as neither is raised or lowered (full configuration below the table). Envoy keeps them an hour: `idle_timeout: 60s` under `common_http_protocol_options` in the cluster's `HttpProtocolOptions`. Every response that keeps the connection does announce `Connection: keep-alive` and `Keep-Alive: timeout=<IdleTimeout in seconds>`, but neither proxy reads that value: nginx ignores the header, Envoy strips it. HTTP/2 announces the end with `GOAWAY` instead. | `net/httpstream/response.go`, `keepAliveField`; `httpstream.go`, `defaultIdleTimeout` |
 | HTTP/2 clients with a reduced HPACK table (nghttp2, Envoy) | Yes: the table size requested by `SETTINGS_HEADER_TABLE_SIZE` is honored from the next header block, in the same critical section as the acknowledgement. | `net/httpstream/h2write.go`, `ackSettings` |
-| HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `Config.InitialWindowSize` raises it, for `Serve`, `Server` and `ServeH2` alike, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/httpstream.go`, `Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
+| HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `Config.InitialWindowSize` raises it, for `Serve`, `Server` and `ServeH2Conn` alike, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/httpstream.go`, `Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
 | QUIC clients behind a mobile NAT (address change in the middle of a connection) | Yes: four active connection IDs per endpoint by default (`TransportParameters.ActiveConnIDLimit`), enough for a NAT rebind and a deliberate rotation to overlap; the new path is validated by `PATH_CHALLENGE` before it is believed. | `net/quic/migration.go`, `issueLocalCIDsLocked` and `migrateLocked` |
 | QUIC server on a host with several addresses | **Linux only**: `net/quic/udp` learns which address a datagram arrived on and answers from it. Elsewhere, `EnablePacketInfo` returns `errors.ErrUnsupported` and the kernel picks the source by route: the client sees a reply come from an address it never wrote to, which for QUIC is a different path. Bind the socket to one specific address, or stay on Linux. | `net/quic/udp/udp.go`, `EnablePacketInfo` |
 
-Two behaviors of `ServeH3` complete the table without fitting in it: manual
+Two behaviors of `ServeH3Conn` complete the table without fitting in it: manual
 stream credit only turns on if the announced windows cover the admission
 bounds, and otherwise falls back to the transport's automatic credit,
 bounded by the ceilings of `Config` (`net/httpstream/h3serve.go`, at the
-top of `ServeH3`); `Config.TransportParameters` produces accepted windows.
+top of `ServeH3Conn`); `Config.TransportParameters` produces accepted windows.
 And everything that "[What "experimental"
 means](#what-experimental-means)" says applies to every row: the table
 says what the code decides, not what an external review has confirmed.
@@ -224,8 +224,8 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
 }
 
 httpstream.Serve(ctx, ln, httpstream.Config{IdleTimeout: time.Second}, handle) // HTTP/1.1 on a net.Listener
-httpstream.ServeH2(ctx, conn, httpstream.Config{}, handle)                      // HTTP/2 on a connection
-httpstream.ServeH3(ctx, quicConn, httpstream.Config{}, handle)                  // HTTP/3 on a *quic.Conn
+httpstream.ServeH2Conn(ctx, conn, httpstream.Config{}, handle)                      // HTTP/2 on a connection
+httpstream.ServeH3Conn(ctx, quicConn, httpstream.Config{}, handle)                  // HTTP/3 on a *quic.Conn
 ```
 
 > **In plain terms.** On an HTTP/1.1 connection where several requests

@@ -18,7 +18,7 @@ import (
 
 // startH3 serves one HTTP/3 connection over an in-memory datagram pair, with
 // the server's transport parameters given, and returns the client end, a
-// cancel for the server's context, and what ServeH3 returned once it has.
+// cancel for the server's context, and what ServeH3Conn returned once it has.
 func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
 	return startH3With(t, Config{}, params, quic.DefaultParameters(), handle)
@@ -48,7 +48,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 			return
 		}
 		serverUp <- nil
-		served <- ServeH3(ctx, conn, cfg, handle)
+		served <- ServeH3Conn(ctx, conn, cfg, handle)
 	}()
 
 	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
@@ -71,7 +71,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 //
 // The client stops the stream once it has seen it, as a client reading the
 // server's SETTINGS does: RFC 9000 §19.5 makes a STOP_SENDING that reaches
-// the server before ServeH3 opened stream 3 a STREAM_STATE_ERROR, which is
+// the server before ServeH3Conn opened stream 3 a STREAM_STATE_ERROR, which is
 // what this test used to race into one run in thirty.
 func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
 	conn, _, _ := startH3(t, quic.DefaultParameters(), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
@@ -109,10 +109,10 @@ func TestH3StopSendingOnTheControlStreamClosesTheConnection(t *testing.T) {
 }
 
 // The same STOP_SENDING, arriving before SETTINGS has gone out: the write
-// of SETTINGS fails, and ServeH3 used to return that error with the
+// of SETTINGS fails, and ServeH3Conn used to return that error with the
 // connection left open — a client waiting on a server nobody runs, until
 // the idle timeout. It is closed on the way out now, with the §6.2.1 code,
-// like every other refusal at the top of ServeH3.
+// like every other refusal at the top of ServeH3Conn.
 func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 	serverPC, clientPC := dgram.Pair()
 	t.Cleanup(func() { _ = serverPC.Close(); _ = clientPC.Close() })
@@ -128,7 +128,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 			serverUp <- err
 			return
 		}
-		// Opened before ServeH3 runs, so the client's STOP_SENDING finds
+		// Opened before ServeH3Conn runs, so the client's STOP_SENDING finds
 		// the stream — a STOP_SENDING for a stream this end never opened
 		// would be a transport error instead (RFC 9000 §19.5).
 		control, err := conn.Stream(3)
@@ -147,7 +147,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 				return
 			}
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 		})
 	}()
@@ -178,7 +178,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 		t.Fatalf("closed with %#x, want H3_CLOSED_CRITICAL_STREAM (%#x)", ce.Code, h3ClosedCriticalStream)
 	}
 	if err := <-served; !errors.Is(err, ErrH3Protocol) {
-		t.Fatalf("ServeH3 returned %v, want ErrH3Protocol", err)
+		t.Fatalf("ServeH3Conn returned %v, want ErrH3Protocol", err)
 	}
 }
 
@@ -314,7 +314,7 @@ func TestH3RequestDuringABusyCallIsNotHeldBehindIt(t *testing.T) {
 }
 
 // A producer blocked in its own code — not in its yield — does not hold
-// ServeH3 once the connection has ended. It learns at its next yield, which
+// ServeH3Conn once the connection has ended. It learns at its next yield, which
 // returns false. The cancellation drains the connection first (ADR 0017): a
 // response in flight is waited for up to ShutdownGrace, and this producer
 // never finishes, so the grace is what ends the connection — kept short here.
@@ -348,7 +348,7 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 	select {
 	case <-served:
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH3 did not return after its connection ended: it waits on a blocked producer")
+		t.Fatal("ServeH3Conn did not return after its connection ended: it waits on a blocked producer")
 	}
 
 	release <- struct{}{}
@@ -363,7 +363,7 @@ func TestServeH3ReturnsWhileAProducerIsBlocked(t *testing.T) {
 }
 
 // Request bodies are credited to the transport once. Under delivery-time
-// crediting — the fallback ServeH3 keeps when the windows are too small for
+// crediting — the fallback ServeH3Conn keeps when the windows are too small for
 // manual credit — the transport has already credited every byte, so this
 // layer must release nothing: it used to release each body again, and
 // MAX_DATA ran ahead of what was consumed without bound. Under manual credit,
@@ -414,7 +414,7 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 	}
 }
 
-// ServeH3 hands crediting to itself when the windows allow it
+// ServeH3Conn hands crediting to itself when the windows allow it
 // (quic.CreditOnRelease): a byte this layer never releases is then a byte
 // the peer never gets credit back for. With the release swallowed, uploads
 // past the connection window the server announced stall; were the
@@ -476,9 +476,9 @@ func TestH3ServeCreditsOnRelease(t *testing.T) {
 	}
 }
 
-// A handler that never returns does not hold ServeH3 past the grace: the
+// A handler that never returns does not hold ServeH3Conn past the grace: the
 // cancellation drains, the grace passes, the connection is closed under the
-// handler, whose context is cancelled, and ServeH3 returns ErrShutdownForced,
+// handler, whose context is cancelled, and ServeH3Conn returns ErrShutdownForced,
 // as Serve does (ADR 0017 §2). It used to wait for the responder after the
 // close, and the responder was inside the handler; then it returned nil, the
 // same as a drain that ended in time.
@@ -514,13 +514,13 @@ func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 	select {
 	case err := <-served:
 		if !errors.Is(err, ErrShutdownForced) {
-			t.Errorf("ServeH3 returned %v, wanted ErrShutdownForced: the grace cut a request in flight", err)
+			t.Errorf("ServeH3Conn returned %v, wanted ErrShutdownForced: the grace cut a request in flight", err)
 		}
 		if took := time.Since(cancelled); took < grace {
-			t.Errorf("ServeH3 returned %v after the cancellation, before the %v grace", took, grace)
+			t.Errorf("ServeH3Conn returned %v after the cancellation, before the %v grace", took, grace)
 		}
 	case <-time.After(2 * grace):
-		t.Fatal("ServeH3 did not return after the grace: it waits on a handler that has not returned")
+		t.Fatal("ServeH3Conn did not return after the grace: it waits on a handler that has not returned")
 	}
 	select {
 	case err := <-handlerErr:

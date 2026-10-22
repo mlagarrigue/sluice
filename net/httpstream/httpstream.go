@@ -126,9 +126,9 @@
 // resynchronised once in doubt: framing and HPACK state.
 //
 // HTTP/1.1 and HTTP/2 pull a producer on the goroutine that serves the
-// connection, so [Serve] and [ServeH2] wait for a producer blocked in its
+// connection, so [Serve] and [ServeH2Conn] wait for a producer blocked in its
 // own code, however long it stays there — releasing one would take a context
-// the producer's signature does not carry. [ServeH3] pulls each on its own
+// the producer's signature does not carry. [ServeH3Conn] pulls each on its own
 // stream's goroutine and returns once the connection has ended.
 //
 // # HTTP/2 and HTTP/3
@@ -136,7 +136,7 @@
 // [Serve] chooses between HTTP/1.1 and prior-knowledge HTTP/2 by what the
 // client sends first — the HTTP/2 preface can begin no HTTP/1.1 request, so
 // one listener serves both — or after ALPN behind a TLS listener (ADR 0014).
-// [ServeH2] applies the rules RFC 9113 §8.3 states — pseudo-headers first and
+// [ServeH2Conn] applies the rules RFC 9113 §8.3 states — pseudo-headers first and
 // unrepeated, lowercase field names, no connection-specific fields, TE only
 // "trailers", origin-form :path — which exist because an HTTP/2 request
 // reaching an HTTP/1.1 hop unchecked is how a smuggled request is written.
@@ -154,20 +154,20 @@
 // QPACK static table ships; [Config.QPACKStatic] remains as an interop and
 // testing override (ADR 0013).
 //
-// [ServeH3] runs over [github.com/mlagarrigue/sluice/net/quic] — a real
+// [ServeH3Conn] runs over [github.com/mlagarrigue/sluice/net/quic] — a real
 // TLS 1.3 handshake on a UDP socket, RFC 9001 packet protection, RFC 9002
 // recovery — not on a dependency, since the standard library has no QUIC.
 // That package is still experimental, in a sense this one has left: checked
 // against itself, against published vectors, against a harness that drops,
 // reorders and forges datagrams, and against two peers that share no code
 // (quic-go, in the interop/ module, where its HTTP/3 client also reads
-// [ServeH3]'s responses, and ngtcp2, in the QUIC Interop Runner).
-// Keep [ServeH3] off the supported path for the same reason as the rest of
+// [ServeH3Conn]'s responses, and ngtcp2, in the QUIC Interop Runner).
+// Keep [ServeH3Conn] off the supported path for the same reason as the rest of
 // this package.
 //
 // # The codec layer is not exported
 //
-// The frame-level codecs under [Serve], [ServeH2] and [ServeH3] — HTTP/2
+// The frame-level codecs under [Serve], [ServeH2Conn] and [ServeH3Conn] — HTTP/2
 // framing and HPACK, HTTP/3 framing and QPACK — are unexported. The servers
 // above them are built from them and the benchmark harness measures them one
 // stage at a time from inside the package; a caller wants one of the three
@@ -284,7 +284,7 @@ var errIncomplete = errors.New("httpstream: incomplete request")
 // that may never come. Distinct from a timeout mid-request (conn.go's
 // reader.fill, [Config.ReadTimeout]) so the two are not answered the same
 // way — see statusFor in serve.go. The HTTP/2 frame reader returns it too,
-// for the same silence between requests, which ServeH2 ends with
+// for the same silence between requests, which ServeH2Conn ends with
 // GOAWAY(NO_ERROR) rather than as a failure.
 var errIdleTimeout = errors.New("httpstream: idle timeout")
 
@@ -296,7 +296,7 @@ var errIdleTimeout = errors.New("httpstream: idle timeout")
 var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w", errIncomplete)
 
 // Config bounds everything a client controls, for every protocol this package
-// serves: [Serve] reads it for HTTP/1.1 and HTTP/2, [ServeH3] for HTTP/3.
+// serves: [Serve] reads it for HTTP/1.1 and HTTP/2, [ServeH3Conn] for HTTP/3.
 // Every bound is mandatory and none is a required parameter: the zero value
 // of each field is the default named in its comment, chosen modest rather
 // than generous, so that an empty Config is a bounded server and a
@@ -418,7 +418,7 @@ type Config struct {
 	// WINDOW_UPDATE does not restart the clock, so a peer cannot hold a
 	// connection it never uses; over HTTP/3 the transport keeps it, as the
 	// max_idle_timeout that [Config.TransportParameters] derives from this
-	// field, so a connection ServeH3 serves on other parameters has the
+	// field, so a connection ServeH3Conn serves on other parameters has the
 	// idle timeout those parameters say, not this one.
 	IdleTimeout time.Duration
 
@@ -467,7 +467,7 @@ type Config struct {
 	// exists to refuse — a connection is a goroutine and a read buffer
 	// before its first byte says which protocol it speaks. This is what
 	// net/http does under netutil.LimitListener. There is no queue: a
-	// client that was refused retries, as it would after a reset. [ServeH3]
+	// client that was refused retries, as it would after a reset. [ServeH3Conn]
 	// is not bound by it; QUIC bounds its connections in the transport.
 	//
 	// It is also the memory bound: each connection may hold one request at
@@ -486,7 +486,7 @@ type Config struct {
 	// by MaxConns alone: its peers share one empty address, and a per-peer
 	// bound would be a second total. Zero means no bound: a figure that is
 	// fair to a home connection starves a carrier-grade NAT, so the operator
-	// chooses. [ServeH3] is not bound by it: the QUIC listener has its own,
+	// chooses. [ServeH3Conn] is not bound by it: the QUIC listener has its own,
 	// [github.com/mlagarrigue/sluice/net/quic.ListenerConfig].MaxConnsPerIP.
 	MaxConnsPerIP int
 
@@ -500,7 +500,7 @@ type Config struct {
 	IPv4PrefixBits int
 	IPv6PrefixBits int
 
-	// ShutdownGrace is how long [Serve], [ServeH2] or [ServeH3], once its
+	// ShutdownGrace is how long [Serve], [ServeH2Conn] or [ServeH3Conn], once its
 	// context is cancelled, waits for the requests already in flight to be
 	// answered before it closes the connections still open, cancels their
 	// handlers' context and returns [ErrShutdownForced]. Zero means 5s.
@@ -520,7 +520,7 @@ type Config struct {
 	// connection between two requests across a NAT or a load balancer that
 	// forgets a silent flow, or a QUIC idle timeout shorter than the gaps
 	// between requests. [Serve] and [Server] apply it to every connection
-	// they accept; [ServeH2] and [ServeH3] to the one they are handed. Zero
+	// they accept; [ServeH2Conn] and [ServeH3Conn] to the one they are handed. Zero
 	// sends nothing of this end's own: an HTTP/3 connection stays silent,
 	// and a TCP connection keeps what its listener set — one from
 	// [net.Listen] probes every 15s. Every protocol.

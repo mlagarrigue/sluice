@@ -400,7 +400,7 @@ type h2Server struct {
 // maxWindow is the largest a flow-control window may be (RFC 9113 §6.9.1).
 const maxWindow = 1<<31 - 1
 
-// ServeH2 runs one HTTP/2 connection whose client preface has already been
+// ServeH2Conn runs one HTTP/2 connection whose client preface has already been
 // read, or is about to be.
 //
 // It is prior-knowledge HTTP/2: the client has been told to speak HTTP/2
@@ -417,21 +417,21 @@ const maxWindow = 1<<31 - 1
 // and a PING, the streams already open answered whole, then the close. When
 // [Config.ShutdownGrace] passes before the drain ends, the connection is
 // closed under its handler, whose context is cancelled, the [Config.Logger]
-// is told, and ServeH2 returns [ErrShutdownForced]. The handler's context
+// is told, and ServeH2Conn returns [ErrShutdownForced]. The handler's context
 // carries ctx's values but not its cancellation, which is the normal stop
 // and not the handler's to see.
 //
-// ServeH2 owns c once it has accepted cfg: c is closed before ServeH2
+// ServeH2Conn owns c once it has accepted cfg: c is closed before ServeH2Conn
 // returns, whatever ended the connection — the peer's own close, the idle
 // timeout, a drain, the grace, or a connection error, after whose GOAWAY
 // RFC 9113 §5.4.1 says the endpoint MUST close the TCP connection. A caller
 // has nothing to close and nothing to reuse, as under [Serve].
 //
-// cfg is the [Config] [Serve] takes: ServeH2 reads the fields that say
+// cfg is the [Config] [Serve] takes: ServeH2Conn reads the fields that say
 // they bound HTTP/2 and ignores the others. A configuration it refuses is
 // returned as an error before a byte is read, and the connection is left to
 // the caller, open.
-func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error {
+func ServeH2Conn(ctx context.Context, c net.Conn, cfg Config, handle Handler) error {
 	cfg, err := cfg.resolve()
 	if err != nil {
 		return err
@@ -441,7 +441,7 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 	// half-closed and drained the socket (linger) by the time it gets here.
 	defer func() { _ = c.Close() }()
 	setTCPKeepAlive(c, cfg.KeepAlive)
-	// The grace is a timer armed at the cancellation, as in ServeH3. When it
+	// The grace is a timer armed at the cancellation, as in ServeH3Conn. When it
 	// passes it closes the socket, which unwinds the connection's goroutines
 	// through their ordinary error paths, and only then cancels the
 	// handler's context: the other order lets a handler that returns at its
@@ -460,12 +460,12 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 	})
 	defer func() {
 		stop()
-		// Stopped once ServeH2 has returned, when nobody reads it.
+		// Stopped once ServeH2Conn has returned, when nobody reads it.
 		if t := graceTimer.Load(); t != nil {
 			t.Stop()
 		}
 	}()
-	err = serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handler)
+	err = serveH2Conn(forced, c, &connState{drain: ctx}, cfg, handle)
 	if cut.Load() {
 		cfg.logger().Warn("httpstream: the shutdown grace passed with requests in flight",
 			"connections", 1, "grace", cfg.ShutdownGrace)
@@ -474,8 +474,8 @@ func ServeH2(ctx context.Context, c net.Conn, cfg Config, handler Handler) error
 	return err
 }
 
-// serveH2Conn is [ServeH2] once its two stops are set: ctx is the forced
-// stop, which closes the socket through its owner's bookkeeping — ServeH2's
+// serveH2Conn is [ServeH2Conn] once its two stops are set: ctx is the forced
+// stop, which closes the socket through its owner's bookkeeping — ServeH2Conn's
 // grace timer, or a [Server]'s — and reaches the handler through its
 // context, and st.drain is the normal stop, which takes the connection
 // through RFC 9113 §6.8's graceful close rather than the socket's —
@@ -2166,7 +2166,7 @@ func addWindow(cur, delta int32) (int32, error) {
 // What was sent there was the wrapped error text, and one of those carries a
 // handler's panic value (see apply) — an internal detail handed to a stranger
 // who caused the failure. The code is what a peer acts on; the text stays on
-// this side, where the caller reads it as ServeH2's return value.
+// this side, where the caller reads it as ServeH2Conn's return value.
 func (s *h2Server) goAway(code uint32) {
 	s.goAwayWith(s.lastID, code)
 }

@@ -1061,7 +1061,7 @@ const (
 // calls would hold window credit against memory nothing will release.
 // [Stream.Read] on streams that arrive after the switch returns nothing.
 // The switch is one-way, and mixing the modes is not supported: register
-// before consuming anything, which is what ServeH3 does. A caller that
+// before consuming anything, which is what ServeH3Conn does. A caller that
 // Reads first and registers after gets what no Read took, per stream, as
 // one delta each — arrival order across streams, resets and STOP_SENDING
 // are lost then.

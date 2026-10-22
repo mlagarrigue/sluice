@@ -100,9 +100,9 @@ func h3Paced(yield func(sluice.Batch[[]byte]) bool) {
 	}
 }
 
-// startH3Server runs ServeH3 with handle behind a quic.Listener and returns
+// startH3Server runs ServeH3Conn with handle behind a quic.Listener and returns
 // the URL prefix to reach it, and the listener for its counters. Every accepted
-// connection is served until the test ends; what ServeH3 returned is
+// connection is served until the test ends; what ServeH3Conn returned is
 // reported through served.
 func startH3Server(tb testing.TB, handle httpstream.Handler) (base string, ln *quic.Listener, served <-chan error) {
 	tb.Helper()
@@ -126,7 +126,7 @@ func startH3Server(tb testing.TB, handle httpstream.Handler) (base string, ln *q
 			if err != nil {
 				return
 			}
-			go func() { out <- httpstream.ServeH3(ctx, c, cfg, handle) }()
+			go func() { out <- httpstream.ServeH3Conn(ctx, c, cfg, handle) }()
 		}
 	}()
 	return "https://" + pc.LocalAddr().String(), ln, out
@@ -196,15 +196,15 @@ func TestQuicGoHTTP3ClientAgainstServeH3(t *testing.T) {
 		}
 	}
 
-	// Closing the client's connections must end ServeH3 cleanly, not by
+	// Closing the client's connections must end ServeH3Conn cleanly, not by
 	// the idle timeout.
 	client.Transport.(*http3.Transport).CloseIdleConnections()
 	select {
 	case err := <-served:
 		if err != nil {
-			t.Logf("ServeH3 returned: %v", err)
+			t.Logf("ServeH3Conn returned: %v", err)
 		}
 	case <-time.After(timeout):
-		t.Fatal("ServeH3 did not return after the client closed")
+		t.Fatal("ServeH3Conn did not return after the client closed")
 	}
 }

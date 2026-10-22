@@ -50,7 +50,7 @@ func BenchmarkH2Encode(b *testing.B) {
 func BenchmarkH3Encode(b *testing.B) {
 	r := benchResponse()
 	method := []byte("GET")
-	sc := &h3Scratch{}          // one per responder goroutine, as ServeH3 holds it
+	sc := &h3Scratch{}          // one per responder goroutine, as ServeH3Conn holds it
 	date := dateFor(time.Now()) // read once per batch, as answerH3 does
 
 	b.ReportAllocs()

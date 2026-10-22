@@ -139,7 +139,7 @@ func (ss servers) Close() error {
 // Start runs serve on its own goroutine and returns the handle that stops it.
 //
 // It is for a server whose only stop signal is its context — httpstream's
-// Serve and ServeH3, or any Serve(ctx) written in that shape — so that
+// Serve and ServeH3Conn, or any Serve(ctx) written in that shape — so that
 // [Shutdown] can stop it next to an [http.Server] and in the same order. The
 // handle's Shutdown cancels the context serve was given and waits for serve
 // to return, which is when that server's own drain, bounded by its own grace,

@@ -63,7 +63,7 @@ func streamFrame(id uint64, data []byte, fin bool) quic.Frame {
 // the frames of a datagram in, the handler's answers out, keyed by the stream
 // each belongs on.
 //
-// [ServeH3] does this across two goroutines — assembly on the connection's
+// [ServeH3Conn] does this across two goroutines — assembly on the connection's
 // read loop, the handler off it — which is what a server must do and what a
 // test of the assembly alone does not need.
 func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
@@ -419,7 +419,7 @@ func TestH3OverARealConnection(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			sizes <- b.Len()
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
@@ -960,7 +960,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
@@ -1032,7 +1032,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	}
 }
 
-// ServeH3 refuses, with a close the client sees, a connection whose transport
+// ServeH3Conn refuses, with a close the client sees, a connection whose transport
 // parameters it cannot serve: a request-stream limit past the cap on the
 // goroutines it runs per admitted stream, or fewer than the three
 // unidirectional streams RFC 9114 §6.2 requires — or no credit on them,
@@ -1067,7 +1067,7 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want 
 			served <- err
 			return
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{}
 		})
 	}()
@@ -1081,10 +1081,10 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want 
 	select {
 	case err := <-served:
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("ServeH3 returned %v, want a refusal naming %s", err, want)
+			t.Fatalf("ServeH3Conn returned %v, want a refusal naming %s", err, want)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("ServeH3 accepted a stream limit past its cap")
+		t.Fatal("ServeH3Conn accepted a stream limit past its cap")
 	}
 	// The refusal reaches the client as a close, not as a server gone quiet.
 	select {
@@ -1196,7 +1196,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) == "/large" {
@@ -1289,7 +1289,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 
 // An upload larger than the transport's initial stream window only
 // completes if the assembler's releases keep re-opening the windows —
-// under ServeH3's manual credit, a byte the assembler never releases is a
+// under ServeH3Conn's manual credit, a byte the assembler never releases is a
 // window the peer never gets back. 600 KiB against a 256 KiB stream window
 // and a 1 MiB connection window forces several rounds of re-crediting.
 func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
@@ -1310,7 +1310,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				select {
@@ -1391,7 +1391,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) != "/boom" {
@@ -1682,7 +1682,7 @@ func TestQPACKCallerTableIsNotAliased(t *testing.T) {
 }
 
 // A connection that negotiated something other than "h3" is refused before
-// a byte of HTTP/3 leaves (RFC 9114 §3.1): ServeH3 returns the refusal and
+// a byte of HTTP/3 leaves (RFC 9114 §3.1): ServeH3Conn returns the refusal and
 // closes the connection, which the client sees end.
 func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 	serverPC, clientPC := dgram.Pair()
@@ -1701,7 +1701,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 			served <- err
 			return
 		}
-		served <- ServeH3(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		served <- ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			t.Error("the handler ran on a connection that did not negotiate h3")
 			return sluice.Batch[Response]{}
 		})
@@ -1716,10 +1716,10 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 	select {
 	case err := <-served:
 		if err == nil || !strings.Contains(err.Error(), `"h3-29"`) {
-			t.Fatalf("ServeH3 returned %v, want the refusal naming h3-29", err)
+			t.Fatalf("ServeH3Conn returned %v, want the refusal naming h3-29", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH3 served a connection that negotiated h3-29")
+		t.Fatal("ServeH3Conn served a connection that negotiated h3-29")
 	}
 	select {
 	case <-conn.Done():
@@ -1792,7 +1792,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			close(entered)
 			<-release
 			res := make([]Response, 0, b.Len())
@@ -1889,7 +1889,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 		t.Fatalf("the answer carried %q, want it whole", body)
 	}
 
-	// Then the connection closes, with an application code, and ServeH3
+	// Then the connection closes, with an application code, and ServeH3Conn
 	// returns long before the grace.
 	select {
 	case <-conn.Done():
@@ -1906,7 +1906,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	select {
 	case <-serverDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("ServeH3 did not return once the request was drained")
+		t.Fatal("ServeH3Conn did not return once the request was drained")
 	}
 }
 
@@ -1974,7 +1974,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(ctx, conn, Config{ShutdownGrace: 10 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				res = append(res, Response{Status: 200, Body: append([]byte("answering "), r.Target...)})
@@ -2036,7 +2036,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	select {
 	case <-serverDone:
 	case <-time.After(5 * time.Second):
-		t.Fatal("ServeH3 did not return once the request was answered")
+		t.Fatal("ServeH3Conn did not return once the request was answered")
 	}
 }
 

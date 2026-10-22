@@ -28,7 +28,7 @@ import (
 // startTLSServer runs Serve behind a TLS listener that offers proto by
 // ALPN. Offered "h2", the standard library's client speaks HTTP/2 from the
 // first byte, with no upgrade dance, and Serve routes the connection to
-// ServeH2 on its preface; offered "http/1.1", it speaks HTTP/1.1 over the
+// ServeH2Conn on its preface; offered "http/1.1", it speaks HTTP/1.1 over the
 // same TLS. Serve returns when ctx ends.
 func startTLSServer(tb testing.TB, proto string, handle httpstream.Handler) (base string) {
 	tb.Helper()

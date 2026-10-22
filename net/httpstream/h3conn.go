@@ -33,7 +33,7 @@ type h3Assembler struct {
 	qpack   *qpackDecoder
 	streams map[uint64]*h3Stream
 
-	// The graceful shutdown's state (RFC 9114 §5.2; ServeH3 says how it is
+	// The graceful shutdown's state (RFC 9114 §5.2; ServeH3Conn says how it is
 	// used). mu is shared with the goroutine that begins the shutdown and
 	// is taken on the admission of a new request stream and at the GOAWAY,
 	// never per frame: it is what makes the identifier the GOAWAY names and
@@ -77,7 +77,7 @@ type h3Assembler struct {
 
 	// refused remembers streams this assembler already rejected, so frames
 	// still arriving on them are dropped instead of re-opening assembly for
-	// a request nobody will answer. ServeH3 tells the peer to stop with
+	// a request nobody will answer. ServeH3Conn tells the peer to stop with
 	// STOP_SENDING, but telling is not enforcing: bytes already in flight —
 	// or a peer that ignores the frame — keep coming, and they must land on
 	// a tombstone, not on a fresh entry. Bounded like every memory here.
@@ -89,7 +89,7 @@ type h3Assembler struct {
 	// that re-credits flow-control windows as soon as a datagram is
 	// delivered here, its windows do not bound what unfinished uploads hold
 	// across the connection; this does, at 4×MaxBodyBytes, the same factor
-	// the h2 side uses for the same reason. ServeH3 additionally moves the
+	// the h2 side uses for the same reason. ServeH3Conn additionally moves the
 	// transport to manual credit (Credit below), which closes the gap at
 	// the window itself; the cap stays as the standalone assembler's bound
 	// and as defense in depth.
@@ -119,7 +119,7 @@ type h3Assembler struct {
 	// makes the default unlimited, and a client that announces zero has
 	// announced a limit of zero (RFC 9114 §4.2.2), not the absence of one.
 	// It is the one setting a server consults — it bounds the field sections it SHOULD send (RFC 9114
-	// §4.2.2); ServeH3 snapshots it per batch and the response encoder
+	// §4.2.2); ServeH3Conn snapshots it per batch and the response encoder
 	// enforces it. The rest are ignored as §7.2.4 requires, and not kept:
 	// a SETTINGS frame of MaxHeaderBytes holds thousands of identifiers, and
 	// a map of them all lived as long as the connection.
@@ -145,7 +145,7 @@ type h3Assembler struct {
 	after []<-chan struct{}
 	// continues lists the request streams whose head completed in this
 	// delivery with Expect: 100-continue and without the FIN: each is owed
-	// an interim 100 now (RFC 9110 §10.1.1), which ServeH3 writes and whose
+	// an interim 100 now (RFC 9110 §10.1.1), which ServeH3Conn writes and whose
 	// gate it closes.
 	continues []h3Continue
 
@@ -192,7 +192,7 @@ type h3Stream struct {
 }
 
 // h3Continue is one request stream owed an interim 100 by this delivery:
-// ServeH3 writes the 100 on it and closes Done, whether or not the write
+// ServeH3Conn writes the 100 on it and closes Done, whether or not the write
 // went through.
 type h3Continue struct {
 	StreamID uint64
@@ -355,7 +355,7 @@ const qpackDecompressionFailed = 0x0200
 // machinery — a duplicated or closed control or QPACK stream, a control
 // stream that did not open with SETTINGS — which RFC 9114 §8 makes connection
 // errors rather than stream ones: there is no stream to refuse when the
-// stream at fault is the one the conversation depends on. [ServeH3] answers
+// stream at fault is the one the conversation depends on. [ServeH3Conn] answers
 // one by closing the connection with Code.
 type h3ConnectionError struct {
 	Code uint64
@@ -418,7 +418,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			// transport hands the frame up only for a stream whose sending
 			// side it had not already abandoned, so a refusal and a
 			// cancellation that cross are one charge, not two. Stream 3 is
-			// ServeH3's own: it ended the connection before this ran.
+			// ServeH3Conn's own: it ended the connection before this ran.
 			if f.StreamID&0x03 == 0 {
 				a.countCancel()
 			}
@@ -497,7 +497,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// The connection-wide bound, beside the per-stream one: under a
 		// transport that re-credits every delivered byte while buf and the
 		// drained body are still held here, flow control alone would let a
-		// peer park per-stream bounds times the stream limit. ServeH3's
+		// peer park per-stream bounds times the stream limit. ServeH3Conn's
 		// manual credit closes that at the window; this cap stays as the
 		// standalone bound and as defense in depth.
 		if a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
@@ -618,7 +618,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 
 // expire fails every request stream that has been assembling for longer than
 // ReadTimeout — the h3 twin of the h2 reader's assembly sweep. It runs at
-// every delivery, and from ServeH3's timer at nextExpiry (see sweep): a peer
+// every delivery, and from ServeH3Conn's timer at nextExpiry (see sweep): a peer
 // that sends no stream frame but keeps the transport's idle timer alive with
 // PINGs or ACKs would otherwise park a stalled stream's memory and admission
 // slot for as long as it kept doing so. A peer that sends nothing at all is
@@ -651,7 +651,7 @@ func (a *h3Assembler) expire(now time.Time) {
 	a.nextExpiry = next
 }
 
-// sweep runs the expiry outside a delivery, for the timer ServeH3 arms at
+// sweep runs the expiry outside a delivery, for the timer ServeH3Conn arms at
 // nextExpiry, and returns the streams it failed for the caller to reset as it
 // resets those Frames fails. The slice is the assembler's, reused by the next
 // call of either.
@@ -709,7 +709,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 
 // fail records a stream error, drops whatever was assembled for it, and
 // leaves a tombstone so later frames on the stream are dropped rather than
-// re-opening assembly. The peer is *told* to stop with STOP_SENDING — ServeH3
+// re-opening assembly. The peer is *told* to stop with STOP_SENDING — ServeH3Conn
 // sends it alongside the reset — but frames already in flight arrive anyway,
 // and a tombstone is what keeps them from re-accumulating state for a
 // request nobody will answer. A refusal is charged like a cancellation: a
@@ -725,7 +725,7 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 }
 
 // answer records a stream refused with a status: dropped and tombstoned as
-// fail does, and charged as fail does, but not retired — ServeH3 retires it
+// fail does, and charged as fail does, but not retired — ServeH3Conn retires it
 // once the status has left, as it does a handler's response, so a draining
 // connection waits for the refusal to be written and acknowledged like any
 // other answer.
@@ -1226,7 +1226,7 @@ func (a *h3Assembler) criticalGone(kind int) error {
 }
 
 // h3FrameSlack is the room a request's frame headers take beyond its header
-// and body bounds — a few varints per frame, generously rounded. ServeH3's
+// and body bounds — a few varints per frame, generously rounded. ServeH3Conn's
 // stream window (Config.TransportParameters) carries the same headroom.
 const h3FrameSlack = 4096
 

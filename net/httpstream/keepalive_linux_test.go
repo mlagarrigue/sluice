@@ -48,7 +48,7 @@ func tcpKeepAlive(t *testing.T, c net.Conn) (on bool, idle, interval int) {
 }
 
 // Config.KeepAlive is the TCP keep-alive period of every connection a
-// Server accepts, and of the one ServeH2 is handed. A listener from
+// Server accepts, and of the one ServeH2Conn is handed. A listener from
 // net.Listen sets 15s, which is what the socket kept before.
 func TestKeepAliveSetsTheTCPPeriod(t *testing.T) {
 	const period = 7 * time.Second
@@ -62,14 +62,14 @@ func TestKeepAliveSetsTheTCPPeriod(t *testing.T) {
 			go func() { _ = srv.Serve(ln) }()
 			t.Cleanup(func() { _ = srv.Close() })
 		}},
-		{"ServeH2", func(ln net.Listener) {
+		{"ServeH2Conn", func(ln net.Listener) {
 			go func() {
 				c, err := ln.Accept()
 				if err != nil {
 					return
 				}
 				defer func() { _ = c.Close() }()
-				_ = ServeH2(t.Context(), c, cfg, echoTarget)
+				_ = ServeH2Conn(t.Context(), c, cfg, echoTarget)
 			}()
 		}},
 	} {

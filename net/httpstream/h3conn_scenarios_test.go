@@ -163,7 +163,7 @@ func TestH3The257thRefusalEvictsTheOldestTombstone(t *testing.T) {
 
 // A datagram that carries a stream's deltas and then its RESET_STREAM — the
 // ordinary packet order for a peer cancelling mid-upload — must leave no
-// assembly state behind. ServeH3 used to run every Forget in a separate pass
+// assembly state behind. ServeH3Conn used to run every Forget in a separate pass
 // before Frames re-walked the same slice, so the deltas recreated an entry
 // the transport had already abandoned: never completable, never evicted, one
 // admission slot burnt per occurrence. MaxConcurrentStreams such datagrams
@@ -384,7 +384,7 @@ func TestH3ControlIdentifiersAreChecked(t *testing.T) {
 }
 
 // RFC 9114 §5.2: the GOAWAY promises every request stream below its
-// identifier an answer, and ServeH3 finishes a draining connection the
+// identifier an answer, and ServeH3Conn finishes a draining connection the
 // moment nothing is in flight. The two agree only if admitting a stream and
 // counting it in flight cannot interleave with the drain's reading of the
 // count: a stream admitted but not yet counted when the drain looked was

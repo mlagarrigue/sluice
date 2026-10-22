@@ -516,7 +516,7 @@ func TestAckDelayClampWaitsForHandshakeConfirmation(t *testing.T) {
 }
 
 // RFC 9114 §6.1: an HTTP/3 server should allow at least 100 request streams,
-// and this transport's default is what ServeH3 inherits.
+// and this transport's default is what ServeH3Conn inherits.
 func TestDefaultBidiStreamLimitCoversH3(t *testing.T) {
 	if got := DefaultParameters().InitialMaxStreamsBidi; got < 100 {
 		t.Errorf("InitialMaxStreamsBidi = %d, want at least RFC 9114 §6.1's 100", got)

@@ -16,13 +16,13 @@ grants 100 (RFC 9114 §6.1: an HTTP/3 server SHOULD grant at least 100) and
 `H2Config` advertised 100 on its own side; `Serve` carried a special case so
 that a zero would not become 64 over HTTP/2. Six bounds existed twice, in
 `Config` and in `H2Config`, with different defaults: an HTTP/2 header block
-of 64 KiB under `ServeH2`, of 32 KiB under `Serve`. Three `Config` fields
+of 64 KiB under `ServeH2Conn`, of 32 KiB under `Serve`. Three `Config` fields
 were never read by HTTP/3 — `MaxRequestsPerBatch` and `MaxRequestsPerConn`,
 which have no meaning there, and `IdleTimeout`, which has one: the transport
 kept its own 30 s whatever the configuration said. A deployer could not tell
 what a field did over HTTP/1.1, HTTP/2 and HTTP/3 without reading the code.
 Lastly, `H2Config.InitialWindowSize` — the window that carried an upload
-eleven times faster at 100 ms of RTT — was reachable through `ServeH2`
+eleven times faster at 100 ms of RTT — was reachable through `ServeH2Conn`
 alone: `Serve` and `Server`, the entry points of a deployment, derived
 their `H2Config` through `h2ConfigOf` and left everything HTTP/2 alone has
 on its defaults.
@@ -39,8 +39,8 @@ never removed.**
    protocol allows (`MaxFrameSize` in 16384..2^24−1,
    `InitialWindowSize` at most 2^31−1, RFC 9113 §6.5.2;
    `MaxConcurrentStreams` at most 4096 for `Config.TransportParameters`,
-   the streams `ServeH3` serves on one connection), is refused before the
-   first byte: `Serve`, `Server`, `ServeH2`, `ServeH3` and `TransportParameters`
+   the streams `ServeH3Conn` serves on one connection), is refused before the
+   first byte: `Serve`, `Server`, `ServeH2Conn`, `ServeH3Conn` and `TransportParameters`
    return an error naming the field, the value and what zero would have
    meant, all errors joined (`errors.Join`). A default may depend on
    another field: `LingerTimeout` at zero is one second, or `ReadTimeout`
@@ -57,7 +57,7 @@ never removed.**
 3. **One configuration, one default, one place.** The three protocols read
    the same `Config`, and each default is chosen once, in `Config.resolve`.
    Nothing derives one configuration from another: `Serve`, `Server` and
-   `ServeH2` hand an HTTP/2 connection the resolved `Config` itself, so a
+   `ServeH2Conn` hand an HTTP/2 connection the resolved `Config` itself, so a
    bound that is set is set for every protocol that reads it.
    `TestServeBoundsHTTP2ByConfig` and `TestServerHonoursInitialWindowSize`
    lock it.
@@ -78,7 +78,7 @@ never removed.**
    `InitialWindowSize` or `MaxFrameSize` is a field like any other there.
    What belongs to the transport stays in its package: the QUIC windows are
    `quic.TransportParameters`, which `Config.TransportParameters` derives
-   and `ServeH3` takes as they are, because `net/quic` also serves
+   and `ServeH3Conn` takes as they are, because `net/quic` also serves
    connections that do not speak HTTP/3.
 
 6. **The rule holds for every `Config` of the periphery, not for
@@ -124,12 +124,12 @@ name on the wire, would leave `Serve` and `Server`, what a deployment
 calls, unable to set any of them — neither the ×11 window nor the frame
 size — and need a mirror to maintain: every shared bound copied into it,
 every HTTP/2 field raising the question of whether `Serve` reaches it, and
-`ShutdownGrace` and `Logger`, which `ServeH2` needs to stop cleanly,
+`ShutdownGrace` and `Logger`, which `ServeH2Conn` needs to stop cleanly,
 growing it further. The name on the wire says how a bound travels, not who
 sets it.
 
 **What is lost.** `Config` has six fields an HTTP/1.1-only deployment never
-sets; each says "HTTP/2 only". `ServeH2` on an empty configuration bounds
+sets; each says "HTTP/2 only". `ServeH2Conn` on an empty configuration bounds
 the header block at 32 KiB, the figure `Serve` applies, so a client that
 sends larger blocks is refused there too. `MaxConcurrentStreams` is 100
 over HTTP/3 as over HTTP/2: more assembly state per connection, but the

@@ -77,7 +77,7 @@ func isWellFormedH3Error(err error) bool {
 // it before appending, so an assembler that is doing its job holds that
 // invariant for every input.
 //
-// Credit is wired the way ServeH3 wires it under manual flow control, and the
+// Credit is wired the way ServeH3Conn wires it under manual flow control, and the
 // credit balance is checked after every batch: every byte delivered is
 // either released, still retained, or handed off in a request body. A path
 // that forgets to release starves a real peer's window — silently, and only
