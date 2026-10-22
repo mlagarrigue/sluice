@@ -726,5 +726,55 @@
       "rebind-addr": "succeeded",
       "connectionmigration": "succeeded"
     }
+  },
+  "s2n-quic": {
+    "server": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "unsupported: s2n-quic's image does not implement the case",
+      "multiplexing": "succeeded",
+      "retry": "succeeded",
+      "resumption": "unsupported: the server issues no session ticket",
+      "zerortt": "unsupported: the server issues no session ticket",
+      "http3": "succeeded",
+      "blackhole": "succeeded",
+      "keyupdate": "unsupported: s2n-quic's image does not implement the case",
+      "ecn": "succeeded",
+      "amplificationlimit": "succeeded",
+      "handshakeloss": "succeeded",
+      "transferloss": "succeeded",
+      "handshakecorruption": "succeeded",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "failed: s2n-quic's client never migrates to the server's preferred address, so the runner sees one path"
+    },
+    "client": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "unsupported: the endpoint's client does not implement the case",
+      "multiplexing": "succeeded",
+      "retry": "succeeded",
+      "resumption": "unsupported: the client keeps no session ticket",
+      "zerortt": "unsupported: the client keeps no session ticket",
+      "http3": "unsupported: the endpoint's client does not implement the case",
+      "blackhole": "succeeded",
+      "keyupdate": "unsupported: the endpoint's client does not implement the case",
+      "ecn": "succeeded",
+      "amplificationlimit": "succeeded",
+      "handshakeloss": "succeeded",
+      "transferloss": "succeeded",
+      "handshakecorruption": "succeeded",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "failed: s2n-quic's server announces no preferred_address transport parameter, so the client has nowhere to move and the runner sees one path"
+    }
   }
 }
