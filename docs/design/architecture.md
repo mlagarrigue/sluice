@@ -1058,10 +1058,16 @@ Rx explicitly distinguishes two strategies, and the distinction is the right one
 | `merge` | the first error propagates immediately, the other sources are abandoned |
 | `mergeDelayError` | the other sources run to completion, errors are aggregated |
 
-**Default adopted: `mergeDelayError`.** Our per-element diagnostics ([Diagnostics](#diagnostics--errors-warnings-and-affordances)) make
+**Both, by where the failure travels.** A failure that travels in the
+element follows `mergeDelayError`: our per-element diagnostics ([Diagnostics](#diagnostics--errors-warnings-and-affordances)) make
 aggregation natural — a failing source produces `Diagnostic`s of severity
 `Critical` without interrupting the others, which is consistent with the
 terminality invariant ([Errors outside the stream](#errors-outside-the-stream)).
+A failure that cannot travel in the element — a source's sentinel panic,
+`ErrOverflow` under `Fail`, `ErrUnsorted` — follows `merge`: `Merge` has no
+error channel, the panic crosses `iter.Pull` and `Merge`, the other sources
+are released without being read to the end, and `sluice.Try` around the
+consumption turns it into an error.
 
 ---
 

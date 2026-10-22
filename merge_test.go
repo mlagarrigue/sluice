@@ -1,6 +1,7 @@
 package sluice
 
 import (
+	"errors"
 	"slices"
 	"testing"
 )
@@ -222,5 +223,42 @@ func TestConcatEarlyStopSkipsRest(t *testing.T) {
 
 	if started {
 		t.Error("Concat consumed the next stream after an early stop")
+	}
+}
+
+// A sentinel panic cannot travel in an element, so Merge does not aggregate
+// it: it crosses the merge, the other sources are released without being
+// read to the end, and Try around the consumption returns it — the `merge`
+// strategy of the architecture's merge section, where a failure carried in
+// the element follows `mergeDelayError`.
+func TestMergeLetsASentinelPanicThroughAndReleasesTheOthers(t *testing.T) {
+	failing := Stream[int](func(yield func(Batch[int]) bool) {
+		if !yield(Batch[int]{Items: []int{1}}) {
+			return
+		}
+		panic(ErrOverflow)
+	})
+	released, read := false, 0
+	endless := Stream[int](func(yield func(Batch[int]) bool) {
+		defer func() { released = true }()
+		for {
+			read++
+			if !yield(Batch[int]{Items: []int{read}}) {
+				return
+			}
+		}
+	})
+	err := Try(func() {
+		for range Merge(WhenAll, failing, endless) {
+		}
+	})
+	if !errors.Is(err, ErrOverflow) {
+		t.Fatalf("Try = %v, want the source's ErrOverflow", err)
+	}
+	if !released {
+		t.Error("the other source was not released when the panic crossed Merge")
+	}
+	if read > 2 {
+		t.Errorf("the other source was read %d times after the failing one panicked", read)
 	}
 }
