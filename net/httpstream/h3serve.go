@@ -164,9 +164,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// the transport keeps crediting on delivery and the caps bound the
 	// exposure, exactly as before. [Config.TransportParameters] produces
 	// windows this check accepts.
+	credit := quic.CreditOnDelivery
 	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote >= uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack && //nolint:gosec // G115: positive config, set by withDefaults
 		p.InitialMaxData >= uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack { //nolint:gosec // G115: positive config, set by withDefaults
-		c.SetManualCredit(true)
+		credit = quic.CreditOnRelease
 		a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
 	}
 
@@ -472,7 +473,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
 	}
-	c.OnStreamFrames(func(frames []quic.Frame) error {
+	c.OnStreamFrames(credit, func(frames []quic.Frame) error {
 		amu.Lock()
 		defer amu.Unlock()
 		defer arm()
@@ -844,7 +845,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 func writeH3Bounded(s *quic.Stream, p []byte, fin bool, wb writeBound) bool {
 	write := s.Write
 	if fin {
-		write = s.WriteClose
+		write = s.WriteFinal
 	}
 	if err := wb.write(s.SetWriteDeadline, write, p); err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {

@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -84,7 +85,7 @@ func dialAgainst(t *testing.T, answer func(srv net.PacketConn, from net.Addr, h 
 		answer(srv, from, h)
 	}()
 	start := time.Now()
-	c, err := Dial(cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -595,9 +596,8 @@ func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "manual:self"}, fakeFuzzAddr("manual:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()
-	c.SetManualCredit(true)
 	held := 0
-	c.OnStreamFrames(func(fs []Frame) error {
+	c.OnStreamFrames(CreditOnRelease, func(fs []Frame) error {
 		for _, f := range fs {
 			held += len(f.Data)
 		}

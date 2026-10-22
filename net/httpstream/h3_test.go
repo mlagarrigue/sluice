@@ -25,6 +25,22 @@ import (
 
 // h3Request builds the bytes one request stream carries: an HTTP/3 HEADERS
 // frame holding a QPACK field section of literals.
+
+// acceptOne serves the first connection that reaches pc, through a
+// [quic.Listener] closed with the test. It gives up after ten seconds, so a
+// client that never dials fails the test rather than hanging it.
+func acceptOne(t *testing.T, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
+	t.Helper()
+	l, err := quic.NewListener(pc, cfg, params, quic.ListenerConfig{})
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	timer := time.AfterFunc(10*time.Second, func() { _ = l.Close() })
+	defer timer.Stop()
+	return l.Accept()
+}
+
 func h3Request(method, path string, extra ...[2]string) []byte {
 	fields := []Header{
 		{Name: []byte(":method"), Value: []byte(method)},
@@ -397,17 +413,7 @@ func TestH3OverARealConnection(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -423,7 +429,7 @@ func TestH3OverARealConnection(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -948,17 +954,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -973,7 +969,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -992,7 +988,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	// The request and its FIN in one call: written apart, the server could
 	// refuse the headers and reset the stream before the FIN went, and
 	// CloseWrite would report the very refusal this test is waiting for.
-	if _, err := bad.WriteClose(h3Request("GET", "/bad", [2]string{"X-Uppercase", "1"})); err != nil {
+	if _, err := bad.WriteFinal(h3Request("GET", "/bad", [2]string{"X-Uppercase", "1"})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1066,17 +1062,7 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want 
 
 	served := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			served <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			served <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), params)
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), params)
 		if err != nil {
 			served <- err
 			return
@@ -1086,7 +1072,7 @@ func refusesH3Params(t *testing.T, mutate func(*quic.TransportParameters), want 
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1204,17 +1190,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1241,7 +1217,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	// so not reading is exactly how a client starves one stream.
 	params := quic.DefaultParameters()
 	params.InitialMaxStreamDataBidiLocal = 128
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), params)
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), params)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1328,17 +1304,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), mustTransportParameters(Config{}))
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), mustTransportParameters(Config{}))
 		if err != nil {
 			serverUp <- err
 			return
@@ -1357,7 +1323,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1419,17 +1385,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1453,7 +1409,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1740,17 +1696,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			served <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			served <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverCfg, quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, serverCfg, quic.DefaultParameters())
 		if err != nil {
 			served <- err
 			return
@@ -1761,7 +1707,7 @@ func TestServeH3RefusesAProtocolOtherThanH3(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientCfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -1840,17 +1786,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -1867,7 +1803,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -2032,17 +1968,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -2058,7 +1984,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	}()
 
 	held := &heldPC{PacketConn: clientPC}
-	conn, err := quic.Dial(held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), held, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

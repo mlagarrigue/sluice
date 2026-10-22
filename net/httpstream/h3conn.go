@@ -96,7 +96,7 @@ type h3Assembler struct {
 	assembling int
 
 	// Credit, when set, reports released bytes back to a transport running
-	// manual flow-control credit ([quic.Conn.SetManualCredit]): every
+	// manual flow-control credit ([quic.CreditOnRelease]): every
 	// delivered byte the assembler does not retain — consumed by header
 	// decoding, dropped with a failed or forgotten stream, carried on a
 	// unidirectional stream past its parse — is released here, the moment

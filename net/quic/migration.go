@@ -38,7 +38,7 @@ const pathProbeMaxRetransmits = 3
 // cidRegistrar is what a connection issues its additional identifiers
 // through. A [Listener] gives each connection it manages the ability to add
 // and remove routing entries in the shared demux table; a connection that
-// owns its socket — [Dial], standalone [Accept] — gets an [ownerRegistrar],
+// owns its socket — [Dial], standalone accept — gets an [ownerRegistrar],
 // which routes nothing. Issuing is only a SHOULD (RFC 9000 §5.1.1), but a
 // peer that got no identifier cannot follow this end across a NAT rebind:
 // §9.5 forbids sending under one identifier to two destination addresses,
@@ -67,7 +67,7 @@ type cidRegistrar interface {
 }
 
 // ownerRegistrar is the registrar of a connection that owns its socket —
-// [Dial], standalone [Accept]. Routing is nothing: every datagram the socket
+// [Dial], standalone accept. Routing is nothing: every datagram the socket
 // yields belongs to this one connection whatever identifier it names, and
 // receive already matches any entry of localCIDs. What remains is minting
 // identifiers of scid's length (the short header is parsed at that length)

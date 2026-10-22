@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -31,7 +32,7 @@ func newInternalUDPListener(t *testing.T, network, addr string, lcfg ListenerCon
 
 func dialInternal(t *testing.T, pc net.PacketConn, to net.Addr) *Conn {
 	t.Helper()
-	c, err := Dial(pc, to, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, to, ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

@@ -64,7 +64,8 @@
 //     answers each datagram from the address it reached (IP_PKTINFO /
 //     IPV6_PKTINFO), so a multi-homed server does not look like a
 //     path change to its clients. [Listener.Addr] reports where it
-//     listens. [Accept] remains for the one-connection-per-socket case.
+//     listens. A server, even one that serves a single connection, is a
+//     Listener.
 //   - Connection-identifier rotation and server-side passive migration
 //     (RFC 9000 §5.1, §9): every connection issues additional identifiers
 //     once its handshake confirms — a client's are what let a server
@@ -164,8 +165,7 @@
 //
 // # The TLS callbacks are the caller's
 //
-// The callbacks of the [tls.Config] given to [Dial], [Accept] and
-// [NewListener] — VerifyPeerCertificate, VerifyConnection, GetCertificate,
+// The callbacks of the [tls.Config] given to [Dial] and [NewListener] — VerifyPeerCertificate, VerifyConnection, GetCertificate,
 // GetConfigForClient and the rest — run on the connection's own receive
 // goroutine, inside the handshake: crypto/tls drives them from the CRYPTO
 // bytes that goroutine feeds it, and returns to it only when the handshake

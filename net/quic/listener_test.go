@@ -1,6 +1,7 @@
 package quic_test
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -38,7 +39,7 @@ func dialUDP(t *testing.T, serverAddr net.Addr, params quic.TransportParameters)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := quic.Dial(pc, serverAddr, clientTLS(), params)
+	conn, err := quic.Dial(context.Background(), pc, serverAddr, clientTLS(), params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +407,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 	// first stream reaches the server, which by then has followed onto
 	// the preferred socket, and its answer comes back from there.
 	received := make(chan []byte, 8)
-	server.OnStreamFrames(func(fs []quic.Frame) error {
+	server.OnStreamFrames(quic.CreditOnDelivery, func(fs []quic.Frame) error {
 		for _, f := range fs {
 			if f.IsStream() {
 				received <- append([]byte(nil), f.Data...)
@@ -415,7 +416,7 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		return nil
 	})
 	echo := make(chan []byte, 8)
-	client.OnStreamFrames(func(fs []quic.Frame) error {
+	client.OnStreamFrames(quic.CreditOnDelivery, func(fs []quic.Frame) error {
 		for _, f := range fs {
 			if f.IsStream() {
 				echo <- append([]byte(nil), f.Data...)
@@ -556,7 +557,7 @@ func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
 		}
 		return [][]byte{b}
 	}
-	conn, err := quic.Dial(client, addr, clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), client, addr, clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}

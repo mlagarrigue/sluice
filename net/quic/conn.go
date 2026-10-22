@@ -207,7 +207,7 @@ type Conn struct {
 	// settles.
 	settleScratch []settledStream
 	// manualCredit hands receive-side crediting to the batch consumer; see
-	// SetManualCredit.
+	// CreditOnRelease.
 	manualCredit bool
 
 	connSend sendQuota
@@ -367,13 +367,13 @@ type Conn struct {
 	// fed datagrams the listener already read off its one shared socket,
 	// instead of this connection reading the socket itself (which would
 	// race every other connection sharing it). nil means this Conn owns its
-	// net.PacketConn exclusively — [Dial] and standalone [Accept] — and
+	// net.PacketConn exclusively — [Dial] and standalone accept — and
 	// readOne/readLoop read it directly, exactly as before this existed.
 	incoming chan rawDatagram
 
 	// amplActive gates the RFC 9000 §8.1 anti-amplification limit: true only
 	// while a server connection's peer address is not yet validated —
-	// Listener-managed and standalone [Accept] alike, since a first datagram
+	// Listener-managed and standalone accept alike, since a first datagram
 	// read off a bare socket proves its source no more than one a listener
 	// demuxed. Always false for [Dial]. Guarded by mu, like everything else
 	// writePacketLocked and receive touch.
@@ -734,8 +734,8 @@ func requireTLS13(cfg *tls.Config) error {
 // mandatory in QUIC (RFC 9001 §8.1) — and set MinVersion to
 // [tls.VersionTLS13]: QUIC uses TLS 1.3 only (RFC 9001 §4.2), and a Config
 // built by hand defaults to a lower minimum that crypto/tls would refuse
-// at handshake. Both are checked before anything is sent, by Dial, [Accept]
-// and [NewListener] alike. All three TLS 1.3 suites are spoken:
+// at handshake. Both are checked before anything is sent, by Dial and
+// [NewListener] alike. All three TLS 1.3 suites are spoken:
 // the AES-GCM pair from the standard library, ChaCha20-Poly1305 from
 // golang.org/x/crypto, the only module outside the standard library this
 // package imports.
@@ -757,25 +757,12 @@ func requireTLS13(cfg *tls.Config) error {
 // VerifyConnection, on the public keys of [tls.ConnectionState.PeerCertificates]
 // (an *rsa.PublicKey's N.BitLen()); this package adds no bound of its own.
 //
-// The handshake gives up after [DefaultHandshakeTimeout]; [DialContext]
-// takes a context instead.
-func Dial(pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
-	if err := params.check(); err != nil {
-		return nil, err
-	}
-	return DialContext(context.Background(), pc, addr, cfg, params)
-}
-
-// DefaultHandshakeTimeout is how long a handshake runs before it fails,
-// when no context deadline says otherwise.
-const DefaultHandshakeTimeout = 10 * time.Second
-
-// DialContext is [Dial] under a context. The handshake ends when ctx is
-// cancelled — promptly, with an error that wraps both [ErrQUIC] and the
-// context's cause — or at ctx's deadline; a ctx without a deadline keeps
-// Dial's [DefaultHandshakeTimeout]. Once DialContext has returned, ctx no
-// longer has any hold on the connection.
-func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+// The handshake runs under ctx. It ends when ctx is cancelled — promptly,
+// with an error that wraps both [ErrQUIC] and the context's cause — or at
+// ctx's deadline; a ctx without a deadline gives up after
+// [DefaultHandshakeTimeout]. Once Dial has returned, ctx no longer has any
+// hold on the connection.
+func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
@@ -813,12 +800,16 @@ func DialContext(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls
 	return c, nil
 }
 
+// DefaultHandshakeTimeout is how long a handshake runs before it fails,
+// when no context deadline says otherwise.
+const DefaultHandshakeTimeout = 10 * time.Second
+
 // Datagram is one UDP datagram as read from a socket: who sent it, its
 // bytes, and the ECN field of the IP header it arrived in — 0b00 Not-ECT,
 // 0b01 ECT(1), 0b10 ECT(0), 0b11 CE, the codepoints [udp.PacketECN]
 // reports (RFC 3168 §5). Zero is Not-ECT, the value to leave where the
 // socket does not report the field.
-type Datagram struct {
+type datagram struct {
 	Peer    net.Addr
 	Payload []byte
 	ECN     uint8
@@ -854,12 +845,12 @@ type Datagram struct {
 // crypto/tls does not do.
 //
 // A server that keeps pc open after the connection, to accept the next one,
-// should call [Conn.SetClosingPeriod]: "Servers that retain an open socket
+// should set [TransportParameters.HoldClosing]: "Servers that retain an open socket
 // for accepting new connections SHOULD NOT end the closing or draining
 // state early" (RFC 9000 §10.2). Without it, the connection stops reading
 // pc the moment it closes, and a late packet of the peer reaches whatever
 // reads pc next.
-func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
@@ -912,7 +903,7 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 
 // newServerConn bootstraps a server-side Conn from a client's first Initial
 // packet: picks this end's connection identifier, derives Initial secrets,
-// and starts the TLS handshake machinery. [Accept] and [Listener] share this
+// and starts the TLS handshake machinery. accept and [Listener] share this
 // and diverge only after: Accept drives the handshake synchronously against
 // its own exclusive socket, Listener feeds it datagrams from its shared
 // demux loop instead.
@@ -927,7 +918,7 @@ func Accept(pc net.PacketConn, first Datagram, cfg *tls.Config, params Transport
 // the connection's own identifier (§10.3, derived from the listener's key
 // so a reset can be honoured statelessly later), the demux hooks, and the
 // preferred address with its freshly minted identifier (§9.6). Standalone
-// [Accept] passes nil: no token (which §10.3 permits), no preferred
+// accept passes nil: no token (which §10.3 permits), no preferred
 // address. keys, when non-nil, are the Initial keys a [Listener]'s decrypt
 // check already derived from h.DCID; nil derives them here.
 func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Config, params TransportParameters, rt *retryToken, keys *initialKeys, prepare func(*Conn) error) (*Conn, error) {
@@ -1028,6 +1019,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 		localMaxStreamsUni:  params.InitialMaxStreamsUni,
 		idleTimeout:         params.MaxIdleTimeout,
 	}
+	c.closing.hold = params.HoldClosing
 	// §14: the datagrams this end sends must not be fragmented, so the
 	// socket is asked to say no (DF) before the first one leaves.
 	dfSocket(pc)
@@ -2005,8 +1997,8 @@ func (c *Conn) LocalParameters() TransportParameters { return c.params }
 // negotiated application protocol (NegotiatedProtocol, what a server
 // checks before it speaks h3), the server name the client asked for, the
 // peer's certificates, the TLS version. It is what
-// [crypto/tls.QUICConn.ConnectionState] returns; [Dial] and [Accept]
-// return only once the handshake is complete, so every field is settled by
+// [crypto/tls.QUICConn.ConnectionState] returns; [Dial] and
+// [Listener.Accept] return only once the handshake is complete, so every field is settled by
 // the time a caller can ask.
 func (c *Conn) ConnectionState() tls.ConnectionState { return c.tls.ConnectionState() }
 

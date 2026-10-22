@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -106,7 +107,7 @@ func TestASmallExchangeCostsTheServerOneDatagram(t *testing.T) {
 			}
 			accepted <- c
 		}()
-		client, err := Dial(right, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		client, err := Dial(context.Background(), right, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +160,7 @@ func TestAnAnswerSentDuringDeliveryCarriesTheACK(t *testing.T) {
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
 	var pending bool
-	c.OnStreamFrames(func([]Frame) error {
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error {
 		c.mu.Lock()
 		pending = c.spaces[spaceApplication].ack.pending()
 		c.mu.Unlock()
@@ -188,14 +189,14 @@ func smallExchange(t *testing.T, client, server *Conn) {
 			served <- err
 			return
 		}
-		_, err = s.WriteClose([]byte("response"))
+		_, err = s.WriteFinal([]byte("response"))
 		served <- err
 	}()
 	s, err := client.OpenStream(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.WriteClose([]byte("request")); err != nil {
+	if _, err := s.WriteFinal([]byte("request")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := io.ReadAll(s)

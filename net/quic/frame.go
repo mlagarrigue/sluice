@@ -39,9 +39,12 @@ const (
 // datagram.
 //
 // A caller meets frames through [Conn.OnStreamFrames], which delivers the
-// stream frames of a packet together: Type is then [FrameStream] (test it
-// with [Frame.IsStream]), [FrameResetStream] or [FrameStopSending], and
-// StreamID, Data, Fin and [Frame.Code] are what it carries. The transport's own frames are parsed into the same
+// stream frames of a packet together: Type is then one of the eight STREAM
+// types, [FrameStream] through FrameStream|0x07 — the low bits say which
+// fields the frame carried on the wire, so test it with [Frame.IsStream]
+// rather than against FrameStream — or [FrameResetStream] or
+// [FrameStopSending], and StreamID, Data, Fin and [Frame.Code] are what it
+// carries. The transport's own frames are parsed into the same
 // type but never leave it, and their fields are not exported.
 type Frame struct {
 	Type byte
@@ -78,7 +81,8 @@ type Frame struct {
 	delay   uint64
 }
 
-// IsStream reports whether the frame carries stream data.
+// IsStream reports whether the frame carries stream data: whether Type is
+// one of the eight STREAM types (RFC 9000 §19.8), 0x08 to 0x0f.
 func (f Frame) IsStream() bool { return f.Type&0xf8 == FrameStream }
 
 // Code is the application error code of a RESET_STREAM or STOP_SENDING

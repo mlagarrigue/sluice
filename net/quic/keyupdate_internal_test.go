@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"net"
 	"testing"
@@ -285,7 +286,7 @@ func TestKeyUpdateInitiatedByEachSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}

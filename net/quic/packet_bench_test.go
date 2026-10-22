@@ -132,7 +132,7 @@ func benchConnReceive(b *testing.B, timeSeal bool) {
 	c, peerSealer := newBenchConn(b)
 	defer c.Close()
 	delivered := 0
-	c.OnStreamFrames(func(frames []Frame) error {
+	c.OnStreamFrames(CreditOnDelivery, func(frames []Frame) error {
 		for i := range frames {
 			if frames[i].IsStream() {
 				delivered++

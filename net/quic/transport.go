@@ -39,7 +39,7 @@ const (
 // Every one of them is a bound, so a zero field is a real announcement — an
 // endpoint that announces no data credit has announced none, and a peer that
 // honours it can send nothing at all. The zero value is therefore not usable
-// and [Dial], [Accept] and [NewListener] refuse it with [ErrZeroParameters]:
+// and [Dial], accept and [NewListener] refuse it with [ErrZeroParameters]:
 // start from [DefaultParameters] and change what you need.
 type TransportParameters struct {
 	// MaxIdleTimeout ends a connection nobody is using. Zero means no
@@ -52,7 +52,7 @@ type TransportParameters struct {
 	// (RFC 9000 §14.3); what this endpoint sends is decided by its own
 	// probe of the path, never by the peer's announcement alone — see the
 	// package documentation. Zero means 1452, like MaxDatagramSize; below
-	// 1200 or above 65527 (§18.2's bounds), [Dial], [Accept] and
+	// 1200 or above 65527 (§18.2's bounds), [Dial], accept and
 	// [NewListener] refuse it.
 	MaxUDPPayloadSize uint64
 
@@ -136,6 +136,23 @@ type TransportParameters struct {
 	// value is that default.
 	Congestion CongestionConfig
 
+	// HoldClosing makes a connection that owns its socket — one from
+	// [Dial] — hold the closing and draining states of RFC 9000 §10.2
+	// after it closes, as a [Listener]'s connections always do: for three
+	// probe timeouts its read loop keeps reading the socket, answers a peer
+	// that missed this end's CONNECTION_CLOSE with the close again, and
+	// absorbs what arrives after the peer's own close. Without it — the
+	// zero value — the socket is the caller's again the moment Close
+	// returns, and a late packet meets whatever the caller does with it
+	// next, which §10.2 allows an endpoint able to close its socket.
+	//
+	// A caller that keeps the socket open to dial again on it should turn
+	// it on. While the state lasts the socket is not the caller's;
+	// [Conn.Wait] reports when it is, and closing the socket ends the state
+	// early, which §10.2 allows. It is local, never encoded on the wire, and
+	// a [Listener]'s connections hold the states whatever it says.
+	HoldClosing bool
+
 	// MaxDatagramSize is the largest datagram this endpoint sends, once
 	// its probe of the path (DPLPMTUD, RFC 9000 §14.3) proves the path
 	// carries it. Local, like Congestion: never encoded on the wire. Zero
@@ -144,7 +161,7 @@ type TransportParameters struct {
 	// path. What is probed is also bounded by the peer's announced
 	// MaxUDPPayloadSize, so a jumbo path needs both ends to announce one.
 	// Below 1200 (what every path must carry, §14.1) or above 65527 (the
-	// largest UDP payload), [Dial], [Accept] and [NewListener] refuse it.
+	// largest UDP payload), [Dial], accept and [NewListener] refuse it.
 	// The size reached is [Stats.DatagramSize].
 	MaxDatagramSize int
 

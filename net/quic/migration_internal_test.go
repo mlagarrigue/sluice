@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -803,7 +804,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,7 +866,7 @@ func TestListenerIssuedIdentifiersRoute(t *testing.T) {
 	client.mu.Unlock()
 
 	got := make(chan []byte, 16)
-	server.OnStreamFrames(func(fs []Frame) error {
+	server.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			if f.IsStream() && len(f.Data) > 0 {
 				got <- append([]byte(nil), f.Data...)
@@ -1042,7 +1043,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 	}()
 
 	rp := newRebindablePC(t, 2)
-	client, err := Dial(rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1060,7 +1061,7 @@ func TestServerFollowsClientRebind(t *testing.T) {
 
 	var recvMu sync.Mutex
 	var received int
-	server.OnStreamFrames(func(fs []Frame) error {
+	server.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		recvMu.Lock()
 		for _, f := range fs {
 			if f.IsStream() {
@@ -1164,7 +1165,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 	}()
 
 	rp := newRebindablePC(t, 3)
-	client, err := Dial(rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), rp, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1182,7 +1183,7 @@ func TestClientIssuesIdentifiersForTheServerToFollow(t *testing.T) {
 
 	var recvMu sync.Mutex
 	var received int
-	server.OnStreamFrames(func(fs []Frame) error {
+	server.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		recvMu.Lock()
 		for _, f := range fs {
 			if f.IsStream() {
@@ -1279,7 +1280,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(first, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), first, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1295,7 +1296,7 @@ func TestClientRebindMovesThePath(t *testing.T) {
 		t.Fatal("the handshake never completed")
 	}
 	got := make(chan []byte, 8)
-	server.OnStreamFrames(func(fs []Frame) error {
+	server.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			if f.IsStream() {
 				got <- append([]byte(nil), f.Data...)

@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestHandshakeSurvivesAHelloRetryRequest(t *testing.T) {
 				done <- err
 				return
 			}
-			conn, err := Accept(serverPC, Datagram{Peer: peer, Payload: buf[:n]}, serverCfg, DefaultParameters())
+			conn, err := Accept(serverPC, datagram{Peer: peer, Payload: buf[:n]}, serverCfg, DefaultParameters())
 			if err != nil {
 				done <- err
 				return
@@ -45,7 +46,7 @@ func TestHandshakeSurvivesAHelloRetryRequest(t *testing.T) {
 		}()
 		clientCfg := ClientTLSForTest()
 		clientCfg.CurvePreferences = clientCurves
-		client, err := Dial(clientTap, serverPC.LocalAddr(), clientCfg, DefaultParameters())
+		client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), clientCfg, DefaultParameters())
 		if err != nil {
 			t.Fatal(err)
 		}

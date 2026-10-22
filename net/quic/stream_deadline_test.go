@@ -135,7 +135,6 @@ func TestWriteDeadlinePassesWithoutCredit(t *testing.T) {
 	serverParams := quic.DefaultParameters()
 	serverParams.InitialMaxStreamDataBidiRemote = 64
 	client, server, _, _ := handshakePairParams(t, serverTLS(t), clientTLS(), serverParams)
-	server.SetManualCredit(true) // the server reads but never grants more
 	cs, _ := openAccepted(t, client, server)
 
 	// The clock starts before the deadline is set, not after: measured

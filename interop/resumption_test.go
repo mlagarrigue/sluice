@@ -85,7 +85,7 @@ func TestResumptionAgainstQuicGoServer(t *testing.T) {
 		}
 	}
 
-	first, err := quic.DialContext(ctx, listenUDP(t), ln.Addr(), cfg, quic.DefaultParameters())
+	first, err := quic.Dial(ctx, listenUDP(t), ln.Addr(), cfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("first handshake: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestResumptionAgainstQuicGoServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := quic.DialContext(ctx, listenUDP(t), ln.Addr(), cfg, quic.DefaultParameters())
+	second, err := quic.Dial(ctx, listenUDP(t), ln.Addr(), cfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("second handshake, from the session cache: %v", err)
 	}

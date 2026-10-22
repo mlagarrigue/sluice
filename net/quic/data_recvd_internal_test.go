@@ -41,7 +41,7 @@ func TestNoResetStreamOnceTheStreamIsAcknowledged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := cs.WriteClose(make([]byte, 100)); err != nil {
+			if _, err := cs.WriteFinal(make([]byte, 100)); err != nil {
 				t.Fatal(err)
 			}
 			ss, err := server.AcceptStream(t.Context())

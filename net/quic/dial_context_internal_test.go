@@ -25,7 +25,7 @@ func (p *signalWritePC) WriteTo(b []byte, to net.Addr) (int, error) {
 
 // A cancelled context ends a handshake that would otherwise wait out its
 // whole timeout against a peer that never answers, and says why.
-func TestDialContextCancelEndsTheHandshake(t *testing.T) {
+func TestDialCancelEndsTheHandshake(t *testing.T) {
 	cli, silent := newLoopbackPair(t) // silent is bound and never read
 	pc := &signalWritePC{PacketConn: cli, written: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -37,7 +37,7 @@ func TestDialContextCancelEndsTheHandshake(t *testing.T) {
 	}
 	got := make(chan result, 1)
 	go func() {
-		c, err := DialContext(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 		got <- result{c, err}
 	}()
 	<-pc.written // the first Initial has left: the handshake is underway
@@ -46,43 +46,43 @@ func TestDialContextCancelEndsTheHandshake(t *testing.T) {
 	case r := <-got:
 		if r.c != nil {
 			_ = r.c.Close()
-			t.Fatal("DialContext returned a connection after its context was cancelled")
+			t.Fatal("Dial returned a connection after its context was cancelled")
 		}
 		if !errors.Is(r.err, context.Canceled) || !errors.Is(r.err, ErrQUIC) {
-			t.Fatalf("DialContext = %v, want an ErrQUIC wrapping context.Canceled", r.err)
+			t.Fatalf("Dial = %v, want an ErrQUIC wrapping context.Canceled", r.err)
 		}
 	case <-time.After(DefaultHandshakeTimeout / 2):
-		t.Fatal("DialContext ignored the cancellation and kept handshaking")
+		t.Fatal("Dial ignored the cancellation and kept handshaking")
 	}
 }
 
 // A context deadline replaces the default handshake timeout.
-func TestDialContextDeadlineReplacesTheDefault(t *testing.T) {
+func TestDialDeadlineReplacesTheDefault(t *testing.T) {
 	cli, silent := newLoopbackPair(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	c, err := DialContext(ctx, cli, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, cli, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if c != nil {
 		_ = c.Close()
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("DialContext = %v, want context.DeadlineExceeded", err)
+		t.Fatalf("Dial = %v, want context.DeadlineExceeded", err)
 	}
 	if took := time.Since(start); took > DefaultHandshakeTimeout/2 {
-		t.Errorf("DialContext took %v under a 100ms deadline", took)
+		t.Errorf("Dial took %v under a 100ms deadline", took)
 	}
 }
 
 // An already-cancelled context sends nothing at all.
-func TestDialContextAlreadyCancelled(t *testing.T) {
+func TestDialAlreadyCancelled(t *testing.T) {
 	cli, silent := newLoopbackPair(t)
 	pc := &signalWritePC{PacketConn: cli, written: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c, err := DialContext(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, pc, silent.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if c != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("DialContext = %v, %v; want no connection and context.Canceled", c, err)
+		t.Fatalf("Dial = %v, %v; want no connection and context.Canceled", c, err)
 	}
 	select {
 	case <-pc.written:
@@ -91,9 +91,9 @@ func TestDialContextAlreadyCancelled(t *testing.T) {
 	}
 }
 
-// The context governs the handshake only: cancelling it once DialContext
+// The context governs the handshake only: cancelling it once Dial
 // has returned leaves the connection alone.
-func TestDialContextCancelAfterReturnKeepsTheConnection(t *testing.T) {
+func TestDialCancelAfterReturnKeepsTheConnection(t *testing.T) {
 	cli, srv := newLoopbackPair(t)
 	l, err := NewListener(srv, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
 	if err != nil {
@@ -106,9 +106,9 @@ func TestDialContextCancelAfterReturnKeepsTheConnection(t *testing.T) {
 		}
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
-	c, err := DialContext(ctx, cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(ctx, cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
-		t.Fatalf("DialContext: %v", err)
+		t.Fatalf("Dial: %v", err)
 	}
 	defer c.Close()
 	cancel()

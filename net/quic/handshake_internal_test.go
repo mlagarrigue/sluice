@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -42,7 +43,7 @@ func TestHandshakeSurvivesATransientReadError(t *testing.T) {
 		}
 	}()
 	pc := &failFirstReadPC{PacketConn: cli}
-	c, err := Dial(pc, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial = %v; one transient read error ended the handshake", err)
 	}
@@ -82,7 +83,7 @@ func TestDialToAClosedPortFailsWithTheRefusal(t *testing.T) {
 	defer uc.Close()
 
 	start := time.Now()
-	c, err := Dial(connectedPC{uc}, raddr, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), connectedPC{uc}, raddr, ClientTLSForTest(), DefaultParameters())
 	took := time.Since(start)
 	if c != nil {
 		_ = c.Close()
@@ -108,7 +109,7 @@ func TestHandshakeRefusalLimitWithNothingHeard(t *testing.T) {
 	pc := newScriptedPC(script...)
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	start := time.Now()
-	c, err := Dial(pc, peer, ClientTLSForTest(), DefaultParameters())
+	c, err := Dial(context.Background(), pc, peer, ClientTLSForTest(), DefaultParameters())
 	if c != nil {
 		_ = c.Close()
 	}
@@ -135,7 +136,7 @@ func TestParkedConnectionHoldsItsPendingSlot(t *testing.T) {
 	defer l.Close()
 	dial := func() (*Conn, error) {
 		cli, _ := newLoopbackPair(t)
-		c, err := Dial(cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		c, err := Dial(context.Background(), cli, srv.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 		if c != nil {
 			t.Cleanup(func() { _ = c.Close() })
 		}

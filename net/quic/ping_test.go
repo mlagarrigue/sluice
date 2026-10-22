@@ -21,7 +21,7 @@ func TestPingWaitsForTheAcknowledgement(t *testing.T) {
 	hooked := &hookedConn{PacketConn: clientPC}
 
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

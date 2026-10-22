@@ -1,6 +1,7 @@
 package quic_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -73,7 +74,7 @@ func TestHandshakeAndStream(t *testing.T) {
 		done <- result{got: string(body)}
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestResetStreamReachesTheReader(t *testing.T) {
 		}
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 		up <- server{conn: conn, err: err}
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestStreamFramesBeforeTheCallbackAreHeld(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	got := make(chan []byte, 4)
-	s.conn.OnStreamFrames(func(frames []quic.Frame) error {
+	s.conn.OnStreamFrames(quic.CreditOnDelivery, func(frames []quic.Frame) error {
 		for _, f := range frames {
 			got <- append([]byte(nil), f.Data...)
 		}
@@ -280,7 +281,7 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	noALPN := clientTLS()
 	noALPN.NextProtos = nil
 
-	if _, err := quic.Dial(pc, peer.LocalAddr(), noALPN, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), noALPN, quic.DefaultParameters()); err == nil {
 		t.Error("Dial accepted a config with no ALPN")
 	}
 	if _, err := quic.Accept(pc, quic.Datagram{Peer: peer.LocalAddr(), Payload: []byte{0}}, noALPN, quic.DefaultParameters()); err == nil {
@@ -289,7 +290,7 @@ func TestEmptyALPNIsRefusedAtConstruction(t *testing.T) {
 	if _, err := quic.NewListener(pc, noALPN, quic.DefaultParameters(), quic.ListenerConfig{}); err == nil {
 		t.Error("NewListener accepted a config with no ALPN")
 	}
-	if _, err := quic.Dial(pc, peer.LocalAddr(), nil, quic.DefaultParameters()); err == nil {
+	if _, err := quic.Dial(context.Background(), pc, peer.LocalAddr(), nil, quic.DefaultParameters()); err == nil {
 		t.Error("Dial accepted a nil tls.Config")
 	}
 }
@@ -316,7 +317,7 @@ func TestErrReportsThePeersApplicationClose(t *testing.T) {
 		}
 		accepted <- c
 	}()
-	client, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	client, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1603,7 +1603,7 @@ func (c *Conn) pickedAheadLocked(id uint64) bool {
 // serves InitialMaxData cumulative bytes over the connection's whole life
 // and then watches a conformant peer stall forever.
 func (c *Conn) settleBatchConsumption(batch []Frame) {
-	// Under manual credit (SetManualCredit) nothing settles here at all:
+	// Under manual credit ([CreditOnRelease]) nothing settles here at all:
 	// the batch consumer owns the moment bytes stop being retained, and
 	// re-crediting them on delivery is exactly the gap that lets a peer
 	// park more than the consumer's own memory bounds admit.
@@ -1656,21 +1656,6 @@ func (c *Conn) settleBatchConsumption(batch []Frame) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
 	}
 	c.flushControlLocked()
-	c.mu.Unlock()
-}
-
-// SetManualCredit moves receive-side flow-control crediting from the
-// transport to the batch consumer. With it on, bytes delivered to the
-// [Conn.OnStreamFrames] callback earn the peer no new credit until the
-// consumer calls [Conn.ReleaseStreamBytes] for them — which it must, for
-// every delivered byte, or the peer's sending starves at the windows'
-// initial values. What it buys: the peer can never hold more unacknowledged
-// memory than the consumer admits to retaining, where automatic crediting
-// re-opens the window for bytes the consumer still holds. Meaningful only
-// in batch mode; read mode credits on [Stream.Read] as before.
-func (c *Conn) SetManualCredit(on bool) {
-	c.mu.Lock()
-	c.manualCredit = on
 	c.mu.Unlock()
 }
 
@@ -1744,7 +1729,7 @@ func (c *Conn) armKeepAliveLocked(now time.Time) {
 }
 
 // ReleaseStreamBytes reports n bytes of stream id's data released by a
-// manual-credit consumer (see [Conn.SetManualCredit]): no longer retained,
+// consumer under [CreditOnRelease]: no longer retained,
 // so the peer may be granted that much again. The stream-level window
 // advances when the stream is still live; the connection-level window
 // advances regardless, because its debt survives the stream. Safe from any

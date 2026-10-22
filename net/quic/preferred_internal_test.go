@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -327,7 +328,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cpc.Close()
-	client, err := Dial(cpc, main.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), cpc, main.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +357,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 	}
 
 	got := make(chan []byte, 8)
-	server.OnStreamFrames(func(fs []Frame) error {
+	server.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			if f.IsStream() {
 				got <- append([]byte(nil), f.Data...)
@@ -391,7 +392,7 @@ func TestPreferredAddressEndToEnd(t *testing.T) {
 	// And the reverse direction, now that the server sends from 127.0.0.2:
 	// the client accepts what comes from its (new) peer address.
 	echo := make(chan []byte, 8)
-	client.OnStreamFrames(func(fs []Frame) error {
+	client.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			if f.IsStream() {
 				echo <- append([]byte(nil), f.Data...)

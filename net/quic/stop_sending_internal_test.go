@@ -34,7 +34,7 @@ func TestStopSendingAloneReachesTheCallback(t *testing.T) {
 	c.mu.Unlock()
 
 	var got [][]Frame
-	c.OnStreamFrames(func(frames []Frame) error {
+	c.OnStreamFrames(CreditOnDelivery, func(frames []Frame) error {
 		got = append(got, cloneFrames(frames))
 		return nil
 	})
@@ -89,7 +89,7 @@ func TestStopSendingBehindTheAnswerKeepsTheAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cs.WriteClose([]byte("GET /x\r\n")); err != nil {
+	if _, err := cs.WriteFinal([]byte("GET /x\r\n")); err != nil {
 		t.Fatal(err)
 	}
 	answer := make([]byte, 1024)

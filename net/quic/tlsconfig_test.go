@@ -31,14 +31,14 @@ func TestConstructorsRefuseAConfigBelowTLS13(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cpc := loopbackSocket(t)
-	if c, err := DialContext(ctx, cpc, pc.LocalAddr(), cli, DefaultParameters()); err == nil {
+	if c, err := Dial(ctx, cpc, pc.LocalAddr(), cli, DefaultParameters()); err == nil {
 		_ = c.Close()
-		t.Error("DialContext accepted a Config with MinVersion == 0")
+		t.Error("Dial accepted a Config with MinVersion == 0")
 	} else if !strings.Contains(err.Error(), "MinVersion") {
-		t.Errorf("DialContext error does not name MinVersion: %v", err)
+		t.Errorf("Dial error does not name MinVersion: %v", err)
 	}
 
-	if c, err := Accept(pc, Datagram{}, srv, DefaultParameters()); err == nil {
+	if c, err := accept(pc, datagram{}, srv, DefaultParameters()); err == nil {
 		_ = c.Close()
 		t.Error("Accept accepted a Config with MinVersion == 0")
 	} else if !strings.Contains(err.Error(), "MinVersion") {

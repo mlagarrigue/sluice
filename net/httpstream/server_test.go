@@ -80,7 +80,7 @@ var stopProtocols = []struct {
 		served := make(chan error, 1)
 		go func() { served <- srv.ServeQUIC(ln) }()
 		t.Cleanup(func() { _ = srv.Close(); _ = ln.Close() })
-		conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+		conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 		if err != nil {
 			t.Fatalf("Dial: %v", err)
 		}
@@ -514,7 +514,7 @@ func serveQUICFor(t *testing.T, srv *Server, clientParams quic.TransportParamete
 	}
 	go func() { _ = srv.ServeQUIC(ln) }()
 	t.Cleanup(func() { _ = srv.Close(); _ = ln.Close() })
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

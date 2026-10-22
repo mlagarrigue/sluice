@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -93,7 +94,7 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 			done <- err
 			return
 		}
-		conn, err := Accept(serverTap, Datagram{Peer: peer, Payload: buf[:n]}, ServerTLSForTest(t), DefaultParameters())
+		conn, err := Accept(serverTap, datagram{Peer: peer, Payload: buf[:n]}, ServerTLSForTest(t), DefaultParameters())
 		if err != nil {
 			done <- err
 			return
@@ -101,7 +102,7 @@ func TestHandshakeFlightsCoalesce(t *testing.T) {
 		defer conn.Close()
 		done <- nil
 	}()
-	client, err := Dial(clientTap, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientTap, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}

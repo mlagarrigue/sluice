@@ -42,17 +42,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), params)
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), params)
 		if err != nil {
 			serverUp <- err
 			return
@@ -61,7 +51,7 @@ func startH3With(t *testing.T, cfg Config, params, clientParams quic.TransportPa
 		served <- ServeH3(ctx, conn, cfg, handle)
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), clientParams)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -133,17 +123,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		buf := make([]byte, 2048)
-		if err := serverPC.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			serverUp <- err
-			return
-		}
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			serverUp <- err
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			serverUp <- err
 			return
@@ -172,7 +152,7 @@ func TestH3StopSendingBeforeSettingsClosesTheConnection(t *testing.T) {
 		})
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -431,6 +411,68 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 				t.Errorf("released %d bytes back to the transport for %d delivered, want %d", got, sent, want)
 			}
 		})
+	}
+}
+
+// ServeH3 hands crediting to itself when the windows allow it
+// (quic.CreditOnRelease): a byte this layer never releases is then a byte
+// the peer never gets credit back for. With the release swallowed, uploads
+// past the connection window the server announced stall; were the
+// transport still crediting on delivery, all of them would go through.
+func TestH3ServeCreditsOnRelease(t *testing.T) {
+	orig := h3ReleaseStreamBytes
+	h3ReleaseStreamBytes = func(*quic.Conn, uint64, uint64) {}
+	t.Cleanup(func() { h3ReleaseStreamBytes = orig })
+
+	got := make(chan int, 8)
+	conn, _, _ := startH3(t, mustTransportParameters(Config{}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		for _, r := range b.Items {
+			got <- len(r.Body)
+		}
+		return sluice.Batch[Response]{Items: make([]Response, b.Len())}
+	})
+	// Eight uploads whose sum (4.8 MiB) exceeds the connection window (just
+	// over 4 MiB), as in TestH3UploadLargerThanTheInitialWindows.
+	const bodyLen = 600 << 10
+	done := 0
+	for range 8 {
+		s, err := conn.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream := h3Request("POST", "/upload", [2]string{"content-length", "614400"})
+		stream = appendH3Frame(stream, h3Data, make([]byte, bodyLen))
+		wrote := make(chan error, 1)
+		go func() {
+			if _, err := s.Write(stream); err != nil {
+				wrote <- err
+				return
+			}
+			wrote <- s.CloseWrite()
+		}()
+		select {
+		case err := <-wrote:
+			if err != nil {
+				t.Fatalf("upload %d: %v", done, err)
+			}
+		case <-time.After(2 * time.Second):
+			// Parked on credit that never comes.
+		}
+		// Each body reaches the handler before the next upload starts, so
+		// this layer retains nothing: what stalls is the transport's credit.
+		select {
+		case <-got:
+			done++
+			continue
+		case <-time.After(time.Second):
+		}
+		break
+	}
+	if done == 8 {
+		t.Fatal("every upload went through with no byte released: the transport credited on delivery")
+	}
+	if done == 0 {
+		t.Fatal("not even the first upload, inside the initial windows, reached the handler")
 	}
 }
 
@@ -938,7 +980,7 @@ func TestH3AnswersExpectContinueWithAnInterim100(t *testing.T) {
 		t.Fatalf("the first HEADERS on the stream carries :status %s, want 100 before the body", got)
 	}
 
-	if _, err := s.WriteClose(appendH3Frame(nil, h3Data, []byte("hi"))); err != nil {
+	if _, err := s.WriteFinal(appendH3Frame(nil, h3Data, []byte("hi"))); err != nil {
 		t.Fatal(err)
 	}
 	fields, body := readH3FieldsAndBody(t, s)
@@ -961,7 +1003,7 @@ func TestH3SendsNoInterim100WhenTheHeadEndsTheStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.WriteClose(h3Request("POST", "/x", [2]string{"expect", "100-continue"})); err != nil {
+	if _, err := s.WriteFinal(h3Request("POST", "/x", [2]string{"expect", "100-continue"})); err != nil {
 		t.Fatal(err)
 	}
 	if got := readH3Fields(t, s)[":status"]; len(got) != 1 || got[0] != "200" {

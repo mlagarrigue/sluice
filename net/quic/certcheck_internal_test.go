@@ -66,7 +66,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("NewListener: %v, want %s named", err, want)
 		}
-		if _, err := Accept(pcA, Datagram{}, cfg, DefaultParameters()); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := accept(pcA, datagram{}, cfg, DefaultParameters()); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Accept: %v, want the same refusal", err)
 		}
 	}

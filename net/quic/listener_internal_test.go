@@ -540,7 +540,7 @@ func TestListenerValidatesTheAddressDuringTheHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +917,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 			t.Fatal(err)
 		}
 		go func() {
-			c, err := Dial(pc, addr, ClientTLSForTest(), DefaultParameters())
+			c, err := Dial(context.Background(), pc, addr, ClientTLSForTest(), DefaultParameters())
 			if err != nil {
 				t.Errorf("Dial: %v", err)
 				close(out)
@@ -949,7 +949,7 @@ func TestListenerSlowConnectionDoesNotFreezeOthers(t *testing.T) {
 	defer close(release) // runs before the Close above
 	entered := make(chan struct{})
 	var once sync.Once
-	slowServer.OnStreamFrames(func([]Frame) error {
+	slowServer.OnStreamFrames(CreditOnDelivery, func([]Frame) error {
 		once.Do(func() { close(entered) })
 		<-release
 		return nil
@@ -1270,7 +1270,7 @@ func capRefusesTheSecondDial(t *testing.T, lcfg ListenerConfig) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return Dial(pc, spc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		return Dial(context.Background(), pc, spc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	}
 
 	first, err := dial()
@@ -1396,7 +1396,7 @@ func TestMaxConnsPerIPCountsEachFamilyApart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return Dial(pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultParameters())
+		return Dial(context.Background(), pc, &net.UDPAddr{IP: ip, Port: port}, ClientTLSForTest(), DefaultParameters())
 	}
 	v4, err := dial(net.IPv4(127, 0, 0, 1))
 	if err != nil {
@@ -1552,7 +1552,7 @@ func TestRestartedListenerResetsWithTheSameKey(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client, err := Dial(clientPC, addr, ClientTLSForTest(), DefaultParameters())
+			client, err := Dial(context.Background(), clientPC, addr, ClientTLSForTest(), DefaultParameters())
 			if err != nil {
 				t.Fatal(err)
 			}

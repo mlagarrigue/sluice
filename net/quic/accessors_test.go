@@ -1,6 +1,7 @@
 package quic_test
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"testing"
@@ -43,7 +44,7 @@ func handshakePairParams(t *testing.T, serverCfg, clientCfg *tls.Config, serverP
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = clientPC.Close() })
-	client, err = quic.Dial(clientPC, l.Addr(), clientCfg, quic.DefaultParameters())
+	client, err = quic.Dial(context.Background(), clientPC, l.Addr(), clientCfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestNoCommonALPNFailsTheHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clientPC.Close()
-	if c, err := quic.Dial(clientPC, l.Addr(), clientTLS(), quic.DefaultParameters()); err == nil {
+	if c, err := quic.Dial(context.Background(), clientPC, l.Addr(), clientTLS(), quic.DefaultParameters()); err == nil {
 		_ = c.Close()
 		t.Fatalf("Dial succeeded with no ALPN in common; negotiated %q", c.ConnectionState().NegotiatedProtocol)
 	}

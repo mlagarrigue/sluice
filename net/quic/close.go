@@ -144,7 +144,7 @@ func (c *Conn) abort(err error) {
 // (NO_ERROR) so it can drop its state now rather than wait out an idle
 // period (§10.2). Close never blocks on the peer: the frame is sent once,
 // best effort. If it is lost, a connection that holds the closing period —
-// a [Listener]'s, or one [Conn.SetClosingPeriod] asked — sends it again to
+// a [Listener]'s, or one [TransportParameters.HoldClosing] asked — sends it again to
 // the next packet the peer sends; otherwise the peer's idle timer is the
 // fallback the protocol designed for.
 //
@@ -449,8 +449,8 @@ func (c *Conn) idleExpired() {
 //
 // A [Listener]'s connections always hold these states: §10.2 asks servers
 // that keep their socket open not to end them early. A connection that
-// owns its socket ([Dial], the standalone [Accept]) holds them only when
-// [Conn.SetClosingPeriod] asked: by default it gives the socket back to its
+// owns its socket ([Dial], the standalone accept) holds them only when
+// [TransportParameters.HoldClosing] asked: by default it gives the socket back to its
 // caller the moment Close returns — the caller may close it or dial again
 // on it — which §10.2 allows an endpoint able to close its socket. When it
 // holds them, its own read loop keeps reading the socket for the period,
@@ -484,7 +484,7 @@ type closingState struct {
 	nextReply int   // the count at which the close goes out again
 	sent      int64 // bytes sent while closing, against 3× received
 	recv      int64
-	// hold is [Conn.SetClosingPeriod]'s choice for a connection that owns
+	// hold is [TransportParameters.HoldClosing] for a connection that owns
 	// its socket; end is when its read loop stops answering — zeroed by a
 	// [Conn.Wait] whose context ended — and left records that the state is
 	// over and gone closed or about to be. loop says a socket-owning read
@@ -632,31 +632,10 @@ func (c *Conn) releaseSocket() {
 	}
 }
 
-// SetClosingPeriod makes a connection that owns its socket ([Dial], the
-// standalone [Accept]) hold the closing and draining states of RFC 9000
-// §10.2 after it closes, as a [Listener]'s connections always do: for
-// three probe timeouts its read loop keeps reading the socket, answers a
-// peer that missed this end's CONNECTION_CLOSE with the close again, and
-// absorbs what arrives after the peer's own close. Without it — the
-// default — the socket is the caller's again the moment Close returns, and
-// a late packet meets whatever the caller does with it next.
-//
-// A server that keeps the socket open to accept further connections should
-// turn it on: §10.2 asks such servers not to end these states early. While
-// the state lasts the socket is not the caller's; [Conn.Wait] reports when
-// it is, and closing the socket ends the state early, which §10.2 allows.
-// The choice is read when the connection closes; it changes nothing on a
-// Listener's connection. Safe from any goroutine.
-func (c *Conn) SetClosingPeriod(on bool) {
-	c.mu.Lock()
-	c.closing.hold = on
-	c.mu.Unlock()
-}
-
 // Wait blocks until the connection has closed and released its socket:
 // at the close for a connection that holds no closing period, at the end
-// of the period for one that does ([Conn.SetClosingPeriod], a [Listener]'s
-// connection). It returns nil then. Wait does not close the connection.
+// of the period for one that does ([TransportParameters.HoldClosing], a
+// [Listener]'s connection). It returns nil then. Wait does not close the connection.
 //
 // When ctx ends first, Wait returns its error. If the connection has closed
 // by then, Wait first ends its closing period early, so that a closed

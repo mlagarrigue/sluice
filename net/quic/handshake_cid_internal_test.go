@@ -228,7 +228,7 @@ func TestServerDiscardsAShortInitialOnAnExistingConn(t *testing.T) {
 	}
 }
 
-// The same rule at [Accept], the other entry a client's Initial has into
+// The same rule at accept, the other entry a client's Initial has into
 // a server: a short one earns no connection.
 func TestAcceptRefusesAShortInitial(t *testing.T) {
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -241,7 +241,7 @@ func TestAcceptRefusesAShortInitial(t *testing.T) {
 	odcid, scid := []byte("odcid-00"), []byte("cli-cid0")
 
 	short := sealedInitialFrom(t, false, odcid, odcid, scid, 0, false)
-	c, err := Accept(pc, Datagram{Peer: peer, Payload: short}, cfg, DefaultParameters())
+	c, err := accept(pc, datagram{Peer: peer, Payload: short}, cfg, DefaultParameters())
 	if err == nil {
 		c.Close()
 		t.Fatalf("Accept opened a connection on a %d-byte Initial datagram; §14.1 says discard it", len(short))

@@ -37,14 +37,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 	t.Cleanup(func() { <-served })
 	go func() {
 		defer close(served)
-		buf := make([]byte, 2048)
-		_ = serverPC.SetReadDeadline(time.Now().Add(10 * time.Second))
-		n, peer, err := serverPC.ReadFrom(buf)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, h3ServerTLS(t), quic.DefaultParameters())
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), quic.DefaultParameters())
 		if err != nil {
 			t.Error(err)
 			return
@@ -57,7 +50,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 			return sluice.Batch[Response]{Items: res}
 		})
 	}()
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), h3ClientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -82,7 +75,7 @@ func TestH3SmallResponseIsOneDatagram(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.WriteClose(h3Request("GET", "/small")); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/small")); err != nil {
 		t.Fatal(err)
 	}
 	if body, _ := readH3Body(t, s); body != "small" {

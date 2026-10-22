@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
-	c.OnStreamFrames(func([]Frame) error { return nil })
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	data := []byte("hello")
 	payload := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
@@ -367,7 +368,7 @@ func TestShortClientDCIDIsRefused(t *testing.T) {
 	t.Run("standalone Accept", func(t *testing.T) {
 		pcA, pcB := newLoopbackPair(t)
 		_ = pcB
-		_, err := Accept(pcA, Datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultParameters())
+		_, err := accept(pcA, datagram{Peer: pcB.LocalAddr(), Payload: syntheticInitial(t, short, scid)}, ServerTLSForTest(t), DefaultParameters())
 		if err == nil {
 			t.Fatal("Accept took an Initial with a 4-byte destination identifier")
 		}
@@ -400,7 +401,7 @@ func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
-	c.OnStreamFrames(func([]Frame) error { return nil })
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	stream := func(offset uint64, data []byte, fin bool) []byte {
 		typ := uint64(FrameStream | streamOFF | streamLEN)
@@ -677,7 +678,7 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	}
 }
 
-// Standalone [Accept] pays RFC 9000 §8.1's anti-amplification limit exactly
+// Standalone accept pays RFC 9000 §8.1's anti-amplification limit exactly
 // as a Listener-managed connection does: the accounting is armed before the
 // first datagram is processed and released by the first decrypted
 // Handshake-level packet — after which the handshake completes as before.
@@ -697,11 +698,11 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 			done <- result{nil, err}
 			return
 		}
-		c, err := Accept(serverPC, Datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultParameters())
+		c, err := Accept(serverPC, datagram{Peer: from, Payload: append([]byte(nil), buf[:n]...)}, serverCfg, DefaultParameters())
 		done <- result{c, err}
 	}()
 
-	client, err := Dial(clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,7 +759,7 @@ func TestEveryDeltaBeforeRegistrationIsReplayed(t *testing.T) {
 	}
 
 	var got []byte
-	c.OnStreamFrames(func(fs []Frame) error {
+	c.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			if f.Type == FrameStream {
 				got = append(got, f.Data...)
@@ -791,7 +792,6 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "regress:self"}, fakeFuzzAddr("regress:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
 	defer c.Close()
-	c.SetManualCredit(true)
 
 	chunk := make([]byte, 100)
 	var off uint64
@@ -808,7 +808,7 @@ func TestManualCreditReplayDoesNotReopenTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var held int
-	c.OnStreamFrames(func(fs []Frame) error {
+	c.OnStreamFrames(CreditOnRelease, func(fs []Frame) error {
 		for _, f := range fs {
 			held += len(f.Data)
 		}
@@ -848,7 +848,7 @@ func TestRegistrationAfterAReadReplaysWhatWasNotRead(t *testing.T) {
 		t.Fatalf("Read = %d, %v", n, err)
 	}
 	var got int
-	c.OnStreamFrames(func(fs []Frame) error {
+	c.OnStreamFrames(CreditOnDelivery, func(fs []Frame) error {
 		for _, f := range fs {
 			got += len(f.Data)
 		}

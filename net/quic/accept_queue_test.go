@@ -27,7 +27,7 @@ func openUntilRefused(t *testing.T, c *quic.Conn, uni bool, most int) int {
 		if err != nil {
 			return n
 		}
-		if _, err := s.WriteClose([]byte{'x'}); err != nil {
+		if _, err := s.WriteFinal([]byte{'x'}); err != nil {
 			t.Fatalf("stream %d: %v", s.ID(), err)
 		}
 	}

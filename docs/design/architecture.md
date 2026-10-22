@@ -94,7 +94,7 @@ loop. Here the caller owns `main`, its goroutines, its sockets and its
 lifecycle. Nothing requires a global registry, a mandatory init, or a
 callback to enroll in; every blocking convenience (`httpstream.Serve`,
 `httpstream.ServeH3`) has the direct alternative under it (`quic.Dial` and
-`quic.Accept` return a `*quic.Conn` you drive yourself; `httpstream.Requests`
+`quic.Listener.Accept` return a `*quic.Conn` you drive yourself; `httpstream.Requests`
 reads a connection you opened). Composition is with the standard library —
 `net.PacketConn`, `tls.Config`, `io`, `iter.Seq` — never a substitute for
 it. What the library implements itself — QUIC, and experimentally the HTTP

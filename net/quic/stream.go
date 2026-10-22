@@ -381,13 +381,13 @@ func (s *Stream) CloseWrite() error {
 	return err
 }
 
-// WriteClose writes p and then the FIN, as Write followed by CloseWrite
+// WriteFinal writes p and then the FIN, as Write followed by CloseWrite
 // does, in one call: the FIN rides the last STREAM frame of p, so a p that
 // fits one packet leaves as one datagram where the two calls send two. It
 // waits for credit as Write does and returns what Write returns; the FIN
 // goes only once all of p has, so an error leaves the stream open for
 // writing, as a failed Write does.
-func (s *Stream) WriteClose(p []byte) (int, error) {
+func (s *Stream) WriteFinal(p []byte) (int, error) {
 	return s.write(p, true)
 }
 
@@ -1012,6 +1012,25 @@ func (c *Conn) returnStreamSlotLocked(uni bool) {
 	c.grants = appendFrame(c.grants, typ, *limit)
 }
 
+// Credit says when the bytes a batch consumer receives through
+// [Conn.OnStreamFrames] earn the peer new flow-control credit.
+type Credit uint8
+
+const (
+	// CreditOnDelivery credits bytes as the callback receives them: the
+	// transport settles flow control, and the consumer has nothing to do.
+	CreditOnDelivery Credit = iota
+
+	// CreditOnRelease moves crediting from the transport to the consumer:
+	// delivered bytes earn the peer no new credit until the consumer calls
+	// [Conn.ReleaseStreamBytes] for them — which it must, for every
+	// delivered byte, or the peer's sending starves at the windows' initial
+	// values. What it buys: the peer can never hold more unacknowledged
+	// memory than the consumer admits to retaining, where crediting on
+	// delivery re-opens the window for bytes the consumer still holds.
+	CreditOnRelease
+)
+
 // OnStreamFrames registers a callback that receives each packet's stream
 // deltas as a group, ordered within each stream by the transport.
 //
@@ -1022,7 +1041,7 @@ func (c *Conn) returnStreamSlotLocked(uni bool) {
 //
 // # What the callback receives
 //
-// Frames with Type FrameStream carry ordered byte deltas: the transport has
+// Stream frames ([Frame.IsStream]) carry ordered byte deltas: the transport has
 // already reassembled retransmissions and reordering, so Data always extends
 // the stream exactly where the previous delivery ended, and Fin marks the
 // delta that completes the stream. Frames with Type FrameResetStream report
@@ -1049,20 +1068,36 @@ func (c *Conn) returnStreamSlotLocked(uni bool) {
 //
 // # What arrived first is not lost
 //
-// The read loop starts inside [Accept] and [Dial], so packets can arrive
+// The read loop starts inside accept and [Dial], so packets can arrive
 // before a caller has had a chance to register. Those deltas are held —
 // bounded by the connection receive window, since none of them has been
 // credited yet — and replayed here, in order, on the goroutine that
 // registers. The replay settles flow control exactly as live delivery does:
-// automatically, or not at all under [Conn.SetManualCredit].
+// automatically, or not at all under [CreditOnRelease].
+//
+// # Credit
+//
+// credit says when delivered bytes earn the peer new flow-control credit:
+// as the callback receives them ([CreditOnDelivery], the zero value), or
+// only once the consumer releases them ([CreditOnRelease]). It applies to
+// the replay above as to every later delivery.
 //
 // The callback runs on the connection's read goroutine and must not block on
 // this connection — blocking is what stops the read loop, which is the
 // back-pressure a caller wants and never a way to wait for something the
 // read loop must deliver.
-func (c *Conn) OnStreamFrames(f func([]Frame) error) {
+//
+// It panics on a credit that is neither of the two: the choice is the
+// caller's code, not data.
+func (c *Conn) OnStreamFrames(credit Credit, f func([]Frame) error) {
+	if credit > CreditOnRelease {
+		panic(fmt.Sprintf("quic: OnStreamFrames credit %d is neither CreditOnDelivery nor CreditOnRelease", credit))
+	}
 	c.deliverMu.Lock()
 	defer c.deliverMu.Unlock()
+	c.mu.Lock()
+	c.manualCredit = credit == CreditOnRelease
+	c.mu.Unlock()
 	c.onFrames = f
 	held, lost := c.pending, c.pendingLost
 	c.pending, c.pendingBytes = nil, 0

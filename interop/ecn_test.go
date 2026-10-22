@@ -91,7 +91,7 @@ func TestECNAgainstQuicGo(t *testing.T) {
 		}()
 	}()
 
-	client, err := quic.DialContext(ctx, listenUDP(t), ln.Addr(), clientTLS(), quic.DefaultParameters())
+	client, err := quic.Dial(ctx, listenUDP(t), ln.Addr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("sluice could not complete a handshake with quic-go: %v", err)
 	}

@@ -178,7 +178,7 @@ func TestHostileDatagramsDoNotKillTheConnection(t *testing.T) {
 	hooked := &hookedConn{PacketConn: serverPC}
 
 	connCh, errCh := startEchoServer(t, hooked)
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestInitialPaddingWithASmallClientHello(t *testing.T) {
 
 	cfg := clientTLS()
 	cfg.CurvePreferences = []tls.CurveID{tls.CurveP256}
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), cfg, quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), cfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial with a small ClientHello: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestManyStreamsSurvive(t *testing.T) {
 	defer clientPC.Close()
 
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestLostDatagramIsRetransmitted(t *testing.T) {
 	hooked.mu.Unlock()
 
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestReorderedFinishedDefersTheRequest(t *testing.T) {
 	hooked.mu.Unlock()
 
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), hooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestWriteAfterResetIsRefused(t *testing.T) {
 	defer clientPC.Close()
 
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestStopSendingAbandonsTheWriter(t *testing.T) {
 		stopped <- s.StopSending(0x77)
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestConnectionsLeaveNoGoroutines(t *testing.T) {
 		for range 3 {
 			serverPC, clientPC := dgram.Pair()
 			connCh, errCh := startEchoServer(t, serverPC)
-			conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+			conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 			if err != nil {
 				t.Fatalf("Dial: %v", err)
 			}
@@ -588,7 +588,7 @@ func TestErrIsSafeDuringTeardown(t *testing.T) {
 	defer serverPC.Close()
 	defer clientPC.Close()
 	connCh, errCh := startEchoServer(t, serverPC)
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestBatchModeReplenishesConnectionCredit(t *testing.T) {
 		defer conn.Close()
 		var received int
 		done := false
-		conn.OnStreamFrames(func(frames []quic.Frame) error {
+		conn.OnStreamFrames(quic.CreditOnDelivery, func(frames []quic.Frame) error {
 			for _, f := range frames {
 				if f.Type == quic.FrameStream {
 					received += len(f.Data)
@@ -670,7 +670,7 @@ func TestBatchModeReplenishesConnectionCredit(t *testing.T) {
 		<-conn.Done()
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestFlowControlBlocksAndResumes(t *testing.T) {
 		done <- nil
 	}()
 
-	conn, err := quic.Dial(clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -830,7 +830,7 @@ func TestServerProbeResendsItsWholeInitialFlight(t *testing.T) {
 	// One probe must be enough; the deadline leaves no room for a second.
 	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
-	conn, err := quic.DialContext(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("the handshake did not complete on the server's first probe: %v", err)
 	}
@@ -935,7 +935,7 @@ func TestClientProbesUnblockAnAmplificationLimitedServer(t *testing.T) {
 	connCh, errCh := startEchoServerTLS(t, &delayedConn{PacketConn: serverPC, delay: 40 * time.Millisecond}, longChainTLS(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := quic.DialContext(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	conn, err := quic.Dial(ctx, clientHooked, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		clientHooked.mu.Lock()
 		n, dr := clientDatagrams, dropped

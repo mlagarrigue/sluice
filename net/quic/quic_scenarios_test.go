@@ -31,7 +31,7 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	// Switch to batch mode so a peer-initiated stream never blocks on the
 	// accept queue — this test cares about the limit check, not about who
 	// drains AcceptStream.
-	c.OnStreamFrames(func([]Frame) error { return nil })
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	limit := DefaultParameters().InitialMaxStreamsBidi
 	streamFrame := func(id uint64) []byte {
@@ -78,7 +78,7 @@ func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
-	c.OnStreamFrames(func([]Frame) error { return nil })
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	limit := DefaultParameters().InitialMaxStreamsUni
 	streamFrame := func(id uint64) []byte {
@@ -126,7 +126,7 @@ func TestStreamDataBlockedIsCheckedLikeAStreamFrame(t *testing.T) {
 			c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
 				[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 			defer c.Close()
-			c.OnStreamFrames(func([]Frame) error { return nil })
+			c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 			err := c.frames(spaceApplication, appendFrame(nil, frameStreamDataBlocked, tt.id, 0), time.Now())
 			var te *transportError
@@ -148,7 +148,7 @@ func TestStopSendingIsNotSentWhereItMeansNothing(t *testing.T) {
 	c := newConn(&fuzzSink{addr: "scenario:self"}, fakeFuzzAddr("scenario:peer"),
 		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
 	defer c.Close()
-	c.OnStreamFrames(func([]Frame) error { return nil })
+	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	s, err := c.Stream(0) // client-initiated bidirectional, picked ahead of its first frame
 	if err != nil {

@@ -128,7 +128,7 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 			if err := c.installInitial(dcid); err != nil {
 				t.Fatal(err)
 			}
-			c.OnStreamFrames(func([]Frame) error { return nil })
+			c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 			err := tc.provoke(c)
 			if err == nil {

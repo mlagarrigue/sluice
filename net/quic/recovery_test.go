@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net"
@@ -1472,7 +1473,7 @@ func TestLoopbackHandshakeSamplesTheRTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := Dial(cpc, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+	client, err := Dial(context.Background(), cpc, pc.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}

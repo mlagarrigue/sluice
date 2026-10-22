@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"strconv"
@@ -88,7 +89,7 @@ func pmtuPairWith(t *testing.T, mtu int, params TransportParameters) (client, se
 		accepted <- c
 	}()
 	clientPC = newMTUPC(t, mtu)
-	client, err = Dial(clientPC, serverPC.LocalAddr(), ClientTLSForTest(), params)
+	client, err = Dial(context.Background(), clientPC, serverPC.LocalAddr(), ClientTLSForTest(), params)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestMaxDatagramSizeOutOfRangeIsRefused(t *testing.T) {
 		if err := p.check(); err == nil {
 			t.Errorf("MaxDatagramSize %d accepted", n)
 		}
-		if _, err := Dial(loopbackSocket(t), loopbackSocket(t).LocalAddr(), ClientTLSForTest(), p); err == nil {
+		if _, err := Dial(context.Background(), loopbackSocket(t), loopbackSocket(t).LocalAddr(), ClientTLSForTest(), p); err == nil {
 			t.Errorf("Dial with MaxDatagramSize %d succeeded", n)
 		}
 	}

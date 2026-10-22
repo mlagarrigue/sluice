@@ -383,7 +383,7 @@ func fetchAll(requests []string, kl io.Writer) error {
 		NextProtos:   []string{alpnHQ},
 		KeyLogWriter: kl,
 	}
-	c, err := quic.Dial(pc, addr, cfg, quic.DefaultParameters())
+	c, err := quic.Dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}

@@ -124,7 +124,7 @@ func TestOpenUniStreamWaitsForMaxStreams(t *testing.T) {
 	if id := first.ID(); id&0x03 != 0x02 {
 		t.Fatalf("first unidirectional stream is %d; want a client-initiated unidirectional identifier (2, 6, …)", id)
 	}
-	if _, err := first.WriteClose([]byte("one")); err != nil {
+	if _, err := first.WriteFinal([]byte("one")); err != nil {
 		t.Fatal(err)
 	}
 

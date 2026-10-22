@@ -43,7 +43,7 @@ func TestAbandonedDialEndsTheTLSHandshake(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		_, err = DialContext(ctx, pc, mute.LocalAddr(), ClientTLSForTest(), DefaultParameters())
+		_, err = Dial(ctx, pc, mute.LocalAddr(), ClientTLSForTest(), DefaultParameters())
 		cancel()
 		_ = pc.Close()
 		if err == nil {

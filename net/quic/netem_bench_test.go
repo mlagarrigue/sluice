@@ -1,6 +1,7 @@
 package quic_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -525,7 +526,7 @@ func transferAfterSmall(tb testing.TB, link *netemLink, cc quic.CongestionAlgori
 		done <- result{n: got, discarded: discarded}
 	}()
 
-	conn, err := quic.Dial(clientPC, dialTo, clientTLS(), params)
+	conn, err := quic.Dial(context.Background(), clientPC, dialTo, clientTLS(), params)
 	if err != nil {
 		return transfer{}, fmt.Errorf("Dial: %w", err)
 	}

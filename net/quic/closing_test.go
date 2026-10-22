@@ -101,7 +101,7 @@ func delayedListener(t *testing.T, delay time.Duration) *quic.Listener {
 }
 
 // The closing state on a socket the connection owns, when asked for
-// (SetClosingPeriod): the client's close is lost, the server talks on, and
+// (TransportParameters.HoldClosing): the client's close is lost, the server talks on, and
 // the client — whose read loop would otherwise have left the socket the
 // moment Close returned — answers with the close again, so the server
 // hears the code instead of waiting out its idle timeout. Wait then
@@ -114,11 +114,12 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 	}
 	defer own.Close()
 	hooked := &hookedConn{PacketConn: own}
-	client, err := quic.Dial(hooked, l.Addr(), clientTLS(), quic.DefaultParameters())
+	holding := quic.DefaultParameters()
+	holding.HoldClosing = true
+	client, err := quic.Dial(context.Background(), hooked, l.Addr(), clientTLS(), holding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetClosingPeriod(true)
 	server, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +193,7 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 		}
 		return [][]byte{b}
 	}
-	client, err := quic.Dial(hooked, addr, clientTLS(), quic.DefaultParameters())
+	client, err := quic.Dial(context.Background(), hooked, addr, clientTLS(), quic.DefaultParameters())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,11 +292,12 @@ func TestWaitEndsTheClosingPeriodWhenTheContextEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer own.Close()
-	client, err := quic.Dial(own, l.Addr(), clientTLS(), quic.DefaultParameters())
+	holding := quic.DefaultParameters()
+	holding.HoldClosing = true
+	client, err := quic.Dial(context.Background(), own, l.Addr(), clientTLS(), holding)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetClosingPeriod(true)
 	server, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)

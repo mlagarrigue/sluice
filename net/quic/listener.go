@@ -19,7 +19,7 @@ import (
 )
 
 // listenerCIDLen is the length every connection identifier a [Listener]
-// issues gets — the same 8 bytes [Dial] and standalone [Accept] have always
+// issues gets — the same 8 bytes [Dial] and standalone accept have always
 // used (randomID(8), every call site), so a short-header packet's DCID can
 // be peeled off with [ParseShortHeader] without first knowing which
 // connection it belongs to.
@@ -209,8 +209,8 @@ type ListenerConfig struct {
 	TokenKey [32]byte
 }
 
-// Listener owns one [net.PacketConn] shared by many connections, the thing a
-// bare [Accept] cannot do on its own (see its doc comment). It demultiplexes
+// Listener owns one [net.PacketConn] shared by the connections it serves, and
+// is how this package serves at all. It demultiplexes
 // incoming datagrams by connection identifier, defends RFC 9000 §8's
 // anti-amplification limit against an unvalidated address, and optionally
 // issues a Retry (see [ListenerConfig.AlwaysRetry]) before trusting one at
@@ -361,9 +361,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 }
 
 // NewListener starts demultiplexing pc. cfg and params are what every
-// accepted connection's handshake uses — the same arguments [Accept] takes,
-// since a Listener is [Accept] generalised to a shared socket rather than a
-// different handshake. pc is any [net.PacketConn]; a [net.UDPConn] is
+// accepted connection's handshake uses. pc is any [net.PacketConn]; a [net.UDPConn] is
 // given the socket options RFC 9000 asks for ("The socket is the caller's"
 // in the package documentation). cfg's callbacks run on each connection's
 // receive goroutine, and a slow one stalls that connection alone ("The TLS
@@ -445,9 +443,8 @@ func packetInfoSocket(pc net.PacketConn) *net.UDPConn {
 }
 
 // Accept blocks until a new connection's handshake completes, mirroring
-// [net.Listener.Accept]'s shape and [Accept]'s own existing return
-// contract: what comes back is already past its handshake, not merely
-// dialled.
+// [net.Listener.Accept]'s shape, with [Dial]'s return contract: what comes
+// back is already past its handshake, not merely dialled.
 func (l *Listener) Accept() (*Conn, error) {
 	select {
 	case <-l.stop:
@@ -1064,7 +1061,7 @@ func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initial
 // connection additionally needs: its demux entries, its listener-fed
 // incoming channel instead of exclusive socket ownership, and — for a
 // direct (non-Retry) attempt — the same anti-amplification accounting the
-// standalone [Accept] applies to its own unvalidated peer.
+// standalone accept applies to its own unvalidated peer.
 func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, rt *retryToken, keys *initialKeys, via net.PacketConn, ecn uint8) {
 	c, err := newServerConn(via, from, h, l.cfg, l.params, rt, keys, l.prepareConn)
 	if err != nil {

@@ -26,7 +26,7 @@ func TestNoMaxStreamDataOnceTheSizeIsKnown(t *testing.T) {
 	if initial != 1<<18 {
 		t.Fatalf("the peer's stream window is %d, the test assumes %d", initial, 1<<18)
 	}
-	if _, err := cs.WriteClose(make([]byte, body)); err != nil {
+	if _, err := cs.WriteFinal(make([]byte, body)); err != nil {
 		t.Fatal(err)
 	}
 	ss, err := server.AcceptStream(t.Context())
