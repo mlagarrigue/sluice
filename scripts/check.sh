@@ -39,9 +39,14 @@ format() {
 # nested <dir>: vet and lint a module beside the root one, which the root's
 # ./... skips. Their tests want PostgreSQL, a quic-go peer or a load campaign
 # and stay in CI; compiling, vet and lint are what a push would otherwise
-# learn from CI first.
+# learn from CI first. The one exception is interop's result guard, which
+# reads a recorded pass and needs no peer: an edit of
+# interop/expected-results.json is checked here rather than in CI.
 nested() {
-  (cd "$1" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./...)
+  (cd "$1" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./...) || return 1
+  if [ "$1" = interop ]; then
+    (cd "$1" && GOWORK=off go test -run '^TestExpectedResultsGuard$' .)
+  fi
 }
 
 step vet go vet ./...
