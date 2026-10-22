@@ -1382,8 +1382,30 @@ func TestAckCostIsIndependentOfTheFlightAbove(t *testing.T) {
 		return best
 	}
 	small, large := cost(2*frames), cost(32*frames)
+	// Windows reads the monotonic clock at the system timer's resolution,
+	// where the smaller block — tens of microseconds — reads zero. Timing it
+	// over enough repetitions would take a gigabyte of tracked packets, so a
+	// clock this coarse is said to be one, rather than read as a ratio.
+	if tick := clockTick(); small < 50*tick {
+		t.Skipf("the clock ticks every %v and the smaller block took %v: too short to time here", tick, small)
+	}
 	if ratio := float64(large) / float64(small); ratio > 4 {
 		t.Errorf("%d one-packet ACKs cost %v under a flight of %d, %v under %d: %.1f×, want independent of the flight (under 4×)",
 			frames, small, 2*frames, large, 32*frames, ratio)
 	}
+}
+
+// clockTick is the smallest step the monotonic clock is seen to take: tens
+// of nanoseconds on Linux, the system timer's period on Windows.
+func clockTick() time.Duration {
+	tick := time.Duration(1<<63 - 1)
+	for range 5 {
+		start := time.Now()
+		next := time.Now()
+		for next.Sub(start) == 0 {
+			next = time.Now()
+		}
+		tick = min(tick, next.Sub(start))
+	}
+	return tick
 }
