@@ -25,6 +25,11 @@ const (
 // listener report a read error, and a dialled connection's read loop
 // fail outright. UDP has no connection to reset; the datagram that
 // provoked the ICMP is simply lost, which QUIC already handles.
+//
+// It is the one use of unsafe in the module's production code, the named
+// exception to the architecture's rule S4: syscall.WSAIoctl takes its
+// input buffer as a *byte and a length, and the four bytes of enable are
+// what it reads. The pointer does not outlive the call.
 func disableConnReset(h syscall.Handle) error {
 	enable := uint32(0)
 	var returned uint32

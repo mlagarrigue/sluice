@@ -55,6 +55,19 @@ for f in $(git ls-files | grep -E '^\.[^/]+$'); do
   esac
 done
 
+# unsafe is forbidden in production code except under a named audit (S4 in
+# the architecture's rules). The audited files are listed here, and a new
+# import of unsafe outside a test fails until it is named in S4 and here.
+# gosec does not run under GOOS=windows, where the only exception lives, so
+# this is the check that sees it.
+audited_unsafe=' net/quic/udp/configure_windows.go '
+for f in $(git grep -lE '^import .unsafe.|^[[:space:]]+.unsafe.' -- '*.go' ':!*_test.go'); do
+  case "$audited_unsafe" in
+    *" $f "*) ;;
+    *) echo "check-hygiene: $f imports unsafe outside the audited list (S4)" >&2; status=1 ;;
+  esac
+done
+
 # Every shell script is tracked executable. Checked on the index, not the
 # disk: a checkout on another machine gets the mode git recorded. The path
 # benchmarks' gate, committed 100644, failed its CI job with "Permission

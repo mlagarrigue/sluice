@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strconv"
 	"sync"
 	"syscall"
-	"unsafe"
 )
 
 // Winsock names (ws2ipdef.h) and error codes (winerror.h), spelled here
@@ -23,8 +23,9 @@ const (
 
 // WSACMSGHDR (ws2def.h) is { SIZE_T cmsg_len; INT cmsg_level; INT
 // cmsg_type; }, and WSA_CMSG_LEN / WSA_CMSG_SPACE align the header and the
-// data to the pointer size.
-const cmsgLenSize = int(unsafe.Sizeof(uintptr(0)))
+// data to the pointer size, which is the size of an int on every platform Go
+// supports.
+const cmsgLenSize = strconv.IntSize / 8
 
 // segmentation records, once per process, whether Winsock has
 // UDP_SEND_MSG_SIZE, which older releases lack.

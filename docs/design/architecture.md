@@ -1639,7 +1639,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S1 | No unbounded allocation. Every bound is mandatory: a zero field is its safe default, never its absence ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)). | Overflow → error, not OOM |
 | S2 | No `panic` crosses a public boundary, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzing of the parsers — `Path.JSONPointer` covered; every sentinel goes through one constructor |
 | S3 | Restrictive default limits. | Review of the defaults |
-| S4 | `unsafe` forbidden except under a named audit. | `go vet` + review |
+| S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` (the audited files) + review |
 | S5 | Mandatory timeouts on all I/O. | Silent connection → released |
 | S6 | No goroutine leak. | In-house detector |
 | S7 | Internal errors do not leak to the client. | **Guaranteed by structure**: `cause` unexported ([The model adopted](#the-model-adopted)) |
