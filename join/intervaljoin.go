@@ -72,8 +72,9 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // [sluice.ErrOverflow] when it is reached, and [sluice.DropNewest] stops retaining new rows
 // — an arriving row still probes and joins against what is buffered, but is
 // not kept for rows yet to come, so the result is missing pairs, never wrong
-// ones. Under a dropping policy the first drop reports a Critical diagnostic
-// to limit.Diagnostics when one is set, once rather than per row (§4.5).
+// ones. Under a dropping policy the first drop calls limit.Report when one is
+// set — typically to raise a Critical diagnostic — once rather than per row
+// (§4.5).
 //
 // # Cost
 //

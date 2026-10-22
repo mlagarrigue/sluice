@@ -38,8 +38,8 @@ package diagnostics
 // # Concurrency
 //
 // A Collector is used by one goroutine and is not itself safe to share. The
-// shape that trips this up: a collector handed to an operator's limit (such
-// as join.BuildLimit.Diagnostics) is written by whichever goroutine drives
+// shape that trips this up: a collector an operator's report writes to (such
+// as one join.BuildLimit.Report adds to) is written by whichever goroutine drives
 // that operator — behind a parallel.Async, the producer goroutine — so calling
 // All or Truncated while the pipeline still runs is a data race. Read it on
 // the same goroutine, or after the stream has completed.
