@@ -556,6 +556,7 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 		// end's Initial response could have the keys to produce one. The
 		// anti-amplification limit stops mattering from here.
 		c.amplActive = false
+		c.extendHandshakeLocked()
 	}
 	c.mu.Unlock()
 

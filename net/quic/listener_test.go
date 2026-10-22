@@ -474,3 +474,116 @@ func TestListenerAnnouncesItsPreferredAddress(t *testing.T) {
 		t.Errorf("server migrations = %d, want 1", n)
 	}
 }
+
+// handshakeLength finds the long-header Handshake packets among a
+// datagram's coalesced packets and reads the largest Length field, the size
+// of what follows it; ok is false when the datagram carries none.
+func handshakeLength(b []byte) (n uint64, ok bool) {
+	varint := func(b []byte) (uint64, int) {
+		if len(b) == 0 || len(b) < 1<<(b[0]>>6) {
+			return 0, 0
+		}
+		l := 1 << (b[0] >> 6)
+		v := uint64(b[0] & 0x3f)
+		for i := 1; i < l; i++ {
+			v = v<<8 | uint64(b[i])
+		}
+		return v, l
+	}
+	for len(b) >= 7 && b[0]&0x80 != 0 {
+		typ := (b[0] >> 4) & 3
+		off := 5
+		off += 1 + int(b[off]) // destination connection ID
+		if off >= len(b) {
+			return 0, false
+		}
+		off += 1 + int(b[off]) // source connection ID
+		if typ == 0 {          // an Initial's token
+			tl, w := varint(b[off:])
+			if w == 0 {
+				return 0, false
+			}
+			off += w + int(tl)
+		}
+		length, w := varint(b[off:])
+		if w == 0 {
+			return 0, false
+		}
+		if typ == 2 {
+			n, ok = max(n, length), true
+		}
+		end := off + w + int(length)
+		if end > len(b) {
+			return n, ok
+		}
+		b = b[end:]
+	}
+	return n, ok
+}
+
+// A client whose Finished is lost has proved its address with the
+// acknowledgements that do arrive, and its handshake is alive: the server
+// waits for the Finished past HandshakeTimeout, up to the idle timeout
+// counted from the start. Here every Handshake packet of the client large
+// enough to carry CRYPTO is dropped for 700 ms, its acknowledgements pass,
+// and the server's HandshakeTimeout is 300 ms — under a fixed deadline the
+// server closed before the Finished came through (runner handshakeloss
+// against ngtcp2 and quinn).
+func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
+	l, addr := newUDPListener(t, quic.ListenerConfig{HandshakeTimeout: 300 * time.Millisecond})
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &hookedConn{PacketConn: udp}
+	var dropUntil time.Time
+	dropped, passed := 0, 0
+	client.filterWrite = func(b []byte) [][]byte {
+		n, ok := handshakeLength(b)
+		if !ok {
+			return [][]byte{b}
+		}
+		if n < 40 { // an ACK alone
+			passed++
+			return [][]byte{b}
+		}
+		if dropUntil.IsZero() {
+			dropUntil = time.Now().Add(700 * time.Millisecond)
+		}
+		if time.Now().Before(dropUntil) {
+			dropped++
+			return nil
+		}
+		return [][]byte{b}
+	}
+	conn, err := quic.Dial(client, addr, clientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	got := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		client.mu.Lock()
+		d, p := dropped, passed
+		client.mu.Unlock()
+		t.Fatalf("the server never accepted the connection (%d Finished packets dropped, %d acknowledgements passed)", d, p)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if dropped == 0 || passed == 0 {
+		t.Fatalf("dropped %d Finished packets and passed %d acknowledgements; the test did not set up what it checks", dropped, passed)
+	}
+}

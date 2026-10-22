@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout)
 - **Theme:** quic
 
 ## Problem
@@ -37,7 +37,10 @@ destination connection identifier; a managed `Conn` reads from a channel.
 Each handshake runs on its own goroutine, bounded by `MaxPendingConns`
 (counting connections parked for `Accept`, capped at twice that figure
 with a stateless `CONNECTION_REFUSED` beyond) and by `HandshakeTimeout`
-(how long one may hold its slot; the client's default when unset); what the
+(how long one may hold its slot; the client's default when unset; once the
+client's first Handshake packet authenticates, which validates its address
+under RFC 9000 §8.1, the deadline moves once to the handshake's start plus
+the connection's idle timeout, when that is later); what the
 listener carries in total, accepted connections included, is bounded by
 `MaxConns` and per source address by `MaxConnsPerIP`, both unset by default
 and refused the same way. `MaxConnsPerIP` counts an address by its prefix —
@@ -133,6 +136,24 @@ and the TTL is then the whole bound (§8.1.4 says "prevented or limited").
 In plain words: a given key is a deployment secret; whoever holds it can
 end any connection (`StatelessResetKey`) or forge a token that validates
 an address (`TokenKey`).
+
+A fixed handshake deadline closes handshakes that are alive. Under 30 %
+loss a client's Finished goes missing, its next probe is due 12 s in, and a
+server that closed at 10 s answers it with INTERNAL_ERROR (the runner's
+handshakeloss case against ngtcp2 and quinn). quic-go holds the same 10 s
+(twice `HandshakeIdleTimeout`, counted from the connection's creation).
+What the move costs: a client that validates its address and then stalls
+keeps its pending slot up to the idle timeout (30 s by default) rather than
+`HandshakeTimeout`. Only a client that answered from its own address with
+the handshake keys gets that far, and it could as well complete the
+handshake and hold a connection that long under `MaxConns`; a client that
+never validates stays bounded by `HandshakeTimeout`. An idle timeout with
+no ceiling was set aside, because a client sending an occasional Handshake
+PING would keep its slot forever. Extending on 1-RTT packets the server
+cannot read yet was set aside too, because nothing authenticates them
+before the 1-RTT keys. In plain words: a client proven as well as an
+established peer is given the time an idle established connection would
+have.
 
 Known residuals, stated rather than hidden: interoperation against a
 foreign implementation remains the missing proof — the harness drops,

@@ -85,6 +85,16 @@ type Conn struct {
 	// otherwise block until the handshake deadline. Guarded by mu.
 	hsSyncRead bool
 	hsWake     bool
+	// hsDeadline is when the running handshake gives up, hsStart when it
+	// began. hsExtendable lets a server's deadline move once, when the
+	// client's first authenticated Handshake packet proves its address
+	// (extendHandshakeLocked). handshakeBudget is a Listener's
+	// HandshakeTimeout, zero meaning [DefaultHandshakeTimeout]. Guarded by
+	// mu.
+	hsDeadline      time.Time
+	hsStart         time.Time
+	hsExtendable    bool
+	handshakeBudget time.Duration
 	// writeFailures counts every failed send, refusal or not. Guarded by mu.
 	writeFailures uint64
 
@@ -1147,11 +1157,22 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 			return err
 		}
 	}
-	deadline := time.Now().Add(DefaultHandshakeTimeout)
+	start := time.Now()
+	c.mu.Lock()
+	budget := DefaultHandshakeTimeout
+	if c.handshakeBudget > 0 {
+		budget = c.handshakeBudget
+	}
+	deadline := start.Add(budget)
 	ctxDeadline, fromCtx := ctx.Deadline()
 	if fromCtx {
 		deadline = ctxDeadline
 	}
+	// Only a deadline this package chose may move: a caller's context says
+	// what the caller wants, and a client has no address of the peer's to
+	// see validated.
+	c.hsStart, c.hsDeadline, c.hsExtendable = start, deadline, !fromCtx && !c.isClient
+	c.mu.Unlock()
 	fired := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		c.fail(abandonedErr(ctx))
@@ -1190,6 +1211,7 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 		// (§12.2): gathered across pump, flushed before the next read.
 		c.mu.Lock()
 		c.gatherLocked(true)
+		deadline = c.hsDeadline // extendHandshakeLocked may have moved it
 		c.mu.Unlock()
 		done, err := c.pump()
 		c.mu.Lock()
@@ -1285,9 +1307,13 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 			}
 			continue
 		}
+		c.mu.Lock()
+		deadline = c.hsDeadline
+		c.mu.Unlock()
 		if !got && errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil && time.Now().Before(deadline) {
 			// Not the deadline: a send refusal woke the read (hsWake) so
-			// the refusal count at the top of the loop is re-taken now.
+			// the refusal count at the top of the loop is re-taken now,
+			// or the deadline moved while the read waited on the old one.
 			continue
 		}
 		if !got && sockErr != nil && !heard && errors.Is(err, os.ErrDeadlineExceeded) {
@@ -1298,6 +1324,32 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 		}
 		c.abort(err)
 		return err
+	}
+}
+
+// extendHandshakeLocked moves a server's handshake deadline, once, to the
+// handshake's start plus the connection's idle timeout, when that is later:
+// called when the client's first Handshake packet authenticates, which
+// validates its address (RFC 9000 §8.1). From then on the client is as
+// proven as any established peer, and RFC 9000 §10.1 ends those by the idle
+// timeout, not by a clock started at their first packet. The fixed deadline
+// closed handshakes that were alive: under 30 % loss a client's Finished
+// went missing, its next probe was due 12 s in, and the server had closed
+// with INTERNAL_ERROR at 10 s (runner handshakeloss against ngtcp2 and
+// quinn). The pending slot a client can hold grows with it, from the
+// HandshakeTimeout to the idle timeout — but only for a client that
+// answered from its own address with the handshake keys, which could as
+// well complete and hold a connection that long. Callers hold mu.
+func (c *Conn) extendHandshakeLocked() {
+	if !c.hsExtendable {
+		return
+	}
+	c.hsExtendable = false
+	if c.idleTimeout == 0 {
+		return
+	}
+	if d := c.hsStart.Add(c.idleTimeout); d.After(c.hsDeadline) {
+		c.hsDeadline = d
 	}
 }
 

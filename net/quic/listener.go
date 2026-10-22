@@ -73,7 +73,12 @@ type ListenerConfig struct {
 	// and together they cap what a slow or stalled peer can occupy. Lower
 	// it under load; a few seconds is plenty on any path a handshake can
 	// succeed on. Zero means [DefaultHandshakeTimeout], the client's
-	// figure; a negative value is refused by [NewListener].
+	// figure; a negative value is refused by [NewListener]. Once the
+	// client's first Handshake packet authenticates, which validates its
+	// address, the bound becomes the handshake's start plus the
+	// connection's idle timeout when that is later: a proven client whose
+	// Finished was lost is given the time an idle established connection
+	// would have.
 	HandshakeTimeout time.Duration
 
 	// MaxConns bounds every connection the listener carries — mid-handshake,
@@ -1189,12 +1194,13 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 	if err := c.receiveGathered(rawDatagram{data: first, from: from, via: c.pc, ecn: ecn}); err != nil {
 		return // an authenticated violation on its own first packet; abort already closed it
 	}
-	// The handshake runs under HandshakeTimeout. Cancelling the context
-	// afterwards is inert: handshake stops its own AfterFunc before it
-	// returns, so an accepted connection is not killed by the cancel.
-	ctx, cancel := context.WithTimeout(context.Background(), l.lcfg.HandshakeTimeout)
-	err := c.handshake(ctx)
-	cancel()
+	// The handshake runs under HandshakeTimeout, which the connection
+	// keeps rather than a context's deadline: a client that proves its
+	// address may move it once (extendHandshakeLocked).
+	c.mu.Lock()
+	c.handshakeBudget = l.lcfg.HandshakeTimeout
+	c.mu.Unlock()
+	err := c.handshake(context.Background())
 	if err != nil {
 		return // the handshake path closes on every failure, same as Accept's
 	}
