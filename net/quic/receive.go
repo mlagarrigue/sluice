@@ -530,6 +530,11 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	// move the path, so a straggler from an abandoned address cannot drag
 	// it backwards.
 	c.rxHighest = pn == sp.largest
+	// Recorded only once the packet authenticated: the identifier a peer
+	// sends under is what tells this end it has consumed a spare.
+	if space == spaceApplication && c.rxLocalCIDSeq > c.peerLocalSeq {
+		c.peerLocalSeq = c.rxLocalCIDSeq
+	}
 	if c.idleTimeout != 0 {
 		// Never backwards: a deferred packet's arrival time can predate a
 		// deadline a later packet already set.

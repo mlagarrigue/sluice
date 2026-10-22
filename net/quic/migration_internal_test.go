@@ -287,6 +287,122 @@ func TestRetireOnAConnectionThatIssuedNothing(t *testing.T) {
 	wantViolation(t, err, transportProtocolViolation, "retiring a sequence never issued")
 }
 
+// A peer with active_connection_id_limit 2 holds sequences 0 and 1. Once its
+// packets arrive under 1 it has no spare, and nginx, which neither reuses
+// the current identifier on a rebound address nor retires the abandoned
+// one, stops following the next NAT rebind. The next NEW_CONNECTION_ID
+// carries Retire Prior To 1 (RFC 9000 §5.1.2); the value moves again only
+// after the peer retired everything below it.
+func TestAPeerOnItsLastIdentifierIsGivenASpare(t *testing.T) {
+	self := &recordingPC{addr: fakeFuzzAddr("spare:self")}
+	c, peer := newKeyedConnOn(t, self, &recordingPC{addr: fakeFuzzAddr("spare:peer")})
+	reg := newTestRegistrar()
+	c.mu.Lock()
+	c.registrar = reg
+	c.hasPeerParams = true
+	c.peerParams.ActiveConnIDLimit = 2
+	c.issueLocalCIDsLocked()
+	c.control, c.controlNewCIDs = nil, 0
+	cidOf := func(seq uint64) []byte {
+		for _, e := range c.localCIDs {
+			if e.seq == seq {
+				return e.cid
+			}
+		}
+		return nil
+	}
+	seq1 := cidOf(1)
+	c.mu.Unlock()
+	if seq1 == nil {
+		t.Fatal("no sequence 1 issued under a limit of 2")
+	}
+
+	sec, err := initialSecrets([]byte("app-secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// newCIDs returns the NEW_CONNECTION_ID frames sent since the last call.
+	sent := 0
+	newCIDs := func() []Frame {
+		t.Helper()
+		var out []Frame
+		writes := self.recorded()
+		for _, w := range writes[sent:] {
+			payload, _, err := opener.Open(w.data, 1+len(c.dcid), 0)
+			if err != nil {
+				t.Fatalf("a datagram does not open: %v", err)
+			}
+			frames, err := parseFrames(nil, payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range frames {
+				if f.Type == frameNewConnectionID {
+					out = append(out, f)
+				}
+			}
+		}
+		sent = len(writes)
+		return out
+	}
+	pn := uint64(0)
+	deliver := func(dcid, payload []byte) {
+		t.Helper()
+		if err := c.receive(shortPacket(t, peer, 0, dcid, pn, payload), c.peer); err != nil {
+			t.Fatal(err)
+		}
+		pn++
+	}
+	ping := append([]byte{framePing}, make([]byte, 40)...)
+
+	deliver([]byte("scid0000"), ping)
+	if got := newCIDs(); len(got) != 0 {
+		t.Fatalf("%d NEW_CONNECTION_ID sent while the peer still has sequence 1 spare", len(got))
+	}
+
+	deliver(seq1, ping)
+	got := newCIDs()
+	if len(got) != 1 || got[0].value != 2 || got[0].offset != 1 {
+		t.Fatalf("after the peer moved to sequence 1: %+v, want one NEW_CONNECTION_ID 2 with Retire Prior To 1", got)
+	}
+	seq2 := got[0].Data[:len(got[0].Data)-16]
+
+	// Sequence 0 still routes until the peer retires it; while it has not,
+	// a move to 2 raises nothing (§5.1.2's SHOULD NOT).
+	c.mu.Lock()
+	kept := cidOf(0) != nil
+	c.mu.Unlock()
+	if !kept {
+		t.Fatal("sequence 0 stopped being accepted before the peer retired it")
+	}
+	deliver(seq2, ping)
+	if got := newCIDs(); len(got) != 0 {
+		t.Fatalf("Retire Prior To raised again before sequence 0 was retired: %+v", got)
+	}
+
+	// The retirement lands: the one below the threshold leaves without a
+	// replacement — it no longer counted — and the move to 2, still with
+	// no spare, now gets sequence 3 with Retire Prior To 2.
+	deliver(seq2, append(appendFrame(nil, frameRetireConnectionID, 0), ping...))
+	got = newCIDs()
+	if len(got) != 1 || got[0].value != 3 || got[0].offset != 2 {
+		t.Fatalf("after sequence 0 was retired: %+v, want one NEW_CONNECTION_ID 3 with Retire Prior To 2", got)
+	}
+	deliver(seq2, append(appendFrame(nil, frameRetireConnectionID, 1), ping...))
+	if got := newCIDs(); len(got) != 0 {
+		t.Fatalf("retiring sequence 1 below the threshold issued %+v", got)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.localCIDs) != 2 || cidOf(2) == nil || cidOf(3) == nil {
+		t.Errorf("active identifiers %+v, want sequences 2 and 3", c.localCIDs)
+	}
+}
+
 // --- B. Peer identifier consumption ----------------------------------------
 
 // Retire Prior To retires every pooled sequence below it — RETIRE frames

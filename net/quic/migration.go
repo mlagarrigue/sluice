@@ -251,7 +251,22 @@ func (c *Conn) localCIDSeqFor(dcid []byte) (uint64, bool) {
 // sequence is the §19.16 violation handleRetireConnectionID refuses, and a
 // conformant peer, which can only retire what it was sent, never meets the
 // bound. The deficit is made up when the queue drains: flushControlLocked
-// tops up after every processed packet. Callers hold mu.
+// tops up after every processed packet.
+//
+// The peer is also kept with a spare when it holds on to identifiers it has
+// stopped using. Once its packets arrive under the highest sequence issued,
+// with the active set full, it has nothing left for the next new path, and
+// a peer that will not reuse the current identifier on a rebound address
+// (§9.5 only lets it) stops following this end: nginx logs "no available
+// client ids for new path" and keeps sending to the port the NAT
+// abandoned, its old identifier never retired despite §5.1.2's SHOULD
+// (runner rebind-port, nginx with active_connection_id_limit 2). The next
+// NEW_CONNECTION_ID then carries Retire Prior To at the sequence in use
+// (§5.1.2), which §5.1.1 lets exceed the peer's limit for as long as the
+// retirements take; the entries below it stop counting as active but keep
+// routing until the peer retires them. The value is raised again only
+// once those have all left, as §5.1.2 asks, so at most one set waits.
+// Callers hold mu.
 func (c *Conn) issueLocalCIDsLocked() {
 	if c.registrar == nil || !c.handshakeConfirmed {
 		return
@@ -261,7 +276,17 @@ func (c *Conn) issueLocalCIDsLocked() {
 		limit = c.peerParams.ActiveConnIDLimit
 	}
 	limit = min(limit, c.params.ActiveConnIDLimit)
-	for uint64(len(c.localCIDs)) < limit && uint64(c.controlNewCIDs) < limit { //nolint:gosec // G115: a count, never negative
+	if c.peerLocalSeq > c.localRetirePrior && c.activeLocalCIDsLocked() >= limit {
+		spare, pending := false, false
+		for _, e := range c.localCIDs {
+			spare = spare || e.seq > c.peerLocalSeq
+			pending = pending || e.seq < c.localRetirePrior
+		}
+		if !spare && !pending {
+			c.localRetirePrior = c.peerLocalSeq
+		}
+	}
+	for c.activeLocalCIDsLocked() < limit && uint64(c.controlNewCIDs) < limit { //nolint:gosec // G115: a count, never negative
 		cid, err := c.registrar.addLocalCID(c)
 		if err != nil {
 			return // a full table or a dying listener; the connection works without
@@ -274,12 +299,25 @@ func (c *Conn) issueLocalCIDsLocked() {
 		c.localCIDs = append(c.localCIDs, localCID{seq: seq, cid: cid})
 		c.control = AppendVarint(c.control, frameNewConnectionID)
 		c.control = AppendVarint(c.control, seq)
-		c.control = AppendVarint(c.control, 0)        // Retire Prior To: never forced here
+		c.control = AppendVarint(c.control, c.localRetirePrior)
 		c.control = append(c.control, byte(len(cid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 		c.control = append(c.control, cid...)
 		c.control = append(c.control, token[:]...)
 		c.controlNewCIDs++
 	}
+}
+
+// activeLocalCIDsLocked counts the identifiers the peer may still hold
+// active: those at or past the Retire Prior To this end has asked for.
+// Callers hold mu.
+func (c *Conn) activeLocalCIDsLocked() uint64 {
+	var n uint64
+	for _, e := range c.localCIDs {
+		if e.seq >= c.localRetirePrior {
+			n++
+		}
+	}
+	return n
 }
 
 // handleRetireConnectionID acts on the peer retiring one of this end's

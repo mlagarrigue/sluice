@@ -392,8 +392,14 @@ type Conn struct {
 	registrar cidRegistrar
 	// localCIDs are the identifiers this end currently answers to, sequence
 	// 0 being scid; nextLocalSeq numbers the next one issued.
-	localCIDs    []localCID
-	nextLocalSeq uint64
+	// localRetirePrior is the Retire Prior To this end has asked for: the
+	// entries below it wait on the peer's RETIRE_CONNECTION_ID and no
+	// longer count as active. peerLocalSeq is the highest local sequence
+	// an authenticated packet of the peer's arrived under.
+	localCIDs        []localCID
+	nextLocalSeq     uint64
+	localRetirePrior uint64
+	peerLocalSeq     uint64
 	// peerCIDs pools the identifiers the peer issued for itself;
 	// peerRetirePrior is the highest Retire Prior To honoured so far, and
 	// currentPeerSeq says which pooled entry dcid currently is.
