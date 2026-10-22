@@ -276,6 +276,11 @@ jobs:
       - name: Turn TLS on, RSA certificate
         run: scripts/pg-tls.sh ${{ job.services.postgres.id }} rsa "$RUNNER_TEMP/pg-rsa"
 
+      # md5, password and trust, each in front of a role of its own, so the
+      # connector meets every method a pg_hba.conf can impose on it.
+      - name: Put md5, password and trust in pg_hba.conf
+        run: scripts/pg-hba.sh ${{ job.services.postgres.id }}
+
       # A skipped integration test reads exactly like a passing one, so the
       # skips that mean "no server" or "wrong role" fail the job, and so does
       # the protocol 3.2 test not passing on the server that is there to run it.
@@ -285,6 +290,7 @@ jobs:
           PG_MAJOR: ${{ matrix.postgres }}
           SLUICE_PG_TLS_CA: ${{ runner.temp }}/pg-rsa/server.crt
           SLUICE_PG_TLS_SIGALG: SHA256-RSA
+          SLUICE_PG_HBA: '1'
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
           if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set|SLUICE_PG_PASSWORD is not set|accepted a wrong password' test.log; then
@@ -297,6 +303,10 @@ jobs:
           fi
           if [ "$PG_MAJOR" -ge 17 ] && ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/direct' test.log; then
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
+            exit 1
+          fi
+          if ! grep -- '--- PASS: TestIntegrationAuthMethods ' test.log; then
+            echo "::error::the md5, password and trust methods were not all met against PostgreSQL $PG_MAJOR" >&2
             exit 1
           fi
           if ! grep -- '--- PASS: TestIntegrationChannelBindingOverTLS/cancel' test.log; then
