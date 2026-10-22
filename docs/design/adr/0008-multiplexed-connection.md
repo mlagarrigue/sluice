@@ -122,11 +122,15 @@ HTTP/2 holds HTTP/1.1 (1.01-1.05) and HTTP/3 stays at 1.34-1.62 times it at
 nothing, so it is not CPU. The server's share follows the size of the
 bursts the gateway releases: at 64 keys, HTTP/3 is 0.43 ms over HTTP/1.1 at
 the p50; at 4 keys, 0.20 ms, the apparatus' own gap. The responses one
-window releases all leave through the listener's UDP socket, and writes on
-one descriptor go one after the other, where HTTP/1.1 and HTTP/2 each write
-on a TCP socket of their own. The HTTP/3 p99 is therefore judged against
-the trivial server's HTTP/3 p99, not against HTTP/1.1; what can still lower
-the server's share is sending across connections in one batch. Measured
+window releases all leave through the listener's UDP socket, where
+HTTP/1.1 and HTTP/2 each write on a TCP socket of their own, and Go takes
+one write lock per descriptor; but spreading the server's writes over eight
+duplicated descriptors, which halves a burst of sixteen sends on the
+loopback (117 to 63 µs), left the p50 where it was (three alternated
+rounds), so the lock is not that share. What remains unmeasured is the rest
+of a burst's path: a goroutine, a seal and a datagram per response, and the
+quic-go client taking sixteen at once. The HTTP/3 p99 is therefore judged
+against the trivial server's HTTP/3 p99, not against HTTP/1.1. Measured
 locally on 2026-10-22, the server on two cores, 8,000 requests per second,
 two or three alternated rounds.
 
