@@ -1111,8 +1111,13 @@ plans for a single logical query.
 `= ANY($1)` takes **an array in a single parameter**: a single query shape
 whatever N is, hence **a single prepared plan**.
 
-> **Rule.** The builder produces **one canonical shape per logical query, never
-> parameterized by N.**
+> **Rule.** A query keeps **one canonical shape per logical query, never
+> parameterized by N.** The caller writes `= ANY($1)` today, since
+> `Conn.Query` takes the caller's SQL; a query builder, which is not built,
+> would apply the rule itself.
+
+The same shape on other backends, none of which this module supports (the
+limits guide: PostgreSQL only):
 
 | Backend | Strategy |
 |---|---|
@@ -1354,19 +1359,22 @@ reflection works **row by row and field by field**, which breaks vectorization.
 
 ### Collections: never a cartesian product
 
-Two collection `Include`s **at the same level** produce a cross product (10 posts
-× 10 contributors = 100 rows for a blog). In a batch engine, we already have the
-parent keys: **separate queries + in-memory join**. Sort order must be made
-deterministic by construction.
+Two collections loaded **at the same level** through joins produce a cross
+product (10 posts × 10 contributors = 100 rows for a blog). The module has no
+`Include`; a batch engine already has the parent keys, so the shape to follow
+is **separate queries + in-memory join**, with a sort order deterministic by
+construction.
 
 ### Security by construction
 
 1. **Values never travel through SQL text** — only in Bind. With `= ANY($1)`,
-   1024 values remain **one parameter**: zero injection surface.
-2. **Identifiers come from a catalog generated** at compile time — a column name
-   is a *Go symbol*, not a string.
-3. **Typed builder**: an invalid state is not representable. No public
-   `Raw(string)` in the nominal path.
+   1024 values remain **one parameter**: zero injection surface. The SQL is
+   the caller's; the statements this package writes itself carry no value
+   (`SetLocal` binds its value, a savepoint name is validated).
+2. **Not built: a generated catalog of identifiers**, which would make a
+   column name a *Go symbol* rather than a string.
+3. **Not built: a typed builder**, which would make an invalid state
+   unrepresentable.
 
 ---
 
@@ -1639,7 +1647,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | S10 | Every operator propagates `false` and lets the generator unwind. | Prompt finalization test |
 | S11 | No unbounded buffer between two operators. | Review + pressure test |
 | **S12** | **Diagnostics ceiling per element and per batch.** | Pathological batch → counted truncation |
-| **S13** | **No value travels through SQL text.** | Builder review + fuzzing |
+| **S13** | **No value travels through SQL text.** | `TestSetLocalNeverPutsTheValueIntoSQL`, `TestSavepointRejectsHostileNames` |
 | **S14** | **An operator that retains a batch beyond the call that received it copies it first.** | `-race` composition test with a buffer-reusing upstream (`Convert \|> X`), per goroutine-crossing operator |
 
 **S9** — if the sequence is not exhausted and `stop()` is not called, the
