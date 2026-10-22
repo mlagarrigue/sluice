@@ -98,5 +98,55 @@
       "rebind-addr": "succeeded",
       "connectionmigration": "failed: ngtcp2's server probes a new path only after a non-probing packet, and the runner wants a PATH_CHALLENGE in its first packet there"
     }
+  },
+  "msquic": {
+    "server": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "succeeded",
+      "multiplexing": "succeeded",
+      "retry": "succeeded",
+      "resumption": "unsupported: the server issues no session ticket",
+      "zerortt": "unsupported: the server issues no session ticket",
+      "http3": "unsupported: msquic's client image exits 127 in this case",
+      "blackhole": "succeeded",
+      "keyupdate": "succeeded",
+      "ecn": "unsupported: msquic's image exits 127 in this case",
+      "amplificationlimit": "succeeded",
+      "handshakeloss": "succeeded",
+      "transferloss": "succeeded",
+      "handshakecorruption": "succeeded",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "failed: msquic's client runs the transfer case instead and never migrates, so the runner sees one path"
+    },
+    "client": {
+      "handshake": "succeeded",
+      "transfer": "succeeded",
+      "longrtt": "succeeded",
+      "chacha20": "unsupported: the endpoint's client does not implement the case",
+      "multiplexing": "succeeded",
+      "retry": "failed: msquic's server first answers with an ACK alone under the client's own connection ID as its Source Connection ID, then changes it; RFC 9000 §7.2 has the client discard every later packet, ServerHello included",
+      "resumption": "unsupported: the client keeps no session ticket",
+      "zerortt": "unsupported: the client keeps no session ticket",
+      "http3": "unsupported: the endpoint's client does not implement the case",
+      "blackhole": "succeeded",
+      "keyupdate": "unsupported: the endpoint's client does not implement the case",
+      "ecn": "unsupported: msquic's image exits 127 in this case",
+      "amplificationlimit": "failed: msquic's server first answers with an ACK alone under the client's own connection ID as its Source Connection ID, then changes it; RFC 9000 §7.2 has the client discard every later packet, ServerHello included",
+      "handshakeloss": "failed: msquic's server first answers with an ACK alone under the client's own connection ID as its Source Connection ID, then changes it; RFC 9000 §7.2 has the client discard every later packet, ServerHello included",
+      "transferloss": "succeeded",
+      "handshakecorruption": "failed: msquic's server first answers with an ACK alone under the client's own connection ID as its Source Connection ID, then changes it; RFC 9000 §7.2 has the client discard every later packet, ServerHello included",
+      "transfercorruption": "succeeded",
+      "ipv6": "succeeded",
+      "v2": "unsupported: QUIC version 2 is not implemented",
+      "rebind-port": "succeeded",
+      "rebind-addr": "succeeded",
+      "connectionmigration": "unsupported"
+    }
   }
 }
