@@ -15,10 +15,12 @@
 # runner's own directories are left as it leaves them, so a second run
 # reuses the clone and its virtual environment.
 #
-# The exit status says whether the runner ran, not whether sluice is green:
-# a red case is a result this script reports, a 127 is an unsupported case
-# the runner records as such. The logs of every case stay in
-# RUNNER_DIR/logs for reading.
+# The exit status says whether every case the pass ran came out as
+# interop/expected-results.json records it (scripts/interop-expect.sh): a
+# red case is a failure only where the file expects it green, a 127 is an
+# unsupported case the runner records as such, and a case that turns green
+# where the file says otherwise fails too, until the file records it. The
+# logs of every case stay in RUNNER_DIR/logs for reading.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -96,3 +98,6 @@ jq -r --arg peer "$peer" -n '
     "|---|---|---|",
     ($asServer.results[0][] | .name | "| \(.) | \($s[.] // "-") | \($c[.] // "-") |")
 ' "$RUNNER_DIR/results_sluice_$peer.json" "$RUNNER_DIR/results_${peer}_sluice.json"
+
+echo "## expected"
+scripts/interop-expect.sh "$peer" "$RUNNER_DIR/results_sluice_$peer.json" "$RUNNER_DIR/results_${peer}_sluice.json"

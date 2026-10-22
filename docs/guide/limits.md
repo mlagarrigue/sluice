@@ -243,12 +243,16 @@ to a separate module before a v1.
   `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
   (the `Interop image` workflow). Each run of the `Interop runner`
   workflow, not this paragraph, is the record: its log holds the table of
-  cases, its artifact the captures and each side's logs. The workflow runs
-  by hand only — nothing schedules it yet — and has run twice, on
-  2026-10-19, for chacha20 and ecn alone, its artifacts kept seven days;
-  the other cases below were read from `scripts/interop-runner.sh` run by
-  hand between 2026-10-10 and 2026-10-19, of which no log is kept. Until a
-  complete run is recorded, this list is a dated reading, not a CI result.
+  cases, its artifact the captures and each side's logs, kept seven days.
+  The workflow runs by hand only — nothing schedules it yet — and has run
+  four times: twice on 2026-10-19, for chacha20 and ecn alone, and twice on
+  2026-10-20 against quic-go with every case. `interop/expected-results.json`
+  records that last pass, case by case and in each direction, with the
+  cause of every failure; a pass that departs from it, either way, fails
+  the script and the job. Against ngtcp2 the cases below were read from
+  `scripts/interop-runner.sh` run by hand between 2026-10-10 and
+  2026-10-19, of which no log is kept: until a complete pass is recorded,
+  they are a dated reading, not a CI result.
   As a server, sluice passes handshake,
   transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
   amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,
