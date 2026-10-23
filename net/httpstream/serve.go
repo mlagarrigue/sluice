@@ -794,6 +794,9 @@ var prefaceBytes = []byte(Preface)
 type prefixConn struct {
 	net.Conn
 	head []byte
+	// scratch is the watch's read buffer, kept for the connection: one watch
+	// runs at a time, and a buffer per watch went to the heap every batch.
+	scratch []byte
 }
 
 func prefixed(c net.Conn, head []byte) net.Conn {
@@ -1010,8 +1013,11 @@ func (k *streamCalls[K]) release(x *batchCtx, ids []K) {
 // start and stop it; most handlers never ask, so nothing is watched until
 // the first call to Done. A handler that answers from memory pays one
 // allocation per batch; one that hands the context to a query pays the
-// watch, measured on a GitHub Linux runner at 24 µs a batch
-// (BenchmarkServeH1RoundTrip: 46 µs watched, 23 µs plain). Starting it later
+// watch. Under load that is 1.2 µs of work a batch (BenchmarkServeH1RoundTrip/
+// parallel: 4.0 µs a request watched, 2.8 plain), little beside the query
+// that made the handler ask; one request at a time on an idle machine it is
+// the wake-up of an idle thread the watch's goroutine needs, 24 µs on a
+// GitHub Linux runner (serial: 46 µs watched, 23 plain). Starting it later
 // — a timer, so that only slow handlers pay — was measured and costs more:
 // arming a timer wakes the network poller. The read is [watchPeer]'s, whose
 // bytes are put back for the request reader, and it ends when the handler
@@ -1167,7 +1173,10 @@ func watchPeerThen(c *prefixConn, limit int, ended func(*peerWatch)) *peerWatch 
 		if ended != nil {
 			defer ended(w)
 		}
-		var scratch [512]byte
+		if c.scratch == nil {
+			c.scratch = make([]byte, 512)
+		}
+		scratch := c.scratch
 		for len(w.got) < limit {
 			// c.Conn, not c: c.head belongs to the request reader, and this
 			// goroutine only appends to it once stop has waited for it.

@@ -92,8 +92,10 @@ handler.
 
 What reaches the handler, precisely: the forced stop, on all three
 protocols; the client's departure on HTTP/1.1, from the handler's first
-call to `ctx.Done` (a watching read of the connection, measured at 24 µs a
-batch on a Linux runner, paid only by a handler that asks). On HTTP/2 and
+call to `ctx.Done` (a watching read of the connection, measured at 1.2 µs
+a batch under load and 24 µs one request at a time on an idle Linux
+runner, where it wakes a sleeping thread; paid only by a handler that
+asks). On HTTP/2 and
 HTTP/3 a batch's context is cancelled once no request of the batch has a
 client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING` takes
 one away, the connection's close takes them all — and not before: the
