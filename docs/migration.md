@@ -44,6 +44,12 @@ that never passed a negative value has nothing to change there.
   it in its message.
 - **A negative depth or worker count panics** (`cd7dce7`); zero or one
   means no concurrency, as before.
+- **A runtime error raised on a worker or a producer comes back wrapped**
+  (`94858d0`): `Ordered`, `OrderedWithState`, `Unordered`, `Async`, and
+  `window.CoalesceWithin`, raise it again in an error that carries the
+  stack it was raised on. `errors.As` with a `runtime.Error` target still
+  finds it; a direct assertion `r.(runtime.Error)` on the recovered value
+  no longer does. Any other value comes back as raised.
 
 ## Deduplication: `distinct`
 
