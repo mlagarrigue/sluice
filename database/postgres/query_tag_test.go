@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -17,7 +18,7 @@ func updateReturningBatched() [][]byte {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1))...)
 	first = append(first, beDataRow(int8Val(2))...)
 	first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
@@ -104,7 +105,7 @@ func TestQueryTagEmptyAfterAnError(t *testing.T) {
 	var chunk []byte
 	chunk = append(chunk, beSimple(pgwire.BackendParseComplete)...)
 	chunk = append(chunk, beSimple(pgwire.BackendBindComplete)...)
-	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	chunk = append(chunk, beDataRow(int8Val(1))...)
 	chunk = append(chunk, beCommandComplete("UPDATE 1")...)
 	chunk = append(chunk, beErrorResponse("23503", "deferred foreign key")...)
@@ -160,7 +161,7 @@ func TestQueryTagCostsNothingUnasked(t *testing.T) {
 		var chunk []byte
 		chunk = append(chunk, beSimple(pgwire.BackendParseComplete)...)
 		chunk = append(chunk, beSimple(pgwire.BackendBindComplete)...)
-		chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		chunk = append(chunk, beDataRow(int8Val(1))...)
 		chunk = append(chunk, beCommandComplete("UPDATE 1")...)
 		return append(chunk, beReadyForQuery()...)

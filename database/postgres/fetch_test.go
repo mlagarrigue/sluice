@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -16,7 +17,7 @@ import (
 func oneRowWhole() [][]byte {
 	var chunk []byte
 	chunk = append(chunk, beSimple(pgwire.BackendBindComplete)...)
-	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	chunk = append(chunk, beDataRow(int8Val(1))...)
 	chunk = append(chunk, beCommandComplete("SELECT 1")...)
 	chunk = append(chunk, beReadyForQuery()...)
@@ -28,7 +29,7 @@ func oneRowWhole() [][]byte {
 func oneRowCached() [][]byte {
 	var chunk []byte
 	chunk = append(chunk, beSimple(pgwire.BackendBindComplete)...)
-	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	chunk = append(chunk, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	chunk = append(chunk, beDataRow(int8Val(1))...)
 	chunk = append(chunk, beCommandComplete("SELECT 1")...)
 	return [][]byte{chunk, beReadyForQuery()}
@@ -90,7 +91,7 @@ func TestFetchAutoFollowsTheLastResult(t *testing.T) {
 		var first []byte
 		first = append(first, beSimple(pgwire.BackendParseComplete)...)
 		first = append(first, beSimple(pgwire.BackendBindComplete)...)
-		first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		first = append(first, beDataRow(int8Val(1))...)
 		first = append(first, beDataRow(int8Val(2))...)
 		first = append(first, beSimple(pgwire.BackendPortalSuspended)...)

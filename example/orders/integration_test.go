@@ -11,6 +11,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/example/orders"
 )
 
@@ -94,9 +95,9 @@ func TestIntegrationVerticalAgainstPostgres(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			v, _ := row.Value(0)
-			idx, _ := postgres.DecodeInt4(v)
+			idx, _ := pgtype.DecodeInt4(v)
 			v, _ = row.Value(1)
-			qty, _ := postgres.DecodeInt8(v)
+			qty, _ := pgtype.DecodeInt8(v)
 			if want := int64(idx) + 1; qty != want {
 				t.Errorf("line %d holds qty %d, want %d", idx, qty, want)
 			}

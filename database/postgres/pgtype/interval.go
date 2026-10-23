@@ -1,4 +1,4 @@
-package postgres
+package pgtype
 
 import (
 	"encoding/binary"

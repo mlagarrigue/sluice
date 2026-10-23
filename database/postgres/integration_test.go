@@ -15,6 +15,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -148,7 +149,7 @@ func TestIntegrationAnyArray(t *testing.T) {
 
 	src := conn.Query(t.Context(),
 		"SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1) ORDER BY k",
-		[]postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
 		postgres.QueryConfig{BatchRows: 256},
 	)
 
@@ -162,7 +163,7 @@ func TestIntegrationAnyArray(t *testing.T) {
 				t.Error("a key came back NULL")
 				continue
 			}
-			k, err := postgres.DecodeInt8(v)
+			k, err := pgtype.DecodeInt8(v)
 			if err != nil {
 				t.Fatalf("decoding a key: %v", err)
 			}
@@ -201,9 +202,9 @@ func TestIntegrationTypeOIDs(t *testing.T) {
 	)
 
 	want := []uint32{
-		postgres.OIDInt8, postgres.OIDInt4, postgres.OIDInt2, postgres.OIDFloat8,
-		postgres.OIDBool, postgres.OIDText, postgres.OIDTimestampTZ,
-		postgres.OIDDate, postgres.OIDNumeric,
+		pgtype.OIDInt8, pgtype.OIDInt4, pgtype.OIDInt2, pgtype.OIDFloat8,
+		pgtype.OIDBool, pgtype.OIDText, pgtype.OIDTimestampTZ,
+		pgtype.OIDDate, pgtype.OIDNumeric,
 	}
 	var fields []postgres.Field
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
@@ -240,18 +241,18 @@ func TestIntegrationNumericRoundTrip(t *testing.T) {
 	}
 	for _, want := range values {
 		t.Run(want, func(t *testing.T) {
-			n, err := postgres.ParseNumeric(want)
+			n, err := pgtype.ParseNumeric(want)
 			if err != nil {
 				t.Fatal(err)
 			}
-			src := conn.Query(t.Context(), "SELECT $1::numeric", []postgres.Param{{OID: postgres.OIDNumeric, Value: postgres.AppendNumeric(nil, n)}},
+			src := conn.Query(t.Context(), "SELECT $1::numeric", []postgres.Param{{OID: pgtype.OIDNumeric, Value: pgtype.AppendNumeric(nil, n)}},
 				postgres.QueryConfig{BatchRows: 4})
 
 			var got string
 			src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 				for _, row := range b.Items {
 					v, _ := row.Value(0)
-					back, err := postgres.DecodeNumeric(v)
+					back, err := pgtype.DecodeNumeric(v)
 					if err != nil {
 						t.Fatalf("decoding: %v", err)
 					}
@@ -290,7 +291,7 @@ func TestIntegrationCopy(t *testing.T) {
 	for i := range rows {
 		buf = buf[:0]
 		buf = postgres.AppendTupleHeader(buf, 2)
-		buf = postgres.AppendField(buf, postgres.AppendInt8(nil, int64(i)))
+		buf = postgres.AppendField(buf, pgtype.AppendInt8(nil, int64(i)))
 		if i%2 == 0 {
 			buf = postgres.AppendField(buf, []byte("even"))
 		} else {
@@ -313,9 +314,9 @@ func TestIntegrationCopy(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			v, _ := row.Value(0)
-			total, _ = postgres.DecodeInt8(v)
+			total, _ = pgtype.DecodeInt8(v)
 			v, _ = row.Value(1)
-			labelled, _ = postgres.DecodeInt8(v)
+			labelled, _ = pgtype.DecodeInt8(v)
 		}
 		return true
 	})
@@ -496,8 +497,8 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 		param   []byte
 	}{
 		{
-			"jsonb", `'{"a": 1}'::jsonb`, postgres.OIDJSONB,
-			postgres.AppendJSONB(nil, []byte(`{"a": 1}`)),
+			"jsonb", `'{"a": 1}'::jsonb`, pgtype.OIDJSONB,
+			pgtype.AppendJSONB(nil, []byte(`{"a": 1}`)),
 		},
 		{
 			// Compared as text, because PostgreSQL gives `json` no equality
@@ -507,83 +508,83 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 			// the bytes you sent. Text comparison is therefore the *right*
 			// check here rather than a workaround: it is exactly what the type
 			// promises to preserve.
-			"json", `'{"a":1}'`, postgres.OIDJSON,
-			postgres.AppendJSON(nil, []byte(`{"a":1}`)),
+			"json", `'{"a":1}'`, pgtype.OIDJSON,
+			pgtype.AppendJSON(nil, []byte(`{"a":1}`)),
 		},
 		{
-			"timestamp without time zone", `'2024-03-01 12:34:56.789012'::timestamp`, postgres.OIDTimestamp,
-			postgres.AppendTimestamp(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
+			"timestamp without time zone", `'2024-03-01 12:34:56.789012'::timestamp`, pgtype.OIDTimestamp,
+			pgtype.AppendTimestamp(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
 		},
 		{
 			// Far outside what a time.Duration spans, which is where the
 			// decoder used to wrap and return a date six centuries off with
 			// no error. The server's own equality decides.
-			"a timestamp beyond a Duration's reach", `'3000-01-01 00:00:00'::timestamp`, postgres.OIDTimestamp,
-			postgres.AppendTimestamp(nil, time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)),
+			"a timestamp beyond a Duration's reach", `'3000-01-01 00:00:00'::timestamp`, pgtype.OIDTimestamp,
+			pgtype.AppendTimestamp(nil, time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
-			"the type's upper bound", `'294276-12-31 23:59:59.999999'::timestamp`, postgres.OIDTimestamp,
-			postgres.AppendTimestamp(nil, time.Date(294276, 12, 31, 23, 59, 59, 999999000, time.UTC)),
+			"the type's upper bound", `'294276-12-31 23:59:59.999999'::timestamp`, pgtype.OIDTimestamp,
+			pgtype.AppendTimestamp(nil, time.Date(294276, 12, 31, 23, 59, 59, 999999000, time.UTC)),
 		},
 		{
-			"a timestamptz beyond a Duration's reach", `'3000-01-01 00:00:00+00'::timestamptz`, postgres.OIDTimestampTZ,
-			postgres.AppendTimestampTZ(nil, time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)),
+			"a timestamptz beyond a Duration's reach", `'3000-01-01 00:00:00+00'::timestamptz`, pgtype.OIDTimestampTZ,
+			pgtype.AppendTimestampTZ(nil, time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
-			"an interval longer than a Duration", `'100000000 hours'::interval`, postgres.OIDInterval,
-			postgres.AppendInterval(nil, postgres.Interval{Micros: 100_000_000 * 3600 * 1_000_000}),
+			"an interval longer than a Duration", `'100000000 hours'::interval`, pgtype.OIDInterval,
+			pgtype.AppendInterval(nil, pgtype.Interval{Micros: 100_000_000 * 3600 * 1_000_000}),
 		},
 		{
-			"interval with all three fields", `'1 year 2 mons 3 days 04:05:06.789'::interval`, postgres.OIDInterval,
-			postgres.AppendInterval(nil, postgres.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}),
+			"interval with all three fields", `'1 year 2 mons 3 days 04:05:06.789'::interval`, pgtype.OIDInterval,
+			pgtype.AppendInterval(nil, pgtype.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}),
 		},
 		{
-			"a negative interval", `'-1 mon -1 day -00:00:01'::interval`, postgres.OIDInterval,
-			postgres.AppendInterval(nil, postgres.Interval{Months: -1, Days: -1, Micros: -1_000_000}),
+			"a negative interval", `'-1 mon -1 day -00:00:01'::interval`, pgtype.OIDInterval,
+			pgtype.AppendInterval(nil, pgtype.Interval{Months: -1, Days: -1, Micros: -1_000_000}),
 		},
 		{
-			"inet keeping its host bits", `'192.168.1.1/24'::inet`, postgres.OIDInet,
-			postgres.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")),
+			"inet keeping its host bits", `'192.168.1.1/24'::inet`, pgtype.OIDInet,
+			pgtype.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")),
 		},
 		{
-			"an IPv6 address", `'2001:db8::1'::inet`, postgres.OIDInet,
-			postgres.AppendInet(nil, netip.MustParsePrefix("2001:db8::1/128")),
+			"an IPv6 address", `'2001:db8::1'::inet`, pgtype.OIDInet,
+			pgtype.AppendInet(nil, netip.MustParsePrefix("2001:db8::1/128")),
 		},
 		{
 			// The server is the authority on this one: it reports family 6 for
 			// a 4-in-6 address and answers false when it is compared with the
 			// plain IPv4 spelling. Unmapping it on the way out would write a
 			// different value than the one that was read.
-			"an IPv4-mapped IPv6 address, which stays IPv6", `'::ffff:1.2.3.4'::inet`, postgres.OIDInet,
-			postgres.AppendInet(nil, netip.PrefixFrom(netip.MustParseAddr("::ffff:1.2.3.4"), 128)),
+			"an IPv4-mapped IPv6 address, which stays IPv6", `'::ffff:1.2.3.4'::inet`, pgtype.OIDInet,
+			pgtype.AppendInet(nil, netip.PrefixFrom(netip.MustParseAddr("::ffff:1.2.3.4"), 128)),
 		},
 		{
-			"cidr", `'10.0.0.0/8'::cidr`, postgres.OIDCIDR,
-			postgres.AppendCIDR(nil, netip.MustParsePrefix("10.0.0.0/8")),
+			"cidr", `'10.0.0.0/8'::cidr`, pgtype.OIDCIDR,
+			pgtype.AppendCIDR(nil, netip.MustParsePrefix("10.0.0.0/8")),
 		},
 		{
 			// PostgreSQL considers numeric NaN equal to NaN, unlike a float.
-			"numeric NaN", `'NaN'::numeric`, postgres.OIDNumeric,
-			postgres.AppendNumeric(nil, postgres.Numeric{Sign: postgres.NumericNaN}),
+			"numeric NaN", `'NaN'::numeric`, pgtype.OIDNumeric,
+			pgtype.AppendNumeric(nil, pgtype.Numeric{Sign: pgtype.NumericNaN}),
 		},
 		{
-			"numeric Infinity", `'Infinity'::numeric`, postgres.OIDNumeric,
-			postgres.AppendNumeric(nil, postgres.Numeric{Sign: postgres.NumericPosInf}),
+			"numeric Infinity", `'Infinity'::numeric`, pgtype.OIDNumeric,
+			pgtype.AppendNumeric(nil, pgtype.Numeric{Sign: pgtype.NumericPosInf}),
 		},
 		{
-			"numeric -Infinity", `'-Infinity'::numeric`, postgres.OIDNumeric,
-			postgres.AppendNumeric(nil, postgres.Numeric{Sign: postgres.NumericNegInf}),
+			"numeric -Infinity", `'-Infinity'::numeric`, pgtype.OIDNumeric,
+			pgtype.AppendNumeric(nil, pgtype.Numeric{Sign: pgtype.NumericNegInf}),
 		},
 		{
-			"uuid[]", `ARRAY['00000000-0000-0000-0000-000000000001']::uuid[]`, postgres.OIDUUIDArray,
-			postgres.AppendUUIDArray(nil, [][16]byte{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}),
+			"uuid[]", `ARRAY['00000000-0000-0000-0000-000000000001']::uuid[]`, pgtype.OIDUUIDArray,
+			pgtype.AppendUUIDArray(nil, [][16]byte{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}),
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			expr := "SELECT $1 = " + tc.literal
-			if tc.oid == postgres.OIDJSON {
+			if tc.oid == pgtype.OIDJSON {
 				expr = "SELECT $1::text = " + tc.literal
 			}
 			src := conn.Query(t.Context(), expr, []postgres.Param{{OID: tc.oid, Value: tc.param}},
@@ -596,7 +597,7 @@ func TestIntegrationCodecsMeanWhatTheyShould(t *testing.T) {
 					if isNull {
 						return false
 					}
-					equal, _ = postgres.DecodeBool(v)
+					equal, _ = pgtype.DecodeBool(v)
 					got = true
 				}
 				return true
@@ -634,8 +635,8 @@ func TestIntegrationCodecsDecodeWhatTheServerSends(t *testing.T) {
 			// The OIDs the server declares must be the ones the codecs claim,
 			// or every value after them is read as something it is not.
 			wantOIDs := []uint32{
-				postgres.OIDJSONB, postgres.OIDTimestamp, postgres.OIDInterval,
-				postgres.OIDInet, postgres.OIDUUIDArray,
+				pgtype.OIDJSONB, pgtype.OIDTimestamp, pgtype.OIDInterval,
+				pgtype.OIDInet, pgtype.OIDUUIDArray,
 			}
 			for i, want := range wantOIDs {
 				if got := row.Fields()[i].TypeOID; got != want {
@@ -644,25 +645,25 @@ func TestIntegrationCodecsDecodeWhatTheServerSends(t *testing.T) {
 			}
 
 			v, _ := row.Value(0)
-			if j, err := postgres.DecodeJSONB(v); err != nil || string(j) != `{"a": 1}` {
+			if j, err := pgtype.DecodeJSONB(v); err != nil || string(j) != `{"a": 1}` {
 				t.Errorf("jsonb = %q, %v", j, err)
 			}
 			v, _ = row.Value(1)
-			if ts, err := postgres.DecodeTimestamp(v); err != nil ||
+			if ts, err := pgtype.DecodeTimestamp(v); err != nil ||
 				!ts.Equal(time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)) {
 				t.Errorf("timestamp = %v, %v", ts, err)
 			}
 			v, _ = row.Value(2)
-			if iv, err := postgres.DecodeInterval(v); err != nil ||
-				iv != (postgres.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}) {
+			if iv, err := pgtype.DecodeInterval(v); err != nil ||
+				iv != (pgtype.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}) {
 				t.Errorf("interval = %v, %v", iv, err)
 			}
 			v, _ = row.Value(3)
-			if p, err := postgres.DecodeInet(v); err != nil || p.String() != "192.168.1.1/24" {
+			if p, err := pgtype.DecodeInet(v); err != nil || p.String() != "192.168.1.1/24" {
 				t.Errorf("inet = %v, %v", p, err)
 			}
 			v, _ = row.Value(4)
-			ids, err := postgres.DecodeUUIDArray(nil, v)
+			ids, err := pgtype.DecodeUUIDArray(nil, v)
 			if err != nil || len(ids) != 1 || ids[0][15] != 1 {
 				t.Errorf("uuid[] = %x, %v", ids, err)
 			}
@@ -715,7 +716,7 @@ func TestIntegrationEarlyStopLeavesTheConnectionUsable(t *testing.T) {
 	next.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			v, _ := row.Value(0)
-			got, _ = postgres.DecodeInt8(v)
+			got, _ = pgtype.DecodeInt8(v)
 		}
 		return true
 	})
@@ -765,7 +766,7 @@ func TestIntegrationExecutesAheadReachAFinishedPortalHarmlessly(t *testing.T) {
 	src := conn.Query(t.Context(), "SELECT count(*) FROM sluice_ahead_test", nil, postgres.QueryConfig{BatchRows: 4})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		v, _ := b.Items[0].Value(0)
-		stored, _ = postgres.DecodeInt8(v)
+		stored, _ = pgtype.DecodeInt8(v)
 		return true
 	})
 	if err := src.Err(); err != nil {
@@ -846,9 +847,9 @@ func TestIntegrationTimestampRangeDecodesBack(t *testing.T) {
 				var got time.Time
 				var err error
 				if i == 3 {
-					got, err = postgres.DecodeTimestampTZ(v)
+					got, err = pgtype.DecodeTimestampTZ(v)
 				} else {
-					got, err = postgres.DecodeTimestamp(v)
+					got, err = pgtype.DecodeTimestamp(v)
 				}
 				if err != nil {
 					t.Errorf("column %d: %v", i, err)
@@ -885,7 +886,7 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 			for _, row := range b.Items {
 				seen = true
 				v, _ := row.Value(0)
-				mapped, err := postgres.DecodeInet(v)
+				mapped, err := pgtype.DecodeInet(v)
 				if err != nil {
 					t.Fatalf("decoding the mapped address: %v", err)
 				}
@@ -893,7 +894,7 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 					t.Errorf("the mapped address came back as %v, want it still 4-in-6", mapped)
 				}
 				v, _ = row.Value(1)
-				plain, err := postgres.DecodeInet(v)
+				plain, err := pgtype.DecodeInet(v)
 				if err != nil {
 					t.Fatalf("decoding the plain address: %v", err)
 				}
@@ -903,11 +904,11 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 				// And re-encoding each must reproduce what the server sent,
 				// which is the property that makes read-then-write safe.
 				orig0, _ := row.Value(0)
-				if got := postgres.AppendInet(nil, mapped); !bytes.Equal(got, orig0) {
+				if got := pgtype.AppendInet(nil, mapped); !bytes.Equal(got, orig0) {
 					t.Errorf("re-encoded the mapped address as %x, want %x", got, orig0)
 				}
 				v, _ = row.Value(2)
-				equal, _ := postgres.DecodeBool(v)
+				equal, _ := pgtype.DecodeBool(v)
 				if equal {
 					t.Error("the server says the two spellings are equal; this test's premise is wrong")
 				}
@@ -929,7 +930,7 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 		src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 			for _, row := range b.Items {
 				v, _ := row.Value(0)
-				_, decodeErr = postgres.DecodeInt8Array(nil, v)
+				_, decodeErr = pgtype.DecodeInt8Array(nil, v)
 			}
 			return true
 		})
@@ -945,7 +946,7 @@ func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
 		ok.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 			for _, row := range b.Items {
 				v, _ := row.Value(0)
-				got, _ = postgres.DecodeInt8Array(nil, v)
+				got, _ = pgtype.DecodeInt8Array(nil, v)
 			}
 			return true
 		})
@@ -980,7 +981,7 @@ func TestIntegrationNumericMatchesTheServersEncoding(t *testing.T) {
 	}
 	for _, lit := range literals {
 		t.Run(lit, func(t *testing.T) {
-			mine, err := postgres.ParseNumeric(lit)
+			mine, err := pgtype.ParseNumeric(lit)
 			if err != nil {
 				t.Fatalf("ParseNumeric: %v", err)
 			}
@@ -988,7 +989,7 @@ func TestIntegrationNumericMatchesTheServersEncoding(t *testing.T) {
 			// numeric_send is the function the server itself uses to put a
 			// value on the wire, so this is the encoder judging the encoder.
 			src := conn.Query(t.Context(), "SELECT numeric_send($1::text::numeric)",
-				[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, lit)}},
+				[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, lit)}},
 				postgres.QueryConfig{})
 
 			var theirs []byte
@@ -1008,12 +1009,12 @@ func TestIntegrationNumericMatchesTheServersEncoding(t *testing.T) {
 				t.Fatal("the server returned nothing")
 			}
 
-			if got := postgres.AppendNumeric(nil, mine); !bytes.Equal(got, theirs) {
+			if got := pgtype.AppendNumeric(nil, mine); !bytes.Equal(got, theirs) {
 				t.Errorf("AppendNumeric(%s) = %x,\n           the server sends %x", lit, got, theirs)
 			}
 			// And the server's bytes must decode to the same value, so the two
 			// encodings are one shape rather than two that agree by accident.
-			back, err := postgres.DecodeNumeric(theirs)
+			back, err := pgtype.DecodeNumeric(theirs)
 			if err != nil {
 				t.Fatalf("DecodeNumeric on the server's own bytes: %v", err)
 			}
@@ -1051,74 +1052,74 @@ func TestIntegrationEveryCodecMatchesTheServersEncoding(t *testing.T) {
 		expr string // SQL producing the value, whose <type>send output is the oracle
 		mine []byte
 	}{
-		{"bool true", `true`, postgres.AppendBool(nil, true)},
-		{"bool false", `false`, postgres.AppendBool(nil, false)},
-		{"int2", `(-12345)::smallint`, postgres.AppendInt2(nil, -12345)},
-		{"int4", `(-1234567)::int`, postgres.AppendInt4(nil, -1234567)},
-		{"int8", `(-1234567890123)::bigint`, postgres.AppendInt8(nil, -1234567890123)},
-		{"float4", `(1.5)::real`, postgres.AppendFloat4(nil, 1.5)},
-		{"float8", `(-0.125)::double precision`, postgres.AppendFloat8(nil, -0.125)},
-		{"float8 infinity", `('Infinity')::double precision`, postgres.AppendFloat8(nil, math.Inf(1))},
-		{"text", `'héllo wörld'::text`, postgres.AppendText(nil, "héllo wörld")},
-		{"text empty", `''::text`, postgres.AppendText(nil, "")},
-		{"bytea", `'\xdeadbeef'::bytea`, postgres.AppendBytea(nil, []byte{0xde, 0xad, 0xbe, 0xef})},
+		{"bool true", `true`, pgtype.AppendBool(nil, true)},
+		{"bool false", `false`, pgtype.AppendBool(nil, false)},
+		{"int2", `(-12345)::smallint`, pgtype.AppendInt2(nil, -12345)},
+		{"int4", `(-1234567)::int`, pgtype.AppendInt4(nil, -1234567)},
+		{"int8", `(-1234567890123)::bigint`, pgtype.AppendInt8(nil, -1234567890123)},
+		{"float4", `(1.5)::real`, pgtype.AppendFloat4(nil, 1.5)},
+		{"float8", `(-0.125)::double precision`, pgtype.AppendFloat8(nil, -0.125)},
+		{"float8 infinity", `('Infinity')::double precision`, pgtype.AppendFloat8(nil, math.Inf(1))},
+		{"text", `'héllo wörld'::text`, pgtype.AppendText(nil, "héllo wörld")},
+		{"text empty", `''::text`, pgtype.AppendText(nil, "")},
+		{"bytea", `'\xdeadbeef'::bytea`, pgtype.AppendBytea(nil, []byte{0xde, 0xad, 0xbe, 0xef})},
 		{
 			"date", `'2024-03-01'::date`,
-			postgres.AppendDate(nil, time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)),
+			pgtype.AppendDate(nil, time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			"date before the epoch", `'1970-01-01'::date`,
-			postgres.AppendDate(nil, time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)),
+			pgtype.AppendDate(nil, time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			"timestamp", `'2024-03-01 12:34:56.789012'::timestamp`,
-			postgres.AppendTimestamp(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
+			pgtype.AppendTimestamp(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
 		},
 		{
 			"timestamptz", `'2024-03-01 12:34:56.789012+00'::timestamptz`,
-			postgres.AppendTimestampTZ(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
+			pgtype.AppendTimestampTZ(nil, time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)),
 		},
 		{
 			"uuid", `'0102030405060708090a0b0c0d0e0f10'::uuid`,
-			postgres.AppendUUID(nil, [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}),
+			pgtype.AppendUUID(nil, [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}),
 		},
-		{"jsonb", `'{"a": 1}'::jsonb`, postgres.AppendJSONB(nil, []byte(`{"a": 1}`))},
-		{"json", `'{"a":1}'::json`, postgres.AppendJSON(nil, []byte(`{"a":1}`))},
+		{"jsonb", `'{"a": 1}'::jsonb`, pgtype.AppendJSONB(nil, []byte(`{"a": 1}`))},
+		{"json", `'{"a":1}'::json`, pgtype.AppendJSON(nil, []byte(`{"a":1}`))},
 		{
 			"interval", `'1 year 2 mons 3 days 04:05:06.789'::interval`,
-			postgres.AppendInterval(nil, postgres.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}),
+			pgtype.AppendInterval(nil, pgtype.Interval{Months: 14, Days: 3, Micros: 14_706_789_000}),
 		},
 		{
 			"inet", `'192.168.1.1/24'::inet`,
-			postgres.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")),
+			pgtype.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")),
 		},
 		{
 			"inet v6", `'2001:db8::1'::inet`,
-			postgres.AppendInet(nil, netip.MustParsePrefix("2001:db8::1/128")),
+			pgtype.AppendInet(nil, netip.MustParsePrefix("2001:db8::1/128")),
 		},
 		{
 			"cidr", `'10.0.0.0/8'::cidr`,
-			postgres.AppendCIDR(nil, netip.MustParsePrefix("10.0.0.0/8")),
+			pgtype.AppendCIDR(nil, netip.MustParsePrefix("10.0.0.0/8")),
 		},
 		{
 			"int4[]", `ARRAY[1,-2,3]::int[]`,
-			postgres.AppendInt4Array(nil, []int32{1, -2, 3}),
+			pgtype.AppendInt4Array(nil, []int32{1, -2, 3}),
 		},
 		{
 			"int8[]", `ARRAY[1,-2,3]::bigint[]`,
-			postgres.AppendInt8Array(nil, []int64{1, -2, 3}),
+			pgtype.AppendInt8Array(nil, []int64{1, -2, 3}),
 		},
 		{
 			"text[]", `ARRAY['a','','ccc']::text[]`,
-			postgres.AppendTextArray(nil, []string{"a", "", "ccc"}),
+			pgtype.AppendTextArray(nil, []string{"a", "", "ccc"}),
 		},
 		{
 			"uuid[]", `ARRAY['00000000-0000-0000-0000-000000000001']::uuid[]`,
-			postgres.AppendUUIDArray(nil, [][16]byte{{15: 1}}),
+			pgtype.AppendUUIDArray(nil, [][16]byte{{15: 1}}),
 		},
 		{
 			"empty int8[]", `ARRAY[]::bigint[]`,
-			postgres.AppendInt8Array(nil, nil),
+			pgtype.AppendInt8Array(nil, nil),
 		},
 	}
 
@@ -1146,7 +1147,7 @@ func serverEncoding(t *testing.T, conn *postgres.Conn, expr string) []byte {
 	send := queryOne(t, conn, "SELECT typsend::text FROM pg_type WHERE oid = pg_typeof("+expr+")::oid",
 		func(row postgres.Row) string {
 			v, _ := row.Value(0)
-			return postgres.DecodeText(v)
+			return pgtype.DecodeText(v)
 		})
 	if send == "" || send == "-" {
 		t.Fatalf("no send function for the type of %s", expr)
@@ -1195,7 +1196,7 @@ func TestIntegrationAnyOverAnEmptyArray(t *testing.T) {
 	conn := dial(t)
 
 	src := conn.Query(t.Context(), "SELECT k FROM unnest($1::bigint[]) AS k WHERE k = ANY($1)",
-		[]postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, nil)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, nil)}},
 		postgres.QueryConfig{BatchRows: 16})
 
 	rows := 0
@@ -1248,17 +1249,17 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 	for i := range rows {
 		buf = buf[:0]
 		buf = postgres.AppendTupleHeader(buf, 8)
-		buf = postgres.AppendField(buf, postgres.AppendInt8(nil, int64(i)))
-		buf = postgres.AppendField(buf, postgres.AppendNumeric(nil, amount))
-		buf = postgres.AppendField(buf, postgres.AppendTimestamp(nil, at))
-		buf = postgres.AppendField(buf, postgres.AppendJSONB(nil, []byte(`{"i": 1}`)))
-		buf = postgres.AppendField(buf, postgres.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")))
-		buf = postgres.AppendField(buf, postgres.AppendUUID(nil, ref))
-		buf = postgres.AppendField(buf, postgres.AppendInt8Array(nil, []int64{int64(i), -1}))
+		buf = postgres.AppendField(buf, pgtype.AppendInt8(nil, int64(i)))
+		buf = postgres.AppendField(buf, pgtype.AppendNumeric(nil, amount))
+		buf = postgres.AppendField(buf, pgtype.AppendTimestamp(nil, at))
+		buf = postgres.AppendField(buf, pgtype.AppendJSONB(nil, []byte(`{"i": 1}`)))
+		buf = postgres.AppendField(buf, pgtype.AppendInet(nil, netip.MustParsePrefix("192.168.1.1/24")))
+		buf = postgres.AppendField(buf, pgtype.AppendUUID(nil, ref))
+		buf = postgres.AppendField(buf, pgtype.AppendInt8Array(nil, []int64{int64(i), -1}))
 		// Every other row leaves the last column NULL, so the marker travels
 		// beside real values rather than only on its own.
 		if i%2 == 0 {
-			buf = postgres.AppendField(buf, postgres.AppendText(nil, "héllo"))
+			buf = postgres.AppendField(buf, pgtype.AppendText(nil, "héllo"))
 		} else {
 			buf = postgres.AppendFieldNull(buf)
 		}
@@ -1282,38 +1283,38 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 			seen++
 
 			v, _ := row.Value(1)
-			gotAmount, err := postgres.DecodeNumeric(v)
+			gotAmount, err := pgtype.DecodeNumeric(v)
 			if err != nil || gotAmount.String() != amount.String() {
 				t.Errorf("row %d amount = %v (%v), want %v", i, gotAmount, err, amount)
 			}
 			v, _ = row.Value(2)
-			gotAt, err := postgres.DecodeTimestamp(v)
+			gotAt, err := pgtype.DecodeTimestamp(v)
 			if err != nil || !gotAt.Equal(at) {
 				t.Errorf("row %d at = %v (%v), want %v", i, gotAt, err, at)
 			}
 			v, _ = row.Value(3)
-			doc, err := postgres.DecodeJSONB(v)
+			doc, err := pgtype.DecodeJSONB(v)
 			if err != nil || string(doc) != `{"i": 1}` {
 				t.Errorf("row %d doc = %q (%v)", i, doc, err)
 			}
 			v, _ = row.Value(4)
-			addr, err := postgres.DecodeInet(v)
+			addr, err := pgtype.DecodeInet(v)
 			if err != nil || addr.String() != "192.168.1.1/24" {
 				t.Errorf("row %d addr = %v (%v)", i, addr, err)
 			}
 			v, _ = row.Value(5)
-			gotRef, err := postgres.DecodeUUID(v)
+			gotRef, err := pgtype.DecodeUUID(v)
 			if err != nil || gotRef != ref {
 				t.Errorf("row %d ref = %x (%v)", i, gotRef, err)
 			}
 			v, _ = row.Value(6)
-			tags, err := postgres.DecodeInt8Array(nil, v)
+			tags, err := pgtype.DecodeInt8Array(nil, v)
 			if err != nil || len(tags) != 2 || tags[0] != int64(i) || tags[1] != -1 {
 				t.Errorf("row %d tags = %v (%v)", i, tags, err)
 			}
 			v, isNull := row.Value(7)
 			switch {
-			case i%2 == 0 && (isNull || postgres.DecodeText(v) != "héllo"):
+			case i%2 == 0 && (isNull || pgtype.DecodeText(v) != "héllo"):
 				t.Errorf("row %d note = %q, null=%v; want héllo", i, v, isNull)
 			case i%2 == 1 && !isNull:
 				// A NULL that came back as an empty string would be the
@@ -1331,8 +1332,8 @@ func TestIntegrationCopyVariableWidthTypes(t *testing.T) {
 	}
 }
 
-func mustParseNumeric(s string) postgres.Numeric {
-	n, err := postgres.ParseNumeric(s)
+func mustParseNumeric(s string) pgtype.Numeric {
+	n, err := pgtype.ParseNumeric(s)
 	if err != nil {
 		panic(err)
 	}
@@ -1558,7 +1559,7 @@ func TestIntegrationCancelInterruptsCopy(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		row := postgres.AppendField(postgres.AppendTupleHeader(nil, 1), postgres.AppendInt8(nil, 1))
+		row := postgres.AppendField(postgres.AppendTupleHeader(nil, 1), pgtype.AppendInt8(nil, 1))
 		return cp.WriteTuples(row, 1)
 	})
 }
@@ -1641,7 +1642,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 	}
 
 	tag, err := conn.ExecParams(ctx, "INSERT INTO sluice_exec_params SELECT $1, 'a' FROM generate_series(1, 3)",
-		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 7)}})
+		[]postgres.Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 7)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1655,7 +1656,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	tag, err = tx.ExecParams(ctx, "UPDATE sluice_exec_params SET v = $2 WHERE x = $1",
-		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 7)}, {OID: postgres.OIDText, Value: postgres.AppendText(nil, "b'; DROP TABLE x; --")}})
+		[]postgres.Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 7)}, {OID: pgtype.OIDText, Value: pgtype.AppendText(nil, "b'; DROP TABLE x; --")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1663,7 +1664,7 @@ func TestIntegrationExecParamsRowsAffected(t *testing.T) {
 		t.Errorf("UPDATE: tag %q, RowsAffected() = %d, %v; want UPDATE 3, 3, true", tag, n, ok)
 	}
 	tag, err = tx.ExecParams(ctx, "DELETE FROM sluice_exec_params WHERE x = $1",
-		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 8)}})
+		[]postgres.Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 8)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1694,7 +1695,7 @@ func TestIntegrationQueryTagOfAStreamedUpdate(t *testing.T) {
 
 	var tag postgres.CommandTag
 	src := conn.Query(ctx, "UPDATE sluice_query_tag SET x = x + $1 RETURNING x",
-		[]postgres.Param{{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, 10)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 10)}},
 		postgres.QueryConfig{BatchRows: 2, Tag: &tag})
 	var rows int64
 	for b := range src.Stream() {
@@ -1732,7 +1733,7 @@ func copyRows(cp *postgres.Copier, first, n int) <-chan error {
 			batch := min(1000, n-i)
 			for j := range batch {
 				buf = postgres.AppendTupleHeader(buf, 1)
-				buf = postgres.AppendField(buf, postgres.AppendInt8(nil, int64(first+i+j)))
+				buf = postgres.AppendField(buf, pgtype.AppendInt8(nil, int64(first+i+j)))
 			}
 			if err := cp.WriteTuples(buf, batch); err != nil {
 				done <- err
@@ -1825,7 +1826,7 @@ func countRows(t *testing.T, conn *postgres.Conn, table string) int64 {
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			v, _ := row.Value(0)
-			n, _ = postgres.DecodeInt8(v)
+			n, _ = pgtype.DecodeInt8(v)
 		}
 		return true
 	})
@@ -1876,7 +1877,7 @@ func TestIntegrationFetchAllEarlyStopCancelsTheRest(t *testing.T) {
 	next.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			v, _ := row.Value(0)
-			got, _ = postgres.DecodeInt8(v)
+			got, _ = pgtype.DecodeInt8(v)
 		}
 		return true
 	})
@@ -1931,7 +1932,7 @@ func TestIntegrationCopyFromStdinThroughExecParamsReturnsAtOnce(t *testing.T) {
 		for b := range src.Stream() {
 			for _, row := range b.Items {
 				v, _ := row.Value(0)
-				got, _ = postgres.DecodeInt8(v)
+				got, _ = pgtype.DecodeInt8(v)
 			}
 		}
 		if err := src.Err(); err != nil {

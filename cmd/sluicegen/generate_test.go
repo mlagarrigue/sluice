@@ -54,7 +54,7 @@ import (
 type Thing struct {
 	Code  string           ` + "`db:\"code\"`" + `
 	Blob  []byte           ` + "`db:\"blob\"`" + `
-	Price postgres.Numeric ` + "`db:\"price\"`" + `
+	Price pgtype.Numeric ` + "`db:\"price\"`" + `
 	Day   time.Time        ` + "`db:\"day,date\"`" + `
 	At    time.Time        ` + "`db:\"at\"`" + `
 }
@@ -65,11 +65,11 @@ type Thing struct {
 	}
 	got := string(out)
 	for _, want := range []string{
-		"postgres.OIDBPChar", "postgres.OIDName",
+		"pgtype.OIDBPChar", "pgtype.OIDName",
 		"e.Blob = slices.Clone(b)",
-		"postgres.DecodeNumeric(b)", "postgres.OIDNumeric",
-		`case "day":`, "postgres.DecodeDate(b)", "f.TypeOID != postgres.OIDDate {",
-		"f.TypeOID != postgres.OIDTimestampTZ && f.TypeOID != postgres.OIDTimestamp {",
+		"pgtype.DecodeNumeric(b)", "pgtype.OIDNumeric",
+		`case "day":`, "pgtype.DecodeDate(b)", "f.TypeOID != pgtype.OIDDate {",
+		"f.TypeOID != pgtype.OIDTimestampTZ && f.TypeOID != pgtype.OIDTimestamp {",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output lacks %q\n%s", want, got)
@@ -106,7 +106,7 @@ type Thing struct {
 	TotalCost float64
 	CustomerID int64
 	Note      *string   ` + "`db:\"note\"`" + `
-	Score     postgres.Null[int32]
+	Score     pgtype.Null[int32]
 	Skipped   int64     ` + "`db:\"-\"`" + `
 	hidden    int64
 	At        time.Time ` + "`db:\"at\"`" + `
@@ -127,12 +127,12 @@ type Thing struct {
 		{"no tag means snake_case", `case "total_cost":`, true},
 		{"an acronym stays whole", `case "customer_id":`, true},
 		{"a pointer field is nullable", "e.Note = &v", true},
-		{"a Null[T] field is nullable without a pointer", "e.Score = postgres.Null[int32]{Value: v, Valid: true}", true},
-		{"a Null[T] field decodes as T", "postgres.DecodeInt4(b)", true},
+		{"a Null[T] field is nullable without a pointer", "e.Score = pgtype.Null[int32]{Value: v, Valid: true}", true},
+		{"a Null[T] field decodes as T", "pgtype.DecodeInt4(b)", true},
 		{`db:"-" opts out`, "Skipped", false},
 		{"an unexported field is not a column", "hidden", false},
-		{"the type OID is checked", "postgres.OIDInt8", true},
-		{"a text column accepts varchar", "postgres.OIDVarchar", true},
+		{"the type OID is checked", "pgtype.OIDInt8", true},
+		{"a text column accepts varchar", "pgtype.OIDVarchar", true},
 		{"the loop is row-major", "for i := range rows.Len()", true},
 		// Two same-named result columns — an ordinary join — used to bind
 		// last-wins with no error: silent wrong data chosen by the SELECT's
@@ -206,9 +206,9 @@ func TestGenerateErrors(t *testing.T) {
 		{"pointer to pointer, other type", "package p\nimport \"time\"\ntype T struct{ At **time.Time }\n", "T", "T.At"},
 		// Null[T] is the other spelling of nullable; combining the two is
 		// an absence said twice.
-		{"pointer to Null", "package p\ntype T struct{ ID *postgres.Null[int64] }\n", "T", "pointer to a postgres.Null"},
-		{"Null of pointer", "package p\ntype T struct{ ID postgres.Null[*int64] }\n", "T", "Null of a pointer"},
-		{"Null of an unknown type", "package p\ntype T struct{ ID postgres.Null[uint8] }\n", "T", `"uint8"`},
+		{"pointer to Null", "package p\ntype T struct{ ID *pgtype.Null[int64] }\n", "T", "pointer to a pgtype.Null"},
+		{"Null of pointer", "package p\ntype T struct{ ID pgtype.Null[*int64] }\n", "T", "Null of a pointer"},
+		{"Null of an unknown type", "package p\ntype T struct{ ID pgtype.Null[uint8] }\n", "T", `"uint8"`},
 		{
 			"colliding columns",
 			"package p\ntype T struct{\n\tUserID int64\n\tOwner int64 `db:\"user_id\"`\n}\n",

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The backend parsers read network input too, so S8 covers them as squarely as
@@ -95,39 +97,39 @@ func FuzzDecoders(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		// Widths are checked before reading, so every one of these either
-		// answers or reports ErrCodec, whatever the bytes are.
+		// answers or reports pgtype.ErrCodec, whatever the bytes are.
 		decoders := []func([]byte) error{
-			func(b []byte) error { _, err := DecodeBool(b); return err },
-			func(b []byte) error { _, err := DecodeInt2(b); return err },
-			func(b []byte) error { _, err := DecodeInt4(b); return err },
-			func(b []byte) error { _, err := DecodeInt8(b); return err },
-			func(b []byte) error { _, err := DecodeFloat4(b); return err },
-			func(b []byte) error { _, err := DecodeFloat8(b); return err },
-			func(b []byte) error { _, err := DecodeUUID(b); return err },
-			func(b []byte) error { _, err := DecodeTimestampTZ(b); return err },
-			func(b []byte) error { _, err := DecodeDate(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeBool(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeInt2(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeInt4(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeInt8(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeFloat4(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeFloat8(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeUUID(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeTimestampTZ(b); return err },
+			func(b []byte) error { _, err := pgtype.DecodeDate(b); return err },
 		}
 		for i, dec := range decoders {
-			if err := dec(b); err != nil && !errors.Is(err, ErrCodec) {
+			if err := dec(b); err != nil && !errors.Is(err, pgtype.ErrCodec) {
 				t.Fatalf("decoder %d returned unclassified error %v", i, err)
 			}
 		}
-		_ = DecodeText(b) // a string of any bytes is a string
+		_ = pgtype.DecodeText(b) // a string of any bytes is a string
 	})
 }
 
 // The array decoder walks a header it did not write, so it is the one with
 // offsets to get wrong.
 func FuzzDecodeInt8Array(f *testing.F) {
-	f.Add(AppendInt8Array(nil, []int64{1, 2, 3}))
-	f.Add(AppendInt8Array(nil, nil))
+	f.Add(pgtype.AppendInt8Array(nil, []int64{1, 2, 3}))
+	f.Add(pgtype.AppendInt8Array(nil, nil))
 	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20})
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
-		got, err := DecodeInt8Array(nil, b)
+		got, err := pgtype.DecodeInt8Array(nil, b)
 		if err != nil {
-			if !errors.Is(err, ErrCodec) {
+			if !errors.Is(err, pgtype.ErrCodec) {
 				t.Fatalf("unclassified error %v", err)
 			}
 			return
@@ -135,7 +137,7 @@ func FuzzDecodeInt8Array(f *testing.F) {
 		// Whatever it accepted must be re-encodable to something it accepts
 		// again with the same values: a decoder that read a length from the
 		// wrong offset would not survive that.
-		again, err := DecodeInt8Array(nil, AppendInt8Array(nil, got))
+		again, err := pgtype.DecodeInt8Array(nil, pgtype.AppendInt8Array(nil, got))
 		if err != nil {
 			t.Fatalf("re-decoding what was accepted: %v", err)
 		}

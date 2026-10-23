@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 	"github.com/mlagarrigue/sluice/pushdown"
 )
@@ -47,7 +48,7 @@ func readDemandAhead(t *testing.T, d *pushdown.Demand, publish func(), rest func
 			}
 			read() // the query
 			write(beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"n"}, []uint32{OIDInt8}),
+				beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}),
 				beDataRow(int8Val(1)), beDataRow(int8Val(2)), beSimple(pgwire.BackendPortalSuspended))
 			// A round trip of zero gives the floor of two batches ahead,
 			// asked before the first one is delivered, then topped up.
@@ -61,12 +62,12 @@ func readDemandAhead(t *testing.T, d *pushdown.Demand, publish func(), rest func
 			rest(read, write)
 		}()
 		conn := NewConn(client)
-		src := conn.Query(t.Context(), demandAheadSQL, []Param{{OID: OIDInt8, Value: int8Val(0)}},
+		src := conn.Query(t.Context(), demandAheadSQL, []Param{{OID: pgtype.OIDInt8, Value: int8Val(0)}},
 			QueryConfig{BatchRows: 2, Demand: d, KeyParam: 1})
 		src.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				k, err := DecodeInt8(v)
+				k, err := pgtype.DecodeInt8(v)
 				if err != nil {
 					t.Errorf("decoding a key: %v", err)
 				}

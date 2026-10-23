@@ -17,6 +17,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The connector comparison, against a live server.
@@ -129,13 +130,13 @@ func BenchmarkPGPointSluice(b *testing.B) {
 	b.ReportAllocs()
 	report := countReport(b)
 	for b.Loop() {
-		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+		key = pgtype.AppendInt8(key[:0], 42)
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: pgtype.OIDInt8, Value: key}},
 			postgres.QueryConfig{BatchRows: 2})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
-				t, _ := postgres.DecodeInt8(v)
+				t, _ := pgtype.DecodeInt8(v)
 				acc += t
 			}
 			return true
@@ -158,13 +159,13 @@ func BenchmarkPGPointSluiceCached(b *testing.B) {
 	var acc int64
 	b.ReportAllocs()
 	for b.Loop() {
-		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+		key = pgtype.AppendInt8(key[:0], 42)
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: pgtype.OIDInt8, Value: key}},
 			postgres.QueryConfig{BatchRows: 2})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
-				t, _ := postgres.DecodeInt8(v)
+				t, _ := pgtype.DecodeInt8(v)
 				acc += t
 			}
 			return true
@@ -185,13 +186,13 @@ func BenchmarkPGPointSluiceFetchAll(b *testing.B) {
 	var acc int64
 	b.ReportAllocs()
 	for b.Loop() {
-		key = postgres.AppendInt8(key[:0], 42)
-		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: postgres.OIDInt8, Value: key}},
+		key = pgtype.AppendInt8(key[:0], 42)
+		src := conn.Query(b.Context(), pointSQL, []postgres.Param{{OID: pgtype.OIDInt8, Value: key}},
 			postgres.QueryConfig{BatchRows: 2, Fetch: postgres.FetchAll})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				v, _ := r.Value(1)
-				t, _ := postgres.DecodeInt8(v)
+				t, _ := pgtype.DecodeInt8(v)
 				acc += t
 			}
 			return true
@@ -210,8 +211,8 @@ func BenchmarkPGAnySluiceFetchAll(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024, Fetch: postgres.FetchAll})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
@@ -279,8 +280,8 @@ func BenchmarkPGAnySluice(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
@@ -300,8 +301,8 @@ func BenchmarkPGAnySluiceCached(b *testing.B) {
 	var seen int
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = postgres.AppendInt8Array(buf[:0], keys)
-		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+		buf = pgtype.AppendInt8Array(buf[:0], keys)
+		src := conn.Query(b.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{BatchRows: 1024})
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			seen += len(batch.Items)
@@ -413,7 +414,7 @@ func benchWideSluice(b *testing.B, cfg postgres.QueryConfig) {
 					if isNull {
 						continue
 					}
-					n, err := postgres.DecodeInt8(v)
+					n, err := pgtype.DecodeInt8(v)
 					if err != nil {
 						b.Errorf("column %d: %v", col, err)
 						return false
@@ -529,7 +530,7 @@ func BenchmarkPGCopySluice(b *testing.B) {
 		buf := make([]byte, 0, copyRows*24)
 		for i := range copyRows {
 			buf = postgres.AppendTupleHeader(buf, 2)
-			scratch = postgres.AppendInt8(scratch[:0], int64(i))
+			scratch = pgtype.AppendInt8(scratch[:0], int64(i))
 			buf = postgres.AppendField(buf, scratch)
 			buf = postgres.AppendField(buf, []byte("label"))
 		}
@@ -604,14 +605,14 @@ func TestPGContendersAgree(t *testing.T) {
 
 	sc := sluiceConn(t)
 	got := map[int64]int64{}
-	src := sc.Query(t.Context(), anySQL, []postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}},
+	src := sc.Query(t.Context(), anySQL, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
 		postgres.QueryConfig{BatchRows: 1024})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, r := range b.Items {
 			idBytes, _ := r.Value(0)
 			totalBytes, _ := r.Value(1)
-			id, _ := postgres.DecodeInt8(idBytes)
-			total, _ := postgres.DecodeInt8(totalBytes)
+			id, _ := pgtype.DecodeInt8(idBytes)
+			total, _ := pgtype.DecodeInt8(totalBytes)
 			got[id] = total
 		}
 		return true

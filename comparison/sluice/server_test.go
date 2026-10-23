@@ -26,6 +26,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The validation the study does once for all variants (§4): every variant
@@ -423,7 +424,7 @@ func countWrites(t *testing.T) int64 {
 	var n int64
 	for b := range src.Stream() {
 		v, _ := b.Items[0].Value(0)
-		n, _ = postgres.DecodeInt8(v)
+		n, _ = pgtype.DecodeInt8(v)
 	}
 	if err := src.Err(); err != nil {
 		t.Fatal(err)

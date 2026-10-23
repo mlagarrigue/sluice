@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -63,11 +64,11 @@ func pgScript(rows int) []byte {
 	desc = binary.BigEndian.AppendUint16(desc, 2)
 	for _, name := range []string{"id", "total"} {
 		desc = append(append(desc, name...), 0)
-		desc = binary.BigEndian.AppendUint32(desc, 0)                // table OID
-		desc = binary.BigEndian.AppendUint16(desc, 0)                // column number
-		desc = binary.BigEndian.AppendUint32(desc, postgres.OIDInt8) // type
-		desc = binary.BigEndian.AppendUint16(desc, 8)                // type size
-		desc = binary.BigEndian.AppendUint32(desc, 0)                // type modifier
+		desc = binary.BigEndian.AppendUint32(desc, 0)              // table OID
+		desc = binary.BigEndian.AppendUint16(desc, 0)              // column number
+		desc = binary.BigEndian.AppendUint32(desc, pgtype.OIDInt8) // type
+		desc = binary.BigEndian.AppendUint16(desc, 8)              // type size
+		desc = binary.BigEndian.AppendUint32(desc, 0)              // type modifier
 		desc = binary.BigEndian.AppendUint16(desc, uint16(pgwire.FormatBinary))
 	}
 
@@ -75,7 +76,7 @@ func pgScript(rows int) []byte {
 	row = binary.BigEndian.AppendUint16(row, 2)
 	for _, v := range []int64{42, 1000} {
 		row = binary.BigEndian.AppendUint32(row, 8)
-		row = postgres.AppendInt8(row, v)
+		row = pgtype.AppendInt8(row, v)
 	}
 
 	out := frame('1', nil) // ParseComplete
@@ -126,10 +127,10 @@ func BenchmarkPGReadDecode(b *testing.B) {
 		src.Stream()(func(batch sluice.Batch[postgres.Row]) bool {
 			for _, r := range batch.Items {
 				idBytes, _ := r.Value(0)
-				id, _ := postgres.DecodeInt8(idBytes)
+				id, _ := pgtype.DecodeInt8(idBytes)
 				totalBytes, isNull := r.Value(1)
 				if !isNull {
-					total, _ := postgres.DecodeInt8(totalBytes)
+					total, _ := pgtype.DecodeInt8(totalBytes)
 					acc += total
 				}
 				acc += id
@@ -157,13 +158,13 @@ func BenchmarkPGDecodeInt8Array(b *testing.B) {
 	for i := range values {
 		values[i] = int64(i)
 	}
-	encoded := postgres.AppendInt8Array(nil, values)
+	encoded := pgtype.AppendInt8Array(nil, values)
 
 	dst := make([]int64, 0, n)
 	var acc int64
 	for b.Loop() {
 		var err error
-		dst, err = postgres.DecodeInt8Array(dst, encoded)
+		dst, err = pgtype.DecodeInt8Array(dst, encoded)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -183,7 +184,7 @@ func BenchmarkPGEncodeInt8Array(b *testing.B) {
 
 	buf := make([]byte, 0, 8*n+32)
 	for b.Loop() {
-		buf = postgres.AppendInt8Array(buf[:0], values)
+		buf = pgtype.AppendInt8Array(buf[:0], values)
 	}
 	sink = int64(len(buf))
 	reportPerElem(b, n)

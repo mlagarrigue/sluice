@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -200,14 +201,14 @@ func beErrorResponse(code, msg string) []byte {
 	return frame(pgwire.BackendErrorResponse, string(errBody("S", "ERROR", "C", code, "M", msg)))
 }
 
-func int8Val(v int64) []byte { return AppendInt8(nil, v) }
+func int8Val(v int64) []byte { return pgtype.AppendInt8(nil, v) }
 
 // A whole query, from the messages the client sends to the rows it reads back.
 func TestConnQuery(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id", "total"}, []uint32{OIDInt8, OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id", "total"}, []uint32{pgtype.OIDInt8, pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1), int8Val(100))...)
 	first = append(first, beDataRow(int8Val(2), nil)...)
 	first = append(first, beCommandComplete("SELECT 2")...)
@@ -215,7 +216,7 @@ func TestConnQuery(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{first, beReadyForQuery()}}
 	conn := NewConn(srv)
 
-	keys := AppendInt8Array(nil, []int64{1, 2})
+	keys := pgtype.AppendInt8Array(nil, []int64{1, 2})
 	src := conn.Query(t.Context(), "SELECT id, total FROM orders WHERE id = ANY($1)",
 		[]Param{{Value: keys}}, QueryConfig{BatchRows: 16})
 
@@ -228,14 +229,14 @@ func TestConnQuery(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			idBytes, _ := r.Value(0)
-			id, err := DecodeInt8(idBytes)
+			id, err := pgtype.DecodeInt8(idBytes)
 			if err != nil {
 				t.Errorf("decoding id: %v", err)
 			}
 			totalBytes, isNull := r.Value(1)
 			var total int64
 			if !isNull {
-				total, _ = DecodeInt8(totalBytes)
+				total, _ = pgtype.DecodeInt8(totalBytes)
 			}
 			rows = append(rows, got{id, total, isNull})
 		}
@@ -276,7 +277,7 @@ func TestConnQueryExposesFields(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(7))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 
@@ -290,7 +291,7 @@ func TestConnQueryExposesFields(t *testing.T) {
 		}
 		return true
 	})
-	if len(fields) != 1 || fields[0].Name != "id" || fields[0].TypeOID != OIDInt8 {
+	if len(fields) != 1 || fields[0].Name != "id" || fields[0].TypeOID != pgtype.OIDInt8 {
 		t.Errorf("fields = %+v", fields)
 	}
 }
@@ -305,7 +306,7 @@ func TestConnQueryAsksForEachBatch(t *testing.T) {
 		var head []byte
 		head = append(head, beSimple(pgwire.BackendParseComplete)...)
 		head = append(head, beSimple(pgwire.BackendBindComplete)...)
-		head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		head = append(head, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		head = append(head, beDataRow(int8Val(1))...)
 		head = append(head, beDataRow(int8Val(2))...)
 		head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
@@ -327,7 +328,7 @@ func TestConnQueryAsksForEachBatch(t *testing.T) {
 			sizes = append(sizes, b.Len())
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				id, _ := DecodeInt8(v)
+				id, _ := pgtype.DecodeInt8(v)
 				ids = append(ids, id)
 			}
 			return true
@@ -358,7 +359,7 @@ func TestConnQueryEarlyStopResynchronises(t *testing.T) {
 	var head []byte
 	head = append(head, beSimple(pgwire.BackendParseComplete)...)
 	head = append(head, beSimple(pgwire.BackendBindComplete)...)
-	head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	head = append(head, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	head = append(head, beDataRow(int8Val(1))...)
 	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 
@@ -402,7 +403,7 @@ func TestEarlyStopDrainsTheBatchesAskedForAhead(t *testing.T) {
 		var head []byte
 		head = append(head, beSimple(pgwire.BackendParseComplete)...)
 		head = append(head, beSimple(pgwire.BackendBindComplete)...)
-		head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		head = append(head, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		head = append(head, beDataRow(int8Val(1))...)
 		head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 
@@ -417,7 +418,7 @@ func TestEarlyStopDrainsTheBatchesAskedForAhead(t *testing.T) {
 		var next []byte
 		next = append(next, beSimple(pgwire.BackendParseComplete)...)
 		next = append(next, beSimple(pgwire.BackendBindComplete)...)
-		next = append(next, beRowDescription([]string{"v"}, []uint32{OIDInt8})...)
+		next = append(next, beRowDescription([]string{"v"}, []uint32{pgtype.OIDInt8})...)
 		next = append(next, beDataRow(int8Val(4242))...)
 		next = append(next, beCommandComplete("SELECT 1")...)
 
@@ -449,7 +450,7 @@ func TestEarlyStopDrainsTheBatchesAskedForAhead(t *testing.T) {
 		q.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				got, _ = DecodeInt8(v)
+				got, _ = pgtype.DecodeInt8(v)
 			}
 			return true
 		})
@@ -499,7 +500,7 @@ func TestConnQueryTruncatedResponseBreaksConn(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	// The stream stops here: no CommandComplete, no ReadyForQuery.
 
 	conn := NewConn(&fakeServer{responses: [][]byte{script}})
@@ -559,7 +560,7 @@ func TestConnQueryIgnoresNotices(t *testing.T) {
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, frame(pgwire.BackendNoticeResponse, string(errBody("S", "NOTICE", "M", "hello")))...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(9))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 
@@ -582,7 +583,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beCommandComplete("SELECT 0")...)
 
 	srv := &fakeServer{responses: [][]byte{script, beReadyForQuery()}}
@@ -593,7 +594,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 		keys[i] = int64(i)
 	}
 	src := conn.Query(t.Context(), "SELECT id FROM orders WHERE id = ANY($1)",
-		[]Param{{Value: AppendInt8Array(nil, keys)}}, QueryConfig{})
+		[]Param{{Value: pgtype.AppendInt8Array(nil, keys)}}, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
 		t.Fatalf("Err = %v", err)
@@ -667,7 +668,7 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	script = append(script, beRowDescription([]string{"v"}, []uint32{pgtype.OIDText})...)
 	for range rows {
 		script = append(script, beDataRow(value)...)
 	}
@@ -677,7 +678,7 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 	var next []byte
 	next = append(next, beSimple(pgwire.BackendParseComplete)...)
 	next = append(next, beSimple(pgwire.BackendBindComplete)...)
-	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	next = append(next, beDataRow(int8Val(1))...)
 	next = append(next, beCommandComplete("SELECT 1")...)
 	next = append(next, beReadyForQuery()...)
@@ -733,7 +734,7 @@ func TestBatchBytesCutsTheBatchedFetch(t *testing.T) {
 	var head []byte
 	head = append(head, beSimple(pgwire.BackendParseComplete)...)
 	head = append(head, beSimple(pgwire.BackendBindComplete)...)
-	head = append(head, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	head = append(head, beRowDescription([]string{"v"}, []uint32{pgtype.OIDText})...)
 	for range 5 {
 		head = append(head, beDataRow(value)...)
 	}
@@ -760,7 +761,7 @@ func TestBatchedFetchRefusesARowPastTheExecute(t *testing.T) {
 	var head []byte
 	head = append(head, beSimple(pgwire.BackendParseComplete)...)
 	head = append(head, beSimple(pgwire.BackendBindComplete)...)
-	head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	head = append(head, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	for i := range 3 {
 		head = append(head, beDataRow(int8Val(int64(i)))...)
 	}
@@ -785,7 +786,7 @@ func TestFetchAllSendsSyncInsteadOfFlush(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(1))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beReadyForQuery()...)
@@ -819,7 +820,7 @@ func TestFetchAllAsksForEveryRow(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beCommandComplete("SELECT 0")...)
 	script = append(script, beReadyForQuery()...)
 
@@ -858,7 +859,7 @@ func TestFetchAllDoesNotSyncTwice(t *testing.T) {
 		var s []byte
 		s = append(s, beSimple(pgwire.BackendParseComplete)...)
 		s = append(s, beSimple(pgwire.BackendBindComplete)...)
-		s = append(s, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		s = append(s, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		s = append(s, beDataRow(int8Val(v))...)
 		s = append(s, beCommandComplete("SELECT 1")...)
 		return append(s, beReadyForQuery()...)
@@ -872,7 +873,7 @@ func TestFetchAllDoesNotSyncTwice(t *testing.T) {
 		src.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				n, _ := DecodeInt8(v)
+				n, _ := pgtype.DecodeInt8(v)
 				got = append(got, n)
 			}
 			return true
@@ -910,7 +911,7 @@ func TestFetchAllEarlyStopKeepsTheConnection(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	for i := range 5 {
 		first = append(first, beDataRow(int8Val(int64(i)))...)
 	}
@@ -920,7 +921,7 @@ func TestFetchAllEarlyStopKeepsTheConnection(t *testing.T) {
 	var second []byte
 	second = append(second, beSimple(pgwire.BackendParseComplete)...)
 	second = append(second, beSimple(pgwire.BackendBindComplete)...)
-	second = append(second, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	second = append(second, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	second = append(second, beDataRow(int8Val(99))...)
 	second = append(second, beCommandComplete("SELECT 1")...)
 	second = append(second, beReadyForQuery()...)
@@ -947,7 +948,7 @@ func TestFetchAllEarlyStopKeepsTheConnection(t *testing.T) {
 	again.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -966,7 +967,7 @@ func TestWithoutFetchAllTheFlushRemains(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1))...)
 	first = append(first, beCommandComplete("SELECT 1")...)
 
@@ -1113,13 +1114,13 @@ func TestAnUnreadableRowDoesNotBreakTheConnection(t *testing.T) {
 	var bad []byte
 	bad = append(bad, beSimple(pgwire.BackendParseComplete)...)
 	bad = append(bad, beSimple(pgwire.BackendBindComplete)...)
-	bad = append(bad, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	bad = append(bad, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	bad = append(bad, frame(pgwire.BackendDataRow, string(dataRow(int8Val(1), int8Val(2), int8Val(3))))...)
 
 	var good []byte
 	good = append(good, beSimple(pgwire.BackendParseComplete)...)
 	good = append(good, beSimple(pgwire.BackendBindComplete)...)
-	good = append(good, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	good = append(good, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	good = append(good, beDataRow(int8Val(42))...)
 	good = append(good, beCommandComplete("SELECT 1")...)
 
@@ -1148,7 +1149,7 @@ func TestAnUnreadableRowDoesNotBreakTheConnection(t *testing.T) {
 	again.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -1317,7 +1318,7 @@ func TestWireTouchingCallsInsideAConsumerAreRefused(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(7))...)
 	first = append(first, beCommandComplete("SELECT 1")...)
 	first = append(first, beReadyForQuery()...)
@@ -1340,7 +1341,7 @@ func TestWireTouchingCallsInsideAConsumerAreRefused(t *testing.T) {
 		nested["WriteTuples"] = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -1376,7 +1377,7 @@ func TestAnErrorMetDuringTheDrainIsSurfaced(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1))...)
 	first = append(first, beSimple(pgwire.BackendPortalSuspended)...)
 	var second []byte
@@ -1409,7 +1410,7 @@ func TestQueryToleratesANotification(t *testing.T) {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(7))...)
 	first = append(first, beNotification("jobs", "42")...)
 	first = append(first, beCommandComplete("SELECT 1")...)
@@ -1423,7 +1424,7 @@ func TestQueryToleratesANotification(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -1453,7 +1454,7 @@ func TestQueryCopyToStdoutFailsTheStatementNotTheConnection(t *testing.T) {
 	var next []byte
 	next = append(next, beSimple(pgwire.BackendParseComplete)...)
 	next = append(next, beSimple(pgwire.BackendBindComplete)...)
-	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	next = append(next, beDataRow(int8Val(42))...)
 	next = append(next, beCommandComplete("SELECT 1")...)
 
@@ -1476,7 +1477,7 @@ func TestQueryCopyToStdoutFailsTheStatementNotTheConnection(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -1676,7 +1677,7 @@ func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) 
 		var head []byte
 		head = append(head, beSimple(pgwire.BackendParseComplete)...)
 		head = append(head, beSimple(pgwire.BackendBindComplete)...)
-		head = append(head, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		head = append(head, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		head = append(head, beDataRow(int8Val(1))...)
 		head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 		tail := append(frame('z', "invented"), beReadyForQuery()...)

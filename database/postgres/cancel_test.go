@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -56,7 +57,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 		var suspended []byte
 		suspended = append(suspended, beSimple(pgwire.BackendParseComplete)...)
 		suspended = append(suspended, beSimple(pgwire.BackendBindComplete)...)
-		suspended = append(suspended, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		suspended = append(suspended, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		suspended = append(suspended, beDataRow(int8Val(1))...)
 		suspended = append(suspended, beSimple(pgwire.BackendPortalSuspended)...)
 
@@ -64,7 +65,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 		var second []byte
 		second = append(second, beSimple(pgwire.BackendParseComplete)...)
 		second = append(second, beSimple(pgwire.BackendBindComplete)...)
-		second = append(second, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+		second = append(second, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 		second = append(second, beDataRow(int8Val(2))...)
 		second = append(second, beCommandComplete("SELECT 1")...)
 
@@ -92,7 +93,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 		src.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				id, _ := DecodeInt8(v)
+				id, _ := pgtype.DecodeInt8(v)
 				seen = append(seen, id)
 			}
 			cancel() // the caller gives up with the portal still suspended
@@ -115,7 +116,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 		again.Stream()(func(b sluice.Batch[Row]) bool {
 			for _, r := range b.Items {
 				v, _ := r.Value(0)
-				id, _ := DecodeInt8(v)
+				id, _ := pgtype.DecodeInt8(v)
 				after = append(after, id)
 			}
 			return true
@@ -154,7 +155,7 @@ func TestQueryCancelledInsideTheLastBatchStillSucceeds(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(7))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 
@@ -475,14 +476,14 @@ func TestQueryCancelsTheRunningStatementThroughTheRecipe(t *testing.T) {
 			// The server aborts the statement; the ReadyForQuery follows the
 			// client's Sync, as it does on every error.
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"pg_sleep"}, []uint32{OIDText}),
+				beRowDescription([]string{"pg_sleep"}, []uint32{pgtype.OIDText}),
 				beErrorResponse("57014", "canceling statement due to user request"))
 			<-srv.read // Sync
 			srv.write(t, beReadyForQuery())
 			// A second query, answered in full.
 			<-srv.read
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(2)),
+				beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8}), beDataRow(int8Val(2)),
 				beCommandComplete("SELECT 1"))
 			<-srv.read // Sync
 			srv.write(t, beReadyForQuery())
@@ -769,7 +770,7 @@ func TestACompletedStatementKeepsItsResultWhenTheCancellationFails(t *testing.T)
 			<-srv.read
 			time.Sleep(200 * time.Millisecond)
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(7)),
+				beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8}), beDataRow(int8Val(7)),
 				beCommandComplete("SELECT 1"))
 			<-srv.read
 			srv.write(t, beReadyForQuery())
@@ -884,7 +885,7 @@ func streamRows(t *testing.T, srv *pipeServer, packets <-chan []byte, limit int)
 	t.Helper()
 	<-srv.read // the query, Sync included
 	srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-		beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+		beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}))
 	for sent < limit {
 		// Every other goroutine of the bubble goes as far as it can before
 		// the next row: a cancellation already decided has reached packets,
@@ -910,7 +911,7 @@ func answerOne(t *testing.T, srv *pipeServer) {
 	t.Helper()
 	<-srv.read
 	srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-		beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(2)),
+		beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8}), beDataRow(int8Val(2)),
 		beCommandComplete("SELECT 1"))
 	<-srv.read // Sync
 	srv.write(t, beReadyForQuery())
@@ -1086,7 +1087,7 @@ func TestAnEarlyStopWaitsForItsCancellationBeforeTheNextStatement(t *testing.T) 
 			// result ends before the packet is even looked for.
 			<-srv.read
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+				beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}))
 			for i := range 40 {
 				srv.write(t, beDataRow(int8Val(int64(i))))
 			}
@@ -1095,7 +1096,7 @@ func TestAnEarlyStopWaitsForItsCancellationBeforeTheNextStatement(t *testing.T) 
 			<-srv.read
 			nextSent <- time.Since(start)
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"id"}, []uint32{OIDInt8}), beDataRow(int8Val(2)),
+				beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8}), beDataRow(int8Val(2)),
 				beCommandComplete("SELECT 1"))
 			<-srv.read
 			srv.write(t, beReadyForQuery())
@@ -1131,7 +1132,7 @@ func TestAnUnconfirmedEarlyStopCancellationBreaksTheConnection(t *testing.T) {
 		go func() {
 			<-srv.read
 			srv.write(t, beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+				beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}))
 			for i := 0; ; i++ {
 				select {
 				case <-packets:

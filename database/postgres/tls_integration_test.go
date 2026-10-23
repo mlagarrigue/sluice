@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // SCRAM-SHA-256-PLUS against a server that hashes its own certificate. The
@@ -143,7 +144,7 @@ func TestIntegrationChannelBindingEd25519(t *testing.T) {
 	version := queryOne(t, conn, "SELECT version FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl",
 		func(row postgres.Row) string {
 			v, _ := row.Value(0)
-			return postgres.DecodeText(v)
+			return pgtype.DecodeText(v)
 		})
 	t.Logf("unbound, over %s", version)
 }
@@ -186,7 +187,7 @@ func bindOverTLS(t *testing.T, dial postgres.DialFunc, cfg postgres.Config) *pos
 	version := queryOne(t, conn, "SELECT version FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl",
 		func(row postgres.Row) string {
 			v, _ := row.Value(0)
-			return postgres.DecodeText(v)
+			return pgtype.DecodeText(v)
 		})
 	t.Logf("bound to the certificate over %s", version)
 	return conn

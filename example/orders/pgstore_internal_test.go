@@ -3,7 +3,7 @@ package orders
 import (
 	"testing"
 
-	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Decoding a row allocates nothing. The hand-written decoder used to build a
@@ -11,10 +11,10 @@ import (
 // over a batch is per-element cost the batch model exists to remove.
 func TestDecodeLineDoesNotAllocate(t *testing.T) {
 	cols := [][]byte{
-		postgres.AppendInt8(nil, 7),
-		postgres.AppendInt4(nil, 2),
-		postgres.AppendInt8(nil, 5),
-		postgres.AppendInt8(nil, 1250),
+		pgtype.AppendInt8(nil, 7),
+		pgtype.AppendInt4(nil, 2),
+		pgtype.AppendInt8(nil, 5),
+		pgtype.AppendInt8(nil, 1250),
 	}
 	value := func(col int) ([]byte, bool) { return cols[col], false }
 

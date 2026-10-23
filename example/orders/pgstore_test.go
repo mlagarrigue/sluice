@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/example/internal/pgfake"
 	"github.com/mlagarrigue/sluice/example/orders"
 )
@@ -36,17 +36,17 @@ func (m *memTable) exec(t *testing.T) func(string, [][]byte, map[string]string) 
 		}
 		switch {
 		case strings.Contains(sql, "SELECT"):
-			ids, err := postgres.DecodeInt8Array(nil, params[0])
+			ids, err := pgtype.DecodeInt8Array(nil, params[0])
 			if err != nil {
 				t.Errorf("order ids: %v", err)
 			}
-			idx, err := postgres.DecodeInt4Array(nil, params[1])
+			idx, err := pgtype.DecodeInt4Array(nil, params[1])
 			if err != nil {
 				t.Errorf("line indexes: %v", err)
 			}
 			res := pgfake.Result{
 				Columns: []string{"order_id", "line_index", "sale_qty", "price"},
-				OIDs:    []uint32{postgres.OIDInt8, postgres.OIDInt4, postgres.OIDInt8, postgres.OIDInt8},
+				OIDs:    []uint32{pgtype.OIDInt8, pgtype.OIDInt4, pgtype.OIDInt8, pgtype.OIDInt8},
 			}
 			for i := range ids {
 				l, ok := m.lines[orders.LineKey{OrderID: ids[i], Index: int(idx[i])}]
@@ -54,10 +54,10 @@ func (m *memTable) exec(t *testing.T) func(string, [][]byte, map[string]string) 
 					continue
 				}
 				row := [][]byte{
-					postgres.AppendInt8(nil, l.OrderID),
-					postgres.AppendInt4(nil, int32(l.Index)), //nolint:gosec // a test line index
-					postgres.AppendInt8(nil, l.SaleQty),
-					postgres.AppendInt8(nil, l.Price),
+					pgtype.AppendInt8(nil, l.OrderID),
+					pgtype.AppendInt4(nil, int32(l.Index)), //nolint:gosec // a test line index
+					pgtype.AppendInt8(nil, l.SaleQty),
+					pgtype.AppendInt8(nil, l.Price),
 				}
 				if m.nullCol >= 0 {
 					row[m.nullCol] = nil
@@ -66,9 +66,9 @@ func (m *memTable) exec(t *testing.T) func(string, [][]byte, map[string]string) 
 			}
 			return res
 		case strings.Contains(sql, "UPDATE"):
-			ids, _ := postgres.DecodeInt8Array(nil, params[0])
-			idx, _ := postgres.DecodeInt4Array(nil, params[1])
-			qty, _ := postgres.DecodeInt8Array(nil, params[2])
+			ids, _ := pgtype.DecodeInt8Array(nil, params[0])
+			idx, _ := pgtype.DecodeInt4Array(nil, params[1])
+			qty, _ := pgtype.DecodeInt8Array(nil, params[2])
 			for i := range ids {
 				k := orders.LineKey{OrderID: ids[i], Index: int(idx[i])}
 				if l, ok := m.lines[k]; ok {

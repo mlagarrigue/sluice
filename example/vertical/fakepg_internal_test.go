@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/example/internal/pgfake"
 )
 
@@ -57,22 +58,22 @@ func (f *fakePG) exec(sql string, _ [][]byte, settings map[string]string) pgfake
 	}
 	res := pgfake.Result{
 		Columns: []string{"order_id", "line_index", "sale_qty", "price"},
-		OIDs:    []uint32{postgres.OIDInt8, postgres.OIDInt4, postgres.OIDInt8, postgres.OIDInt8},
+		OIDs:    []uint32{pgtype.OIDInt8, pgtype.OIDInt4, pgtype.OIDInt8, pgtype.OIDInt8},
 	}
 	tenant := settings["app.tenant_id"]
 	for _, r := range f.rows {
 		if r.tenant != tenant {
 			continue
 		}
-		sale := postgres.AppendInt8(nil, r.line.SaleQty)
+		sale := pgtype.AppendInt8(nil, r.line.SaleQty)
 		if r.nullSale {
 			sale = nil
 		}
 		res.Rows = append(res.Rows, [][]byte{
-			postgres.AppendInt8(nil, r.line.OrderID),
-			postgres.AppendInt4(nil, int32(r.line.Index)), //nolint:gosec // a test line index
+			pgtype.AppendInt8(nil, r.line.OrderID),
+			pgtype.AppendInt4(nil, int32(r.line.Index)), //nolint:gosec // a test line index
 			sale,
-			postgres.AppendInt8(nil, r.line.Price),
+			pgtype.AppendInt8(nil, r.line.Price),
 		})
 	}
 	return res

@@ -1,4 +1,4 @@
-package postgres
+package pgtype
 
 import (
 	"encoding/binary"
@@ -21,8 +21,9 @@ import (
 // Because a pointer per element is an allocation per element, and the whole
 // point of the array codecs is that a thousand keys travel without a thousand
 // allocations. A `[]Null[int64]` is one contiguous block, `Valid` sits beside
-// the value, and the batch stays flat — which is the same reason [Rows] decodes
-// into one buffer plus offsets rather than a slice per row.
+// the value, and the batch stays flat — which is the same reason the
+// connector's Rows decodes into one buffer plus offsets rather than a slice
+// per row.
 //
 // # Valid, not IsNull
 //

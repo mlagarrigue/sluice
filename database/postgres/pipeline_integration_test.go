@@ -14,6 +14,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // A pipeline must return exactly what the sequential form returns, or the round
@@ -64,7 +65,7 @@ func TestIntegrationPipelineMatchesSequential(t *testing.T) {
 					t.Error("a NULL id")
 					continue
 				}
-				id, err := postgres.DecodeInt8(v)
+				id, err := pgtype.DecodeInt8(v)
 				if err != nil {
 					t.Errorf("decoding: %v", err)
 					continue
@@ -224,7 +225,7 @@ func TestIntegrationPipelineLargeVolumeFinishes(t *testing.T) {
 	for i := range ps {
 		ps[i] = postgres.Part{
 			SQL:    `SELECT repeat('r', 200000), length($1)`,
-			Params: []postgres.Param{{OID: postgres.OIDText, Value: param}},
+			Params: []postgres.Param{{OID: pgtype.OIDText, Value: param}},
 		}
 	}
 

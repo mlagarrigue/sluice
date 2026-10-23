@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Every column scanner, held to the same three promises.
@@ -26,12 +28,12 @@ func TestScanners(t *testing.T) {
 	// One row of every type, then a second row that is NULL throughout.
 	at := time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)
 	values := [][]byte{
-		AppendInt8(nil, -1234567890123),
-		AppendInt4(nil, -1234567),
-		AppendFloat8(nil, -0.125),
-		AppendBool(nil, true),
-		AppendText(nil, "héllo"),
-		AppendTimestampTZ(nil, at),
+		pgtype.AppendInt8(nil, -1234567890123),
+		pgtype.AppendInt4(nil, -1234567),
+		pgtype.AppendFloat8(nil, -0.125),
+		pgtype.AppendBool(nil, true),
+		pgtype.AppendText(nil, "héllo"),
+		pgtype.AppendTimestampTZ(nil, at),
 	}
 
 	rows := newRows(len(values), 4, 0)
@@ -103,8 +105,8 @@ func TestScanners(t *testing.T) {
 			"ScanTimestampTZ": func() error { _, err := ScanTimestampTZ(nil, narrow, 0); return err },
 		}
 		for name, scan := range scanners {
-			if err := scan(); !errors.Is(err, ErrCodec) {
-				t.Errorf("%s over three bytes = %v, want ErrCodec", name, err)
+			if err := scan(); !errors.Is(err, pgtype.ErrCodec) {
+				t.Errorf("%s over three bytes = %v, want pgtype.ErrCodec", name, err)
 			}
 		}
 		// ScanText takes any width by definition, so it has no such refusal
@@ -149,7 +151,7 @@ func TestScanners(t *testing.T) {
 	// to survive the scan.
 	t.Run("NaN survives a float scan", func(t *testing.T) {
 		one := newRows(1, 4, 0)
-		if err := one.appendRow(dataRow(AppendFloat8(nil, math.NaN()))); err != nil {
+		if err := one.appendRow(dataRow(pgtype.AppendFloat8(nil, math.NaN()))); err != nil {
 			t.Fatal(err)
 		}
 		got, err := ScanFloat8(nil, one, 0)
@@ -175,10 +177,10 @@ func described(t *testing.T, oid uint32, value []byte) *Rows {
 // int8 and decode into a number nobody stored. A built-in type the scanner
 // does not read is refused, naming both types.
 func TestScannersRefuseABuiltinTypeMismatch(t *testing.T) {
-	text8 := described(t, OIDText, []byte("abcdefgh"))
+	text8 := described(t, pgtype.OIDText, []byte("abcdefgh"))
 	got, err := ScanInt8(nil, text8, 0)
-	if !errors.Is(err, ErrCodec) || len(got) != 0 {
-		t.Fatalf("ScanInt8 over a text column = %v, %v; want ErrCodec and nothing decoded", got, err)
+	if !errors.Is(err, pgtype.ErrCodec) || len(got) != 0 {
+		t.Fatalf("ScanInt8 over a text column = %v, %v; want pgtype.ErrCodec and nothing decoded", got, err)
 	}
 	for _, name := range []string{"text (OID 25)", "int8 (OID 20)", "ScanInt8"} {
 		if !strings.Contains(err.Error(), name) {
@@ -186,18 +188,27 @@ func TestScannersRefuseABuiltinTypeMismatch(t *testing.T) {
 		}
 	}
 
-	at := AppendTimestampTZ(nil, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	at := pgtype.AppendTimestampTZ(nil, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
 	for name, scan := range map[string]func() error{
-		"ScanInt4 over int8":             func() error { _, err := ScanInt4(nil, described(t, OIDInt8, AppendInt4(nil, 1)), 0); return err },
-		"ScanFloat8 over int8":           func() error { _, err := ScanFloat8(nil, described(t, OIDInt8, AppendInt8(nil, 1)), 0); return err },
-		"ScanBool over bytea":            func() error { _, err := ScanBool(nil, described(t, OIDBytea, []byte{1}), 0); return err },
-		"ScanText over int8":             func() error { _, err := ScanText(nil, described(t, OIDInt8, AppendInt8(nil, 1)), 0); return err },
-		"ScanTimestampTZ over timestamp": func() error { _, err := ScanTimestampTZ(nil, described(t, OIDTimestamp, at), 0); return err },
-		"ScanTimestampTZ over float8":    func() error { _, err := ScanTimestampTZ(nil, described(t, OIDFloat8, at), 0); return err },
-		"ScanInt8 over a zero OID":       func() error { _, err := ScanInt8(nil, described(t, 0, AppendInt8(nil, 1)), 0); return err },
+		"ScanInt4 over int8": func() error {
+			_, err := ScanInt4(nil, described(t, pgtype.OIDInt8, pgtype.AppendInt4(nil, 1)), 0)
+			return err
+		},
+		"ScanFloat8 over int8": func() error {
+			_, err := ScanFloat8(nil, described(t, pgtype.OIDInt8, pgtype.AppendInt8(nil, 1)), 0)
+			return err
+		},
+		"ScanBool over bytea": func() error { _, err := ScanBool(nil, described(t, pgtype.OIDBytea, []byte{1}), 0); return err },
+		"ScanText over int8": func() error {
+			_, err := ScanText(nil, described(t, pgtype.OIDInt8, pgtype.AppendInt8(nil, 1)), 0)
+			return err
+		},
+		"ScanTimestampTZ over timestamp": func() error { _, err := ScanTimestampTZ(nil, described(t, pgtype.OIDTimestamp, at), 0); return err },
+		"ScanTimestampTZ over float8":    func() error { _, err := ScanTimestampTZ(nil, described(t, pgtype.OIDFloat8, at), 0); return err },
+		"ScanInt8 over a zero OID":       func() error { _, err := ScanInt8(nil, described(t, 0, pgtype.AppendInt8(nil, 1)), 0); return err },
 	} {
-		if err := scan(); !errors.Is(err, ErrCodec) {
-			t.Errorf("%s = %v, want ErrCodec", name, err)
+		if err := scan(); !errors.Is(err, pgtype.ErrCodec) {
+			t.Errorf("%s = %v, want pgtype.ErrCodec", name, err)
 		}
 	}
 }
@@ -206,21 +217,21 @@ func TestScannersRefuseABuiltinTypeMismatch(t *testing.T) {
 // FirstNormalObjectId: a domain over int8 is sent as int8, its OID is
 // assigned per database, and the width checks still guard it.
 func TestScannersAcceptMatchingAndUserTypes(t *testing.T) {
-	if got, err := ScanInt8(nil, described(t, OIDInt8, AppendInt8(nil, 42)), 0); err != nil || got[0] != 42 {
+	if got, err := ScanInt8(nil, described(t, pgtype.OIDInt8, pgtype.AppendInt8(nil, 42)), 0); err != nil || got[0] != 42 {
 		t.Errorf("ScanInt8 over int8 = %v, %v", got, err)
 	}
-	for _, oid := range []uint32{OIDText, OIDVarchar, 1042, 19, OIDJSON} {
+	for _, oid := range []uint32{pgtype.OIDText, pgtype.OIDVarchar, 1042, 19, pgtype.OIDJSON} {
 		if got, err := ScanText(nil, described(t, oid, []byte("v")), 0); err != nil || got[0] != "v" {
 			t.Errorf("ScanText over OID %d = %v, %v", oid, got, err)
 		}
 	}
 	const domainOverInt8 = 16384
-	if got, err := ScanInt8(nil, described(t, domainOverInt8, AppendInt8(nil, 7)), 0); err != nil || got[0] != 7 {
+	if got, err := ScanInt8(nil, described(t, domainOverInt8, pgtype.AppendInt8(nil, 7)), 0); err != nil || got[0] != 7 {
 		t.Errorf("ScanInt8 over a user type = %v, %v", got, err)
 	}
 	// Accepted is not unchecked: the width still has to be right.
-	if _, err := ScanInt8(nil, described(t, 99999, []byte("short")), 0); !errors.Is(err, ErrCodec) {
-		t.Errorf("ScanInt8 over a user type of the wrong width = %v, want ErrCodec", err)
+	if _, err := ScanInt8(nil, described(t, 99999, []byte("short")), 0); !errors.Is(err, pgtype.ErrCodec) {
+		t.Errorf("ScanInt8 over a user type of the wrong width = %v, want pgtype.ErrCodec", err)
 	}
 }
 
@@ -231,26 +242,26 @@ func TestScannersAcceptMatchingAndUserTypes(t *testing.T) {
 func TestGenericScanners(t *testing.T) {
 	at := time.Date(2024, 3, 1, 12, 34, 56, 789012000, time.UTC)
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
-	price, err := ParseNumeric("19.90")
+	price, err := pgtype.ParseNumeric("19.90")
 	if err != nil {
 		t.Fatal(err)
 	}
 	uuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 
 	fields := []Field{
-		{Name: "a", TypeOID: OIDInt2},
-		{Name: "b", TypeOID: OIDFloat4},
-		{Name: "c", TypeOID: OIDBytea},
-		{Name: "d", TypeOID: OIDUUID},
-		{Name: "e", TypeOID: OIDNumeric},
-		{Name: "f", TypeOID: OIDTimestamp},
-		{Name: "g", TypeOID: OIDDate},
+		{Name: "a", TypeOID: pgtype.OIDInt2},
+		{Name: "b", TypeOID: pgtype.OIDFloat4},
+		{Name: "c", TypeOID: pgtype.OIDBytea},
+		{Name: "d", TypeOID: pgtype.OIDUUID},
+		{Name: "e", TypeOID: pgtype.OIDNumeric},
+		{Name: "f", TypeOID: pgtype.OIDTimestamp},
+		{Name: "g", TypeOID: pgtype.OIDDate},
 	}
 	values := [][]byte{
-		AppendInt2(nil, -12345), AppendFloat4(nil, -0.125),
+		pgtype.AppendInt2(nil, -12345), pgtype.AppendFloat4(nil, -0.125),
 		{1, 2, 3},
-		AppendUUID(nil, uuid), AppendNumeric(nil, price),
-		AppendTimestamp(nil, at), AppendDate(nil, day),
+		pgtype.AppendUUID(nil, uuid), pgtype.AppendNumeric(nil, price),
+		pgtype.AppendTimestamp(nil, at), pgtype.AppendDate(nil, day),
 	}
 	rows := newRows(len(values), 4, 0)
 	rows.start(fields, 4, 0)
@@ -325,8 +336,8 @@ func TestGenericScanners(t *testing.T) {
 			if name == "ScanBytea" {
 				continue // any width is a bytea
 			}
-			if err := scan(narrow, 0); !errors.Is(err, ErrCodec) {
-				t.Errorf("%s over three bytes = %v, want ErrCodec", name, err)
+			if err := scan(narrow, 0); !errors.Is(err, pgtype.ErrCodec) {
+				t.Errorf("%s over three bytes = %v, want pgtype.ErrCodec", name, err)
 			}
 		}
 		if got, err := ScanBytea(nil, narrow, 0); err != nil || len(got) != 1 {
@@ -339,15 +350,15 @@ func TestGenericScanners(t *testing.T) {
 		// even agree (date and float4, int2 and nothing), the OID does not.
 		for name, scan := range scanners {
 			col := (cols[name] + 1) % len(fields)
-			if err := scan(rows, col); !errors.Is(err, ErrCodec) {
-				t.Errorf("%s over column %d (%s) = %v, want ErrCodec", name, col, oidName(fields[col].TypeOID), err)
+			if err := scan(rows, col); !errors.Is(err, pgtype.ErrCodec) {
+				t.Errorf("%s over column %d (%s) = %v, want pgtype.ErrCodec", name, col, oidName(fields[col].TypeOID), err)
 			}
 		}
 		// ScanTimestamp does not read timestamptz: the two differ in meaning,
 		// not in bytes, which is exactly why the OID is the guard.
-		tz := described(t, OIDTimestampTZ, AppendTimestampTZ(nil, at))
-		if _, err := ScanTimestamp(nil, tz, 0); !errors.Is(err, ErrCodec) {
-			t.Errorf("ScanTimestamp over timestamptz = %v, want ErrCodec", err)
+		tz := described(t, pgtype.OIDTimestampTZ, pgtype.AppendTimestampTZ(nil, at))
+		if _, err := ScanTimestamp(nil, tz, 0); !errors.Is(err, pgtype.ErrCodec) {
+			t.Errorf("ScanTimestamp over timestamptz = %v, want pgtype.ErrCodec", err)
 		}
 	})
 

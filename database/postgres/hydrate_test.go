@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // §8.6 asserts that reflection "works row by row and field by field, which
@@ -40,11 +41,11 @@ func orderRows(n int) *Rows {
 	rows := newRows(5, n, 0)
 	for i := range n {
 		body := dataRow(
-			AppendInt8(nil, int64(i)),
-			AppendFloat8(nil, float64(i)*1.5),
+			pgtype.AppendInt8(nil, int64(i)),
+			pgtype.AppendFloat8(nil, float64(i)*1.5),
 			fmt.Appendf(nil, "order-%d", i),
-			AppendBool(nil, i%2 == 0),
-			AppendTimestampTZ(nil, time.Unix(int64(i), 0).UTC()),
+			pgtype.AppendBool(nil, i%2 == 0),
+			pgtype.AppendTimestampTZ(nil, time.Unix(int64(i), 0).UTC()),
 		)
 		if err := rows.appendRow(body); err != nil {
 			panic(err)
@@ -85,13 +86,13 @@ func hydrateReflect(dst []order, rows *Rows) ([]order, error) {
 			f := ev.Field(col)
 			switch kind {
 			case reflect.Int64:
-				x, err := DecodeInt8(b)
+				x, err := pgtype.DecodeInt8(b)
 				if err != nil {
 					return nil, err
 				}
 				f.SetInt(x)
 			case reflect.Float64:
-				x, err := DecodeFloat8(b)
+				x, err := pgtype.DecodeFloat8(b)
 				if err != nil {
 					return nil, err
 				}
@@ -99,13 +100,13 @@ func hydrateReflect(dst []order, rows *Rows) ([]order, error) {
 			case reflect.String:
 				f.SetString(string(b))
 			case reflect.Bool:
-				x, err := DecodeBool(b)
+				x, err := pgtype.DecodeBool(b)
 				if err != nil {
 					return nil, err
 				}
 				f.SetBool(x)
 			case reflect.Struct: // time.Time, the only struct field
-				x, err := DecodeTimestampTZ(b)
+				x, err := pgtype.DecodeTimestampTZ(b)
 				if err != nil {
 					return nil, err
 				}
@@ -135,13 +136,13 @@ func hydrateReflectBoxed(dst []order, rows *Rows) ([]order, error) {
 			f := v.Field(col)
 			switch f.Interface().(type) {
 			case int64:
-				x, err := DecodeInt8(b)
+				x, err := pgtype.DecodeInt8(b)
 				if err != nil {
 					return nil, err
 				}
 				f.SetInt(x)
 			case float64:
-				x, err := DecodeFloat8(b)
+				x, err := pgtype.DecodeFloat8(b)
 				if err != nil {
 					return nil, err
 				}
@@ -149,13 +150,13 @@ func hydrateReflectBoxed(dst []order, rows *Rows) ([]order, error) {
 			case string:
 				f.SetString(string(b))
 			case bool:
-				x, err := DecodeBool(b)
+				x, err := pgtype.DecodeBool(b)
 				if err != nil {
 					return nil, err
 				}
 				f.SetBool(x)
 			case time.Time:
-				x, err := DecodeTimestampTZ(b)
+				x, err := pgtype.DecodeTimestampTZ(b)
 				if err != nil {
 					return nil, err
 				}
@@ -177,14 +178,14 @@ func hydrateRowMajor(dst []order, rows *Rows) ([]order, error) {
 		if isNull {
 			return nil, ErrNullValue
 		}
-		id, err := DecodeInt8(b)
+		id, err := pgtype.DecodeInt8(b)
 		if err != nil {
 			return nil, err
 		}
 		o.ID = id
 
 		b, _ = rows.Value(i, 1)
-		total, err := DecodeFloat8(b)
+		total, err := pgtype.DecodeFloat8(b)
 		if err != nil {
 			return nil, err
 		}
@@ -194,14 +195,14 @@ func hydrateRowMajor(dst []order, rows *Rows) ([]order, error) {
 		o.Name = string(b)
 
 		b, _ = rows.Value(i, 3)
-		active, err := DecodeBool(b)
+		active, err := pgtype.DecodeBool(b)
 		if err != nil {
 			return nil, err
 		}
 		o.Active = active
 
 		b, _ = rows.Value(i, 4)
-		created, err := DecodeTimestampTZ(b)
+		created, err := pgtype.DecodeTimestampTZ(b)
 		if err != nil {
 			return nil, err
 		}
@@ -417,7 +418,7 @@ func BenchmarkHydrateRowMajorBatchOne(b *testing.B) {
 func TestRowReachesItsRows(t *testing.T) {
 	rows := newRows(1, 4, 0)
 	for i := range 3 {
-		if err := rows.appendRow(dataRow(AppendInt8(nil, int64(i)))); err != nil {
+		if err := rows.appendRow(dataRow(pgtype.AppendInt8(nil, int64(i)))); err != nil {
 			t.Fatal(err)
 		}
 	}

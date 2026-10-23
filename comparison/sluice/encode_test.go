@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The hand encoder must write what json.Marshal writes, byte for byte: the
@@ -94,7 +95,7 @@ func BenchmarkListDecode(b *testing.B) {
 	rows := syntheticRows(listLimit)
 	bodies := make([][]byte, len(rows))
 	for i, r := range rows {
-		bodies[i] = dataRow(postgres.AppendInt8(nil, r.ID), postgres.AppendInt8(nil, r.Total), []byte(r.Label))
+		bodies[i] = dataRow(pgtype.AppendInt8(nil, r.ID), pgtype.AppendInt8(nil, r.Total), []byte(r.Label))
 	}
 	out := make([]orderRow, 0, listLimit)
 	decode := func(b *testing.B, acc *postgres.Rows) {
@@ -104,15 +105,15 @@ func BenchmarkListDecode(b *testing.B) {
 			idB, _ := acc.Value(i, 0)
 			totalB, _ := acc.Value(i, 1)
 			labelB, _ := acc.Value(i, 2)
-			id, err := postgres.DecodeInt8(idB)
+			id, err := pgtype.DecodeInt8(idB)
 			if err != nil {
 				b.Fatal(err)
 			}
-			total, err := postgres.DecodeInt8(totalB)
+			total, err := pgtype.DecodeInt8(totalB)
 			if err != nil {
 				b.Fatal(err)
 			}
-			out = append(out, orderRow{ID: id, Total: total, Label: postgres.DecodeText(labelB)})
+			out = append(out, orderRow{ID: id, Total: total, Label: pgtype.DecodeText(labelB)})
 		}
 	}
 	conn := postgres.NewConn(replay{bytes.NewReader(replayedList(bodies))})
@@ -153,7 +154,7 @@ func replayedList(bodies [][]byte) []byte {
 	for _, col := range []struct {
 		name string
 		oid  uint32
-	}{{"id", postgres.OIDInt8}, {"total", postgres.OIDInt8}, {"label", postgres.OIDText}} {
+	}{{"id", pgtype.OIDInt8}, {"total", pgtype.OIDInt8}, {"label", pgtype.OIDText}} {
 		desc = append(desc, col.name...)
 		desc = append(desc, 0)
 		desc = binary.BigEndian.AppendUint32(desc, 0) // table OID

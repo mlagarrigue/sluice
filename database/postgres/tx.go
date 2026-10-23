@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // ErrTxDone reports an operation on a transaction that has already committed
@@ -597,8 +598,8 @@ func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 		return err
 	}
 	return tx.conn.execParams(ctx, "SELECT set_config($1, $2, true)", []Param{
-		{OID: OIDText, Value: AppendText(nil, name)},
-		{OID: OIDText, Value: AppendText(nil, value)},
+		{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, name)},
+		{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, value)},
 	})
 }
 

@@ -50,17 +50,17 @@ type column struct {
 	Decode     string   // expression decoding `b` into the field's type
 	OIDs       []string // acceptable type OIDs, by their constant names
 	Nullable   bool     // the Go field is a pointer or a Null[T], so NULL is expressible
-	Present    string   // expression wrapping a decoded `v` for a nullable field: &v or a valid postgres.Null
+	Present    string   // expression wrapping a decoded `v` for a nullable field: &v or a valid pgtype.Null
 	GoType     string   // the Go type, for the nullable branch
 	Infallible bool     // Decode cannot fail, so no error branch is rendered
 }
 
 // generatedFormat is stamped into every generated file's header. It names
-// the contract between the generator and the postgres symbols the generated
-// code calls: it changes when the generated code's shape changes, so a file
-// produced by an older generator can be told apart from one that merely
-// needs regenerating.
-const generatedFormat = 1
+// the contract between the generator and the postgres and pgtype symbols
+// the generated code calls: it changes when the generated code's shape
+// changes, so a file produced by an older generator can be told apart from
+// one that merely needs regenerating.
+const generatedFormat = 2
 
 // entity is what the template renders.
 type entity struct {
@@ -86,21 +86,21 @@ var typeMapping = map[string]struct {
 	// that is always nil is dead code in a DO NOT EDIT file.
 	infallible bool
 }{
-	"int64":   {decode: "postgres.DecodeInt8(b)", oids: []string{"postgres.OIDInt8"}},
-	"int32":   {decode: "postgres.DecodeInt4(b)", oids: []string{"postgres.OIDInt4"}},
-	"int16":   {decode: "postgres.DecodeInt2(b)", oids: []string{"postgres.OIDInt2"}},
-	"float64": {decode: "postgres.DecodeFloat8(b)", oids: []string{"postgres.OIDFloat8"}},
-	"float32": {decode: "postgres.DecodeFloat4(b)", oids: []string{"postgres.OIDFloat4"}},
-	"bool":    {decode: "postgres.DecodeBool(b)", oids: []string{"postgres.OIDBool"}},
+	"int64":   {decode: "pgtype.DecodeInt8(b)", oids: []string{"pgtype.OIDInt8"}},
+	"int32":   {decode: "pgtype.DecodeInt4(b)", oids: []string{"pgtype.OIDInt4"}},
+	"int16":   {decode: "pgtype.DecodeInt2(b)", oids: []string{"pgtype.OIDInt2"}},
+	"float64": {decode: "pgtype.DecodeFloat8(b)", oids: []string{"pgtype.OIDFloat8"}},
+	"float32": {decode: "pgtype.DecodeFloat4(b)", oids: []string{"pgtype.OIDFloat4"}},
+	"bool":    {decode: "pgtype.DecodeBool(b)", oids: []string{"pgtype.OIDBool"}},
 	// text, varchar, char(n) and name all travel as their characters in
 	// binary format; char(n) keeps its blank padding, as the server stores it.
-	"string": {decode: "string(b)", oids: []string{"postgres.OIDText", "postgres.OIDVarchar", "postgres.OIDBPChar", "postgres.OIDName"}, infallible: true},
+	"string": {decode: "string(b)", oids: []string{"pgtype.OIDText", "pgtype.OIDVarchar", "pgtype.OIDBPChar", "pgtype.OIDName"}, infallible: true},
 	// The row's bytes are the reader's buffer, reused for the next batch, so
 	// the field gets its own copy.
-	"[]byte":           {decode: "slices.Clone(b)", oids: []string{"postgres.OIDBytea"}, infallible: true},
-	"postgres.Numeric": {decode: "postgres.DecodeNumeric(b)", oids: []string{"postgres.OIDNumeric"}},
-	"time.Time":        {decode: "postgres.DecodeTimestampTZ(b)", oids: []string{"postgres.OIDTimestampTZ", "postgres.OIDTimestamp"}},
-	"[16]byte":         {decode: "postgres.DecodeUUID(b)", oids: []string{"postgres.OIDUUID"}},
+	"[]byte":         {decode: "slices.Clone(b)", oids: []string{"pgtype.OIDBytea"}, infallible: true},
+	"pgtype.Numeric": {decode: "pgtype.DecodeNumeric(b)", oids: []string{"pgtype.OIDNumeric"}},
+	"time.Time":      {decode: "pgtype.DecodeTimestampTZ(b)", oids: []string{"pgtype.OIDTimestampTZ", "pgtype.OIDTimestamp"}},
+	"[16]byte":       {decode: "pgtype.DecodeUUID(b)", oids: []string{"pgtype.OIDUUID"}},
 }
 
 // Generate produces the hydration source for one struct type found in src.
@@ -195,7 +195,7 @@ func columnFor(typeName, fieldName string, f *ast.Field) (*column, error) {
 	}
 
 	// A field says its column may be NULL in one of two ways: a pointer, or
-	// a postgres.Null[T]. Saying it twice has no meaning the generated code
+	// a pgtype.Null[T]. Saying it twice has no meaning the generated code
 	// could give it — `e.F = &v` would not even compile against **T, and a
 	// Null[*T] or *Null[T] would be an absence with two spellings — so it is
 	// refused here, where the message can name the field, rather than in a
@@ -206,13 +206,13 @@ func columnFor(typeName, fieldName string, f *ast.Field) (*column, error) {
 				typeName, fieldName)
 		}
 		if isNullType(star.X) {
-			return nil, fmt.Errorf("%s.%s: a pointer to a postgres.Null is not supported — a nullable column is either *T or postgres.Null[T]",
+			return nil, fmt.Errorf("%s.%s: a pointer to a pgtype.Null is not supported — a nullable column is either *T or pgtype.Null[T]",
 				typeName, fieldName)
 		}
 	}
 	if inner, ok := nullOf(f.Type); ok {
 		if _, star := inner.(*ast.StarExpr); star {
-			return nil, fmt.Errorf("%s.%s: a postgres.Null of a pointer is not supported — a nullable column is either *T or postgres.Null[T]",
+			return nil, fmt.Errorf("%s.%s: a pgtype.Null of a pointer is not supported — a nullable column is either *T or pgtype.Null[T]",
 				typeName, fieldName)
 		}
 	}
@@ -255,7 +255,7 @@ func columnFor(typeName, fieldName string, f *ast.Field) (*column, error) {
 var dateMapping = struct {
 	decode string
 	oids   []string
-}{decode: "postgres.DecodeDate(b)", oids: []string{"postgres.OIDDate"}}
+}{decode: "pgtype.DecodeDate(b)", oids: []string{"pgtype.OIDDate"}}
 
 // tagOption returns what follows the column name in the `db` tag, if anything.
 func tagOption(tag *ast.BasicLit) string {
@@ -301,7 +301,7 @@ func columnName(fieldName string, tag *ast.BasicLit) (name string, skip bool) {
 //
 // Two spellings of nullable are accepted. `*T` is the one Go readers expect,
 // and costs an allocation per row because the pointer the generated code
-// takes escapes. `postgres.Null[T]` is the form this package uses for its own
+// takes escapes. `pgtype.Null[T]` is the form this package uses for its own
 // arrays and column scans: a value beside a Valid bit, no pointer, no
 // allocation — the same reason the batch decodes into one buffer plus
 // offsets rather than a slice per row.
@@ -312,7 +312,7 @@ func typeExpr(e ast.Expr) (goType string, nullable bool, present string) {
 	}
 	if inner, ok := nullOf(e); ok {
 		t, _, _ := typeExpr(inner)
-		return t, true, "postgres.Null[" + t + "]{Value: v, Valid: true}"
+		return t, true, "pgtype.Null[" + t + "]{Value: v, Valid: true}"
 	}
 	// ExprString renders any type expression as written, so a field the
 	// mapping does not cover is named in the error — a map or a [N]byte with
@@ -321,7 +321,7 @@ func typeExpr(e ast.Expr) (goType string, nullable bool, present string) {
 	return types.ExprString(e), false, ""
 }
 
-// nullOf returns T when e is written postgres.Null[T].
+// nullOf returns T when e is written pgtype.Null[T].
 func nullOf(e ast.Expr) (ast.Expr, bool) {
 	idx, ok := e.(*ast.IndexExpr)
 	if !ok || !isNullType(idx.X) {
@@ -330,9 +330,9 @@ func nullOf(e ast.Expr) (ast.Expr, bool) {
 	return idx.Index, true
 }
 
-// isNullType reports whether e names postgres.Null, with or without its type
+// isNullType reports whether e names pgtype.Null, with or without its type
 // argument. The package is matched by the name the fixture imports it under,
-// as typeMapping matches postgres.Numeric: an aliased import is a type the
+// as typeMapping matches pgtype.Numeric: an aliased import is a type the
 // generator does not know, and says so.
 func isNullType(e ast.Expr) bool {
 	if idx, ok := e.(*ast.IndexExpr); ok {
@@ -343,7 +343,7 @@ func isNullType(e ast.Expr) bool {
 		return false
 	}
 	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "postgres"
+	return ok && pkg.Name == "pgtype"
 }
 
 // snakeCase turns FieldName into field_name, and CustomerID into customer_id
@@ -387,6 +387,7 @@ import (
 	"slices"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // {{.Type}}Plan binds {{.Type}}'s fields to the columns of one result.

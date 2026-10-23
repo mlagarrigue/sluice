@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -56,7 +57,7 @@ func setConfigCycle() [][]byte {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"set_config"}, []uint32{OIDText})...)
+	first = append(first, beRowDescription([]string{"set_config"}, []uint32{pgtype.OIDText})...)
 	first = append(first, beDataRow([]byte("x"))...)
 	first = append(first, beCommandComplete("SELECT 1")...)
 	first = append(first, beReadyForQuery()...)

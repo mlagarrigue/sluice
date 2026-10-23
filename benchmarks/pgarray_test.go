@@ -11,9 +11,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	pgxtype "github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The claim the connector is built around, measured against the driver the
@@ -28,7 +28,7 @@ import (
 // matters because a `= ANY($1)` batch encodes one array per query and decodes
 // one per result, so it sits on the path every batched read takes, once.
 //
-// pgx is used through pgtype.Map, which is how pgx encodes a Go slice into a
+// pgx is used through pgxtype.Map, which is how pgx encodes a Go slice into a
 // binary array parameter and how its own Rows.Scan reaches an array column.
 const arrayLen = 1000
 
@@ -45,18 +45,18 @@ func BenchmarkPGEncodeInt8ArraySluice(b *testing.B) {
 	buf := make([]byte, 0, arrayLen*12+64)
 	b.ReportAllocs()
 	for b.Loop() {
-		buf = postgres.AppendInt8Array(buf[:0], src)
+		buf = pgtype.AppendInt8Array(buf[:0], src)
 	}
 	sink = len(buf)
 }
 
 func BenchmarkPGEncodeInt8ArrayPgx(b *testing.B) {
 	src := keys()
-	m := pgtype.NewMap()
+	m := pgxtype.NewMap()
 	var buf []byte
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := m.Encode(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, src, buf[:0])
+		out, err := m.Encode(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, src, buf[:0])
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -66,11 +66,11 @@ func BenchmarkPGEncodeInt8ArrayPgx(b *testing.B) {
 }
 
 func BenchmarkPGDecodeInt8ArraySluice(b *testing.B) {
-	wire := postgres.AppendInt8Array(nil, keys())
+	wire := pgtype.AppendInt8Array(nil, keys())
 	dst := make([]int64, 0, arrayLen)
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := postgres.DecodeInt8Array(dst[:0], wire)
+		out, err := pgtype.DecodeInt8Array(dst[:0], wire)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -80,12 +80,12 @@ func BenchmarkPGDecodeInt8ArraySluice(b *testing.B) {
 }
 
 func BenchmarkPGDecodeInt8ArrayPgx(b *testing.B) {
-	wire := postgres.AppendInt8Array(nil, keys())
-	m := pgtype.NewMap()
+	wire := pgtype.AppendInt8Array(nil, keys())
+	m := pgxtype.NewMap()
 	var dst []int64
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := m.Scan(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, wire, &dst); err != nil {
+		if err := m.Scan(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, wire, &dst); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -104,10 +104,10 @@ var sink int
 // module's zero-dependency rule forbids there and this module exists to allow.
 func TestInt8ArrayWireCompatibility(t *testing.T) {
 	src := keys()
-	m := pgtype.NewMap()
+	m := pgxtype.NewMap()
 
-	ours := postgres.AppendInt8Array(nil, src)
-	theirs, err := m.Encode(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, src, nil)
+	ours := pgtype.AppendInt8Array(nil, src)
+	theirs, err := m.Encode(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, src, nil)
 	if err != nil {
 		t.Fatalf("pgx failed to encode: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestInt8ArrayWireCompatibility(t *testing.T) {
 	}
 
 	// And each decodes the other's bytes back to the input.
-	back, err := postgres.DecodeInt8Array(nil, theirs)
+	back, err := pgtype.DecodeInt8Array(nil, theirs)
 	if err != nil {
 		t.Fatalf("decoding pgx's bytes: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestInt8ArrayWireCompatibility(t *testing.T) {
 	}
 
 	var pgxBack []int64
-	if err := m.Scan(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, ours, &pgxBack); err != nil {
+	if err := m.Scan(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, ours, &pgxBack); err != nil {
 		t.Fatalf("pgx decoding this package's bytes: %v", err)
 	}
 	if !slices.Equal(pgxBack, src) {
@@ -134,16 +134,16 @@ func TestInt8ArrayWireCompatibility(t *testing.T) {
 }
 
 // Fairness check for the encode figure above. Passing a plain []int64 to
-// pgtype.Map is what a pgx caller writes, but pgx also offers FlatArray, which
+// pgxtype.Map is what a pgx caller writes, but pgx also offers FlatArray, which
 // is the type its own documentation reaches for when the shape is known. If
 // the gap is an artefact of the wrong entry point, it shows up here.
 func BenchmarkPGEncodeInt8ArrayPgxFlat(b *testing.B) {
-	src := pgtype.FlatArray[int64](keys())
-	m := pgtype.NewMap()
+	src := pgxtype.FlatArray[int64](keys())
+	m := pgxtype.NewMap()
 	var buf []byte
 	b.ReportAllocs()
 	for b.Loop() {
-		out, err := m.Encode(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, src, buf[:0])
+		out, err := m.Encode(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, src, buf[:0])
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -154,12 +154,12 @@ func BenchmarkPGEncodeInt8ArrayPgxFlat(b *testing.B) {
 
 // And the same for decoding, into the type pgx prefers.
 func BenchmarkPGDecodeInt8ArrayPgxFlat(b *testing.B) {
-	wire := postgres.AppendInt8Array(nil, keys())
-	m := pgtype.NewMap()
-	var dst pgtype.FlatArray[int64]
+	wire := pgtype.AppendInt8Array(nil, keys())
+	m := pgxtype.NewMap()
+	var dst pgxtype.FlatArray[int64]
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := m.Scan(pgtype.Int8ArrayOID, pgtype.BinaryFormatCode, wire, &dst); err != nil {
+		if err := m.Scan(pgxtype.Int8ArrayOID, pgxtype.BinaryFormatCode, wire, &dst); err != nil {
 			b.Fatal(err)
 		}
 	}

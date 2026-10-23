@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -159,8 +160,8 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	// an earlier round trip, which is the round trip this is removing.
 	for _, p := range parts {
 		if p.Setting != "" {
-			c.w.Parse("", "SELECT set_config($1, $2, true)", []uint32{OIDText, OIDText})
-			c.w.BindBinary("", "", [][]byte{AppendText(nil, p.Setting), AppendText(nil, p.Value)})
+			c.w.Parse("", "SELECT set_config($1, $2, true)", []uint32{pgtype.OIDText, pgtype.OIDText})
+			c.w.BindBinary("", "", [][]byte{pgtype.AppendText(nil, p.Setting), pgtype.AppendText(nil, p.Value)})
 			// Zero, not one. A row limit makes the backend answer
 			// PortalSuspended instead of CommandComplete when it has produced
 			// that many and does not know whether more follow — and this

@@ -12,6 +12,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // store is what the app asks of a driver, in the terms of the scenarios
@@ -130,8 +131,8 @@ func (s *sluiceStore) createWriteTable(ctx context.Context) error {
 // key of the batch leaves as one array parameter and comes back in one round
 // trip.
 func (s *sluiceStore) unit(ctx context.Context, ids []int64, found map[int64]orderRow) error {
-	s.buf = postgres.AppendInt8Array(s.buf[:0], ids)
-	src := s.gwConn.Query(ctx, unitQuery, []postgres.Param{{OID: postgres.OIDInt8Array, Value: s.buf}},
+	s.buf = pgtype.AppendInt8Array(s.buf[:0], ids)
+	src := s.gwConn.Query(ctx, unitQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: s.buf}},
 		postgres.QueryConfig{BatchRows: s.size + 1})
 	src.Stream()(func(rows sluice.Batch[postgres.Row]) bool {
 		for _, r := range rows.Items {
@@ -154,8 +155,8 @@ func (s *sluiceStore) listBatches(ctx context.Context, from int64, limit int, yi
 	defer func() { s.pool <- conn }()
 
 	params := []postgres.Param{
-		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, from)},
-		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, int64(limit))},
+		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, from)},
+		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, int64(limit))},
 	}
 	rows := make([]orderRow, 0, listBatchRows)
 	src := conn.Query(ctx, listQuery, params, postgres.QueryConfig{
@@ -188,8 +189,8 @@ func (s *sluiceStore) write(ctx context.Context, key, total int64) error {
 	defer func() { s.pool <- conn }()
 
 	params := []postgres.Param{
-		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, key)},
-		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, total)},
+		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, key)},
+		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, total)},
 	}
 	src := conn.Query(ctx, writeQuery, params, postgres.QueryConfig{
 		BatchRows: 2,
@@ -203,15 +204,15 @@ func decodeOrder(r postgres.Row) (orderRow, error) {
 	idB, _ := r.Value(0)
 	totalB, _ := r.Value(1)
 	labelB, _ := r.Value(2)
-	id, err := postgres.DecodeInt8(idB)
+	id, err := pgtype.DecodeInt8(idB)
 	if err != nil {
 		return orderRow{}, err
 	}
-	total, err := postgres.DecodeInt8(totalB)
+	total, err := pgtype.DecodeInt8(totalB)
 	if err != nil {
 		return orderRow{}, err
 	}
-	return orderRow{ID: id, Total: total, Label: postgres.DecodeText(labelB)}, nil
+	return orderRow{ID: id, Total: total, Label: pgtype.DecodeText(labelB)}, nil
 }
 
 // --- pgx: axis B ------------------------------------------------------------

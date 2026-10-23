@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/pushdown"
 )
 
@@ -20,7 +21,7 @@ func int8Key(v int64) []byte { return binary.BigEndian.AppendUint64(nil, uint64(
 func pushdownQuery(t *testing.T, conn *postgres.Conn, d *pushdown.Demand) sluice.Source[postgres.Row] {
 	t.Helper()
 	return conn.Query(t.Context(), pushdownSQL,
-		[]postgres.Param{{OID: postgres.OIDInt8, Value: int8Key(0)}}, // the floor: every key is above it until a bound says otherwise
+		[]postgres.Param{{OID: pgtype.OIDInt8, Value: int8Key(0)}}, // the floor: every key is above it until a bound says otherwise
 		postgres.QueryConfig{BatchRows: 100, Demand: d, KeyParam: 1},
 	)
 }
@@ -36,7 +37,7 @@ func readKeys(t *testing.T, src sluice.Source[postgres.Row], between func(batch 
 			if isNull {
 				t.Fatal("a key came back NULL")
 			}
-			k, err := postgres.DecodeInt8(v)
+			k, err := pgtype.DecodeInt8(v)
 			if err != nil {
 				t.Fatalf("decoding a key: %v", err)
 			}

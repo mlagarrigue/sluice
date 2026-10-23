@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -275,7 +276,7 @@ func (b *Backend) serve(nc net.Conn, startup bool) {
 			if strings.Contains(sql, "set_config") && len(params) >= 2 {
 				settings[string(params[0])] = string(params[1])
 				local[string(params[0])] = true
-				res = Result{Columns: []string{"set_config"}, OIDs: []uint32{postgres.OIDText}, Rows: [][][]byte{{params[1]}}}
+				res = Result{Columns: []string{"set_config"}, OIDs: []uint32{pgtype.OIDText}, Rows: [][][]byte{{params[1]}}}
 			}
 			if r := b.exec(sql, params, settings); r.Err != "" || r.Columns != nil || r.Tag != "" {
 				res = r

@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -73,7 +74,7 @@ func BenchmarkCopyWriteTuples(b *testing.B) {
 	scratch := make([]byte, 0, 16)
 	for i := range rows {
 		tuples = AppendTupleHeader(tuples, 2)
-		scratch = AppendInt8(scratch[:0], int64(i))
+		scratch = pgtype.AppendInt8(scratch[:0], int64(i))
 		tuples = AppendField(tuples, scratch)
 		tuples = AppendField(tuples, []byte("a label of some length"))
 	}

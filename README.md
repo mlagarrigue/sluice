@@ -128,7 +128,8 @@ special "handler" in the middle that would be of another nature.
 | `sluice/diagnostics` | errors, warnings and remedies that travel with the data without stopping the stream | supported |
 | `sluice/web` | an HTTP request's path over `net/http`: bounded reading, authentication, authorisation, clean shutdown | supported |
 | `sluice/gateway` | simultaneous calls grouped into one batch | supported |
-| `sluice/database/postgres` | PostgreSQL by speaking its protocol: binary codecs, `= ANY($1)`, COPY | supported |
+| `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)`, COPY | supported |
+| `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed | supported |
 | `cmd/sluicegen` | generates the code that turns rows into structs | supported |
 | `sluice/probe` | counters to find the stage that makes the others wait | supported |
 | `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens | supported |

@@ -125,7 +125,7 @@ func parseError(body []byte) (*Error, error) {
 		case 'd':
 			e.DataType = val
 		case 'P', 'p':
-			// Numeric by the protocol's definition. A value that is not one
+			// pgtype.Numeric by the protocol's definition. A value that is not one
 			// would otherwise surface as Position 0, which reads as "the
 			// server gave none" — a silent loss rather than a refusal.
 			n, err := strconv.Atoi(val)

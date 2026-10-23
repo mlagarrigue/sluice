@@ -8,6 +8,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Row-level security against a real server, which is the only place the claim
@@ -95,7 +96,7 @@ func readIDs(t *testing.T, src sluice.Source[postgres.Row]) []int64 {
 				t.Error("a NULL id came back from a primary key column")
 				continue
 			}
-			id, err := postgres.DecodeInt8(v)
+			id, err := pgtype.DecodeInt8(v)
 			if err != nil {
 				t.Errorf("decoding id: %v", err)
 				continue

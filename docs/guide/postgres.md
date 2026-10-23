@@ -304,13 +304,13 @@ to consult afterwards (see [Getting started](getting-started.md) for
 keys := []int64{1, 2, 3 /* … a thousand */}
 src := conn.Query(ctx,
     "SELECT id, total FROM orders WHERE id = ANY($1)",
-    []postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}}, // the parameter: its type, its encoded value
+    []postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}}, // the parameter: its type, its encoded value
     postgres.QueryConfig{BatchRows: 1024},
 )
 for b := range src.Stream() {
     for _, row := range b.Items {
         idBytes, isNull := row.Value(0)       // column 0, as bytes, and "is it NULL?"
-        id, err := postgres.DecodeInt8(idBytes)
+        id, err := pgtype.DecodeInt8(idBytes)
         // …
     }
 }
@@ -376,17 +376,18 @@ bytes and a boolean "is it NULL?". **NULL is never the empty value**: an
 absent string and an empty string are two things, and the protocol tells
 them apart.
 
-The `Decode*` functions turn bytes into a Go value: `DecodeInt8` for a
-`bigint`, `DecodeText` for a `text`, `DecodeTimestampTZ` for a date with a
-time zone, `DecodeNumeric` for an exact amount. The `Scan*` functions do
-the same for **a whole column** of a batch in one pass
+The codec lives in its own package, `database/postgres/pgtype`, which needs
+no connection. Its `Decode*` functions turn bytes into a Go value:
+`DecodeInt8` for a `bigint`, `DecodeText` for a `text`, `DecodeTimestampTZ`
+for a date with a time zone, `DecodeNumeric` for an exact amount. The `Scan*` functions of
+`postgres` do the same for **a whole column** of a batch in one pass
 (`ScanInt8(dst, rows, col)`) — the shape that produces the next array of
 keys to send as `= ANY`.
 
 ### The codecs, in one table
 
-Every type below has the same pair, `AppendX`/`DecodeX`, named after the
-PostgreSQL type. The first thirteen also have a one-dimensional array
+Every type below has the same pair in `pgtype`, `AppendX`/`DecodeX`, named
+after the PostgreSQL type. The first thirteen also have a one-dimensional array
 (`AppendXArray`/`DecodeXArray`), the same array with NULL elements
 (`AppendNullableXArray`/`DecodeNullableXArray`, over `[]Null[T]`), and a
 column scanner (`ScanX`). The others have the scalar pair only; what is
@@ -416,10 +417,10 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
 | `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
 
-**NULL has one form in this package: `Null[T]`** — the value beside a
+**NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
 `Valid` bit, no pointer, so no allocation. The nullable arrays carry
 `[]Null[T]`, and a generated hydrator (next section) fills a
-`postgres.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
+`pgtype.Null[T]` field. A `Scan*` refuses a NULL rather than writing a
 zero; `ScanNulls` gives the mask of a column that may hold one. In your own
 structs, `*T` is accepted too, because the struct is yours; it costs the
 allocation `Null[T]` does not.
@@ -452,7 +453,7 @@ type Order struct {
     Label     string                 // no tag: the column is named label, by convention
     CreatedAt time.Time              `db:"created_at"`
     Note      *string                `db:"note"`   // nullable: a pointer is one way to say "may be NULL"
-    Weight    postgres.Null[float64] `db:"weight"` // nullable: the other way, without a pointer
+    Weight    pgtype.Null[float64] `db:"weight"` // nullable: the other way, without a pointer
     Computed  int64                  `db:"-"`      // not a column
 }
 ```
@@ -482,7 +483,7 @@ values. `HydrateOrder` then fills a slice from each batch.
 > test regenerates it and compares: if someone changes the struct without
 > rerunning the generator, the build fails instead of leaving a silent
 > difference. Measured: 47 ns per row for six columns. A `*T` field costs
-> one allocation per row (the pointer); a `postgres.Null[T]` field costs
+> one allocation per row (the pointer); a `pgtype.Null[T]` field costs
 > none, which is why it is the form to prefer when rows are many.
 
 ## Writing
@@ -502,8 +503,8 @@ var buf []byte
 for _, o := range orders {
     buf = buf[:0]
     buf = postgres.AppendTupleHeader(buf, 2)                             // a row of two columns
-    buf = postgres.AppendField(buf, postgres.AppendInt8(nil, o.ID))
-    buf = postgres.AppendField(buf, postgres.AppendText(nil, o.Label))
+    buf = postgres.AppendField(buf, pgtype.AppendInt8(nil, o.ID))
+    buf = postgres.AppendField(buf, pgtype.AppendText(nil, o.Label))
     if err := cp.WriteTuples(buf, 1); err != nil { return err }
 }
 if err := cp.Close(); err != nil { return err }
@@ -533,7 +534,7 @@ defer tx.Rollback() // a no-op if Commit succeeded: the safety net
 
 if err := tx.SetLocal(ctx, "app.tenant_id", tenant); err != nil { return err } // visible to row-level security
 tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-	[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, customer)}})
+	[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, customer)}})
 if err != nil { return err }
 n, _ := tag.RowsAffected() // how many rows changed, by the server's count
 return tx.Commit(ctx)

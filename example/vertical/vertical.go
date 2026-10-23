@@ -44,6 +44,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/gateway"
 	"github.com/mlagarrigue/sluice/net/httpstream"
@@ -237,8 +238,8 @@ func (s *Service) serveGroup(ctx context.Context, tx *postgres.Tx, tenant string
 	s.roundTrips.Add(1)
 	lines := make(map[[2]int64]Line, len(group))
 	src := tx.Query(ctx, readLines, []postgres.Param{
-		{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, orderIDs)},
-		{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, indexes)},
+		{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, orderIDs)},
+		{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, indexes)},
 	}, postgres.QueryConfig{
 		BatchRows: 256, Fetch: postgres.FetchAll,
 	})
@@ -333,13 +334,13 @@ func decodeLine(r postgres.Row) (Line, error) {
 	var err error
 	if v, isNull := r.Value(0); isNull {
 		return l, errors.New("column 0 (order_id) is NULL")
-	} else if l.OrderID, err = postgres.DecodeInt8(v); err != nil {
+	} else if l.OrderID, err = pgtype.DecodeInt8(v); err != nil {
 		return l, err
 	}
 	if v, isNull := r.Value(1); isNull {
 		return l, errors.New("column 1 (line_index) is NULL")
 	} else {
-		idx, err := postgres.DecodeInt4(v)
+		idx, err := pgtype.DecodeInt4(v)
 		if err != nil {
 			return l, err
 		}
@@ -347,11 +348,11 @@ func decodeLine(r postgres.Row) (Line, error) {
 	}
 	if v, isNull := r.Value(2); isNull {
 		return l, errors.New("column 2 (sale_qty) is NULL")
-	} else if l.SaleQty, err = postgres.DecodeInt8(v); err != nil {
+	} else if l.SaleQty, err = pgtype.DecodeInt8(v); err != nil {
 		return l, err
 	}
 	if v, isNull := r.Value(3); !isNull {
-		if l.Price, err = postgres.DecodeInt8(v); err != nil {
+		if l.Price, err = pgtype.DecodeInt8(v); err != nil {
 			return l, err
 		}
 	}

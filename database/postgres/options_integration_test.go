@@ -8,6 +8,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Session options that change how a server writes values as text change
@@ -64,7 +65,7 @@ func TestIntegrationSessionOptions(t *testing.T) {
 		if !bytes.Equal(got[0], []byte{0xe9}) {
 			t.Errorf("é under LATIN1 arrived as %x, want e9", got[0])
 		}
-		if ok, err := postgres.DecodeBool(got[1]); err != nil || !ok {
+		if ok, err := pgtype.DecodeBool(got[1]); err != nil || !ok {
 			t.Errorf("a LATIN1 parameter was not read as LATIN1: %v %v", ok, err)
 		}
 	})
@@ -82,7 +83,7 @@ func optionRow(t *testing.T, addr string, cfg postgres.Config, sql string, param
 	}
 	defer conn.Close()
 	var out [][]byte
-	src := conn.Query(ctx, sql, []postgres.Param{{OID: postgres.OIDText, Value: param}}, postgres.QueryConfig{BatchRows: 1})
+	src := conn.Query(ctx, sql, []postgres.Param{{OID: pgtype.OIDText, Value: param}}, postgres.QueryConfig{BatchRows: 1})
 	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
 		for _, row := range b.Items {
 			if out != nil {

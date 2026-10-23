@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -34,7 +35,7 @@ func tuple(id *int64, name *string) []byte {
 	if id == nil {
 		b = AppendFieldNull(b)
 	} else {
-		b = AppendField(b, AppendInt8(nil, *id))
+		b = AppendField(b, pgtype.AppendInt8(nil, *id))
 	}
 	if name == nil {
 		b = AppendFieldNull(b)
@@ -406,18 +407,18 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tags := []Null[int64]{present(int64(10)), {}, present(int64(30))}
+	tags := []pgtype.Null[int64]{{Value: 10, Valid: true}, {}, {Value: 30, Valid: true}}
 
 	var buf []byte
 	// Row one: an array with a NULL inside it, written straight into the tuple.
 	buf = AppendTupleHeader(buf, 2)
-	buf = AppendField(buf, AppendInt8(nil, 1))
+	buf = AppendField(buf, pgtype.AppendInt8(nil, 1))
 	buf, at := BeginField(buf)
-	buf = AppendNullableInt8Array(buf, tags)
+	buf = pgtype.AppendNullableInt8Array(buf, tags)
 	buf = EndField(buf, at)
 	// Row two: the whole array column is NULL.
 	buf = AppendTupleHeader(buf, 2)
-	buf = AppendField(buf, AppendInt8(nil, 2))
+	buf = AppendField(buf, pgtype.AppendInt8(nil, 2))
 	buf = AppendFieldNull(buf)
 
 	if err := cp.WriteTuples(buf, 2); err != nil {
@@ -432,9 +433,9 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 
 	// Row one, field two must be the array, byte for byte, with its length in
 	// front of it. A wrong back-patch here would corrupt every field after.
-	wantArray := AppendNullableInt8Array(nil, tags)
+	wantArray := pgtype.AppendNullableInt8Array(nil, tags)
 	wantRow1 := AppendTupleHeader(nil, 2)
-	wantRow1 = AppendField(wantRow1, AppendInt8(nil, 1))
+	wantRow1 = AppendField(wantRow1, pgtype.AppendInt8(nil, 1))
 	wantRow1 = AppendField(wantRow1, wantArray)
 	if !bytes.HasPrefix(body, wantRow1) {
 		t.Fatalf("row one on the wire:\n got % x\nwant % x", body[:min(len(wantRow1), len(body))], wantRow1)
@@ -444,7 +445,7 @@ func TestCopyWithNullBearingArray(t *testing.T) {
 	// two are different values and the difference is four bytes.
 	rest := body[len(wantRow1):]
 	wantRow2 := AppendTupleHeader(nil, 2)
-	wantRow2 = AppendField(wantRow2, AppendInt8(nil, 2))
+	wantRow2 = AppendField(wantRow2, pgtype.AppendInt8(nil, 2))
 	wantRow2 = AppendFieldNull(wantRow2)
 	if !bytes.HasPrefix(rest, wantRow2) {
 		t.Fatalf("row two on the wire:\n got % x\nwant % x", rest[:min(len(wantRow2), len(rest))], wantRow2)

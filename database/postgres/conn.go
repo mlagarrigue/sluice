@@ -586,7 +586,7 @@ func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 }
 
 // Param is one parameter of a statement — the value of a $1, a $2 — in the
-// binary encoding the codec functions write ([AppendInt8], [AppendText] and
+// binary encoding the codec functions write ([pgtype.AppendInt8], [pgtype.AppendText] and
 // their siblings), with its type beside it.
 //
 //	params := []postgres.Param{
@@ -796,7 +796,7 @@ type QueryConfig struct {
 // Query runs sql with the given binary parameters and returns its rows as a
 // stream.
 //
-//	ids := AppendInt8Array(nil, keys)          // one parameter, a thousand keys
+//	ids := pgtype.AppendInt8Array(nil, keys)          // one parameter, a thousand keys
 //	src := conn.Query(ctx, "SELECT id, total FROM orders WHERE id = ANY($1)",
 //	    [][]byte{ids}, QueryConfig{BatchRows: 1024})
 //	for b := range src.Stream() {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -65,7 +66,7 @@ func executesAfterFirstBatch(t *testing.T, rtt, batch time.Duration) (executes i
 			read() // the query
 			time.Sleep(rtt)
 			write(beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-				beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+				beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}))
 			time.Sleep(batch)
 			write(beDataRow(int8Val(1)), beDataRow(int8Val(2)), beSimple(pgwire.BackendPortalSuspended))
 			executes = strings.Count(read(), "E")
@@ -137,7 +138,7 @@ func TestBatchedReadKeepsTheDepthOfItsShortestFirstBatch(t *testing.T) {
 				if i == 0 {
 					write(beSimple(pgwire.BackendParseComplete))
 				}
-				write(beSimple(pgwire.BackendBindComplete), beRowDescription([]string{"n"}, []uint32{OIDInt8}))
+				write(beSimple(pgwire.BackendBindComplete), beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}))
 				time.Sleep(batch)
 				write(beDataRow(int8Val(1)), beDataRow(int8Val(2)), beSimple(pgwire.BackendPortalSuspended))
 				if i == 0 {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -35,7 +36,7 @@ func TestPipelineBatchBytesCutsABatchEarly(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"v"}, []uint32{OIDText})...)
+	script = append(script, beRowDescription([]string{"v"}, []uint32{pgtype.OIDText})...)
 	for range 6 {
 		script = append(script, beDataRow(value)...)
 	}
@@ -78,12 +79,12 @@ func TestAPipelinePartThatCannotBeReadKeepsTheConnection(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, frame(pgwire.BackendDataRow, string(dataRow(int8Val(1), int8Val(2))))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(7))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beReadyForQuery()...)
@@ -91,7 +92,7 @@ func TestAPipelinePartThatCannotBeReadKeepsTheConnection(t *testing.T) {
 	var next []byte
 	next = append(next, beSimple(pgwire.BackendParseComplete)...)
 	next = append(next, beSimple(pgwire.BackendBindComplete)...)
-	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	next = append(next, beDataRow(int8Val(42))...)
 	next = append(next, beCommandComplete("SELECT 1")...)
 
@@ -116,7 +117,7 @@ func TestAPipelinePartThatCannotBeReadKeepsTheConnection(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true
@@ -136,7 +137,7 @@ func TestAPipelineThatCannotRecoverBreaksTheConnection(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, frame(pgwire.BackendDataRow, string(dataRow(int8Val(1), int8Val(2))))...)
 	// No ReadyForQuery follows, so the drain runs out of messages.
 
@@ -211,14 +212,14 @@ func TestPipelineDrainsWhenTheCallbackPanics(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(1))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	// A second part whose rows nobody will ever read, because the panic
 	// happens while the first one is being delivered.
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(2))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beReadyForQuery()...)
@@ -226,7 +227,7 @@ func TestPipelineDrainsWhenTheCallbackPanics(t *testing.T) {
 	var next []byte
 	next = append(next, beSimple(pgwire.BackendParseComplete)...)
 	next = append(next, beSimple(pgwire.BackendBindComplete)...)
-	next = append(next, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	next = append(next, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	next = append(next, beDataRow(int8Val(42))...)
 	next = append(next, beCommandComplete("SELECT 1")...)
 
@@ -259,7 +260,7 @@ func TestPipelineDrainsWhenTheCallbackPanics(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			id, _ := DecodeInt8(v)
+			id, _ := pgtype.DecodeInt8(v)
 			got = append(got, id)
 		}
 		return true
@@ -280,11 +281,11 @@ func TestPipelineRefusesAnExtraResultCycle(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(1))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	// A second cycle nobody asked for.
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(99))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beReadyForQuery()...)
@@ -318,7 +319,7 @@ func TestPipelineRefusesAnEarlySplitCommandComplete(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(1))...)
 	script = append(script, beCommandComplete("SELECT 1")...) // splits part 0 early
 	script = append(script, beDataRow(int8Val(99))...)
@@ -326,7 +327,7 @@ func TestPipelineRefusesAnEarlySplitCommandComplete(t *testing.T) {
 	// Part 1's real result, which now arrives one part late.
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(2))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beReadyForQuery()...)
@@ -358,7 +359,7 @@ func TestPipelineToleratesANotification(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beSimple(pgwire.BackendBindComplete)...)
-	script = append(script, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	script = append(script, beDataRow(int8Val(7))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 	script = append(script, beNotification("jobs", "42")...)
@@ -415,7 +416,7 @@ func TestPipelineReadsWhileItStillWrites(t *testing.T) {
 	tx := &Tx{conn: conn}
 	ps := make([]Part, parts)
 	for i := range ps {
-		ps[i] = Part{SQL: "SELECT $1", Params: []Param{{OID: OIDText, Value: param}}}
+		ps[i] = Part{SQL: "SELECT $1", Params: []Param{{OID: pgtype.OIDText, Value: param}}}
 	}
 	var got []int
 	err := tx.Pipeline(t.Context(), ps, QueryConfig{}, func(i int, b sluice.Batch[Row]) bool {
@@ -464,7 +465,7 @@ func answerAsRead(server net.Conn, parts int, result []byte) error {
 		case pgwire.FrontendBind:
 			answer = beSimple(pgwire.BackendBindComplete)
 		case pgwire.FrontendDescribe:
-			answer = beRowDescription([]string{"v"}, []uint32{OIDText})
+			answer = beRowDescription([]string{"v"}, []uint32{pgtype.OIDText})
 		case pgwire.FrontendExecute:
 			executes++
 			answer = append(beDataRow(result), beCommandComplete("SELECT 1")...)

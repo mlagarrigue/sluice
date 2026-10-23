@@ -8,6 +8,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/example/internal/pgfake"
 )
 
@@ -17,9 +18,9 @@ func rows(n int) func(string, [][]byte, map[string]string) pgfake.Result {
 		if !strings.HasPrefix(sql, "SELECT") {
 			return pgfake.Result{}
 		}
-		res := pgfake.Result{Columns: []string{"n"}, OIDs: []uint32{postgres.OIDInt8}}
+		res := pgfake.Result{Columns: []string{"n"}, OIDs: []uint32{pgtype.OIDInt8}}
 		for i := range n {
-			res.Rows = append(res.Rows, [][]byte{postgres.AppendInt8(nil, int64(i))})
+			res.Rows = append(res.Rows, [][]byte{pgtype.AppendInt8(nil, int64(i))})
 		}
 		return res
 	}

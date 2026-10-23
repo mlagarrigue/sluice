@@ -17,9 +17,9 @@
 // batches, [Conn.Exec] for statements without a result, [Conn.Begin] for a
 // [Tx] with savepoints and SET LOCAL, and [Conn.CopyFrom] for binary COPY of
 // a batch at a time. Parameters and results are binary: the Append* and
-// Decode* codecs in codec.go, array.go and nullable.go encode a Go value to
-// the server's own representation and back, and the array codecs are what
-// make `WHERE id = ANY($1)` with a thousand keys one round trip rather than a
+// Decode* functions of [pgtype] encode a Go value to the server's own
+// representation and back, and its array codecs are what make
+// `WHERE id = ANY($1)` with a thousand keys one round trip rather than a
 // thousand. Each connection keeps a bounded statement cache, which
 // [Config.StatementCacheSize] sizes or turns off; through it, a statement
 // known to fit in one batch is read in one round trip ([FetchAuto]).

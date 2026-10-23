@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Rows.appendRow is where the connector spends most of its time and takes most of
@@ -27,8 +29,8 @@ import (
 // place where getting it wrong misaligns every value after it rather than
 // spoiling one.
 func FuzzRowsAppendReproducesTheRow(f *testing.F) {
-	f.Add(dataRow(AppendInt8(nil, 1), AppendInt8(nil, 2)))
-	f.Add(dataRow(AppendInt8(nil, 1), nil)) // a NULL, which is not an empty value
+	f.Add(dataRow(pgtype.AppendInt8(nil, 1), pgtype.AppendInt8(nil, 2)))
+	f.Add(dataRow(pgtype.AppendInt8(nil, 1), nil)) // a NULL, which is not an empty value
 	f.Add(dataRow(nil, nil))
 	f.Add(dataRow([]byte{}, []byte{})) // empty values, which are not NULLs
 	f.Add([]byte{0, 2})
@@ -86,7 +88,7 @@ func FuzzRowsAppendReproducesTheRow(f *testing.F) {
 // stores correctly on its own can still land at the wrong offset once there is
 // something before it.
 func FuzzRowsAppendBatchReproducesEachRow(f *testing.F) {
-	f.Add(dataRow(AppendInt8(nil, 1)), dataRow(AppendInt8(nil, 2)))
+	f.Add(dataRow(pgtype.AppendInt8(nil, 1)), dataRow(pgtype.AppendInt8(nil, 2)))
 	f.Add(dataRow(nil), dataRow([]byte{}))
 	f.Add(dataRow([]byte("a")), dataRow(nil))
 	f.Add([]byte{0, 1}, []byte{0, 1})

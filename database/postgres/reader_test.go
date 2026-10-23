@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -33,8 +34,8 @@ func (d *dribbleReader) Read(p []byte) (int, error) {
 // would take the first byte for the whole length.
 func TestReaderSurvivesAFragmentedStream(t *testing.T) {
 	var stream []byte
-	stream = append(stream, frame(pgwire.BackendRowDescription, string(rowDesc([]string{"id"}, []uint32{OIDInt8})))...)
-	stream = append(stream, frame(pgwire.BackendDataRow, string(dataRow(AppendInt8(nil, 7))))...)
+	stream = append(stream, frame(pgwire.BackendRowDescription, string(rowDesc([]string{"id"}, []uint32{pgtype.OIDInt8})))...)
+	stream = append(stream, frame(pgwire.BackendDataRow, string(dataRow(pgtype.AppendInt8(nil, 7))))...)
 	stream = append(stream, frame(pgwire.BackendCommandComplete, "SELECT 1\x00")...)
 	stream = append(stream, frame(pgwire.BackendReadyForQuery, "I")...)
 
@@ -61,9 +62,9 @@ func TestQuerySurvivesAFragmentedStream(t *testing.T) {
 	var stream []byte
 	stream = append(stream, frame(pgwire.BackendParseComplete, "")...)
 	stream = append(stream, frame(pgwire.BackendBindComplete, "")...)
-	stream = append(stream, frame(pgwire.BackendRowDescription, string(rowDesc([]string{"id"}, []uint32{OIDInt8})))...)
+	stream = append(stream, frame(pgwire.BackendRowDescription, string(rowDesc([]string{"id"}, []uint32{pgtype.OIDInt8})))...)
 	for i := range 3 {
-		stream = append(stream, frame(pgwire.BackendDataRow, string(dataRow(AppendInt8(nil, int64(i)))))...)
+		stream = append(stream, frame(pgwire.BackendDataRow, string(dataRow(pgtype.AppendInt8(nil, int64(i)))))...)
 	}
 	stream = append(stream, frame(pgwire.BackendCommandComplete, "SELECT 3\x00")...)
 	stream = append(stream, frame(pgwire.BackendReadyForQuery, "I")...)
@@ -74,7 +75,7 @@ func TestQuerySurvivesAFragmentedStream(t *testing.T) {
 	src.Stream()(func(b sluice.Batch[Row]) bool {
 		for _, r := range b.Items {
 			v, _ := r.Value(0)
-			n, _ := DecodeInt8(v)
+			n, _ := pgtype.DecodeInt8(v)
 			got = append(got, n)
 		}
 		return true

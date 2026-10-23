@@ -73,7 +73,7 @@ const defaultChunkBytes = 64 << 10
 // field count.
 //
 //	buf = AppendTupleHeader(buf, 2)
-//	scratch = AppendInt8(scratch[:0], id)
+//	scratch = pgtype.AppendInt8(scratch[:0], id)
 //	buf = AppendField(buf, scratch)
 //	buf = AppendFieldNull(buf)
 //
@@ -100,7 +100,7 @@ func AppendFieldNull(dst []byte) []byte {
 // returns the offset [EndField] needs.
 //
 //	buf, at := BeginField(buf)
-//	buf = AppendNullableInt8Array(buf, tags)
+//	buf = pgtype.AppendNullableInt8Array(buf, tags)
 //	buf = EndField(buf, at)
 //
 // [AppendField] takes bytes that already exist, so an array field costs an

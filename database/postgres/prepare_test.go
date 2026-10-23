@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -81,7 +82,7 @@ func oneRow() [][]byte {
 	var first []byte
 	first = append(first, beSimple(pgwire.BackendParseComplete)...)
 	first = append(first, beSimple(pgwire.BackendBindComplete)...)
-	first = append(first, beRowDescription([]string{"id"}, []uint32{OIDInt8})...)
+	first = append(first, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	first = append(first, beDataRow(int8Val(1))...)
 	first = append(first, beCommandComplete("SELECT 1")...)
 	return [][]byte{first, beReadyForQuery()}
@@ -191,11 +192,11 @@ func TestStatementCacheKeyIncludesTheParameterTypes(t *testing.T) {
 	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id WHERE k = $1"
-	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: OIDInt8, Value: nil}},
+	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: pgtype.OIDInt8, Value: nil}},
 		QueryConfig{Fetch: FetchBatches})); err != nil {
 		t.Fatal(err)
 	}
-	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: OIDInt4, Value: nil}},
+	if err := drain(t, conn.Query(t.Context(), sql, []Param{{OID: pgtype.OIDInt4, Value: nil}},
 		QueryConfig{Fetch: FetchBatches})); err != nil {
 		t.Fatal(err)
 	}
@@ -617,8 +618,8 @@ func TestParseDeclaresTheStatedTypes(t *testing.T) {
 		want   []uint32
 	}{
 		{[]Param{{Value: val}, {Value: nil}}, nil},
-		{[]Param{{OID: OIDInt8, Value: val}, {Value: val}}, []uint32{OIDInt8}},
-		{[]Param{{Value: val}, {OID: OIDText, Value: nil}}, []uint32{0, OIDText}},
+		{[]Param{{OID: pgtype.OIDInt8, Value: val}, {Value: val}}, []uint32{pgtype.OIDInt8}},
+		{[]Param{{Value: val}, {OID: pgtype.OIDText, Value: nil}}, []uint32{0, pgtype.OIDText}},
 	} {
 		srv := &fakeServer{responses: oneRow()}
 		conn := NewConn(srv)

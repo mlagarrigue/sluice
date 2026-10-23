@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // PGStore is [Store] backed by the connector, and it is the point where the
@@ -64,8 +65,8 @@ func (s *PGStore) LoadLines(ctx context.Context, keys []LineKey) (map[LineKey]Li
 
 	src := s.conn.Query(ctx, loadSQL,
 		[]postgres.Param{
-			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, s.orderIDs)},
-			{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, s.indexes)},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, s.orderIDs)},
+			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, s.indexes)},
 		},
 		postgres.QueryConfig{
 			BatchRows: len(keys),
@@ -114,7 +115,7 @@ func decodeLine(value func(col int) ([]byte, bool)) (Line, error) {
 	if isNull {
 		return l, nullColumn("line_index")
 	}
-	idx, err := postgres.DecodeInt4(b)
+	idx, err := pgtype.DecodeInt4(b)
 	if err != nil {
 		return l, fmt.Errorf("column %q: %w", "line_index", err)
 	}
@@ -133,7 +134,7 @@ func int8Column(value func(int) ([]byte, bool), col int, name string) (int64, er
 	if isNull {
 		return 0, nullColumn(name)
 	}
-	v, err := postgres.DecodeInt8(b)
+	v, err := pgtype.DecodeInt8(b)
 	if err != nil {
 		return 0, fmt.Errorf("column %q: %w", name, err)
 	}
@@ -168,9 +169,9 @@ func (s *PGStore) SaveLines(ctx context.Context, lines []Line) error {
 
 	src := s.conn.Query(ctx, saveSQL,
 		[]postgres.Param{
-			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, s.orderIDs)},
-			{OID: postgres.OIDInt4Array, Value: postgres.AppendInt4Array(nil, s.indexes)},
-			{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, qty)},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, s.orderIDs)},
+			{OID: pgtype.OIDInt4Array, Value: pgtype.AppendInt4Array(nil, s.indexes)},
+			{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, qty)},
 		},
 		postgres.QueryConfig{
 			BatchRows: 1,

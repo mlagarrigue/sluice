@@ -16,6 +16,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/gateway"
 	"github.com/mlagarrigue/sluice/web"
 )
@@ -73,8 +74,8 @@ func sluiceDBHandlerCounted(tb testing.TB) (http.Handler, *atomic.Int64) {
 	return dbGatewayHandler(tb, func(ids []int64, found map[int64]int64) error {
 		// The whole thesis, in one statement: every id in the batch leaves
 		// as one array parameter and comes back in one result.
-		buf = postgres.AppendInt8Array(buf[:0], ids)
-		src := conn.Query(context.Background(), dbQuery, []postgres.Param{{OID: postgres.OIDInt8Array, Value: buf}},
+		buf = pgtype.AppendInt8Array(buf[:0], ids)
+		src := conn.Query(context.Background(), dbQuery, []postgres.Param{{OID: pgtype.OIDInt8Array, Value: buf}},
 			postgres.QueryConfig{
 				BatchRows: 128, Fetch: postgres.FetchAll,
 			})
@@ -82,8 +83,8 @@ func sluiceDBHandlerCounted(tb testing.TB) (http.Handler, *atomic.Int64) {
 			for _, r := range rows.Items {
 				idBytes, _ := r.Value(0)
 				totalBytes, _ := r.Value(1)
-				id, _ := postgres.DecodeInt8(idBytes)
-				total, _ := postgres.DecodeInt8(totalBytes)
+				id, _ := pgtype.DecodeInt8(idBytes)
+				total, _ := pgtype.DecodeInt8(totalBytes)
 				found[id] = total
 			}
 			return true

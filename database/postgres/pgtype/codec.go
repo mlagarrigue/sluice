@@ -1,4 +1,4 @@
-package postgres
+package pgtype
 
 import (
 	"encoding/binary"
@@ -39,7 +39,7 @@ const (
 // It always means the stream and the description disagree, never that the data
 // is merely surprising — a NULL is reported by its length, not by its content,
 // so a decoder that reaches here is decoding something it was told was there.
-var ErrCodec = errors.New("postgres: value does not match its declared type")
+var ErrCodec = errors.New("pgtype: value does not match its declared type")
 
 // pgEpoch is midnight 2000-01-01 UTC, which PostgreSQL counts its timestamps
 // and dates from rather than the Unix epoch. Getting this constant wrong

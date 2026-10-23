@@ -10,6 +10,7 @@ import (
 
 	"github.com/mlagarrigue/sluice/database/postgres"
 	"github.com/mlagarrigue/sluice/database/postgres/internal/entity"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // replay is a backend that has already answered: it drops what the client
@@ -103,12 +104,12 @@ func dataRow(values ...[]byte) []byte {
 // different from the struct's: columns bind by name, so this must work.
 func orderFields() []postgres.Field {
 	return []postgres.Field{
-		{Name: "created_at", TypeOID: postgres.OIDTimestampTZ},
-		{Name: "total_amount", TypeOID: postgres.OIDFloat8},
-		{Name: "id", TypeOID: postgres.OIDInt8},
-		{Name: "note", TypeOID: postgres.OIDText},
-		{Name: "is_active", TypeOID: postgres.OIDBool},
-		{Name: "label", TypeOID: postgres.OIDVarchar},
+		{Name: "created_at", TypeOID: pgtype.OIDTimestampTZ},
+		{Name: "total_amount", TypeOID: pgtype.OIDFloat8},
+		{Name: "id", TypeOID: pgtype.OIDInt8},
+		{Name: "note", TypeOID: pgtype.OIDText},
+		{Name: "is_active", TypeOID: pgtype.OIDBool},
+		{Name: "label", TypeOID: pgtype.OIDVarchar},
 	}
 }
 
@@ -118,11 +119,11 @@ func orderRow(id int64, total float64, at time.Time, note *string, active bool, 
 		noteBytes = []byte(*note)
 	}
 	return dataRow(
-		postgres.AppendTimestampTZ(nil, at),
-		postgres.AppendFloat8(nil, total),
-		postgres.AppendInt8(nil, id),
+		pgtype.AppendTimestampTZ(nil, at),
+		pgtype.AppendFloat8(nil, total),
+		pgtype.AppendInt8(nil, id),
 		noteBytes,
-		postgres.AppendBool(nil, active),
+		pgtype.AppendBool(nil, active),
 		[]byte(label),
 	)
 }
@@ -179,7 +180,7 @@ func TestBindRejectsWrongType(t *testing.T) {
 	fields := orderFields()
 	for i := range fields {
 		if fields[i].Name == "id" {
-			fields[i].TypeOID = postgres.OIDInt4 // altered from bigint in a migration
+			fields[i].TypeOID = pgtype.OIDInt4 // altered from bigint in a migration
 		}
 	}
 	_, err := entity.BindOrder(fields)
@@ -215,7 +216,7 @@ func TestBindRejectsMissingColumn(t *testing.T) {
 // SELECT listed last — wrong data chosen by column order, with no error — so
 // the binder refuses and tells the caller to alias.
 func TestBindRejectsADuplicateColumn(t *testing.T) {
-	fields := append(orderFields(), postgres.Field{Name: "id", TypeOID: postgres.OIDInt8})
+	fields := append(orderFields(), postgres.Field{Name: "id", TypeOID: pgtype.OIDInt8})
 	_, err := entity.BindOrder(fields)
 	if err == nil {
 		t.Fatal("a result carrying two \"id\" columns was accepted")
@@ -233,11 +234,11 @@ func TestHydrateRejectsUnexpectedNull(t *testing.T) {
 	}
 	// A NULL id, which Order declares as a plain int64.
 	body := dataRow(
-		postgres.AppendTimestampTZ(nil, time.Now()),
-		postgres.AppendFloat8(nil, 1),
+		pgtype.AppendTimestampTZ(nil, time.Now()),
+		pgtype.AppendFloat8(nil, 1),
 		nil,
 		nil,
-		postgres.AppendBool(nil, true),
+		pgtype.AppendBool(nil, true),
 		[]byte("x"),
 	)
 	eachBatch(t, orderFields(), [][][]byte{{body}}, func(rows *postgres.Rows) {
@@ -270,11 +271,11 @@ func TestHydrateKeepsTheCallersBufferWhenARowFails(t *testing.T) {
 	// whose second row is unhydratable.
 	at := time.Now().UTC()
 	bad := dataRow(
-		postgres.AppendTimestampTZ(nil, at),
-		postgres.AppendFloat8(nil, 30),
+		pgtype.AppendTimestampTZ(nil, at),
+		pgtype.AppendFloat8(nil, 30),
 		nil, // a NULL id, which Order cannot hold
 		nil,
-		postgres.AppendBool(nil, true),
+		pgtype.AppendBool(nil, true),
 		[]byte("c"),
 	)
 	var dst []entity.Order
@@ -348,13 +349,13 @@ func BenchmarkGeneratedHydrate(b *testing.B) {
 // productFields describes the result Product expects, with released as oid.
 func productFields(released uint32) []postgres.Field {
 	return []postgres.Field{
-		{Name: "sku", TypeOID: postgres.OIDBPChar},
-		{Name: "owner", TypeOID: postgres.OIDName},
-		{Name: "image", TypeOID: postgres.OIDBytea},
-		{Name: "thumbnail", TypeOID: postgres.OIDBytea},
-		{Name: "price", TypeOID: postgres.OIDNumeric},
+		{Name: "sku", TypeOID: pgtype.OIDBPChar},
+		{Name: "owner", TypeOID: pgtype.OIDName},
+		{Name: "image", TypeOID: pgtype.OIDBytea},
+		{Name: "thumbnail", TypeOID: pgtype.OIDBytea},
+		{Name: "price", TypeOID: pgtype.OIDNumeric},
 		{Name: "released", TypeOID: released},
-		{Name: "weight", TypeOID: postgres.OIDFloat8},
+		{Name: "weight", TypeOID: pgtype.OIDFloat8},
 	}
 }
 
@@ -363,11 +364,11 @@ func productFields(released uint32) []postgres.Field {
 // buffer, numeric kept exact, a date column through the `date` option, and
 // a Null[T] field for the nullable column that takes no pointer.
 func TestGeneratedProductHydrator(t *testing.T) {
-	plan, err := entity.BindProduct(productFields(postgres.OIDDate))
+	plan, err := entity.BindProduct(productFields(pgtype.OIDDate))
 	if err != nil {
 		t.Fatalf("BindProduct returned %v", err)
 	}
-	price, err := postgres.ParseNumeric("19.90")
+	price, err := pgtype.ParseNumeric("19.90")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,12 +376,12 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	first := [][]byte{
 		dataRow(
 			[]byte("AB-1  "), []byte("postgres"), []byte{1, 2, 3}, nil,
-			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
-			postgres.AppendFloat8(nil, 1.25),
+			pgtype.AppendNumeric(nil, price), pgtype.AppendDate(nil, day),
+			pgtype.AppendFloat8(nil, 1.25),
 		),
 		dataRow(
 			[]byte("AB-2  "), []byte("postgres"), []byte{1, 2, 3}, nil,
-			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day),
+			pgtype.AppendNumeric(nil, price), pgtype.AppendDate(nil, day),
 			nil,
 		),
 	}
@@ -388,13 +389,13 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	// the bytea check below needs.
 	second := [][]byte{dataRow(
 		[]byte("ZZ-9  "), []byte("other"), []byte{9, 9, 9}, []byte{7},
-		postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), nil,
+		pgtype.AppendNumeric(nil, price), pgtype.AppendDate(nil, day), nil,
 	)}
 
 	var got []entity.Product
 	var p entity.Product
 	batch := 0
-	eachBatch(t, productFields(postgres.OIDDate), [][][]byte{first, second}, func(rows *postgres.Rows) {
+	eachBatch(t, productFields(pgtype.OIDDate), [][][]byte{first, second}, func(rows *postgres.Rows) {
 		batch++
 		if batch > 1 {
 			// The bytes are the field's own: the row buffer is reused for
@@ -427,7 +428,7 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	}
 	// A Null[T] field: present as a valid value, absent as the zero Null —
 	// never a zero value that reads as present.
-	if want := (postgres.Null[float64]{Value: 1.25, Valid: true}); p.Weight != want {
+	if want := (pgtype.Null[float64]{Value: 1.25, Valid: true}); p.Weight != want {
 		t.Errorf("Weight = %+v, want %+v", p.Weight, want)
 	}
 	if got[1].Weight.Valid {
@@ -435,7 +436,7 @@ func TestGeneratedProductHydrator(t *testing.T) {
 	}
 
 	// A timestamp column is refused for the date field: the bytes differ.
-	if _, err := entity.BindProduct(productFields(postgres.OIDTimestampTZ)); err == nil {
+	if _, err := entity.BindProduct(productFields(pgtype.OIDTimestampTZ)); err == nil {
 		t.Error("a timestamptz column bound to a date field")
 	}
 }
@@ -444,18 +445,18 @@ func TestGeneratedProductHydrator(t *testing.T) {
 // where a pointer field costs one per row. Measured here as a difference, so
 // the allocations the other fields make (two strings, one bytea) cancel out.
 func TestNullFieldDoesNotAllocate(t *testing.T) {
-	plan, err := entity.BindProduct(productFields(postgres.OIDDate))
+	plan, err := entity.BindProduct(productFields(pgtype.OIDDate))
 	if err != nil {
 		t.Fatal(err)
 	}
-	price, _ := postgres.ParseNumeric("1")
+	price, _ := pgtype.ParseNumeric("1")
 	day := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
 	dst := make([]entity.Product, 0, 1)
 	allocs := func(weight []byte) float64 {
 		var n float64
-		eachBatch(t, productFields(postgres.OIDDate), [][][]byte{{dataRow(
+		eachBatch(t, productFields(pgtype.OIDDate), [][][]byte{{dataRow(
 			[]byte("A"), []byte("o"), []byte{1}, nil,
-			postgres.AppendNumeric(nil, price), postgres.AppendDate(nil, day), weight,
+			pgtype.AppendNumeric(nil, price), pgtype.AppendDate(nil, day), weight,
 		)}}, func(rows *postgres.Rows) {
 			n = testing.AllocsPerRun(100, func() {
 				if _, err := entity.HydrateProduct(dst[:0], rows, plan); err != nil {
@@ -465,7 +466,7 @@ func TestNullFieldDoesNotAllocate(t *testing.T) {
 		})
 		return n
 	}
-	if extra := allocs(postgres.AppendFloat8(nil, 1)) - allocs(nil); extra != 0 {
+	if extra := allocs(pgtype.AppendFloat8(nil, 1)) - allocs(nil); extra != 0 {
 		t.Errorf("a present Null[float64] costs %v allocations per row, want 0", extra)
 	}
 }

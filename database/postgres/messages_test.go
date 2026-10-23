@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -419,7 +420,7 @@ func TestBindBinaryEncodesNull(t *testing.T) {
 // so whoever recovers one can read them. This test pins that shape.
 func TestRowsValueOutOfRangePanics(t *testing.T) {
 	r := newRows(2, 4, 0)
-	if err := r.appendRow(dataRow(AppendInt8(nil, 1), AppendInt8(nil, 2))); err != nil {
+	if err := r.appendRow(dataRow(pgtype.AppendInt8(nil, 1), pgtype.AppendInt8(nil, 2))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -577,7 +578,7 @@ func TestRowsRefuseABatchPastTheOffsetRange(t *testing.T) {
 // wrong offset, and every field above it is then plausible nonsense —
 // the same refusal Rows.appendRow makes for a DataRow.
 func TestParseRowDescriptionRefusesTrailingBytes(t *testing.T) {
-	body := append(rowDesc([]string{"id"}, []uint32{OIDInt8}), 0xff)
+	body := append(rowDesc([]string{"id"}, []uint32{pgtype.OIDInt8}), 0xff)
 	if _, err := parseRowDescription(nil, body); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("parseRowDescription accepted a trailing byte: %v", err)
 	}
@@ -607,7 +608,7 @@ func BenchmarkRowsAppend(b *testing.B) {
 	const n = 1000
 	bodies := make([][]byte, n)
 	for i := range bodies {
-		bodies[i] = dataRow(AppendInt8(nil, int64(i)), AppendInt8(nil, int64(i)*7), []byte("order label number 0"))
+		bodies[i] = dataRow(pgtype.AppendInt8(nil, int64(i)), pgtype.AppendInt8(nil, int64(i)*7), []byte("order label number 0"))
 	}
 	r := newRows(3, n, 0)
 	b.ReportAllocs()

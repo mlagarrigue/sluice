@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // Column scanners: one column of a whole batch, decoded in one pass.
@@ -76,17 +78,17 @@ func checkColumn(rows *Rows, col int, scanner string, accepts ...uint32) error {
 		return nil
 	}
 	return fmt.Errorf("%w: column %d (%q) has type %s, and %s reads %s",
-		ErrCodec, col, rows.desc[col].Name, oidName(got), scanner, oidName(accepts[0]))
+		pgtype.ErrCodec, col, rows.desc[col].Name, oidName(got), scanner, oidName(accepts[0]))
 }
 
 // oidName renders a type OID for an error message.
 func oidName(oid uint32) string {
 	name := map[uint32]string{
-		OIDBool: "bool", OIDBytea: "bytea", OIDInt8: "int8", OIDInt2: "int2",
-		OIDInt4: "int4", OIDText: "text", OIDFloat4: "float4", OIDFloat8: "float8",
-		OIDVarchar: "varchar", OIDDate: "date", OIDTimestamp: "timestamp",
-		OIDTimestampTZ: "timestamptz", OIDUUID: "uuid", OIDNumeric: "numeric",
-		OIDJSON: "json", OIDJSONB: "jsonb", oidBpchar: "bpchar", oidNameType: "name",
+		pgtype.OIDBool: "bool", pgtype.OIDBytea: "bytea", pgtype.OIDInt8: "int8", pgtype.OIDInt2: "int2",
+		pgtype.OIDInt4: "int4", pgtype.OIDText: "text", pgtype.OIDFloat4: "float4", pgtype.OIDFloat8: "float8",
+		pgtype.OIDVarchar: "varchar", pgtype.OIDDate: "date", pgtype.OIDTimestamp: "timestamp",
+		pgtype.OIDTimestampTZ: "timestamptz", pgtype.OIDUUID: "uuid", pgtype.OIDNumeric: "numeric",
+		pgtype.OIDJSON: "json", pgtype.OIDJSONB: "jsonb", oidBpchar: "bpchar", oidNameType: "name",
 	}[oid]
 	if name == "" {
 		return fmt.Sprintf("OID %d", oid)
@@ -102,9 +104,9 @@ const (
 )
 
 // ErrNullValue reports a NULL where a scanner was asked for a value. A
-// column that can be NULL is scanned into a [Null] of its type, which reads
+// column that can be NULL is scanned into a [pgtype.Null] of its type, which reads
 // NULL as absent, or selected through COALESCE with the value it stands for.
-var ErrNullValue = fmt.Errorf("%w: NULL in a column scanned as not-null", ErrCodec)
+var ErrNullValue = fmt.Errorf("%w: NULL in a column scanned as not-null", pgtype.ErrCodec)
 
 // ScanNulls appends the NULL mask of a column: one bool per row.
 func ScanNulls(dst []bool, rows *Rows, col int) []bool {
@@ -117,7 +119,7 @@ func ScanNulls(dst []bool, rows *Rows, col int) []bool {
 
 // ScanInt8 appends column col of every row, decoded as int8 (int64).
 func ScanInt8(dst []int64, rows *Rows, col int) ([]int64, error) {
-	if err := checkColumn(rows, col, "ScanInt8", OIDInt8); err != nil {
+	if err := checkColumn(rows, col, "ScanInt8", pgtype.OIDInt8); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -125,7 +127,7 @@ func ScanInt8(dst []int64, rows *Rows, col int) ([]int64, error) {
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
 		}
-		v, err := DecodeInt8(b)
+		v, err := pgtype.DecodeInt8(b)
 		if err != nil {
 			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
 		}
@@ -136,7 +138,7 @@ func ScanInt8(dst []int64, rows *Rows, col int) ([]int64, error) {
 
 // ScanInt4 appends column col of every row, decoded as int4 (int32).
 func ScanInt4(dst []int32, rows *Rows, col int) ([]int32, error) {
-	if err := checkColumn(rows, col, "ScanInt4", OIDInt4); err != nil {
+	if err := checkColumn(rows, col, "ScanInt4", pgtype.OIDInt4); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -144,7 +146,7 @@ func ScanInt4(dst []int32, rows *Rows, col int) ([]int32, error) {
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
 		}
-		v, err := DecodeInt4(b)
+		v, err := pgtype.DecodeInt4(b)
 		if err != nil {
 			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
 		}
@@ -155,7 +157,7 @@ func ScanInt4(dst []int32, rows *Rows, col int) ([]int32, error) {
 
 // ScanFloat8 appends column col of every row, decoded as float8 (float64).
 func ScanFloat8(dst []float64, rows *Rows, col int) ([]float64, error) {
-	if err := checkColumn(rows, col, "ScanFloat8", OIDFloat8); err != nil {
+	if err := checkColumn(rows, col, "ScanFloat8", pgtype.OIDFloat8); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -163,7 +165,7 @@ func ScanFloat8(dst []float64, rows *Rows, col int) ([]float64, error) {
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
 		}
-		v, err := DecodeFloat8(b)
+		v, err := pgtype.DecodeFloat8(b)
 		if err != nil {
 			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
 		}
@@ -174,7 +176,7 @@ func ScanFloat8(dst []float64, rows *Rows, col int) ([]float64, error) {
 
 // ScanBool appends column col of every row, decoded as bool.
 func ScanBool(dst []bool, rows *Rows, col int) ([]bool, error) {
-	if err := checkColumn(rows, col, "ScanBool", OIDBool); err != nil {
+	if err := checkColumn(rows, col, "ScanBool", pgtype.OIDBool); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -182,7 +184,7 @@ func ScanBool(dst []bool, rows *Rows, col int) ([]bool, error) {
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
 		}
-		v, err := DecodeBool(b)
+		v, err := pgtype.DecodeBool(b)
 		if err != nil {
 			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
 		}
@@ -200,7 +202,7 @@ func ScanBool(dst []bool, rows *Rows, col int) ([]bool, error) {
 // That copy is the one allocation hydration cannot avoid, and it is per value
 // rather than per row.
 func ScanText(dst []string, rows *Rows, col int) ([]string, error) {
-	if err := checkColumn(rows, col, "ScanText", OIDText, OIDVarchar, oidBpchar, oidNameType, OIDJSON, oidUnknown); err != nil {
+	if err := checkColumn(rows, col, "ScanText", pgtype.OIDText, pgtype.OIDVarchar, oidBpchar, oidNameType, pgtype.OIDJSON, oidUnknown); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -215,7 +217,7 @@ func ScanText(dst []string, rows *Rows, col int) ([]string, error) {
 
 // ScanTimestampTZ appends column col of every row as UTC times.
 func ScanTimestampTZ(dst []time.Time, rows *Rows, col int) ([]time.Time, error) {
-	if err := checkColumn(rows, col, "ScanTimestampTZ", OIDTimestampTZ); err != nil {
+	if err := checkColumn(rows, col, "ScanTimestampTZ", pgtype.OIDTimestampTZ); err != nil {
 		return dst, err
 	}
 	for i := range rows.Len() {
@@ -223,7 +225,7 @@ func ScanTimestampTZ(dst []time.Time, rows *Rows, col int) ([]time.Time, error) 
 		if isNull {
 			return dst, fmt.Errorf("%w: row %d, column %d", ErrNullValue, i, col)
 		}
-		v, err := DecodeTimestampTZ(b)
+		v, err := pgtype.DecodeTimestampTZ(b)
 		if err != nil {
 			return dst, fmt.Errorf("row %d, column %d: %w", i, col, err)
 		}
@@ -240,7 +242,7 @@ func ScanTimestampTZ(dst []time.Time, rows *Rows, col int) ([]time.Time, error) 
 // hole in its Scan column — a uuid key is as common an `= ANY($1)` parameter
 // as an int8 one — and they are built on one generic loop rather than copied
 // seven more times. The hand-written six are deliberately not converted to
-// it, for the reason array.go gives about its own hand-written four: a
+// it, for the reason pgtype's array.go gives about its own hand-written four: a
 // per-value indirect call on the measured path is the kind of change that
 // costs three percent and is noticed a month later.
 
@@ -266,40 +268,47 @@ func scanColumn[T any](dst []T, rows *Rows, col int, name string, dec func([]byt
 
 // ScanInt2 appends column col of every row, decoded as int2 (int16).
 func ScanInt2(dst []int16, rows *Rows, col int) ([]int16, error) {
-	return scanColumn(dst, rows, col, "ScanInt2", DecodeInt2, OIDInt2)
+	return scanColumn(dst, rows, col, "ScanInt2", pgtype.DecodeInt2, pgtype.OIDInt2)
 }
 
 // ScanFloat4 appends column col of every row, decoded as float4 (float32).
 func ScanFloat4(dst []float32, rows *Rows, col int) ([]float32, error) {
-	return scanColumn(dst, rows, col, "ScanFloat4", DecodeFloat4, OIDFloat4)
+	return scanColumn(dst, rows, col, "ScanFloat4", pgtype.DecodeFloat4, pgtype.OIDFloat4)
 }
 
 // ScanBytea appends column col of every row as byte slices. Each is a copy,
 // for the reason [ScanText] gives: the batch's buffer is reused.
 func ScanBytea(dst [][]byte, rows *Rows, col int) ([][]byte, error) {
-	return scanColumn(dst, rows, col, "ScanBytea", cloneBytes, OIDBytea)
+	return scanColumn(dst, rows, col, "ScanBytea", cloneBytes, pgtype.OIDBytea)
+}
+
+// cloneBytes is the column decoder for bytea: a copy, never the batch's buffer.
+func cloneBytes(v []byte) ([]byte, error) {
+	out := make([]byte, len(v))
+	copy(out, v)
+	return out, nil
 }
 
 // ScanUUID appends column col of every row, decoded as uuid.
 func ScanUUID(dst [][16]byte, rows *Rows, col int) ([][16]byte, error) {
-	return scanColumn(dst, rows, col, "ScanUUID", DecodeUUID, OIDUUID)
+	return scanColumn(dst, rows, col, "ScanUUID", pgtype.DecodeUUID, pgtype.OIDUUID)
 }
 
 // ScanNumeric appends column col of every row, decoded as numeric — exact,
-// as [DecodeNumeric] keeps it.
-func ScanNumeric(dst []Numeric, rows *Rows, col int) ([]Numeric, error) {
-	return scanColumn(dst, rows, col, "ScanNumeric", DecodeNumeric, OIDNumeric)
+// as [pgtype.DecodeNumeric] keeps it.
+func ScanNumeric(dst []pgtype.Numeric, rows *Rows, col int) ([]pgtype.Numeric, error) {
+	return scanColumn(dst, rows, col, "ScanNumeric", pgtype.DecodeNumeric, pgtype.OIDNumeric)
 }
 
 // ScanTimestamp appends column col of every row as times without a zone,
-// as [DecodeTimestamp] returns them. It reads timestamp only: a timestamptz
+// as [pgtype.DecodeTimestamp] returns them. It reads timestamp only: a timestamptz
 // column holds instants, and [ScanTimestampTZ] is the scanner that says so.
 func ScanTimestamp(dst []time.Time, rows *Rows, col int) ([]time.Time, error) {
-	return scanColumn(dst, rows, col, "ScanTimestamp", DecodeTimestamp, OIDTimestamp)
+	return scanColumn(dst, rows, col, "ScanTimestamp", pgtype.DecodeTimestamp, pgtype.OIDTimestamp)
 }
 
 // ScanDate appends column col of every row as midnight UTC times, as
-// [DecodeDate] returns them.
+// [pgtype.DecodeDate] returns them.
 func ScanDate(dst []time.Time, rows *Rows, col int) ([]time.Time, error) {
-	return scanColumn(dst, rows, col, "ScanDate", DecodeDate, OIDDate)
+	return scanColumn(dst, rows, col, "ScanDate", pgtype.DecodeDate, pgtype.OIDDate)
 }

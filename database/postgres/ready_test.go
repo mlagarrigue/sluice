@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -45,7 +46,7 @@ func (s *scriptedPipe) write(msgs ...[]byte) {
 // answer writes a one-row result of a batched read, to its CommandComplete.
 func (s *scriptedPipe) answer() {
 	s.write(beSimple(pgwire.BackendParseComplete), beSimple(pgwire.BackendBindComplete),
-		beRowDescription([]string{"n"}, []uint32{OIDInt8}), beDataRow(int8Val(1)),
+		beRowDescription([]string{"n"}, []uint32{pgtype.OIDInt8}), beDataRow(int8Val(1)),
 		beCommandComplete("SELECT 1"))
 }
 

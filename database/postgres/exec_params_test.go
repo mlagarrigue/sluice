@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
@@ -65,7 +66,7 @@ func TestExecParamsReturnsTheTag(t *testing.T) {
 
 	const hostile = "acme'; DROP TABLE orders; --"
 	tag, err := conn.ExecParams(t.Context(), "UPDATE orders SET shipped = true WHERE customer = $1",
-		[]Param{{OID: OIDText, Value: AppendText(nil, hostile)}})
+		[]Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, hostile)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestExecParamsReturnsTheTag(t *testing.T) {
 func TestExecParamsDropsRowsAndKeepsTheCount(t *testing.T) {
 	conn := NewConn(&fakeServer{responses: setConfigCycle()})
 	tag, err := conn.ExecParams(t.Context(), "SELECT set_config($1, $2, false)",
-		[]Param{{Value: AppendText(nil, "a.b")}, {Value: AppendText(nil, "c")}})
+		[]Param{{Value: pgtype.AppendText(nil, "a.b")}, {Value: pgtype.AppendText(nil, "c")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 	conn := NewConn(&fakeServer{responses: [][]byte{failed, extendedCycle("INSERT 0 1", "I")}})
 	ctx := t.Context()
 
-	tag, err := conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: OIDInt8, Value: AppendInt8(nil, 1)}})
+	tag, err := conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 1)}})
 	var pgErr *Error
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("err = %v, want the server's 23505", err)
@@ -119,7 +120,7 @@ func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 	if tag != "" {
 		t.Errorf("tag = %q after a failure, want empty", tag)
 	}
-	tag, err = conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: OIDInt8, Value: AppendInt8(nil, 2)}})
+	tag, err = conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 2)}})
 	if err != nil || tag != "INSERT 0 1" {
 		t.Fatalf("the next statement returned %q, %v", tag, err)
 	}
@@ -178,7 +179,7 @@ func TestTxExecParamsAfterEndIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := srv.sent.Len()
-	if _, err := tx.ExecParams(ctx, "UPDATE t SET x = $1", []Param{{Value: AppendInt8(nil, 1)}}); !errors.Is(err, ErrTxDone) {
+	if _, err := tx.ExecParams(ctx, "UPDATE t SET x = $1", []Param{{Value: pgtype.AppendInt8(nil, 1)}}); !errors.Is(err, ErrTxDone) {
 		t.Fatalf("Tx.ExecParams after Commit returned %v, want ErrTxDone", err)
 	}
 	if srv.sent.Len() != before {

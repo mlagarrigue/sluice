@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice/database/postgres"
+	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
 // The claim this package exists for: a thousand keys leave as one parameter,
@@ -29,14 +30,14 @@ func Example_anyArray() {
 	// injection surface this removes rather than guards.
 	src := conn.Query(context.Background(),
 		"SELECT id, total FROM orders WHERE id = ANY($1)",
-		[]postgres.Param{{OID: postgres.OIDInt8Array, Value: postgres.AppendInt8Array(nil, keys)}},
+		[]postgres.Param{{OID: pgtype.OIDInt8Array, Value: pgtype.AppendInt8Array(nil, keys)}},
 		postgres.QueryConfig{BatchRows: 1024},
 	)
 
 	for b := range src.Stream() {
 		for _, row := range b.Items {
 			idBytes, _ := row.Value(0)
-			id, err := postgres.DecodeInt8(idBytes)
+			id, err := pgtype.DecodeInt8(idBytes)
 			if err != nil {
 				fmt.Println("decoding id:", err)
 				return
@@ -75,7 +76,7 @@ func Example_copy() {
 	for i := range 1000 {
 		buf = buf[:0]
 		buf = postgres.AppendTupleHeader(buf, 2)
-		buf = postgres.AppendField(buf, postgres.AppendInt8(nil, int64(i)))
+		buf = postgres.AppendField(buf, pgtype.AppendInt8(nil, int64(i)))
 		buf = postgres.AppendFieldNull(buf) // NULL is not the empty string
 		if err := cp.WriteTuples(buf, 1); err != nil {
 			fmt.Println("writing:", err)
@@ -85,37 +86,6 @@ func Example_copy() {
 	if err := cp.Close(); err != nil {
 		fmt.Println("finishing:", err)
 	}
-}
-
-// numeric is kept exactly, because a column is declared numeric precisely when
-// a float would lose what matters. Every lossy reading has to be named.
-func ExampleNumeric() {
-	// A value with more significant digits than a float64 can hold.
-	n, err := postgres.ParseNumeric("12345678901234567890.12345678901234567890")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	// Through the wire and back, unchanged.
-	back, err := postgres.DecodeNumeric(postgres.AppendNumeric(nil, n))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println("exact: ", back.String())
-	fmt.Println("as a float64, which loses what the column was chosen to keep:")
-	fmt.Printf("        %.6f...\n", back.Float64())
-
-	// The display scale is data, not decoration: numeric(12,2) holding ten is
-	// "10.00", and that is what an invoice prints.
-	scaled, _ := postgres.ParseNumeric("10.00")
-	fmt.Println("scale: ", scaled.String())
-	// Output:
-	// exact:  12345678901234567890.12345678901234567890
-	// as a float64, which loses what the column was chosen to keep:
-	//         12345678901234567168.000000...
-	// scale:  10.00
 }
 
 // A server error is a struct with its SQLSTATE, which is the only part stable
