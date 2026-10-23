@@ -63,6 +63,28 @@ func markdownFiles(t *testing.T) []string {
 	return out
 }
 
+// linkedPages is markdownFiles plus the pages a reader reaches outside docs/:
+// the changelog, the code of conduct, the nested modules' READMEs and the
+// pull request template. Their links are checked like the others; they are
+// not documentation, so the tests that ask whether something is documented
+// do not read them.
+func linkedPages(t *testing.T) []string {
+	t.Helper()
+	out := append(markdownFiles(t), "CHANGELOG.md", "CODE_OF_CONDUCT.md")
+	for _, dir := range []string{"benchmarks", "comparison", "interop", ".github"} {
+		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+				out = append(out, p)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return out
+}
+
 // slug renders a heading as GitHub does: lowercased, punctuation dropped,
 // spaces to hyphens, a numeric suffix for repeats.
 func headingSlugs(content string) map[string]bool {
@@ -107,14 +129,14 @@ var linkRE = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 
 func TestDocumentationLinksResolve(t *testing.T) {
 	slugs := map[string]map[string]bool{}
-	for _, f := range markdownFiles(t) {
+	for _, f := range linkedPages(t) {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)
 		}
 		slugs[filepath.Clean(f)] = headingSlugs(string(b))
 	}
-	for _, f := range markdownFiles(t) {
+	for _, f := range linkedPages(t) {
 		b, _ := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		inFence := false
 		for i, line := range strings.Split(string(b), "\n") {
@@ -151,6 +173,81 @@ func TestDocumentationLinksResolve(t *testing.T) {
 			}
 		}
 	}
+}
+
+// titleRef is a page named and then one of its titles quoted, in one
+// sentence: `docs/README.md, "Security — verifiable properties"` or
+// `docs/README.md ("I want to connect another system")`.
+var titleRef = regexp.MustCompile(`([\w./-]+\.md)\)?[^".]{0,40}?["“]([A-Z][^"”]{2,80})["”]`)
+
+// A sentence that sends the reader to a page by one of its titles is a link
+// no tool follows: the page is renamed or the section retitled, and the
+// sentence still reads as if it pointed somewhere. The quoted title must be a
+// heading of the page or the text of one of its links — an index such as
+// docs/README.md reaches a section through a link named after it. The issue
+// templates are read too, since they cite the index the same way.
+func TestReferencesByTitleResolve(t *testing.T) {
+	templates, err := filepath.Glob(".github/ISSUE_TEMPLATE/*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkText := regexp.MustCompile(`\[([^\]]+)\]\(`)
+	titles := map[string]map[string]bool{}
+	titlesOf := func(page string) (map[string]bool, bool) {
+		if ts, ok := titles[page]; ok {
+			return ts, true
+		}
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			return nil, false
+		}
+		ts := map[string]bool{}
+		for line := range strings.SplitSeq(string(b), "\n") {
+			if h := strings.TrimLeft(line, "#"); h != line && strings.HasPrefix(h, " ") {
+				ts[strings.TrimSpace(h)] = true
+			}
+			for _, m := range linkText.FindAllStringSubmatch(line, -1) {
+				ts[m[1]] = true
+			}
+		}
+		titles[page] = ts
+		return ts, true
+	}
+	var refs int
+	for _, f := range append(linkedPages(t), templates...) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A sentence may wrap: the page and the title are looked for in the
+		// text with each line break and its indentation read as one space.
+		lines := strings.Split(string(b), "\n")
+		var text strings.Builder
+		starts := make([]int, len(lines))
+		for i, line := range lines {
+			starts[i] = text.Len()
+			text.WriteString(strings.TrimSpace(line))
+			text.WriteByte(' ')
+		}
+		for _, m := range titleRef.FindAllStringSubmatchIndex(text.String(), -1) {
+			page := text.String()[m[2]:m[3]]
+			title := text.String()[m[4]:m[5]]
+			line, _ := slices.BinarySearch(starts, m[0]+1)
+			dest := filepath.Clean(filepath.Join(filepath.Dir(f), page))
+			ts, ok := titlesOf(dest)
+			if !ok {
+				dest = filepath.Clean(page) // written from the repository root
+				if ts, ok = titlesOf(dest); !ok {
+					continue // a file name in passing, not a page of this tree
+				}
+			}
+			refs++
+			if !ts[title] {
+				t.Errorf("%s:%d: %q is neither a heading nor a link of %s", f, line, title, dest)
+			}
+		}
+	}
+	t.Logf("%d references by title", refs)
 }
 
 // Every decision record has the same header, so the index of decisions can
