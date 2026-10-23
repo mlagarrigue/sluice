@@ -142,7 +142,10 @@ res, err := gw.Do(r.Context(), amendment)
 lone call agrees to wait for company. Both are required: no value suits
 every service, and without a ceiling an isolated call would wait for a
 batch that never fills. Sixty-four and two milliseconds are a reasonable
-start in front of a database.
+start in front of a database. `Logger`, optional, receives the pipeline's
+panic — its value and its stack — before the callers get
+`ErrPipelinePanicked`; nil means `slog.Default()`. A gateway whose pipeline
+panicked stays dead: build a new one.
 
 > **In plain terms: the gateway's rule.** Every call gets **exactly one**
 > answer, through `Reply` or `Fail`. Never zero: the pipeline's element *is*

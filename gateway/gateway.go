@@ -104,6 +104,8 @@ package gateway
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -128,8 +130,12 @@ var ErrNoReply = errors.New("gateway: the pipeline consumed the call without rep
 // — so the panic value, which can quote a fragment of whatever element was
 // being processed, is deliberately not in it. A handler that relays
 // err.Error() to its client must not be a channel between tenants. The
-// pipeline owns its panics: recover where the data is still yours if the
-// value matters to a log.
+// value and its stack go to [Config.Logger] instead.
+//
+// The gateway does not restart: its pipeline's state is whatever the panic
+// left, and a new pipeline would need the caller's code to build it. A
+// service that wants to keep serving builds a new gateway with [New] and
+// routes to it; [Gateway.Close] on the dead one returns this error.
 var ErrPipelinePanicked = errors.New("gateway: the pipeline panicked")
 
 // Config states how calls are grouped. Both bounds are the caller's: there is
@@ -157,6 +163,13 @@ type Config struct {
 	// saves: 2 ms of waiting to turn 64 round trips into one is a bargain,
 	// 200 ms is not.
 	Within time.Duration
+
+	// Logger receives the pipeline's panic — its value and the stack it was
+	// raised on, at the error level — before the callers are released with
+	// [ErrPipelinePanicked]. Nil means [slog.Default]. The value goes to the
+	// log and never into the error: the log is the operator's, the error is
+	// handed to every tenant.
+	Logger *slog.Logger
 }
 
 // Call is one request travelling through the pipeline, and the way back to
@@ -210,6 +223,7 @@ type Gateway[In, Out any] struct {
 	in     chan *Call[In, Out]
 	size   int
 	within time.Duration
+	logger *slog.Logger // where the pipeline's panic is reported
 
 	// closing is closed by Close to stop the run loop. The call channel
 	// itself is never closed: Do sends on it from arbitrary goroutines, and a
@@ -265,6 +279,7 @@ func New[In, Out any](cfg Config, pipeline func(sluice.Stream[*Call[In, Out]])) 
 		in:      make(chan *Call[In, Out], size),
 		size:    size,
 		within:  cfg.Within,
+		logger:  cfg.Logger,
 		closing: make(chan struct{}),
 		drained: make(chan struct{}),
 	}
@@ -289,7 +304,17 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 		case r != nil:
 			// Not fmt.Errorf("...: %v", r): this error is handed to every
 			// waiting and future caller, and the panic value can carry another
-			// caller's data. See ErrPipelinePanicked.
+			// caller's data. See ErrPipelinePanicked. The log is the
+			// operator's, and is written before die releases anyone: a
+			// caller that sees the error can find its cause already there.
+			// The stack is taken here, still on the panicking goroutine with
+			// the pipeline's frames under this one.
+			logger := g.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Error("gateway: the pipeline panicked; every call now fails with ErrPipelinePanicked",
+				"panic", r, "stack", string(debug.Stack()))
 			err = ErrPipelinePanicked
 		case asked:
 			err = ErrClosed

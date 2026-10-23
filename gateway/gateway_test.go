@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -262,7 +263,7 @@ func TestGatewayPipelinePanicFailsCallers(t *testing.T) {
 		// The panic value quotes what was being processed — here, another
 		// caller's data. It must not reach the error every caller shares.
 		const secret = "tenant-acme card 4242"
-		gw := New(Config{Size: 1, Within: 5 * time.Millisecond},
+		gw := New(Config{Size: 1, Within: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)},
 			func(calls sluice.Stream[*Call[int, string]]) {
 				calls(func(b sluice.Batch[*Call[int, string]]) bool {
 					panic("pipeline boom: " + secret)

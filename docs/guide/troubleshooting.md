@@ -70,7 +70,7 @@ one failed, see the `probe` package.
 | `web.ErrForbidden` | The principal is known and has no grant for what it asked. Answered 403. | Grant it, or ask for something it is allowed; retrying with the same credentials changes nothing. |
 | `gateway.ErrClosed` | A call was submitted to a gateway that is closed or closing. | Answer as a service shutting down answers (503), and stop submitting. |
 | `gateway.ErrNoReply` | The pipeline consumed a call without answering — it was filtered out, or stopped mid-batch. A wiring mistake. | Never filter a call out of a gateway's pipeline; answer every one, refusals included. |
-| `gateway.ErrPipelinePanicked` | The pipeline panicked. Every caller of the batch gets this same error, without the panic value (callers may be different tenants). | Find the panic in your logs; fix the stage that raised it. |
+| `gateway.ErrPipelinePanicked` | The pipeline panicked. Every caller of the batch gets this same error, without the panic value (callers may be different tenants). The value and the stack are in the log of `gateway.Config.Logger` (`slog.Default()` by default); the gateway does not restart, build a new one. | Find the panic in your logs; fix the stage that raised it. |
 
 ## HTTP: `net/httpstream`
 
