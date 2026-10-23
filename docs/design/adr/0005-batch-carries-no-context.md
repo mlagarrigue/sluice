@@ -47,7 +47,7 @@ made where the caller knows they need it.
 The HTTP transport follows the same rule at its own level: the `Handler`
 of `net/httpstream` receives the context as a parameter of the call,
 beside the batch, never inside it. That context is cancelled at a forced
-stop and, on HTTP/1.1, when the client closes during the call; the
+stop and when no request of the batch has a client left; the
 client's address and TLS state travel in the element (`Request.RemoteAddr`,
 `Request.TLS`), as the envelope above does for a per-element context.
 

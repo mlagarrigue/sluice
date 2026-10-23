@@ -94,12 +94,12 @@ What reaches the handler, precisely: the forced stop, on all three
 protocols; the client's departure on HTTP/1.1, from the handler's first
 call to `ctx.Done` (a watching read of the connection, measured at 24 µs a
 batch on a Linux runner, paid only by a handler that asks). On HTTP/2 and
-HTTP/3 a batch's context is to be cancelled once no request of the batch
-has a client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING`
-takes one away, the connection's close takes them all — and not before:
-the batch is answered whole, and a client giving up on one request does
-not cost the others their answers. That part is not written yet; the
-`Handler` documentation says so.
+HTTP/3 a batch's context is cancelled once no request of the batch has a
+client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING` takes
+one away, the connection's close takes them all — and not before: the
+batch is answered whole, and a client giving up on one request does not
+cost the others their answers. It costs one allocation per batch and a
+map entry per stream, and nothing more until the handler asks `ctx.Done`.
 
 The cost is three goroutines per connection plus one per call in
 flight, and their synchronisation, which

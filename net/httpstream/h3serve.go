@@ -304,6 +304,10 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		calls, writers sync.WaitGroup
 		launchMu       sync.Mutex
 		ended          bool
+		// cancels maps each request stream handed to a handler to its
+		// batch's context: a RESET_STREAM or STOP_SENDING from the client
+		// takes the request out of it, the connection's end takes them all.
+		cancels streamCalls[uint64]
 	)
 	// launch runs f on wg unless the connection has ended, and reports
 	// whether it did: a caller that owes a signal from f sends it itself
@@ -382,6 +386,13 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			if f.Type == quic.FrameStopSending && f.StreamID == control.ID() {
 				_ = c.CloseWithError(h3ClosedCriticalStream)
 				return controlStopped(f.Code())
+			}
+			// A client that resets a request stream, or asks this end to
+			// stop sending on it, has given the request up (RFC 9114
+			// §4.1.1): it leaves its batch, whose context is cancelled once
+			// none is left. A stream not yet handed over is not in cancels.
+			if f.Type == quic.FrameResetStream || f.Type == quic.FrameStopSending {
+				cancels.leave(f.StreamID)
 			}
 		}
 		// RESET_STREAM is the assembler's to fold in, inside Frames' own
@@ -466,9 +477,12 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		// bytes it was assembled from. Copying the slice — not the requests —
 		// is what makes the hand-off safe, and it is one small copy per
 		// datagram rather than one per request.
+		held := append([]uint64(nil), ids...)
 		b := h3Batch{
+			ctx:   cancels.register(forced, held),
+			calls: &cancels,
 			reqs:  append([]Request(nil), batch.Items...),
-			ids:   append([]uint64(nil), ids...),
+			ids:   held,
 			after: append([]<-chan struct{}(nil), a.after...),
 			// The peer's MAX_FIELD_SECTION_SIZE, snapshotted here because
 			// the assembler belongs to this goroutine and the call must not
@@ -510,6 +524,9 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	})
 
 	<-c.Done()
+	// Nobody is left to answer: the handlers still running learn it before
+	// they are waited for.
+	cancels.leaveAll()
 	amu.Lock()
 	sweepDone = true
 	if sweepT != nil {
@@ -643,6 +660,10 @@ type h3Batch struct {
 	answered func()
 	// early is Config.EarlyData, for the requests carrying Early-Data.
 	early func(*Request) bool
+	// ctx is the batch's context, released through calls once the last of
+	// its responses is written (see batchCtx).
+	ctx   *batchCtx
+	calls *streamCalls[uint64]
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
@@ -711,6 +732,18 @@ func h3GracefulCode() uint64 {
 func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
 	// The address as it stands now: a QUIC connection may have moved.
 	peer{addr: addrPortOf(c.RemoteAddr()), tls: state}.stamp(b.reqs)
+	// The batch's context, released by the last of its writers below.
+	var pending atomic.Int32
+	done := func() {}
+	if b.ctx != nil {
+		ctx = b.ctx
+		pending.Store(int32(len(b.ids))) //nolint:gosec // G115: a batch is bounded far below 2^31
+		done = func() {
+			if pending.Add(-1) == 0 {
+				b.calls.release(b.ctx, b.ids)
+			}
+		}
+	}
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
@@ -753,6 +786,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 				if b.retire != nil {
 					b.retire()
 				}
+				done()
 			}()
 			whole := writeH3Response(c, id, r, method, b.fieldSection, wb, date, func() {
 				detached = true

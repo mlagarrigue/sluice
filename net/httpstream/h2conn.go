@@ -232,6 +232,7 @@ type h2Stream struct {
 type h2Batch struct {
 	reqs []Request
 	ids  []uint32
+	ctx  *batchCtx
 }
 
 // h2Answer is one response on its way out: where its framed head sits in the
@@ -263,8 +264,12 @@ type h2Server struct {
 	ctx context.Context
 	// peer is written into every request before the handler sees it.
 	peer peer
-	dec  *hpackDecoder
-	w    *h2Writer
+	// calls maps each stream handed to a handler to its batch's context,
+	// until the batch is answered: a RST_STREAM takes the stream's request
+	// out of it. The reader adds and removes, the responder removes.
+	calls streamCalls[uint32]
+	dec   *hpackDecoder
+	w     *h2Writer
 
 	// streams is the open streams, the ones still being assembled.
 	streams map[uint32]*h2Stream
@@ -616,7 +621,7 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 			st.set(connIdle)
 		}
 		if len(ready) > 0 {
-			b := h2Batch{reqs: ready, ids: ids}
+			b := h2Batch{reqs: ready, ids: ids, ctx: s.calls.register(s.ctx, ids)}
 			calls.Go(func() { s.call(b, in) })
 		}
 		if !live && s.drainStep.Load() == drainAnnounced {
@@ -655,6 +660,10 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		s.goAway(codeFor(fatal))
 		told = true
 	}
+	// The client is gone, or the connection failed: no request in flight
+	// has anyone left to answer to, and their handlers learn it before they
+	// are waited for.
+	s.calls.leaveAll()
 	// The calls still running are answered before the responder goes, so
 	// that every request is answered once, as ever.
 	calls.Wait()
@@ -1088,8 +1097,10 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 		}
 		s.retire(f.StreamID, stateClosed)
 		// The cancellation reaches the response being written for it, which
-		// is what stops a producer working for a caller who walked away.
+		// is what stops a producer working for a caller who walked away,
+		// and the handler's context once no request of its batch is left.
 		s.w.forget(f.StreamID)
+		s.calls.leave(f.StreamID)
 		return nil, nil
 
 	case frameGoAway:
@@ -1708,7 +1719,7 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 		}
 	}()
 	s.peer.stamp(b.reqs)
-	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
+	res, err := apply(b.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
 	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}
 }
@@ -1728,6 +1739,9 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 // because nothing could be framed, a streamed body once it has ended.
 func (s *h2Server) answer(got *h2Applied) {
 	b, res, err := got.b, got.res, got.err
+	if b.ctx != nil {
+		defer s.calls.release(b.ctx, b.ids)
+	}
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Neither is the peer's doing and

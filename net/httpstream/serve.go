@@ -77,19 +77,22 @@ import (
 // not when it stops normally, which lets the requests in flight finish. It is
 // the context a handler hands to what it calls on the batch's behalf, a
 // database query or an upstream request, so that a forced stop reaches them
-// rather than leaving them to run with nobody waiting for the answer. It is
-// one context for the whole batch, because the batch is answered as a whole:
-// a client that gives up on one request of it is not seen there.
+// rather than leaving them to run with nobody waiting for the answer.
 //
-// On HTTP/1.1, where a batch is one connection's requests, ctx is also
-// cancelled when the client closes the connection while the handler runs —
-// a reset, or the end of its sending side, which RFC 9112 §9.6 notes may be
-// a half-close from a client still waiting: only the context is cancelled,
-// and whatever the handler returns is still written. The connection is
-// watched from the handler's first call to ctx.Done: a handler that never
-// asks costs no watch. The context lives until the batch's responses are
-// written, which is when a streamed response's producer stops needing it.
-// On HTTP/2 and HTTP/3 the client leaving is not seen there yet.
+// ctx is also cancelled when no request of the batch has a client left. It
+// is one context for the whole batch, because the batch is answered as a
+// whole: a client that gives up on one request of several does not cancel
+// the others' answer. On HTTP/2 a client gives a request up with RST_STREAM,
+// on HTTP/3 with RESET_STREAM or STOP_SENDING, and on every protocol by
+// closing the connection. On HTTP/1.1, where a batch is one connection's
+// requests, the close is seen while the handler runs — a reset, or the end
+// of the client's sending side, which RFC 9112 §9.6 notes may be a
+// half-close from a client still waiting — from the handler's first call to
+// ctx.Done, since seeing it means reading the connection: a handler that
+// never asks pays nothing for it. Only the context is cancelled: whatever
+// the handler returns is still written, until a write fails. The context
+// lives until the batch's responses are written, which is when a streamed
+// response's producer stops needing it.
 type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]
 
 // Serve accepts connections on ln and drives handle over each one until ctx
@@ -844,90 +847,206 @@ func (p peer) stamp(reqs []Request) {
 	}
 }
 
-// clientCtx is the handler's context on HTTP/1.1: its parent's — the forced
-// stop — and also the client leaving while the handler runs.
+// batchCtx is the context of one batch's call: its parent's — the forced
+// stop — and also the batch's clients all leaving.
 //
-// Watching costs a goroutine reading the connection, and the wake-ups to
-// start and stop it; most handlers never ask, so nothing is watched until
-// the first call to Done. A handler that answers from memory pays one
-// allocation per batch; one that hands the context to a query pays the
-// watch, measured on a GitHub Linux runner at 24 µs a batch
-// (BenchmarkServeH1RoundTrip: 46 µs watched, 23 µs plain). Starting it later — a timer, so that only slow handlers pay — was
-// measured and costs more: arming a timer wakes the network poller. The read is
-// [watchPeer]'s, whose bytes are put back for the request reader, and it
-// ends when the handler returns: a streamed response has its own watch. The
-// forced stop reaches the context through [context.AfterFunc], which runs
-// no goroutine of its own.
+// It is allocated once per batch and costs nothing more until someone asks
+// for Done: the channel, and the parent's hold on it through
+// [context.AfterFunc] (which runs no goroutine of its own), are made then.
+// It covers the batch until its responses are written, so that a streamed
+// response's producer keeps it; past that it is neither watched nor
+// cancelled, and the parent lets go of it.
 //
-// An EOF counts as the client leaving. RFC 9112 §9.6 notes that a client's
-// half-close does not by itself say it lost interest in the response; but a
-// client that closes sends exactly that EOF, and is by far the common case.
-// What is cancelled is the context only: whatever the handler returns is
-// still written, until a write fails.
-//
-// The context covers the batch until its responses are written, so that a
-// streamed response's producer keeps the forced stop; past that it is
-// neither watched nor cancelled.
-type clientCtx struct {
+// live counts the requests of the batch whose client may still want an
+// answer, on HTTP/2 and HTTP/3: a stream the client resets takes one away,
+// the connection's end takes them all, and the context is cancelled at
+// zero — not before, since the batch is answered whole and one request
+// given up on does not cost the others their answers (ADR 0008). HTTP/1.1
+// has one client per batch, and clientCtx watches it.
+type batchCtx struct {
 	context.Context // the parent
 
-	c     *prefixConn
-	limit int
-
-	mu      sync.Mutex
-	calling bool            // the handler is running: the watch may start
-	ended   bool            // the batch is written
-	done    <-chan struct{} // what Done returns, once asked
-	cancel  chan struct{}   // done when this context owns it
-	err     error
-	watch   *peerWatch
-	unlink  func() bool // ends the parent's hold on cancel
+	mu     sync.Mutex
+	ended  bool            // the batch is written
+	done   <-chan struct{} // what Done returns, once asked
+	cancel chan struct{}   // done when this context owns it
+	err    error
+	unlink func() bool // ends the parent's hold on cancel
+	live   int
 }
 
-func newClientCtx(parent context.Context, c *prefixConn, limit int) *clientCtx {
-	return &clientCtx{Context: parent, c: c, limit: limit, calling: true}
-}
-
-func (x *clientCtx) Done() <-chan struct{} {
+func (x *batchCtx) Done() <-chan struct{} {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	return x.doneLocked()
+}
+
+func (x *batchCtx) doneLocked() <-chan struct{} {
 	if x.done != nil {
 		return x.done
 	}
-	if x.ended {
+	if x.ended && x.err == nil {
 		// Asked after the batch was written: nothing left to watch.
 		x.done = x.Context.Done()
 		return x.done
 	}
 	x.cancel = make(chan struct{})
 	x.done = x.cancel
+	if x.err != nil {
+		close(x.cancel) // the clients left before anyone asked
+		return x.done
+	}
 	x.unlink = context.AfterFunc(x.Context, func() { x.close(x.Context.Err()) })
-	if x.calling {
+	return x.done
+}
+
+func (x *batchCtx) Err() error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.err != nil || x.cancel != nil {
+		return x.err
+	}
+	return x.Context.Err()
+}
+
+// close cancels the context, unless the batch is written or it already is.
+func (x *batchCtx) close(err error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.closeLocked(err)
+}
+
+func (x *batchCtx) closeLocked(err error) {
+	if x.err != nil || x.ended {
+		return
+	}
+	x.err = err
+	if x.cancel != nil {
+		close(x.cancel)
+	}
+}
+
+// leave counts one request's client gone: the last one cancels.
+func (x *batchCtx) leave() {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.live--
+	if x.live <= 0 {
+		x.closeLocked(context.Canceled)
+	}
+}
+
+// written is called once the batch's responses are written, or abandoned.
+func (x *batchCtx) written() {
+	x.mu.Lock()
+	x.ended = true
+	unlink := x.unlink
+	x.mu.Unlock()
+	if unlink != nil {
+		unlink()
+	}
+}
+
+// streamCalls maps each stream handed to a handler to its batch's context,
+// until the batch's responses are written: on HTTP/2 and HTTP/3, where a
+// client cancels one request by resetting its stream.
+type streamCalls[K comparable] struct {
+	mu sync.Mutex
+	m  map[K]*batchCtx
+}
+
+// register makes the context of a batch about to be handed to the handler.
+func (k *streamCalls[K]) register(parent context.Context, ids []K) *batchCtx {
+	x := &batchCtx{Context: parent, live: len(ids)}
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = make(map[K]*batchCtx)
+	}
+	for _, id := range ids {
+		k.m[id] = x
+	}
+	k.mu.Unlock()
+	return x
+}
+
+// leave takes a cancelled stream's request out of its batch; a stream not
+// handed over, or already taken out, is nothing.
+func (k *streamCalls[K]) leave(id K) {
+	k.mu.Lock()
+	x := k.m[id]
+	delete(k.m, id)
+	k.mu.Unlock()
+	if x != nil {
+		x.leave()
+	}
+}
+
+// leaveAll cancels every batch still in flight: the connection is over.
+func (k *streamCalls[K]) leaveAll() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for id, x := range k.m {
+		x.close(context.Canceled)
+		delete(k.m, id)
+	}
+}
+
+// release ends a batch's context once its responses are written.
+func (k *streamCalls[K]) release(x *batchCtx, ids []K) {
+	k.mu.Lock()
+	for _, id := range ids {
+		if k.m[id] == x {
+			delete(k.m, id)
+		}
+	}
+	k.mu.Unlock()
+	x.written()
+}
+
+// clientCtx is the handler's context on HTTP/1.1: a [batchCtx] whose client
+// is watched while the handler runs.
+//
+// Watching costs a goroutine reading the connection, and the wake-ups to
+// start and stop it; most handlers never ask, so nothing is watched until
+// the first call to Done. A handler that answers from memory pays one
+// allocation per batch; one that hands the context to a query pays the
+// watch, measured on a GitHub Linux runner at 24 µs a batch
+// (BenchmarkServeH1RoundTrip: 46 µs watched, 23 µs plain). Starting it later
+// — a timer, so that only slow handlers pay — was measured and costs more:
+// arming a timer wakes the network poller. The read is [watchPeer]'s, whose
+// bytes are put back for the request reader, and it ends when the handler
+// returns: a streamed response has its own watch.
+//
+// An EOF counts as the client leaving. RFC 9112 §9.6 notes that a client's
+// half-close does not by itself say it lost interest in the response; but a
+// client that closes sends exactly that EOF, and is by far the common case.
+// What is cancelled is the context only: whatever the handler returns is
+// still written, until a write fails.
+type clientCtx struct {
+	batchCtx
+
+	c       *prefixConn
+	limit   int
+	calling bool // the handler is running: the watch may start
+	watch   *peerWatch
+}
+
+func newClientCtx(parent context.Context, c *prefixConn, limit int) *clientCtx {
+	return &clientCtx{batchCtx: batchCtx{Context: parent}, c: c, limit: limit, calling: true}
+}
+
+func (x *clientCtx) Done() <-chan struct{} {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	done := x.doneLocked()
+	if x.calling && x.watch == nil && x.err == nil && x.cancel != nil {
 		x.watch = watchPeerThen(x.c, x.limit, func(w *peerWatch) {
 			if w.gone.Load() || w.halfClosed.Load() {
 				x.close(context.Canceled)
 			}
 		})
 	}
-	return x.done
-}
-
-func (x *clientCtx) Err() error {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if x.cancel != nil {
-		return x.err
-	}
-	return x.Context.Err()
-}
-
-func (x *clientCtx) close(err error) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if x.err == nil {
-		x.err = err
-		close(x.cancel)
-	}
+	return done
 }
 
 // returned is called when the handler returns: the watch stops, and the
@@ -939,17 +1058,6 @@ func (x *clientCtx) returned() {
 	x.mu.Unlock()
 	if w != nil {
 		w.stop()
-	}
-}
-
-// written is called once the batch's responses are written, or abandoned.
-func (x *clientCtx) written() {
-	x.mu.Lock()
-	x.ended = true
-	unlink := x.unlink
-	x.mu.Unlock()
-	if unlink != nil {
-		unlink()
 	}
 }
 
