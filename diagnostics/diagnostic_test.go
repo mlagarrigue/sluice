@@ -86,12 +86,12 @@ func TestDiagnosticWithers(t *testing.T) {
 	args := map[string]any{"expected": 10}
 
 	d := base.
-		WithMessage("PrixInhabituel", args).
+		WithMessage("UnusualPrice", args).
 		WithOrigin(OriginBusinessRule).
 		WithRule("PriceBand.v2")
 
-	if d.MessageID != "PrixInhabituel" {
-		t.Errorf("MessageID = %q, want %q", d.MessageID, "PrixInhabituel")
+	if d.MessageID != "UnusualPrice" {
+		t.Errorf("MessageID = %q, want %q", d.MessageID, "UnusualPrice")
 	}
 	if d.Args["expected"] != 10 {
 		t.Errorf("Args = %v, want expected=10", d.Args)

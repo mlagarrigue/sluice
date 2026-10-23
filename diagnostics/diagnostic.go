@@ -91,7 +91,7 @@ func (s Severity) String() string {
 
 // Origin says which layer produced a diagnostic.
 //
-// It is what lets a reader go from "Critical ClientMustExists" back to what
+// It is what lets a reader go from "Critical CustomerMustExist" back to what
 // actually happened — a NOT NULL constraint at read time, a hydration failure, a
 // business rule. Without it, every diagnostic looks like it came from the
 // business layer and the real cause is a guess.
@@ -185,7 +185,7 @@ type Diagnostic struct {
 	// code, and knowing which one fired is what makes a report actionable.
 	RuleID string
 
-	// MessageID is the i18n key — "QteMustBeOverZero" — never a rendered
+	// MessageID is the i18n key — "QtyMustBeOverZero" — never a rendered
 	// sentence.
 	MessageID string
 
@@ -212,7 +212,7 @@ type Diagnostic struct {
 // the With methods, which return a copy:
 //
 //	NewDiagnostic(Error, "Sales.Order.InvalidQty", path).
-//	    WithMessage("QteMustBeOverZero", map[string]any{"min": 1}).
+//	    WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}).
 //	    WithOrigin(OriginBusinessRule)
 func NewDiagnostic(sev Severity, code string, path Path) Diagnostic {
 	return Diagnostic{Severity: sev, Code: code, Path: path}

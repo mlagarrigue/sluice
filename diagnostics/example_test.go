@@ -33,7 +33,7 @@ func ExamplePath_HasPrefix() {
 func ExampleNewDiagnostic() {
 	d := diagnostics.NewDiagnostic(diagnostics.Error, "Sales.Order.InvalidQty",
 		diagnostics.Field("lines").Index(7).Field("saleQty")).
-		WithMessage("QteMustBeOverZero", map[string]any{"min": 1}).
+		WithMessage("QtyMustBeOverZero", map[string]any{"min": 1}).
 		WithOrigin(diagnostics.OriginBusinessRule)
 
 	// The rendered form is for a log line. What travels to a client is the
@@ -42,7 +42,7 @@ func ExampleNewDiagnostic() {
 	fmt.Println(d.MessageID, d.Args["min"])
 	// Output:
 	// Error Sales.Order.InvalidQty at lines[7].saleQty
-	// QteMustBeOverZero 1
+	// QtyMustBeOverZero 1
 }
 
 func ExampleDiagnostic_Unwrap() {

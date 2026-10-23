@@ -414,13 +414,13 @@ In a PATCH stream, we want to be able to produce, **without interrupting the
 stream**:
 
 ```
-Error    1000  QteMustBeOverZero  commande[42].ligne[7].qteVente
-Critical 0001  ClientMustExists   commande[42].idClient
-Warning  2010  PrixInhabituel     commande[42].ligne[3].prixUnitaire
+Error    1000  QtyMustBeOverZero  orders[42].lines[7].saleQty
+Critical 0001  CustomerMustExist  orders[42].customerID
+Warning  2010  UnusualPrice       orders[42].lines[3].unitPrice
 ```
 
 with, in the logs, the readable trace allowing one to go from
-`Critical 0001 ClientMustExists` back to its real origin — a `NOT NULL` SQL
+`Critical 0001 CustomerMustExist` back to its real origin — a `NOT NULL` SQL
 constraint at read time, or a hydration failure.
 
 ### This model already exists — twice
@@ -453,7 +453,7 @@ type Diagnostic struct {
     Severity  Severity
     Code      string          // "Sales.Order.InvalidQty" — hierarchical
     RuleID    string          // key in the rule catalog
-    MessageID string          // i18n key: "QteMustBeOverZero"
+    MessageID string          // i18n key: "QtyMustBeOverZero"
     Args      map[string]any  // NAMED arguments, not positional
     Path      Path            // structured, NOT a string
     Origin    Origin          // SQL | Hydration | BusinessRule | Protocol
@@ -501,7 +501,7 @@ separately: HAL-FORMS has `readOnly`, `regex`, `required` per property; Siren ha
 `method`, `href` and `fields` for the action.
 
 **The join nobody has standardized: attaching the affordance to the same `Path`
-as the diagnostic.** The same `commande[42].ligne[7].qteVente` carries both "here
+as the diagnostic.** The same `orders[42].lines[7].saleQty` carries both "here
 is why this is invalid" and "here is how to fix it, by which action, with which
 type". That is the model's added value, and it is a bet — no precedent to copy.
 
