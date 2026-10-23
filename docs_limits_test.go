@@ -2,6 +2,7 @@ package sluice_test
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,51 @@ func TestLimitsAreShort(t *testing.T) {
 		}
 	}
 	flush()
+}
+
+// A learning guide ends on what its reader can now do and the command that
+// shows it: one "## You can now" section, the last but for "What next", with
+// a sh block that runs `go`. A guide that ends on a figure or a link leaves the
+// reader to work out what they learned and whether it worked.
+func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
+	for _, page := range []string{
+		"docs/guide/getting-started.md", "docs/guide/operators.md",
+		"docs/guide/postgres.md", "docs/guide/web.md",
+	} {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sections []string
+		var body []string
+		fenced := false
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "```") {
+				fenced = !fenced
+			}
+			if !fenced && strings.HasPrefix(line, "## ") {
+				sections = append(sections, line)
+				body = append(body, "")
+				continue
+			}
+			if len(body) > 0 {
+				body[len(body)-1] += line + "\n"
+			}
+		}
+		i := slices.Index(sections, "## You can now")
+		switch {
+		case i < 0:
+			t.Errorf("%s: no \"## You can now\" section", page)
+			continue
+		case slices.Index(sections[i+1:], "## You can now") >= 0:
+			t.Errorf("%s: two \"## You can now\" sections", page)
+		case i != len(sections)-1 && sections[len(sections)-1] != "## What next" || i < len(sections)-2:
+			t.Errorf("%s: \"## You can now\" is followed by %v; it closes the guide", page, sections[i+1:])
+		}
+		if !strings.Contains(body[i], "```sh\ngo ") {
+			t.Errorf("%s: \"## You can now\" has no sh block starting with a go command", page)
+		}
+	}
 }
 
 // maxQuoteLines is the longest run of quotation the architecture may hold
