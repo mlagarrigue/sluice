@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"crypto/tls"
 	"errors"
 	"strings"
 	"testing"
@@ -106,4 +107,38 @@ func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 	if held != 1 {
 		t.Errorf("a server before its keys held %d 0-RTT packets, want 1", held)
 	}
+}
+
+// A server whose 0-RTT was accepted is handed to Accept only once it can
+// write in 1-RTT: crypto/tls installs the early read secret first, and an
+// application that writes the moment Accept returns — an HTTP/3 server's
+// SETTINGS — found nothing to seal its packets with, and the connection
+// died with it.
+func TestEarlyAcceptanceWaitsForTheWriteKeys(t *testing.T) {
+	secret := make([]byte, 32)
+	c := &Conn{cc: newNewReno(1200), earlyAccepted: make(chan struct{})}
+	event := func(kind tls.QUICEventKind, level tls.QUICEncryptionLevel) {
+		t.Helper()
+		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: kind, Level: level, Suite: tls.TLS_AES_128_GCM_SHA256, Data: secret}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accepted := func() bool {
+		select {
+		case <-c.earlyAccepted:
+			return true
+		default:
+			return false
+		}
+	}
+	event(tls.QUICSetReadSecret, tls.QUICEncryptionLevelEarly)
+	event(tls.QUICSetWriteSecret, tls.QUICEncryptionLevelHandshake)
+	if accepted() {
+		t.Fatal("the connection was released for Accept with no 1-RTT write keys")
+	}
+	event(tls.QUICSetWriteSecret, tls.QUICEncryptionLevelApplication)
+	if !accepted() {
+		t.Fatal("the 1-RTT write keys are in and the connection was not released")
+	}
+	event(tls.QUICSetReadSecret, tls.QUICEncryptionLevelApplication) // a second release would close twice
 }

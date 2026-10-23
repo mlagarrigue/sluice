@@ -410,11 +410,14 @@ type Conn struct {
 	// crypto/tls installs the early secret, which it does only when the
 	// resumption's 0-RTT was accepted; it is dropped at the first 1-RTT
 	// packet (RFC 9001 §4.9.3). deferredEarly holds 0-RTT packets that
-	// arrived before that secret. earlyAccepted is closed when it arrives.
+	// arrived before that secret. earlyAccepted is closed, and
+	// earlyReleased set, once the 1-RTT write keys follow it
+	// (releaseEarly).
 	early         *earlyGate
 	earlyOpener   *packetOpener
 	deferredEarly []deferredPacket
 	earlyAccepted chan struct{}
+	earlyReleased bool
 	// hsComplete is closed when the handshake completes
 	// (Conn.HandshakeComplete).
 	hsComplete chan struct{}
@@ -1419,8 +1422,8 @@ func (c *Conn) issueTicket() error {
 }
 
 // installEarly installs the 0-RTT read keys of a server whose resumption's
-// 0-RTT was accepted, reads the 0-RTT packets that arrived before them, and
-// tells the listener the connection may be accepted now.
+// 0-RTT was accepted. Nothing is read with them yet: releaseEarly does that
+// once this end can also write in 1-RTT.
 func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
 	s, err := suiteFor(suiteID)
 	if err != nil {
@@ -1432,6 +1435,23 @@ func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
 	}
 	c.mu.Lock()
 	c.earlyOpener = opener
+	c.mu.Unlock()
+	return nil
+}
+
+// releaseEarly runs on a server whose 0-RTT was accepted, once its 1-RTT
+// write keys are in: crypto/tls hands them out in the same flight as the
+// early secret, and nothing — an ACK for a 0-RTT packet, the application's
+// first write — can leave in the application space before them. It reads
+// the 0-RTT packets that arrived before the early secret and tells the
+// listener the connection may be accepted now.
+func (c *Conn) releaseEarly() error {
+	c.mu.Lock()
+	if c.earlyOpener == nil || c.earlyReleased {
+		c.mu.Unlock()
+		return nil
+	}
+	c.earlyReleased = true
 	held := c.deferredEarly
 	c.deferredEarly = nil
 	peer, rxECN := c.peer, c.rxECN
@@ -1554,7 +1574,13 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			}
 			return false, nil
 		}
-		return false, c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret)
+		if err := c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret); err != nil {
+			return false, err
+		}
+		if e.Level == tls.QUICEncryptionLevelApplication && e.Kind == tls.QUICSetWriteSecret && !c.isClient {
+			return false, c.releaseEarly()
+		}
+		return false, nil
 	case tls.QUICResumeSession:
 		// A client resumes (server side; client connections leave session
 		// events off). Its 0-RTT stands only if this listener admits the
