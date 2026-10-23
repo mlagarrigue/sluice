@@ -10,8 +10,8 @@ import (
 	"testing"
 )
 
-// Every performance figure the README quotes must exist in the consolidated
-// measurements, within rounding.
+// Every figure the README quotes is, to the character, the median of its
+// row in docs/benchmarks.md.
 //
 // This test exists because the two drifted apart within an hour of the
 // consolidated file being created. The README was written from one run of
@@ -21,57 +21,84 @@ import (
 //
 // Numbers in two places is how one of them goes stale. Since the README is
 // meant to carry the comparisons — a pointer to a table is not a
-// comparison a reader will follow — the duplication stays and this checks it.
+// comparison a reader will follow — the duplication stays. The README's
+// copies are written by readme-figures.sh from the page, so exact is the
+// right comparison, and the fix for a failure is that one command.
 
-// figure is one quoted number and the benchmark it must come from.
+// figure is one number the README quotes, between the inline markers
+// readme-figures.sh rewrites:
+//
+//	<!-- figure: BenchmarkWebDBSluiceOneConn -->898 µs<!-- /figure -->
 type figure struct {
-	readme    string // as written in README.md
 	benchmark string // the row in docs/benchmarks.md
-	nanos     float64
+	readme    string // as written in README.md
 }
 
-// readmeFigures is the one list of quoted numbers both tests below check
-// against — a second hand-maintained copy of it is how the two tests drift
-// from each other the same way the README drifts from the table.
-var readmeFigures = []figure{
-	{"898 µs", "BenchmarkWebDBSluiceOneConn", 898_000},
-	{"12.9 ms", "BenchmarkWebDBPgxOneConn", 12_900_000},
+var figureMarker = regexp.MustCompile(`<!-- figure: (Benchmark\w+) -->([^<]*)<!-- /figure -->`)
+
+// readmeFigures is the one list of quoted numbers both tests below check,
+// read from the README's own markers: the hand-kept list it replaces had
+// already missed one of the three figures.
+func readmeFigures(t *testing.T) []figure {
+	t.Helper()
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []figure
+	for _, m := range figureMarker.FindAllStringSubmatch(string(readme), -1) {
+		out = append(out, figure{benchmark: m[1], readme: m[2]})
+	}
+	if len(out) == 0 {
+		t.Fatal("README.md holds no <!-- figure: … --> marker; the format changed")
+	}
+	return out
 }
 
 // The tolerance is loose on purpose. The consolidated table reports a median
-// with a spread beside it, and the README rounds to two or three significant
+// with a spread beside it, and the guides round to two or three significant
 // figures; what this catches is a figure that came from a different *run*, not
 // one rounded differently.
 const figureTolerance = 0.06
+
+// showDuration is the README's spelling of a median, the one
+// readme-figures.sh writes: ns, µs or ms, whichever keeps the number under
+// 1000, to three significant digits.
+func showDuration(ns float64) string {
+	v, unit := ns, "ns"
+	if v >= 999.5 {
+		v, unit = v/1000, "µs"
+	}
+	if v >= 999.5 {
+		v, unit = v/1000, "ms"
+	}
+	switch {
+	case v >= 99.95:
+		return strconv.FormatFloat(v, 'f', 0, 64) + " " + unit
+	case v >= 9.995:
+		return strconv.FormatFloat(v, 'f', 1, 64) + " " + unit
+	}
+	return strconv.FormatFloat(v, 'f', 2, 64) + " " + unit
+}
 
 func TestREADMEFiguresMatchTheConsolidatedMeasurements(t *testing.T) {
 	consolidated, err := os.ReadFile("docs/benchmarks.md")
 	if err != nil {
 		t.Skipf("no consolidated measurements: %v", err)
 	}
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	medians := parseMedians(t, string(consolidated))
 	if len(medians) < 10 {
 		t.Fatalf("parsed %d medians from the consolidated file; the format changed", len(medians))
 	}
-
-	for _, f := range readmeFigures {
+	for _, f := range readmeFigures(t) {
 		t.Run(f.benchmark, func(t *testing.T) {
-			if !strings.Contains(string(readme), f.readme) {
-				t.Fatalf("the README no longer quotes %q; update this test with it", f.readme)
-			}
 			got, ok := medians[f.benchmark]
 			if !ok {
 				t.Fatalf("%s is not in the consolidated file", f.benchmark)
 			}
-			if drift := relative(f.nanos, got); drift > figureTolerance {
-				t.Errorf("README says %s (%.0f ns), consolidated says %.0f ns — %.0f%% apart.\n"+
-					"One of them is from an older run; regenerate the README figure from the table.",
-					f.readme, f.nanos, got, 100*drift)
+			if want := showDuration(got); f.readme != want {
+				t.Errorf("README says %s, the consolidated median is %.0f ns (%s);\n"+
+					"run internal/bench/scripts/readme-figures.sh", f.readme, got, want)
 			}
 		})
 	}
@@ -128,20 +155,15 @@ func TestREADMEDoesNotQuoteUnstableRows(t *testing.T) {
 	}
 	// Not a failure by itself — the flag is information. It fails only if one
 	// of those rows is also a number the README asks a reader to believe —
-	// any of them, drawn from the same readmeFigures list the test above
-	// checks, so the two cannot drift apart.
+	// any of them, read from the same markers the test above checks, so the
+	// two cannot drift apart.
 	quoted := map[string]string{}
-	for _, f := range readmeFigures {
+	for _, f := range readmeFigures(t) {
 		quoted[f.benchmark] = f.readme
 	}
-	readmeBytes, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	readme := string(readmeBytes)
 	var offenders int
 	for _, nm := range unstable {
-		if fig, ok := quoted[nm]; ok && strings.Contains(readme, fig) {
+		if fig, ok := quoted[nm]; ok {
 			offenders++
 			t.Errorf("%s has a spread over the flag threshold and the README quotes it as %s; "+
 				"raise BENCHTIME and regenerate before publishing that number", nm, fig)

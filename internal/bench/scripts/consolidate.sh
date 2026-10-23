@@ -3,6 +3,7 @@
 # result with the conditions attached.
 #
 #   internal/bench/scripts/consolidate.sh > /tmp/b.md && mv /tmp/b.md docs/benchmarks.md
+#   internal/bench/scripts/readme-figures.sh   # the README's quoted figures, from the page
 #
 # It rewrites only the tables, each between two markers that name it, and
 # prints the rest of docs/benchmarks.md as it found it:

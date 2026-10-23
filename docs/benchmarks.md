@@ -7,6 +7,10 @@ produces them. The tables of "Measured in one session" are regenerated in one
 session by `internal/bench/scripts/consolidate.sh`, which rewrites only what
 lies between their `consolidate` markers; the session's conditions are
 written with them, and every other line of this page is edited by hand.
+The figures the README quotes are copied from those tables by
+`internal/bench/scripts/readme-figures.sh`, run after a regeneration; a test
+refuses a README figure that differs, to the character, from the median of
+its row.
 
 ## Contents
 

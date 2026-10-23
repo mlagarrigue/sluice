@@ -199,9 +199,9 @@ flowchart LR
 ```
 
 Requests that arrive together leave together. The code that handles one
-request does not change. **64 requests, 1 connection, 898 µs** — against
-12.9 ms for pgx (the reference PostgreSQL driver in Go) on one connection,
-and 1.28 ms for pgx on a pool of 64 connections, one per request.
+request does not change. **64 requests, 1 connection, <!-- figure: BenchmarkWebDBSluiceOneConn -->898 µs<!-- /figure -->** — against
+<!-- figure: BenchmarkWebDBPgxOneConn -->12.9 ms<!-- /figure --> for pgx (the reference PostgreSQL driver in Go) on one connection,
+and <!-- figure: BenchmarkWebDBPgxPool64 -->1.28 ms<!-- /figure --> for pgx on a pool of 64 connections, one per request.
 → [`example/orders`](example/orders), run by
 `go test ./example/orders -run TestIntegration -v` against the PostgreSQL the
 `SLUICE_PG` variables name (the test skips without one).
