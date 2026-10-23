@@ -518,3 +518,19 @@ func (e IndexOutOfRange) Error() string {
 // String makes the panic readable when it is printed rather than recovered,
 // which is how it will usually be met.
 func (e IndexOutOfRange) String() string { return e.Error() }
+
+// parseNotification reads a NotificationResponse: the sender's PID, then the
+// channel and the payload as C strings.
+func parseNotification(body []byte) (Notification, error) {
+	r := replReader{b: body}
+	pid := r.u32("NotificationResponse")
+	ch := r.cstring("NotificationResponse")
+	payload := r.cstring("NotificationResponse")
+	if r.err == nil && len(r.b) != 0 {
+		r.err = fmt.Errorf("%w: NotificationResponse has %d bytes past its end", ErrProtocol, len(r.b))
+	}
+	if r.err != nil {
+		return Notification{}, r.err
+	}
+	return Notification{Channel: ch, Payload: payload, PID: pid}, nil
+}
