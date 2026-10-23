@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -202,7 +203,161 @@ func TestQuicGoHTTP3ClientAgainstServeH3(t *testing.T) {
 	select {
 	case err := <-served:
 		if err != nil {
-			t.Logf("ServeH3Conn returned: %v", err)
+			t.Errorf("ServeH3Conn returned %v once the client closed", err)
+		}
+	case <-time.After(timeout):
+		t.Fatal("ServeH3Conn did not return after the client closed")
+	}
+}
+
+// h3Fields answers every request with what the handler saw of it: method,
+// target, body length, the cookie fields, the length of x-big, and the
+// x-checksum trailer — so a test reads back, through a third-party client,
+// what crossed the wire.
+func h3Fields(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+	out := make([]httpstream.Response, b.Len())
+	for i := range b.Items {
+		r := &b.Items[i]
+		var cookies []string
+		big := 0
+		for _, h := range r.Headers {
+			switch strings.ToLower(string(h.Name)) {
+			case "cookie":
+				cookies = append(cookies, string(h.Value))
+			case "x-big":
+				big = len(h.Value)
+			}
+		}
+		trailer := ""
+		for _, h := range r.Trailers {
+			if strings.EqualFold(string(h.Name), "x-checksum") {
+				trailer = string(h.Value)
+			}
+		}
+		out[i] = httpstream.Response{Status: 200, Body: fmt.Appendf(nil, "%s %s body=%d cookies=%s big=%d trailer=%s",
+			r.Method, r.Target, len(r.Body), strings.Join(cookies, "; "), big, trailer)}
+	}
+	return sluice.Batch[httpstream.Response]{Items: out}
+}
+
+// h3Do sends req and returns the status and body, failing the test on a
+// transport error.
+func h3Do(t *testing.T, client *http.Client, req *http.Request) (int, string) {
+	t.Helper()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s %s: reading the body: %v", req.Method, req.URL.Path, err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+// TestQuicGoHTTP3MethodsAndFields: beyond GET, through quic-go's client — a
+// POST body arrives whole, HEAD gets the status and no body (RFC 9110
+// §9.3.2), OPTIONS is a request like any other, two cookies arrive (RFC 9114
+// §4.2.1 lets a client split them into separate fields), a 20 KiB field
+// passes under the 32 KiB bound, a 64 KiB one is refused — by the client,
+// which read the bound in SETTINGS (§4.2.2), or by a 431 — and a request
+// trailer reaches the handler.
+func TestQuicGoHTTP3MethodsAndFields(t *testing.T) {
+	base, _, served := startH3Server(t, h3Fields)
+	client := h3Client(t)
+	req := func(method, path string, body io.Reader) *http.Request {
+		r, err := http.NewRequest(method, base+path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	post := strings.Repeat("p", 100<<10)
+	if status, got := h3Do(t, client, req(http.MethodPost, "/orders", strings.NewReader(post))); status != 200 || got != "POST /orders body=102400 cookies= big=0 trailer=" {
+		t.Errorf("POST: %d %q", status, got)
+	}
+	if status, got := h3Do(t, client, req(http.MethodHead, "/orders/7", http.NoBody)); status != 200 || got != "" {
+		t.Errorf("HEAD: %d %q, want 200 and no body", status, got)
+	}
+	if status, got := h3Do(t, client, req(http.MethodOptions, "/orders", http.NoBody)); status != 200 || got != "OPTIONS /orders body=0 cookies= big=0 trailer=" {
+		t.Errorf("OPTIONS: %d %q", status, got)
+	}
+
+	withCookies := req(http.MethodGet, "/me", http.NoBody)
+	withCookies.Header.Add("Cookie", "session=abc")
+	withCookies.Header.Add("Cookie", "theme=dark")
+	if status, got := h3Do(t, client, withCookies); status != 200 || !strings.Contains(got, "session=abc") || !strings.Contains(got, "theme=dark") {
+		t.Errorf("cookies: %d %q, want both", status, got)
+	}
+
+	big := req(http.MethodGet, "/big", http.NoBody)
+	big.Header.Set("X-Big", strings.Repeat("b", 20<<10))
+	if status, got := h3Do(t, client, big); status != 200 || !strings.Contains(got, "big=20480") {
+		t.Errorf("a 20 KiB field: %d %q", status, got)
+	}
+	tooBig := req(http.MethodGet, "/too-big", http.NoBody)
+	tooBig.Header.Set("X-Big", strings.Repeat("b", 64<<10))
+	if resp, err := client.Do(tooBig); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+			t.Errorf("a 64 KiB field was answered %d, want 431 or a client-side refusal", resp.StatusCode)
+		}
+	}
+
+	withTrailer := req(http.MethodPut, "/upload", strings.NewReader("payload"))
+	withTrailer.Trailer = http.Header{"X-Checksum": {"c0ffee"}}
+	if status, got := h3Do(t, client, withTrailer); status != 200 || !strings.Contains(got, "trailer=c0ffee") {
+		t.Errorf("request trailer: %d %q", status, got)
+	}
+
+	client.Transport.(*http3.Transport).CloseIdleConnections()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("ServeH3Conn returned %v once the client closed", err)
+		}
+	case <-time.After(timeout):
+		t.Fatal("ServeH3Conn did not return after the client closed")
+	}
+}
+
+// TestQuicGoHTTP3ClientCancels: the client gives up on a streamed response
+// halfway — its stream is reset — and the connection goes on: the next
+// request on it is answered, and ServeH3Conn ends cleanly when the client
+// closes.
+func TestQuicGoHTTP3ClientCancels(t *testing.T) {
+	base, _, served := startH3Server(t, h3Handle)
+	client := h3Client(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/paced", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(resp.Body, make([]byte, bulkChunk)); err != nil {
+		t.Fatalf("the first batch did not arrive: %v", err)
+	}
+	cancel()
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Error("the cancelled body read to its end")
+	}
+	_ = resp.Body.Close()
+
+	if got := h3Get(t, client, base+"/after"); got != "you asked for /after" {
+		t.Fatalf("the request after the cancellation: %q", got)
+	}
+	client.Transport.(*http3.Transport).CloseIdleConnections()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("ServeH3Conn returned %v once the client closed", err)
 		}
 	case <-time.After(timeout):
 		t.Fatal("ServeH3Conn did not return after the client closed")
