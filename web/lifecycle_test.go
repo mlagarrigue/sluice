@@ -377,8 +377,9 @@ func TestShutdownDrainsTheServerBeforeClosingAnything(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- web.Shutdown(context.Background(), srv, gw) }()
 
-	// Give Shutdown a moment to begin, then let the handler finish.
-	time.Sleep(20 * time.Millisecond)
+	// Shutdown closes the listener before it waits for the handler: once a
+	// dial is refused it has begun, and the gateway must still be open.
+	waitRefused(t, ln.Addr().String())
 	if closed, _ := gw.state(); closed {
 		t.Fatal("the gateway was closed while a request was still running")
 	}

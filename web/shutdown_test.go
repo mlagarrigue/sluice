@@ -68,7 +68,10 @@ func TestShutdownDrainsEveryServerBeforeTheGateway(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- web.Shutdown(context.Background(), web.Servers(srv, h3), gw) }()
 
-	time.Sleep(20 * time.Millisecond)
+	// Both servers close their listener before they wait for a handler: once
+	// both refuse a dial, the drain has begun under the running request.
+	waitRefused(t, srvLn.Addr().String())
+	waitRefused(t, ln.Addr().String())
 	if closed, _ := gw.state(); closed {
 		t.Fatal("the gateway was closed while a request was still running")
 	}
@@ -254,5 +257,67 @@ func TestShutdownClosesAnHTTPServerItCouldNotDrain(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the connection was not cut")
+	}
+}
+
+// waitRefused waits until addr refuses a connection: the observable sign that
+// a server's shutdown has closed its listener. A test that slept instead
+// would assert on a shutdown that may not have begun, and pass for nothing.
+func waitRefused(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = c.Close()
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s still accepts connections: the shutdown never began", addr)
+}
+
+// stuckServer never finishes draining: its Shutdown waits for ctx, and its
+// Close records the forced stop.
+type stuckServer struct{ closed atomic.Bool }
+
+func (s *stuckServer) Shutdown(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+func (s *stuckServer) Close() error                       { s.closed.Store(true); return nil }
+
+// When ctx ends before several servers have drained, Shutdown's forced stop
+// reaches every one of them through Servers, not only the first.
+func TestShutdownForcesEveryServerOfServers(t *testing.T) {
+	a, b := &stuckServer{}, &stuckServer{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := web.Shutdown(ctx, web.Servers(a, b)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown returned %v, want context.DeadlineExceeded", err)
+	}
+	if !a.closed.Load() || !b.closed.Load() {
+		t.Errorf("forced stop: closed %v and %v, want both", a.closed.Load(), b.closed.Load())
+	}
+}
+
+// A handler under Recover still reaches the connection's controls: the
+// wrapper unwraps, so SetWriteDeadline is supported rather than refused.
+func TestRecoverKeepsTheResponseController(t *testing.T) {
+	got := make(chan error, 1)
+	h := web.Recover(func(any) {}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		got <- http.NewResponseController(w).SetWriteDeadline(time.Now().Add(time.Second))
+	}))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+	resp, err := http.Get("http://" + ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if err := <-got; err != nil {
+		t.Errorf("SetWriteDeadline under Recover: %v", err)
 	}
 }
