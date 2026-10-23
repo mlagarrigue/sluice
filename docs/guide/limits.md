@@ -189,7 +189,9 @@ Three reasons come up, and the difference matters:
   every 3.7 µs at best, for nothing). And under WSL2, a `Within` of 500 µs
   is worth 1.11 ms.
 - **`gateway.Partitions` is experimental**: the mechanism (grouping a batch
-  by key) works and is tested, but no measurement yet says when it pays.
+  by key) works and is tested, and its own cost is measured
+  (`BenchmarkPartition*`, [benchmarks](../benchmarks.md)), but no measurement
+  yet says when the round trips it saves pay for it.
 - **No HTTP compression** (`Content-Encoding: gzip`…) — not yet, on either
   path. gzip and deflate will come from the standard library, zstd and
   brotli from a maintained module, the day the measurement says what each
@@ -402,7 +404,8 @@ condition per package, each one checkable:
   core.
 - **`net/quic` datagram size**: datagrams start at 1200 bytes, the
   smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
-  rise by a search (DPLPMTUD, §14.3, RFC 8899): a probe — one PING+PADDING
+  rise by a search (DPLPMTUD, §14.3, RFC 8899 — probing for the largest
+  datagram the path lets through): a probe — one PING+PADDING
   datagram — of 1452 bytes first (an Ethernet MTU less the IPv6 and UDP
   headers), then, while nothing is lost, the ceiling itself; after the
   first size lost, each probe halves the range between the last size

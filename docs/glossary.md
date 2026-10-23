@@ -69,5 +69,12 @@ repeated here; a term used in several places is.
   object); a result describes its columns' types by OID.
 - **QUIC** — the transport over UDP that HTTP/3 runs on (RFC 9000):
   encrypted, with several independent streams per connection.
+- **Terminal** — a function that reads a stream to its end and returns a
+  result (`Collect`, `Count`); it is what makes the stream flow.
+- **ETL** — a job that extracts data from a source, transforms it and loads
+  it elsewhere; the same chain of operators as a web request.
+- **CVE** — the public identifier of a known vulnerability
+  (CVE-2023-44487, HTTP/2's "rapid reset"); a bound cited with its CVE says
+  which attack it stops.
 - **ADR** — Architecture Decision Record: one structural decision, its
   problem, the decision and why, in [design/adr](design/adr/).

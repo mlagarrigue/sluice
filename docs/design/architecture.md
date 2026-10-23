@@ -1364,7 +1364,8 @@ construction.
 1. **Values never travel through SQL text** — only in Bind. With `= ANY($1)`,
    1024 values remain **one parameter**: zero injection surface. The SQL is
    the caller's; the statements this package writes itself carry no value
-   (`SetLocal` binds its value, a savepoint name is validated).
+   (`SetLocal` binds its value, a savepoint name — a point to roll back to
+   inside a transaction — is validated).
 2. **Not built: a generated catalog of identifiers**, which would make a
    column name a *Go symbol* rather than a string.
 3. **Not built: a typed builder**, which would make an invalid state

@@ -1,5 +1,5 @@
-// Package sluice is a dataflow engine: a single data model — the Stream — for
-// web serving, database access and ETL.
+// Package sluice is a library for processing data as it flows: a single data
+// model — the Stream — for web serving, database access and ETL.
 //
 // A sluice regulates flow, and that is what this package does. The consumer
 // sets the pace; the producer only produces what is pulled from it. This

@@ -529,7 +529,8 @@ brim, declares loss on the reordering profile that the path never had,
 and on the shallow 80 ms path reaches three tenths of the line — those
 are the margins a new controller is measured against. The first one is
 CUBIC (RFC 9438, `CongestionCubic` in `TransportParameters.Congestion`;
-NewReno stays the default until a controller has been measured against a
+NewReno — the classic congestion control of RFC 9002, which slows down on
+loss — stays the default until a controller has been measured against a
 real client):
 
 | Benchmark | Reno, same pass | CUBIC | Reno / CUBIC | CUBIC goodput | Spread |
@@ -591,7 +592,9 @@ for r in 1 2 3 4 5 6 7 8; do for cc in newreno cubic; do
 done; done
 ```
 
-**BBR version 1** (draft-cardwell-iccrg-bbr-congestion-control-00) is no
+**BBR version 1** (draft-cardwell-iccrg-bbr-congestion-control-00; BBR is a
+congestion control that measures the path's rate and delay instead of
+waiting for loss) is no
 longer in the palette: the IETF draft below beats it on every benchmark of
 this file, and version 1 never went past an individual draft, now expired.
 The figures that follow are the ones that decided it. It was the first
@@ -696,7 +699,8 @@ transfer (`BenchmarkTransferBottleneck16MiB`, eight rounds on
 0.93 of the line (2.88 s median, 2.870 to 2.886 s) against Reno's 0.81
 (3.33 s, 3.29 to 3.43 s). A smoothed round trip
 within 1.5× of the path's on `DeepBuffer`: 1.77 here, and 2.25 as the
-median over a 16 MiB transfer. With no loss and no ECN the draft bounds
+median over a 16 MiB transfer. With no loss and no ECN (the mark a router
+sets on a packet when its queue builds, before it drops any) the draft bounds
 the queue by the window's gain alone (§5.3.1.1: (gain − 1) × the
 estimated product, plus `extra_acked`), and the estimate carries +5.6%:
 the emulated path's delivery-rate samples are noisy by ±3% either way

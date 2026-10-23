@@ -78,7 +78,7 @@ library (`net`, `crypto/tls`, `io`, `iter`), never replaces it.
 
 **What it covers today**: serving HTTP (over `net/http`, and natively in
 HTTP/1.1, /2 and /3), reading and writing PostgreSQL (by speaking its
-protocol directly, with COPY for bulk loads), grouping simultaneous calls
+protocol directly, with COPY — its bulk transfer command — for bulk loads), grouping simultaneous calls
 into one query, and transforming, joining, windowing and deduplicating
 streams for ETL — with the same operators everywhere.
 
@@ -268,7 +268,8 @@ preparation** — scenarios, method and results will be published together.
   2026-10-10 and under the compatibility promise — and fuzzed in CI without
   a public corpus; it has neither run in production nor had an outside
   security review.**
-- **PostgreSQL only** for now; SCRAM-SHA-256, cleartext and trust
+- **PostgreSQL only** for now; SCRAM-SHA-256 (password authentication that
+  never sends the password), cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
 - **QUIC is experimental**: confronted with two other implementations
