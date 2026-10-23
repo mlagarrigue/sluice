@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way)
 - **Theme:** httpstream
 
 ## Problem
@@ -35,6 +35,12 @@ enforces it:
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);
    the handler sees them joined again by `"; "` as one field, as HTTP/1.1
    delivers it, and `MaxHeaders` counts that one field, not the crumbs.
+6. **The response says its payload one way.** `Body` for a payload in
+   hand, `Stream` for one produced as it goes, never both; `ContentLength`
+   describes a `Stream` and nothing else. The forbidden combinations are
+   not made inexpressible: they are refused with `ErrMalformed` at the one
+   point the three protocols' writers go through, on every write and
+   whatever the data.
 
 ## Rationale
 
@@ -59,3 +65,15 @@ the contract exists to remove, and every `web/stream` stage would have to
 learn a partial element. It is revisited if a workload needs request
 bodies that do not fit in memory (uploads); until then the bound is a
 configuration, not a design.
+
+Article 6 keeps exported fields over a type the compiler checks. Every
+forbidden combination — `Body` beside `Stream`, a `ContentLength` with no
+`Stream`, beside a `Body` or negative, content on a 205 — fails on every
+write regardless of the data, so a handler's first test sees it. Payload
+fields hidden behind constructors would also need accessors for every piece
+of code that reads a response (tests, a compressing middleware, a
+renderer): twice the surface for a check that already exists. Constructors
+added beside the fields would be a second spelling of the same thing. It is
+the shape `net/http.Request` has (`Body`, `ContentLength`, `GetBody`),
+which a Go reader already knows. It is revisited if a forbidden combination
+passes a handler's tests and is first seen in production.
