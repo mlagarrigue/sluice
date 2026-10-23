@@ -73,13 +73,13 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("postgres: %s %s: %s (%s)", e.Severity, e.Code, e.Message, e.Detail)
 }
 
-// ParseError decodes an ErrorResponse or NoticeResponse body: a sequence of
+// parseError decodes an ErrorResponse or NoticeResponse body: a sequence of
 // (type byte, value C string) pairs ending at a zero type byte.
 //
 // Unknown field types are skipped rather than refused. The protocol reserves
 // the right to add them, and a connector that fails on a field it has not
 // heard of turns a server upgrade into an outage.
-func ParseError(body []byte) (*Error, error) {
+func parseError(body []byte) (*Error, error) {
 	e := &Error{}
 	// V is S without the translation, sent by every server since 9.6. It wins
 	// whichever order the two arrive in: a caller comparing Severity against
@@ -170,9 +170,9 @@ type Field struct {
 	Format   int16
 }
 
-// ParseRowDescription decodes a RowDescription body into fields, appending to
+// parseRowDescription decodes a RowDescription body into fields, appending to
 // dst so the caller's slice is reused across statements.
-func ParseRowDescription(dst []Field, body []byte) ([]Field, error) {
+func parseRowDescription(dst []Field, body []byte) ([]Field, error) {
 	if len(body) < 2 {
 		return nil, fmt.Errorf("%w: RowDescription shorter than its field count", ErrProtocol)
 	}

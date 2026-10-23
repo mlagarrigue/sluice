@@ -405,7 +405,7 @@ func (cp *Copier) beginTx() error {
 			cp.rd, c.copier = startCopyReader(c.r), cp
 			return nil
 		case pgwire.BackendErrorResponse:
-			serverErr, parseErr := ParseError(m.Body)
+			serverErr, parseErr := parseError(m.Body)
 			if parseErr != nil {
 				// Same rule: the copy is refused either way, and an error
 				// whose payload could not be read says nothing about the
@@ -531,7 +531,7 @@ func (rd *copyReader) run(r *pgwire.Reader) {
 			rd.status = bytes.Clone(m.Body)
 			return
 		case pgwire.BackendErrorResponse:
-			e, parseErr := ParseError(m.Body)
+			e, parseErr := parseError(m.Body)
 			if rd.serverErr == nil {
 				if parseErr != nil {
 					rd.serverErr = parseErr
@@ -786,7 +786,7 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 				}
 			}
 		case pgwire.BackendErrorResponse:
-			e, parseErr := ParseError(m.Body)
+			e, parseErr := parseError(m.Body)
 			if parseErr != nil {
 				if serverErr == nil {
 					serverErr = parseErr

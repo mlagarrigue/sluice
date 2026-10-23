@@ -851,7 +851,7 @@ func TestParameterTracksAMidSessionChange(t *testing.T) {
 // without end, before it has proved anything.
 func TestStartupBoundsTheParameterMap(t *testing.T) {
 	script := beAuth(authOK, "")
-	for i := range MaxServerParameters + 1 {
+	for i := range maxServerParameters + 1 {
 		script = append(script, beParameterStatus("p"+strconv.Itoa(i), "v")...)
 	}
 	script = append(script, beReadyForQuery()...)
@@ -873,7 +873,7 @@ func TestStartupBoundsTheParameterMap(t *testing.T) {
 func TestStartupBoundsAParametersSize(t *testing.T) {
 	script := beAuth(authOK, "")
 	each := 60 << 10 // under the 64 KiB startup ceiling
-	for i := 0; i*each <= MaxServerParameterBytes; i++ {
+	for i := 0; i*each <= maxServerParameterBytes; i++ {
 		script = append(script, beParameterStatus(fmt.Sprintf("p%03d", i), strings.Repeat("v", each))...)
 	}
 	script = append(script, beReadyForQuery()...)
@@ -1104,7 +1104,7 @@ func TestStartupKeepsALongSearchPath(t *testing.T) {
 	// adding to it: the same search_path reported a thousand times costs
 	// what one costs.
 	script := beAuth(0, "")
-	for range MaxServerParameterBytes / len(long) {
+	for range maxServerParameterBytes / len(long) {
 		script = append(script, beParameterStatus("search_path", long)...)
 	}
 	srv = &fakeServer{responses: [][]byte{append(script, beReady()...)}}

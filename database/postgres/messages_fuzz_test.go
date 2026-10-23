@@ -16,12 +16,12 @@ func FuzzParseError(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		e, err := ParseError(body)
+		e, err := parseError(body)
 		switch {
 		case err != nil && !errors.Is(err, ErrProtocol):
 			t.Fatalf("unclassified error %v", err)
 		case err == nil && e == nil:
-			t.Fatal("ParseError returned neither an error nor a value")
+			t.Fatal("parseError returned neither an error nor a value")
 		case err == nil:
 			_ = e.Error() // rendering must not panic on anything that parsed
 		}
@@ -34,7 +34,7 @@ func FuzzParseRowDescription(f *testing.F) {
 	f.Add([]byte{0, 1})
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		fields, err := ParseRowDescription(nil, body)
+		fields, err := parseRowDescription(nil, body)
 		if err != nil {
 			if !errors.Is(err, ErrProtocol) {
 				t.Fatalf("unclassified error %v", err)

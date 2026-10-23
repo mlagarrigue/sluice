@@ -1019,11 +1019,11 @@ func (c *countingTransport) Close() error                { return nil }
 // protocol's messages are small and numerous: unbuffered, each costs two, one
 // for the header and one for the body. Profiling a wide scan put 79% of its
 // time in those calls. A transport that is not a net.Conn often has a socket
-// under it all the same, so it is buffered too: one read per ReadBufferSize
+// under it all the same, so it is buffered too: one read per readBufferSize
 // of the stream, whatever the messages in it.
 func TestConnReadsATransportOncePerBuffer(t *testing.T) {
 	row := frame(pgwire.BackendDataRow, "\x00\x01\x00\x00\x00\x08abcdefgh")
-	messages := 3*ReadBufferSize/len(row) + 1
+	messages := 3*readBufferSize/len(row) + 1
 	script := bytes.Repeat(row, messages)
 	tr := &countingTransport{script: script}
 
@@ -1037,9 +1037,9 @@ func TestConnReadsATransportOncePerBuffer(t *testing.T) {
 			t.Fatalf("message %d: type = %q", i, m.Type)
 		}
 	}
-	if limit := (len(script) + ReadBufferSize - 1) / ReadBufferSize; tr.reads > limit {
+	if limit := (len(script) + readBufferSize - 1) / readBufferSize; tr.reads > limit {
 		t.Errorf("%d messages, %d bytes: %d reads from the transport, want at most %d — "+
-			"one per %d bytes", messages, len(script), tr.reads, limit, ReadBufferSize)
+			"one per %d bytes", messages, len(script), tr.reads, limit, readBufferSize)
 	}
 
 	// A socket hands back what has arrived, which ends anywhere in a message.
@@ -1053,7 +1053,7 @@ func TestConnReadsATransportOncePerBuffer(t *testing.T) {
 			t.Fatalf("short reads, message %d: %v", i, err)
 		}
 	}
-	if least := ReadBufferSize - len(row); tr.smallest < least {
+	if least := readBufferSize - len(row); tr.smallest < least {
 		t.Errorf("a read was offered %d bytes of room, want at least %d — "+
 			"the window minus one message", tr.smallest, least)
 	}
@@ -1068,7 +1068,7 @@ func TestBufferedReadsSpanFills(t *testing.T) {
 
 	// One message comfortably larger than the read buffer, so its body cannot
 	// arrive in a single fill.
-	big := make([]byte, ReadBufferSize+4096)
+	big := make([]byte, readBufferSize+4096)
 	for i := range big {
 		big[i] = byte(i)
 	}

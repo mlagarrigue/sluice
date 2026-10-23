@@ -179,7 +179,7 @@ func FuzzParseParameterStatus(f *testing.F) {
 		if err != nil {
 			t.Fatalf("recordParameter accepted %q, which parseParameterStatus refused", body)
 		}
-		if len(name)+len(val) > MaxServerParameterBytes {
+		if len(name)+len(val) > maxServerParameterBytes {
 			t.Fatalf("recordParameter kept %d bytes, over the limit", len(name)+len(val))
 		}
 		if c.Parameter(name) != val {

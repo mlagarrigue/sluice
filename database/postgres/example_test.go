@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -121,11 +122,13 @@ func ExampleNumeric() {
 // across versions, locales and rewordings. A caller given only a message ends
 // up matching on text that changes with the server's language.
 func ExampleError() {
-	// What the server sends for a unique-constraint violation, as this package
-	// parses it.
-	body := []byte("SERROR\x00C23505\x00Mduplicate key value\x00norders_pkey\x00\x00")
-	e, err := postgres.ParseError(body)
-	if err != nil {
+	// What Exec returns for a unique-constraint violation, once the caller
+	// has wrapped it on the way up.
+	err := fmt.Errorf("insert order 42: %w", &postgres.Error{
+		Severity: "ERROR", Code: "23505", Message: "duplicate key value", Constraint: "orders_pkey",
+	})
+	var e *postgres.Error
+	if !errors.As(err, &e) {
 		fmt.Println(err)
 		return
 	}

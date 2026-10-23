@@ -666,7 +666,7 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			// Out of band, and may arrive at any point.
 
 		case pgwire.BackendErrorResponse:
-			serverErr, parseErr := ParseError(m.Body)
+			serverErr, parseErr := parseError(m.Body)
 			if parseErr != nil {
 				return c.breakConn(parseErr)
 			}
@@ -878,7 +878,7 @@ func parseAuthentication(body []byte) (code uint32, data []byte, err error) {
 	return binary.BigEndian.Uint32(body[:4]), body[4:], nil
 }
 
-// MaxServerParameters bounds how many distinct runtime parameters a Conn will
+// maxServerParameters bounds how many distinct runtime parameters a Conn will
 // remember.
 //
 // The server chooses both the names and how many it sends, and it sends them
@@ -886,9 +886,9 @@ func parseAuthentication(body []byte) (code uint32, data []byte, err error) {
 // that answered the socket can grow for free, per connection. PostgreSQL
 // reports about a dozen; this is two orders of magnitude of headroom, and
 // reaching it means the far end is not a PostgreSQL.
-const MaxServerParameters = 1024
+const maxServerParameters = 1024
 
-// MaxServerParameterBytes bounds the remembered parameters together: the
+// maxServerParameterBytes bounds the remembered parameters together: the
 // names plus the values of everything [Conn.Parameter] can report.
 //
 // Capping the count alone is not enough. After authentication the message
@@ -901,7 +901,7 @@ const MaxServerParameters = 1024
 // valid configuration tens of kilobytes long. Real values are otherwise a
 // timezone or a version string; 16 MiB is what the former per-parameter cap
 // of 16 KiB allowed in total, unchanged.
-const MaxServerParameterBytes = 16 << 20
+const maxServerParameterBytes = 16 << 20
 
 // recordParameter files a ParameterStatus under its name.
 //
@@ -922,9 +922,9 @@ func (c *Conn) recordParameter(body []byte) error {
 	if old, known := c.params[name]; known {
 		total -= len(name) + len(old) // replaced, not added
 	}
-	if total > MaxServerParameterBytes {
+	if total > maxServerParameterBytes {
 		// The name is not quoted: it is part of what is oversized.
-		return fmt.Errorf("%w: a ParameterStatus of %d bytes takes the remembered parameters past their %d-byte budget", ErrProtocol, len(name)+len(val), MaxServerParameterBytes)
+		return fmt.Errorf("%w: a ParameterStatus of %d bytes takes the remembered parameters past their %d-byte budget", ErrProtocol, len(name)+len(val), maxServerParameterBytes)
 	}
 	if name == "client_encoding" && !c.encodingChosen && !strings.EqualFold(val, "UTF8") {
 		// UTF8 was asked for, not granted: a pooler or a server-side default
@@ -935,8 +935,8 @@ func (c *Conn) recordParameter(body []byte) error {
 		// rather than carry on as they do for a payload they cannot read.
 		return c.breakConn(fmt.Errorf("the server reports client_encoding %q, and this package decodes text as UTF-8 — set Config.Params[\"client_encoding\"] to decode another encoding yourself", val))
 	}
-	if _, known := c.params[name]; !known && len(c.params) >= MaxServerParameters {
-		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters", ErrProtocol, MaxServerParameters)
+	if _, known := c.params[name]; !known && len(c.params) >= maxServerParameters {
+		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters", ErrProtocol, maxServerParameters)
 	}
 	c.params[name] = val
 	c.paramBytes = total

@@ -282,7 +282,7 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 			if err := c.checkPipelinePart(part, len(parts)); err != nil {
 				return err
 			}
-			desc, err := ParseRowDescription(nil, m.Body)
+			desc, err := parseRowDescription(nil, m.Body)
 			if err != nil {
 				return c.abortPipeline(err)
 			}
@@ -326,7 +326,7 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 			}
 
 		case pgwire.BackendErrorResponse:
-			serverErr, parseErr := ParseError(m.Body)
+			serverErr, parseErr := parseError(m.Body)
 			if parseErr != nil {
 				return c.abortPipeline(parseErr)
 			}

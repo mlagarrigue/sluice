@@ -216,6 +216,9 @@ Stream[Batch[byte]]     ← PostgreSQL wire protocol
 
 This implies **reimplementing the connectors**: `database/sql` cannot batch
 ([database/sql does not fit](#databasesql-does-not-fit--a-verified-finding)). That is an accepted and budgeted cost.
+The PostgreSQL connector's shape — one connection and no pool, the transport
+the caller's, binary only, batches asked for ahead, COPY at-least-once, and
+where its codec lives — is [ADR 0022](adr/0022-postgres-connector-shape.md).
 
 | Domain | Reading it in stream terms |
 |---|---|

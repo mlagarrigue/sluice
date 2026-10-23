@@ -38,9 +38,9 @@ func TestParseError(t *testing.T) {
 		"n", "orders_pkey",
 		"t", "orders",
 	)
-	e, err := ParseError(body)
+	e, err := parseError(body)
 	if err != nil {
-		t.Fatalf("ParseError returned %v", err)
+		t.Fatalf("parseError returned %v", err)
 	}
 	if e.Code != "23505" {
 		t.Errorf("Code = %q, want %q — the SQLSTATE is the only stable part", e.Code, "23505")
@@ -69,9 +69,9 @@ func TestParseErrorAllFields(t *testing.T) {
 		"L", "1176",
 		"R", "scanner_yyerror",
 	)
-	e, err := ParseError(body)
+	e, err := parseError(body)
 	if err != nil {
-		t.Fatalf("ParseError returned %v", err)
+		t.Fatalf("parseError returned %v", err)
 	}
 	want := Error{
 		Severity: "ERROR", Code: "42601", Message: "syntax error at or near \"FORM\"",
@@ -90,16 +90,16 @@ func TestParseErrorPrefersNonLocalisedSeverity(t *testing.T) {
 		errBody("S", "ERREUR", "V", "ERROR", "C", "23505"),
 		errBody("V", "ERROR", "S", "ERREUR", "C", "23505"),
 	} {
-		e, err := ParseError(body)
+		e, err := parseError(body)
 		if err != nil {
-			t.Fatalf("ParseError returned %v", err)
+			t.Fatalf("parseError returned %v", err)
 		}
 		if e.Severity != "ERROR" {
 			t.Errorf("Severity = %q, want the untranslated %q", e.Severity, "ERROR")
 		}
 	}
 	// A pre-9.6 server sends S alone, and that is what there is to report.
-	e, err := ParseError(errBody("S", "ERREUR", "C", "23505"))
+	e, err := parseError(errBody("S", "ERREUR", "C", "23505"))
 	if err != nil || e.Severity != "ERREUR" {
 		t.Errorf("without V: Severity = %q, %v; want S kept", e.Severity, err)
 	}
@@ -110,9 +110,9 @@ func TestParseErrorPrefersNonLocalisedSeverity(t *testing.T) {
 // server upgrade into an outage.
 func TestParseErrorSkipsUnknownFields(t *testing.T) {
 	body := errBody("S", "ERROR", "Z", "something new", "C", "42P01")
-	e, err := ParseError(body)
+	e, err := parseError(body)
 	if err != nil {
-		t.Fatalf("ParseError returned %v", err)
+		t.Fatalf("parseError returned %v", err)
 	}
 	if e.Code != "42P01" {
 		t.Errorf("Code = %q — an unknown field derailed the parse", e.Code)
@@ -133,7 +133,7 @@ func TestParseErrorMalformed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := ParseError(tt.body); !errors.Is(err, ErrProtocol) {
+			if _, err := parseError(tt.body); !errors.Is(err, ErrProtocol) {
 				t.Errorf("got %v, want ErrProtocol", err)
 			}
 		})
@@ -159,9 +159,9 @@ func rowDesc(names []string, oids []uint32) []byte {
 
 func TestParseRowDescription(t *testing.T) {
 	body := rowDesc([]string{"id", "total"}, []uint32{20, 1700})
-	fields, err := ParseRowDescription(nil, body)
+	fields, err := parseRowDescription(nil, body)
 	if err != nil {
-		t.Fatalf("ParseRowDescription returned %v", err)
+		t.Fatalf("parseRowDescription returned %v", err)
 	}
 	if len(fields) != 2 {
 		t.Fatalf("got %d fields, want 2", len(fields))
@@ -177,7 +177,7 @@ func TestParseRowDescription(t *testing.T) {
 func TestParseRowDescriptionTruncated(t *testing.T) {
 	full := rowDesc([]string{"id"}, []uint32{20})
 	for _, n := range []int{0, 1, 3, len(full) - 1} {
-		if _, err := ParseRowDescription(nil, full[:n]); !errors.Is(err, ErrProtocol) {
+		if _, err := parseRowDescription(nil, full[:n]); !errors.Is(err, ErrProtocol) {
 			t.Errorf("truncated to %d bytes: got %v, want ErrProtocol", n, err)
 		}
 	}
@@ -578,8 +578,8 @@ func TestRowsRefuseABatchPastTheOffsetRange(t *testing.T) {
 // the same refusal Rows.appendRow makes for a DataRow.
 func TestParseRowDescriptionRefusesTrailingBytes(t *testing.T) {
 	body := append(rowDesc([]string{"id"}, []uint32{OIDInt8}), 0xff)
-	if _, err := ParseRowDescription(nil, body); !errors.Is(err, ErrProtocol) {
-		t.Fatalf("ParseRowDescription accepted a trailing byte: %v", err)
+	if _, err := parseRowDescription(nil, body); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("parseRowDescription accepted a trailing byte: %v", err)
 	}
 }
 

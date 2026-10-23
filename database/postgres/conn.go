@@ -112,7 +112,7 @@ type Conn struct {
 	// startup. It is nil for a Conn built by NewConn, which never saw them.
 	params map[string]string
 	// paramBytes is what params holds in names and values together, held
-	// under MaxServerParameterBytes by recordParameter.
+	// under maxServerParameterBytes by recordParameter.
 	paramBytes int
 
 	// encodingChosen is set when the caller named client_encoding in
@@ -390,12 +390,12 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // are read while the rows go out.
 func NewConn(rw io.ReadWriteCloser) *Conn {
 	return &Conn{
-		rw: rw, r: pgwire.NewReaderSize(rw, ReadBufferSize), w: pgwire.NewWriter(rw),
+		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
 		stmts: newStmtCache(defaultStatementCacheBound),
 	}
 }
 
-// ReadBufferSize is how much of the stream a connection pulls in one read.
+// readBufferSize is how much of the stream a connection pulls in one read.
 //
 // It exists because the protocol's messages are small and numerous: a result
 // of twenty thousand rows is twenty thousand DataRows, and reading each one
@@ -413,7 +413,7 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 //
 // Sixty-four kilobytes per connection, and a connection is already an
 // expensive thing to hold.
-const ReadBufferSize = 64 << 10
+const readBufferSize = 64 << 10
 
 // Close closes the underlying connection, sending a Terminate first when the
 // protocol position still allows it.
@@ -1359,7 +1359,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 
 		switch m.Type {
 		case pgwire.BackendRowDescription:
-			desc, err := ParseRowDescription(nil, m.Body)
+			desc, err := parseRowDescription(nil, m.Body)
 			if err != nil {
 				// Not a broken connection. The reader framed this message
 				// whole, so the position is still known and the deferred
@@ -1495,7 +1495,7 @@ func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err er
 			return true, nil
 
 		case pgwire.BackendErrorResponse:
-			serverErr, parseErr := ParseError(m.Body)
+			serverErr, parseErr := parseError(m.Body)
 			if parseErr != nil {
 				return false, c.breakConn(parseErr)
 			}
@@ -1691,7 +1691,7 @@ func (q *query) resync() error {
 			}
 			return withoutOwnCancel(serverErr)
 		case pgwire.BackendErrorResponse:
-			if e, parseErr := ParseError(m.Body); serverErr == nil {
+			if e, parseErr := parseError(m.Body); serverErr == nil {
 				if parseErr != nil {
 					serverErr = parseErr
 				} else {
