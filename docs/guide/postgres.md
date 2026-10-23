@@ -653,7 +653,7 @@ The detail: [Limits](limits.md).
 ## Measured
 
 Against pgx, the reference driver, on one connection each: parity on a
-point read, with no option since 2026-10-13 (196 µs against 197 on another
+point read, with no option (196 µs against 197 on another
 server), 348 µs against 363 for a thousand keys in `= ANY` with
 `FetchAll`, a wide scan 4% slower (9.8 ms against 9.4) but in 23
 allocations against 280,008, and a faster COPY (7.3 ms against 8.3). The

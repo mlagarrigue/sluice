@@ -194,7 +194,7 @@ Three reasons come up, and the difference matters:
   yet says when the round trips it saves pay for it.
 - **No HTTP compression** (`Content-Encoding: gzip`…) — not yet, on either
   path. gzip and deflate will come from the standard library, zstd and
-  brotli from a maintained module, the day the measurement says what each
+  brotli from a maintained module, once the measurement says what each
   brings.
 - **Request trailers arrive apart from the headers** — identically over
   HTTP/1.1, 2 and 3: parsed, held to the same bounds as the headers
@@ -289,106 +289,43 @@ condition per package, each one checkable:
 
 - **`net/quic`**: being green in the *QUIC Interop Runner* against
   quic-go and ngtcp2, on each side of the handshake, in our own continuous
-  integration; an external cryptographic review. Two conditions left this list on
-  2026-10-10: key update (RFC 9001 §6) — both sides rotate, and a long
-  connection no longer dies of its packet count — and the first
-  third-party peer: quic-go, on each side of the handshake, in continuous
-  integration (the `interop/` module, job `interop-quic`). The runner
-  itself was first run against quic-go on 2026-10-10 (`interop/cmd/endpoint`,
-  the `Interop runner` workflow). Since 2026-10-11 the endpoint's image,
-  `ghcr.io/mlagarrigue/sluice-interop`, is built from every release tag
-  (the `Interop image` workflow). Since 2026-10-22 the `Interop runner`
-  workflow crosses every implementation in the runner's list every
-  Sunday, on each side its role allows — 31 peer-directions; the table of
-  its latest complete pass, peer by case, is on the
-  [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results),
-  and each run keeps the captures and each side's logs as artifacts for
-  seven days. A case that fails is run once more, and the table shows both
-  results. `interop/expected-results.json` records, for quic-go, ngtcp2
-  and msquic, every case in each direction with the cause of every
-  failure; a pass that departs from it, either way, fails the job. The
-  other peers are reported, not judged, until their results are read and
-  written down. Against msquic's server four cases fail on the client side
-  for a reason outside sluice: msquic sometimes answers first with an ACK
-  alone, under the client's own connection ID as its Source Connection ID,
-  then changes it, and RFC 9000 §7.2 has the client discard every later
-  packet, ServerHello included, so the handshake never completes. The
-  cases below are those of the passes of 2026-10-22 against
-  quic-go and ngtcp2.
-  As a server, sluice passes handshake,
-  transfer, longrtt, multiplexing, retry, http3, blackhole, keyupdate,
-  amplificationlimit, transferloss, transfercorruption, ipv6, rebind-port,
-  rebind-addr, handshakeloss and handshakecorruption, and fails
-  connectionmigration for a reason outside it: quic-go's client never
-  migrates to a server's preferred address, so the runner sees a single
-  path while the transfer itself completes. As a client it passes handshake,
+  integration; an external cryptographic review. Already true: key update
+  (RFC 9001 §6) in both directions, and quic-go against sluice on each side
+  in continuous integration (job `interop-quic`).
+  The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
+  every implementation in its list every Sunday, on each side its role
+  allows — 31 peer-directions — with the image the `Interop image` workflow
+  builds from each release tag (`ghcr.io/mlagarrigue/sluice-interop`). The
+  table of its latest complete pass is on the
+  [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
+  a failed case is run once more. `interop/expected-results.json` records
+  every case of quic-go, ngtcp2 and msquic with the cause of every failure,
+  and a pass that departs from it fails the job. Green means every case
+  passed against at least two peers.
+  At the last complete pass, of 22 October 2026, against quic-go and
+  ngtcp2: as a server, sluice passes handshake, transfer, longrtt,
+  multiplexing, retry, http3, blackhole, keyupdate, amplificationlimit,
+  transferloss, transfercorruption, ipv6, rebind-port, rebind-addr,
+  handshakeloss, handshakecorruption and chacha20, plus ecn and
+  connectionmigration against ngtcp2. As a client it passes handshake,
   transfer, longrtt, multiplexing, retry, blackhole, transferloss,
   transfercorruption, ipv6, handshakeloss, handshakecorruption,
-  amplificationlimit, rebind-port and rebind-addr. Since 2026-10-19 the
-  server also passes chacha20 against both peers — the client offers
-  ChaCha20-Poly1305 alone (`0x1303`) and the server picks it, read in the
-  capture — and ecn passes on each side against ngtcp2: every packet
-  sluice sends leaves marked ECT(0), and each side reports its counts in
-  its ACK frames. quic-go refuses that case itself: its image exits 127 in
-  both roles. The two
-  handshake cases under 30 % loss or corruption passed on both sides once
-  a probe timeout resent the two oldest unacknowledged packets instead of
-  copying the first again; amplificationlimit passed on the client side
-  once a probe with a single payload to resend sent it twice, so that a
-  server allowed three times what it received is unblocked after seven
-  doubling intervals rather than sixty-three (RFC 9002 §6.2.4); the two
-  rebind cases passed on the client side once `Dial` issued connection
-  identifiers of its own — a server may not probe a client's new address
-  under an identifier it already uses towards the old one (RFC 9000
-  §9.5), so quic-go, holding no spare, kept sending to the address the
-  NAT had abandoned until the idle timer fired; the connectionmigration
-  transfer completed once the server's long-header gate accepted every
-  identifier it had issued, not only its own — quic-go names the
-  preferred_address identifier (sequence 1, RFC 9000 §5.1.1) from the
-  Handshake packets that carry its Finished, and a server dropping them
-  resent its own Handshake until its deadline closed the connection with
-  INTERNAL_ERROR (`interop/preferred_test.go`). The second peer, ngtcp2,
-  was crossed the same day: every case above passes on both sides, and
-  connectionmigration splits. ngtcp2's client does move to a preferred
-  address, but only to one of the family its connection already uses
-  (RFC 9000 §9.6.1), and it had connected over IPv6 to a server announcing
-  IPv4 alone — the endpoint now announces one address per family from a
-  dual-stack socket (`ListenerConfig.PreferredIPv4` and `PreferredIPv6`).
-  The runner then wants the first server packet on the new path to carry
-  a PATH_CHALLENGE, which
-  is §9.6.2's own demand ("the server MUST probe on the path toward the
-  client from its preferred address"): the server now puts that probe in
-  the packet that answers the client's challenge, under an identifier
-  never used on the old path (§9.5). The reverse direction stays red for
-  a reason outside sluice: the client validates the preferred address
-  before moving, as §9.6.2 requires, so the first packet it sends there
-  carries nothing but a PATH_CHALLENGE. ngtcp2's server answers such a
-  packet with a PATH_RESPONSE alone
-  ([`conn_recv_path_challenge`](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L6145)
-  only queues the response) and probes in turn only once a non-probing
-  packet arrives
-  ([`conn_recv_non_probing_pkt_on_new_path`](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L8893),
-  called [from this one place](https://github.com/ngtcp2/ngtcp2/blob/48228939787d4b5bea94c7795b8c7fe0781d918e/lib/ngtcp2_conn.c#L9835-L9840));
-  the runner, though, wants a PATH_CHALLENGE in the server's first packet
-  on the new path
-  ([`testcases_quic.py`](https://github.com/quic-interop/quic-interop-runner/blob/ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6/testcases_quic.py#L1023-L1029)).
-  No client that validates first can satisfy it (ngtcp2's own client
-  probes the same way, `conn_write_path_challenge`), and the public matrix
-  showed it: in its run of 15 October 2026, ngtcp2's server failed CM
-  against each of the 14 clients that attempt it (Chrome does not). The
-  matrix keeps only its latest runs, so that page is gone: this is a dated
-  reading, not a link to check. ngtcp2's code read at revision `4822893`, the
-  runner's at revision `ab039a4`. The cases
-  it refuses, as the runner's
-  exit status 127 asks, are the features documented as not there — QUIC v2
-  (see the `net/quic` versions line below) — plus
-  chacha20 on the client side (Go's TLS 1.3
-  offers no way to restrict the cipher suites it offers), a forced key update and HTTP/3 on the client
-  side (no HTTP/3 client in the module). Green means every one of these
-  passed against at least two peers. Session resumption and 0-RTT
-  were refused in those runs; the endpoint has served and fetched both since
-  23 October 2026 (`ListenerConfig.SessionTickets`, `ListenerConfig.EarlyData`,
-  `DialEarly`), with no runner pass since.
+  amplificationlimit, rebind-port and rebind-addr, plus ecn against ngtcp2.
+  It refuses, with the exit status 127 the runner asks for, what is
+  documented as not there: QUIC v2, and on the client side chacha20 (Go's
+  TLS 1.3 offers no way to restrict the cipher suites it offers), a forced
+  key update and HTTP/3. Session resumption and 0-RTT are served and
+  fetched (`ListenerConfig.SessionTickets`, `ListenerConfig.EarlyData`,
+  `DialEarly`) but have not run in a pass yet.
+  Four failures have their cause outside sluice. quic-go refuses ecn
+  itself. quic-go's client never moves to a server's preferred address, so
+  connectionmigration sees one path. msquic's server sometimes answers
+  first under the client's own connection ID, then changes it, and RFC
+  9000 §7.2 has the client discard what follows (four client-side cases).
+  And against ngtcp2's server, connectionmigration fails on the client
+  side: the runner wants a PATH_CHALLENGE in the server's first packet on
+  the new path, and ngtcp2 probes only after a non-probing packet, which a
+  client that validates first, as §9.6.2 requires, never sends there.
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
   the same response over HTTP/2 with every core available, and catches up
   on two; the figures, their date and the machine that measured them are
@@ -459,7 +396,7 @@ condition per package, each one checkable:
   `version_information` parameter is skipped like any unknown parameter.
   Version 2 differs from 1 in constants only and exists against
   middleboxes that ossify on version 1; none of this package's peers has
-  shown one, and the day one does is the day to add it. In plain words:
+  shown one, and when one does, that is when to add it. In plain words:
   there is one dialect, and it is the one everybody speaks today.
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
@@ -494,7 +431,7 @@ condition per package, each one checkable:
   `crypto/tls` and `crypto/cipher` hold their own copies that this
   package cannot reach. What that costs is a window the length of the
   process, open only to whoever can read the process's memory, who has
-  everything else as well. To revisit the day Go or `crypto/tls` offers
+  everything else as well. To revisit once Go or `crypto/tls` offers
   guaranteed erasure. In plain words: keys are dropped, not shredded,
   because the shredder does not exist.
 - **`net/quic` IPv6 flow label**: on Linux the kernel labels each flow
@@ -531,5 +468,5 @@ of what meets its conditions. The end-to-end bench and the comparative
 study have their apparatus in `comparison/` (the study's server, one flag
 per axis, and its load generator); what they lack is the campaign on the
 machines the protocol names, and its results. The exit from experimental
-has begun: `pushdown` and `net/httpstream` left it on 2026-10-10. The rest
+has begun: `pushdown` and `net/httpstream` are out of it. The rest
 is not started, and each item needs a written decision first.

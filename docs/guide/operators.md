@@ -140,7 +140,7 @@ enriched := join.StreamTable(orders, customers,
 
 The last argument is **required**: how many entries the table may hold,
 and what to do beyond. There is no default, because a table without a limit
-is a program that will die the day the reference list has grown.
+is a program that will die once the reference list has grown.
 
 **Why prefer the merge join** when you have the choice: on 65,536 rows a
 side, the merge costs 24 ns per element and 25 KB; the table, 99 ns and

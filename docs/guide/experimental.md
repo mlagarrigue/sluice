@@ -3,8 +3,9 @@
 Three packages carry the **experimental** label, in the first sentence of
 their documentation: `net/quic` and its helper `net/quic/udp`, and
 `web/stream`. This page first says what the word means here, then what
-each one does and what not to expect from it, and ends with the packages
-that left the list and what it took to leave.
+each one does and what not to expect from it, and ends with the two
+supported packages this page remains the guide of, and what each is held
+to.
 
 ## What "experimental" means
 
@@ -198,24 +199,23 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
 }
 ```
 
-## `net/httpstream` — no longer experimental
+## `net/httpstream` — supported
 
 net/httpstream is supported — out of the experimental label since
 2026-10-10 and under the compatibility promise — and fuzzed in CI without
 a public corpus; it has neither run in production nor had an outside
 security review.
 
-The package left the list the day its three conditions were met. HTTP/1.1
-and /2 have faced curl, h2load (10,000 requests over ten connections) and
-h2spec in continuous integration
+What it is held to, in continuous integration: HTTP/1.1 and /2 face curl,
+h2load (10,000 requests over ten connections) and h2spec
 (`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
 module), curl, aioquic's client and h3spec (`scripts/interop-http3.sh`,
 whose expected h3spec failures are listed with their reasons in
 `net/httpstream/testdata/h3spec-exclusions.txt`); every week it also
 faces nginx, HAProxy and Envoy in front of it (`scripts/interop-proxy.sh`);
 the parsers are fuzzed in CI; the limit on streamed HTTP/2
-responses is owned below, and their per-batch cost measured from a real
-client, then halved.
+responses is owned below, and their per-batch cost is measured from a real
+client.
 
 HTTP exists in three versions. HTTP/1.1 sends requests one at a time over
 a connection (or several in a row, "pipelined"). HTTP/2 **multiplexes**:
@@ -288,7 +288,7 @@ batch divides that cost by as much — and remember that
 `Config.MaxWriteBufferBytes` bounds how far ahead of the socket a
 producer may be, per stream.
 
-## `pushdown` — no longer experimental
+## `pushdown` — supported
 
 A reader that knows where it is can help its source: "skip to key X", "I
 only need a hundred more". That is what database engines call *pushing* a
@@ -298,7 +298,7 @@ little to measure), and downstream operators **tighten** it — never the
 reverse, because a source that has already skipped a thousand rows cannot
 go back.
 
-The package left this list the day a source in the library read it: the
+A source in the library reads it, which is what the package is held to: the
 PostgreSQL connector takes a `Demand` in its `QueryConfig`. The limit
 becomes the number of rows the server is asked for next; the lower bound is
 bound to the key parameter the query names, and the query resumes above it

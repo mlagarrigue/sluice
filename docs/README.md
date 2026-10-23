@@ -23,7 +23,7 @@ place.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
 - [Experimental](guide/experimental.md) — QUIC and the native request path
-  as stream stages; `net/httpstream` and `pushdown`, which left the label.
+  as stream stages; `net/httpstream` and `pushdown`, now supported.
   What is promised, and what is not.
 - [Limits](guide/limits.md) — what is not done, module by module.
 
