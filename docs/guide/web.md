@@ -241,6 +241,17 @@ negative value lifts the bound for the whole server. `Recover` turns a
 panic in a handler into a 500 response you observe, instead of killing the
 process and every request in flight.
 
+Behind a CDN or a TLS-terminating proxy, a request may arrive with the
+header `Early-Data: 1`: the proxy received it in *early data*, sent by the
+client before its TLS handshake ended, which a third party can replay
+as is. `web.EarlyData(allow, h)` answers such a request 425 Too Early,
+unless `allow` accepts it; the client sends it again once its handshake is
+through. Accept only what a duplicate does not hurt — a catalogue read, not
+an order.
+
+> **In plain terms.** With no such proxy in front of you, the header never
+> arrives and the wrapper costs one table lookup per request.
+
 ## The complete example
 
 [`example/orders`](../../example/orders) is this whole vertical: a PATCH
