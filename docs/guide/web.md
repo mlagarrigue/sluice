@@ -145,7 +145,9 @@ batch that never fills. Sixty-four and two milliseconds are a reasonable
 start in front of a database. `Logger`, optional, receives the pipeline's
 panic — its value and its stack — before the callers get
 `ErrPipelinePanicked`; nil means `slog.Default()`. A gateway whose pipeline
-panicked stays dead: build a new one.
+panicked stays dead: build a new one. What the gateway and the server log,
+and what never leaves the log, is
+[ADR 0025](../design/adr/0025-observability.md).
 
 > **In plain terms: the gateway's rule.** Every call gets **exactly one**
 > answer, through `Reply` or `Fail`. Never zero: the pipeline's element *is*
