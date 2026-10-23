@@ -148,11 +148,15 @@ expect "aioquic two requests on one connection" "you asked for /ayou asked for /
 # h3spec is hspec: its "Failures:" section numbers each red case and gives
 # its full name, group included ("  2) HTTP/3 servers treats ..."). The
 # count of names read must match the summary's count of failures, so that a
-# change of format cannot turn red cases into an empty list.
+# change of format cannot turn red cases into an empty list. hspec colours
+# its output when GITHUB_ACTIONS is set, terminal or not: the escapes go
+# before anything reads it.
 echo "## h3spec"
 set +e
-"$h3spec" -n -t 2000 "${addr%:*}" "${addr##*:}" >"$work/h3spec.txt" 2>&1
+"$h3spec" -n -t 2000 "${addr%:*}" "${addr##*:}" >"$work/h3spec.raw" 2>&1
 set -e
+esc=$(printf '\033')
+sed "s/$esc\[[0-9;]*m//g" "$work/h3spec.raw" >"$work/h3spec.txt"
 summary=$(grep -E '^[0-9]+ examples?, [0-9]+ failures?' "$work/h3spec.txt") \
   || fail "h3spec printed no summary: $(tail -n 20 "$work/h3spec.txt")"
 echo "$summary"
