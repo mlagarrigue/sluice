@@ -61,31 +61,9 @@ as is. Sending it in cleartext is possible but must be asked for explicitly
 (`AllowCleartextPassword`), because only you know whether the network your
 recipe reaches may carry a secret.
 
-Two options make the client demand what the server only offers by default.
-`RequireAuth` refuses a server that declares the connection authenticated
-without asking for anything: that is what a role configured for `trust`
-gets, and also what an impostor sends, since the message proves nothing
-about who sent it. `ChannelBinding` set to `ChannelBindingRequire` refuses
-every exchange that is not SCRAM-SHA-256-PLUS, the variant bound to the
-server's certificate: a recipe that does not return a `*tls.Conn`, a server
-that does not offer the variant, a password asked for in cleartext. Both
-refusals arrive as `ErrAuth`, before any credential has left the client,
-and the message names the option. The third value, `ChannelBindingDisable`,
-goes the other way: the exchange is never bound, and the client says so
-(libpq's `channel_binding=disable`). It exists for one server: the one
-whose certificate is signed by an algorithm with no hash, Ed25519, for
-which the binding is undefined (RFC 5929 §4.1). The default refuses that
-server rather than fall back without saying so.
-
-> **In plain terms: channel binding.** With SCRAM alone, the server proves
-> it knows your password and you prove you know it too, but neither side
-> proves *which* connection the proof was made on. An attacker who
-> terminates TLS between you and the server can relay the exchange. Channel
-> binding mixes a fingerprint of the server's certificate into the proof: a
-> relay holding another certificate fails. The server offers it when it has
-> a certificate (`ssl = on`); `ChannelBindingRequire` makes its absence an
-> error instead of a silent fallback, `ChannelBindingDisable` turns it off
-> openly.
+Demanding more of the server — that it ask for a password, that the proof
+be bound to its certificate — is set further down, in
+[Demanding more of authentication](#demanding-more-of-authentication).
 
 > **In plain terms: no pool.** A *pool* is a reserve of open connections
 > shared by everyone. There is none here, because batching calls
@@ -97,202 +75,6 @@ A wrong password arrives as a server error with code `28P01`; an
 authentication method the package refuses (`md5`, deprecated) arrives as
 `ErrAuthUnsupported`. Two different errors because they are fixed
 differently.
-
-### Encrypting the connection
-
-A PostgreSQL server does not begin with a TLS handshake the way an HTTPS
-server does. The client opens a plain socket and sends an **SSLRequest** —
-eight bytes, a code in place of a protocol version — and the server answers
-with a single byte, `S` to accept or `N` to refuse. Only then does the TLS
-handshake start. A `tls.Dial` aimed straight at port 5432 therefore fails,
-with an error that looks like a certificate problem rather than a protocol
-mismatch. `DialTLS` performs that negotiation:
-
-```go
-roots, err := x509.SystemCertPool()
-if err != nil { return err }
-dial := postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
-conn, err := postgres.Connect(ctx, dial, postgres.Config{ /* … */ })
-```
-
-Three things are done for you there. It reads **exactly one byte** before
-handing the socket to TLS: bytes read ahead would have been slipped in by a
-third party before encryption, and would be treated as coming from the
-server. On `N`, it **refuses** rather than carry on in plaintext, which is
-exactly what an attacker able to strip one byte is hoping for; on an error
-message, it refuses without repeating it, since nothing has authenticated
-the server yet. And when `ServerName` is empty, it fills in the host of the
-address, so the certificate is checked against the name you dialled. Which
-certificates to trust stays yours (`RootCAs`), never `InsecureSkipVerify`:
-an encrypted connection to anyone at all protects against nothing. The
-complete, commented example is in
-[`example_tls_test.go`](../../database/postgres/example_tls_test.go).
-
-Since PostgreSQL 17, the client may also skip the SSLRequest and open TLS
-directly (`sslnegotiation=direct` in libpq): one round trip fewer, and not a
-single byte in clear. The protocol then requires the client to announce
-**ALPN** `postgresql`, and the server refuses the handshake without it.
-That is the `DialTLSDirect` recipe, which takes the same arguments as
-`DialTLS`:
-
-```go
-conn, err := postgres.Connect(ctx,
-    postgres.DialTLSDirect("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}),
-    postgres.Config{ /* … */ })
-```
-
-It announces `postgresql` in place of whatever your `tls.Config` held in
-`NextProtos`, and refuses a server that completes the handshake without
-having chosen it, as libpq does: that server has not said it speaks
-PostgreSQL. A server at 16 or older does not understand this form and fails
-the handshake: it only fits when you know which server is on the other
-side; otherwise, `DialTLS`.
-
-> **In plain terms: ALPN.** A label the client slips into the TLS handshake
-> to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
-> here). Without it, a server that accepts TLS directly could be fooled by a
-> client that believes it is talking to something else; the label closes
-> that confusion.
-
-### Cancelling a running query
-
-A statement running on the server does not stop because your program no
-longer wants its answer. As long as it runs, three things stay taken:
-
-- its **locks**: the reservations a statement places on rows or tables so
-  that nobody changes them underneath it. A long `UPDATE` blocks every other
-  `UPDATE` on the same rows;
-- the server's processor, memory and disks, which every other query shares;
-- the connection itself: the protocol lets nothing else through until the
-  statement has finished.
-
-The classic case is a slow query behind an HTTP deadline: the visitor left
-long ago, the database is still working for them, and the following queries
-wait on its locks.
-
-The context passed to a query is not enough to stop it. It is checked
-between two batches, which stops the client pulling; but while the server
-is computing and has not sent its first row, the client is waiting for it,
-and the server knows nothing about the context. The protocol has a separate
-message for this, the **CancelRequest**: a small packet that carries the
-**cancellation key** the server gave to the session (its process number and
-a secret), and that travels on a **second connection** to the same server,
-because the first one is busy with the running statement and its bytes are
-taken.
-
-On a connection opened by `Connect`, you have nothing to write. As soon as
-a context ends while the connection is waiting for the server (in `Query`,
-`Exec`, `ExecParams`, `Copier.WriteTuples` or `Tx.Pipeline`) the package:
-
-1. reopens a connection with the recipe given to `Connect`;
-2. writes the CancelRequest on it;
-3. waits for the server to close that second connection. This is the
-   **confirmation**: the server notifies the statement before closing, and
-   nothing is sent on the main connection before that close, so a
-   cancellation still on its way cannot land on the next statement.
-
-The server then abandons the statement with code `57014`
-(`query_canceled`). The call returns the context's error, wrapped (the
-server's error stays reachable through `errors.As`), and the connection
-stays usable:
-
-```go
-ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-defer cancel()
-err := conn.Exec(ctx, "UPDATE orders SET status = 'late' WHERE due < now()")
-if errors.Is(err, context.DeadlineExceeded) {
-    // the server abandoned the UPDATE and released its locks; conn is still good
-}
-```
-
-For COPY and the pipeline, the same cancellation has the effects of their
-shape. A `WriteTuples` that was waiting for the server's answer returns the
-context's error, the transaction rolled back; a context that expires **between**
-two batches leaves the transaction open, and it is up to you to choose
-between `Abort` and `Close` ([In bulk: COPY](#in-bulk-copy)). In a pipeline,
-the part in progress fails, the following ones do not run, and `Pipeline`
-returns the context's error next to `ErrPipelineAborted`, the transaction
-aborted as after any failure of a part.
-
-**When nothing confirms.** `Config.CancelTimeout` (5 seconds by default)
-bounds the three steps together. If the recipe fails, or if the server does
-not close in time, the package no longer knows where the request is: lost,
-or still on its way to the server, where it would cancel the statement
-after this one. So it closes the main connection, which is also what frees
-your call, blocked on a read the server might never serve. The call returns
-the context's error with `ErrConnBroken`: the connection is no longer good,
-open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
-that says why.
-
-One case stands apart: the statement finished just before the close
-reached it. The call then returns its real result (`nil`, the rows
-delivered) and it is the next call that finds `ErrConnBroken`. The warning,
-with `statement_completed=true`, is the only trace of the failed
-cancellation. The reason: an `INSERT` reported as failed after being
-committed would be replayed by the caller, and the row would exist twice.
-
-**The recipe does the cancelling.** Since cancellation goes through the
-recipe, it has the recipe's properties. With `DialTCP`, the cancellation
-secret crosses the network in cleartext; anyone who reads it can cancel
-this session's queries until it closes. That is harmless on a loopback:
-
-```go
-conn, err := postgres.Connect(ctx, postgres.DialTCP("127.0.0.1:5432"), cfg)
-```
-
-With `DialTLS`, each cancellation negotiates TLS like the main connection,
-with the same configuration; the server accepts a CancelRequest inside TLS:
-
-```go
-conn, err := postgres.Connect(ctx, postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots}), cfg)
-```
-
-A **recipe of your own** (a UNIX socket, a tunnel, a proxy) is any function
-of the shape `DialFunc`. For example, the UNIX socket of a server on the
-same machine (here at the path used by the Debian and Ubuntu packages):
-
-```go
-unix := func(ctx context.Context) (io.ReadWriteCloser, error) {
-    var d net.Dialer
-    return d.DialContext(ctx, "unix", "/var/run/postgresql/.s.PGSQL.5432")
-}
-conn, err := postgres.Connect(ctx, unix, cfg)
-```
-
-It must keep three promises, and any `net.Conn` opened inside the function
-keeps them: return a **new** connection on every call, respect the context
-it receives (otherwise the cancellation overruns `CancelTimeout`), and
-accept a `Close` while a `Read` is blocked.
-
-The trap is the first promise. A recipe that opens the socket once and
-returns it on every call gets through `Connect` without trouble, and then
-the first cancellation receives the very connection it was meant to cancel:
-
-```go
-nc, err := net.Dial("tcp", "db.internal:5432")
-dial := func(context.Context) (io.ReadWriteCloser, error) { return nc, nil } // wrong: always the same socket
-```
-
-The package recognises this case and refuses it (written on the main
-connection, the packet would be read as a message of the conversation in
-progress), which means an unconfirmed cancellation: connection closed,
-`ErrConnBroken`. A different wrapper around the same socket, however, is not
-recognised. The rule is therefore simple: open **inside** the function,
-never before.
-
-A `Conn` built by `NewConn` has no recipe, so no automatic cancellation:
-it is up to you to open the second connection and call `CancelRequest` with
-`conn.CancelKey()`.
-
-> **In plain terms: an advisory cancellation.** The CancelRequest is a
-> request, not an order. The server looks at it at moments of its choosing
-> (checkpoints scattered through its code, between two rows read for
-> instance) and a statement that was finishing finishes: the answer may then
-> arrive with its result rather than with `57014`. Cancelling is not undoing
-> either: what a transaction has already committed stays committed. And a
-> cancellation only leaves if your program is there to send it; to bound the
-> server's work even when the client has vanished, add a limit on the server
-> side, `statement_timeout` in `Params`.
 
 ## Reading
 
@@ -557,6 +339,237 @@ after the request's context has expired, and a block left open on a reused
 connection is the worst outcome. A stream obtained from `tx.Query` is read
 **before** the `Commit`; afterwards it refuses to run rather than running
 outside the transaction under nobody's identity.
+
+## Securing and controlling the connection
+
+What follows is for the day you need it: a server that must prove more than
+the defaults ask, a connection that crosses a network you do not trust, a
+query that must stop before it ends. The first `Connect` above needs none of
+it beyond `DialTLS` and its defaults.
+
+### Demanding more of authentication
+
+Two options make the client demand what the server only offers by default.
+`RequireAuth` refuses a server that declares the connection authenticated
+without asking for anything: that is what a role configured for `trust`
+gets, and also what an impostor sends, since the message proves nothing
+about who sent it. `ChannelBinding` set to `ChannelBindingRequire` refuses
+every exchange that is not SCRAM-SHA-256-PLUS, the variant bound to the
+server's certificate: a recipe that does not return a `*tls.Conn`, a server
+that does not offer the variant, a password asked for in cleartext. Both
+refusals arrive as `ErrAuth`, before any credential has left the client,
+and the message names the option. The third value, `ChannelBindingDisable`,
+goes the other way: the exchange is never bound, and the client says so
+(libpq's `channel_binding=disable`). It exists for one server: the one
+whose certificate is signed by an algorithm with no hash, Ed25519, for
+which the binding is undefined (RFC 5929 §4.1). The default refuses that
+server rather than fall back without saying so.
+
+> **In plain terms: channel binding.** With SCRAM alone, the server proves
+> it knows your password and you prove you know it too, but neither side
+> proves *which* connection the proof was made on. An attacker who
+> terminates TLS between you and the server can relay the exchange. Channel
+> binding mixes a fingerprint of the server's certificate into the proof: a
+> relay holding another certificate fails. The server offers it when it has
+> a certificate (`ssl = on`); `ChannelBindingRequire` makes its absence an
+> error instead of a silent fallback, `ChannelBindingDisable` turns it off
+> openly.
+
+### Encrypting the connection
+
+A PostgreSQL server does not begin with a TLS handshake the way an HTTPS
+server does. The client opens a plain socket and sends an **SSLRequest** —
+eight bytes, a code in place of a protocol version — and the server answers
+with a single byte, `S` to accept or `N` to refuse. Only then does the TLS
+handshake start. A `tls.Dial` aimed straight at port 5432 therefore fails,
+with an error that looks like a certificate problem rather than a protocol
+mismatch. `DialTLS` performs that negotiation:
+
+```go
+roots, err := x509.SystemCertPool()
+if err != nil { return err }
+dial := postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12})
+conn, err := postgres.Connect(ctx, dial, postgres.Config{ /* … */ })
+```
+
+Three things are done for you there. It reads **exactly one byte** before
+handing the socket to TLS: bytes read ahead would have been slipped in by a
+third party before encryption, and would be treated as coming from the
+server. On `N`, it **refuses** rather than carry on in plaintext, which is
+exactly what an attacker able to strip one byte is hoping for; on an error
+message, it refuses without repeating it, since nothing has authenticated
+the server yet. And when `ServerName` is empty, it fills in the host of the
+address, so the certificate is checked against the name you dialled. Which
+certificates to trust stays yours (`RootCAs`), never `InsecureSkipVerify`:
+an encrypted connection to anyone at all protects against nothing. The
+complete, commented example is in
+[`example_tls_test.go`](../../database/postgres/example_tls_test.go).
+
+Since PostgreSQL 17, the client may also skip the SSLRequest and open TLS
+directly (`sslnegotiation=direct` in libpq): one round trip fewer, and not a
+single byte in clear. The protocol then requires the client to announce
+**ALPN** `postgresql`, and the server refuses the handshake without it.
+That is the `DialTLSDirect` recipe, which takes the same arguments as
+`DialTLS`:
+
+```go
+conn, err := postgres.Connect(ctx,
+    postgres.DialTLSDirect("db.internal:5432", &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}),
+    postgres.Config{ /* … */ })
+```
+
+It announces `postgresql` in place of whatever your `tls.Config` held in
+`NextProtos`, and refuses a server that completes the handshake without
+having chosen it, as libpq does: that server has not said it speaks
+PostgreSQL. A server at 16 or older does not understand this form and fails
+the handshake: it only fits when you know which server is on the other
+side; otherwise, `DialTLS`.
+
+> **In plain terms: ALPN.** A label the client slips into the TLS handshake
+> to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
+> here). Without it, a server that accepts TLS directly could be fooled by a
+> client that believes it is talking to something else; the label closes
+> that confusion.
+
+### Cancelling a running query
+
+A statement running on the server does not stop because your program no
+longer wants its answer. As long as it runs, three things stay taken:
+
+- its **locks**: the reservations a statement places on rows or tables so
+  that nobody changes them underneath it. A long `UPDATE` blocks every other
+  `UPDATE` on the same rows;
+- the server's processor, memory and disks, which every other query shares;
+- the connection itself: the protocol lets nothing else through until the
+  statement has finished.
+
+The classic case is a slow query behind an HTTP deadline: the visitor left
+long ago, the database is still working for them, and the following queries
+wait on its locks.
+
+The context passed to a query is not enough to stop it. It is checked
+between two batches, which stops the client pulling; but while the server
+is computing and has not sent its first row, the client is waiting for it,
+and the server knows nothing about the context. The protocol has a separate
+message for this, the **CancelRequest**: a small packet that carries the
+**cancellation key** the server gave to the session (its process number and
+a secret), and that travels on a **second connection** to the same server,
+because the first one is busy with the running statement and its bytes are
+taken.
+
+On a connection opened by `Connect`, you have nothing to write. As soon as
+a context ends while the connection is waiting for the server (in `Query`,
+`Exec`, `ExecParams`, `Copier.WriteTuples` or `Tx.Pipeline`) the package:
+
+1. reopens a connection with the recipe given to `Connect`;
+2. writes the CancelRequest on it;
+3. waits for the server to close that second connection. This is the
+   **confirmation**: the server notifies the statement before closing, and
+   nothing is sent on the main connection before that close, so a
+   cancellation still on its way cannot land on the next statement.
+
+The server then abandons the statement with code `57014`
+(`query_canceled`). The call returns the context's error, wrapped (the
+server's error stays reachable through `errors.As`), and the connection
+stays usable:
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+defer cancel()
+err := conn.Exec(ctx, "UPDATE orders SET status = 'late' WHERE due < now()")
+if errors.Is(err, context.DeadlineExceeded) {
+    // the server abandoned the UPDATE and released its locks; conn is still good
+}
+```
+
+For COPY and the pipeline, the same cancellation has the effects of their
+shape. A `WriteTuples` that was waiting for the server's answer returns the
+context's error, the transaction rolled back; a context that expires **between**
+two batches leaves the transaction open, and it is up to you to choose
+between `Abort` and `Close` ([In bulk: COPY](#in-bulk-copy)). In a pipeline,
+the part in progress fails, the following ones do not run, and `Pipeline`
+returns the context's error next to `ErrPipelineAborted`, the transaction
+aborted as after any failure of a part.
+
+**When nothing confirms.** `Config.CancelTimeout` (5 seconds by default)
+bounds the three steps together. If the recipe fails, or if the server does
+not close in time, the package no longer knows where the request is: lost,
+or still on its way to the server, where it would cancel the statement
+after this one. So it closes the main connection, which is also what frees
+your call, blocked on a read the server might never serve. The call returns
+the context's error with `ErrConnBroken`: the connection is no longer good,
+open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
+that says why.
+
+One case stands apart: the statement finished just before the close
+reached it. The call then returns its real result (`nil`, the rows
+delivered) and it is the next call that finds `ErrConnBroken`. The warning,
+with `statement_completed=true`, is the only trace of the failed
+cancellation. The reason: an `INSERT` reported as failed after being
+committed would be replayed by the caller, and the row would exist twice.
+
+**The recipe does the cancelling.** Since cancellation goes through the
+recipe, it has the recipe's properties. With `DialTCP`, the cancellation
+secret crosses the network in cleartext; anyone who reads it can cancel
+this session's queries until it closes. That is harmless on a loopback:
+
+```go
+conn, err := postgres.Connect(ctx, postgres.DialTCP("127.0.0.1:5432"), cfg)
+```
+
+With `DialTLS`, each cancellation negotiates TLS like the main connection,
+with the same configuration; the server accepts a CancelRequest inside TLS:
+
+```go
+conn, err := postgres.Connect(ctx, postgres.DialTLS("db.internal:5432", &tls.Config{RootCAs: roots}), cfg)
+```
+
+A **recipe of your own** (a UNIX socket, a tunnel, a proxy) is any function
+of the shape `DialFunc`. For example, the UNIX socket of a server on the
+same machine (here at the path used by the Debian and Ubuntu packages):
+
+```go
+unix := func(ctx context.Context) (io.ReadWriteCloser, error) {
+    var d net.Dialer
+    return d.DialContext(ctx, "unix", "/var/run/postgresql/.s.PGSQL.5432")
+}
+conn, err := postgres.Connect(ctx, unix, cfg)
+```
+
+It must keep three promises, and any `net.Conn` opened inside the function
+keeps them: return a **new** connection on every call, respect the context
+it receives (otherwise the cancellation overruns `CancelTimeout`), and
+accept a `Close` while a `Read` is blocked.
+
+The trap is the first promise. A recipe that opens the socket once and
+returns it on every call gets through `Connect` without trouble, and then
+the first cancellation receives the very connection it was meant to cancel:
+
+```go
+nc, err := net.Dial("tcp", "db.internal:5432")
+dial := func(context.Context) (io.ReadWriteCloser, error) { return nc, nil } // wrong: always the same socket
+```
+
+The package recognises this case and refuses it (written on the main
+connection, the packet would be read as a message of the conversation in
+progress), which means an unconfirmed cancellation: connection closed,
+`ErrConnBroken`. A different wrapper around the same socket, however, is not
+recognised. The rule is therefore simple: open **inside** the function,
+never before.
+
+A `Conn` built by `NewConn` has no recipe, so no automatic cancellation:
+it is up to you to open the second connection and call `CancelRequest` with
+`conn.CancelKey()`.
+
+> **In plain terms: an advisory cancellation.** The CancelRequest is a
+> request, not an order. The server looks at it at moments of its choosing
+> (checkpoints scattered through its code, between two rows read for
+> instance) and a statement that was finishing finishes: the answer may then
+> arrive with its result rather than with `57014`. Cancelling is not undoing
+> either: what a transaction has already committed stays committed. And a
+> cancellation only leaves if your program is there to send it; to bound the
+> server's work even when the client has vanished, add a limit on the server
+> side, `statement_timeout` in `Params`.
 
 ## Following changes: logical replication
 
