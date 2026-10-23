@@ -38,13 +38,14 @@ import (
 //
 // Ordering caps the speed-up, and by more than the word "parallel" suggests.
 // The emitter waits for the oldest batch, so one slow worker holds up the queue
-// however idle the others are: on work heavy enough to be worth distributing,
-// four workers measured at 4.10 ms against 5.27 ms serial — a factor of 1.29,
-// not 4. Independent workers with no ordering constraint would do better; that
-// is the trade, taken deliberately.
+// however idle the others are, and handing a batch to a worker and waking it
+// costs about what a light f saves: on work of about 34 µs per batch, four
+// workers measured at 2.05 ms against 2.16 ms serial — a factor of 1.05, not
+// 4. Independent workers with no ordering constraint would do better; that is
+// the trade, taken deliberately.
 //
 // Below that, the fan-out costs. On an f that only passes its batch through,
-// four workers measured at 127 microseconds against 37 serial — 3.5 times
+// four workers measured at 57 microseconds against 16 serial — 3.5 times
 // slower. "Add Ordered to speed it up" is a claim to check against these
 // numbers, not an assumption: measure the pipeline, and if f is sluice.Map-sized,
 // leave it out.
@@ -75,9 +76,8 @@ import (
 // operators legitimately reuse their output buffer ([sluice.Convert], [sluice.Filter],
 // [sluice.Scan], [sluice.FlatMap], the joins), Ordered copies Items into a buffer owned by
 // the job slot at the hand-off (guarantee S14). The copy is what makes
-// composing Ordered downstream of any operator safe; measured, it costs ~0.2
-// ns/element on a pass-through f and disappears in the noise on the heavy f
-// the operator exists for. The slot's buffer is reused, so the steady state
+// composing Ordered downstream of any operator safe. The slot's buffer is
+// reused, so the steady state
 // allocates nothing — recycling the slots removed the ~2.2 allocations per
 // batch the previous shape paid for its job, its channel and its queue.
 //

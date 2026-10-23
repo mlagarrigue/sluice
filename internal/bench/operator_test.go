@@ -164,7 +164,7 @@ func BenchmarkDropWhile(b *testing.B) {
 }
 
 // BenchmarkInterleave2 pulls from two sources, alternating a batch at a time.
-// It costs one iter.Pull resumption per batch — 68.6 ns amortised over 1024
+// It costs one iter.Pull resumption per batch — 53 ns amortised over 1024
 // elements — which is the same trade Merge makes and the reason the operator is
 // viable at batch grain and unthinkable at element grain.
 func BenchmarkInterleave2(b *testing.B) {

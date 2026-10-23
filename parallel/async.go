@@ -25,7 +25,7 @@ import (
 // copy together measured +0.31 ns/element at 1024-element batches — inside
 // the per-stage budget, where the same operator element-wise would be two
 // orders of magnitude out (the arithmetic that disqualified iter.Pull per
-// element at 68.6 ns). On equal producer and consumer work the overlap
+// element at 53 ns). On equal producer and consumer work the overlap
 // measured ×1.85 against the serial chain, of an ideal ×2
 // (BenchmarkAsyncOverlap).
 //

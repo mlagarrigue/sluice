@@ -10,7 +10,7 @@
 // reason it is shaped this way rather than the obvious way.
 //
 // **The pipeline is built once, at startup.** Building six operators per
-// request costs 122 ns and seven allocations of the 249 ns and thirteen a
+// request costs 138 ns and seven allocations of the 280 ns and thirteen a
 // request pays (measured, see docs/benchmarks.md) — half the cost, for a pipeline
 // shape the model does not require. Here the pipeline exists before the server
 // does and requests enter it as elements.

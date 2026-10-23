@@ -127,7 +127,7 @@ an element can be valid, carry three warnings, and keep moving forward.
 >
 > Three of its decisions come from measurements rather than from taste. **The
 > pipeline is built once**, because building six operators per request is half
-> the 249 ns and thirteen allocations a request costs. **The store
+> the 280 ns and thirteen allocations a request costs. **The store
 > is asked once per batch**, which is the whole thesis and measured at ×6.9
 > against a bounded backend. And **a rejected request is answered,
 > never filtered out**: the gateway routes replies through the element itself,
@@ -231,7 +231,7 @@ type Batch[T any] struct {
 >
 > Cost was measured and is not the reason: a `context.Context` is an interface,
 > so the batch goes from 24 to 40 bytes, and a traversal of 1M elements is
-> unchanged at 343 vs 346 ns — including with cancellation checked per batch.
+> unchanged, within 1% — including with cancellation checked per batch.
 > What a caller pays instead is 16 bytes per **element** when they do need
 > per-element context. That is a real trade, made where the caller knows they
 > need it. Rationale, alternatives, and what would reverse it:
@@ -280,7 +280,7 @@ remains to be verified with several batches alive simultaneously.*
 - Go has **no** monomorphization — generating a specialised copy of a generic function per type, which is how Rust makes generics free. Rust is a conceptual model, **not a cost
   model** — no "zero-cost" promise is made here.
 - `iter.Pull` (the standard function that turns an iterator into a `next()` call) costs a runtime coroutine — a suspended function the runtime resumes on demand — and a context switch **per value
-  pulled**: **68.6 ns/element measured** (×221 the ceiling), against 1.4 ns in
+  pulled**: **53.3 ns/element measured** (×243 the ceiling), against 1.05 ns in
   direct push. It is reserved for lockstep joins and merge, and then **on
   batches** — never on elements. This is not a recommendation but an
   **obligation**: see [Measurements](../benchmarks.md).
@@ -366,11 +366,11 @@ type Demand struct {
 
 > **`pushdown` is that mechanism, measured on both sides.** The cost first,
 > because a mechanism that taxes every pipeline to help a few is not worth
-> having: a scan consulting a demand that never changes runs at **1.699 ms
-> against 1.699 ms** without one — the atomic load per batch is not
-> measurable. The gain, on the shape the mechanism is for — a consumer walking
+> having: a scan consulting a demand that never changes runs at **1,868 µs
+> against 1,908 µs** without one, inside each other's spread — the atomic load
+> per batch is not measurable. The gain, on the shape the mechanism is for — a consumer walking
 > in key order publishing where it has got to, so the scan skips whole pages
-> instead of decoding rows it is about to discard: **58.2 µs against 403.8**,
+> instead of decoding rows it is about to discard: **64.4 µs against 445**,
 > **×6.9**. Smaller than DataFusion's ×22 because the simulated per-row work is
 > smaller; the ratio is what transposes.
 >
@@ -392,8 +392,8 @@ type Demand struct {
 > decoding a column on its own, and adding it then breaks nobody.
 >
 > **One operator was written, measured and removed.** A `Take` publishing its
-> remaining count measured 8.63 µs against the core operator's 8.35 — a 3% cost
-> and no gain — and the reason is structural: a source whose unit of work *is*
+> remaining count measured a few percent slower than the core operator, and
+> faster nowhere — and the reason is structural: a source whose unit of work *is*
 > the batch it yields cannot do less than one batch for the last batch, and
 > checking a limit per row is the per-element cost this design refuses. Its
 > absence is documented in the package with the number that decided it. The
@@ -466,8 +466,8 @@ type Diagnostic struct {
 > in `diagnostics`, with `NewDiagnostic(severity, code, path)` for the three a
 > diagnostic cannot be useful without and `With…` methods returning copies for
 > the rest. The value receiver is what makes a diagnostic safe to hold as a
-> template — measured at 5.69 ns either way, so the size the linter flags is
-> not a cost.
+> template — measured no slower than a pointer receiver when it was chosen, so
+> the size the linter flags is not a cost.
 >
 > Affordances are a separate type ([below](#affordances--the-gap-to-fill)):
 > an `Affordance` carries its own `Path`, and a remedy is matched to a problem
@@ -556,7 +556,7 @@ limit on the first diagnostic turns a cautious configuration value into a
 nothing costs 12 allocations and 3× the time to fill a 1000-entry report,
 because every doubling copies. The storage is therefore reserved up to a small
 cap and grows into its limit beyond it: 2 KB and one allocation for the first
-`Add` at any ceiling, and past the ceiling a counter increment at 1.9 ns with no
+`Add` at any ceiling, and past the ceiling a counter increment at 1.24 ns with no
 allocation at all.
 
 **Conditional trace capture**: `runtime.Callers` is expensive and Go's `errors`
@@ -714,10 +714,10 @@ operators *are* that point.
 > no error anywhere. Documentation cannot prevent that, because the operators
 > doing the copying are correct.
 >
-> Measured at 4.5 ns/element (1024-element windows), above the per-stage
+> Measured at 5.43 ns/element (1024-element windows), above the per-stage
 > budget for the reason `distinct.By` is: every element pays a caller callback
 > returning a 24-byte `time.Time` and two time comparisons. Calling
-> `time.Truncate` per element — a 64-bit division — costs 10.5; testing the
+> `time.Truncate` per element — a 64-bit division — cost twice that; testing the
 > open window's end first answers for every element but the first of each
 > window, for −56.7% (14/14 paired rounds).
 
@@ -819,8 +819,9 @@ coordination cost is amortized.
 >
 > That ordering caps the gain, and the measurement says so: the emitter waits
 > for the oldest batch, so one slow worker holds the queue whatever the others
-> are doing. On work heavy enough to distribute, four workers came out at
-> **4.10 ms against 5.27 ms serial — ×1.29, not ×4**. On a pass-through `f`,
+> are doing. On work of about 34 µs per batch, four workers came out at
+> **2,051 µs against 2,160 µs serial — ×1.05, not ×4**: at that grain, handing
+> a batch to a worker and waking it eats what the fan-out would save. On a pass-through `f`,
 > four workers were **3.5× slower** than none. The operator earns its place only
 > where `f` is genuinely expensive, and the numbers are in its documentation so
 > that "add `parallel.Ordered`" is a claim to check rather than an assumption.
@@ -847,8 +848,7 @@ coordination cost is amortized.
 > legitimately reuse their output buffers — composed, those two facts are a
 > data race with silent value corruption. `Items` is copied into a per-slot
 > buffer at the retention point; the slots are recycled, so the copy costs no
-> allocation in steady state. Measured: ~0.2 ns/element on a pass-through `f`,
-> in the noise on a heavy one.
+> allocation in steady state.
 
 ---
 
@@ -948,8 +948,8 @@ In single-goroutine pull, a fair merge **at the element level** is impossible
 without a buffer or `iter.Pull`. At **batch** grain, it becomes trivial: one
 `iter.Pull` per source, and you alternate.
 
-**Measured**: merging two streams costs **69.8 ns/element** tuple-at-a-
-time against **0.39 ns/element** per batch of 1024 — a factor of **179**. At 1.3×
+**Measured**: merging two streams costs **53.2 ns/element** tuple-at-a-
+time against **0.295 ns/element** per batch of 1024 — a factor of **180**. At 1.3×
 the ceiling, the operator is essentially free in batch, and unusable without it.
 
 > Tuple-at-a-time, this cost is prohibitive and `Merge` would require an inversion
@@ -967,9 +967,9 @@ the ceiling, the operator is essentially free in batch, and unusable without it.
 > yielding a, b and 1, 2 the output is a, 1, b, 2 — which is what makes it
 > usable in a test and worth relying on when a fair share per source is what
 > the caller needs. Under `WhenAll`, an exhausted source drops out of the
-> rotation and the rest carry on. Measured flat at ~0.40 ns/element from two
-> sources to eight: the pull count per element does not change with the
-> source count.
+> rotation and the rest carry on. Measured at 0.305 ns/element from two
+> sources and 0.349 from eight, within the eight-source run's spread: the pull
+> count per element does not change with the source count.
 
 ### `join.ZipLongest` primitive, `Zip` derived
 
@@ -1306,18 +1306,18 @@ reflection works **row by row and field by field**, which breaks vectorization.
 - **zero `interface{}`** in the hot path; **binary** format mandatory;
 - pre-allocation at batch size, buffer reuse between batches.
 
-> **Measured: reflection costs ×1.8, and columnar decoding loses.** The argument against
+> **Measured: reflection costs ×1.9, and columnar decoding loses.** The argument against
 > reflection holds, though it is smaller than it looks: a naive measurement
 > that boxes every field through `reflect.Value.Interface` charges the boxing
-> to reflection (×5.6). Written the way a careful mapper writes it — a
-> per-type plan, typed setters, nothing boxed — reflection costs **×1.8** the
-> same hydration written by hand, with the same one allocation per row: 67
-> against 37 ns/row (`BenchmarkHydrateReflect` against
-> `BenchmarkHydrateRowMajor` in `database/postgres`). ×1.8 on the hydration
+> to reflection (×6.3). Written the way a careful mapper writes it — a
+> per-type plan, typed setters, nothing boxed — reflection costs **×1.9** the
+> same hydration written by hand, with the same one allocation per row: 56.7
+> against 29.6 ns/row (`BenchmarkHydrateReflect` against
+> `BenchmarkHydrateRowMajor` in `database/postgres`). ×1.9 on the hydration
 > step, with by-name binding and bind-time type checks on top, still justifies
 > a generator. Columnar decoding does not pay. One scanner
-> per column then a pass to assemble measures **34.7 ns/row against row-major's 31.2**,
-> and at batch = 1 — the web vertical's shape — 37.6 against 26.3. The columnar
+> per column then a pass to assemble measures **36.7 ns/row against row-major's 29.6**,
+> and at batch = 1 — the web vertical's shape — 40.5 against 26.1. The columnar
 > form makes two passes over the values, and the extra memory traffic costs
 > more than the branch predictability buys; a row-major loop over five
 > repeating fields is a pattern a processor predicts perfectly well, and there
@@ -1342,7 +1342,7 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > generated code that lives only on the machine that ran the generator is code
 > nobody reviews and nothing compiles. Drift fails the build.
 >
-> Measured at 47 ns/row on a six-column entity with a nullable string — a
+> Measured at 54 ns/row on a six-column entity with a nullable string — a
 > different entity from the figures above, so not comparable to them. What the
 > number does say directly: **a nullable `*T` field costs an
 > allocation per row**, because the pointer the generated code takes escapes to
@@ -1437,10 +1437,9 @@ thrashing*.
 > back is a compatible change the day it does.
 >
 > **The default table is not `map[K][]B`.** That shape allocates a slice per
-> distinct key, which dominates on a build side with many keys: measured at
-> 66,000 allocations and 17.7 ms over 65536 keys, against 597 and 8.0 ms for a
-> flat value slice with an index chain — 2.6× the time and 110× the
-> allocations. The chain addresses values with `int32`, so `MaxEntries` is
+> distinct key, which dominates on a build side with many keys: measured over
+> 65536 keys against a flat value slice with an index chain, it took 2.6× the
+> time and 110× the allocations. The chain addresses values with `int32`, so `MaxEntries` is
 > capped accordingly and a larger one is refused at construction rather than
 > left to overflow.
 
@@ -1458,11 +1457,11 @@ implicit casts in join constraints are very expensive in memory; generic typing
 makes the problem non-existent — a clear advantage over SQL engines.
 
 > **The gap between the first two rows is larger than the table conveys.** On
-> 65536 rows a side, joining one-to-one, the merge join measured **24
-> ns/element and 25 KB** against the hash join's **99 ns and 8.4 MB** — four
+> 65536 rows a side, joining one-to-one, the merge join measured **19
+> ns/element and 25 KB** against the hash join's **83 ns and 8.4 MB** — four
 > times the speed and three hundred times less memory (`BenchmarkJoinMerge`
-> and `BenchmarkJoinHash`, ten interleaved rounds pinned to one core, medians;
-> the per-round ratio held at ×3.5 to ×4.7 in nine rounds of ten). "O(1)
+> and `BenchmarkJoinHash`, six runs of one second, medians;
+> [Measurements](../benchmarks.md#joins-and-hydration-in-isolation)). "O(1)
 > versus O(build)"
 > understates it, because the hash join also pays a map lookup per probe row
 > where the merge join advances a cursor. Materialising a side is what you do
@@ -1503,10 +1502,10 @@ lying to the user.
 > `join.BuildLimit` counting both sides' retained rows (`Fail` | `DropNewest`,
 > the first drop reported once through `Report`), because
 > O(throughput × interval) is a class, not a bound; and the measured class is
-> the hash join's, not the merge join's — **~100 ns/element on a zero-width
-> window against 99 for the hash join and 24 for the merge join** in the same
-> session (the [Strategies](#strategies) measurement, `BenchmarkIntervalJoinNarrow` in the same
-> interleaved rounds; ~170 ns on a ±2 s window) — since the per-element map
+> the hash join's, not the merge join's — **82.5 ns/element on a zero-width
+> window against 93.5 for the hash join and 21.8 for the merge join** in the
+> same runs (`BenchmarkIntervalJoinNarrow`; 141 ns on a ±2 s window;
+> [Measurements](../benchmarks.md#the-architectures-figures)) — since the per-element map
 > is the same dominant term. Verified
 > against a brute-force oracle over pseudo-random ordered inputs, eviction
 > and compaction included.
@@ -1562,13 +1561,13 @@ figure is recorded beside the other, because it is the one that says when not
 to use this.
 
 **Batch = 1 is measured, not assumed.** A pipeline built per request costs
-249 ns and 13 allocations against 1.88 ns and none for the same six steps
+280 ns and 13 allocations against 1.98 ns and none for the same six steps
 hand-written: about 1% of the cheapest possible request, so the claim
 survives, and all-batch buys nothing at that size. Two findings follow: the
 per-traversal output buffers of `Convert` and `Filter` — the economy that
 makes the library fast over large batches — become one allocation per stage
 per element when the batch holds one; and building the pipeline costs as much
-as running it, 122 ns of the 249. The shape that pays neither is a pipeline
+as running it: 142 ns once built, 280 built per request. The shape that pays neither is a pipeline
 built once at server start with requests entering it as elements, which is
 also the only shape where the batch can hold more than one request. The
 per-request-pipeline shape is the expensive one, and it is the one everybody

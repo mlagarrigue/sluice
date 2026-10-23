@@ -14,8 +14,8 @@ import (
 // nothing.
 //
 // The library's per-element nanoseconds are the wrong figure for a request
-// path: the measurements put the model at 249 ns per request at
-// batch = 1 against 1.88 for a hand-written chain. These benchmarks measure
+// path: the measurements put the model at 280 ns per request at
+// batch = 1 against 1.98 for a hand-written chain. These benchmarks measure
 // the figure that is right, which is what happens to throughput when the work
 // behind the request is a bounded external resource.
 //

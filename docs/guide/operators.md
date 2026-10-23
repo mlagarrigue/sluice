@@ -252,8 +252,9 @@ rows := parallel.Async(readCSV(path), 4)
 ```
 
 > **In plain terms: parallelism pays less than you think.** Measured: on
-> work heavy enough to spread, four ordered goroutines give ×1.29, not ×4 —
-> because the operator waits for the oldest batch, and one slow goroutine
+> work of about 34 µs per batch, four ordered goroutines give ×1.05, not ×4 —
+> handing each batch over and waking a goroutine costs about what the work
+> does, and the operator waits for the oldest batch, so one slow goroutine
 > holds the others. On a trivial `f`, four goroutines are 3.5 times
 > *slower* than none: the coordination costs more than the work.
 > `Unordered` does better when the cost varies (×2.75 on skewed work). And

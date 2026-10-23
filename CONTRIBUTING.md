@@ -211,7 +211,7 @@ Why this arrangement rather than a copy of the public configuration:
 
 Performance is a stated goal, so it is measured, never asserted. The
 [measurements](docs/benchmarks.md) give the method, the ceiling — a native
-loop at 0.310 ns per element — and the budget of a core operator: **about
+loop at 0.219 ns per element — and the budget of a core operator: **about
 1.5 ns per stage per element**.
 
 If your change touches a hot path, include a benchmark. If it makes

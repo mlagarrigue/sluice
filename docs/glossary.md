@@ -44,7 +44,7 @@ repeated here; a term used in several places is.
   [Security section](design/architecture.md#security--verifiable-properties)
   of the architecture, which refers to them by number.
 - **Nanoseconds per element (ns/element)** — the unit of the core's
-  measurements; the ceiling is 0.310 ns, an operator's budget 1.5 ns per
+  measurements; the ceiling is 0.219 ns, an operator's budget 1.5 ns per
   stage.
 
 - **Source** — a stream paired with the errors that cannot travel inside it

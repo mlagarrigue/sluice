@@ -10,16 +10,16 @@ written with them, and every other line of this page is edited by hand.
 
 ## The ceiling and the budget
 
-**A native `for range` loop over `[]int64`: 0.310 ns per element, zero
-allocations.** That is the ceiling; every measurement of the core is
-expressed as a multiple of it. A core operator has a budget of **about 1.5 ns
+**A native `for range` loop over `[]int64`: 0.219 ns per element, zero
+allocations** ([measured](#the-architectures-figures)). That is the ceiling;
+every measurement of the core is expressed as a multiple of it. A core operator has a budget of **about 1.5 ns
 per stage per element**; `TestStageBudget` in `internal/bench` guards it in
 CI, with a tolerance.
 
 The batch is what makes that budget reachable. Measured: a batched pipeline
 is ~2× faster than an element-wise one for the same useful work from two
-stages on, and the gap reaches ×179 for the operators that must pull from
-several streams at once, because `iter.Pull` costs 68.6 ns per value pulled
+stages on, and the gap reaches ×180 for the operators that must pull from
+several streams at once, because `iter.Pull` costs 53.3 ns per value pulled
 — a coroutine and a context switch — and at batch grain that cost is paid
 once per thousand elements. The batch-size plateau starts at 8 elements and
 stays flat up to a million; 1024 by default is safe, not critical.
@@ -1163,6 +1163,88 @@ included (`database/postgres/internal/entity`).
 | `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
 | `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
 | `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
+
+## The architecture's figures
+
+The figures [the architecture](design/architecture.md) quotes for its
+decisions, each from the benchmark named beside it. Six runs of one second,
+median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
+counts in the unit its header names; the spread is the lowest and highest of
+the six runs.
+
+Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
+the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
+pushed through an `iter.Seq`; the two `MergeTwoStreams` rows merge two halves
+by `iter.Pull`, one value or one batch of 1024 at a time.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBaselineLoop` | 0.219 | 0.215–0.222 | 0 | 0 |
+| `BenchmarkSeqStages/stages=0` | 1.05 | 1.03–1.05 | 72 | 3 |
+| `BenchmarkPullPerElement` | 53.3 | 52.9–58.9 | 267 | 7 |
+| `BenchmarkPullPerBatch` | 0.299 | 0.293–0.300 | 272 | 7 |
+| `BenchmarkMergeTwoStreams/element` | 53.2 | 53.0–53.7 | 559 | 14 |
+| `BenchmarkMergeTwoStreams/batch1024` | 0.295 | 0.291–0.300 | 544 | 14 |
+| `BenchmarkMergeOperator` | 0.305 | 0.300–0.327 | 568 | 16 |
+| `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
+| `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
+
+The joins, 65,536 rows a side. The interval join and the two joins it is
+compared with are measured in the same runs here; the hash join's spread is
+wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
+is the one the guides quote.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.5 | 81.4–83.1 | 24,248 | 56 |
+| `BenchmarkIntervalJoinWide` (±2 s window) | 141 | 139–141 | 92,538 | 105 |
+| `BenchmarkJoinHash` | 93.5 | 76.9–101.6 | 8,421,980 | 599 |
+| `BenchmarkJoinMerge` | 21.8 | 21.0–22.1 | 25,464 | 20 |
+
+Per row, six columns decoded into a struct (`database/postgres`), over a
+batch of 1,024 rows or of one.
+
+| benchmark | ns per row | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkHydrateRowMajor` | 29.6 | 29.1–30.5 | 15,584 | 1,024 |
+| `BenchmarkHydrateReflect` | 56.7 | 56.2–59.3 | 15,608 | 1,025 |
+| `BenchmarkHydrateReflectBoxed` | 187.5 | 185.4–190.5 | 163,764 | 8,192 |
+| `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
+| `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
+| `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
+
+Per call: one request through the six steps of the
+[request path](design/architecture.md#the-request-path), written by hand,
+through a pipeline built per request, or through one built once
+(`internal/bench`); the first `Add` to a diagnostics collector, and an `Add`
+past its ceiling.
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkWebHandwritten` | 1.98 | 1.95–2.02 | 0 | 0 |
+| `BenchmarkWebBatchOne` | 280 | 277–288 | 368 | 13 |
+| `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
+| `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
+| `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
+
+Per run of a whole pipeline. The four `Scan` rows read a simulated table
+through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
+that never changes, and with a consumer that skips ahead, publishing its
+position or not (`pushdown`). The four `Parallel` rows run 65,536 elements
+through `parallel.Ordered` with one worker or four, on an `f` that does
+about 34 µs of work per batch or only passes its batch through
+(`internal/bench`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanNoDemand` | 1,908 | 1,868–1,947 | 8,192 | 1 |
+| `BenchmarkScanQuietDemand` | 1,868 | 1,854–1,936 | 8,192 | 1 |
+| `BenchmarkScanSkipAheadControl` | 445 | 441–452 | 8,192 | 1 |
+| `BenchmarkScanSkipAhead` | 64.4 | 63.2–66.9 | 9,344 | 138 |
+| `BenchmarkParallelSerialBaseline` | 2,160 | 2,131–2,229 | 524,430 | 69 |
+| `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
+| `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
+| `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
 
 ## Web pipeline, in process
 
