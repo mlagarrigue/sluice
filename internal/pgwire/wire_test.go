@@ -499,3 +499,40 @@ func TestWindowedReaderRefusesOversizedFromTheHeader(t *testing.T) {
 		t.Errorf("%d bytes allocated for a message that was refused", cap(rd.buf))
 	}
 }
+
+// Buffered says yes only for a message Next can return without reading: a
+// header alone, or a body still on the wire, is a read away.
+func TestReaderBuffered(t *testing.T) {
+	two := append(frame('d', "one"), frame('d', "two")...)
+	rd := NewReaderSize(bytes.NewReader(two), 64)
+	if rd.Buffered() {
+		t.Fatal("Buffered before any read: the window is empty")
+	}
+	if m, err := rd.Next(); err != nil || string(m.Body) != "one" {
+		t.Fatalf("Next = %q, %v", m.Body, err)
+	}
+	if !rd.Buffered() {
+		t.Fatal("Buffered = false with the second message whole in the window")
+	}
+	if m, err := rd.Next(); err != nil || string(m.Body) != "two" {
+		t.Fatalf("Next = %q, %v", m.Body, err)
+	}
+	if rd.Buffered() {
+		t.Fatal("Buffered = true with nothing left")
+	}
+
+	// A message cut after its header is not whole.
+	cut := append(frame('d', "one"), frame('d', "two")[:7]...)
+	rd = NewReaderSize(&oneByteReader{data: cut, err: io.EOF}, 64)
+	if _, err := rd.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if rd.Buffered() {
+		t.Fatal("Buffered = true for a message whose body has not arrived")
+	}
+
+	// A reader without a window holds nothing between messages.
+	if NewReader(bytes.NewReader(two)).Buffered() {
+		t.Fatal("Buffered = true on a reader without a window")
+	}
+}

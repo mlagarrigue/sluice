@@ -123,9 +123,12 @@ Three reasons come up, and the difference matters:
 - **Everything is read in binary, with no per-column text fallback.** A
   type with no binary send function (some extension types) fails the whole
   query; the workaround is in SQL: `column::text`.
-- **No replication connection.** `Params["replication"]` is refused before
-  anything is sent: a server in replication mode speaks only the simple
-  query protocol, and what it sends next (`CopyBoth`) nothing here reads.
+- **Logical replication only, through `Replicate`.** `Params["replication"]`
+  is refused before anything is sent, because `Query` and `Exec` cannot drive
+  a replication connection; `Replicate` opens one and streams a slot's
+  changes ([ADR 0023](../design/adr/0023-logical-replication.md)). Physical
+  replication is not spoken, transactions arrive only once committed (no
+  `streaming`), and the slot and publication are the caller's to create.
 - **NegotiateProtocolVersion is read as a whole version word.** The
   PostgreSQL documentation (§54.7) calls its first field the newest minor
   version the server supports; the server writes the whole word, major in

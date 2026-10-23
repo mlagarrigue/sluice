@@ -271,6 +271,11 @@ jobs:
           docker exec -i ${{ job.services.postgres.id }} \
             psql -U postgres -v ON_ERROR_STOP=1 < .devcontainer/postgres/init.sql
 
+      # wal_level = logical, for the replication suite; read at start only,
+      # so the server restarts.
+      - name: Turn logical replication on
+        run: scripts/pg-logical.sh ${{ job.services.postgres.id }}
+
       # TLS on the same server, so SCRAM-SHA-256-PLUS meets a server that
       # hashes its own certificate. Plain TCP keeps working beside it.
       - name: Turn TLS on, RSA certificate
@@ -293,7 +298,7 @@ jobs:
           SLUICE_PG_HBA: '1'
         run: |
           go test -race -count=1 -v ./database/postgres/... ./example/... | tee test.log
-          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set|SLUICE_PG_PASSWORD is not set|accepted a wrong password' test.log; then
+          if grep -E 'SLUICE_PG is not set|is a superuser|may not create roles|SLUICE_PG_TLS_CA is not set|SLUICE_PG_PASSWORD is not set|accepted a wrong password|not logical: the server cannot replicate|lacks the REPLICATION attribute' test.log; then
             echo "::error::integration tests skipped: the server or the role is not what they need" >&2
             exit 1
           fi

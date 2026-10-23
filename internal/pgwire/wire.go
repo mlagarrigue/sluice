@@ -120,6 +120,21 @@ func NewReaderSize(r io.Reader, size int) *Reader {
 // MaxMessage reports the limit [Reader.SetMaxMessage] set.
 func (rd *Reader) MaxMessage() int { return rd.max }
 
+// Buffered reports whether the next message is already whole in the read
+// window, so that Next returns it without reading from the connection. A
+// reader without a window holds nothing between messages and reports false.
+//
+// It is what lets a stream close a batch on what the server has already
+// delivered instead of waiting on the socket for the next message.
+func (rd *Reader) Buffered() bool {
+	const hdrLen = 1 + LengthSize
+	if rd.win == nil || rd.hi-rd.lo < hdrLen {
+		return false
+	}
+	length := int(int32(binary.BigEndian.Uint32(rd.win[rd.lo+1 : rd.lo+hdrLen]))) //nolint:gosec // G115: the protocol field is int32
+	return length >= LengthSize && rd.hi-rd.lo >= 1+length
+}
+
 // SetMaxMessage sets the largest message the reader will accept. A value of
 // zero or less restores [DefaultMaxMessage] rather than removing the limit:
 // there is no legitimate way to ask this package for an unbounded read.

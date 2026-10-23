@@ -31,7 +31,7 @@ services:
     # A test server: its data lives in memory and goes with the container,
     # and durability is off. The integration database weighs 39 MB after a
     # full run; the tmpfs counts against mem_limit.
-    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "wal_level=logical"]
     tmpfs:
       - /var/lib/postgresql/data:size=512m
     mem_limit: 1536m

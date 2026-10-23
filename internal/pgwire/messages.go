@@ -45,6 +45,11 @@ const (
 	// instead of killing the connection or silently discarding the data.
 	BackendCopyOutResponse = 'H'
 
+	// BackendCopyBothResponse answers START_REPLICATION on a replication
+	// connection: from there both sides send CopyData until one sends
+	// CopyDone ("Streaming Replication Protocol" in the protocol chapter).
+	BackendCopyBothResponse = 'W'
+
 	// Frontend.
 	FrontendQuery     = 'Q'
 	FrontendParse     = 'P'
@@ -282,7 +287,7 @@ func KnownBackendType(typ byte) bool {
 		BackendNoData, BackendPortalSuspended, BackendEmptyQuery, BackendAuthentication,
 		BackendParameterStatus, BackendBackendKeyData, BackendParameterDescription,
 		BackendNegotiateProtocolVersion, BackendCloseComplete, BackendNotificationResponse,
-		BackendCopyOutResponse, BackendCopyInResponse, BackendCopyData, BackendCopyDone:
+		BackendCopyOutResponse, BackendCopyInResponse, BackendCopyBothResponse, BackendCopyData, BackendCopyDone:
 		return true
 	}
 	return false

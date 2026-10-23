@@ -271,7 +271,7 @@ type Config struct {
 	// Params sets additional runtime parameters in the startup packet —
 	// application_name, search_path, statement_timeout and the rest. It may
 	// not contain "user" or "database", which have fields of their own, nor
-	// "replication": this package does not speak the replication protocol.
+	// "replication": a replication connection is opened by [Replicate].
 	// Setting "client_encoding" overrides the UTF8 this package sends by
 	// default. Without that override, the connection breaks whenever the
 	// server reports any other encoding — at startup, or after a SET
@@ -387,6 +387,11 @@ type Config struct {
 	// completed. Nil means [slog.Default]. The cancellation key's secret is
 	// never logged.
 	Logger *slog.Logger
+
+	// replication asks the server for a logical replication connection
+	// (replication=database). Only [Replicate] sets it: the same key in
+	// Params would open a connection Query and Exec cannot drive.
+	replication bool
 }
 
 // maxProtocol is [Config.MaxProtocol] with its default applied.
@@ -473,7 +478,7 @@ func startupBody(cfg Config) ([]byte, error) {
 	// would be discarded forever. Refused whatever the value, "off" included: the key buys
 	// nothing a plain connection lacks.
 	if _, ok := cfg.Params["replication"]; ok {
-		return nil, errors.New(`postgres: Params["replication"] asks for a replication connection, which this package does not speak`)
+		return nil, errors.New(`postgres: Params["replication"] asks for a replication connection, which Replicate opens — Query and Exec cannot drive one`)
 	}
 	if m := cfg.ChannelBinding; m < ChannelBindingPrefer || m > ChannelBindingDisable {
 		return nil, fmt.Errorf("postgres: Config.ChannelBinding %v is not one of ChannelBindingPrefer, ChannelBindingRequire, ChannelBindingDisable", m)
@@ -538,6 +543,9 @@ func startupBody(cfg Config) ([]byte, error) {
 		// encoding is a property of the codecs rather than a preference. A
 		// caller who overrides it is on their own for what comes back.
 		b = appendParam(b, "client_encoding", "UTF8")
+	}
+	if cfg.replication {
+		b = appendParam(b, "replication", "database")
 	}
 	for _, k := range keys {
 		b = appendParam(b, k, cfg.Params[k])

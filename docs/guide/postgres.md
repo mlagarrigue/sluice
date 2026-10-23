@@ -557,6 +557,53 @@ connection is the worst outcome. A stream obtained from `tx.Query` is read
 **before** the `Commit`; afterwards it refuses to run rather than running
 outside the transaction under nobody's identity.
 
+## Following changes: logical replication
+
+A query reads what a table holds now. **Logical replication** reads what
+happens to it afterwards: every insert, update and delete, in the order the
+server committed them — what is called *change data capture*. The server
+keeps the changes in a **slot** until the reader says it has processed them,
+and a **publication** names the tables the slot follows. Both are created
+once, in SQL, by the database's owner; the role that reads needs the
+`REPLICATION` attribute, and the server `wal_level = logical`.
+
+```go
+// Once: CREATE PUBLICATION orders_pub FOR TABLE orders;
+//       SELECT pg_create_logical_replication_slot('orders_slot', 'pgoutput');
+repl, err := postgres.Replicate(ctx, postgres.DialTLS(addr, tlsConfig), cfg,
+    postgres.ReplicationConfig{Slot: "orders_slot", Publications: []string{"orders_pub"}})
+if err != nil {
+    return err
+}
+defer repl.Close()
+src := repl.Changes(ctx)
+for b := range src.Stream() {
+    for _, c := range b.Items {
+        switch c.Kind {
+        case postgres.ChangeInsert:
+            id, err := pgtype.DecodeInt8(c.New[0].Data) // columns in c.Relation.Columns order
+            // …
+        case postgres.ChangeCommit:
+            repl.Ack(c.EndLSN) // processed: the server may let these changes go
+        }
+    }
+}
+return src.Err()
+```
+
+> **In plain terms: acknowledging.** The server keeps every change until you
+> call `Ack` with a position past it. Acknowledge after the work is done, not
+> before: a reader that stops in between gets the unacknowledged changes again
+> when it starts over, which is safe; a reader that acknowledged first would
+> have lost them. The flip side is that a slot nobody reads keeps the server's
+> log growing, so drop a slot you no longer use
+> (`SELECT pg_drop_replication_slot('orders_slot')`).
+
+A transaction arrives as a `Begin`, its row changes and a `Commit`, and
+nothing of it before the server has committed it. The values are binary and
+decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The
+design is in [ADR 0023](../design/adr/0023-logical-replication.md).
+
 ## What is not there
 
 - **No connection pool**: a `Conn` is one connection; holding several is
