@@ -400,10 +400,24 @@ type Conn struct {
 	// ownerRegistrar for one that owns its socket. The peer needs them to
 	// follow this end across a NAT rebind (RFC 9000 §9.5).
 	registrar cidRegistrar
-	// sendsTicket is [ListenerConfig.SessionTickets] on a connection the
-	// listener accepts: one session ticket leaves once the handshake
-	// completes (issueTicket).
+	// sendsTicket is [ListenerConfig.SessionTickets] or EarlyData on a
+	// connection the listener accepts: one session ticket leaves once the
+	// handshake completes (issueTicket).
 	sendsTicket bool
+	// early is the listener's 0-RTT admission (ListenerConfig.EarlyData),
+	// nil when 0-RTT is refused — on every client, on every server
+	// without it. earlyOpener reads the client's 0-RTT packets once
+	// crypto/tls installs the early secret, which it does only when the
+	// resumption's 0-RTT was accepted; it is dropped at the first 1-RTT
+	// packet (RFC 9001 §4.9.3). deferredEarly holds 0-RTT packets that
+	// arrived before that secret. earlyAccepted is closed when it arrives.
+	early         *earlyGate
+	earlyOpener   *packetOpener
+	deferredEarly []deferredPacket
+	earlyAccepted chan struct{}
+	// hsComplete is closed when the handshake completes
+	// (Conn.HandshakeComplete).
+	hsComplete chan struct{}
 	// localCIDs are the identifiers this end currently answers to, sequence
 	// 0 being scid; nextLocalSeq numbers the next one issued.
 	// localRetirePrior is the Retire Prior To this end has asked for: the
@@ -975,7 +989,11 @@ func newServerConn(pc net.PacketConn, peer net.Addr, h longHeader, cfg *tls.Conf
 		_ = c.Close() // newConn started the timer loop; an early failure must stop it
 		return nil, err
 	}
-	c.tls = tls.QUICServer(&tls.QUICConfig{TLSConfig: cfg})
+	// Session events on: every resumption reaches handleTLSEvent, which
+	// refuses its 0-RTT unless this connection's listener admits it — a
+	// ticket marked for early data by another instance sharing the
+	// Config's ticket keys included, which crypto/tls alone would accept.
+	c.tls = tls.QUICServer(&tls.QUICConfig{TLSConfig: cfg, EnableSessionEvents: true})
 	if err := c.start(); err != nil {
 		_ = c.Close()
 		return nil, err
@@ -1015,6 +1033,8 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 		acceptReady:         make(chan struct{}, 1),
 		closed:              make(chan struct{}),
 		gone:                make(chan struct{}),
+		earlyAccepted:       make(chan struct{}),
+		hsComplete:          make(chan struct{}),
 		timerKick:           make(chan struct{}, 1),
 		maxDatagram:         1200, // until a probe proves the path carries more (pmtu.go)
 		connSend:            sendQuota{},
@@ -1379,24 +1399,72 @@ func (c *Conn) endedDuringHandshakeErr() error {
 	return fmt.Errorf("%w: the connection closed during the handshake", ErrQUIC)
 }
 
-// issueTicket has crypto/tls write the connection's one session ticket and
-// sends it, in the application space where RFC 9001 §4.5 puts it, beside
+// issueTicket has crypto/tls write the connection's one session ticket —
+// marked for 0-RTT, with what earlyGate needs to admit it, when the
+// listener has EarlyData — and sends it, in the application space where RFC 9001 §4.5 puts it, beside
 // the HANDSHAKE_DONE handshakeComplete adds — gathered into one datagram.
 // Called once the handshake is complete, on a server: before then
 // crypto/tls refuses, and on a client it has no ticket to send.
 func (c *Conn) issueTicket() error {
-	if err := c.tls.SendSessionTicket(tls.QUICSessionTicketOptions{}); err != nil {
+	opts := tls.QUICSessionTicketOptions{}
+	if c.early != nil {
+		opts.EarlyData = true
+		opts.Extra = [][]byte{c.early.ticketExtra(time.Now())}
+	}
+	if err := c.tls.SendSessionTicket(opts); err != nil {
 		return err
 	}
 	_, err := c.pump()
 	return err
 }
 
+// installEarly installs the 0-RTT read keys of a server whose resumption's
+// 0-RTT was accepted, reads the 0-RTT packets that arrived before them, and
+// tells the listener the connection may be accepted now.
+func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
+	s, err := suiteFor(suiteID)
+	if err != nil {
+		return err
+	}
+	opener, err := newOpenerSuite(secret, s)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.earlyOpener = opener
+	held := c.deferredEarly
+	c.deferredEarly = nil
+	peer, rxECN := c.peer, c.rxECN
+	c.mu.Unlock()
+	close(c.earlyAccepted)
+	for _, pkt := range held {
+		c.mu.Lock()
+		c.rxECN = pkt.ecn
+		c.mu.Unlock()
+		if err := c.receiveAt(pkt.raw, peer, pkt.at); err != nil {
+			return err
+		}
+	}
+	c.mu.Lock()
+	c.rxECN = rxECN
+	c.mu.Unlock()
+	return nil
+}
+
+// HandshakeComplete returns a channel closed when the handshake completes.
+// A connection from [Dial] has completed it already, and so has one from
+// [Listener.Accept] unless the listener has [ListenerConfig.EarlyData]:
+// that one may not have, and what it received until then may be a replay of
+// another client's first flight. A connection whose handshake fails never closes the channel:
+// select on [Conn.Done] beside it.
+func (c *Conn) HandshakeComplete() <-chan struct{} { return c.hsComplete }
+
 // handshakeComplete is the transition TLS reports: the server confirms at
 // once and tells the client with HANDSHAKE_DONE; the client confirms when
 // that frame arrives (§4.1.2 of RFC 9001). Handshake keys are dropped on
 // confirmation (§4.9.2). Called under mu.
 func (c *Conn) handshakeComplete() {
+	close(c.hsComplete)
 	if !c.isClient {
 		c.control = AppendVarint(c.control, frameHandshakeDone)
 		c.confirmLocked()
@@ -1470,20 +1538,33 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	switch e.Kind {
 	case tls.QUICSetReadSecret, tls.QUICSetWriteSecret:
 		if e.Level == tls.QUICEncryptionLevelEarly {
-			// The 0-RTT secret. crypto/tls hands it out whenever a
-			// resumption it attempts (a tls.Config with a
-			// ClientSessionCache, a ticket the server marked for early
-			// data, RFC 9001 §4.6.1) or accepts carries it. This package
-			// sends no 0-RTT packet and accepts none, which §4.6.1 leaves
-			// a client free to do after a resumption — so the secret has
-			// no space to go to. spaceFor would file it under the
-			// application space, where it sealed 1-RTT packets with a
-			// key the peer holds only for 0-RTT: dropped by the peer,
-			// declared lost here, until the 1-RTT secret replaced it.
-			// 0-RTT is not served (quic.go, "What is not here").
+			// The 0-RTT secret. On a server, crypto/tls hands out the read
+			// secret only for a resumption whose 0-RTT it accepted, which
+			// the QUICResumeSession case below allows only when the
+			// listener admits the ticket: the client's 0-RTT packets are
+			// read with it (installEarly). On a client, crypto/tls hands
+			// it out whenever a resumption it attempts carries a ticket
+			// the server marked for early data (RFC 9001 §4.6.1); this
+			// package sends no 0-RTT packet, which §4.6.1 leaves a client
+			// free to do, so the secret has no space to go to. spaceFor
+			// would file it under the application space, where it sealed
+			// 1-RTT packets with a key the peer holds only for 0-RTT.
+			if !c.isClient && e.Kind == tls.QUICSetReadSecret {
+				return false, c.installEarly(e.Suite, e.Data)
+			}
 			return false, nil
 		}
 		return false, c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret)
+	case tls.QUICResumeSession:
+		// A client resumes (server side; client connections leave session
+		// events off). Its 0-RTT stands only if this listener admits the
+		// ticket (ADR 0019); otherwise crypto/tls answers without
+		// early_data, and no 0-RTT packet is read (RFC 9001 §4.6.2).
+		if !c.isClient && e.SessionState.EarlyData &&
+			(c.early == nil || !c.early.admit(e.SessionState.Extra, time.Now())) {
+			e.SessionState.EarlyData = false
+		}
+		return false, nil
 	case tls.QUICRejectedEarlyData:
 		// Nothing was sent under the early secret, so nothing is to be
 		// resent in 1-RTT (§4.6.2): the rejection is a non-event, not one

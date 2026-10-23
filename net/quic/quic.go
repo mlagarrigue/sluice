@@ -138,11 +138,11 @@
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT. Neither end sends or accepts data in 0-RTT packets. Session
-//     resumption is here: a [Listener] issues a ticket when asked
-//     ([ListenerConfig.SessionTickets]) and a client given a
-//     [tls.ClientSessionCache] presents it ([Dial]), both still in one
-//     round trip.
+//   - 0-RTT from a client. A [Listener] accepts it when asked
+//     ([ListenerConfig.EarlyData], ADR 0019), once per ticket and only
+//     for its own; a client given a [tls.ClientSessionCache] resumes
+//     ([Dial]) but sends nothing in 0-RTT, so its first request still
+//     waits the round trip.
 //   - **Versions other than 1.** QUIC version 2 (RFC 9369) and compatible
 //     version negotiation (RFC 9368, the version_information parameter)
 //     are not implemented: the only version spoken is 1. A Version

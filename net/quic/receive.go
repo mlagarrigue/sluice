@@ -297,6 +297,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 
 		var (
 			space    int
+			early    bool // a 0-RTT packet, read with earlyOpener
 			pnOffset int
 			peerSCID []byte
 			raw      []byte
@@ -349,12 +350,26 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				c.handleRetry(h)
 				return nil
 			default:
-				// 0-RTT is not served; its declared length says where the
-				// next packet starts.
-				datagram = after
-				continue
+				// 0-RTT (the only long type left, §17.2): a client's early
+				// data, read on a server whose listener accepted it, in the
+				// application space it shares with 1-RTT (§12.3). A client
+				// never receives one — a server does not send 0-RTT — and
+				// drops it.
+				if c.isClient {
+					c.noteDiscard()
+					datagram = after
+					continue
+				}
+				space, early = spaceApplication, true
 			}
-			if !c.expectedDCID(h.DCID, space) {
+			// A client's 0-RTT names the identifier its Initial named
+			// until the server's first packet tells it another, so it is
+			// checked by the Initial's rule.
+			dcidSpace := space
+			if early {
+				dcidSpace = spaceInitial
+			}
+			if !c.expectedDCID(h.DCID, dcidSpace) {
 				c.noteDiscard()
 				datagram = after
 				continue
@@ -401,6 +416,29 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 			c.ku.dropPrevAt = time.Time{}
 		}
 		opener, largest, discarded := sp.opener, sp.largest, sp.discarded
+		if early {
+			opener = c.earlyOpener
+			if opener == nil && !c.earlyOver() {
+				// Before the early secret: the ClientHello that carries it
+				// may be in this very datagram, ahead of this packet, and
+				// crypto/tls reads it only once the datagram is through.
+				if len(c.deferredEarly) < 16 {
+					c.deferredEarly = append(c.deferredEarly, deferredPacket{
+						raw: append([]byte(nil), raw...),
+						at:  now,
+						ecn: c.rxECN,
+					})
+				}
+				c.mu.Unlock()
+				datagram = rest
+				continue
+			}
+			// No early secret and none coming: 0-RTT refused, or its keys
+			// already dropped. Not one of these packets is read (RFC 9001
+			// §4.6.2), and a reordered one is resent by the client in
+			// 1-RTT.
+			discarded = discarded || opener == nil
+		}
 		c.mu.Unlock()
 		if discarded {
 			datagram = rest
@@ -497,7 +535,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 				return err
 			}
 		}
-		if err := c.processPacket(space, pn, payload, now); err != nil {
+		if err := c.processPacket(space, early, pn, payload, now); err != nil {
 			return err
 		}
 		datagram = rest
@@ -505,12 +543,26 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 	return nil
 }
 
+// earlyOver reports, under mu, that no early secret will come: the 1-RTT
+// read keys are in, so the handshake read the ClientHello long ago and
+// crypto/tls would have handed the secret over by now. Before that, a 0-RTT
+// packet may be ahead of its keys.
+func (c *Conn) earlyOver() bool {
+	return c.spaces[spaceApplication].opener != nil
+}
+
 // processPacket acts on one authenticated packet. now is when the packet
 // arrived — for a packet replayed off the deferred queue, that is when it was
 // first received, not when the keys finally let it be read.
-func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time) error {
+func (c *Conn) processPacket(space int, early bool, pn uint64, payload []byte, now time.Time) error {
 	c.mu.Lock()
 	sp := &c.spaces[space]
+	if space == spaceApplication && !early && c.earlyOpener != nil {
+		// RFC 9001 §4.9.3: a server MAY drop its 0-RTT keys at the first
+		// 1-RTT packet that authenticates; a 0-RTT packet reordered
+		// behind it is resent by the client in 1-RTT.
+		c.earlyOpener, c.deferredEarly = nil, nil
+	}
 	if !sp.ack.record(pn, now) {
 		// A duplicate: already processed, or forgotten. Processing it again
 		// would double-deliver.
@@ -565,7 +617,7 @@ func (c *Conn) processPacket(space int, pn uint64, payload []byte, now time.Time
 	}
 	c.mu.Unlock()
 
-	if err := c.frames(space, payload, now); err != nil {
+	if err := c.framesIn(space, early, payload, now); err != nil {
 		c.abort(err)
 		return err
 	}
@@ -791,6 +843,12 @@ func (c *Conn) handleRetry(h longHeader) {
 // protocol violation for the caller to abort with. now is the packet's
 // arrival time.
 func (c *Conn) frames(space int, payload []byte, now time.Time) error {
+	return c.framesIn(space, false, payload, now)
+}
+
+// framesIn is frames for a packet that may be 0-RTT (early), whose frame
+// types §12.4 restricts further.
+func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) error {
 	// RFC 9000 §12.4: a packet with no frames at all is PROTOCOL_VIOLATION.
 	// A payload of nothing but PADDING contains frames and stays legal; only
 	// the empty payload is refused here.
@@ -906,6 +964,19 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 		// frame admitted at that level is a frame anyone who saw the first
 		// datagram can forge: a HANDSHAKE_DONE there would make a client
 		// discard its Handshake keys mid-handshake, for good.
+		if early {
+			// RFC 9000 §12.4, Table 3: of the application frames, ACK,
+			// CRYPTO, NEW_TOKEN, PATH_RESPONSE and HANDSHAKE_DONE never
+			// appear in 0-RTT — the client has nothing of this
+			// connection's to acknowledge or answer yet.
+			switch f.Type {
+			case frameACK, frameACK | 1, frameCrypto, frameNewToken, framePathResponse, frameHandshakeDone:
+				return &transportError{
+					code: transportProtocolViolation,
+					err:  fmt.Errorf("%w: frame type %#x in a 0-RTT packet", ErrQUIC, f.Type),
+				}
+			}
+		}
 		if space != spaceApplication {
 			switch f.Type {
 			case framePing, frameCrypto, frameACK, frameACK | 1, frameConnectionClose:

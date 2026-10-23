@@ -42,11 +42,18 @@ const defaultRetryTokenTTL = 10 * time.Second
 // admissions — limited, as §8.1.4 allows, under a load the per-address and
 // pending-table limits already cap elsewhere. Every method is called with
 // the listener's mu held.
+//
+// The same register records the 0-RTT tickets an [earlyGate] admitted, with
+// failClosed set: there a full register refuses the next entry instead of
+// forgetting the oldest, since a 0-RTT refused costs the client a round
+// trip and a replay accepted breaks RFC 8446 §8. That one is called with
+// the gate's own mu held.
 type spentTokens struct {
-	byID  map[string]time.Time // newSCID → when the token can no longer verify
-	order []string             // byID's keys, oldest expiry first
-	ttl   time.Duration        // ListenerConfig.RetryTokenTTL
-	max   int                  // ListenerConfig.MaxSpentRetryTokens
+	byID       map[string]time.Time // identifier → when it may be forgotten
+	order      []string             // byID's keys, oldest expiry first
+	ttl        time.Duration        // RetryTokenTTL, or EarlyDataWindow
+	max        int                  // MaxSpentRetryTokens, or MaxEarlyDataTickets
+	failClosed bool                 // full: refuse, rather than forget the oldest
 }
 
 // defaultMaxSpentRetryTokens is what a zero
@@ -57,7 +64,7 @@ type spentTokens struct {
 const defaultMaxSpentRetryTokens = 1 << 14
 
 // consume records newSCID's token as spent until expiry and reports whether
-// it was still unspent — false is a replay. now is the caller's clock, so
+// it was still unspent — false is a replay, or a full failClosed register. now is the caller's clock, so
 // expiries stay in insertion order and the sweep below stops at the first
 // live one.
 func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
@@ -73,6 +80,9 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 		s.order = s.order[1:]
 	}
 	if len(s.order) >= s.max {
+		if s.failClosed {
+			return false
+		}
 		delete(s.byID, s.order[0])
 		s.order = s.order[1:]
 	}

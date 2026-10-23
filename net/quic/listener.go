@@ -226,6 +226,38 @@ type ListenerConfig struct {
 	// connection is all crypto/tls sends, and the client, which presents a
 	// ticket once (see [Dial]), gets the next one on the resumed connection.
 	SessionTickets bool
+
+	// EarlyData lets clients send their first requests in 0-RTT packets on
+	// a resumed connection, which saves them a round trip (RFC 9001 §4.6;
+	// the whole design is ADR 0019). It issues tickets as SessionTickets
+	// does, marked for 0-RTT, and a Config with SessionTicketsDisabled is
+	// refused alongside it by [NewListener]. Off by default.
+	//
+	// Early data can be a replay: anyone who copies a client's first
+	// flight can send it again, and the server cannot tell until the
+	// client's Finished arrives. The listener accepts the 0-RTT of a
+	// ticket at most once (RFC 8446 §8), and only for a ticket it issued
+	// itself — another instance, or this one after a restart, resumes the
+	// connection in 1-RTT — less than EarlyDataWindow ago. What remains is
+	// the application's to judge: a connection with 0-RTT accepted is
+	// handed to [Listener.Accept] before its handshake ends, and whatever
+	// it receives before [Conn.HandshakeComplete] is closed may be a
+	// replay whose handshake never completes.
+	EarlyData bool
+
+	// EarlyDataWindow is how long after its issue a ticket may still carry
+	// 0-RTT; an older one resumes in 1-RTT. Zero means 10 minutes; a
+	// negative value is refused by [NewListener].
+	EarlyDataWindow time.Duration
+
+	// MaxEarlyDataTickets bounds the record of tickets whose 0-RTT was
+	// accepted, each kept one EarlyDataWindow so that it is accepted once.
+	// Full, the record refuses 0-RTT rather than forget an entry: the
+	// connection resumes in 1-RTT, and the guarantee holds under any load.
+	// Size it as the rate of 0-RTT connections times the window; an entry
+	// is a 16-byte identifier and a time, in a map and a slice. Zero means
+	// 16,384; a negative value is refused by [NewListener].
+	MaxEarlyDataTickets int
 }
 
 // Listener owns one [net.PacketConn] shared by the connections it serves, and
@@ -293,7 +325,9 @@ type Listener struct {
 	ipOf      map[*Conn]string
 	// spent is the Retry tokens that already admitted a connection, which a
 	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
-	spent     spentTokens
+	spent spentTokens
+	// early admits 0-RTT (ListenerConfig.EarlyData), nil when off.
+	early     *earlyGate
 	closed    bool
 	discarded uint64
 	// resetWindow and resetsSent are the one-second budget maybeSendStatelessReset
@@ -336,6 +370,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxSpentRetryTokens < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxSpentRetryTokens %d is negative — zero means %d", c.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
 	}
+	if c.EarlyDataWindow < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.EarlyDataWindow %v is negative — zero means %v", c.EarlyDataWindow, defaultEarlyDataWindow))
+	}
+	if c.MaxEarlyDataTickets < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxEarlyDataTickets %d is negative — zero means %d", c.MaxEarlyDataTickets, defaultMaxEarlyDataTickets))
+	}
 	if c.TokenKey != ([32]byte{}) && c.TokenKey == c.StatelessResetKey {
 		err = errors.Join(err, errors.New("quic: ListenerConfig.TokenKey equals StatelessResetKey — one key, two uses; give each its own"))
 	}
@@ -365,6 +405,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	}
 	if c.RetryTokenTTL == 0 {
 		c.RetryTokenTTL = defaultRetryTokenTTL
+	}
+	if c.EarlyDataWindow == 0 {
+		c.EarlyDataWindow = defaultEarlyDataWindow
+	}
+	if c.MaxEarlyDataTickets == 0 {
+		c.MaxEarlyDataTickets = defaultMaxEarlyDataTickets
 	}
 	if c.MaxSpentRetryTokens == 0 {
 		c.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
@@ -405,8 +451,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if err != nil {
 		return nil, err
 	}
-	if lcfg.SessionTickets && cfg.SessionTicketsDisabled {
-		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets is set and tls.Config.SessionTicketsDisabled too — "+
+	if (lcfg.SessionTickets || lcfg.EarlyData) && cfg.SessionTicketsDisabled {
+		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets or EarlyData is set and tls.Config.SessionTicketsDisabled too — "+
 			"crypto/tls would send no ticket", ErrQUIC)
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
@@ -429,6 +475,9 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
+	}
+	if lcfg.EarlyData {
+		l.early = newEarlyGate(lcfg.EarlyDataWindow, lcfg.MaxEarlyDataTickets)
 	}
 	var loops sync.WaitGroup
 	loops.Go(func() { l.readLoop(l.pc) })
@@ -1138,7 +1187,8 @@ func (l *Listener) prepareConn(c *Conn) error {
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
 	c.incoming = make(chan rawDatagram, l.lcfg.ConnQueueLen)
-	c.sendsTicket = l.lcfg.SessionTickets
+	c.sendsTicket = l.lcfg.SessionTickets || l.lcfg.EarlyData
+	c.early = l.early
 	if l.preferred == nil {
 		return nil
 	}
@@ -1221,9 +1271,24 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 	c.mu.Lock()
 	c.handshakeBudget = l.lcfg.HandshakeTimeout
 	c.mu.Unlock()
-	err := c.handshake(context.Background())
-	if err != nil {
-		return // the handshake path closes on every failure, same as Accept's
+	// A connection whose 0-RTT was accepted is handed out as soon as it
+	// was (ADR 0019): early data is only worth its replay risk if the
+	// application can act on it before the handshake ends. It keeps its
+	// pending slot until then — MaxPendingConns and HandshakeTimeout
+	// still bound it — and a handshake that fails afterwards closes it
+	// under its new owner.
+	hsDone := make(chan error, 1)
+	go func() { hsDone <- c.handshake(context.Background()) }()
+	select {
+	case err := <-hsDone:
+		if err != nil {
+			return // the handshake path closes on every failure, same as Accept's
+		}
+		hsDone = nil
+	case <-c.earlyAccepted:
+	}
+	if hsDone != nil {
+		defer func() { <-hsDone }() // runs before the slot is given back
 	}
 
 	// Forgotten once its closing state ends (gone), not when it closes:
