@@ -2,7 +2,9 @@ package sluice_test
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -147,6 +149,79 @@ func TestREADMEDoesNotQuoteUnstableRows(t *testing.T) {
 	}
 	if offenders == 0 {
 		t.Logf("%d rows flagged as unstable, none of them quoted: %v", len(unstable), unstable)
+	}
+}
+
+// duration is a time figure as the documents write it: "47 ns", "3.7 µs",
+// "1.11 ms", digits grouped by commas or not.
+var duration = regexp.MustCompile(`(\d[\d,]*(?:\.\d+)?) ?(ns|µs|ms)\b`)
+
+// nanos is a duration match in nanoseconds.
+func nanos(m []string) float64 {
+	v, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+	if err != nil {
+		return -1
+	}
+	return v * map[string]float64{"ns": 1, "µs": 1e3, "ms": 1e6}[m[2]]
+}
+
+// Every duration a guide or the README quotes is a measurement found in
+// docs/benchmarks.md, within the README's tolerance and whatever the unit it
+// is written in. A figure quoted from memory, or from a session whose table
+// has since been regenerated, has no source: it is either brought to the
+// current measurement or left to the page that holds it.
+func TestGuideFiguresHaveASource(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var measured []float64
+	for _, m := range duration.FindAllStringSubmatch(string(page), -1) {
+		measured = append(measured, nanos(m))
+	}
+	// A table may name its unit once, in the header ("ns per call"), and
+	// write bare numbers below it.
+	unit := regexp.MustCompile(`\b(ns|µs|ms)\b`)
+	bare := regexp.MustCompile(`^\s*(\d[\d,]*(?:\.\d+)?)\s*$`)
+	var header []string
+	lines := strings.Split(string(page), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "|") {
+			header = nil
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "|---") {
+			header = cells
+			continue
+		}
+		for c, cell := range cells {
+			if c >= len(header) {
+				break
+			}
+			u, n := unit.FindStringSubmatch(header[c]), bare.FindStringSubmatch(cell)
+			if u != nil && n != nil {
+				measured = append(measured, nanos([]string{"", n[1], u[1]}))
+			}
+		}
+	}
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range append([]string{"README.md"}, guides...) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			for _, m := range duration.FindAllStringSubmatch(line, -1) {
+				v := nanos(m)
+				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
+					t.Errorf("%s:%d: %s is in no table or sentence of docs/benchmarks.md", f, i+1, m[0])
+				}
+			}
+		}
 	}
 }
 
