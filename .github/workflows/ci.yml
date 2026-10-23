@@ -417,8 +417,7 @@ jobs:
   # eyes is the one check the scripted tests cannot be. The expected h2spec
   # failures are listed, each with its reason, in
   # net/httpstream/testdata/h2spec-exclusions.txt; the script fails on any
-  # other red case and on a listed case that passes. HTTP/3 is not here yet:
-  # the runner's curl is built without it.
+  # other red case and on a listed case that passes. HTTP/3 is the next job.
   interop-http:
     runs-on: ubuntu-latest
     steps:
@@ -432,6 +431,24 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq nghttp2-client
       - name: curl, h2load and h2spec against the server
         run: scripts/interop-http.sh
+
+  # The same server over HTTP/3, against two QUIC stacks that share no code
+  # with sluice — curl on OpenSSL's, and aioquic's client, both from the image
+  # scripts/interop-http3.Dockerfile builds, since the runner's curl speaks
+  # no HTTP/3 — and h3spec's RFC 9000 and RFC 9114 cases, with the expected
+  # failures in net/httpstream/testdata/h3spec-exclusions.txt held to the
+  # same two-way rule.
+  interop-http3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: curl, aioquic and h3spec against the server
+        run: scripts/interop-http3.sh
 
   # net/quic against a peer that shares none of its code: the interop/ module
   # (its own go.mod, excluded from the root's ./... and so from the deps job's

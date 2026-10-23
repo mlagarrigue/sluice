@@ -1,0 +1,15 @@
+# h3spec cases scripts/interop-http3.sh expects to fail, one per line, each
+# under the reason it is not a defect. A line is a case's full name as
+# h3spec's "Failures:" section prints it after the case number.
+
+# RFC 9114 §7.2.4: refusing a repeated setting identifier is a MAY. The
+# server refuses repeats among identifiers below 64, where every setting
+# RFC 9114 and RFC 9204 define lives; this case repeats 0x40, a setting the
+# server ignores either way (h3conn.go, settings).
+HTTP/3 servers treats a repeated setting identifier as an error whatever its value [HTTP/3 7.2.4.1]
+
+# The case announces a GOAWAY of 1 GiB on the control stream and wants
+# H3_EXCESSIVE_LOAD, which RFC 9114 §10.5 makes a MAY. The server buffers
+# nothing and closes at once with H3_FRAME_ERROR (0x106): a frame longer than
+# the field it carries is a layout fault, which §7.1 makes H3_FRAME_ERROR.
+HTTP/3 servers MUST NOT buffer a frame longer than SETTINGS_MAX_FIELD_SECTION_SIZE [HTTP/3 7.1]

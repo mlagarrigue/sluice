@@ -204,7 +204,9 @@ The package left the list the day its three conditions were met. HTTP/1.1
 and /2 have faced curl, h2load (10,000 requests over ten connections) and
 h2spec in continuous integration
 (`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
-module); the parsers are fuzzed in CI; the limit on streamed HTTP/2
+module), curl, aioquic's client and h3spec (`scripts/interop-http3.sh`,
+whose expected h3spec failures are listed with their reasons in
+`net/httpstream/testdata/h3spec-exclusions.txt`); the parsers are fuzzed in CI; the limit on streamed HTTP/2
 responses is owned below, and their per-batch cost measured from a real
 client, then halved.
 

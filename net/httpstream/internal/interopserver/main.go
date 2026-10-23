@@ -1,6 +1,8 @@
 // Command interopserver is the server that third-party clients are pointed
-// at: curl over HTTP/1.1 and HTTP/2, and h2spec for RFC 9113 conformance.
-// scripts/interop-http.sh runs it, locally and in continuous integration.
+// at: curl over HTTP/1.1 and HTTP/2, and h2spec for RFC 9113 conformance;
+// with -h3, curl and aioquic over HTTP/3, and h3spec for RFC 9114.
+// scripts/interop-http.sh and scripts/interop-http3.sh run it, locally and
+// in continuous integration.
 //
 // It is deliberately small. Every request is answered with its own target,
 // which lets a client check that the response it got is the one it asked
@@ -12,6 +14,9 @@
 // recommends — TLS 1.2 floor, AEAD suites, ALPN h2 then http/1.1 — on a
 // certificate it signs for itself at start-up, so that the clients above
 // also exercise ALPN, the way a browser reaches HTTP/2.
+//
+// With -h3 it serves HTTP/3 on UDP instead, through [httpstream.Server.ServeQUIC]
+// on a [quic.Listener]: TLS 1.3, ALPN h3, the same throwaway certificate.
 //
 // The address it listens on is printed on standard output, on its own line,
 // once the listener is open: the script reads it rather than guessing a free
@@ -38,12 +43,20 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/httpstream"
+	"github.com/mlagarrigue/sluice/net/quic"
+	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "address to listen on; port 0 picks a free one")
 	withTLS := flag.Bool("tls", false, "terminate TLS with a self-signed certificate and ALPN")
+	h3 := flag.Bool("h3", false, "serve HTTP/3 over QUIC on UDP instead of TCP")
 	flag.Parse()
+
+	if *h3 {
+		serveH3(*listen)
+		return
+	}
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -69,6 +82,36 @@ var config = httpstream.Config{
 	IdleTimeout:  10 * time.Second,
 	ReadTimeout:  10 * time.Second,
 	WriteTimeout: 10 * time.Second,
+}
+
+// serveH3 serves HTTP/3 on a UDP socket until SIGINT or SIGTERM, with the
+// same handler and bounds as the TCP server.
+func serveH3(listen string) {
+	pc, err := udp.Listen("udp", listen)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(pc.LocalAddr().String())
+	cfg := &tls.Config{
+		Certificates: tlsConfig().Certificates,
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h3"},
+	}
+	ln, err := quic.NewListener(pc, cfg, quic.DefaultParameters(), quic.ListenerConfig{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	s := &httpstream.Server{Config: config, Handler: handle}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		_ = s.Close()
+	}()
+	err = s.ServeQUIC(ln)
+	stop()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 // tlsConfig is the configuration docs/guide/experimental.md recommends,
