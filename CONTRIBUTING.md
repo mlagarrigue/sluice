@@ -337,11 +337,13 @@ In review, comments follow
   [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff), the exported
   API of each commit with its parent's, on every pull request and every push
   to `main`; a commit that breaks the API without a `!` in its own subject
-  blocks.
+  blocks. Once a `v1.*` tag exists, a break of a stable package blocks with
+  or without `!`: what v1 freezes, and what it leaves free, is
+  [ADR 0020](docs/design/adr/0020-compatibility.md).
+- Deprecating: `// Deprecated: use X instead.` on the symbol. In v0 it is
+  kept at least one minor before removal; from v1 it stays until v2.
 - A published tag never moves: the module proxy has frozen it. A version
   published by mistake is withdrawn with the `retract` directive in `go.mod`.
-- Deprecating: `// Deprecated: use X instead.` on the symbol, kept at least
-  one minor before removal.
 - Go versions: the `go` line of `go.mod` is the floor, Go 1.26 today, and
   CI builds every pull request on that floor and on the latest stable
   release. Nothing in between is tested; it is interpolation. Raising the

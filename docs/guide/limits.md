@@ -16,7 +16,10 @@ Three reasons come up, and the difference matters:
   being built on top of it, and its frictions will land here.
 - **The API will change before version 1.** In v0, a minor version
   (0.1 → 0.2) may rename or remove a function. Changes are announced in the
-  release notes; the compatibility policy of a v1 is still to be published.
+  release notes. What v1 will freeze — the stable packages, the sentinel
+  errors, the diagnostic codes — and what it leaves free, the experimental
+  packages, is in [ADR 0020](../design/adr/0020-compatibility.md), which
+  `scripts/check-api.sh` applies.
 - **One machine.** Everything fits in one process. Spreading a pipeline
   over several machines, or resuming on another machine after a crash, is
   neither provided nor decided: the question is whether that is the job of

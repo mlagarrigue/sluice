@@ -1,6 +1,7 @@
 #!/bin/sh
 # Refuses an incompatible change to the exported API that the commit making
-# it does not announce with a `!` in its subject.
+# it does not announce with a `!` in its subject — and, once a v1 tag exists,
+# any incompatible change to a stable package (ADR 0020; see v1_era below).
 #
 #   scripts/check-api.sh                 every commit not pushed yet (@{upstream}..HEAD)
 #   scripts/check-api.sh BASE [HEAD]     every commit in BASE..HEAD (HEAD by default)
@@ -65,9 +66,60 @@ incompatible() {
 
 gochange='*.go :!*_test.go go.mod'
 
+# From v1.0.0 the promise of ADR 0020 holds: a break of a stable package —
+# not experimental (the first sentence of its documentation says so, the
+# label repo_test.go holds the README and the guides to), not internal, not
+# under example/ — would need a new major version, which in Go is a new
+# module path; it is refused outright, `!` or not. An experimental package
+# keeps v0's rule: a break is announced with `!`. The era is the latest tag
+# reachable from the commit; CHECK_API_MAJOR=1 forces v1, so that the rule
+# can be exercised before a v1 tag exists.
+v1_era() {
+  [ "${CHECK_API_MAJOR-}" = 1 ] && return 0
+  git describe --tags --abbrev=0 --match 'v[1-9]*' "$1" >/dev/null 2>&1
+}
+
+unstable=
+# stable_breaks prints the lines of apidiff's report (`- ./<package>.<symbol>:
+# ...`) that name a stable package.
+stable_breaks() {
+  if [ -z "$unstable" ]; then
+    unstable=$(go list -f '{{.ImportPath}}|{{.Doc}}' ./... | grep -i '|.*experimental' | cut -d'|' -f1 | sed "s|^$module||; s|^/||")
+  fi
+  echo "$1" | while IFS= read -r line; do
+    pkg=${line#- ./}
+    pkg=${pkg%%.*}
+    case "$pkg" in example | example/*) continue ;; esac
+    echo "$unstable" | grep -qx "$pkg" && continue
+    echo "$line"
+  done
+}
+
+# judge <changes> <announced> <era-ref> <what>: the verdict on one commit's
+# incompatible changes, 1 for a refusal.
+judge() {
+  [ -n "$1" ] || return 0
+  if v1_era "$3"; then
+    stable=$(stable_breaks "$1")
+    if [ -n "$stable" ]; then
+      echo "$stable" >&2
+      echo "check-api: $4 breaks a stable package after v1 (ADR 0020): that is a new major version, a new module path, not a commit" >&2
+      return 1
+    fi
+  fi
+  [ "$2" = 1 ] && return 0
+  echo "$1" >&2
+  echo "check-api: $4 breaks the exported API and carries no '!'" >&2
+  return 1
+}
+
 if [ "${1-}" = --index ]; then
   subject=${2-}
+  announced=0
   if echo "$subject" | grep -qE "$bang"; then
+    announced=1
+  fi
+  if [ "$announced" = 1 ] && ! v1_era HEAD; then
     exit 0
   fi
   # The pathspecs are meant to split; set -f keeps the shell from globbing them.
@@ -80,11 +132,7 @@ if [ "${1-}" = --index ]; then
   git checkout-index -a --prefix="$tmp/index/"
   export_data "$tmp/index" "$tmp/index.exp" "the index"
   changes=$(incompatible "$old" "$tmp/index.exp")
-  if [ -n "$changes" ]; then
-    echo "$changes" >&2
-    echo "check-api: the staged changes break the exported API and the subject carries no '!'" >&2
-    exit 1
-  fi
+  judge "$changes" "$announced" HEAD "the staged change" || exit 1
   exit 0
 fi
 
@@ -108,18 +156,18 @@ for c in $(git rev-list --reverse --no-merges "$base..$head"); do
     continue
   fi
   subject=$(git log -1 --format=%s "$c")
+  announced=0
   if echo "$subject" | grep -qE "$bang"; then
+    announced=1
+  fi
+  if [ "$announced" = 1 ] && ! v1_era "$c"; then
     continue
   fi
   checked=$((checked + 1))
   old=$(commit_data "$c^")
   new=$(commit_data "$c")
   changes=$(incompatible "$old" "$new")
-  if [ -n "$changes" ]; then
-    echo "$changes" >&2
-    echo "check-api: $(git rev-parse --short "$c") \"$subject\" breaks the exported API and carries no '!'" >&2
-    status=1
-  fi
+  judge "$changes" "$announced" "$c" "$(git rev-parse --short "$c") \"$subject\"" || status=1
 done
 if [ "$status" -eq 0 ]; then
   echo "check-api: $checked commit(s) in $base..$head compared with their parent, no unannounced break"
