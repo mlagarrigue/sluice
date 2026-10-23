@@ -219,3 +219,24 @@ func TestMaxStreamedBodyBytesRefusesNegative(t *testing.T) {
 		t.Errorf("negative MaxStreamedBodyBytes: %v", err)
 	}
 }
+
+// A streamed body whose last bytes share a read with the request pipelined
+// behind it: the last piece is handed out before that request is moved down
+// over the body's region, not after — the other order handed the handler the
+// next request's bytes as the end of its body.
+func TestStreamedBodyEndSharesAReadWithTheNextRequest(t *testing.T) {
+	addr, _ := serveTest(t, streamCfg(), readAllHandler)
+	c := dial(t, addr)
+	body := pattern(2000) // over MaxBodyBytes: it streams although whole in the first read
+	req := fmt.Sprintf("POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n%sGET /next HTTP/1.1\r\nHost: x\r\n\r\n", len(body), body)
+	if _, err := c.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(c)
+	if status, got := readResponse(t, br); !strings.Contains(status, "200") || got != "2000 a x" {
+		t.Fatalf("streamed body: %s %q, want 200 \"2000 a x\"", status, got)
+	}
+	if status, got := readResponse(t, br); !strings.Contains(status, "200") || got != "0 /next" {
+		t.Fatalf("the request behind it: %s %q", status, got)
+	}
+}

@@ -151,15 +151,19 @@ func (b *bodyStream) fail(err error) error {
 func (b *bodyStream) step() (data []byte, more bool, err error) {
 	buf := b.r.buf[:b.r.n]
 	if !b.chunked {
+		if b.left == 0 {
+			// Finished at the pull after the last piece, not with it:
+			// finish moves the next request down over the body's region,
+			// where that piece still lies.
+			b.finish()
+			return nil, false, nil
+		}
 		k := min(len(buf)-b.pos, b.left)
 		data = buf[b.pos : b.pos+k : b.pos+k]
 		b.pos += k
 		b.left -= k
 		b.total += k
-		if b.left == 0 {
-			b.finish()
-		}
-		return data, false, nil
+		return data, b.left == 0, nil
 	}
 	switch b.state {
 	case chunkSize:
