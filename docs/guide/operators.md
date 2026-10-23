@@ -35,6 +35,11 @@ once running.
 
 A few deserve a word:
 
+- `Map` and `Convert` both apply a function to every element. `Map` keeps
+  the type and writes in place; `Convert` changes it and writes into a
+  buffer of its own, never into its input. One generic function for both
+  would allocate where `Map` does not, and the measurement that kept them
+  apart is in [ADR 0007](../design/adr/0007-map-and-convert.md).
 - `FlatMap` replaces each element with zero, one or several elements (an
   order becomes its lines).
 - `Scan` accumulates a value as it goes (a running total): it keeps that

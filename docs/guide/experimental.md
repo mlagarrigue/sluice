@@ -62,7 +62,10 @@ stats := conn.Stats() // counters, RTT, congestion window, bytes in flight, loss
 The **transport parameters** are the limits each end announces to the
 other (how much data, how many streams, what idle timeout). Start from
 `DefaultParameters()`; the zero value is refused, because it would announce
-a connection with no credit at all, unable to send anything.
+a connection with no credit at all, unable to send anything. What a server
+must do beyond the handshake — route datagrams by connection ID, validate
+addresses against amplification, follow a client whose NAT rebinds — is
+[ADR 0015](../design/adr/0015-quic-server.md).
 
 > **In plain terms: the dependency QUIC needs.** QUIC's encryption needs an
 > algorithm (ChaCha20-Poly1305) that `crypto/tls` uses but does not expose.
@@ -253,7 +256,9 @@ middle**, as batch stages, for `net/httpstream`'s requests, with the same
 vocabulary (`web.Verifier`, `web.Authorizer`, `web.Report`) — so that the
 two paths do not drift apart. What the stages learn (the route, the
 principal, a refusal) travels in the element itself, an `Exchange` that
-wraps the request. It keeps the label alone: its transport has left, but
+wraps the request. Why these stages ship beside the core rather than in
+it is [ADR 0011](../design/adr/0011-web-stream-beside-core.md). It keeps
+the label alone: its transport has left, but
 no real consumer has yet built its request path on these stages. That
 confrontation is what it lacks, not a measurement.
 
@@ -271,6 +276,10 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
     return stream.Render(ex, func(i int) (int, any) { return 200, results[i] })
 }
 ```
+
+The router is a table compiled once: first match wins in table order,
+`{name}` matches one segment, and nothing is percent-decoded
+([ADR 0010](../design/adr/0010-routing-table.md)).
 
 ## `net/httpstream` — supported
 
@@ -344,8 +353,9 @@ loses is simultaneity, and a slow reader of the first delays the second.
 Where that matters, give long-lived streamed responses a connection of
 their own, or serve them over HTTP/3, where each stream has its own
 transport. `scripts/interop-http.sh` checks the two-stream case against
-curl; the decision record on the multiplexed connection records the trade
-and what would reverse it.
+curl; the decision record on the multiplexed connection
+([ADR 0008](../design/adr/0008-multiplexed-connection.md)) records the
+trade and what would reverse it.
 
 The cost of a streamed batch over HTTP/2 is measured, not promised
 (`docs/benchmarks.md`, "HTTP/2 and HTTP/3, from a real client"). The first

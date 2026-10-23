@@ -886,3 +886,31 @@ func TestSecurityPropertiesNameTheirTests(t *testing.T) {
 		t.Errorf("found the rows %v, want S1 to S14", seen)
 	}
 }
+
+// TestEveryDecisionRecordIsLinked keeps every decision record reachable from
+// the page that applies it: a record's file name appears in a document
+// outside docs/design/adr, so a reader learns why from where the decision
+// shows, not from a directory listing.
+func TestEveryDecisionRecordIsLinked(t *testing.T) {
+	var docs strings.Builder
+	for _, f := range markdownFiles(t) {
+		if strings.HasPrefix(f, filepath.Join("docs", "design", "adr")+string(filepath.Separator)) {
+			continue
+		}
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs.Write(b)
+	}
+	text := docs.String()
+	records, err := filepath.Glob("docs/design/adr/[0-9][0-9][0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if !strings.Contains(text, "adr/"+filepath.Base(r)) {
+			t.Errorf("%s is linked by name from no document outside docs/design/adr", r)
+		}
+	}
+}
