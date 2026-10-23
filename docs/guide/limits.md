@@ -113,10 +113,11 @@ Three reasons come up, and the difference matters:
   if an authority signed the server's certificate or an intermediate that
   way, the TLS handshake fails before any authentication: re-sign with
   `-sigopt rsa_pss_saltlen:digest`.
-- **No LISTEN/NOTIFY, no notices.** A `LISTEN` goes through `Exec`, but
-  the notifications that arrive afterwards are discarded, for want of an
-  API to receive them; the server's notices (`RAISE NOTICE`, warnings) are
-  too.
+- **Notifications on a connection of their own, no notices.** `Listen`
+  opens a connection that only listens and streams its notifications
+  ([ADR 0024](../design/adr/0024-listen-notify.md)); a `LISTEN` run through
+  `Exec` on an ordinary connection still has its notifications discarded.
+  The server's notices (`RAISE NOTICE`, warnings) are discarded too.
 - **No COPY TO STDOUT.** Only loading (`COPY ... FROM STDIN`) has an API;
   a `COPY ... TO STDOUT` fails with an error that says so. To read in bulk,
   `Query` on a `SELECT` already delivers batches.

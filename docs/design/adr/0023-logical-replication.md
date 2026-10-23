@@ -1,7 +1,7 @@
 # ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record)
 - **Theme:** postgres
 
 ## Problem
@@ -75,7 +75,8 @@ deserves to be a visible step of the caller's.
 
 What is lost: in-progress transactions (protocol 2 and later, `streaming`)
 are not delivered before they commit, so the server holds a large
-transaction until its end; `LISTEN/NOTIFY` is another source, still to come.
+transaction until its end. `LISTEN/NOTIFY` is a source of its own
+([ADR 0024](0024-listen-notify.md)).
 
 Reversal condition: a consumer that needs in-progress transactions, or an
 implicit acknowledgement.

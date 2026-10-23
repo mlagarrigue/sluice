@@ -604,15 +604,46 @@ nothing of it before the server has committed it. The values are binary and
 decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The
 design is in [ADR 0023](../design/adr/0023-logical-replication.md).
 
+### Signals: LISTEN and NOTIFY
+
+`NOTIFY` is PostgreSQL's built-in publish and subscribe: one session says
+`NOTIFY orders, '42'`, and every session that ran `LISTEN orders` receives
+the channel, the text (the *payload*) and the sender's process number, as
+soon as the sending transaction commits. `Listen` opens a connection that
+does only that:
+
+```go
+l, err := postgres.Listen(ctx, postgres.DialTLS(addr, tlsConfig), cfg,
+    postgres.ListenConfig{Channels: []string{"orders"}})
+if err != nil {
+    return err
+}
+defer l.Close()
+src := l.Notifications(ctx)
+for b := range src.Stream() {
+    for _, n := range b.Items {
+        // n.Channel, n.Payload, n.PID
+    }
+}
+return src.Err()
+```
+
+> **In plain terms: a signal, not a log.** A notification sent while nobody
+> listens is gone, and nothing is replayed after a restart: use it to say
+> "look at the table", and read what changed from the table (or from
+> logical replication, above). And keep reading: the server queues what
+> listeners have not taken yet, for the whole instance, and when that queue
+> is full it is the *senders'* transactions that fail.
+
+The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
+
 ## What is not there
 
 - **No connection pool**: a `Conn` is one connection; holding several is
   the caller's.
 - **No automatic resumption of an interrupted load**: delivery is
   at-least-once, and the resumption point lives in your schema.
-- **No LISTEN/NOTIFY** (PostgreSQL's built-in publish and subscribe, by
-  which a session learns of an event another one signalled), **and no
-  `COPY ... TO STDOUT`**.
+- **No `COPY ... TO STDOUT`**.
 - **`md5` authentication is refused.**
 - **Types**: no `money` or `tsvector`; arrays and column scanners for the
   first thirteen types of the table above only.
