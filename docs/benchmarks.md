@@ -309,6 +309,33 @@ trip between goroutines, not mutual exclusion. The change was not kept;
 contention on `mu` is no longer an item to treat until a benchmark with
 several writers per connection shows it.
 
+**One datagram per exchange (measured 2026-10-23).** Three commits made a
+small HTTP/3 exchange cost the server one datagram where it used to cost
+several: the response's data and the end of its stream (FIN) leave in one
+frame (`feat(quic): WriteClose sends data and FIN together`), the
+acknowledgements and the MAX_STREAMS credit ride the packets that carry
+data instead of leaving on their own (`fix(quic): ACKs ride data,
+MAX_STREAMS by eighths`), and a response rendered whole is written in one
+call (`perf(httpstream): one write for a buffered h3 response`). The tests
+`TestASmallExchangeCostsTheServerOneDatagram` and
+`TestH3SmallResponseIsOneDatagram` hold the count; this is what it is
+worth in time. Paired A/B of the commit before the first (bbf4745) against
+the last (ab5665f), `internal/bench/scripts/ab.sh`, twelve rounds of
+`-benchtime 2s` alternated back to back, every core, the first round
+discarded as warm-up, medians:
+
+| benchmark | before | after | rounds won |
+|---|---|---|---|
+| `BenchmarkH3FromQuicGo/plain` | 294 µs | 274 µs (−10%) | 11 of 11 |
+| `BenchmarkH3FromQuicGo/stream` | 325 µs | 301 µs (−8%) | 10 of 11 |
+| `BenchmarkH3FromQuicGo/bulk` | 766 µs · 86 MB/s | 739 µs · 89 MB/s | 8 of 11, noise |
+
+The gain is where the datagrams went: a response of one or a few packets
+had one or two more to send, and `bulk`, some fifty packets, had the same
+one or two. This session ran faster than the one of the first table (`plain`
+at 294 µs before the change against 378): compare the ratios, not the
+figures.
+
 **First and last byte (measured 2026-10-13).** ns/op is a mean, and it
 only counts the last byte. The benchmark also records, request by request,
 two delays counted from the moment the request is sent: the first byte of
