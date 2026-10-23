@@ -160,6 +160,10 @@ func (s *Server) Serve(ln net.Listener) error {
 // its connections have drained or Close has been called, and returns then:
 // nil when the server stopped, an error when ln failed. A configuration
 // [Config] refuses is returned before ln is read, and ln is left open.
+//
+// Experimental: it takes net/quic's types, and net/quic is experimental, so
+// this entry point is outside the v1 promise the rest of the package makes
+// (ADR 0020, ADR 0021): it may change with net/quic, announced with a `!`.
 func (s *Server) ServeQUIC(ln *quic.Listener) error {
 	if s.Handler == nil {
 		panic("httpstream: Server.ServeQUIC requires a handler")

@@ -236,9 +236,9 @@ Three reasons come up, and the difference matters:
 
 ## Experimental: the exit conditions
 
-These packages leave the label only by meeting these conditions, or move
-to a separate module before a v1. One condition per package, each one
-checkable:
+These packages leave the label only by meeting these conditions; they stay
+in the module ([ADR 0021](../design/adr/0021-net-quic-stays.md)). One
+condition per package, each one checkable:
 
 - **`web/stream`**: a first real consumer, an application outside this
   repository, serves its requests through these stages, and what it

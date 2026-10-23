@@ -87,10 +87,14 @@ stable_breaks() {
     unstable=$(go list -f '{{.ImportPath}}|{{.Doc}}' ./... | grep -i '|.*experimental' | cut -d'|' -f1 | sed "s|^$module||; s|^/||")
   fi
   echo "$1" | while IFS= read -r line; do
-    pkg=${line#- ./}
-    pkg=${pkg%%.*}
+    symbol=${line#- ./}
+    symbol=${symbol%%:*}
+    pkg=${symbol%%.*}
     case "$pkg" in example | example/*) continue ;; esac
     echo "$unstable" | grep -qx "$pkg" && continue
+    # A stable package's own experimental symbols (ADR 0021), listed with the
+    # check that holds the list to their documentation.
+    grep -v '^#' scripts/api-experimental.txt | grep -qxF "$symbol" && continue
     echo "$line"
   done
 }

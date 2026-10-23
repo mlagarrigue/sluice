@@ -1,0 +1,8 @@
+# Experimental symbols of stable packages, in apidiff's spelling: what
+# scripts/check-api.sh exempts from the v1 promise (ADR 0020, ADR 0021).
+# Each one says so in an "Experimental:" paragraph of its documentation;
+# TestExperimentalSymbolsMatchTheirList holds this list and the
+# documentation to each other.
+net/httpstream.ServeH3Conn
+net/httpstream.(*Server).ServeQUIC
+net/httpstream.Config.TransportParameters

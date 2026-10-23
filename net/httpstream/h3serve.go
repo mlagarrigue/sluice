@@ -76,6 +76,10 @@ import (
 // closed under its handler, whose context is cancelled, and ServeH3Conn returns
 // [ErrShutdownForced]. The handler's context carries ctx's values but not
 // its cancellation, which is the normal stop and not the handler's to see.
+//
+// Experimental: it takes net/quic's types, and net/quic is experimental, so
+// this entry point is outside the v1 promise the rest of the package makes
+// (ADR 0020, ADR 0021): it may change with net/quic, announced with a `!`.
 func ServeH3Conn(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	if handle == nil {
 		panic("httpstream: ServeH3Conn requires a handler")
@@ -657,6 +661,10 @@ type h3Batch struct {
 // MaxConcurrentStreams over the 4096 streams ServeH3Conn serves on one
 // connection: announced, that limit would have ServeH3Conn refuse every
 // connection built on these parameters.
+//
+// Experimental: it takes net/quic's types, and net/quic is experimental, so
+// this entry point is outside the v1 promise the rest of the package makes
+// (ADR 0020, ADR 0021): it may change with net/quic, announced with a `!`.
 func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	c, err := c.resolve()
 	if err != nil {

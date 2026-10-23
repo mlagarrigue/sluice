@@ -37,9 +37,11 @@ Part of the contract, like the signatures:
 
 Not part of the contract: the experimental packages (today `net/quic`,
 `net/quic/udp`, `web/stream`), whose breaks are still announced with `!` and
-listed in the CHANGELOG; `internal/`; `example/`; the nested modules
-(`interop`, `benchmarks`, `comparison/…`), which are not published; the text
-of errors and logs; performance, measured and published but not promised.
+listed in the CHANGELOG; the few symbols of a stable package whose
+documentation opens a paragraph with "Experimental:" (ADR 0021);
+`internal/`; `example/`; the nested modules (`interop`, `benchmarks`,
+`comparison/…`), which are not published; the text of errors and logs;
+performance, measured and published but not promised.
 
 **What still moves.** The Go floor rises in a minor version, never in a
 patch, through a `build:` commit (the rule in `CONTRIBUTING.md` and its test
