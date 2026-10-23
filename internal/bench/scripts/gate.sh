@@ -58,10 +58,11 @@ GATED="$GATED|BenchmarkTake$|BenchmarkDrop$|BenchmarkTakeWhile$|BenchmarkDropWhi
 GATED="$GATED|BenchmarkSplitPartition$|BenchmarkSplitBroadcast$|BenchmarkInterleave2$|BenchmarkConcat$"
 # The element-wise stages: Peek is the bare indirect call every one of them
 # pays, Scan writes one output per input, SelectiveFilter drops most of them,
-# and SeqStages chains Map and Filter — the one place Map is held to a
-# paired comparison rather than only to TestStageBudget's ceiling of twice
-# the budget. Convert has no benchmark of its own: the three stages of
-# WebBatchOne below are Convert. PipeSinglePass is not gated either: it is
+# and SeqStages chains Map and Filter written over iter.Seq in its own file —
+# the cost of a stage's shape, which reaches no package of the module and is
+# measured when internal/bench or the toolchain moves. The package's Map is
+# held to a paired comparison through WebBatchOne below, whose six stages are
+# Convert, Filter and Map; Convert has no benchmark of its own. PipeSinglePass is not gated either: it is
 # the hand-fused loop the stages are compared with, not an operator.
 GATED="$GATED|BenchmarkPeek$|BenchmarkScan$|BenchmarkSelectiveFilter$|BenchmarkSeqStages$"
 # The request path, which is the figure a web workload actually feels.
@@ -107,9 +108,16 @@ fi
 # (+3.8%), DropWhile (+5.4%) and WindowNarrow (+19%), with 0 or 1 wins out of
 # 11 — the sign test reads a constant layout effect as a regression, and no
 # alternation of names or order (ab.sh) reaches inside the binary. A
-# benchmark is kept when a changed Go file sits in a package its own file
-# imports, or in one of their dependencies; a change to internal/bench, to
-# go.mod or to go.sum keeps them all. What stays exposed is the layout effect
+# benchmark is kept when a changed Go file sits in a package its code reaches,
+# or in one of their dependencies; a change to internal/bench, to go.mod or to
+# go.sum keeps them all. What its code reaches is read by benchdeps, from the
+# benchmark's body and the helpers it names, not from the imports of its
+# file: read by file, a file that imported nothing of the module was given
+# every package internal/bench imports, and SeqStages — whose stages are
+# helpers of its own file — was declared SLOWER (+4.9%, 1 win of 11) on a
+# diff to database/postgres alone (1a71025). A benchmark that reaches nothing
+# of the module measures the compiler and its own file, which the
+# internal/bench rule above covers. What stays exposed is the layout effect
 # of a diff to a package a benchmark does depend on: a SLOWER there is worth
 # reading before it is worth believing.
 if [ -z "$REPLAY" ]; then
@@ -119,20 +127,11 @@ if [ -z "$REPLAY" ]; then
   } | grep -v '_test\.go$' || true)"
   if ! grep -qE '^(go\.mod|go\.sum|internal/bench/)' <<<"$changed"; then
     module="$(cd "$ROOT" && go list -m)"
+    reached="$(cd "$ROOT" && go run ./internal/bench/cmd/benchdeps -dir internal/bench -module "$module" \
+      $(tr '|' '\n' <<<"$GATED" | sed 's/\$$//'))"
     kept=""
     while IFS= read -r name; do
-      file="$(grep -l "^func $name(" "$ROOT"/internal/bench/*_test.go | head -1)"
-      imports="$(sed -n '/^import/,/^)/p' "$file" | { grep -o "\"$module[^\"]*\"" || true; } | tr -d '"' | sort -u)"
-      # A file that imports nothing of the module reaches it through the
-      # package's helpers in other files — SeqStages and SelectiveFilter
-      # build their stages that way — so it depends on whatever the package
-      # imports. Read as "depends on nothing", it was never measured; and
-      # before the `|| true` above, the grep's empty match stopped the whole
-      # script under pipefail, without a word, on every diff outside
-      # internal/bench.
-      if [ -z "$imports" ]; then
-        imports="$(cd "$ROOT" && go list -f '{{join .Imports "\n"}}{{"\n"}}{{join .TestImports "\n"}}' ./internal/bench | grep "^$module" | sort -u || true)"
-      fi
+      imports="$(awk -v n="$name" '$1 == n { for (i = 2; i <= NF; i++) print $i }' <<<"$reached")"
       touched=""
       if [ -n "$imports" ]; then
         while IFS= read -r pkg; do

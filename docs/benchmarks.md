@@ -113,7 +113,10 @@ suite of twenty produces a spurious verdict about two times in three. A
 benchmark lives in `internal/bench`, or it cannot be paired; an operator
 added is added to the gated set, or nobody watches its regressions. It
 measures only the benchmarks whose code changed: a benchmark is kept when the
-diff touches a package its file imports, or a dependency of one. The test
+diff touches a package its code reaches — its body and the helpers it calls,
+read by `internal/bench/cmd/benchdeps` — or a dependency of one. Read by
+file instead, a benchmark whose stages are helpers of its own file was
+measured on a diff to `database/postgres` alone, and declared slower. The test
 binary links every package `internal/bench` imports, so a change to
 `net/quic` moves the code of all the others within the binary, and that move
 alone has declared an untouched benchmark 4 to 19% slower, always in the same
