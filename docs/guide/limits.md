@@ -244,13 +244,29 @@ condition per package, each one checkable:
   repository, serves its requests through these stages, and what it
   needed changed has been changed. The figures against third-party
   clients (HTTP/1.1, HTTP/2, HTTP/3) are already in
-  [the benchmarks](../benchmarks.md).
+  [the benchmarks](../benchmarks.md). Checked by: the consumer named in
+  this bullet with the sluice version it runs, and each change it asked
+  for named by its commit.
 - **`net/quic/udp`**: it leaves with `net/quic`, not before. Its options
   are the socket half of the transport and are judged by the same passes;
   the `test-udp` job already runs it on Windows, macOS and Linux ARM.
+  Checked by: `net/quic`'s conditions met, and `test-udp` green on the
+  commit that lifts the label.
 - **`net/quic`, the measurement**: throughput and latency measured against
   a real third-party client, beside the interop. Interop proves agreement,
-  not cost.
+  not cost. Checked by: a table in
+  [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client)
+  measured over a network between two machines, not loopback, with
+  `comparison/loadgen` against HTTP/3 and HTTP/2 on the same host, its
+  date and machines given (today it is missing: see "Measurements: what
+  is missing" below).
+- **`net/quic`, the interop**: checked by the weekly `Interop runner`
+  workflow green with `interop/expected-results.json` unchanged — every
+  case against quic-go and ngtcp2, in each direction, passing or failing
+  for the cause written there — and by an external review of the
+  handshake and key handling, its report linked from `SECURITY.md`. The
+  runner's last complete pass, of 22 October 2026, is green; the review
+  has not been done.
 
 - **`net/quic`**: being green in the *QUIC Interop Runner* against
   quic-go and ngtcp2, on each side of the handshake, in our own continuous
@@ -472,11 +488,6 @@ condition per package, each one checkable:
   measurement where the label alone tells two connections apart. In
   plain words: the tag on the envelope is the postal service's, and the
   address links the envelopes anyway.
-- **`net/quic/udp`**: follows `quic`.
-- **`web/stream`**: a real consumer of its stages. Its transport,
-  `net/httpstream`, left this list on 2026-10-10: curl, h2spec and quic-go's
-  client in continuous integration, fuzzed parsers, the per-batch cost of a
-  streamed response measured.
 
 ## Measurements: what is missing
 
