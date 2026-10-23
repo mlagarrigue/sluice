@@ -175,9 +175,9 @@ verifier, err := web.NewHMACVerifier(web.HMACConfig{
 
 principal, d, err := web.Authenticate(r, verifier) // reads the Bearer, checks signature and claims
 if err != nil {
-    log.Println(err)                                              // "expired", "bad signature": for you
-    w.Header().Set("WWW-Authenticate", web.BearerChallenge(d))    // a 401 must say which scheme (RFC 9110)
-    web.WriteJSON(w, http.StatusUnauthorized, web.ReportOf(d))   // for the client: "refused", no detail
+    log.Println(err)                                                     // "expired", "bad signature": for you
+    w.Header().Set("WWW-Authenticate", web.BearerChallenge("orders", d)) // a 401 names its scheme and realm
+    web.WriteJSON(w, http.StatusUnauthorized, web.ReportOf(d))          // for the client: "refused", no detail
     return
 }
 grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or ClaimAuthorizer
@@ -189,6 +189,11 @@ grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or
 > which half of their forgery was right is telling them how to fix the
 > other. Everything in `HMACConfig` is a ground for refusal: audience,
 > issuer, clock, maximum token size.
+
+The challenge header tells the client how to authenticate: the `Bearer`
+scheme, and the *realm*, the name of what it is authenticating for. Pass
+the audience your verifier checks — `"orders"` here — so a client holding
+tokens for several services knows which one to send.
 
 **The order: `Authenticate`, then `Authorize`, then `DecodeJSON`.**
 Verifying a token reads only the `Authorization` header, bounded to 8 KB by

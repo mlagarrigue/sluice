@@ -393,7 +393,11 @@ func (s *Service) Close() error { return s.gw.Close() }
 // which is the batch's rather than a request's because the transport
 // correlates by position, not by goroutine: a forced stop of the server
 // cancels the wait too.
-func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Duration) httpstream.Handler {
+//
+// realm is what every 401 names as the protection space (RFC 6750 §3): the
+// audience v checks, so a client that holds tokens for several services
+// learns which one this is.
+func StreamHandler(s *Service, v web.Verifier, realm string, a web.Authorizer, timeout time.Duration) httpstream.Handler {
 	rt := stream.NewRouter(
 		stream.Route{Method: "PATCH", Pattern: "/orders/{order}/lines/{line}"},
 	)
@@ -401,7 +405,7 @@ func StreamHandler(s *Service, v web.Verifier, a web.Authorizer, timeout time.Du
 	return func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 		ex := stream.Exchanges(nil, b)
 		rt.Route(ex)
-		stream.Authenticate(ex, v)
+		stream.Authenticate(ex, v, realm)
 		stream.Authorize(ex, a)
 
 		// Decode what is still open: every exchange either is refused, its

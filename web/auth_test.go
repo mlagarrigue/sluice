@@ -605,10 +605,11 @@ func TestNewHMACVerifierRefusesANegativeMaxTokenBytes(t *testing.T) {
 }
 
 // The challenge a 401 carries is fixed text per refusal, shared with
-// web/stream: a bare scheme when no token was offered (RFC 6750 §3 wants no
-// error code for a client that did not know it had to authenticate),
-// invalid_request for a token that was there but unusable, invalid_token
-// for one the verifier rejected.
+// web/stream: always the realm, the one auth-param RFC 6750 §3 requires
+// after the scheme; no error code when no token was offered (§3 wants none
+// for a client that did not know it had to authenticate), invalid_request
+// for a token that was there but unusable, invalid_token for one the
+// verifier rejected.
 func TestBearerChallenge(t *testing.T) {
 	rejecting := verifierFunc(func(string) (web.Principal, error) {
 		return web.Principal{}, errors.New("no")
@@ -618,14 +619,14 @@ func TestBearerChallenge(t *testing.T) {
 		set  func(h http.Header)
 		want string
 	}{
-		{"absent", func(http.Header) {}, "Bearer"},
-		{"another scheme", func(h http.Header) { h.Set("Authorization", "Basic x") }, "Bearer"},
-		{"malformed", func(h http.Header) { h.Set("Authorization", "Bearer a b") }, `Bearer error="invalid_request"`},
+		{"absent", func(http.Header) {}, `Bearer realm="orders"`},
+		{"another scheme", func(h http.Header) { h.Set("Authorization", "Basic x") }, `Bearer realm="orders"`},
+		{"malformed", func(h http.Header) { h.Set("Authorization", "Bearer a b") }, `Bearer realm="orders", error="invalid_request"`},
 		{"duplicated", func(h http.Header) {
 			h.Add("Authorization", "Bearer a")
 			h.Add("Authorization", "Bearer a")
-		}, `Bearer error="invalid_request"`},
-		{"rejected", func(h http.Header) { h.Set("Authorization", "Bearer a") }, `Bearer error="invalid_token"`},
+		}, `Bearer realm="orders", error="invalid_request"`},
+		{"rejected", func(h http.Header) { h.Set("Authorization", "Bearer a") }, `Bearer realm="orders", error="invalid_token"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -635,13 +636,48 @@ func TestBearerChallenge(t *testing.T) {
 			if err == nil {
 				t.Fatal("authenticated")
 			}
-			if got := web.BearerChallenge(d); got != tc.want {
+			if got := web.BearerChallenge("orders", d); got != tc.want {
 				t.Errorf("BearerChallenge = %q, want %q", got, tc.want)
 			}
 		})
 	}
-	if got := web.BearerChallenge(diagnostics.Diagnostic{}); got != "Bearer" {
-		t.Errorf("a foreign diagnostic gets %q, want the bare scheme", got)
+	if got := web.BearerChallenge("orders", diagnostics.Diagnostic{}); got != `Bearer realm="orders"` {
+		t.Errorf("a foreign diagnostic gets %q, want the challenge without an error code", got)
+	}
+}
+
+// The realm goes out as a quoted-string (RFC 9110 §5.6.4): a quote or a
+// backslash in it is escaped, nothing else is, and a realm that names no
+// protection space or that no quoted-string can carry is a programming
+// mistake BearerChallenge refuses to turn into a header.
+func TestBearerChallengeQuotesTheRealm(t *testing.T) {
+	quoted := []struct{ realm, want string }{
+		{`orders`, `Bearer realm="orders"`},
+		{`say "hi"`, `Bearer realm="say \"hi\""`},
+		{`a\b`, `Bearer realm="a\\b"`},
+		{"tab\there", "Bearer realm=\"tab\there\""},
+		{"caf\xc3\xa9", "Bearer realm=\"caf\xc3\xa9\""},
+	}
+	for _, tc := range quoted {
+		if got := web.BearerChallenge(tc.realm, diagnostics.Diagnostic{}); got != tc.want {
+			t.Errorf("realm %q: BearerChallenge = %q, want %q", tc.realm, got, tc.want)
+		}
+		if !web.ValidRealm(tc.realm) {
+			t.Errorf("ValidRealm(%q) = false", tc.realm)
+		}
+	}
+	for _, realm := range []string{"", "a\r\nset-cookie: x", "nul\x00", "del\x7f", "unit\x1f"} {
+		if web.ValidRealm(realm) {
+			t.Errorf("ValidRealm(%q) = true", realm)
+		}
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("BearerChallenge(%q) did not panic", realm)
+				}
+			}()
+			web.BearerChallenge(realm, diagnostics.Diagnostic{})
+		}()
 	}
 }
 

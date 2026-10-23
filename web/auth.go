@@ -507,7 +507,7 @@ func Bearer(r *http.Request) (string, diagnostics.Diagnostic, bool) {
 // The 401 the caller then writes must carry a challenge (RFC 9110 §11.6.1),
 // and the diagnostic knows which one:
 //
-//	w.Header().Set("WWW-Authenticate", web.BearerChallenge(d))
+//	w.Header().Set("WWW-Authenticate", web.BearerChallenge("orders", d))
 func Authenticate(r *http.Request, v Verifier) (Principal, diagnostics.Diagnostic, error) {
 	token, d, ok := Bearer(r)
 	if !ok {
@@ -520,26 +520,23 @@ func Authenticate(r *http.Request, v Verifier) (Principal, diagnostics.Diagnosti
 	return p, diagnostics.Diagnostic{}, nil
 }
 
-// BearerChallenge is the WWW-Authenticate value a 401 refusing d must carry.
+// BearerChallenge is the WWW-Authenticate value a 401 refusing d must carry,
+// naming realm as the protection space the credentials are for.
 //
 // RFC 9110 §11.6.1 says a 401 without a challenge is not a 401 a client can
 // act on: it has to learn the scheme somewhere. The challenge is the Bearer
-// one of RFC 6750 §3, and its error code follows the diagnostic's message:
-// none when the request brought no token at all — absent, or under another
-// scheme — because §3 says a client that did not know it had to authenticate
-// should get the scheme and nothing else; "invalid_request" when a token was
-// there but unusable (malformed, or two of them); "invalid_token" when the
-// verifier rejected it.
+// one of RFC 6750 §3, which requires at least one auth-param after the
+// scheme; realm is that one, always present, so even a request that brought
+// no token gets a complete challenge. In a token system the protection space
+// is the audience the verifier checks — [HMACConfig.Audience] — and that is
+// what realm should name.
 //
-// No realm. RFC 6750 §3 says the scheme "MUST be followed by one or more
-// auth-param values" and, for a request that brought no token, that the
-// error attribute is not the one to send; its own example fills the gap
-// with realm. This package does not know a realm — it is the protection
-// space, which in a token system is the audience the verifier checks, and
-// [Verifier] does not expose it — so the bare scheme goes out, valid under
-// the RFC 9110 §11.3 grammar, short of RFC 6750 on that one point. The
-// realm joins the next breaking change of this API rather than breaking it
-// twice.
+// The error code follows the diagnostic's message: none when the request
+// brought no token at all — absent, or under another scheme — because §3
+// says a client that did not know it had to authenticate should get the
+// scheme and nothing else; "invalid_request" when a token was there but
+// unusable (malformed, or two of them); "invalid_token" when the verifier
+// rejected it.
 //
 // The code says no more than the client can see for itself. Malformed is
 // visible in its own request, rejected is the one word [Authenticate] already
@@ -549,16 +546,60 @@ func Authenticate(r *http.Request, v Verifier) (Principal, diagnostics.Diagnosti
 // valid credentials (RFC 9110 §15.5.2), and one status for every refusal of
 // this stage is what the batch-shaped version relies on.
 //
-// A diagnostic that is not one of [Authenticate]'s gets the bare challenge:
-// it is always a correct one.
-func BearerChallenge(d diagnostics.Diagnostic) string {
+// A diagnostic that is not one of [Authenticate]'s gets the challenge without
+// an error code: it is always a correct one.
+//
+// realm goes out as a quoted-string (RFC 9110 §5.6.4), a quote or a backslash
+// escaped. BearerChallenge panics on an empty realm, which names no
+// protection space, and on one holding a control character other than tab,
+// which no quoted-string can carry: both are mistakes in the program, not in
+// the request.
+func BearerChallenge(realm string, d diagnostics.Diagnostic) string {
+	if !ValidRealm(realm) {
+		panic(fmt.Sprintf("web: BearerChallenge realm %q is empty or holds a control character", realm))
+	}
+	c := `Bearer realm="` + escapeQuoted(realm) + `"`
 	switch d.MessageID {
 	case "CredentialsDuplicated", "CredentialsMalformed":
-		return `Bearer error="invalid_request"`
+		return c + `, error="invalid_request"`
 	case "CredentialsRejected":
-		return `Bearer error="invalid_token"`
+		return c + `, error="invalid_token"`
 	}
-	return "Bearer"
+	return c
+}
+
+// ValidRealm reports whether realm is one [BearerChallenge] accepts: not
+// empty, and free of the control characters a quoted-string cannot carry
+// (everything below space but tab, and DEL). A stage that builds challenges
+// only when it refuses checks its realm with it up front, so a wrong one
+// fails on the first call rather than on the first refusal.
+func ValidRealm(realm string) bool {
+	if realm == "" {
+		return false
+	}
+	for i := range len(realm) {
+		if c := realm[i]; (c < ' ' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// escapeQuoted puts a backslash before each quote and backslash of s, the
+// two characters a quoted-string must escape (RFC 9110 §5.6.4).
+func escapeQuoted(s string) string {
+	if !strings.ContainsAny(s, `"\`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	for i := range len(s) {
+		if s[i] == '"' || s[i] == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func unauthenticated(messageID string, args map[string]any) diagnostics.Diagnostic {

@@ -2,6 +2,7 @@ package stream
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/net/httpstream"
@@ -11,7 +12,10 @@ import (
 // Authenticate establishes every open exchange's principal from its bearer
 // token, refusing with 401 the ones whose credentials are absent, malformed
 // or rejected. Every 401 carries the WWW-Authenticate challenge RFC 9110
-// §11.6.1 requires, the one [web.BearerChallenge] names for the diagnostic.
+// §11.6.1 requires, the one [web.BearerChallenge] names for realm and the
+// diagnostic. realm is the protection space, the audience v checks.
+// Authenticate panics on its first call, whether or not anything is refused,
+// when [web.ValidRealm] says no.
 //
 // It is [web.Authenticate] made batch-shaped and protocol-neutral: the token
 // comes off the authorization field through [httpstream.Request.Get], so the
@@ -24,7 +28,10 @@ import (
 // right is telling them how to fix it. What web's version returns as an error
 // for the caller to log is not surfaced here — a verifier that must observe
 // its rejections wraps itself.
-func Authenticate(exchanges []Exchange, v web.Verifier) {
+func Authenticate(exchanges []Exchange, v web.Verifier, realm string) {
+	if !web.ValidRealm(realm) {
+		panic(fmt.Sprintf("stream: Authenticate realm %q is empty or holds a control character", realm))
+	}
 	for i := range exchanges {
 		e := &exchanges[i]
 		if e.Refused() {
@@ -38,17 +45,17 @@ func Authenticate(exchanges []Exchange, v web.Verifier) {
 			// on its way through. Refused outright, the way the transport
 			// refuses a Host/:authority disagreement, rather than resolved
 			// in favour of either.
-			refuseUnauthenticated(e, "CredentialsDuplicated")
+			refuseUnauthenticated(e, realm, "CredentialsDuplicated")
 			continue
 		}
 		token, messageID := bearer(raw)
 		if messageID != "" {
-			refuseUnauthenticated(e, messageID)
+			refuseUnauthenticated(e, realm, messageID)
 			continue
 		}
 		p, err := v.Verify(token)
 		if err != nil {
-			refuseUnauthenticated(e, "CredentialsRejected")
+			refuseUnauthenticated(e, realm, "CredentialsRejected")
 			continue
 		}
 		e.Principal = p
@@ -96,13 +103,13 @@ func bearer(raw []byte) (token, messageID string) {
 // diagnostic and the challenge it calls for go on the exchange together, so
 // no refusal can forget the header (RFC 9110 §11.6.1). The field name is
 // lowercase, as every response header this package writes.
-func refuseUnauthenticated(e *Exchange, messageID string) {
+func refuseUnauthenticated(e *Exchange, realm, messageID string) {
 	d := diagnostics.NewDiagnostic(diagnostics.Error, web.CodeUnauthenticated, diagnostics.Path{}).
 		WithMessage(messageID, nil).
 		WithOrigin(diagnostics.OriginProtocol)
 	e.Headers = append(e.Headers, httpstream.Header{
 		Name:  wwwAuthenticateName,
-		Value: []byte(web.BearerChallenge(d)),
+		Value: []byte(web.BearerChallenge(realm, d)),
 	})
 	e.Refuse(401, d)
 }

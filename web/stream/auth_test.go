@@ -95,7 +95,7 @@ func TestAuthenticate(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ex := []Exchange{withAuthz(tc.header)}
-			Authenticate(ex, acceptToken{})
+			Authenticate(ex, acceptToken{}, "orders")
 			e := &ex[0]
 			if tc.wantSubject != "" {
 				if e.Refused() {
@@ -121,8 +121,8 @@ func TestAuthenticate(t *testing.T) {
 func TestAuthenticateDoesNotSayWhichHalfFailed(t *testing.T) {
 	forged := []Exchange{withAuthz("Bearer forged")}
 	missing := []Exchange{withAuthz("")}
-	Authenticate(forged, acceptToken{})
-	Authenticate(missing, acceptToken{})
+	Authenticate(forged, acceptToken{}, "orders")
+	Authenticate(missing, acceptToken{}, "orders")
 	if forged[0].Diagnostics[0].Code != missing[0].Diagnostics[0].Code {
 		t.Errorf("a forged token and a missing one carry different codes: %q vs %q",
 			forged[0].Diagnostics[0].Code, missing[0].Diagnostics[0].Code)
@@ -132,7 +132,7 @@ func TestAuthenticateDoesNotSayWhichHalfFailed(t *testing.T) {
 func TestAuthenticateSkipsARefusedExchange(t *testing.T) {
 	ex := []Exchange{withAuthz("Bearer good")}
 	ex[0].Status = 404
-	Authenticate(ex, acceptToken{})
+	Authenticate(ex, acceptToken{}, "orders")
 	if ex[0].Principal.Subject != "" {
 		t.Error("a refused exchange was authenticated")
 	}
@@ -152,7 +152,7 @@ func (grantTenant) Authorize(p web.Principal) (web.Grant, error) {
 func TestAuthorize(t *testing.T) {
 	t.Run("a principal with a tenant gets its grant", func(t *testing.T) {
 		ex := []Exchange{withAuthz("Bearer good")}
-		Authenticate(ex, acceptToken{})
+		Authenticate(ex, acceptToken{}, "orders")
 		Authorize(ex, grantTenant{})
 		e := &ex[0]
 		if e.Refused() {
@@ -206,7 +206,7 @@ func TestAuthenticateRefusesDuplicateAuthorization(t *testing.T) {
 				{Name: []byte("authorization"), Value: []byte(tc.second)},
 			}
 			ex := []Exchange{e}
-			Authenticate(ex, acceptToken{})
+			Authenticate(ex, acceptToken{}, "orders")
 			if ex[0].Status != 401 {
 				t.Fatalf("status = %d, want 401", ex[0].Status)
 			}
@@ -219,7 +219,8 @@ func TestAuthenticateRefusesDuplicateAuthorization(t *testing.T) {
 
 // A 401 without a challenge is one the client cannot act on (RFC 9110
 // §11.6.1): every refusal of this stage puts the Bearer challenge of RFC 6750
-// §3 on the exchange, and RenderOpen carries it onto the answer. The error
+// §3, realm first, on the exchange, and RenderOpen carries it onto the
+// answer. The error
 // code says no more than the client can see for itself: none when it sent
 // no token, invalid_request when the token it sent was unusable,
 // invalid_token when the verifier said no.
@@ -229,27 +230,27 @@ func TestAuthenticateChallengesWithBearer(t *testing.T) {
 		headers []httpstream.Header
 		want    string
 	}{
-		{"absent", nil, "Bearer"},
+		{"absent", nil, `Bearer realm="orders"`},
 		{"another scheme", []httpstream.Header{
 			{Name: []byte("authorization"), Value: []byte("Basic good")},
-		}, "Bearer"},
+		}, `Bearer realm="orders"`},
 		{"malformed", []httpstream.Header{
 			{Name: []byte("authorization"), Value: []byte("Bearer go od")},
-		}, `Bearer error="invalid_request"`},
+		}, `Bearer realm="orders", error="invalid_request"`},
 		{"duplicated", []httpstream.Header{
 			{Name: []byte("authorization"), Value: []byte("Bearer good")},
 			{Name: []byte("authorization"), Value: []byte("Bearer good")},
-		}, `Bearer error="invalid_request"`},
+		}, `Bearer realm="orders", error="invalid_request"`},
 		{"rejected", []httpstream.Header{
 			{Name: []byte("authorization"), Value: []byte("Bearer forged")},
-		}, `Bearer error="invalid_token"`},
+		}, `Bearer realm="orders", error="invalid_token"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := exchangeFor("GET", "/health")
 			e.Request.Headers = tc.headers
 			ex := []Exchange{e}
-			Authenticate(ex, acceptToken{})
+			Authenticate(ex, acceptToken{}, "orders")
 			out := RenderOpen(ex, func(_, _ int) (int, any) { return 200, nil })
 			r := out.Items[0]
 			if r.Status != 401 {
@@ -265,5 +266,23 @@ func TestAuthenticateChallengesWithBearer(t *testing.T) {
 				t.Errorf("www-authenticate = %q, want exactly one %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A realm BearerChallenge would refuse is caught on the first call, not on
+// the first refusal: a batch where every token verifies, and an empty one,
+// panic as surely as a batch that refuses.
+func TestAuthenticateChecksTheRealmUpFront(t *testing.T) {
+	for _, realm := range []string{"", "a\r\nb"} {
+		for _, ex := range [][]Exchange{nil, {withAuthz("Bearer good")}} {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Errorf("realm %q, %d exchanges: Authenticate did not panic", realm, len(ex))
+					}
+				}()
+				Authenticate(ex, acceptToken{}, realm)
+			}()
+		}
 	}
 }

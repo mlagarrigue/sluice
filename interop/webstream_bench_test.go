@@ -113,7 +113,7 @@ type order struct {
 func stagesOrderHandle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	ex := stream.Exchanges(nil, b)
 	orderRouter.Route(ex)
-	stream.Authenticate(ex, orderVerifier{})
+	stream.Authenticate(ex, orderVerifier{}, "orders")
 	stream.Authorize(ex, orderAuthorizer{})
 	ids := make([]int, len(ex))
 	for i := range ex {

@@ -134,7 +134,7 @@ func build(t *testing.T) (*vertical.Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := vertical.StreamHandler(svc, v, web.ClaimAuthorizer{}, 5*time.Second)
+	h := vertical.StreamHandler(svc, v, "orders", web.ClaimAuthorizer{}, 5*time.Second)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -242,7 +242,7 @@ func buildOffline(t *testing.T) (*vertical.Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := vertical.StreamHandler(svc, v, web.ClaimAuthorizer{}, 5*time.Second)
+	h := vertical.StreamHandler(svc, v, "orders", web.ClaimAuthorizer{}, 5*time.Second)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

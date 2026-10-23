@@ -33,7 +33,7 @@
 //	handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 //	    ex := stream.Exchanges(nil, b)
 //	    rt.Route(ex)
-//	    stream.Authenticate(ex, verifier)
+//	    stream.Authenticate(ex, verifier, "orders")
 //	    stream.Authorize(ex, authorizer)
 //	    for i := range ex {
 //	        // decode, run the business stage, remember its answer
