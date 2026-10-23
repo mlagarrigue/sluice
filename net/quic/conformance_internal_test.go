@@ -187,6 +187,28 @@ func TestCryptoBufferIsBounded(t *testing.T) {
 	}
 }
 
+// RFC 9000 §7.5: the bound is on how far ahead of the delivered prefix the
+// data reaches, not only on the bytes parked. One byte a hundred megabytes
+// ahead parks one byte, and can only be delivered after a hundred megabytes
+// no handshake sends; h3spec's "CRYPTO data is buffered beyond the limit"
+// sends exactly that, and the connection used to wait for its handshake
+// timeout instead of closing.
+func TestCryptoFarAheadIsRefused(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+
+	err := c.handleCrypto(spaceHandshake, Frame{Type: frameCrypto, offset: 100_000_000, Data: []byte("x")})
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {
+		t.Errorf("one byte of CRYPTO 100 MB ahead: got %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
+	}
+	// The last byte the bound admits is still taken.
+	if err := c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: maxCryptoBuffer - 1, Data: []byte("x")}); err != nil {
+		t.Errorf("one byte ending at the bound: %v, want it parked", err)
+	}
+}
+
 // RFC 9000 §12.4: Initial and Handshake packets admit only PING, ACK,
 // CRYPTO, PADDING and the transport CONNECTION_CLOSE. Initial keys are
 // public, so a HANDSHAKE_DONE admitted there is a HANDSHAKE_DONE anyone can

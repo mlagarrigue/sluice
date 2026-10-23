@@ -1311,11 +1311,13 @@ func (c *Conn) abandonPending() {
 	c.pending, c.pendingBytes, c.pendingLost = nil, 0, true
 }
 
-// maxCryptoBuffer bounds the bytes CRYPTO reassembly may park per space.
-// Stream reassembly is bounded by flow control; CRYPTO has no flow control
-// (RFC 9000 §7.5 says bound it anyway, and this is the customary bound), so
-// without this a peer parks ~1.4 KB per fragment × 256 fragments per
-// connection it never finishes the handshake of.
+// maxCryptoBuffer bounds how far past the delivered prefix CRYPTO data may
+// reach, per space. Stream reassembly is bounded by flow control; CRYPTO has
+// no flow control (RFC 9000 §7.5 says bound it anyway, and this is the
+// customary bound). A window rather than a count of parked bytes: it bounds
+// those too — every parked byte lies inside it — and it also refuses the
+// byte parked far ahead, which no handshake could ever reach and which would
+// otherwise hold the connection open until its handshake timeout.
 const maxCryptoBuffer = 64 << 10
 
 // handleCrypto reassembles handshake bytes — retransmissions overlap here
@@ -1323,20 +1325,21 @@ const maxCryptoBuffer = 64 << 10
 func (c *Conn) handleCrypto(space int, f Frame) error {
 	c.mu.Lock()
 	sp := &c.spaces[space]
-	if space == spaceInitial && len(f.Data) > 0 && f.offset+uint64(len(f.Data)) <= sp.crypto.consumed {
+	end := f.offset + uint64(len(f.Data)) // offsets are below 2^62 (frame.go)
+	if space == spaceInitial && len(f.Data) > 0 && end <= sp.crypto.consumed {
 		c.rxStaleCrypto = true
 	}
+	if end > sp.crypto.consumed+maxCryptoBuffer {
+		c.mu.Unlock()
+		return &transportError{
+			code: transportCryptoBufferExceeded,
+			err:  fmt.Errorf("%w: handshake data over %d bytes past what was delivered", ErrQUIC, maxCryptoBuffer),
+		}
+	}
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
-	held := sp.crypto.held
 	c.mu.Unlock()
 	if err != nil {
 		return &transportError{code: transportProtocolViolation, err: err}
-	}
-	if held > maxCryptoBuffer {
-		return &transportError{
-			code: transportCryptoBufferExceeded,
-			err:  fmt.Errorf("%w: over %d bytes of handshake data parked out of order", ErrQUIC, maxCryptoBuffer),
-		}
 	}
 	if len(delta) == 0 {
 		return nil
