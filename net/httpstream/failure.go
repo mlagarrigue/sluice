@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
-	"syscall"
 )
 
 // panicError is a panic in the caller's code — the handler, a streamed
@@ -64,8 +63,7 @@ func reportPanic(log *slog.Logger, err error) bool {
 // error to their caller instead, and log nothing.
 func reportConnEnd(log *slog.Logger, proto string, peer net.Addr, err error) {
 	if err == nil || errors.Is(err, ErrShutdownForced) || errors.Is(err, io.EOF) ||
-		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrDeadlineExceeded) || isConnReset(err) {
 		return
 	}
 	log.Warn("httpstream: connection ended in error", "proto", proto, "peer", peer.String(), "err", err)

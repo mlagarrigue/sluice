@@ -139,7 +139,14 @@ func TestServeLogsAConnectionEndedInError(t *testing.T) {
 			rec.mu.Lock()
 			defer rec.mu.Unlock()
 			if len(rec.records) != 0 {
-				t.Errorf("an ordinary close logged %d records, the first %q", len(rec.records), rec.records[0].Message)
+				var cause string
+				rec.records[0].Attrs(func(a slog.Attr) bool {
+					if a.Key == "err" {
+						cause = a.Value.String()
+					}
+					return true
+				})
+				t.Errorf("an ordinary close logged %d records, the first %q: %s", len(rec.records), rec.records[0].Message, cause)
 			}
 		})
 		addr, _ := serveTest(t, Config{Logger: slog.New(rec)}, echoTarget)
