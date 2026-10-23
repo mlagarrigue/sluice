@@ -411,7 +411,8 @@ jobs:
           fi
 
   # net/httpstream against clients it did not write: curl over HTTP/1.1 and
-  # HTTP/2, and h2spec's RFC 9113 conformance cases, against a small server
+  # HTTP/2, h2load's 10,000 HTTP/2 requests over ten connections, and
+  # h2spec's RFC 9113 conformance cases, against a small server
   # built from the tree. A peer that did not read the specification with our
   # eyes is the one check the scripted tests cannot be. The expected h2spec
   # failures are listed, each with its reason, in
@@ -427,7 +428,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_LATEST }}
-      - name: curl and h2spec against the server
+      - name: h2load
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nghttp2-client
+      - name: curl, h2load and h2spec against the server
         run: scripts/interop-http.sh
 
   # net/quic against a peer that shares none of its code: the interop/ module

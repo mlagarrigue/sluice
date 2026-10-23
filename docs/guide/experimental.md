@@ -201,7 +201,8 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
 ## `net/httpstream` — no longer experimental
 
 The package left the list the day its three conditions were met. HTTP/1.1
-and /2 have faced curl and h2spec in continuous integration
+and /2 have faced curl, h2load (10,000 requests over ten connections) and
+h2spec in continuous integration
 (`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
 module); the parsers are fuzzed in CI; the limit on streamed HTTP/2
 responses is owned below, and their per-batch cost measured from a real

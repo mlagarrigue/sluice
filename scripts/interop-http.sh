@@ -4,7 +4,8 @@
 #   scripts/interop-http.sh
 #
 # Builds net/httpstream/internal/interopserver, points curl at it over
-# HTTP/1.1 and HTTP/2, then runs h2spec (RFC 9113 conformance, 146 cases)
+# HTTP/1.1 and HTTP/2, loads it with h2load (10,000 HTTP/2 requests from
+# ten connections, every one a 2xx), then runs h2spec (RFC 9113 conformance, 146 cases)
 # and fails on any red case that net/httpstream/testdata/h2spec-exclusions.txt
 # does not list — and on any listed case that passes, so the list stays
 # honest. Everything runs twice: in clear text, and behind the TLS
@@ -15,6 +16,7 @@
 # h2spec is built from a pinned commit of its repository into $TMPDIR
 # unless $H2SPEC names a binary already on the machine. Built rather than
 # downloaded: the release tarball carries no checksum, a commit hash does.
+# h2load comes from the system (Debian and Ubuntu: nghttp2-client).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -145,6 +147,35 @@ expect "HTTP/2 streamed body" "$stream" -k --http2 "https://$addr/stream"
 expect "HTTP/2 two streamed bodies in parallel" "$two_streams" \
   --no-progress-meter -k --http2 --parallel --parallel-max 2 \
   "https://$addr/stream" "https://$addr/stream"
+
+# --- h2load -----------------------------------------------------------------
+
+# load <label> <url> <h2load flags...>: 10,000 HTTP/2 requests from ten
+# connections, ten streams in flight on each, and every one must succeed
+# with a 2xx — what one client at a time never shows: many batches at once
+# on many connections, and the flow-control windows reopening under them.
+LOAD_REQUESTS=10000
+load() {
+  label=$1
+  url=$2
+  shift 2
+  out=$(h2load -n "$LOAD_REQUESTS" -c 10 -m 10 "$@" "$url" 2>&1) || {
+    echo "$out" >&2
+    fail "$label: h2load failed"
+  }
+  requests=$(echo "$out" | sed -n 's/^requests: .* \([0-9]*\) succeeded, \([0-9]*\) failed, \([0-9]*\) errored, \([0-9]*\) timeout.*/\1 \2 \3 \4/p')
+  ok2xx=$(echo "$out" | sed -n 's/^status codes: \([0-9]*\) 2xx.*/\1/p')
+  if [ "$requests" != "$LOAD_REQUESTS 0 0 0" ] || [ "$ok2xx" != "$LOAD_REQUESTS" ]; then
+    echo "$out" >&2
+    fail "$label: want $LOAD_REQUESTS requests succeeded with a 2xx, got succeeded/failed/errored/timeout $requests, 2xx $ok2xx"
+  fi
+  echo "ok  $label: $LOAD_REQUESTS requests, all 2xx"
+}
+
+echo "## h2load"
+command -v h2load >/dev/null || fail "h2load is not installed (nghttp2-client); CI installs it, see the interop-http job"
+load "HTTP/2 under load, clear text" "http://$clear_addr/hello"
+load "HTTP/2 under load, TLS" "https://$tls_addr/hello"
 
 # --- h2spec -----------------------------------------------------------------
 
