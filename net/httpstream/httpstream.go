@@ -7,14 +7,14 @@
 // docs/design/architecture.md ("What this is — and is not") refuses to ship
 // such a parser, in those words — "rewriting a parser exposed to hostile
 // input is how CVEs are manufactured" — and that judgement is not revised
-// here. [web] over net/http remains the supported path, and nothing in this
-// package is on it.
+// here: [web] over net/http leaves that parsing to the standard library.
 //
-// What is claimed for this code is narrower: that the architecture's own
-// table can be honoured end to end, and that doing so can be measured. It has
-// faced curl, h2spec and quic-go's HTTP/3 client in continuous integration,
-// and its parsers are fuzzed there; it has not run in production, nor been
-// reviewed by anyone who does this for a living. Put it behind something you trust, or do not
+// net/httpstream is supported — out of the experimental label since
+// 2026-10-10 and under the compatibility promise — and fuzzed in CI without
+// a public corpus; it has neither run in production nor had an outside
+// security review. It has faced curl, h2spec, h2load, h3spec, aioquic,
+// quic-go's HTTP/3 client, and nginx, HAProxy and Envoy in front of it, in
+// continuous integration. Put it behind something you trust, or do not
 // expose it at all. Which deployments it is written for — HTTP/1.1 exposed
 // directly, cleartext only behind a terminating proxy, clients with a
 // reduced HPACK table — is gathered in docs/guide/experimental.md
@@ -162,8 +162,8 @@
 // reorders and forges datagrams, and against two peers that share no code
 // (quic-go, in the interop/ module, where its HTTP/3 client also reads
 // [ServeH3Conn]'s responses, and ngtcp2, in the QUIC Interop Runner).
-// Keep [ServeH3Conn] off the supported path for the same reason as the rest of
-// this package.
+// [ServeH3Conn] and [Server.ServeQUIC] take its types, and so stay outside
+// the compatibility promise with it (ADR 0021).
 //
 // # The codec layer is not exported
 //

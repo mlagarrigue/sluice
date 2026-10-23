@@ -164,30 +164,31 @@ an element can be valid, carry three warnings, and keep moving forward.
 > the batch — and beside it an `Affordance` at the **same `Path`**, so the HTTP
 > layer renders `422` with both the problem and the action that fixes it, and a
 > client pairs them by comparing paths rather than by convention. The example's
-> handler is eight lines and there is still no adapter in the library for it:
+> handler fits on one screen and there is still no adapter in the library for it:
 > the status code and the encoding are the two decisions that matter, and an
 > adapter would hide them.
 
-#### Two paths: supported and experimental
+#### Two transports
 
-The flow above is the **supported path**: `net/http` supplies the protocol
-parsing (byte → Frame → Request), `web` and the example's pipeline build the
-rest, and nothing about the HTTP parsing is this library's responsibility. An
-experimental alternative exists: `net/httpstream` and `net/quic` are the package names,
-and they bring the byte → Frame → Request boundary into the library's own
-table — for measurement rather than for production, and under the caveat that
-writing protocol parsers exposed to hostile input is how CVEs are made, which
-the supported path is built to avoid.
+The flow above runs on `net/http`: the standard library supplies the
+protocol parsing (byte → Frame → Request), `web` and the example's pipeline
+build the rest, and nothing about the HTTP parsing is this library's
+responsibility. The other transport is `net/httpstream`, which brings the
+byte → Frame → Request boundary into the library's own table, under the
+caveat that writing protocol parsers exposed to hostile input is how CVEs are
+made — the risk the first transport leaves to the standard library.
+net/httpstream is supported — out of the experimental label since
+2026-10-10 and under the compatibility promise — and fuzzed in CI without
+a public corpus; it has neither run in production nor had an outside
+security review. Its HTTP/3 runs on `net/quic`, which is still experimental.
 
-[example/vertical](../../example/vertical) runs this experimental path end to
-end: every arrow is a stream stage — the transport from `net/httpstream`, whose
+[example/vertical](../../example/vertical) runs this transport end to end:
+every arrow is a stream stage — the transport from `net/httpstream`, whose
 one Handler serves HTTP/1.1, /2 and /3 (the example's own tests drive /1.1),
-and the routing and middle stages from `web/stream` — meeting the same
-credential and grant vocabulary as `web`'s pipeline. Nothing here is on the
-supported path. `net/httpstream` is not fuzzed against a public corpus, not run
-in production, and not reviewed by security specialists; the experiment
-claims only that the table is realisable, that building it can be measured,
-and that the claimed batch semantics hold end-to-end.
+and the routing and middle stages from `web/stream`, still experimental —
+meeting the same credential and grant vocabulary as `web`'s pipeline. It
+shows that the table is realisable, that building it can be measured, and
+that the claimed batch semantics hold end-to-end.
 
 ### A database example
 

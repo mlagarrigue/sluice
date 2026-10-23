@@ -31,7 +31,8 @@ import (
 // demultiplexing, address validation, amplification limits, Retry
 // generation — lives in [Listener], its own design unit on top of this one.
 // Interoperation is proven against quic-go, both ways, in continuous
-// integration (interop/); against any other implementation it is not.
+// integration (interop/), and against ngtcp2 and the other peers of the QUIC
+// Interop Runner (see the package documentation).
 //
 // # Failure model
 //

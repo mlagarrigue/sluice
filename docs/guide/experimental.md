@@ -200,6 +200,11 @@ handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.B
 
 ## `net/httpstream` — no longer experimental
 
+net/httpstream is supported — out of the experimental label since
+2026-10-10 and under the compatibility promise — and fuzzed in CI without
+a public corpus; it has neither run in production nor had an outside
+security review.
+
 The package left the list the day its three conditions were met. HTTP/1.1
 and /2 have faced curl, h2load (10,000 requests over ten connections) and
 h2spec in continuous integration

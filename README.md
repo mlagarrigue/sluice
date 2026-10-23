@@ -5,7 +5,7 @@
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mlagarrigue/sluice/badges/coverage.json)](https://github.com/mlagarrigue/sluice/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/mlagarrigue/sluice)](https://github.com/mlagarrigue/sluice/releases)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8)
-![Status](https://img.shields.io/badge/status-v0.1%20·%20unstable%20API-orange)
+![Status](https://img.shields.io/badge/status-v0%20·%20unstable%20API-orange)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 # Sluice.go
@@ -14,10 +14,10 @@
 flows.** Bytes arrive from the network, become a request, then a question
 asked of the database, then rows, then an answer that leaves. Sluice.go
 gives that whole journey one model — the `Stream`, a flow — and one set of
-tools to process it. It depends on nothing beyond Go's standard library,
-with one exception explained below.
+tools to process it. It depends on nothing beyond Go's standard library
+and two of the Go project's own modules, explained below.
 
-> **v0.1 — not used in production yet.** Everything described here exists,
+> **v0 — not used in production yet.** Everything described here exists,
 > is tested and measured; but function names may still change before
 > version 1. See [Status and limits](#status-and-limits).
 
@@ -252,7 +252,11 @@ preparation** — scenarios, method and results will be published together.
 
 ## Status and limits
 
-- **Nothing has run in production**, and the v0.1 API will change.
+- **Nothing has run in production**, and the v0 API will change.
+- **net/httpstream is supported — out of the experimental label since
+  2026-10-10 and under the compatibility promise — and fuzzed in CI without
+  a public corpus; it has neither run in production nor had an outside
+  security review.**
 - **PostgreSQL only** for now; SCRAM-SHA-256, cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).

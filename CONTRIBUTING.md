@@ -1,6 +1,6 @@
 # Contributing to Sluice.go
 
-The project is at v0.1: the API is not stable and will change before v1. The
+The project is at v0: the API is not stable and will change before v1. The
 most useful contributions today are **arguments about the design**,
 measurements, and adversarial tests — not only patches.
 

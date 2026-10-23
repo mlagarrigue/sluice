@@ -16,7 +16,8 @@ import (
 // handlers make so the store behind it sees one lookup for many requests.
 //
 // There is deliberately no HTTP adapter in this package. The glue below is
-// eight lines, it is completely explicit about status codes and encoding, and
+// short enough to read on one screen, it is completely explicit about status
+// codes and encoding, and
 // an adapter taking decode and encode functions would save three of those
 // lines while hiding the two decisions that matter. A thin abstraction over
 // something already thin is surface for nothing.

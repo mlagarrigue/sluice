@@ -7,14 +7,16 @@
 //
 // # Read this before using it
 //
-// Interoperability is proven against exactly one peer that shares no code:
-// quic-go, on each side of the handshake, in continuous integration (the
-// interop/ module — handshake, an echo across flow-control
-// windows, a close the peer sees). Everything else is checked against
+// Interoperability is proven against peers that share no code: quic-go, on
+// each side of the handshake, in continuous integration (the interop/ module
+// — handshake, an echo across flow-control windows, a close the peer sees),
+// and the implementations of the QUIC Interop Runner below. Everything else is checked against
 // itself, against RFC 9001 Appendix A's published vectors, and against a
 // test harness that drops, reorders and forges datagrams. The QUIC Interop
-// Runner, run in this repository's CI, adds ngtcp2 to quic-go; two peers
-// are not every peer, so treat a third implementation as untested.
+// Runner, run weekly in this repository's CI, crosses every implementation in
+// its list and judges three — quic-go, ngtcp2 and msquic — case by case
+// against interop/expected-results.json; the others are reported, not
+// judged, so treat them as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
 // a server on a host with several addresses (Linux only, through
 // [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported

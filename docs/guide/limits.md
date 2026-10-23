@@ -153,8 +153,8 @@ Three reasons come up, and the difference matters:
 ## Web and gateway
 
 - **On the `net/http` path, no router and no adapter** — on purpose.
-  `http.ServeMux` routes since Go 1.22; the handler stays eight lines you
-  can read; an adapter would hide the status code and the encoding. Two
+  `http.ServeMux` routes since Go 1.22; the handler stays short enough to read
+  at a glance; an adapter would hide the status code and the encoding. Two
   wrappers exist, and neither picks the status or the encoding of an
   ordinary response: `web.Recover` turns a panic into an observed 500, and
   `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental

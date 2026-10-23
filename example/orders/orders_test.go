@@ -285,7 +285,7 @@ func TestStoreFailureReachesEveryCaller(t *testing.T) {
 	}
 }
 
-// The eight lines of glue that join net/http to the vertical, exercised. There
+// The few lines of glue that join net/http to the vertical, exercised. There
 // is no adapter in the library for this on purpose: the status codes and the
 // encoding are the two decisions that matter, and an adapter would hide them.
 func TestOverHTTP(t *testing.T) {

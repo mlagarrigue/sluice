@@ -684,3 +684,28 @@ func exportedDocs(p *godoc.Package) []namedDoc {
 	}
 	return out
 }
+
+// httpstreamStatus is how net/httpstream's status is said, once, wherever a
+// reader may ask: it had been "supported" in one page, "on no supported
+// path" in its own documentation, "fuzzed in CI" in a guide and "not fuzzed"
+// in the architecture.
+const httpstreamStatus = "net/httpstream is supported — out of the experimental label since " +
+	"2026-10-10 and under the compatibility promise — and fuzzed in CI without " +
+	"a public corpus; it has neither run in production nor had an outside " +
+	"security review."
+
+func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
+	flat := func(s string) string {
+		s = strings.NewReplacer("//", " ", "**", "", "\n", " ").Replace(s)
+		return strings.Join(strings.Fields(s), " ")
+	}
+	for _, f := range []string{"README.md", "docs/guide/experimental.md", "docs/design/architecture.md", "net/httpstream/httpstream.go"} {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(flat(string(b)), httpstreamStatus) {
+			t.Errorf("%s does not state net/httpstream's status as %q", f, httpstreamStatus)
+		}
+	}
+}

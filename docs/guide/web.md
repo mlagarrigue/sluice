@@ -17,7 +17,7 @@ things:
 - `gateway`: a way to **group** the requests that arrive at the same time,
   so that a database asked sixty-four times is asked once.
 
-## A handler, eight lines you can see
+## A handler you can read on one screen
 
 ```go
 mux := http.NewServeMux() // the standard library's router
@@ -46,7 +46,7 @@ mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter,
 > code and the format for you. That is comfortable, and it is precisely
 > what disappears from the code: the two decisions that matter in a handler
 > are the status and the encoding, and you must be able to read them on one
-> line. Eight lines, no adapter.
+> line. One screen, no adapter.
 
 `DecodeJSON` requires a maximum size: a body without a limit is an open
 door to a client sending gigabytes. `PathInt64` reads a **wildcard** from

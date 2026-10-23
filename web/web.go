@@ -9,7 +9,7 @@
 // code** and the **encoding**
 // are the two decisions that matter in an HTTP handler, and anything that
 // wraps them makes both invisible at the call site. The example's handler is
-// eight lines and it should stay eight lines that a reader can see.
+// short and it should stay short enough for a reader to see it whole.
 //
 // So this package is functions a handler calls, never a thing that calls the
 // handler:
