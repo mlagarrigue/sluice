@@ -22,6 +22,8 @@ place.
   COPY, transactions, generated hydrators.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
+- [Deployments](guide/deployments.md) — behind nginx or Envoy, TLS in
+  front, QUIC behind a NAT, 0-RTT: what is supported and what to set.
 - [Experimental](guide/experimental.md) — QUIC and the native request path
   as stream stages; `net/httpstream` and `pushdown`, now supported.
   What is promised, and what is not.

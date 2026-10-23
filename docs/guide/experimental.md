@@ -5,7 +5,7 @@ their documentation: `net/quic` and its helper `net/quic/udp`, and
 `web/stream`. This page first says what the word means here, then what
 each one does and what not to expect from it, and ends with the two
 supported packages this page remains the guide of, and what each is held
-to.
+to. The deployments they support have [their own page](deployments.md).
 
 ## What "experimental" means
 
@@ -156,97 +156,12 @@ with the command that replays the comparison). To judge on yours,
 (`CongestionWindow`), the losses (`LostPackets`) and the round trip
 (`SmoothedRTT` against `MinRTT`: the gap is the queue the flow keeps).
 
-## Supported deployments
+## Deployments
 
-The network packages make deployment choices, and each one is carried at the
-place in the code that decides it. This section gathers them: what is
-supported as it is, what is only supported behind something else, what is
-not supported yet.
-
-| Situation | Supported? | Where it is decided |
-|---|---|---|
-| HTTP/1.1 exposed directly, with no proxy in front | Yes, by construction: parsing refuses anything two hops could read differently (obsolete line folding, a space before the colon, control characters, `Transfer-Encoding` next to `Content-Length`); an absolute-form target is served as the origin-form it holds, its authority taking the Host's place. A proxy that re-splits chunks is not required. | `net/httpstream/request.go`, `splitRequestLine` and `parseHeaders` |
-| HTTP/1.1 or HTTP/2 in clear text on a bare TCP socket | Kept for interoperability (terminating proxy, health probe, local tooling), **not for a network boundary**: whatever crosses a network goes behind TLS or over HTTP/3, whose transport encrypts by construction. | `net/httpstream/serve.go`, godoc of `Serve`; `h2conn.go`, godoc of `ServeH2Conn` |
-| HTTP/1.1 behind nginx or Envoy, upstream connections reused | Yes. The rule: the proxy's upstream idle timeout must be **shorter** than `IdleTimeout`, so that the proxy closes first instead of reusing a connection this server is closing and reporting a 502. nginx keeps its upstream connections 60 s by default, below the 2 min default of `IdleTimeout`: nothing to set as long as neither is raised or lowered (full configuration below the table). Envoy keeps them an hour: `idle_timeout: 60s` under `common_http_protocol_options` in the cluster's `HttpProtocolOptions`. Every response that keeps the connection does announce `Connection: keep-alive` and `Keep-Alive: timeout=<IdleTimeout in seconds>`, but neither proxy reads that value: nginx ignores the header, Envoy strips it. HTTP/2 announces the end with `GOAWAY` — the frame that says no new stream will be taken — instead. | `net/httpstream/response.go`, `keepAliveField`; `httpstream.go`, `defaultIdleTimeout` |
-| HTTP/2 clients with a reduced HPACK table — HTTP/2's header compression — (nghttp2, Envoy) | Yes: the table size requested by `SETTINGS_HEADER_TABLE_SIZE` is honored from the next header block, in the same critical section as the acknowledgement. | `net/httpstream/h2write.go`, `ackSettings` |
-| HTTP/2 uploads on a link with latency | Yes, with a window to set: the default stream window of 65535 bytes is one round trip's worth, about 0.5 MB/s at 100 ms of RTT; `Config.InitialWindowSize` raises it, for `Serve`, `Server` and `ServeH2Conn` alike, and 1 MiB measured eleven times the default on a 4 MiB upload through a proxy adding 100 ms. The connection window follows it, so it never queues what the streams alone admit. | `net/httpstream/httpstream.go`, `Config.InitialWindowSize`; `h2rtt_test.go`, `TestH2UploadThroughputAtRTT` |
-| QUIC clients behind a mobile NAT (address change in the middle of a connection) | Yes: four active connection IDs per endpoint by default (`TransportParameters.ActiveConnIDLimit`), enough for a NAT rebind and a deliberate rotation to overlap; the new path is validated by `PATH_CHALLENGE` before it is believed. | `net/quic/migration.go`, `issueLocalCIDsLocked` and `migrateLocked` |
-| QUIC server on a host with several addresses | **Linux only**: `net/quic/udp` learns which address a datagram arrived on and answers from it. Elsewhere, `EnablePacketInfo` returns `errors.ErrUnsupported` and the kernel picks the source by route: the client sees a reply come from an address it never wrote to, which for QUIC is a different path. Bind the socket to one specific address, or stay on Linux. | `net/quic/udp/udp.go`, `EnablePacketInfo` |
-| HTTP/3 clients resuming in 0-RTT (first requests sent before the handshake ends) | On request. `ListenerConfig.EarlyData` accepts the 0-RTT of a ticket this `Listener` issued, once, within ten minutes; anywhere else the connection resumes without 0-RTT. `Config.EarlyData` says which requests to act on before the handshake ends; nil: none, they wait for its end, which a replay never reaches. A request carrying `Early-Data` (an intermediary received it in early data) is answered 425 unless the predicate allows it. Allow only what a duplicate does not hurt. | [ADR 0019](../design/adr/0019-quic-early-data.md); `net/quic/earlydata.go`; `net/httpstream/h3serve.go`, `allowedEarly` |
-
-Two behaviors of `ServeH3Conn` complete the table without fitting in it: manual
-stream credit only turns on if the announced windows cover the admission
-bounds, and otherwise falls back to the transport's automatic credit,
-bounded by the ceilings of `Config` (`net/httpstream/h3serve.go`, at the
-top of `ServeH3Conn`); `Config.TransportParameters` produces accepted windows.
-And everything that "[What "experimental"
-means](#what-experimental-means)" says applies to every row: the table
-says what the code decides, not what an external review has confirmed.
-
-> **In plain terms.** "Supported" means here: the code makes this choice
-> explicitly, a test covers it, and the row says where to read the reason.
-> It takes nothing away from the *experimental* label of `net/quic`.
-
-The nginx row, in full: a configuration to copy as it is, where only the
-server's address changes. An *upstream* is the group of servers nginx
-relays to; `keepalive` there keeps connections open between two requests
-instead of opening one per request.
-
-```nginx
-upstream app {
-    server 10.0.0.1:8080;
-    keepalive 16;           # connections kept per worker; on by default since nginx 1.29.7
-    keepalive_timeout 60s;  # nginx's default, below IdleTimeout's 2 min
-}
-
-server {
-    listen 80;
-
-    location / {
-        proxy_pass http://app;
-        proxy_http_version 1.1;          # needed before nginx 1.29.7
-        proxy_set_header Connection "";  # needed before nginx 1.29.7
-    }
-}
-```
-
-Before 1.29.7, nginx speaks HTTP/1.0 to the upstream and sends
-`Connection: close` with every request: without the last two lines, every
-request opens a connection and `keepalive` does nothing. Since 1.29.7 that
-is the default, and the two lines no longer change anything. If you raise
-`keepalive_timeout` above 2 min, raise `IdleTimeout` above it.
-
-The "clear text" row points to TLS; this is what goes in front. The package
-does not terminate TLS ([ADR 0014](../design/adr/0014-tls-stays-in-front.md)):
-`crypto/tls` wraps the listener, and `Serve` reads the decrypted stream as
-it would read a bare socket.
-
-```go
-tlsConfig := &tls.Config{
-    Certificates: []tls.Certificate{cert},
-    MinVersion:   tls.VersionTLS12,
-    CipherSuites: []uint16{ // TLS 1.2 only: TLS 1.3 picks its own, all AEAD
-        tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-        tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-    },
-    NextProtos: []string{"h2", "http/1.1"}, // ALPN: a browser opens HTTP/2 this way only
-}
-err := httpstream.Serve(ctx, tls.NewListener(ln, tlsConfig), httpstream.Config{}, handle)
-```
-
-TLS 1.3 alone would do (`MinVersion: tls.VersionTLS13`, no `CipherSuites`):
-all of its suites are **AEAD** (encryption and authentication in one pass)
-and Go picks them itself. The list only serves clients still on TLS 1.2, to
-keep them off the suites RFC 9113 (Appendix A) prohibits for HTTP/2; the
-compression and renegotiation it prohibits too, `crypto/tls` never does on
-the server side. The package itself checks nothing of what was negotiated:
-it reads neither the version, nor the suite, nor the ALPN, and the preface
-picks the protocol, as in clear text. `scripts/interop-http.sh` replays
-curl and h2spec over `https://` with exactly this configuration.
+Which deployments the network packages are written for — HTTP/1.1 exposed
+directly, behind nginx or Envoy, TLS in front, QUIC behind a mobile NAT,
+0-RTT — and what to set for each is on a page of its own:
+[Deployments](deployments.md).
 
 ## `web/stream` — the same middle, for the other transport
 

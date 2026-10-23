@@ -17,8 +17,8 @@
 // continuous integration. Put it behind something you trust, or do not
 // expose it at all. Which deployments it is written for — HTTP/1.1 exposed
 // directly, cleartext only behind a terminating proxy, clients with a
-// reduced HPACK table — is gathered in docs/guide/experimental.md
-// ("Supported deployments"); each row names where the code decides it.
+// reduced HPACK table — is gathered in docs/guide/deployments.md; each
+// section names where the code decides it.
 //
 // # The thesis
 //

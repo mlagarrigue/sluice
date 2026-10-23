@@ -35,9 +35,9 @@ not provide is protocol selection *by* ALPN — the sniff decides, ALPN
 merely makes the client cooperate — which is fine while the two agree and
 would need revisiting only if a protocol without a distinguishing preface
 ever joined. The configuration to put in front — TLS 1.2 floor, AEAD
-suites, ALPN — lives in `docs/guide/experimental.md`, "Supported
-deployments", and `scripts/interop-http.sh` replays curl and h2spec
-through it.
+suites, ALPN — lives in
+[Deployments](../../guide/deployments.md#tls-in-front), and
+`scripts/interop-http.sh` replays curl and h2spec through it.
 
 The TLS requirements RFC 9113 §9.2 puts on an HTTP/2 endpoint — TLS 1.2 at
 least, no compression, no renegotiation, the key-size floors and the
