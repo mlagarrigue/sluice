@@ -35,6 +35,10 @@ once running.
 
 A few deserve a word:
 
+- Two operators are called `Merge`. `sluice.Merge` brings two streams
+  together by alternating their batches, comparing and keeping nothing;
+  `join.Merge` pairs two **sorted** streams on a key, as a SQL join does
+  ([Two sorted streams: the merge join](#two-sorted-streams-the-merge-join)).
 - `Map` and `Convert` both apply a function to every element. `Map` keeps
   the type and writes in place; `Convert` changes it and writes into a
   buffer of its own, never into its input. One generic function for both
