@@ -15,6 +15,12 @@ Three habits first:
   protocol position is lost (PostgreSQL, HTTP), the only safe move is to
   close that connection and open another.
 
+> **In plain terms: a sentinel.** A sentinel is an exported error value,
+> always the same one (`ErrOverflow`), that code compares against rather
+> than reading its message. `errors.Is(err, sluice.ErrOverflow)` finds it
+> even wrapped inside another error that adds context; comparing the text
+> breaks the day the message changes a word.
+
 To find which stage of a pipeline makes the others wait, rather than which
 one failed, see the `probe` package.
 
