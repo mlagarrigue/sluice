@@ -418,6 +418,21 @@ type Conn struct {
 	deferredEarly []deferredPacket
 	earlyAccepted chan struct{}
 	earlyReleased bool
+	// earlyTicket is the identifier of the ticket a resuming client
+	// presented, found eligible for 0-RTT and spent by installEarly.
+	earlyTicket []byte
+	// On a client: wantsEarly is DialEarly asking for 0-RTT; remembered is
+	// the ticket's parameters it is sent under, adopted as the peer's
+	// (paramsRemembered) once earlySealer, the 0-RTT write keys, is in;
+	// earlyRejected says the server refused it (rejectEarlyLocked).
+	// peerParamsRaw is the server's parameters as they arrived, kept with
+	// the tickets this connection stores.
+	wantsEarly       bool
+	remembered       TransportParameters
+	earlySealer      *packetSealer
+	paramsRemembered bool
+	earlyRejected    bool
+	peerParamsRaw    []byte
 	// hsComplete is closed when the handshake completes
 	// (Conn.HandshakeComplete).
 	hsComplete chan struct{}
@@ -704,10 +719,28 @@ type singleUseSessionCache struct{ inner tls.ClientSessionCache }
 
 func (c singleUseSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
 	cs, ok := c.inner.Get(key)
-	if ok {
-		c.inner.Put(key, nil)
+	if !ok {
+		return nil, false
 	}
-	return cs, ok
+	c.inner.Put(key, nil)
+	return sessionCopy(cs), true
+}
+
+// sessionCopy is cs over a copy of its session: the connection that resumes
+// from it may decline the ticket's 0-RTT (handleTLSEvent, under Dial) by
+// clearing SessionState.EarlyData, and the session a cache that ignores
+// removals keeps must not lose its 0-RTT to that. A session that cannot be
+// read back is handed out as it is.
+func sessionCopy(cs *tls.ClientSessionState) *tls.ClientSessionState {
+	ticket, state, err := cs.ResumptionState()
+	if err != nil || state == nil {
+		return cs
+	}
+	own := *state
+	if cp, err := tls.NewResumptionState(ticket, &own); err == nil {
+		return cp
+	}
+	return cs
 }
 
 func (c singleUseSessionCache) Put(key string, cs *tls.ClientSessionState) { c.inner.Put(key, cs) }
@@ -763,14 +796,14 @@ func requireTLS13(cfg *tls.Config) error {
 //
 // A cfg with a [tls.ClientSessionCache] resumes a session the server has
 // issued a ticket for (PSK, RFC 9001 §4.6): the handshake still takes one
-// round trip and no 0-RTT data is sent — this package carries nothing in
-// 0-RTT packets, even when the server offers to accept them. A ticket is
-// presented once: Dial wraps the cache, on a copy of cfg, so that a ticket
-// taken out of it is removed — RFC 9001 §4.5 and RFC 8446 Appendix C.4,
-// since a ticket reused lets anyone on the path tie the connections
-// together — and the ticket the server issues on the resumed connection
-// refills it. A cache that ignores Put(key, nil) reuses its tickets
-// anyway; that is the caller's choice to make, not the default.
+// round trip and Dial does not even offer 0-RTT, which leaves the ticket's
+// 0-RTT unspent at the server; [DialEarly] is the one that sends in it.
+// A ticket is presented once: Dial wraps the cache, on a copy of cfg, so
+// that a ticket taken out of it is removed — RFC 9001 §4.5 and RFC 8446
+// Appendix C.4, since a ticket reused lets anyone on the path tie the
+// connections together — and the ticket the server issues on the resumed
+// connection refills it. A cache that ignores Put(key, nil) reuses its
+// tickets anyway; that is the caller's choice to make, not the default.
 //
 // crypto/tls refuses RSA keys under 1024 bits and no more. RFC 8446
 // Appendix C.2 asks applications to hold certification paths to at least
@@ -784,6 +817,21 @@ func requireTLS13(cfg *tls.Config) error {
 // [DefaultHandshakeTimeout]. Once Dial has returned, ctx no longer has any
 // hold on the connection.
 func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
+	c, err := newClientConn(ctx, pc, addr, cfg, params)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.handshake(ctx); err != nil {
+		return nil, err // the handshake path closes on every failure
+	}
+	return c, nil
+}
+
+// newClientConn is what Dial and DialEarly share: the checks, the
+// identifiers, the Initial keys, and a crypto/tls client with session
+// events on, so that every ticket is stored with the server's parameters
+// and only DialEarly offers 0-RTT (handleTLSEvent).
+func newClientConn(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config, params TransportParameters) (*Conn, error) {
 	if err := params.check(); err != nil {
 		return nil, err
 	}
@@ -814,11 +862,28 @@ func Dial(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *tls.Config
 		_ = c.Close() // newConn started the timer loop; an early failure must stop it
 		return nil, err
 	}
-	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: clientTLSConfig(cfg)})
-	if err := c.handshake(ctx); err != nil {
-		return nil, err // the handshake path closes on every failure
-	}
+	c.tls = tls.QUICClient(&tls.QUICConfig{TLSConfig: clientTLSConfig(cfg), EnableSessionEvents: true})
 	return c, nil
+}
+
+// installEarlySealer installs a DialEarly client's 0-RTT write keys, takes
+// the ticket's remembered parameters as the server's, and lets DialEarly
+// return: streams may open and write from here, in 0-RTT packets.
+func (c *Conn) installEarlySealer(suiteID uint16, secret []byte) error {
+	s, err := suiteFor(suiteID)
+	if err != nil {
+		return err
+	}
+	sealer, err := newSealerSuite(secret, s)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.earlySealer = sealer
+	c.applyRememberedLocked(c.remembered)
+	c.mu.Unlock()
+	close(c.earlyAccepted)
+	return nil
 }
 
 // DefaultHandshakeTimeout is how long a handshake runs before it fails,
@@ -1433,6 +1498,13 @@ func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
 	if err != nil {
 		return err
 	}
+	if c.early == nil || !c.early.take(c.earlyTicket, time.Now()) {
+		// Another connection took the ticket since it was found eligible
+		// — a replay racing the original. crypto/tls has accepted the
+		// 0-RTT already; its packets are never read, which the client
+		// sees as loss and resends in 1-RTT, after the handshake.
+		return nil
+	}
 	c.mu.Lock()
 	c.earlyOpener = opener
 	c.mu.Unlock()
@@ -1558,47 +1630,105 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	switch e.Kind {
 	case tls.QUICSetReadSecret, tls.QUICSetWriteSecret:
 		if e.Level == tls.QUICEncryptionLevelEarly {
-			// The 0-RTT secret. On a server, crypto/tls hands out the read
-			// secret only for a resumption whose 0-RTT it accepted, which
-			// the QUICResumeSession case below allows only when the
-			// listener admits the ticket: the client's 0-RTT packets are
-			// read with it (installEarly). On a client, crypto/tls hands
-			// it out whenever a resumption it attempts carries a ticket
-			// the server marked for early data (RFC 9001 §4.6.1); this
-			// package sends no 0-RTT packet, which §4.6.1 leaves a client
-			// free to do, so the secret has no space to go to. spaceFor
-			// would file it under the application space, where it sealed
-			// 1-RTT packets with a key the peer holds only for 0-RTT.
-			if !c.isClient && e.Kind == tls.QUICSetReadSecret {
+			// The 0-RTT secret, never filed under the application space
+			// (spaceFor would, and it would seal 1-RTT packets with a key
+			// the peer holds only for 0-RTT). On a server, crypto/tls hands
+			// out the read secret only for a resumption whose 0-RTT it
+			// accepted, which the QUICResumeSession case below allows only
+			// when the listener admits the ticket: the client's 0-RTT
+			// packets are read with it (installEarly). On a client, the
+			// write secret comes only when DialEarly offered 0-RTT — the
+			// same case declines it for Dial — and seals what is sent
+			// before the 1-RTT keys (installEarlySealer).
+			switch {
+			case !c.isClient && e.Kind == tls.QUICSetReadSecret:
 				return false, c.installEarly(e.Suite, e.Data)
+			case c.isClient && e.Kind == tls.QUICSetWriteSecret && c.wantsEarly:
+				return false, c.installEarlySealer(e.Suite, e.Data)
 			}
 			return false, nil
 		}
 		if err := c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret); err != nil {
 			return false, err
 		}
-		if e.Level == tls.QUICEncryptionLevelApplication && e.Kind == tls.QUICSetWriteSecret && !c.isClient {
-			return false, c.releaseEarly()
+		if e.Level == tls.QUICEncryptionLevelApplication && e.Kind == tls.QUICSetWriteSecret {
+			if !c.isClient {
+				return false, c.releaseEarly()
+			}
+			// RFC 9001 §4.9.3: a client SHOULD discard its 0-RTT keys as
+			// soon as it installs 1-RTT keys; from here everything leaves
+			// in 1-RTT, retransmissions of 0-RTT data included.
+			c.mu.Lock()
+			c.earlySealer = nil
+			c.cond.Broadcast() // a writer waiting since a refused 0-RTT (awaitSealLocked)
+			c.mu.Unlock()
 		}
 		return false, nil
 	case tls.QUICResumeSession:
-		// A client resumes (server side; client connections leave session
-		// events off). Its 0-RTT stands only if this listener admits the
-		// ticket (ADR 0019); otherwise crypto/tls answers without
-		// early_data, and no 0-RTT packet is read (RFC 9001 §4.6.2).
-		if !c.isClient && e.SessionState.EarlyData &&
-			(c.early == nil || !c.early.admit(e.SessionState.Extra, time.Now())) {
-			e.SessionState.EarlyData = false
+		if !c.isClient {
+			// A client resumes. Its 0-RTT stands only if this listener
+			// admits the ticket (ADR 0019); otherwise crypto/tls answers
+			// without early_data, and no 0-RTT packet is read (RFC 9001
+			// §4.6.2).
+			// The ticket is only checked here, and spent in installEarly,
+			// once the client has offered 0-RTT and crypto/tls accepted it.
+			if e.SessionState.EarlyData {
+				var id []byte
+				ok := false
+				if c.early != nil {
+					id, ok = c.early.eligible(e.SessionState.Extra, time.Now())
+				}
+				if !ok {
+					e.SessionState.EarlyData = false
+				}
+				c.earlyTicket = append([]byte(nil), id...)
+			}
+			return false, nil
+		}
+		// This client resumes from a ticket. It offers 0-RTT only under
+		// DialEarly, and only with the server's parameters remembered
+		// beside the ticket: they are what 0-RTT must be sent under (RFC
+		// 9000 §7.4.1). Dial offers none, so its ticket costs the server
+		// no 0-RTT admission.
+		if e.SessionState.EarlyData {
+			p, ok := rememberedParams(e.SessionState.Extra)
+			if !c.wantsEarly || !ok {
+				e.SessionState.EarlyData = false
+			} else {
+				c.mu.Lock()
+				c.remembered = p
+				c.mu.Unlock()
+			}
 		}
 		return false, nil
+	case tls.QUICStoreSession:
+		// A ticket from the server, stored with the parameters this
+		// connection's handshake brought, for a later DialEarly to send
+		// 0-RTT under. Session events being on, crypto/tls stores nothing
+		// itself. A ticket that fails to store is one resumption less, not
+		// a reason to end this connection.
+		if raw := c.peerParamsRaw; raw != nil {
+			e.SessionState.Extra = append(e.SessionState.Extra, rememberedEntry(raw))
+		}
+		_ = c.tls.StoreSession(e.SessionState)
+		return false, nil
 	case tls.QUICRejectedEarlyData:
-		// Nothing was sent under the early secret, so nothing is to be
-		// resent in 1-RTT (§4.6.2): the rejection is a non-event, not one
-		// of the kinds UnhandledTLSEvents counts.
+		// The server refused 0-RTT (§4.6.2). Under DialEarly, what went
+		// out in it is undone (rejectEarlyLocked); otherwise nothing was
+		// sent under the early secret, and the rejection is a non-event,
+		// not one of the kinds UnhandledTLSEvents counts.
+		c.mu.Lock()
+		if c.wantsEarly {
+			c.rejectEarlyLocked()
+		}
+		c.mu.Unlock()
 		return false, nil
 	case tls.QUICWriteData:
 		return false, c.sendCrypto(e.Level, e.Data)
 	case tls.QUICTransportParameters:
+		if c.isClient {
+			c.peerParamsRaw = append([]byte(nil), e.Data...)
+		}
 		return false, c.handlePeerParameters(e.Data)
 	case tls.QUICHandshakeDone:
 		return true, nil
@@ -1695,6 +1825,7 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 
 	c.peerParams = p
 	c.hasPeerParams = true
+	c.paramsRemembered = false
 	if c.isClient && len(p.statelessResetToken) == 16 {
 		// §10.3.1: the handshake parameter's token belongs to the peer's
 		// sequence-0 identifier, exactly as a NEW_CONNECTION_ID's token

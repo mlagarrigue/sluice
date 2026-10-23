@@ -1372,7 +1372,9 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	out, err := sp.sent.markAcked(f.largest, f.Data)
 	if errors.Is(err, errOptimisticAck) {
 		// RFC 9000 §21.4: the ACK covers a number this end skipped on
-		// purpose — an acknowledgement of a packet that never existed.
+		// purpose — an acknowledgement of a packet that never existed — or
+		// RFC 9001 §4.6.2: one sent in 0-RTT the server refused, which it
+		// cannot have processed.
 		return &transportError{
 			code: transportProtocolViolation,
 			err:  fmt.Errorf("%w: the peer acknowledged packet %d, which was never sent", ErrQUIC, sp.sent.caught),

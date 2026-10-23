@@ -224,11 +224,16 @@ type sentTracker struct {
 	// land at least a quarter of a flight apart while the window doubles,
 	// so four reach back past the largest acknowledged. nextSkip is where
 	// the next gap goes; skipArmed says whether it has been drawn yet.
-	skips     [4]uint64
-	nSkips    int
-	caught    uint64
-	nextSkip  uint64
-	skipArmed bool
+	skips  [4]uint64
+	nSkips int
+	caught uint64
+	// refusedBelow is set on a client whose 0-RTT the server refused: every
+	// application packet number below it went out in 0-RTT and was
+	// forgotten (rejectEarlyLocked), and an ACK naming one is
+	// PROTOCOL_VIOLATION (RFC 9001 §4.6.2), caught naming it.
+	refusedBelow uint64
+	nextSkip     uint64
+	skipArmed    bool
 	// pathStart is when the current path began (RFC 9000 §9.4). A packet
 	// sent before it was sent on a previous path: its acknowledgement or
 	// loss still leaves the record — and a lost payload is still queued
@@ -390,6 +395,9 @@ func (s *sentTracker) markAcked(largest uint64, rangeData []byte) (ackOutcome, e
 	i := len(s.packets) - 1
 	optimistic := false
 	err := decodeAckRanges(largest, rangeData, func(lo, hi uint64) {
+		if lo < s.refusedBelow && !optimistic {
+			optimistic, s.caught = true, lo
+		}
 		for _, k := range s.skips[:s.nSkips] {
 			if lo <= k && k <= hi && !optimistic {
 				// The range names a number that was never sent (§21.4).

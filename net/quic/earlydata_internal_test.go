@@ -15,35 +15,35 @@ func TestEarlyGateAdmitsATicketOnce(t *testing.T) {
 	now := time.Now()
 	g := newEarlyGate(time.Minute, 2)
 	ticket := [][]byte{g.ticketExtra(now)}
-	if !g.admit(ticket, now.Add(time.Second)) {
+	if !admitOnce(g, ticket, now.Add(time.Second)) {
 		t.Fatal("a fresh ticket of this instance was refused")
 	}
-	if g.admit(ticket, now.Add(2*time.Second)) {
+	if admitOnce(g, ticket, now.Add(2*time.Second)) {
 		t.Error("the same ticket was admitted twice")
 	}
-	if g.admit([][]byte{g.ticketExtra(now.Add(-time.Minute))}, now) {
+	if admitOnce(g, [][]byte{g.ticketExtra(now.Add(-time.Minute))}, now) {
 		t.Error("a ticket one window old was admitted")
 	}
-	if g.admit([][]byte{g.ticketExtra(now.Add(time.Second))}, now) {
+	if admitOnce(g, [][]byte{g.ticketExtra(now.Add(time.Second))}, now) {
 		t.Error("a ticket issued in the future was admitted")
 	}
 	other := newEarlyGate(time.Minute, 2)
-	if g.admit([][]byte{other.ticketExtra(now)}, now) {
+	if admitOnce(g, [][]byte{other.ticketExtra(now)}, now) {
 		t.Error("another instance's ticket was admitted")
 	}
-	if g.admit(nil, now) || g.admit([][]byte{[]byte("unrelated")}, now) {
+	if admitOnce(g, nil, now) || admitOnce(g, [][]byte{[]byte("unrelated")}, now) {
 		t.Error("a ticket without this package's entry was admitted")
 	}
 
-	if !g.admit([][]byte{g.ticketExtra(now)}, now) {
+	if !admitOnce(g, [][]byte{g.ticketExtra(now)}, now) {
 		t.Fatal("a second fresh ticket was refused")
 	}
-	if g.admit([][]byte{g.ticketExtra(now)}, now) {
+	if admitOnce(g, [][]byte{g.ticketExtra(now)}, now) {
 		t.Error("a full register admitted a third ticket; it must refuse, not forget one")
 	}
 	// A window later the first entries expire, and room comes back.
 	later := now.Add(2 * time.Minute)
-	if !g.admit([][]byte{g.ticketExtra(later)}, later) {
+	if !admitOnce(g, [][]byte{g.ticketExtra(later)}, later) {
 		t.Error("the register did not free its expired entries")
 	}
 }
@@ -117,6 +117,7 @@ func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 func TestEarlyAcceptanceWaitsForTheWriteKeys(t *testing.T) {
 	secret := make([]byte, 32)
 	c := &Conn{cc: newNewReno(1200), earlyAccepted: make(chan struct{})}
+	c.early, c.earlyTicket = eligibleTicket(t)
 	event := func(kind tls.QUICEventKind, level tls.QUICEncryptionLevel) {
 		t.Helper()
 		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: kind, Level: level, Suite: tls.TLS_AES_128_GCM_SHA256, Data: secret}); err != nil {
@@ -141,4 +142,70 @@ func TestEarlyAcceptanceWaitsForTheWriteKeys(t *testing.T) {
 		t.Fatal("the 1-RTT write keys are in and the connection was not released")
 	}
 	event(tls.QUICSetReadSecret, tls.QUICEncryptionLevelApplication) // a second release would close twice
+}
+
+// admitOnce is what the server does for a client that offers 0-RTT: check
+// the ticket at resumption, spend it when the 0-RTT is accepted.
+func admitOnce(g *earlyGate, extra [][]byte, now time.Time) bool {
+	id, ok := g.eligible(extra, now)
+	return ok && g.take(id, now)
+}
+
+// Checking a ticket spends nothing — crypto/tls reports every resumption,
+// 0-RTT offered or not, and one without it must leave the ticket's 0-RTT
+// intact — and of two connections that found it eligible, one takes it.
+func TestEarlyGateChecksWithoutSpending(t *testing.T) {
+	now := time.Now()
+	g := newEarlyGate(time.Minute, 4)
+	ticket := [][]byte{g.ticketExtra(now)}
+	id1, ok1 := g.eligible(ticket, now)
+	id2, ok2 := g.eligible(ticket, now)
+	if !ok1 || !ok2 {
+		t.Fatal("a check spent the ticket")
+	}
+	if !g.take(id1, now) {
+		t.Fatal("the first take was refused")
+	}
+	if g.take(id2, now) {
+		t.Error("the second of two racing connections took the ticket too")
+	}
+	if _, ok := g.eligible(ticket, now); ok {
+		t.Error("a spent ticket is still eligible")
+	}
+}
+
+// eligibleTicket is a gate and the identifier of a ticket it finds eligible,
+// as a server holds them once a resuming client has offered 0-RTT.
+func eligibleTicket(t *testing.T) (*earlyGate, []byte) {
+	t.Helper()
+	now := time.Now()
+	g := newEarlyGate(time.Minute, 4)
+	id, ok := g.eligible([][]byte{g.ticketExtra(now)}, now)
+	if !ok {
+		t.Fatal("a fresh ticket is not eligible")
+	}
+	return g, id
+}
+
+// RFC 9001 §4.6.2: once the server refused 0-RTT, an acknowledgement of a
+// packet sent in it is PROTOCOL_VIOLATION. The same ACK without the refusal
+// names packets merely forgotten, and passes.
+func TestAnAckOfRefusedZeroRTTIsAViolation(t *testing.T) {
+	for _, refused := range []bool{true, false} {
+		c := boundsConn(t, true)
+		c.mu.Lock()
+		sp := &c.spaces[spaceApplication]
+		sp.nextPN = 3
+		if refused {
+			sp.sent.refusedBelow = 3
+		}
+		c.mu.Unlock()
+		ranges := AppendVarint(AppendVarint(nil, 0), 1) // no further range; the first covers packets 0 and 1
+		err := c.handleAck(spaceApplication, Frame{Type: frameACK, largest: 1, Data: ranges}, time.Now())
+		te, isViolation := errors.AsType[*transportError](err)
+		isViolation = isViolation && te.code == transportProtocolViolation
+		if isViolation != refused {
+			t.Errorf("refused %v: handleAck = %v", refused, err)
+		}
+	}
 }

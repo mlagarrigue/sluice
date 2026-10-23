@@ -97,8 +97,8 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		return errClosed
 	}
 	sp := &c.spaces[space]
-	if sp.discarded || sp.sealer == nil {
-		return fmt.Errorf("%w: nothing to seal packets with at level %d", ErrQUIC, space)
+	if err := c.awaitSealLocked(sp, space); err != nil {
+		return err
 	}
 
 	if opts.waitCwnd {
@@ -144,8 +144,8 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 			if c.draining || c.closeSent {
 				return errClosed
 			}
-			if sp.discarded || sp.sealer == nil {
-				return fmt.Errorf("%w: the keys for level %d were discarded while waiting", ErrQUIC, space)
+			if err := c.awaitSealLocked(sp, space); err != nil {
+				return err
 			}
 		}
 	}
@@ -384,6 +384,7 @@ func (c *Conn) takePNLocked(sp *space, space int) uint64 {
 type pendingPacket struct {
 	sp          *space
 	space       int
+	early       bool   // a 0-RTT packet: long header, sealed with Conn.earlySealer
 	prefix      []byte // the long header up to, not including, Length
 	payload     []byte
 	retransPart []byte
@@ -504,7 +505,11 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	header := c.hdrScratch[:0]
 	defer func() { c.hdrScratch = header[:0] }()
 	needPad := false
-	if space == spaceApplication {
+	// A DialEarly client before its 1-RTT keys sends application data in
+	// 0-RTT packets: a long header of type 1, sealed with the early keys
+	// (RFC 9001 §4.6, RFC 9000 §17.2.3).
+	early := space == spaceApplication && sp.sealer == nil && c.earlySealer != nil
+	if space == spaceApplication && !early {
 		header = append(header, 0x40|c.spin|c.ku.phase|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin, RFC 9001 §6 key phase
 		if opts.dcid != nil {
 			header = append(header, opts.dcid...)
@@ -513,7 +518,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 	} else {
 		typ := byte(packetInitial)
-		if space == spaceHandshake {
+		switch {
+		case early:
+			typ = packetZeroRTT
+		case space == spaceHandshake:
 			typ = packetHandshake
 		}
 		header = append(header, 0xc0|typ<<4|byte(pnLen-1), 0, 0, 0, 1, byte(len(c.dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version 1
@@ -569,7 +577,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// exactly before sealing. While gathering, the padding a closing Initial
 	// will add is still to come — counted as the room it fills.
 	size := len(header) + pnLen + len(payload) + 16
-	if space != spaceApplication {
+	if space != spaceApplication || early {
 		size = sealedLen(len(header), len(payload), 0)
 		if gathering && needPad {
 			size = max(size, 1200-c.gatheredLenLocked())
@@ -638,8 +646,12 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// in use and nothing more under them — the MUST describes the state of
 	// an endpoint that went past the limit without closing, which this one
 	// never does. The integrity limit (receive.go) reads §6.6 the same way.
-	if !c.closeSent && sp.sealer.sealed >= sp.sealer.k.confLimit-1 {
-		if space == spaceApplication {
+	keys := sp.sealer
+	if early {
+		keys = c.earlySealer
+	}
+	if !c.closeSent && keys.sealed >= keys.k.confLimit-1 {
+		if space == spaceApplication && !early {
 			if ok, err := c.initiateKeyUpdateLocked(); err != nil {
 				return err
 			} else if ok {
@@ -689,10 +701,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 
 	pn := c.takePNLocked(sp, space)
 	p := pendingPacket{
-		sp: sp, space: space, prefix: header, payload: payload,
+		sp: sp, space: space, early: early, prefix: header, payload: payload,
 		retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath, ecn: c.ecn.mark(),
 	}
-	if c.batching && space == spaceApplication && opts.via == nil && onPath {
+	if c.batching && space == spaceApplication && !early && opts.via == nil && onPath {
 		return c.batchLocked(&p, size)
 	}
 	c.flushBatchLocked()
@@ -729,7 +741,11 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error) {
 	const pnLen = 4
 	sp := p.sp
-	if sp.discarded || sp.sealer == nil {
+	sealer := sp.sealer
+	if p.early {
+		sealer = c.earlySealer
+	}
+	if sp.discarded || sealer == nil {
 		// The keys left between building and sealing — a Handshake packet
 		// retiring the Initial space under an Initial still pending. What
 		// it carried is gone with the space, as discardSpaceLocked says.
@@ -740,7 +756,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		payload = append(payload, make([]byte, pad)...)
 	}
 	header := p.prefix
-	if p.space != spaceApplication {
+	if p.space != spaceApplication || p.early {
 		// The length covers the packet number and the sealed payload, tag
 		// included.
 		header = AppendVarint(header, uint64(pnLen+len(payload)+16))
@@ -750,7 +766,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		header = append(header, byte(p.pn>>(8*uint(i)))) //nolint:gosec // G115: keeps the low octet of each shift
 	}
 	before := len(dst)
-	out, err := sp.sealer.Seal(dst, header, payload, p.pn, pnOffset, pnLen)
+	out, err := sealer.Seal(dst, header, payload, p.pn, pnOffset, pnLen)
 	if err != nil {
 		return dst, err
 	}
@@ -1547,4 +1563,29 @@ func (c *Conn) keepBatchErr(err error) {
 	if c.batchErr == nil {
 		c.batchErr = err
 	}
+}
+
+// canSealLocked reports whether a packet of space can be sealed now: the
+// space's own keys, or for the application space a DialEarly client's 0-RTT
+// keys before the 1-RTT ones arrive. Callers hold mu.
+func (c *Conn) canSealLocked(sp *space, space int) bool {
+	if sp.discarded {
+		return false
+	}
+	return sp.sealer != nil || (space == spaceApplication && c.earlySealer != nil)
+}
+
+// awaitSealLocked returns once a packet of space can be sealed, or the
+// error that says it never will. The one wait is a DialEarly client whose
+// 0-RTT the server refused: crypto/tls reports the refusal just before the
+// 1-RTT keys, the 0-RTT keys are gone, and a stream opened in between waits
+// the instant until the 1-RTT ones are in. Callers hold mu.
+func (c *Conn) awaitSealLocked(sp *space, space int) error {
+	for !c.canSealLocked(sp, space) {
+		if sp.discarded || space != spaceApplication || !c.earlyRejected || c.draining || c.closeSent || c.closeErr != nil {
+			return fmt.Errorf("%w: nothing to seal packets with at level %d", ErrQUIC, space)
+		}
+		c.cond.Wait()
+	}
+	return nil
 }

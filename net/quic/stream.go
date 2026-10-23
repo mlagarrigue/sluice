@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -78,6 +79,12 @@ type Stream struct {
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.
 	writeDeadline time.Time
+
+	// rejected says the stream was opened in 0-RTT and the server refused
+	// it (rejectEarlyLocked): every Read and Write returns
+	// ErrEarlyDataRejected. Atomic, so that neither side needs the other's
+	// lock to see it.
+	rejected atomic.Bool
 }
 
 // ID reports the stream's identifier. Its two low bits say who opened it and
@@ -228,6 +235,9 @@ func (s *Stream) Read(p []byte) (int, error) {
 		return 0, fmt.Errorf("%w: stream %d is unidirectional and this end opened it: nothing to read", ErrQUIC, s.id)
 	}
 	for {
+		if s.rejected.Load() {
+			return 0, ErrEarlyDataRejected
+		}
 		s.mu.Lock()
 		if len(s.buf) > 0 {
 			n := copy(p, s.buf)
@@ -421,6 +431,9 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		return 0, os.ErrDeadlineExceeded
 	}
 	for {
+		if s.rejected.Load() {
+			return written, ErrEarlyDataRejected
+		}
 		if s.writeReset {
 			return written, fmt.Errorf("%w: stream %d is reset (code %#x) and takes no more writes",
 				ErrQUIC, s.id, s.writeCode)

@@ -132,17 +132,18 @@
 //     the path validates, and a rise in the CE count a peer reports is a
 //     congestion event for the controller. Elsewhere the field is neither
 //     read nor set, and [Stats] shows zero.
+//   - Session resumption and 0-RTT (RFC 9001 §4.5, §4.6; ADR 0019), on
+//     request. A [Listener] issues tickets ([ListenerConfig.SessionTickets])
+//     and accepts 0-RTT ([ListenerConfig.EarlyData]) once per ticket and
+//     only for its own; [DialEarly] sends the first requests in 0-RTT
+//     under the parameters remembered with the ticket, and a refusal fails
+//     the streams that carried them ([ErrEarlyDataRejected]).
 //
 // # What is not here
 //
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT from a client. A [Listener] accepts it when asked
-//     ([ListenerConfig.EarlyData], ADR 0019), once per ticket and only
-//     for its own; a client given a [tls.ClientSessionCache] resumes
-//     ([Dial]) but sends nothing in 0-RTT, so its first request still
-//     waits the round trip.
 //   - **Versions other than 1.** QUIC version 2 (RFC 9369) and compatible
 //     version negotiation (RFC 9368, the version_information parameter)
 //     are not implemented: the only version spoken is 1. A Version

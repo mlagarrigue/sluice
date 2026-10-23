@@ -223,3 +223,10 @@ func tokenField(b []byte) (val, rest []byte, err error) {
 	n := int(b[0])
 	return bytesN(b[1:], n)
 }
+
+// has reports whether id is recorded as spent and not yet expired at now,
+// recording nothing.
+func (s *spentTokens) has(id []byte, now time.Time) bool {
+	exp, ok := s.byID[string(id)]
+	return ok && now.Before(exp)
+}

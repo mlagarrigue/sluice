@@ -17,7 +17,7 @@
 // failed; anything else that goes wrong exits with 1.
 //
 // What is refused here, and why, is one table (supported); the cases it
-// refuses are the features net/quic documents as not there (0-RTT, QUIC v2)
+// refuses are the features net/quic documents as not there (QUIC v2)
 // or that crypto/tls offers no knob for (a client
 // that offers only ChaCha20 — Go does not let a TLS 1.3 cipher suite list
 // be restricted — and a key update forced inside the first megabyte, which
@@ -28,7 +28,9 @@
 // it reads in its ACK frames (RFC 9000 §13.4). The HTTP/3 case is served,
 // by net/httpstream, but not fetched: the module has no HTTP/3 client. The
 // resumption case is served by a listener that issues session tickets, and
-// fetched over two connections, the second presenting the first's ticket.
+// fetched over two connections, the second presenting the first's ticket;
+// the zerortt case the same, the listener accepting 0-RTT and the second
+// connection sending its requests in it.
 package main
 
 import (
@@ -93,11 +95,11 @@ var supported = map[string]map[string]bool{
 	"server": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
 		"http3": true, "connectionmigration": true, "chacha20": true, "ecn": true,
-		"resumption": true,
+		"resumption": true, "zerortt": true,
 	},
 	"client": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
-		"ipv6": true, "ecn": true, "resumption": true,
+		"ipv6": true, "ecn": true, "resumption": true, "zerortt": true,
 	},
 }
 
@@ -164,7 +166,7 @@ func runServer(testcase string) error {
 	if err != nil {
 		return err
 	}
-	lcfg := quic.ListenerConfig{AlwaysRetry: testcase == "retry", SessionTickets: testcase == "resumption"}
+	lcfg := quic.ListenerConfig{AlwaysRetry: testcase == "retry", SessionTickets: testcase == "resumption", EarlyData: testcase == "zerortt"}
 	if testcase == "connectionmigration" {
 		// One dual-stack socket, announced in both families: a client only
 		// moves to a preferred address of the family it already uses
@@ -333,34 +335,36 @@ func runClient(testcase string, requests []string) error {
 		// One connection per file, one after the other: the case counts
 		// handshakes under heavy loss.
 		for _, r := range requests {
-			if err := fetchAll([]string{r}, kl, nil); err != nil {
+			if err := fetchAll([]string{r}, kl, nil, false); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	if testcase == "resumption" {
+	if testcase == "resumption" || testcase == "zerortt" {
 		// The first file on one connection, the rest on a second that
 		// presents the ticket the first received: the case checks that
-		// the second handshake carries no certificate. The ticket arrives
+		// the second handshake carries no certificate, and zerortt that
+		// the requests of the second travel in 0-RTT. The ticket arrives
 		// beside HANDSHAKE_DONE, before any answer, so it is stored by the
 		// time the first file is.
 		cache := tls.NewLRUClientSessionCache(1)
-		if err := fetchAll(requests[:1], kl, cache); err != nil {
+		if err := fetchAll(requests[:1], kl, cache, false); err != nil {
 			return err
 		}
 		if len(requests) == 1 {
 			return nil
 		}
-		return fetchAll(requests[1:], kl, cache)
+		return fetchAll(requests[1:], kl, cache, testcase == "zerortt")
 	}
-	return fetchAll(requests, kl, nil)
+	return fetchAll(requests, kl, nil, false)
 }
 
 // fetchAll opens one connection to the host of the first URL and fetches
 // every URL over it, concurrently within maxStreamsInFlight. A non-nil cache
-// resumes from a ticket it holds and stores the one the server sends.
-func fetchAll(requests []string, kl io.Writer, cache tls.ClientSessionCache) error {
+// resumes from a ticket it holds and stores the one the server sends; early
+// sends the requests in 0-RTT when the ticket allows it (quic.DialEarly).
+func fetchAll(requests []string, kl io.Writer, cache tls.ClientSessionCache, early bool) error {
 	first, err := url.Parse(requests[0])
 	if err != nil {
 		return err
@@ -404,7 +408,11 @@ func fetchAll(requests []string, kl io.Writer, cache tls.ClientSessionCache) err
 
 		ClientSessionCache: cache,
 	}
-	c, err := quic.Dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
+	dial := quic.Dial
+	if early {
+		dial = quic.DialEarly
+	}
+	c, err := dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}

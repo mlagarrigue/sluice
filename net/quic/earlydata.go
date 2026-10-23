@@ -62,26 +62,39 @@ func (g *earlyGate) ticketExtra(now time.Time) []byte {
 	return binary.BigEndian.AppendUint64(b, uint64(now.UnixNano())) //nolint:gosec // G115: a time after the epoch
 }
 
-// admit reports whether a resumption whose ticket carries extra may have its
-// 0-RTT accepted at now, and records the ticket as spent when it may: RFC
-// 8446 §8's "at most once" on the instance that issued it.
-func (g *earlyGate) admit(extra [][]byte, now time.Time) bool {
+// eligible reports whether a resumption whose ticket carries extra may have
+// its 0-RTT accepted at now — a ticket of this instance, young enough, not
+// spent — and returns the ticket's identifier for take. It spends nothing:
+// crypto/tls reports the resumption whether or not the client offers 0-RTT,
+// and a resumption without it must not cost the ticket its 0-RTT.
+func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 	for _, e := range extra {
 		if len(e) != earlyTicketLen || !bytes.HasPrefix(e, earlyTicketMagic) {
 			continue
 		}
 		e = e[len(earlyTicketMagic):]
 		if !bytes.Equal(e[:16], g.instance[:]) {
-			return false
+			return nil, false
 		}
 		issued := time.Unix(0, int64(binary.BigEndian.Uint64(e[32:]))) //nolint:gosec // G115: written by ticketExtra from a positive time
 		if age := now.Sub(issued); age < 0 || age >= g.window {
-			return false
+			return nil, false
 		}
+		id := e[16:32]
 		g.mu.Lock()
-		ok := g.spent.consume(e[16:32], now)
+		spent := g.spent.has(id, now)
 		g.mu.Unlock()
-		return ok
+		return id, !spent
 	}
-	return false
+	return nil, false
+}
+
+// take records the ticket id as spent and reports whether it was not yet:
+// RFC 8446 §8's "at most once" on the instance that issued it. Called when
+// the 0-RTT is actually accepted; of two connections that found the same
+// ticket eligible — a replay racing the original — only one takes it.
+func (g *earlyGate) take(id []byte, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.spent.consume(id, now)
 }

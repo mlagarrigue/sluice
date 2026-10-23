@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -363,5 +364,204 @@ func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
 				t.Errorf("the handler ran with the handshake completed = %v, want %v", got.completed, tc.wantCompleted)
 			}
 		})
+	}
+}
+
+// sluiceDialEarly resumes from cfg's cached ticket with DialEarly, opens a
+// stream at once and writes payload on it, and returns the connection, the
+// stream, and whether DialEarly returned before the handshake completed.
+func sluiceDialEarly(t *testing.T, ctx context.Context, addr net.Addr, cfg *tls.Config, payload string) (*quic.Conn, *quic.Stream, bool) {
+	t.Helper()
+	c, err := quic.DialEarly(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("DialEarly: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	early := false
+	select {
+	case <-c.HandshakeComplete():
+	default:
+		early = true
+	}
+	st, err := c.OpenStream(ctx)
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	if _, err := st.WriteFinal([]byte(payload)); err != nil {
+		t.Fatalf("writing in 0-RTT: %v", err)
+	}
+	return c, st, early
+}
+
+// sluicePrime runs one full sluice connection so that cfg's cache holds the
+// ticket the server issues, stored with the server's parameters.
+func sluicePrime(t *testing.T, ctx context.Context, addr net.Addr, cfg *tls.Config) {
+	t.Helper()
+	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("first handshake: %v", err)
+	}
+	defer c.Close()
+	for deadline := time.Now().Add(timeout); ; {
+		if _, ok := cfg.ClientSessionCache.Get(cfg.ServerName); ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no session ticket reached the client")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestSluiceZeroRTTAgainstSluiceServer: DialEarly returns before the
+// handshake ends, the request written then leaves in 0-RTT, the listener
+// accepts it early, and the echo comes back.
+func TestSluiceZeroRTTAgainstSluiceServer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	addr, accepted := earlyServer(t, serverTLS(t), quic.ListenerConfig{EarlyData: true})
+	cfg := clientTLS()
+	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
+	sluicePrime(t, ctx, addr, cfg)
+	<-accepted
+
+	_, st, early := sluiceDialEarly(t, ctx, addr, cfg, "early request")
+	if !early {
+		t.Fatal("DialEarly waited for the handshake; no 0-RTT was attempted")
+	}
+	got, err := io.ReadAll(st)
+	if err != nil {
+		t.Fatalf("reading the echo: %v", err)
+	}
+	if string(got) != "early request" {
+		t.Fatalf("echo = %q", got)
+	}
+	if !<-accepted {
+		t.Error("the server did not accept the connection's 0-RTT")
+	}
+}
+
+// TestSluiceZeroRTTAgainstQuicGoServer: the same against quic-go listening
+// with Allow0RTT, which reports whether it used 0-RTT.
+func TestSluiceZeroRTTAgainstQuicGoServer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ln, err := quicgo.ListenEarly(listenUDP(t), serverTLS(t), &quicgo.Config{MaxIdleTimeout: timeout, Allow0RTT: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	used := make(chan bool, 4)
+	go func() {
+		for {
+			c, err := ln.Accept(ctx)
+			if err != nil {
+				return
+			}
+			go func() {
+				st, err := c.AcceptStream(ctx)
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(st, st)
+				_ = st.Close()
+				<-c.HandshakeComplete()
+				used <- c.ConnectionState().Used0RTT
+			}()
+		}
+	}()
+	cfg := clientTLS()
+	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
+	sluicePrime(t, ctx, ln.Addr(), cfg)
+
+	_, st, early := sluiceDialEarly(t, ctx, ln.Addr(), cfg, "early request")
+	if !early {
+		t.Fatal("DialEarly waited for the handshake; no 0-RTT was attempted")
+	}
+	got, err := io.ReadAll(st)
+	if err != nil {
+		t.Fatalf("reading the echo: %v", err)
+	}
+	if string(got) != "early request" {
+		t.Fatalf("echo = %q", got)
+	}
+	if !<-used {
+		t.Error("quic-go did not see the request in 0-RTT")
+	}
+}
+
+// When the server refuses 0-RTT — here an instance that did not issue the
+// ticket — the stream opened in 0-RTT fails with ErrEarlyDataRejected, and
+// the connection carries a stream opened afterwards (RFC 9001 §4.6.2: the
+// streams start over).
+func TestSluiceZeroRTTRefused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	key := [32]byte{4, 5, 6}
+	cfgA, cfgB := serverTLS(t), serverTLS(t)
+	cfgA.SetSessionTicketKeys([][32]byte{key})
+	cfgB.SetSessionTicketKeys([][32]byte{key})
+	addrA, _ := earlyServer(t, cfgA, quic.ListenerConfig{EarlyData: true})
+	addrB, _ := earlyServer(t, cfgB, quic.ListenerConfig{EarlyData: true})
+	cfg := clientTLS()
+	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
+	sluicePrime(t, ctx, addrA, cfg)
+
+	c, st, early := sluiceDialEarly(t, ctx, addrB, cfg, "refused")
+	if !early {
+		t.Fatal("DialEarly waited for the handshake; no 0-RTT was attempted")
+	}
+	if _, err := io.ReadAll(st); !errors.Is(err, quic.ErrEarlyDataRejected) {
+		t.Fatalf("the 0-RTT stream read %v, want ErrEarlyDataRejected", err)
+	}
+	if _, err := st.Write([]byte("more")); !errors.Is(err, quic.ErrEarlyDataRejected) {
+		t.Errorf("a write on the refused stream returned %v, want ErrEarlyDataRejected", err)
+	}
+	again, err := c.OpenStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID() != st.ID() {
+		t.Errorf("the stream after the refusal is %d, want %d: the streams start over", again.ID(), st.ID())
+	}
+	if _, err := again.WriteFinal([]byte("in 1-RTT")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(again)
+	if err != nil || string(got) != "in 1-RTT" {
+		t.Fatalf("echo in 1-RTT = %q, %v", got, err)
+	}
+}
+
+// Dial resumes without offering 0-RTT, so its ticket costs the server no
+// admission: the same ticket presented by DialEarly afterwards still has its
+// 0-RTT accepted.
+func TestDialDoesNotSpendTheTicketsZeroRTT(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	addr, accepted := earlyServer(t, serverTLS(t), quic.ListenerConfig{EarlyData: true})
+	cfg := clientTLS()
+	cache := &stickyCache{cs: map[string]*tls.ClientSessionState{}}
+	cfg.ClientSessionCache = cache
+	sluicePrime(t, ctx, addr, cfg)
+	<-accepted
+
+	c, err := quic.Dial(ctx, listenUDP(t), addr, cfg, quic.DefaultParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ConnectionState().DidResume {
+		t.Fatal("Dial did not resume")
+	}
+	_ = c.Close()
+
+	_, st, early := sluiceDialEarly(t, ctx, addr, cfg, "after Dial")
+	if !early {
+		t.Fatal("DialEarly waited for the handshake")
+	}
+	// A refused 0-RTT fails the stream (ErrEarlyDataRejected): the echo is
+	// the proof that the server accepted it.
+	if _, err := io.ReadAll(st); err != nil {
+		t.Fatalf("the ticket's 0-RTT was spent by Dial: %v", err)
 	}
 }

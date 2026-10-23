@@ -20,6 +20,7 @@ func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 			tls.QUICEncryptionLevelApplication: true,
 		} {
 			c := &Conn{cc: newNewReno(1200), isClient: isClient, earlyAccepted: make(chan struct{})}
+			c.early, c.earlyTicket = eligibleTicket(t)
 			for _, kind := range []tls.QUICEventKind{tls.QUICSetWriteSecret, tls.QUICSetReadSecret} {
 				done, err := c.handleTLSEvent(tls.QUICEvent{Kind: kind, Level: level, Suite: tls.TLS_AES_128_GCM_SHA256, Data: secret})
 				if err != nil || done {
