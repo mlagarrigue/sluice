@@ -68,6 +68,20 @@ stream the client never opened is the connection error; the idle
 clock does not run while answers are owed; the connection receive window
 starts at 1 MiB.
 
+The three goroutines of an HTTP/2 connection and the bound on each
+hand-off (HTTP/3 has no responder):
+
+```mermaid
+flowchart LR
+    IN[(socket, read side)] --> R[reader<br/>frames, stream states,<br/>receive windows, HPACK]
+    R -- "one batch,<br/>its own goroutine" --> H[Handler call]
+    R -- "≤ MaxConcurrentStreams batches,<br/>never blocks" --> P[responder<br/>response framing,<br/>streamed bodies]
+    H -- answers --> P
+    R -- "control frames,<br/>≤ MaxPendingControlBytes,<br/>the reader blocks when full" --> W[writer<br/>send windows,<br/>scheduling]
+    P -- "buffered bodies,<br/>bounded by the stream slots" --> W
+    W --> OUT[(socket, write side)]
+```
+
 What a call returns is read after it returns. The HTTP/2 responder encodes
 the response and the writer sends its body while later batches of the same
 connection are being handled; HTTP/3 writes each response on a goroutine

@@ -468,6 +468,24 @@ a context ends while the connection is waiting for the server (in `Query`,
    nothing is sent on the main connection before that close, so a
    cancellation still on its way cannot land on the next statement.
 
+The three steps, with the two connections:
+
+```mermaid
+sequenceDiagram
+    participant A as your call
+    participant M as main connection
+    participant X as second connection
+    participant P as PostgreSQL
+    A->>M: Query, Exec…
+    M->>P: the statement
+    Note over A: the context ends
+    A->>X: 1. the recipe opens it
+    X->>P: 2. CancelRequest (process number, secret)
+    P-->>X: 3. closes it, the confirmation
+    P-->>M: error 57014 (query_canceled)
+    M-->>A: the context's error, the connection stays usable
+```
+
 The server then abandons the statement with code `57014`
 (`query_canceled`). The call returns the context's error, wrapped (the
 server's error stays reachable through `errors.As`), and the connection

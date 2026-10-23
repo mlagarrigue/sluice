@@ -23,6 +23,26 @@ cancellation.
 
 **A shutdown is a bounded drain, front to back.**
 
+The order of (1) and HTTP/2's pair of GOAWAY frames from (6), in one
+picture:
+
+```mermaid
+sequenceDiagram
+    participant M as your main
+    participant S as server
+    participant C as HTTP/2 client
+    participant G as gateway
+    participant B as back-end connections
+    M->>S: first signal, Shutdown, the normal stop
+    S->>C: GOAWAY NO_ERROR, last stream 2^31−1, and a PING
+    C-->>S: the PING's acknowledgement, one round trip later
+    S->>C: second GOAWAY, the last stream actually taken
+    Note over S,C: the open streams finish, the connection closes
+    S-->>M: nil, or ErrShutdownForced once ShutdownGrace has passed
+    M->>G: stop, its pending batches go out, nothing new is accepted
+    M->>B: close the PostgreSQL pools and clients
+```
+
 1. **Order.** A layer stops after the layer that calls it: the server
    first (nothing new admitted, the responses in flight finish), then the
    gateway (its pending batches go out, nothing new accepted), then the
