@@ -7,6 +7,9 @@ package reqbody
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"reflect"
 	"strings"
 
@@ -125,4 +128,81 @@ func MalformedArgs(err error) map[string]any {
 		return map[string]any{"field": strings.Trim(name, `"`)}
 	}
 	return nil
+}
+
+// Decode reads one JSON document from r into dst under the rules both
+// DecodeJSON functions state — unknown fields refused, null refused into a
+// struct, a second value refused as smuggled — and returns the refusal under
+// code, or under tooLarge past the limit, or ok. Past limit, r must fail with an *http.MaxBytesError, as
+// http.MaxBytesReader does; a caller that already knows the size checks it
+// before. The two paths differ only in how they learn a body is too large and
+// in who picks the status.
+func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnostics.Diagnostic, bool) {
+	var first *firstByteReader
+	if IntoStruct(dst) {
+		first = &firstByteReader{r: r}
+		r = first
+	}
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			return TooLarge(tooLarge, limit), false
+		}
+		// The server's read deadline ran out under the body: the client
+		// stopped sending, which is not a syntax error and must not read as
+		// one.
+		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+			return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+				WithMessage("RequestBodyTimeout", nil).
+				WithOrigin(diagnostics.OriginProtocol).
+				WithCause(err), false
+		}
+		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+			WithMessage("RequestBodyMalformed", MalformedArgs(err)).
+			WithOrigin(diagnostics.OriginProtocol).
+			WithCause(err), false
+	}
+	// A JSON value that starts with 'n' is null, and null decodes into a
+	// struct as nothing at all: dst keeps its zero fields and the handler
+	// proceeds on a request nobody wrote.
+	if first != nil && first.b == 'n' {
+		return Null(code), false
+	}
+	// A second value in the body is not a stray byte, it is a different
+	// request smuggled behind the first. Refused rather than ignored.
+	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
+		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+			WithMessage("RequestBodyTrailingContent", nil).
+			WithOrigin(diagnostics.OriginProtocol), false
+	}
+	return diagnostics.Diagnostic{}, true
+}
+
+// TooLarge is the refusal of a body past limit bytes, under code.
+func TooLarge(code string, limit int64) diagnostics.Diagnostic {
+	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
+		WithOrigin(diagnostics.OriginProtocol)
+}
+
+// firstByteReader remembers the first non-whitespace byte read through it,
+// which is enough to tell a null document from any other: no other JSON
+// value begins with 'n'.
+type firstByteReader struct {
+	r io.Reader
+	b byte
+}
+
+func (f *firstByteReader) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if f.b == 0 {
+		for _, c := range p[:n] {
+			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+				f.b = c
+				break
+			}
+		}
+	}
+	return n, err
 }

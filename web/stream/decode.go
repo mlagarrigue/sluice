@@ -2,11 +2,7 @@ package stream
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
-	"io"
 
-	"github.com/mlagarrigue/sluice/diagnostics"
 	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/web"
 	"github.com/mlagarrigue/sluice/web/internal/reqbody"
@@ -42,33 +38,11 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	}
 	body := e.Request.Body
 	if int64(len(body)) > limit {
-		e.Refuse(413, diagnostics.NewDiagnostic(diagnostics.Error, web.CodeBodyTooLarge, diagnostics.Path{}).
-			WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
-			WithOrigin(diagnostics.OriginProtocol))
+		e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, limit))
 		return false
 	}
-
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		e.Refuse(400, diagnostics.NewDiagnostic(diagnostics.Error, web.CodeMalformedBody, diagnostics.Path{}).
-			WithMessage("RequestBodyMalformed", reqbody.MalformedArgs(err)).
-			WithOrigin(diagnostics.OriginProtocol).
-			WithCause(err))
-		return false
-	}
-	// null decodes into a struct as nothing, leaving dst zero; refused as web
-	// refuses it. A JSON value whose first byte is 'n' is null.
-	if reqbody.IntoStruct(dst) {
-		if t := bytes.TrimLeft(body, " \t\r\n"); len(t) > 0 && t[0] == 'n' {
-			e.Refuse(400, reqbody.Null(web.CodeMalformedBody))
-			return false
-		}
-	}
-	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
-		e.Refuse(400, diagnostics.NewDiagnostic(diagnostics.Error, web.CodeMalformedBody, diagnostics.Path{}).
-			WithMessage("RequestBodyTrailingContent", nil).
-			WithOrigin(diagnostics.OriginProtocol))
+	if d, ok := reqbody.Decode(bytes.NewReader(body), limit, dst, web.CodeMalformedBody, web.CodeBodyTooLarge); !ok {
+		e.Refuse(400, d)
 		return false
 	}
 	return true

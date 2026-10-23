@@ -55,11 +55,8 @@ package web
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"math"
-	"net"
 	"net/http"
 	"strconv"
 
@@ -114,72 +111,7 @@ func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, 
 	// ResponseWriter it does not tell the server to stop reading or close the
 	// connection — net/http drains or abandons what is left of the body on
 	// its own terms once the handler returns.
-	var body io.Reader = http.MaxBytesReader(nil, r.Body, limit)
-	var first *firstByteReader
-	if reqbody.IntoStruct(dst) {
-		first = &firstByteReader{r: body}
-		body = first
-	}
-	dec := json.NewDecoder(body)
-	dec.DisallowUnknownFields()
-
-	if err := dec.Decode(dst); err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			return diagnostics.NewDiagnostic(diagnostics.Error, CodeBodyTooLarge, diagnostics.Path{}).
-				WithMessage("RequestBodyTooLarge", map[string]any{"limit": limit}).
-				WithOrigin(diagnostics.OriginProtocol), false
-		}
-		// The server's read deadline ran out under the body: the client
-		// stopped sending, which is not a syntax error and must not read as
-		// one. Its own message, under the transport code a malformed body
-		// carries: no code of its own before the API freeze.
-		if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-			return diagnostics.NewDiagnostic(diagnostics.Error, CodeMalformedBody, diagnostics.Path{}).
-				WithMessage("RequestBodyTimeout", nil).
-				WithOrigin(diagnostics.OriginProtocol).
-				WithCause(err), false
-		}
-		return diagnostics.NewDiagnostic(diagnostics.Error, CodeMalformedBody, diagnostics.Path{}).
-			WithMessage("RequestBodyMalformed", reqbody.MalformedArgs(err)).
-			WithOrigin(diagnostics.OriginProtocol).
-			WithCause(err), false
-	}
-	// A JSON value that starts with 'n' is null, and null decodes into a
-	// struct as nothing at all: dst keeps its zero fields and the handler
-	// proceeds on a request nobody wrote.
-	if first != nil && first.b == 'n' {
-		return reqbody.Null(CodeMalformedBody), false
-	}
-
-	// A second value in the body is not a stray byte, it is a different
-	// request smuggled behind the first. Refused rather than ignored.
-	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
-		return diagnostics.NewDiagnostic(diagnostics.Error, CodeMalformedBody, diagnostics.Path{}).
-			WithMessage("RequestBodyTrailingContent", nil).
-			WithOrigin(diagnostics.OriginProtocol), false
-	}
-	return diagnostics.Diagnostic{}, true
-}
-
-// firstByteReader remembers the first non-whitespace byte read through it,
-// which is enough to tell a null document from any other: no other JSON
-// value begins with 'n'.
-type firstByteReader struct {
-	r io.Reader
-	b byte
-}
-
-func (f *firstByteReader) Read(p []byte) (int, error) {
-	n, err := f.r.Read(p)
-	if f.b == 0 {
-		for _, c := range p[:n] {
-			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
-				f.b = c
-				break
-			}
-		}
-	}
-	return n, err
+	return reqbody.Decode(http.MaxBytesReader(nil, r.Body, limit), limit, dst, CodeMalformedBody, CodeBodyTooLarge)
 }
 
 // PathInt64 reads a [http.ServeMux] wildcard as an int64.
