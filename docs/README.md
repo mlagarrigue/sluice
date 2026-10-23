@@ -25,6 +25,12 @@ place.
   What is promised, and what is not.
 - [Limits](guide/limits.md) — what is not done, module by module.
 
+## Something is wrong
+
+- [Troubleshooting](guide/troubleshooting.md) — every error the library
+  exports, by package: when it happens, why, and what to do.
+- [Limits](guide/limits.md) — when the thing you need is simply not there.
+
 ## I want to understand the choices
 
 - [Architecture](design/architecture.md) — the reasoning: two types, the

@@ -709,3 +709,60 @@ func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
 		}
 	}
 }
+
+// Every error the library exports is named in a document a reader reaches —
+// the troubleshooting guide at least — so that someone who meets it in a log
+// finds when it happens and what to do (docs/guide/troubleshooting.md). The
+// examples and internal packages are not the library's surface; the nested
+// modules are measured, not imported.
+func TestEveryErrorIsDocumented(t *testing.T) {
+	var docs strings.Builder
+	for _, f := range markdownFiles(t) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs.Write(b)
+	}
+	text := docs.String()
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", ".claude", ".git"}
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if slices.Contains(skip, d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		for _, decl := range f.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				for _, name := range spec.(*ast.ValueSpec).Names {
+					n := name.Name
+					if !strings.HasPrefix(n, "Err") || !name.IsExported() {
+						continue
+					}
+					if !regexp.MustCompile(`\b` + n + `\b`).MatchString(text) {
+						t.Errorf("%s: %s.%s is named in no document; add it to docs/guide/troubleshooting.md", p, f.Name.Name, n)
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
