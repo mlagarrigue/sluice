@@ -1,12 +1,12 @@
 # ADR 0011 — The middle arrows ship beside the core, as `web/stream`
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered; `webstream` became `web/stream`)
+- **Revised:** 2026-10-07 (renumbered; `webstream` became `web/stream`), 2026-10-23 (the stages are functions over a batch; what the exchange carries)
 - **Theme:** web
 
 ## Problem
 
-The architecture draws the web vertical as a chain of stream operators,
+The architecture draws the web vertical as a chain of batch-shaped stages,
 and the transport arrows existed on the experimental path. The middle
 arrows — routing, authentication, authorisation, body decoding, response
 rendering — were either `net/http`-typed functions in `web` or nothing at
@@ -18,12 +18,19 @@ Which stages become shipped operators, and where do they live?
 **Beside the core, not in it.** Nothing in `Stream`/`Batch` needs routing
 or principals, so the stages live in `web/stream`, under `web` because
 they are the same middle for another transport, and they inherit the
-experimental caveat. **The shipped set is the minimum honest one**: route,
+experimental caveat. **The stages are functions over a batch, not stream
+operators**: an `httpstream.Handler` answers one batch per call, and inside
+it `Route`, `Authenticate`, `Authorize` and `Render` each take the
+`[]Exchange` built from that batch and record what they learn on it in
+place. **The shipped set is the minimum honest one**: route,
 authenticate and authorise (batch-shaped over `web`'s `Verifier` and
 `Authorizer` — one credential vocabulary, not a fork), decode, and render.
-**Context travels in the element**: an `Exchange` wraps the request plus
-the route, principal, grant, refusal status and diagnostics — the wrapper
-ADR 0005 says belongs outside the core. **Refusals travel; nothing is
+**Context travels in the element**: an `Exchange` wraps the whole
+`httpstream.Request`, the peer included (`Request.RemoteAddr`,
+`Request.TLS`), plus the route, principal, grant, refusal status and
+diagnostics — the wrapper ADR 0005 says belongs outside the core. The
+`context.Context` is not in it: it is the handler call's own, one per
+batch, cancelled as ADR 0008 describes. **Refusals travel; nothing is
 filtered**: a dropped element answers the wrong caller on a pipelined
 connection, so a refusing stage records a status and later stages step
 over the element, and `Render` answers refused and served alike,

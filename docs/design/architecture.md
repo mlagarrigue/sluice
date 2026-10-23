@@ -80,11 +80,24 @@ code and in the sources.
 The library has **a single concept**: the `Stream`, a potentially infinite
 sequence of **batches** of values, whose throughput is controlled by the consumer.
 
-**Everything is a stream operation.** This is not a figure of speech: HTTP
-parsing, routing, security, business rules, SQL reads, object hydration and
-serialization are **all** operators of the same algebra. There is no "handler" in
-the middle of the pipeline that would be of some other nature — business
-processing is an operator just like `Map` or `Filter`.
+**Everything is a stream operation, at the grain of the batch.** This is not a
+figure of speech: HTTP parsing, routing, security, business rules, SQL reads,
+object hydration and serialization are **all** stages of the same shape — a
+batch in, a batch out, in order. There is no "handler" in the middle of the
+pipeline that would be of some other nature — business processing is a stage
+just like `Map` or `Filter`.
+
+The shape is written two ways. A stage that composes with others over a whole
+stream is an **operator**, a function from `Stream[A]` to `Stream[B]`: `Map`,
+`Filter`, the joins, the PostgreSQL connector's decoding. A stage that runs
+inside one call answering one batch is a **function over the batch's slice**:
+that is the web path, whose `httpstream.Handler` receives a batch of requests
+and returns a batch of responses, and whose `web/stream` stages (`Route`,
+`Authenticate`, `Authorize`, `Render`) take the `[]Exchange` built from that
+batch and record what they learn on it in place. The batch is the unit either
+way; the second form gives up chaining stream operators inside the handler,
+and gains one context per batch and answers matched by position (see
+[Two transports](#two-transports)).
 
 ### What this is — and is not
 
@@ -183,10 +196,11 @@ a public corpus; it has neither run in production nor had an outside
 security review. Its HTTP/3 runs on `net/quic`, which is still experimental.
 
 [example/vertical](../../example/vertical) runs this transport end to end:
-every arrow is a stream stage — the transport from `net/httpstream`, whose
-one Handler serves HTTP/1.1, /2 and /3 (the example's own tests drive /1.1),
-and the routing and middle stages from `web/stream`, still experimental —
-meeting the same credential and grant vocabulary as `web`'s pipeline. It
+every arrow is a batch-shaped stage — the transport from `net/httpstream`,
+whose one Handler serves HTTP/1.1, /2 and /3 (the example's own tests drive
+/1.1), and the routing and middle stages from `web/stream`, still
+experimental, which are functions over the batch's `[]Exchange` inside that
+one Handler call — meeting the same credential and grant vocabulary as `web`'s pipeline. It
 shows that the table is realisable, that building it can be measured, and
 that the claimed batch semantics hold end-to-end.
 
@@ -1410,19 +1424,26 @@ stream-stream outer join without a watermark; Kafka **deprecated** its implicit
 24 h grace period (KIP-633). The safe default is zero tolerance, widened on
 request.
 
-**Overflow is loud**: a `Diagnostic` of severity `Critical` and an observable
-counter — never silence, never an OOM. Breaking co-partitioning in Kafka Streams — the requirement that both sides of a join be split the same way — raises no exception and produces no output: that is the worst failure mode, and
+**Overflow is loud** — never silence, never an OOM. Under `Fail` the operator
+panics with `ErrOverflow`, which `Try` turns into an error; under `DropNewest`
+it calls its limit's `Report` once, with the limit and the number of entries
+it was asked to hold, and that is where the caller raises its `Critical`
+diagnostic. Breaking co-partitioning in Kafka Streams — the requirement that both sides of a join be split the same way — raises no exception and produces no output: that is the worst failure mode, and
 the counter-example not to reproduce.
 
-**The limit is global to the plan**, not local to the operator: when several joins
-coexist, the sum of the tables must fit. A shared budget.
+**The limit belongs to the operator.** Each join holds its own `BuildLimit`;
+when several joins coexist, the caller divides its memory between them. The
+library keeps no budget shared across a pipeline: one would need a registry
+every operator consults, which a library with no global state does not have
+([ADR 0016](adr/0016-hash-join-bound.md)).
 
-**Storage is an interface** — an in-memory map by default, optional spill. Never
-hardwire a persistence policy into an operator: Kafka Streams ended up mandating
-RocksDB in its foreign-key join, in contradiction with its own agnosticism goal.
-For spill (continuing on disk when memory is full), the reference is radix partitioning with recursive bit increase
-(DuckDB), with its known guardrail: on very skewed data, recursive
-sub-partitioning causes *I/O thrashing*.
+**Storage is in memory.** Never hardwire a persistence policy into an operator
+for its own sake: Kafka Streams ended up mandating RocksDB in its foreign-key
+join, in contradiction with its own agnosticism goal. The day spill
+(continuing on disk when memory is full) has a consumer, the reference is
+radix partitioning with recursive bit increase (DuckDB), with its known
+guardrail: on very skewed data, recursive sub-partitioning causes *I/O
+thrashing*.
 
 > `join.StreamTable` takes `join.BuildLimit` positionally, and its zero value
 > is refused: a limit of zero under the zero policy would drop every row,
@@ -1643,7 +1664,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 
 | # | Guarantee | Verification |
 |---|---|---|
-| S1 | No unbounded allocation. Every bound is mandatory: a zero field is its safe default, never its absence ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)). | Overflow → error, not OOM |
+| S1 | No unbounded allocation. A zero is never the absence of a bound: either it stands for a safe default named in the field's comment (`httpstream.Config`, [ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)), or it is refused at construction where no default suits every caller (`join.BuildLimit`, `gateway.Config`, `postgres.CopyConfig.RowsPerTx`). `diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as truncated. Two named exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound at zero, because they are the deployer's memory budget (ADR 0018). | Overflow → error, not OOM; a refused zero → a panic or an error naming the field |
 | S2 | No `panic` crosses a public boundary, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzing of the parsers — `Path.JSONPointer` covered; every sentinel goes through one constructor |
 | S3 | Restrictive default limits. | Review of the defaults |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` (the audited files) + review |

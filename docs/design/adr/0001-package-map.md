@@ -1,7 +1,7 @@
 # ADR 0001 — The package map: a core that retains nothing, operators by what they retain, the periphery by external system
 
 - **Created:** 2026-10-07
-- **Revised:** —
+- **Revised:** 2026-10-23 (what the root retains, the internal packages, operators and stages)
 - **Theme:** core
 
 ## Problem
@@ -26,14 +26,28 @@ Operators are grouped by **what they retain between two batches**:
 | `parallel` | goroutines |
 | `distinct` | keys |
 
-`Coalesce` stays in the root as the one documented exception: it holds at
-most one batch, and it is the core's own tool for restoring full batches.
+Three root operators retain more than the batch in flight, each by a
+bound that does not grow with the stream: `Coalesce` holds at most one
+batch, and it is the core's own tool for restoring full batches; `Split`
+holds at most one pending batch per branch; `Merge` holds one `iter.Pull`
+coroutine per source and buffers no batch.
+
+Two words name what these packages export. An **operator** is a function
+from `Stream[A]` to `Stream[B]` and composes over a whole stream. A
+**stage** is a function from one batch to the next, called once per batch:
+`parallel.Ordered` takes one, `httpstream.Handler` is one, and `web/stream`
+writes its stages as functions over the batch's `[]Exchange`.
+
 The periphery is grouped like the standard library, by external system:
-`database/postgres`, `net/quic`, `net/httpstream`, with `web/stream` beside
-`web`. Cross-cutting extensions (`diagnostics`, `gateway`, `probe`,
-`pushdown`) stay as root-level packages. Shared machinery (`internal/batch`,
-`internal/pgwire`, `internal/streamtest`) is internal. The root imports
-nothing of the module beyond `internal/`, and a test enforces it.
+`database/postgres`, `net/quic` (with `net/quic/udp`), `net/httpstream`,
+and `web` with `web/stream` beside it. Cross-cutting extensions
+(`diagnostics`, `gateway`, `probe`, `pushdown`) stay as root-level
+packages. Shared machinery is internal: `internal/batch`, `internal/dgram`,
+`internal/ipkey`, `internal/pgwire`, `internal/streamtest`,
+`internal/varint` for the module, and an `internal/` under the one package
+that needs it (`database/postgres/internal/entity`, `web/internal/reqbody`,
+`net/httpstream/internal/interopserver`). The root imports nothing of the
+module beyond `internal/batch`, and a test enforces it.
 
 ## Rationale
 
@@ -49,6 +63,6 @@ The split was measured before it shipped: twelve paired rounds against the
 pre-split tree showed no benchmark slower, so the cross-package calls to
 `internal/batch` cost nothing observable.
 
-Reversal condition: an operator whose retention does not fit one of the
-four families. The criterion would then need a fifth package, not a return
-to one flat namespace.
+Reversal condition: an operator whose retention fits none of the packages
+above. The criterion would then need one more package, not a return to one
+flat namespace.
