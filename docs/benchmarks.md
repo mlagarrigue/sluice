@@ -1148,6 +1148,22 @@ depth costs a consumer that stops. `FetchAll` and pgx are the controls.
 | `BenchmarkPGEncodeInt8ArraySluice` | 492 ns | ±4% | 0 B | 0 |
 <!-- /consolidate -->
 
+## Joins and hydration, in isolation
+
+The figures the guides quote for choosing a join and for the generated
+hydration. Six runs of one second, median, 2026-10-23, go1.26.9, 15 cores,
+under WSL2, not pinned. `JoinMerge` and `JoinHash` join 65,536 rows a side,
+sorted, through `join.Merge` and through the hash table (`internal/bench`);
+`GeneratedHydrate` decodes 1,024 rows of six columns into a struct through
+the code `sluicegen` writes, a nullable `*string` and a copied string
+included (`database/postgres/internal/entity`).
+
+| benchmark | ns per element or row | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
+| `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
+| `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
+
 ## Web pipeline, in process
 
 No socket, no kernel. See the socket table below before drawing anything from
