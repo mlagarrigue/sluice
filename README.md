@@ -181,8 +181,11 @@ flowchart LR
 
 Requests that arrive together leave together. The code that handles one
 request does not change. **64 requests, 1 connection, 898 µs** — against
-12.9 ms for pgx (the reference PostgreSQL driver in Go) on one connection.
-→ [`example/orders`](example/orders)
+12.9 ms for pgx (the reference PostgreSQL driver in Go) on one connection,
+and 1.28 ms for pgx on a pool of 64 connections, one per request.
+→ [`example/orders`](example/orders), run by
+`go test ./example/orders -run TestIntegration -v` against the PostgreSQL the
+`SLUICE_PG` variables name (the test skips without one).
 
 ### 2. A large result, constant memory
 
@@ -306,8 +309,10 @@ prerequisite beyond Go. The API reference is the godoc, on
 [pkg.go.dev](https://pkg.go.dev/github.com/mlagarrigue/sluice), with a
 runnable example per operator. Two complete examples:
 [`example/orders`](example/orders), the supported vertical against a real
-PostgreSQL, and [`example/vertical`](example/vertical), the same over the
-native transport.
+PostgreSQL (`go test ./example/orders -run TestIntegration -v`), and
+[`example/vertical`](example/vertical), the same over the native transport
+(`go test ./example/vertical -run TestVerticalEndToEnd -v`); both take their
+PostgreSQL from the `SLUICE_PG` variables and skip without one.
 
 Inspired by the Volcano model, MonetDB/X100, Akka Streams, Flink, and the
 FHIR and SARIF diagnostic models — sources cited in the architecture.

@@ -257,4 +257,7 @@ an order.
 [`example/orders`](../../example/orders) is this whole vertical: a PATCH
 served by a pipeline built once, one read and one write per batch into a
 real PostgreSQL, refusals answered with their remedy, and an integration
-test that counts the round trips to prove there is only one per batch.
+test that counts the round trips to prove there is only one per batch:
+`go test ./example/orders -run TestIntegration -v`, against the PostgreSQL the
+`SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and `SLUICE_PG_PASSWORD`
+variables name (it skips without them).

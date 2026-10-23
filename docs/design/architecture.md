@@ -96,22 +96,24 @@ the code; this section states the policy once so the labels have a spine.
 
 ### A complete web example — a PATCH
 
-Every arrow is a stream operator, without exception:
+Every arrow is a stream operator, without exception. Each stage is a
+`Stream[T]`, which is a sequence of `Batch[T]`: the batch is in every arrow
+without being written.
 
 ```
-Stream[Batch[byte]]        ← socket read, pooled buffers
-  → Stream[Batch[Frame]]      protocol parsing
-  → Stream[Batch[Request]]    decoding, limits
-  → Stream[Batch[Route]]      routing
-  → Stream[Batch[Params]]     parameter extraction + validation
-  → Stream[Batch[Params]]     security (authn/authz)          ← operator
-  → Stream[Batch[Params]]     business security middleware    ← operator
-  → Stream[Batch[Entity]]     DB read from the batch of params
-  → Stream[Batch[Entity]]     data amendment                  ← operator
-  → Stream[Batch[Entity]]     business rules (line.saleQty > 0)
-  → Stream[Batch[Entity]]     save
-  → Stream[Batch[Response]]   result projection
-  → Stream[Batch[byte]]       serialization
+Stream[byte]               ← socket read, pooled buffers
+  → Stream[Frame]             protocol parsing
+  → Stream[Request]           decoding, limits
+  → Stream[Route]             routing
+  → Stream[Params]            parameter extraction + validation
+  → Stream[Params]            security (authn/authz)          ← operator
+  → Stream[Params]            business security middleware    ← operator
+  → Stream[Entity]            DB read from the batch of params
+  → Stream[Entity]            data amendment                  ← operator
+  → Stream[Entity]            business rules (line.saleQty > 0)
+  → Stream[Entity]            save
+  → Stream[Response]          result projection
+  → Stream[byte]              serialization
 ```
 
 Diagnostics ([Diagnostics](#diagnostics--errors-warnings-and-affordances)) travel **alongside** the entities through this whole pipeline —
@@ -166,12 +168,13 @@ that the claimed batch semantics hold end-to-end.
 
 ### A database example
 
-The connector follows exactly the same shape:
+The connector follows exactly the same shape, each stage a `Stream[T]` of
+batches as above:
 
 ```
-Stream[Batch[byte]]     ← PostgreSQL wire protocol
-  → Stream[Batch[Row]]      DataRow decoding, binary format
-  → Stream[Batch[Entity]]   generated hydration, column by column
+Stream[byte]            ← PostgreSQL wire protocol
+  → Stream[Row]             DataRow decoding, binary format
+  → Stream[Entity]          generated hydration, column by column
 ```
 
 This implies **reimplementing the connectors**: `database/sql` cannot batch

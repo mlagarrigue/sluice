@@ -327,4 +327,7 @@ this path: an HTTP request authenticated, authorized, batched by principal,
 decided by one business rule, read from PostgreSQL under row-level
 security, and answered with its problems and their remedies. Every arrow
 of the journey is a stream stage, and the example counts its round trips.
-Its twin on the supported path is `example/orders`.
+`go test ./example/vertical -run TestVerticalEndToEnd -v` runs it, against the
+PostgreSQL the `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and
+`SLUICE_PG_PASSWORD` variables name; without them it skips. Its twin on the
+supported path is `example/orders`.
