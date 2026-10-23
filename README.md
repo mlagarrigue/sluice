@@ -21,8 +21,12 @@ and two of the Go project's own modules, explained below.
 > is tested and measured; but function names may still change before
 > version 1. See [Status and limits](#status-and-limits).
 
+The guides describe the `main` branch, which carries the changes grouped
+for the next minor release; the last one published, v0.2.2, has a different
+API (the CHANGELOG lists what changed). Until that release, install `main`:
+
 ```sh
-go get github.com/mlagarrigue/sluice
+go get github.com/mlagarrigue/sluice@main
 ```
 
 ```go
