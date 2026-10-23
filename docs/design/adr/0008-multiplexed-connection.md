@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol; grouping a burst's datagrams leaves the HTTP/3 p50 where it was)
 - **Theme:** httpstream
 
 ## Problem
@@ -167,17 +167,34 @@ the size of the bursts the gateway releases: at 64 keys, HTTP/3 is 0.43 ms
 over HTTP/1.1 at the p50; at 4 keys, 0.20 ms, the apparatus' own gap.
 
 The responses one window releases all leave through the listener's UDP
-socket, where HTTP/1.1 and HTTP/2 each write on a TCP socket of their own,
-and Go takes one write lock per descriptor; but spreading the server's
-writes over eight duplicated descriptors, which halves a burst of sixteen
-sends on the loopback (117 to 63 µs), left the p50 where it was (three
-alternated rounds), so the lock is not that share. What remains unmeasured
-is the rest of a burst's path: a goroutine, a seal and a datagram per
-response, and the quic-go client taking sixteen at once.
+socket, one per connection, where HTTP/1.1 and HTTP/2 each write on a TCP
+socket of their own. Neither the write lock Go takes per descriptor nor the
+number of system calls is that share. Spreading the server's writes over
+eight duplicated descriptors halves a burst of sixteen sends on the loopback
+(117 to 63 µs) and left the p50 where it was (three alternated rounds).
+Grouping a burst's datagrams into `sendmmsg` calls — a send that finds the
+socket busy leaves its datagram behind, and the send in flight carries them
+all in one call — takes about an eighth off the write path's CPU (one
+profile per variant) and left the p50 in place as well: eight alternated
+rounds, the server on two cores then on fifteen, four rounds won and four
+lost each time.
+
+A burst's profile says where the rest goes. The HTTP/3 server burns about
+1.8 times the CPU of HTTP/1.1: first the receive path, packet by packet,
+then one datagram written per response, then each packet's hand-off from
+the listener's loop to its connection's goroutine. That CPU is not the
+latency — four cores instead of two, and an eighth less write path, leave
+the p50 where it is. The hypothesis left, not measured directly, is each
+packet's trip between goroutines, which QUIC makes in user space where TCP
+leaves it to the kernel. The HTTP/3 p50 excess over HTTP/1.1 at 64 keys is
+declared the cost of that per-packet path and is not pursued; it reopens if
+a client other than quic-go shows the same excess, or if a measurement
+attributes it to one hop of that path.
 
 The HTTP/3 p99 is therefore judged against the trivial server's HTTP/3 p99,
-not against HTTP/1.1. Measured locally on 2026-10-22, the server on two
-cores, 8,000 requests per second, two or three alternated rounds.
+not against HTTP/1.1. Measured locally on 2026-10-22 and 2026-10-23, the
+server on two cores, 8,000 requests per second, two or three alternated
+rounds, eight for the grouped sends.
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies
