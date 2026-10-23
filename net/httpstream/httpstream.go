@@ -106,12 +106,14 @@
 // callers on other connections still join the same batch. Neither mechanism
 // subsumes the other.
 //
-// # One connection, three goroutines
+// # One connection, three goroutines and a call per batch
 //
-// A connection is a reader, a responder and a writer — never one goroutine
-// per request, so a batch that arrived together is still served together.
-// The reader parses frames and owns the receive side; the responder runs the
-// [Handler]; the writer owns the socket's write side, the send windows and
+// A multiplexed connection is a reader, a responder and a writer. The reader
+// parses frames, owns the receive side and hands each batch to one [Handler]
+// call on a goroutine of its own — one call per batch, not per request, so a
+// batch that arrived together is still served together, and the calls in
+// flight are bounded by MaxConcurrentStreams; the responder frames what the
+// calls return; the writer owns the socket's write side, the send windows and
 // the scheduling. ADR 0008 records the bounds each hand-off has and what was
 // deliberately left out.
 //
