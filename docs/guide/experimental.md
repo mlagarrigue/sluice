@@ -100,9 +100,58 @@ announces.
 | `MaxAckDelay` | — | duration; *read from the peer*, never announced (this end uses 25 ms) | how long the peer may sit on an acknowledgement |
 | `ActiveConnIDLimit` | 4 | identifiers; 0 or 1 become 4 | the peer's connection IDs kept active, and the ones this end issues |
 | `DisableActiveMigration` | false | boolean | announces that this end does not follow a peer that changes address |
-| `Congestion` | NewReno | *local* | the congestion controller this end sends with |
+| `Congestion` | NewReno | *local* | the congestion controller this end sends with ([below](#choosing-a-congestion-controller)) |
 | `HoldClosing` | false | *local* | whether a connection from `Dial` holds the closing states of RFC 9000 §10.2 |
 | `MaxDatagramSize` | 1452 | bytes, *local*; 1200 to 65527, otherwise refused | the largest datagram sent, once the path is probed |
+
+### Choosing a congestion controller
+
+An advanced setting: it asks you to know your network path — round trip,
+loss, how deep the routers' buffers are — and to measure with your own
+traffic. Without that, leave it at zero.
+
+> **In plain terms.** **Congestion control** decides how fast this end
+> sends: too slow and the line stays half empty; too fast and the routers'
+> buffers fill, latency climbs and packets are lost. The choice is local:
+> it is never announced to the peer, which sends with its own (RFC 9002
+> §7).
+
+Three controllers, chosen by `TransportParameters.Congestion`:
+
+```go
+p := quic.DefaultParameters()
+p.Congestion = quic.CongestionConfig{Algorithm: quic.CongestionCubic} // or quic.CongestionBBR
+```
+
+- **NewReno** (RFC 9002 §7), the zero value and the default: the window
+  grows by one datagram per round trip and halves on each loss episode.
+  Every measurement of this package is made with it, and it stays the
+  default until another has been measured against a real client.
+- **CUBIC** (RFC 9438, `CongestionCubic`): after a loss the window drops
+  to seven tenths rather than half, and grows back along a cubic curve. It
+  wins on long paths that lose: 1.7 to 2.3 times faster than NewReno on the
+  emulated 80 ms path with a shallow buffer, 1.24 times with 1% loss, 1.59
+  times with burst loss; it is within 2.5% of NewReno on the clean and
+  bottleneck profiles, and it fills a deep buffer exactly as NewReno does,
+  because loss is all it reads. Two fine settings: `SlowStart` (HyStart++
+  by default for CUBIC, RFC 9406 — the initial slow start ends on the
+  round trip rising, with fewer losses and a somewhat fuller queue on a
+  deep buffer) and `DisableFastConvergence`, for a flow alone on its path.
+- **BBR** (draft-ietf-ccwg-bbr-06, what Linux ships as BBRv3,
+  `CongestionBBR`): a model of the path — the highest delivery rate and the
+  lowest round trip seen recently — in which loss is evidence of how much
+  the path holds. 16 times NewReno with 1% loss, about 3 times with burst
+  loss; on a deep buffer the queue stays at 1.8 times the path's round
+  trip, against 5.9 under NewReno, at the same goodput. Against a NewReno
+  flow it takes 0.56 of the line. Its startup has its own exit and ignores
+  `SlowStart`.
+
+The last two are **experimental**: measured on this repository's emulated
+paths only ([QUIC, on an emulated path](../benchmarks.md#quic-on-an-emulated-path),
+with the command that replays the comparison). To judge on yours,
+`Conn.Stats()` gives the controller in use (`Algorithm`), its window
+(`CongestionWindow`), the losses (`LostPackets`) and the round trip
+(`SmoothedRTT` against `MinRTT`: the gap is the queue the flow keeps).
 
 ## Supported deployments
 
