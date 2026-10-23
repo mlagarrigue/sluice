@@ -261,3 +261,21 @@ test that counts the round trips to prove there is only one per batch:
 `go test ./example/orders -run TestIntegration -v`, against the PostgreSQL the
 `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and `SLUICE_PG_PASSWORD`
 variables name (it skips without them).
+
+## You can now
+
+- write a handler that reads on one screen and refuses with a remedy;
+- group concurrent calls into one round trip with `gateway`;
+- authenticate and authorize before the pipeline;
+- start and stop the server without cutting a response.
+
+The vertical's tests run without a database, its store faked:
+
+```sh
+go test ./example/orders -run 'TestOverHTTP|TestConcurrentRequestsShareOneRoundTrip' -v
+```
+
+A variant to try: in `TestConcurrentRequestsShareOneRoundTrip`, change the
+batch size given to `orders.New` from `n` to `n/2`. The test fails on
+"32 requests caused 2 loads, want 1": the batch size bounds how many
+requests share a round trip.

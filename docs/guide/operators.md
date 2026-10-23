@@ -311,3 +311,22 @@ does the method that makes them credible: on a laptop, two runs of the same
 program differ by 14%. Before deciding that one operator is worth another
 in your pipeline, `compare.sh` runs both versions alternately and counts
 the wins.
+
+## You can now
+
+- tell, from the package an operator lives in, what it keeps between two
+  batches;
+- bound what a join or a window retains, and choose the policy past the
+  bound;
+- compare two versions of a pipeline by alternating runs rather than by one
+  measurement.
+
+The examples of the operators' packages run as tests, their output checked:
+
+```sh
+go test -run Example -v ./join/ ./window/ ./distinct/ ./parallel/
+```
+
+A variant to try: in `parallel/parallel_example_test.go`, give `Ordered` one
+goroutine instead of four. The output does not change, nor its order:
+`Ordered` keeps it whatever the count.

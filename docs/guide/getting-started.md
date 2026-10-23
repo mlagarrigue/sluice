@@ -281,6 +281,24 @@ if errors.Is(err, sluice.ErrOverflow) {
   live in the `join` package, because they must keep elements in memory —
   the next guide explains what that costs.
 
+## You can now
+
+- build a stream from a slice and pass it through `Filter`, `Map` and
+  `Collect`;
+- say which family an error belongs to and where it surfaces;
+- recover a panic that is really an error, with `Try`;
+- bring two streams together with `Merge` or `Concat`.
+
+The examples of the root package run as tests, their output checked:
+
+```sh
+go test -run Example -v .
+```
+
+A variant to try: in `sluice_example_test.go`, change the batch size of
+`ExampleOf` from 2 to 1 and run it again. The test fails, and its diff shows
+the same five elements in five batches instead of three.
+
 ## What next
 
 - [Choosing an operator](operators.md) — the full map, grouped by what each

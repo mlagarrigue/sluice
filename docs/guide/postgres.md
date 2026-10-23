@@ -691,3 +691,23 @@ server), 348 µs against 363 for a thousand keys in `= ANY` with
 allocations against 280,008, and a faster COPY (7.3 ms against 8.3). The
 last three figures are those of the table re-measured on 2026-10-19; the
 rows and the method: [Measurements](../benchmarks.md).
+
+## You can now
+
+- open a connection through a recipe and read a table in batches;
+- send a thousand keys in one round trip with `= ANY($1)`;
+- load rows with COPY, and run a transaction;
+- cancel a running statement by ending its context.
+
+The package's examples compile and run as tests; the integration test runs
+against the PostgreSQL the `SLUICE_PG` variables name, and skips without
+them:
+
+```sh
+go test -run Example -v ./database/postgres/
+go test ./example/orders -run TestIntegration -v
+```
+
+A variant to try, against that server: give the context of the
+cancellation example a millisecond on a `SELECT pg_sleep(1)`. The call
+returns `context.DeadlineExceeded`, and the connection stays usable.
