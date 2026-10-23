@@ -426,13 +426,7 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 	// One atomic load on the fast path. The check is fail-fast only: a Do that
 	// races past it is still released by the drained cases of both selects.
 	if g.closed.Load() {
-		g.mu.Lock()
-		err := g.fatal
-		g.mu.Unlock()
-		if err == nil {
-			err = ErrClosed
-		}
-		return zero, err
+		return zero, g.fatalErr(ErrClosed)
 	}
 
 	c := &Call[In, Out]{
@@ -449,13 +443,7 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 		return zero, ctx.Err()
 	case <-g.drained:
 		g.sweepIn()
-		g.mu.Lock()
-		err := g.fatal
-		g.mu.Unlock()
-		if err == nil {
-			err = ErrClosed
-		}
-		return zero, err
+		return zero, g.fatalErr(ErrClosed)
 	}
 
 	select {
@@ -484,13 +472,7 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 			return r.out, r.err
 		default:
 		}
-		g.mu.Lock()
-		err := g.fatal
-		g.mu.Unlock()
-		if err == nil {
-			err = ErrNoReply
-		}
-		return zero, err
+		return zero, g.fatalErr(ErrNoReply)
 	}
 }
 
