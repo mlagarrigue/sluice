@@ -29,9 +29,8 @@ import (
 
 func savepointFixture(t *testing.T, conn *postgres.Conn) string {
 	t.Helper()
-	const table = "sluice_savepoint_test"
+	table := testSchema(t, conn) + ".sluice_savepoint_test"
 	for _, s := range []string{
-		`DROP TABLE IF EXISTS ` + table,
 		`CREATE TABLE ` + table + ` (id bigint PRIMARY KEY, n bigint NOT NULL)`,
 		`INSERT INTO ` + table + ` SELECT g, g FROM generate_series(1, 5000) g`,
 	} {
@@ -39,7 +38,6 @@ func savepointFixture(t *testing.T, conn *postgres.Conn) string {
 			t.Fatalf("fixture %q: %v", s, err)
 		}
 	}
-	t.Cleanup(func() { _ = conn.Exec(t.Context(), `DROP TABLE IF EXISTS `+table) })
 	return table
 }
 

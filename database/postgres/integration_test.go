@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"math"
 	"net/netip"
@@ -392,7 +393,9 @@ func TestIntegrationWrongPassword(t *testing.T) {
 // same prepared string. Its NFKC form is then the same password, which shows
 // the preparation happened on both ends rather than on neither.
 func TestIntegrationSASLprepPassword(t *testing.T) {
-	const role = "sluice_saslprep_test"
+	// A name of this run's own: a role belongs to the whole server, and two
+	// `go test` processes sharing one name dropped it under each other.
+	role := "sluice_saslprep_" + strings.ToLower(rand.Text())
 	const password = "Ⅸ-ｐａｓｓ" //nolint:gosec // G101: a throwaway role's password; "Ⅸ" and fullwidth letters
 	addr, cfg := pgTarget(t)
 	admin := dial(t)

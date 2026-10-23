@@ -46,9 +46,8 @@ func rlsFixture(t *testing.T, conn *postgres.Conn) string {
 		t.Skip("SLUICE_PG_USER is a superuser, which bypasses row-level security: this suite would pass without proving anything")
 	}
 
-	const table = "sluice_rls_orders"
+	table := testSchema(t, conn) + ".sluice_rls_orders"
 	stmts := []string{
-		`DROP TABLE IF EXISTS ` + table,
 		`CREATE TABLE ` + table + ` (id bigint primary key, tenant text not null, total bigint not null)`,
 		`INSERT INTO ` + table + ` VALUES (1,'acme',100), (2,'acme',200), (3,'globex',300)`,
 		`ALTER TABLE ` + table + ` ENABLE ROW LEVEL SECURITY`,
@@ -64,7 +63,6 @@ func rlsFixture(t *testing.T, conn *postgres.Conn) string {
 			t.Fatalf("fixture %q: %v", s, err)
 		}
 	}
-	t.Cleanup(func() { _ = conn.Exec(ctx, `DROP TABLE IF EXISTS `+table) })
 	return table
 }
 

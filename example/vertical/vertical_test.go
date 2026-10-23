@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -60,8 +61,21 @@ func fixture(t *testing.T, conn *postgres.Conn) {
 	if superuser(t, conn) {
 		t.Skip("the test role is a superuser, which bypasses row-level security entirely")
 	}
+	// A schema of this run's own, first on the search path, since the
+	// service names order_lines unqualified: two `go test` processes against
+	// one server no longer drop each other's table. Dropped with what it holds
+	// on a context of its own — t.Context is cancelled before cleanups run.
+	schema := "sluice_t_" + strings.ToLower(rand.Text())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := conn.Exec(ctx, `DROP SCHEMA IF EXISTS `+schema+` CASCADE`); err != nil {
+			t.Logf("schema %s left behind: %v", schema, err)
+		}
+	})
 	for _, s := range []string{
-		`DROP TABLE IF EXISTS order_lines`,
+		`CREATE SCHEMA ` + schema,
+		`SET search_path TO ` + schema,
 		`CREATE TABLE order_lines (
 		   order_id bigint NOT NULL, line_index int NOT NULL,
 		   tenant text NOT NULL, sale_qty bigint NOT NULL, price bigint NOT NULL,
@@ -78,7 +92,6 @@ func fixture(t *testing.T, conn *postgres.Conn) {
 			t.Fatalf("fixture %q: %v", s, err)
 		}
 	}
-	t.Cleanup(func() { _ = conn.Exec(t.Context(), `DROP TABLE IF EXISTS order_lines`) })
 }
 
 func superuser(t *testing.T, conn *postgres.Conn) bool {
