@@ -1345,6 +1345,17 @@ func (q *query) replan() (rebind bool) {
 
 // readChunk reads messages until the portal suspends or the query ends,
 // yielding whatever rows accumulate. It reports whether the query is finished.
+//
+// One loop, one case per backend message: RowDescription starts a result,
+// DataRow fills the batch and hands it over when it is full;
+// PortalSuspended ends a batch of the portal and asks for the next ones
+// ahead, so the server works while the consumer does; CommandComplete or
+// EmptyQuery ends the result with the last batch; ErrorResponse fails it;
+// the asynchronous messages (NoticeResponse, ParameterStatus,
+// NotificationResponse) are routed and reading goes on; the pipeline's
+// acknowledgements (ParseComplete, BindComplete, CloseComplete, NoData,
+// ReadyForQuery) move its bookkeeping; a COPY response is refused, since a
+// query does not start one.
 func (q *query) readChunk(yield func(sluice.Batch[Row]) bool) (done bool, err error) {
 	c := q.conn
 	for {

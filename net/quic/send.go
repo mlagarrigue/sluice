@@ -479,6 +479,21 @@ func (c *Conn) flushDatagramLocked() {
 // padding, the datagram write, and the recovery bookkeeping — or, while
 // gathering, everything but the seal and the write, which
 // flushDatagramLocked finishes for the whole datagram at once.
+//
+// In order:
+//
+//  1. Refuse a connection that is draining or has said its close, and
+//     decide whether this packet coalesces (Initial and Handshake only).
+//  2. Build the header for the packet's space — long, or short with the key
+//     phase, or 0-RTT for a DialEarly client before its 1-RTT keys.
+//  3. Choose the destination (the peer, or a path being probed) and its
+//     padding, and size the datagram.
+//  4. Check the limits that may stop it: the amplification limit before the
+//     peer's address is validated (§8.1), on the path or off it, the packet
+//     number space (§12.3) and the AEAD's confidentiality limit (RFC 9001
+//     §6.6).
+//  5. Gathering: queue the packet for flushDatagramLocked. Otherwise take
+//     the packet number, seal, and write — or keep it for the write batch.
 func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []byte, opts sendOpts, now time.Time) error {
 	// Every packet passes here — acknowledgements, probes, retransmissions
 	// and control frames included, not only what sendPacketLocked guards —

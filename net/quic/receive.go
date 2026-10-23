@@ -930,6 +930,24 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 
 // framesIn is frames for a packet that may be 0-RTT (early), whose frame
 // types §12.4 restricts further.
+//
+// It reads one packet in four passes:
+//
+//  1. Parse every frame (parseFrames): an empty payload or a frame that does
+//     not parse ends the connection.
+//  2. Owe the acknowledgement when a frame elicits one — before acting on any
+//     of them, a stated deviation from §13.1 (see eliciting below).
+//  3. Act on each frame in packet order, one case per type: CRYPTO to TLS,
+//     ACK to loss recovery, STREAM into the packet's delivery batch, then
+//     the stream and connection controls (RESET_STREAM, STOP_SENDING,
+//     MAX_DATA, MAX_STREAM_DATA, MAX_STREAMS), path validation,
+//     HANDSHAKE_DONE, CONNECTION_CLOSE, identifiers, tokens and the BLOCKED
+//     signals.
+//  4. Settle the packet as a whole: its new stream bytes charged to the
+//     connection's flow control, its PATH_CHALLENGEs answered together, its
+//     stream deltas handed over as one group (dispatchDeltas: the batch
+//     callback, or the streams' read buffers), and the streams whose
+//     lifecycle ended in it retired last.
 func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) error {
 	// RFC 9000 §12.4: a packet with no frames at all is PROTOCOL_VIOLATION.
 	// A payload of nothing but PADDING contains frames and stays legal; only

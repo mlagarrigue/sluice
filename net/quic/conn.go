@@ -1,3 +1,26 @@
+// Where to find what in this package's source. The package documentation
+// (quic.go) says what it does; this says which file does it.
+//
+//	conn.go          Conn: its state, Dial, key updates, the failure model
+//	receive.go       a datagram in: the read loops, receiveAt's steps, the frames
+//	send.go          a packet out: sendPacketLocked, writePacketLocked, coalescing
+//	stream.go        Stream: Read and Write, OnStreamFrames and its credit modes
+//	reassembly.go    stream and CRYPTO bytes put back in order
+//	flow.go          flow control, both directions, both levels (RFC 9000 §4)
+//	ack.go           acknowledgements owed (RFC 9000 §13.2)
+//	recovery.go      loss detection and NewReno (RFC 9002)
+//	cubic.go         CUBIC; bbr3.go BBR; hystart.go slow-start exit; ecn.go ECN
+//	pmtu.go          the datagram size search (DPLPMTUD, RFC 8899)
+//	crypto.go        packet protection (RFC 9001)
+//	packet.go        packet headers; frame.go frame types and parsing
+//	transport.go     transport parameters (RFC 9000 §18)
+//	listener.go      Listener: accepting connections on one socket
+//	retry.go         a server's Retry; refusal_*.go the peer's ICMP refusals
+//	migration.go     connection identifiers and passive migration (RFC 9000 §9)
+//	earlyclient.go   0-RTT for a client; earlydata.go 0-RTT for a server
+//	close.go         how a connection ends; timer.go the goroutine of its deadlines
+//	gso*.go          segmentation offload, per platform
+
 package quic
 
 import (

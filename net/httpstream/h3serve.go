@@ -118,6 +118,17 @@ func ServeH3Conn(ctx context.Context, c *quic.Conn, cfg Config, handle Handler) 
 // serveH3 is [ServeH3Conn] with its two stops apart, as a [Server] drives them:
 // the cancellation of drain is the normal stop, that of forced the forced
 // one, and forced is also the handler's context. cfg is resolved.
+//
+// serveH3 runs in this order: refuse a connection it cannot serve (a stream
+// limit over h3MaxServeStreams, fewer than three unidirectional streams for
+// the client, an ALPN other than h3); choose the credit mode and build the
+// assembler; open the control stream and send SETTINGS; arm the drain
+// (GOAWAY, PING, GOAWAY, close); then serve, through onFrames on the
+// transport's read goroutine — control-stream checks, assembly (Frames),
+// the interim 100s owed, the refusals, and one handler call per batch,
+// held for the handshake when it arrived in 0-RTT; and last, at the
+// connection's end, wake what is still waiting and wait for the calls and
+// writers, the forced stop bounding that wait.
 func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Handler) error {
 	// The goroutines a connection runs are bounded by the request streams
 	// the transport admits, and h3MaxServeStreams is where that bound is
