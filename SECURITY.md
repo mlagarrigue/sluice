@@ -26,8 +26,9 @@ will be credited in the advisory unless you ask otherwise.
 
 Sluice.go is a library, not a service, so the threat model is what a caller
 can be made to suffer by data it does not control. The architecture states
-fourteen security guarantees as testable properties (reach it from
-[docs/README.md](docs/README.md), "Security — verifiable properties"). A
+fourteen security guarantees as testable properties, each naming the test
+that checks it (reach it from [docs/README.md](docs/README.md), "Security —
+verifiable properties"). A
 reproducible breach of any of them is a vulnerability, in particular:
 
 - **unbounded allocation** driven by input, where the specification promises a

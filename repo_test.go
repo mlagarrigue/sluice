@@ -817,3 +817,72 @@ func TestSettingsHaveATableRow(t *testing.T) {
 		}
 	}
 }
+
+// TestSecurityPropertiesNameTheirTests holds SECURITY.md's promise that the
+// security properties are testable: every row S1 to S14 of the architecture's
+// table names, in its verification cell, a test or fuzz target declared in
+// the module or a script of the repository, and every one it names exists —
+// so a reporter knows which test a breach makes fail.
+func TestSecurityPropertiesNameTheirTests(t *testing.T) {
+	declared := map[string]bool{}
+	decl := regexp.MustCompile(`(?m)^func ((?:Test|Fuzz)\w+)\(`)
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != "." && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(p) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			return err
+		}
+		for _, m := range decl.FindAllSubmatch(b, -1) {
+			declared[string(m[1])] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile("docs/design/architecture.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile(`^\| (?:\*\*)?(S\d+)(?:\*\*)? \|`)
+	named := regexp.MustCompile("`((?:Test|Fuzz)[A-Z]\\w*)`")
+	script := regexp.MustCompile("`(scripts/[\\w./-]+\\.sh)`")
+	var seen []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		m := row.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		seen = append(seen, m[1])
+		cells := strings.Split(strings.TrimSuffix(strings.TrimSpace(line), "|"), " | ")
+		cell := cells[len(cells)-1]
+		tests, scripts := named.FindAllStringSubmatch(cell, -1), script.FindAllStringSubmatch(cell, -1)
+		if len(tests) == 0 && len(scripts) == 0 {
+			t.Errorf("%s names no test, fuzz target or script in its verification cell", m[1])
+		}
+		for _, n := range tests {
+			if !declared[n[1]] {
+				t.Errorf("%s names %s, which no _test.go declares", m[1], n[1])
+			}
+		}
+		for _, s := range scripts {
+			if _, err := os.Stat(s[1]); err != nil {
+				t.Errorf("%s names %s: %v", m[1], s[1], err)
+			}
+		}
+	}
+	if len(seen) != 14 {
+		t.Errorf("found the rows %v, want S1 to S14", seen)
+	}
+}
