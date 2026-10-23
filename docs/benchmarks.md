@@ -125,9 +125,8 @@ Windows; `autoMemoryReclaim=disabled` and `pageReporting=false` in
 
 ## HTTP/2 and HTTP/3, from a real client
 
-This is the measurement that `docs/guide/limits.md` names as the exit
-condition of the "experimental" label on `net/httpstream`. The package's
-micro-benchmarks measure each layer without a socket; here it is the whole
+This measures `net/httpstream` end to end over HTTP/2 and HTTP/3. The
+package's micro-benchmarks measure each layer without a socket; here it is the whole
 path, seen by a client that shares no code with sluice: the standard
 library's HTTP/2 client (`net/http`, ALPN `h2` over TLS 1.3) and quic-go's
 HTTP/3 client (`quic-go/http3`). Server and client run on the same machine,
@@ -204,15 +203,14 @@ goroutines. 64 KiB is some fifty packets, each its own system call, with no
 batching of datagrams and no pacing of their departure. That is the observed
 shape, not a proven split of the 1179 µs.
 
-**Batching the datagrams (measured 2026-10-13).** Since the commit
-`perf(quic): send a write's datagrams in one call`, the packets one
+**Batching the datagrams (measured 2026-10-13).** The packets one
 `Stream.Write` builds are sealed back to back and leave in one `sendmsg`
 carrying `UDP_SEGMENT` (UDP segmentation offload, Linux 4.18): the kernel
 cuts the buffer into the same datagrams a write per packet gave, so the peer
 sees no difference, and a 4 KiB batch costs one system call instead of four.
 The standard library is enough (`WriteMsgUDPAddrPort` with a control
-message); no module was added. Paired A/B against the previous commit, eight
-rounds alternated back to back, `-benchtime 2s`, medians:
+message); no module was added. Paired A/B against one write per datagram,
+eight rounds alternated back to back, `-benchtime 2s`, medians:
 
 | benchmark | before | after | rounds won |
 |---|---|---|---|
@@ -228,8 +226,7 @@ keeps one write per datagram — it offers no public interface for
 segmentation —, as does a system that refuses the option (the first refusal
 turns batching into a loop of writes for the connection).
 
-**The same batching on Windows (measured 2026-10-19).** Since the commit
-`perf(quic): segment UDP sends on Windows`, the one call carries
+**The same batching on Windows (measured 2026-10-19).** The one call carries
 `UDP_SEND_MSG_SIZE`, the Windows counterpart of `UDP_SEGMENT` (UDP
 segmentation offload: the system cuts the buffer into datagrams of the
 given size). Before the first send, sluice asks the system, once per
@@ -374,16 +371,14 @@ seen above, not a late start. HTTP/3's tails (p99.9 around a millisecond
 from `plain` on) are nearly twice those of HTTP/2. A pass of `paced` counts
 only about 160 requests: its p99.9 is the slowest of them.
 
-**Verdict.** The cost per batch is explained, divided by two, and what remains
-is owned: `docs/guide/experimental.md` says it in one sentence for whoever
-sizes their batches, and `docs/guide/limits.md` no longer carries an exit
-condition on `net/httpstream`. A bigger batch still divides the cost by as
-much.
+**Verdict.** The cost per batch is explained and what remains is owned:
+`docs/guide/experimental.md` says it in one sentence for whoever sizes their
+batches. A bigger batch still divides the cost by as much.
 
 ## Web pipeline, from a real client
 
-This is one of the two exit conditions of the "experimental" label on
-`web/stream`; the other is a first real consumer. A client that shares no
+These are the third-party figures `docs/guide/limits.md` cites for
+`web/stream`, whose label leaves with a first real consumer. A client that shares no
 code with sluice — `net/http` over HTTP/1.1 and HTTP/2, quic-go over
 HTTP/3 — requests one order (`GET /orders/42`, with a bearer token) from two
 handlers that answer the same bytes:
@@ -863,9 +858,7 @@ and settled at 285-298 µs across five runs of 1s.
 ## Connector, against pgx / lib/pq / database/sql
 
 One connection each, since this connector has no pool and a comparison that
-ignores that measures pooling. The `…SluiceFetchAll` benchmarks were named
-`…SluiceAllRows` up to v0.2.2, after the `QueryConfig.AllRows` field that
-`Fetch: FetchAll` replaced.
+ignores that measures pooling.
 
 **Re-measured on 2026-10-19, outside the session above.** The conditions
 differ from the "Conditions" table: Go 1.26.9, kernel
@@ -913,7 +906,7 @@ trip from its second execution on: one write and one read per query
   discarded), 2 s each, core 6, `GOMAXPROCS=1`: medians 196 µs against
   197 µs, sluice slower in 7 rounds of 15. No detectable difference (sign
   test, p = 1).
-- Against the former default (two round trips), paired over 8 rounds:
+- Against the same read in two round trips, paired over 8 rounds:
   184 µs against 367 µs (−50%), faster in 8 rounds of 8.
 
 Server: the `postgres` container (PostgreSQL 17.11, Docker bridge). The
@@ -1037,8 +1030,8 @@ that holds every segment half the round trip in each direction. It emulates
 latency alone; the bandwidth stays loopback's.
 
 Wide read (`bench_wide`, 20,000 rows of eleven columns, batches of 1,024),
-paired A/B by `ab.sh`, 14 rounds of 1 s, medians in ms. Before is 180fa89
-(the adaptive ask-ahead depth); after is the end-of-read `ReadyForQuery`
+paired A/B by `ab.sh`, 14 rounds of 1 s, medians in ms. Before: the
+adaptive ask-ahead depth alone; after: the end-of-read `ReadyForQuery` also
 read behind the next query. `FetchAll` and pgx do not run the changed code:
 they are the controls.
 
@@ -1071,9 +1064,9 @@ they are the controls.
 
 ### Under a demand that holds
 
-**Measured on 2026-10-19**, same conditions, same proxy. Before is 278a91e;
-after is 272d694, where a demand whose bound does not move and that has no
-limit asks ahead like a query without one. The default does not run the
+**Measured on 2026-10-19**, same conditions, same proxy. Before: a demand
+asked one batch at a time; after: a demand whose bound does not move and
+that has no limit asks ahead like a query without one. The default does not run the
 changed code: it is each series' control.
 
 | benchmark | loopback | 1 ms | 10 ms |
@@ -1097,8 +1090,8 @@ changed code: it is each series' control.
 
 ### Asking ahead by the shortest batch
 
-**Measured on 2026-10-19**, same conditions, same proxy. Before is e42743b;
-after is c00111a, where a statement's depth (⌈RTT / T₁⌉ + 1, the number of
+**Measured on 2026-10-19**, same conditions, same proxy. Before: the depth
+came from the statement's latest first batch; after: a statement's depth (⌈RTT / T₁⌉ + 1, the number of
 batches asked ahead) comes from the shortest first batch the statement has
 timed rather than from its latest. T₁ is the time of the first batch, from
 the `BindComplete` to the `PortalSuspended`: the server's work plus

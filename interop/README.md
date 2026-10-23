@@ -20,11 +20,10 @@ What runs here, and in the CI job `interop-quic` on every push:
 | `TestQuicGoClientAgainstSluiceServer` | `quic.NewListener` listens, quic-go dials | the mirror, with the peer's application close surfaced by `Err` as a `ConnectionError` |
 | `TestQuicGoHTTP3ClientAgainstServeH3` | `httpstream.ServeH3Conn` serves, `quic-go/http3` requests | a plain response, a streamed one, several on one connection, two streamed at once |
 
-The first of these found a bug on its first day: one echo in twenty came
-back a frame short, because `quic.Stream.Read` reported EOF between the
-read loop marking the stream finished and the last delta reaching the read
-buffer (`net/quic/readend_internal_test.go`). Nothing in the root module's
-own tests had the timing to see it.
+The first of these has a timing the root module's own tests lack: it is
+what catches a `quic.Stream.Read` that reports EOF before the stream's last
+delta has reached the read buffer, an echo coming back a frame short
+(`net/quic/readend_internal_test.go` pins the case).
 
 Two benchmarks, not run in CI, measure the same servers from the same
 clients — `net/http` pinned to HTTP/2 by ALPN, `quic-go/http3` — on a
