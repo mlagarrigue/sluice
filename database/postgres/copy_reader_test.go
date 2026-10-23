@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/pgwire"
@@ -227,37 +227,33 @@ func TestExecRefusedWhileACopyIsOpen(t *testing.T) {
 // A copier abandoned with its COPY open leaves its reader blocked in a read;
 // closing the connection closes the socket under it, and nothing stays.
 func TestAbandonedCopyLeavesNoGoroutineAfterClose(t *testing.T) {
-	before := runtime.NumGoroutine()
-	conn, backend := newCopyBackend(t, func(rd *pgwire.Reader, w net.Conn) error {
-		if err := openCopy(rd, w); err != nil {
-			return err
-		}
-		for {
-			if _, err := rd.Next(); errors.Is(err, io.EOF) {
-				return nil // the client hung up
-			} else if err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		conn, backend := newCopyBackend(t, func(rd *pgwire.Reader, w net.Conn) error {
+			if err := openCopy(rd, w); err != nil {
 				return err
 			}
+			for {
+				if _, err := rd.Next(); errors.Is(err, io.EOF) {
+					return nil // the client hung up
+				} else if err != nil {
+					return err
+				}
+			}
+		})
+		cp, err := conn.CopyFrom(t.Context(), copyTestSQL, CopyConfig{RowsPerTx: 100})
+		if err != nil {
+			t.Fatal(err)
 		}
+		if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-backend; err != nil {
+			t.Fatal(err)
+		}
+		// The bubble ends only when every goroutine started in it has: a
+		// reader left blocked on the pipe fails the test as a deadlock.
 	})
-	cp, err := conn.CopyFrom(t.Context(), copyTestSQL, CopyConfig{RowsPerTx: 100})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cp.WriteTuples(tuple(new(int64(1)), nil), 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-backend; err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > before {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d goroutines after Close, %d before the copy: the copy's reader outlived the connection", runtime.NumGoroutine(), before)
-		}
-		time.Sleep(time.Millisecond)
-	}
 }
