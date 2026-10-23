@@ -266,8 +266,9 @@ if errors.Is(err, sluice.ErrOverflow) {
 - `Split(s, n, route)` sends each batch to one or more of the `n` branches,
   according to what your `route` function returns: one branch number
   (partition), a number in turn (balance), all the numbers (broadcast). The
-  source is read once. Read the branches in alternation, not one after the
-  other.
+  source is read once. One branch can be read on its own; several are read
+  in alternation, not one after the other (see
+  [Split: reading the branches](operators.md#split-reading-the-branches)).
 - `Merge(sluice.WhenAll, a, b)` brings two streams together, strictly
   alternating: one batch from `a`, one from `b`. `Concat(a, b)` puts `b`
   after `a`.

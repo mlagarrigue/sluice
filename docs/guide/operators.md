@@ -45,6 +45,36 @@ A few deserve a word:
   batch while filling it, and it sits in the root because it is the core's
   own tool for repairing its sparse batches.
 
+### Split: reading the branches
+
+`Split(s, n, route)` sends each batch to one or more of `n` branches,
+according to the numbers `route` returns. The source is read only once,
+and that is what decides how the branches are read.
+
+- **One branch read on its own** gets its batches; the others get nothing
+  and must not be read afterwards (reading one of them once the source is
+  dry panics with `ErrSplitDrained`, rather than return an empty stream
+  that would look normal). A branch `route` never chose is simply empty.
+- **Several branches that must all receive** are read in alternation, from
+  one goroutine: `iter.Pull` on each, then a `next` on one, a `next` on the
+  other. Each branch holds at most one pending batch — that is what bounds
+  memory to one batch per branch — and draining one branch to the end while
+  another is being read panics with `ErrSplitStalled`. Two goroutines
+  reading two branches make a data race, which only `-race` detects.
+- **The batch is shared**, without copying, by its destinations, and valid
+  until the source advances — which any branch can cause: copy it to keep
+  it, or before calling `next` on another branch.
+- **A branch that stops early** leaves the source open for the others. If
+  the last branch read stops early and the others are never read, the
+  source's coroutine stays suspended until the process ends: read any
+  remaining branch, even an empty one, to release it.
+
+> **In plain words:** one branch, read it like a stream; several, read them
+> in turn in the same goroutine.
+
+To feed several goroutines from a `Split`, read the branches in one
+goroutine and hand the batches on through channels, copying them.
+
 Two operators do not exist, on purpose. **No `Sort`**: sorting needs to see
 every value, so it is written `Collect` then `slices.Sort`, so that loading
 everything shows in the code. **No `Buffer`**: one might think a buffer
