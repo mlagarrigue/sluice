@@ -515,3 +515,35 @@ func TestHPACKArenaSurvivesRegrowth(t *testing.T) {
 		":authority: www.example.com", ":authority: www.example.com",
 	})
 }
+
+// hpackLiteral is one literal representation with a new name and no Huffman
+// coding: the first byte (0x40 indexes it, 0x00 does not), then name and
+// value as length-prefixed strings.
+func hpackLiteral(first byte, name, value string) []byte {
+	b := []byte{first, byte(len(name))}
+	b = append(b, name...)
+	b = append(b, byte(len(value)))
+	return append(b, value...)
+}
+
+// Past the header list bound the decoder still walks the rest of the block:
+// a literal it does not keep is skipped whole, and one with incremental
+// indexing still enters the table, so the next block's reference to it
+// decodes. A skip that walked one byte wrong would desynchronise the table
+// for the rest of the connection.
+func TestHPACKSkipKeepsTheTableAfterTheBound(t *testing.T) {
+	d := newHPACKDecoder(4096, 64)
+	block := hpackLiteral(0x00, "x-big", strings.Repeat("v", 100))
+	block = append(block, hpackLiteral(0x00, "x-skip", "skipped")...)
+	block = append(block, hpackLiteral(0x40, "x-kept", "yes")...)
+	if _, err := d.Decode(nil, block); !errors.Is(err, errHeadersTooLarge) {
+		t.Fatalf("the oversized block: %v, want errHeadersTooLarge", err)
+	}
+	got, err := d.Decode(nil, []byte{0x80 | 62}) // the first dynamic entry
+	if err != nil {
+		t.Fatalf("the next block: %v", err)
+	}
+	if len(got) != 1 || string(got[0].Name) != "x-kept" || string(got[0].Value) != "yes" {
+		t.Errorf("the next block decoded to %q, want x-kept: yes", got)
+	}
+}
