@@ -24,7 +24,18 @@ func h3StreamServer(t *testing.T, cfg Config, handle Handler) (*quic.Conn, int) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, _, _ := startH3With(t, cfg, params, quic.DefaultParameters(), handle)
+	conn, _, served := startH3With(t, cfg, params, quic.DefaultParameters(), handle)
+	// A failed test says how the server ended, when it has: a client error
+	// such as "the connection is closed" names nothing on its own.
+	t.Cleanup(func() {
+		select {
+		case err := <-served:
+			if err != nil && t.Failed() {
+				t.Logf("the server ended with: %v", err)
+			}
+		default:
+		}
+	})
 	return conn, int(params.InitialMaxStreamDataBidiRemote) //nolint:gosec // G115: a window in a test
 }
 
