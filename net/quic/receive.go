@@ -1812,24 +1812,50 @@ func (c *Conn) armKeepAliveLocked(now time.Time) {
 // advances regardless, because its debt survives the stream. Safe from any
 // goroutine.
 func (c *Conn) ReleaseStreamBytes(id, n uint64) {
-	if n == 0 {
+	c.release(id, n, n)
+}
+
+// ReleaseConnectionCredit and ReleaseStreamCredit are the two halves of
+// [Conn.ReleaseStreamBytes], for a consumer that stops counting bytes
+// against the connection before it stops holding them for the stream: a
+// request body handed on as it arrives, whose stream window should follow
+// its reader while the connection's keeps the other streams moving. Every
+// delivered byte is still released once at each level. Safe from any
+// goroutine.
+func (c *Conn) ReleaseConnectionCredit(n uint64) {
+	c.release(0, 0, n)
+}
+
+// ReleaseStreamCredit is the stream-level half of [Conn.ReleaseStreamBytes];
+// see [Conn.ReleaseConnectionCredit].
+func (c *Conn) ReleaseStreamCredit(id, n uint64) {
+	c.release(id, n, 0)
+}
+
+// release advances stream id's window by stream bytes, when the stream is
+// still live, and the connection's by conn bytes.
+func (c *Conn) release(id, stream, conn uint64) {
+	if stream == 0 && conn == 0 {
 		return
 	}
-	c.mu.Lock()
-	s := c.streams[id]
-	c.mu.Unlock()
+	var s *Stream
+	if stream > 0 {
+		c.mu.Lock()
+		s = c.streams[id]
+		c.mu.Unlock()
+	}
 	var nextMax uint64
 	grant := false
 	if s != nil {
 		s.mu.Lock()
-		grant, nextMax = s.grantLocked(n)
+		grant, nextMax = s.grantLocked(stream)
 		s.mu.Unlock()
 	}
 	c.mu.Lock()
 	if grant {
 		c.grants = appendFrame(c.grants, frameMaxStreamData, id, nextMax)
 	}
-	if c.connRecv.consume(n) {
+	if conn > 0 && c.connRecv.consume(conn) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
 	}
 	c.flushControlLocked()

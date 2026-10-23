@@ -652,6 +652,46 @@ func TestManualCreditGrantsOnlyOnRelease(t *testing.T) {
 	}
 }
 
+// The two halves of a release move one level each: the connection's credit
+// alone leaves the stream at its window, the stream's alone leaves the
+// connection at its own.
+func TestManualCreditReleasesOneLevelAtATime(t *testing.T) {
+	params := DefaultParameters()
+	params.InitialMaxData = 1000
+	params.InitialMaxStreamDataBidiRemote = 1000
+	c := newConn(&fuzzSink{addr: "split:self"}, fakeFuzzAddr("split:peer"),
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
+	defer c.Close()
+	c.OnStreamFrames(CreditOnRelease, func([]Frame) error { return nil })
+	if err := c.frames(spaceApplication, streamFrameBytes(0, 0, make([]byte, 1000)), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	queued := func() (conn, stream bool) {
+		t.Helper()
+		c.mu.Lock()
+		b := append([]byte(nil), c.grants...)
+		c.grants = c.grants[:0]
+		c.mu.Unlock()
+		frames, err := parseFrames(nil, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range frames {
+			conn = conn || f.Type == frameMaxData
+			stream = stream || f.Type == frameMaxStreamData
+		}
+		return conn, stream
+	}
+	c.ReleaseConnectionCredit(1000)
+	if conn, stream := queued(); !conn || stream {
+		t.Errorf("ReleaseConnectionCredit queued MAX_DATA %v, MAX_STREAM_DATA %v; want the first alone", conn, stream)
+	}
+	c.ReleaseStreamCredit(0, 1000)
+	if conn, stream := queued(); conn || !stream {
+		t.Errorf("ReleaseStreamCredit queued MAX_DATA %v, MAX_STREAM_DATA %v; want the second alone", conn, stream)
+	}
+}
+
 // BenchmarkSameAddr is the per-datagram sender check: every received
 // datagram is compared against the peer's address. Comparing String()
 // renderings allocated six times per call.
