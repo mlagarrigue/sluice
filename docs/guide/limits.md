@@ -66,34 +66,21 @@ Three reasons come up, and the difference matters:
   your application's decision; batching does with one connection what a
   pool does with many.
 - **Authentication**: SCRAM-SHA-256 (with channel binding over TLS, required
-  or disabled by `Config.ChannelBinding`),
-  cleartext password on explicit request, and `trust`. SCRAM-SHA-1, which
-  RFC 5802 §4 requires of every SCRAM client, is not implemented: no
-  PostgreSQL server offers it. The SCRAM username field is sent empty, as
-  libpq sends it: PostgreSQL takes the role from the startup packet and
-  ignores it, where RFC 5802 §5.1 wants a name. A password that SASLprep
-  (RFC 4013) would refuse — not UTF-8, a prohibited character, mixed
-  bidirectional text — is sent as its raw bytes, the way `pg_saslprep`
-  derived the role's key on the server: refusing it here would lock out a
-  password the server accepts. **`md5` is refused**
-  — on purpose: the hash stored server-side is as good as the password, and
-  PostgreSQL has deprecated it. The error message says what to change on
-  the server. The PBKDF2 iteration count the server asks for is accepted
-  between 4096 (RFC 7677's floor, PostgreSQL's default) and 1,048,576, and
-  the salt at 16 bytes or more; a server outside that range is refused with
-  the field to set in the message — `Config.MinSCRAMIterations`,
-  `MaxSCRAMIterations`, `MinSCRAMSaltLen` — for a role stored at
-  `scram_iterations = 1000` (a fast test fixture) or at two million (a
-  hardened server). Zero means the default; a negative value is refused
-  before anything is sent.
+  or disabled by `Config.ChannelBinding`), cleartext password on explicit
+  request, and `trust`. **`md5` is refused** — on purpose: the hash stored
+  server-side is as good as the password, and PostgreSQL has deprecated it;
+  the error message says what to change on the server. SCRAM-SHA-1 is not
+  implemented (no PostgreSQL server offers it). The PBKDF2 iteration count
+  and the salt length are bounded, adjustable through
+  `Config.MinSCRAMIterations`, `MaxSCRAMIterations` and `MinSCRAMSaltLen`.
+  Where this departs from RFC 5802 and RFC 4013, and why:
+  [Authentication, in detail](#authentication-in-detail).
 - **Types**: present, the common ones (`bool`, `bytea`, `date`,
   `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
   `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,
-  `macaddr`, `bit`). Thirteen of them — `bool`, `int2/4/8`, `float4/8`,
-  `text`, `bytea`, `uuid`, `timestamptz`, `timestamp`, `date`, `numeric` —
-  also have a one-dimensional array, the same array with NULL elements, and
-  a column scanner; the table in the [PostgreSQL guide](postgres.md#the-codecs-in-one-table)
-  says which has what. **Missing** — not yet: `money` (its scale depends on
+  `macaddr`, `bit`). Thirteen of them also have a one-dimensional array,
+  the same array with NULL elements, and a column scanner; the table in the
+  [PostgreSQL guide](postgres.md#the-codecs-in-one-table) says which has what. **Missing** — not yet: `money` (its scale depends on
   a server setting, a trap more than a type), `tsvector`, ranges, composite
   types, multi-dimensional arrays, and arrays and scanners of the other
   types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
@@ -204,20 +191,16 @@ Three reasons come up, and the difference matters:
   signature); RFC 9110 §6.5 keeps it apart because the request was
   already framed and routed by then, so nothing in the package reads it.
 - **Preconditions, ranges and validators are the handler's.** Neither the
-  transport nor `web/stream` reads `If-Match`, `If-None-Match`,
-  `If-Modified-Since`, `If-Unmodified-Since` or `If-Range` (RFC 9110
-  §13.1), nor `Range` and `Content-Range` (§14); `RenderOpen` sets neither
-  `ETag` nor `Last-Modified` (§8.8, §15.3.1); and the transport answers no
-  417: an `Expect` member other than `100-continue` reaches the handler
-  like any other field (§10.1.1, a MAY). The fields arrive untouched in
-  `Request.Headers`; evaluating them takes the representation — its tag,
-  its date, its length — which only the handler holds. Two concrete
-  effects: a conditional GET gets a full 200 instead of a 304, and a PUT
-  carrying `Content-Range` that a handler ignores replaces the whole
-  resource, where §14.5 says to answer 400. In plain words: the transport
-  delivers the letter, reading what it asks is yours; if your resource has
-  a state, set `ETag` or `Last-Modified` and answer the `If-*` fields; if
-  not, refuse with 400 any PUT that carries `Content-Range`.
+  transport nor `web/stream` reads the `If-*` fields (RFC 9110 §13.1),
+  `Range` or `Content-Range` (§14); `RenderOpen` sets neither `ETag` nor
+  `Last-Modified`; an `Expect` other than `100-continue` reaches the
+  handler, with no 417 (§10.1.1, a MAY). The fields arrive untouched in
+  `Request.Headers`, for the handler, which alone holds the representation.
+  So a conditional GET gets a 200 instead of a 304, and a PUT carrying
+  `Content-Range` that a handler ignores replaces the whole resource, where
+  §14.5 says 400. In plain words: the transport delivers the letter, reading
+  it is yours; with a state, set `ETag` or `Last-Modified` and answer the
+  `If-*` fields; without one, refuse with 400 a PUT carrying `Content-Range`.
 - **No CONNECT tunnel.** A CONNECT request is answered 501 by the transport
   on HTTP/1.1, 2 and 3 (RFC 9110 §9.3.6, §15.6.2) and never reaches the
   handler: this is an origin server, not a proxy, and the request has no
@@ -234,9 +217,8 @@ Three reasons come up, and the difference matters:
   `Authorization`, `Proxy-Authorization`) and never index anything: a
   response is safe to send, but a program that relays a field it received
   under another name cannot preserve the bit, which RFC 9204 §7.1.3 asks of
-  an intermediary. This server is an origin, not a relay; the field that
-  would carry the bit is the thing to add when a relay is built on it. In
-  plain words: if you copy the headers you received toward another HTTP/2
+  an intermediary; the bit is to be carried when a relay is built on this
+  origin server. In plain words: if you copy the headers you received toward another HTTP/2
   or HTTP/3 server, a secret the client had marked "do not compress" may
   leave compressed.
 - **Unknown HTTP/3 elements are skipped, not counted.** A frame, a setting
@@ -249,9 +231,8 @@ Three reasons come up, and the difference matters:
   pays its own bandwidth, and the transport's flow control bounds it: credit
   is given back only as this side reads. What does cost something — field
   sections, request streams, cancellations — has a bound of its own
-  (`MaxHeaderBytes`, the per-stream cap, the cancellation allowance). To
-  revisit if a measurement shows a disproportionate processor cost per
-  frame.
+  (`MaxHeaderBytes`, the per-stream cap, the cancellation allowance); to
+  revisit if a frame is measured to cost the processor disproportionately.
 
 ## Experimental: the exit conditions
 
@@ -290,42 +271,13 @@ condition per package, each one checkable:
 - **`net/quic`**: being green in the *QUIC Interop Runner* against
   quic-go and ngtcp2, on each side of the handshake, in our own continuous
   integration; an external cryptographic review. Already true: key update
-  (RFC 9001 §6) in both directions, and quic-go against sluice on each side
-  in continuous integration (job `interop-quic`).
-  The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
-  every implementation in its list every Sunday, on each side its role
-  allows — 31 peer-directions — with the image the `Interop image` workflow
-  builds from each release tag (`ghcr.io/mlagarrigue/sluice-interop`). The
-  table of its latest complete pass is on the
-  [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
-  a failed case is run once more. `interop/expected-results.json` records
-  every case of quic-go, ngtcp2 and msquic with the cause of every failure,
-  and a pass that departs from it fails the job. Green means every case
-  passed against at least two peers.
-  At the last complete pass, of 22 October 2026, against quic-go and
-  ngtcp2: as a server, sluice passes handshake, transfer, longrtt,
-  multiplexing, retry, http3, blackhole, keyupdate, amplificationlimit,
-  transferloss, transfercorruption, ipv6, rebind-port, rebind-addr,
-  handshakeloss, handshakecorruption and chacha20, plus ecn and
-  connectionmigration against ngtcp2. As a client it passes handshake,
-  transfer, longrtt, multiplexing, retry, blackhole, transferloss,
-  transfercorruption, ipv6, handshakeloss, handshakecorruption,
-  amplificationlimit, rebind-port and rebind-addr, plus ecn against ngtcp2.
-  It refuses, with the exit status 127 the runner asks for, what is
-  documented as not there: QUIC v2, and on the client side chacha20 (Go's
-  TLS 1.3 offers no way to restrict the cipher suites it offers), a forced
-  key update and HTTP/3. Session resumption and 0-RTT are served and
-  fetched (`ListenerConfig.SessionTickets`, `ListenerConfig.EarlyData`,
-  `DialEarly`) but have not run in a pass yet.
-  Four failures have their cause outside sluice. quic-go refuses ecn
-  itself. quic-go's client never moves to a server's preferred address, so
-  connectionmigration sees one path. msquic's server sometimes answers
-  first under the client's own connection ID, then changes it, and RFC
-  9000 §7.2 has the client discard what follows (four client-side cases).
-  And against ngtcp2's server, connectionmigration fails on the client
-  side: the runner wants a PATH_CHALLENGE in the server's first packet on
-  the new path, and ngtcp2 probes only after a non-probing packet, which a
-  client that validates first, as §9.6.2 requires, never sends there.
+  (RFC 9001 §6) in both directions, quic-go against sluice on each side in
+  continuous integration (job `interop-quic`), and a weekly pass of the
+  runner against every implementation in its list, held to
+  `interop/expected-results.json`. The cases passed at the last complete
+  pass, the ones sluice refuses on purpose and the four failures whose
+  cause lies outside sluice:
+  [The interop runner, in detail](#the-interop-runner-in-detail).
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
   the same response over HTTP/2 with every core available, and catches up
   on two; the figures, their date and the machine that measured them are
@@ -334,39 +286,19 @@ condition per package, each one checkable:
   datagrams one `Stream.Write` produces leave in one system call (UDP
   segmentation offload); on macOS, which offers no public interface for
   it, or on a system that refuses the option, each datagram is still its
-  own write. The QUIC windows are not the cause —
-  scaled from 1 to 16 times, on either side, they move nothing — so sizing
-  them will not buy the gap back. The gap is the Go scheduler: a request
-  crosses several goroutines, and each hand-off wakes one, often on another
-  core.
+  own write. Sizing the QUIC windows does not buy the gap back (scaled 1
+  to 16 times, on either side, they move nothing): the gap is the Go
+  scheduler, as a request crosses goroutines and each hand-off wakes one.
 - **`net/quic` datagram size**: datagrams start at 1200 bytes, the
-  smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
-  rise by a search (DPLPMTUD, §14.3, RFC 8899 — probing for the largest
-  datagram the path lets through): a probe — one PING+PADDING
-  datagram — of 1452 bytes first (an Ethernet MTU less the IPv6 and UDP
-  headers), then, while nothing is lost, the ceiling itself; after the
-  first size lost, each probe halves the range between the last size
-  confirmed and the smallest lost, down to 20 bytes. A size is lost after
-  three unanswered probes. A tunnel with an MTU of 1420 settles within
-  20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
-  or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
-  1452; 8952 for a 9000-byte jumbo path), bounded by the
-  `MaxUDPPayloadSize` the peer announces; the size reached reads in
-  `Stats.DatagramSize`. The search starts over at 1200 after each
-  migration. A path that shrinks under a connection (a "black hole",
-  RFC 8899 §4.3) shows as three probe timeouts in a row, or three
-  full-size packets lost while only smaller ones are acknowledged: the size
-  falls back to 1200, what was lost is resent cut to that size, the search
-  runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
-  outage of three probe timeouts counts too, and costs one probe once the
-  path is back. A completed search is not run again on a path that might
-  have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
-  require them, and `net.PacketConn` does not deliver them). A path that
-  cannot carry 1200 bytes is therefore never detected: sending on it goes
-  on at probe-timeout pace, doubling each time, until the idle timeout
-  ends the connection; §14.2's "cease sending" has no trigger here, and
-  the backoff is the bound. A lost probe is not a congestion event
-  (§14.4).
+  smallest maximum RFC 9000 §14.1 guarantees, and rise by a search for the
+  largest datagram the path lets through (DPLPMTUD, §14.3, RFC 8899), up to
+  `TransportParameters.MaxDatagramSize` (zero: 1452; 8952 for a 9000-byte
+  jumbo path); the size reached reads in `Stats.DatagramSize`. A path that
+  shrinks under a connection is detected and the size falls back to 1200
+  (`Stats.MTUBlackHoles`). ICMP "packet too big" messages are ignored, so a
+  path that cannot carry 1200 bytes is never detected: the connection ends
+  at its idle timeout. How the search probes, and the RFC positions:
+  [Datagram size, in detail](#datagram-size-in-detail).
 - **`net/quic` reassembly**: the bytes of a stream that arrive out of
   order are kept until the gap before them fills, up to the flow-control
   limit this end granted — and in at most `max(held / 1024, 256)` disjoint
@@ -400,36 +332,23 @@ condition per package, each one checkable:
   there is one dialect, and it is the one everybody speaks today.
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
-  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
-  documentation says. Four of its positions depart from RFC 8446 and are
-  inherited as they are: the ClientHello's X25519 key share repeats the
-  key inside the hybrid X25519MLKEM768 share (§4.2.8, the one departure a
-  conformant peer can see); a `pre_shared_key` extension out of last place
-  or a version never offered end the handshake with decode_error or
-  protocol_version rather than illegal_parameter (§4.2.11, §4.2.1); an
-  extension known but forbidden in the message carrying it is ignored
-  rather than refused (§4.2, §4.3.1); a `pre_shared_key` without
-  `psk_key_exchange_modes` continues without the PSK rather than aborting
-  (§4.2.9). The TLS 1.3 compatibility mode is neither asked for by this
-  client nor policed by this server: `crypto/tls` sends no
-  `legacy_session_id` in QUIC and echoes one it receives without the
-  change_cipher_spec RFC 8446 Appendix D.4 would want — RFC 9001 §8.4
-  removes that record from QUIC — and the ClientHello field is not
-  exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
-  waits on `crypto/tls`. Rewriting the TLS stack is out of the question (ADR 0002:
-  the standard library owns the sensitive ground); these follow the Go
-  release, and a peer refused over one of them is the signal to revisit.
-  In plain words: the lock on the door is the one Go ships, quirks
-  included, and it is kept rather than copied.
+  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Four of its
+  positions depart from RFC 8446, one of them visible to a conformant peer
+  (the X25519 key share repeated inside the hybrid X25519MLKEM768 share),
+  and the compatibility mode is neither asked for nor policed; they are
+  inherited as they are, listed in [TLS, in detail](#tls-in-detail).
+  Rewriting the TLS stack is out of the question (ADR 0002); a peer refused
+  over one of them is the signal to revisit. In plain words: the lock on
+  the door is the one Go ships, quirks included, and it is kept rather
+  than copied.
 - **`net/quic` secrets**: a secret or key is forgotten by becoming
   unreachable, never by being overwritten. RFC 8446 §6 has endpoints
   "forget" the keys of a failed connection and §7 would have each secret
   erased once used; here the sealers and openers of a closed connection
   are released to the garbage collector, a rotated key is replaced, and
   no copy is cleared — Go gives no guarantee that clearing a slice erases
-  its bytes (the collector, stacks and registers keep copies), and
-  `crypto/tls` and `crypto/cipher` hold their own copies that this
-  package cannot reach. What that costs is a window the length of the
+  its bytes, and `crypto/tls` and `crypto/cipher` hold their own copies
+  that this package cannot reach. What that costs is a window the length of the
   process, open only to whoever can read the process's memory, who has
   everything else as well. To revisit once Go or `crypto/tls` offers
   guaranteed erasure. In plain words: keys are dropped, not shredded,
@@ -470,3 +389,132 @@ per axis, and its load generator); what they lack is the campaign on the
 machines the protocol names, and its results. The exit from experimental
 has begun: `pushdown` and `net/httpstream` are out of it. The rest
 is not started, and each item needs a written decision first.
+
+## Details
+
+The entries above say the limit; what follows is the full record of the
+longest ones — how each was measured or argued, and where it departs from
+a specification.
+
+### Authentication, in detail
+
+SCRAM-SHA-256 (with channel binding over TLS, required
+or disabled by `Config.ChannelBinding`),
+cleartext password on explicit request, and `trust`. SCRAM-SHA-1, which
+RFC 5802 §4 requires of every SCRAM client, is not implemented: no
+PostgreSQL server offers it. The SCRAM username field is sent empty, as
+libpq sends it: PostgreSQL takes the role from the startup packet and
+ignores it, where RFC 5802 §5.1 wants a name. A password that SASLprep
+(RFC 4013) would refuse — not UTF-8, a prohibited character, mixed
+bidirectional text — is sent as its raw bytes, the way `pg_saslprep`
+derived the role's key on the server: refusing it here would lock out a
+password the server accepts. **`md5` is refused**
+— on purpose: the hash stored server-side is as good as the password, and
+PostgreSQL has deprecated it. The error message says what to change on
+the server. The PBKDF2 iteration count the server asks for is accepted
+between 4096 (RFC 7677's floor, PostgreSQL's default) and 1,048,576, and
+the salt at 16 bytes or more; a server outside that range is refused with
+the field to set in the message — `Config.MinSCRAMIterations`,
+`MaxSCRAMIterations`, `MinSCRAMSaltLen` — for a role stored at
+`scram_iterations = 1000` (a fast test fixture) or at two million (a
+hardened server). Zero means the default; a negative value is refused
+before anything is sent.
+
+### The interop runner, in detail
+
+Being green in the *QUIC Interop Runner* against
+quic-go and ngtcp2, on each side of the handshake, in our own continuous
+integration; an external cryptographic review. Already true: key update
+(RFC 9001 §6) in both directions, and quic-go against sluice on each side
+in continuous integration (job `interop-quic`).
+The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
+every implementation in its list every Sunday, on each side its role
+allows — 31 peer-directions — with the image the `Interop image` workflow
+builds from each release tag (`ghcr.io/mlagarrigue/sluice-interop`). The
+table of its latest complete pass is on the
+[`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
+a failed case is run once more. `interop/expected-results.json` records
+every case of quic-go, ngtcp2 and msquic with the cause of every failure,
+and a pass that departs from it fails the job. Green means every case
+passed against at least two peers.
+At the last complete pass, of 22 October 2026, against quic-go and
+ngtcp2: as a server, sluice passes handshake, transfer, longrtt,
+multiplexing, retry, http3, blackhole, keyupdate, amplificationlimit,
+transferloss, transfercorruption, ipv6, rebind-port, rebind-addr,
+handshakeloss, handshakecorruption and chacha20, plus ecn and
+connectionmigration against ngtcp2. As a client it passes handshake,
+transfer, longrtt, multiplexing, retry, blackhole, transferloss,
+transfercorruption, ipv6, handshakeloss, handshakecorruption,
+amplificationlimit, rebind-port and rebind-addr, plus ecn against ngtcp2.
+It refuses, with the exit status 127 the runner asks for, what is
+documented as not there: QUIC v2, and on the client side chacha20 (Go's
+TLS 1.3 offers no way to restrict the cipher suites it offers), a forced
+key update and HTTP/3. Session resumption and 0-RTT are served and
+fetched (`ListenerConfig.SessionTickets`, `ListenerConfig.EarlyData`,
+`DialEarly`) but have not run in a pass yet.
+Four failures have their cause outside sluice. quic-go refuses ecn
+itself. quic-go's client never moves to a server's preferred address, so
+connectionmigration sees one path. msquic's server sometimes answers
+first under the client's own connection ID, then changes it, and RFC
+9000 §7.2 has the client discard what follows (four client-side cases).
+And against ngtcp2's server, connectionmigration fails on the client
+side: the runner wants a PATH_CHALLENGE in the server's first packet on
+the new path, and ngtcp2 probes only after a non-probing packet, which a
+client that validates first, as §9.6.2 requires, never sends there.
+
+### Datagram size, in detail
+
+Datagrams start at 1200 bytes, the
+smallest maximum RFC 9000 §14.1 guarantees on any path QUIC runs on, and
+rise by a search (DPLPMTUD, §14.3, RFC 8899 — probing for the largest
+datagram the path lets through): a probe — one PING+PADDING
+datagram — of 1452 bytes first (an Ethernet MTU less the IPv6 and UDP
+headers), then, while nothing is lost, the ceiling itself; after the
+first size lost, each probe halves the range between the last size
+confirmed and the smallest lost, down to 20 bytes. A size is lost after
+three unanswered probes. A tunnel with an MTU of 1420 settles within
+20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
+or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
+1452; 8952 for a 9000-byte jumbo path), bounded by the
+`MaxUDPPayloadSize` the peer announces; the size reached reads in
+`Stats.DatagramSize`. The search starts over at 1200 after each
+migration. A path that shrinks under a connection (a "black hole",
+RFC 8899 §4.3) shows as three probe timeouts in a row, or three
+full-size packets lost while only smaller ones are acknowledged: the size
+falls back to 1200, what was lost is resent cut to that size, the search
+runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
+outage of three probe timeouts counts too, and costs one probe once the
+path is back. A completed search is not run again on a path that might
+have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
+require them, and `net.PacketConn` does not deliver them). A path that
+cannot carry 1200 bytes is therefore never detected: sending on it goes
+on at probe-timeout pace, doubling each time, until the idle timeout
+ends the connection; §14.2's "cease sending" has no trigger here, and
+the backoff is the bound. A lost probe is not a congestion event
+(§14.4).
+
+### TLS, in detail
+
+The handshake is `crypto/tls`'s, from the Go release
+`go.mod` names as the floor, run through `tls.QUICClient` and
+`tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
+documentation says. Four of its positions depart from RFC 8446 and are
+inherited as they are: the ClientHello's X25519 key share repeats the
+key inside the hybrid X25519MLKEM768 share (§4.2.8, the one departure a
+conformant peer can see); a `pre_shared_key` extension out of last place
+or a version never offered end the handshake with decode_error or
+protocol_version rather than illegal_parameter (§4.2.11, §4.2.1); an
+extension known but forbidden in the message carrying it is ignored
+rather than refused (§4.2, §4.3.1); a `pre_shared_key` without
+`psk_key_exchange_modes` continues without the PSK rather than aborting
+(§4.2.9). The TLS 1.3 compatibility mode is neither asked for by this
+client nor policed by this server: `crypto/tls` sends no
+`legacy_session_id` in QUIC and echoes one it receives without the
+change_cipher_spec RFC 8446 Appendix D.4 would want — RFC 9001 §8.4
+removes that record from QUIC — and the ClientHello field is not
+exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
+waits on `crypto/tls`. Rewriting the TLS stack is out of the question (ADR 0002:
+the standard library owns the sensitive ground); these follow the Go
+release, and a peer refused over one of them is the signal to revisit.
+In plain words: the lock on the door is the one Go ships, quirks
+included, and it is kept rather than copied.
