@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -124,6 +125,8 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// refused outright rather than served with a bound nobody chose. The
 	// connection is closed with the refusal, as on every other way out of
 	// ServeH3Conn: left open, the client would wait on a server nobody runs.
+	// The handshake is done: one copy for every request of the connection.
+	state := c.ConnectionState()
 	if lim := c.LocalParameters().InitialMaxStreamsBidi; lim > h3MaxServeStreams {
 		_ = c.CloseWithError(h3InternalError)
 		return fmt.Errorf(
@@ -489,14 +492,14 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 				launch(&calls, func() {
 					select {
 					case <-c.HandshakeComplete():
-						answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers)
+						answerH3(forced, c, &state, b, handle, writeBoundOf(cfg), &writers)
 					case <-c.Done():
 					}
 				})
 				return nil
 			}
 		}
-		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
+		launch(&calls, func() { answerH3(forced, c, &state, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
 	}
 	c.OnStreamFrames(credit, func(frames []quic.Frame) error {
@@ -705,7 +708,9 @@ func h3GracefulCode() uint64 {
 //
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
-func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
+func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
+	// The address as it stands now: a QUIC connection may have moved.
+	peer{addr: addrPortOf(c.RemoteAddr()), tls: state}.stamp(b.reqs)
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does

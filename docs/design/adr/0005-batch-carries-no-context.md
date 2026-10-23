@@ -1,7 +1,7 @@
 # ADR 0005 — `Batch` carries no context; context travels in the element type
 
 - **Created:** 2026-08-17
-- **Revised:** 2026-10-07 (renumbered)
+- **Revised:** 2026-10-07 (renumbered), 2026-10-23 (the HTTP handler's context and peer)
 - **Theme:** core
 
 ## Problem
@@ -43,6 +43,13 @@ silently drops the context from that stage onward — the failure mode this
 project turns into a panic everywhere else. What a caller pays instead is
 16 bytes per element when they do need per-element context: a real trade,
 made where the caller knows they need it.
+
+The HTTP transport follows the same rule at its own level: the `Handler`
+of `net/httpstream` receives the context as a parameter of the call,
+beside the batch, never inside it. That context is cancelled at a forced
+stop and, on HTTP/1.1, when the client closes during the call; the
+client's address and TLS state travel in the element (`Request.RemoteAddr`,
+`Request.TLS`), as the envelope above does for a per-element context.
 
 The context-merging question (there is no `context.Merge` in Go) is
 answered by the element: a merge pairs elements without combining their

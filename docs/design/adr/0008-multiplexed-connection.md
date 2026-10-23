@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol)
 - **Theme:** httpstream
 
 ## Problem
@@ -88,7 +88,20 @@ the hot path: the contract changed, not the writer.
 
 Streamed responses of any size, a connection that stays responsive, one
 request's failure costing one request, and cancellation that reaches the
-handler. The cost is three goroutines per connection plus one per call in
+handler.
+
+What reaches the handler, precisely: the forced stop, on all three
+protocols; the client's departure on HTTP/1.1, from the handler's first
+call to `ctx.Done` (a watching read of the connection, measured at 24 µs a
+batch on a Linux runner, paid only by a handler that asks). On HTTP/2 and
+HTTP/3 a batch's context is to be cancelled once no request of the batch
+has a client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING`
+takes one away, the connection's close takes them all — and not before:
+the batch is answered whole, and a client giving up on one request does
+not cost the others their answers. That part is not written yet; the
+`Handler` documentation says so.
+
+The cost is three goroutines per connection plus one per call in
 flight, and their synchronisation, which
 `TestH2ConnectionsLeaveNoGoroutines` keeps honest. Calls run in parallel
 because serialised ones make a stream wait twice: a handler that waits on

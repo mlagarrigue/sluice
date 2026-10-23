@@ -2,6 +2,7 @@ package httpstream
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -72,6 +73,24 @@ type Request struct {
 	// KeepAlive reports whether the connection may serve another request
 	// after this one, per the version and the Connection header.
 	KeepAlive bool
+
+	// RemoteAddr is the address and port the request came from: the TCP
+	// peer on HTTP/1.1 and HTTP/2, the UDP peer on HTTP/3 as it stood when
+	// the batch was handed over (a QUIC connection may move). It is the
+	// transport's peer, so behind a proxy it is the proxy; a forwarded
+	// address is in the headers, and trusting it is the handler's decision.
+	// The zero value means the listener's addresses are not IP addresses (a
+	// Unix socket, a test pipe).
+	RemoteAddr netip.AddrPort
+
+	// TLS is the state of the TLS session that carried the request — version,
+	// cipher suite, the protocol ALPN chose, the certificates a client
+	// presented — or nil in clear text. It is shared by every request of the
+	// connection and must not be modified. It is what mutual TLS authorises
+	// on (PeerCertificates, VerifiedChains); that NegotiatedProtocol names
+	// the HTTP version is a fact of the handshake, not something a handler
+	// should branch on, since the request is the same whichever carried it.
+	TLS *tls.ConnectionState
 
 	// http10 marks a request parsed from an HTTP/1.0 request line. It is
 	// unexported on purpose: the Handler contract promises a request never

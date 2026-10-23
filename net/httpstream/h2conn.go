@@ -261,8 +261,10 @@ type h2Server struct {
 	// ctx is the handler's context: cancelled when the connection is cut
 	// rather than drained (see [Handler]).
 	ctx context.Context
-	dec *hpackDecoder
-	w   *h2Writer
+	// peer is written into every request before the handler sees it.
+	peer peer
+	dec  *hpackDecoder
+	w    *h2Writer
 
 	// streams is the open streams, the ones still being assembled.
 	streams map[uint32]*h2Stream
@@ -528,6 +530,8 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 		<-s.w.done
 		return err
 	}
+	// After the preface, so that a TLS handshake is done.
+	s.peer = peerOf(c)
 	if st != nil {
 		// Registered after hello has queued the SETTINGS: a drain already
 		// under way runs beginDrain at once, on its own goroutine, and its
@@ -1703,6 +1707,7 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 			out <- &h2Applied{b: b, err: errors.New("httpstream: the handler exited its goroutine without answering")}
 		}
 	}()
+	s.peer.stamp(b.reqs)
 	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
 	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}

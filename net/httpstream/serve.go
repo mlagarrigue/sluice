@@ -80,6 +80,16 @@ import (
 // rather than leaving them to run with nobody waiting for the answer. It is
 // one context for the whole batch, because the batch is answered as a whole:
 // a client that gives up on one request of it is not seen there.
+//
+// On HTTP/1.1, where a batch is one connection's requests, ctx is also
+// cancelled when the client closes the connection while the handler runs —
+// a reset, or the end of its sending side, which RFC 9112 §9.6 notes may be
+// a half-close from a client still waiting: only the context is cancelled,
+// and whatever the handler returns is still written. The connection is
+// watched from the handler's first call to ctx.Done: a handler that never
+// asks costs no watch. The context lives until the batch's responses are
+// written, which is when a streamed response's producer stops needing it.
+// On HTTP/2 and HTTP/3 the client leaving is not seen there yet.
 type Handler func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]
 
 // Serve accepts connections on ln and drives handle over each one until ctx
@@ -384,9 +394,19 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 	// rather than once per batch.
 	out := make([]byte, 0, 4<<10)
 
+	// Read once the first batch is in, by which time a TLS handshake is done.
+	var who peer
+	known := false
 	stopped := false
 	src.Stream()(func(b sluice.Batch[Request]) bool {
-		res, err := apply(ctx, handle, b, cfg.EarlyData)
+		if !known {
+			who, known = peerOf(c), true
+		}
+		who.stamp(b.Items)
+		call := newClientCtx(ctx, c, cfg.maxBuffer())
+		defer call.written()
+		res, err := apply(call, handle, b, cfg.EarlyData)
+		call.returned()
 		if err != nil {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
@@ -780,6 +800,159 @@ func prefixed(c net.Conn, head []byte) net.Conn {
 	return &prefixConn{Conn: c, head: head}
 }
 
+// peer is what a connection knows of its client, written into each request
+// before the handler sees it ([Request.RemoteAddr], [Request.TLS]).
+type peer struct {
+	addr netip.AddrPort
+	tls  *tls.ConnectionState
+}
+
+// peerOf reads the client's address and TLS state off a connection whose
+// handshake is done: one ConnectionState copy per connection, shared by its
+// requests.
+func peerOf(c net.Conn) peer {
+	if pc, ok := c.(*prefixConn); ok {
+		c = pc.Conn
+	}
+	p := peer{addr: addrPortOf(c.RemoteAddr())}
+	if t, ok := c.(interface{ ConnectionState() tls.ConnectionState }); ok {
+		s := t.ConnectionState()
+		p.tls = &s
+	}
+	return p
+}
+
+// addrPortOf is a TCP or UDP address as an [netip.AddrPort], an IPv4 address
+// in its four-byte form; the zero value for any other kind of address.
+func addrPortOf(a net.Addr) netip.AddrPort {
+	var ap netip.AddrPort
+	switch a := a.(type) {
+	case *net.TCPAddr:
+		ap = a.AddrPort()
+	case *net.UDPAddr:
+		ap = a.AddrPort()
+	default:
+		return ap
+	}
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+}
+
+// stamp writes the peer into each request of a batch.
+func (p peer) stamp(reqs []Request) {
+	for i := range reqs {
+		reqs[i].RemoteAddr, reqs[i].TLS = p.addr, p.tls
+	}
+}
+
+// clientCtx is the handler's context on HTTP/1.1: its parent's — the forced
+// stop — and also the client leaving while the handler runs.
+//
+// Watching costs a goroutine reading the connection, and the wake-ups to
+// start and stop it; most handlers never ask, so nothing is watched until
+// the first call to Done. A handler that answers from memory pays one
+// allocation per batch; one that hands the context to a query pays the
+// watch, measured on a GitHub Linux runner at 24 µs a batch
+// (BenchmarkServeH1RoundTrip: 46 µs watched, 23 µs plain). Starting it later — a timer, so that only slow handlers pay — was
+// measured and costs more: arming a timer wakes the network poller. The read is
+// [watchPeer]'s, whose bytes are put back for the request reader, and it
+// ends when the handler returns: a streamed response has its own watch. The
+// forced stop reaches the context through [context.AfterFunc], which runs
+// no goroutine of its own.
+//
+// An EOF counts as the client leaving. RFC 9112 §9.6 notes that a client's
+// half-close does not by itself say it lost interest in the response; but a
+// client that closes sends exactly that EOF, and is by far the common case.
+// What is cancelled is the context only: whatever the handler returns is
+// still written, until a write fails.
+//
+// The context covers the batch until its responses are written, so that a
+// streamed response's producer keeps the forced stop; past that it is
+// neither watched nor cancelled.
+type clientCtx struct {
+	context.Context // the parent
+
+	c     *prefixConn
+	limit int
+
+	mu      sync.Mutex
+	calling bool            // the handler is running: the watch may start
+	ended   bool            // the batch is written
+	done    <-chan struct{} // what Done returns, once asked
+	cancel  chan struct{}   // done when this context owns it
+	err     error
+	watch   *peerWatch
+	unlink  func() bool // ends the parent's hold on cancel
+}
+
+func newClientCtx(parent context.Context, c *prefixConn, limit int) *clientCtx {
+	return &clientCtx{Context: parent, c: c, limit: limit, calling: true}
+}
+
+func (x *clientCtx) Done() <-chan struct{} {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.done != nil {
+		return x.done
+	}
+	if x.ended {
+		// Asked after the batch was written: nothing left to watch.
+		x.done = x.Context.Done()
+		return x.done
+	}
+	x.cancel = make(chan struct{})
+	x.done = x.cancel
+	x.unlink = context.AfterFunc(x.Context, func() { x.close(x.Context.Err()) })
+	if x.calling {
+		x.watch = watchPeerThen(x.c, x.limit, func(w *peerWatch) {
+			if w.gone.Load() || w.halfClosed.Load() {
+				x.close(context.Canceled)
+			}
+		})
+	}
+	return x.done
+}
+
+func (x *clientCtx) Err() error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.cancel != nil {
+		return x.err
+	}
+	return x.Context.Err()
+}
+
+func (x *clientCtx) close(err error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.err == nil {
+		x.err = err
+		close(x.cancel)
+	}
+}
+
+// returned is called when the handler returns: the watch stops, and the
+// connection has a single reader again.
+func (x *clientCtx) returned() {
+	x.mu.Lock()
+	x.calling = false
+	w := x.watch
+	x.mu.Unlock()
+	if w != nil {
+		w.stop()
+	}
+}
+
+// written is called once the batch's responses are written, or abandoned.
+func (x *clientCtx) written() {
+	x.mu.Lock()
+	x.ended = true
+	unlink := x.unlink
+	x.mu.Unlock()
+	if unlink != nil {
+		unlink()
+	}
+}
+
 // buffered reports whether bytes put back in front of the connection are
 // waiting to be read — the start of a request, as far as the shutdown is
 // concerned.
@@ -856,6 +1029,13 @@ func (w *peerWatch) left() bool {
 }
 
 func watchPeer(c *prefixConn, limit int) *peerWatch {
+	return watchPeerThen(c, limit, nil)
+}
+
+// watchPeerThen is watchPeer with a function run when the watch ends, on the
+// watching goroutine, before done is closed: the handler's context learns
+// the client left without a goroutine of its own waiting on done.
+func watchPeerThen(c *prefixConn, limit int, ended func(*peerWatch)) *peerWatch {
 	w := &peerWatch{c: c, done: make(chan struct{})}
 	// No deadline while watching: the request reader set one for the request
 	// it read, and that clock says nothing about how long a response may
@@ -863,11 +1043,22 @@ func watchPeer(c *prefixConn, limit int) *peerWatch {
 	// request reader sets its own again before its next read.
 	if err := c.SetReadDeadline(time.Time{}); err != nil {
 		w.gone.Store(true) // a connection that refuses a deadline is closed
-		close(w.done)
+		if ended == nil {
+			close(w.done)
+			return w
+		}
+		// Not on this goroutine: its caller may hold the lock ended takes.
+		go func() {
+			defer close(w.done)
+			ended(w)
+		}()
 		return w
 	}
 	go func() {
 		defer close(w.done)
+		if ended != nil {
+			defer ended(w)
+		}
 		var scratch [512]byte
 		for len(w.got) < limit {
 			// c.Conn, not c: c.head belongs to the request reader, and this
