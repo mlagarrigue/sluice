@@ -24,51 +24,11 @@ the alternatives rejected).
 
 ## Glossary
 
-The terms that recur throughout, one sentence each.
+The terms that recur throughout — stream, batch, operator, source, bound,
+join, connector and the rest — are defined one sentence each in the
+[glossary](../glossary.md).
 
-- **Stream** — a sequence of batches of values, produced only when someone
-  reads it.
-- **Batch** — a slice of values processed together; the unit of transport
-  of the whole library, a thousand by default.
-- **Operator** — a function that takes a stream and returns another
-  (`Filter`, `Map`, a join).
-- **Pull / push** — in pull, the reader asks for the next batch; in push,
-  the source sends it when it has it. Sluice.go is pull-based.
-- **Back-pressure** — what slows a source down when the reader cannot keep
-  up; in pull, it follows from the very shape of the type.
-- **Iterator** — in Go, a function that `for range` can walk; `iter.Seq` is
-  its standard type.
-- **Goroutine** — one of Go's lightweight threads; several run at once on
-  the available cores.
-- **Allocation** — reserving memory for a new value; expensive to repeat
-  per element, which is what buffer reuse avoids.
-- **Bound** — the limit an operator that retains state must receive as a
-  parameter; without it, memory can grow without end.
-- **Overflow policy (`Overflow`)** — what an operator does when its bound
-  is reached: drop the oldest, the newest, or fail.
-- **Diagnostic** — what can be said about a value without stopping the
-  stream: an error, a warning, where, for what reason.
-- **Affordance** — the remedy attached at the same place as a diagnostic:
-  what the client can do to fix it.
-- **Round trip** — a question sent to a server and its answer; one network
-  journey, often the dominant cost.
-- **Join** — pairing the elements of two streams that share a key.
-- **Build side** — in a table join, the side loaded entirely into memory;
-  the other is the *probe* side.
-- **Window** — a group of elements from one slice of time.
-- **Connector** — the code that speaks an external system's protocol
-  (PostgreSQL) to read it as a stream.
-- **Hydration** — filling a Go struct from a result row.
-- **Wire protocol** — the exact shape of the bytes exchanged with a server.
-- **Sentinel** — a named error, raised by panic for lack of another channel
-  in an iterator, which `Try` knows how to convert.
-- **S1 … S14** — the fourteen verifiable security guarantees listed in the
-  Security section; the document refers to them by number.
-- **Nanoseconds per element (ns/element)** — the unit of the core's
-  measurements; the ceiling is 0.310 ns, an operator's budget 1.5 ns per
-  stage.
-
-Every technical term not in this glossary is explained in one sentence,
+Every technical term not in the glossary is explained in one sentence,
 between dashes or in parentheses, the first time it appears below. The
 original term is always kept, because it is what you search for in the
 code and in the sources.

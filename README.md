@@ -122,6 +122,9 @@ special "handler" in the middle that would be of another nature.
 
 ### The packages
 
+The terms below — source, pane, demand, principal, grant — are defined in
+the [glossary](docs/glossary.md).
+
 | Package | Role | Status |
 |---|---|---|
 | `sluice` | the core: `Stream`, `Batch`, `Source`, and the operators that keep nothing in memory between two batches | supported |

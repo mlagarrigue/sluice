@@ -11,6 +11,8 @@ place.
   pipeline.
 - [Guide: getting started](guide/getting-started.md) — `Stream`, `Batch`,
   `Source`, `Try`, and what a batch promises.
+- [Glossary](glossary.md) — the terms that recur, one sentence each: source,
+  pane, demand, principal, grant, QUIC, OID and the rest.
 
 ## I am building something
 

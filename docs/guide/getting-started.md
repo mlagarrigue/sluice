@@ -5,7 +5,8 @@
 In twenty minutes: write a first program with Sluice.go, understand what a
 *stream* and a *batch* are, and know the four rules that avoid the early
 pitfalls. You need Go installed (version 1.26 or newer) and to know how to
-write a `for` loop. Nothing else.
+write a `for` loop. Nothing else. A word you do not know is likely in the
+[glossary](../glossary.md).
 
 ## The idea in one picture
 
