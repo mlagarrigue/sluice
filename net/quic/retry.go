@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Server-generated Retry (RFC 9000 §8.1.2), the stronger of this package's
@@ -140,7 +142,7 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	// Milliseconds, not seconds: a TTL below one second must still mean
 	// what it says, and a second-truncated issue time ages a token by up
 	// to a second at birth.
-	dst = AppendVarint(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
+	dst = varint.Append(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
 	addr := []byte(peer.String())
 	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port, at most 18 bytes
 	dst = append(dst, addr...)
@@ -187,7 +189,7 @@ func verifyRetryToken(token []byte, key [32]byte, ttl time.Duration, peer net.Ad
 		return retryToken{}, errForeignToken
 	}
 
-	issued, rest, err := Varint(body)
+	issued, rest, err := readVarint(body)
 	if err != nil {
 		return retryToken{}, err
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Tests for preferred_address (RFC 9000 §9.6, §18.2): the parameter's
@@ -56,8 +58,8 @@ func TestPreferredAddressCodec(t *testing.T) {
 	}
 
 	raw := func(val []byte) []byte {
-		b := AppendVarint(nil, paramPreferredAddress)
-		b = AppendVarint(b, uint64(len(val)))
+		b := varint.Append(nil, paramPreferredAddress)
+		b = varint.Append(b, uint64(len(val)))
 		return append(b, val...)
 	}
 	zeroCID := make([]byte, preferredAddressLen)
@@ -160,7 +162,7 @@ func TestClientMovesToTheServersPreferredAddress(t *testing.T) {
 	// The answer comes back from the preferred address: the receive gate
 	// must let it through for a client, and the move completes.
 	c.mu.Lock()
-	resp := AppendVarint(nil, framePathResponse)
+	resp := varint.Append(nil, framePathResponse)
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.rxFrom = pref
 	c.mu.Unlock()
@@ -473,7 +475,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, via, 1200, true
 		c.mu.Unlock()
 	}
-	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	rxVia(pref)
 	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
@@ -530,7 +532,7 @@ func TestServerProbesTheClientFromItsPreferredSocket(t *testing.T) {
 	}
 	// The answer arrives: both conditions hold, the connection moves and
 	// adopts the identifier it probed under.
-	resp := append(AppendVarint(nil, framePathResponse), data[:]...)
+	resp := append(varint.Append(nil, framePathResponse), data[:]...)
 	rxVia(pref)
 	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
@@ -563,7 +565,7 @@ func TestServerMovesToItsPreferredSocketOnceProbedAndWrittenTo(t *testing.T) {
 		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = peer, via, 1200, true
 		c.mu.Unlock()
 	}
-	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	rxVia(pref)
 	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
@@ -571,7 +573,7 @@ func TestServerMovesToItsPreferredSocketOnceProbedAndWrittenTo(t *testing.T) {
 	c.mu.Lock()
 	data := c.pathProbe.data
 	c.mu.Unlock()
-	resp := append(AppendVarint(nil, framePathResponse), data[:]...)
+	resp := append(varint.Append(nil, framePathResponse), data[:]...)
 	rxVia(pref)
 	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)
@@ -612,7 +614,7 @@ func TestServerWithoutASpareIdentifierSendsNothingFromItsPreferredSocket(t *test
 	}
 
 	rxVia()
-	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +767,7 @@ func TestPathResponseOffThePathCarriesNoAck(t *testing.T) {
 	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = fakeFuzzAddr("noack:peerA"), pref, 1200, true
 	c.mu.Unlock()
 
-	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
 	if err := c.frames(spaceApplication, challenge, now); err != nil {
 		t.Fatal(err)
 	}

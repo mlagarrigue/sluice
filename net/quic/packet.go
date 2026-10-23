@@ -109,7 +109,7 @@ func parseLongHeader(b []byte) (longHeader, []byte, error) {
 
 	if h.Type == packetInitial {
 		var n uint64
-		if n, rest, err = Varint(rest); err != nil {
+		if n, rest, err = readVarint(rest); err != nil {
 			return h, nil, err
 		}
 		if n > uint64(len(rest)) {
@@ -120,7 +120,7 @@ func parseLongHeader(b []byte) (longHeader, []byte, error) {
 		}
 	}
 
-	if h.Length, rest, err = Varint(rest); err != nil {
+	if h.Length, rest, err = readVarint(rest); err != nil {
 		return h, nil, err
 	}
 	if h.Length > uint64(len(rest)) {

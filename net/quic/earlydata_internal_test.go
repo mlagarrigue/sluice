@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // The gate admits a ticket of its own instance once, within the window; it
@@ -86,7 +88,7 @@ func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 		b := []byte{0xc0 | packetZeroRTT<<4, 0, 0, 0, 1, byte(len(dcid))}
 		b = append(b, dcid...)
 		b = append(b, 0)
-		b = AppendVarint(b, 24)
+		b = varint.Append(b, 24)
 		return append(b, make([]byte, 24)...)
 	}
 	client := boundsConn(t, true)
@@ -200,7 +202,7 @@ func TestAnAckOfRefusedZeroRTTIsAViolation(t *testing.T) {
 			sp.sent.refusedBelow = 3
 		}
 		c.mu.Unlock()
-		ranges := AppendVarint(AppendVarint(nil, 0), 1) // no further range; the first covers packets 0 and 1
+		ranges := varint.Append(varint.Append(nil, 0), 1) // no further range; the first covers packets 0 and 1
 		err := c.handleAck(spaceApplication, Frame{Type: frameACK, largest: 1, Data: ranges}, time.Now())
 		te, isViolation := errors.AsType[*transportError](err)
 		isViolation = isViolation && te.code == transportProtocolViolation

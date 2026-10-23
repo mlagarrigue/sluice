@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/mlagarrigue/sluice/net/quic"
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // TestH3DrainIncompleteFrameLeavesBufferInPlace: a delivery that completes
@@ -29,8 +29,8 @@ func TestH3DrainIncompleteFrameLeavesBufferInPlace(t *testing.T) {
 	defer debug.SetPanicOnFault(old)
 
 	// A DATA frame declared at MaxBodyBytes, 64 KiB of it arrived.
-	hdr := quic.AppendVarint(nil, h3Data)
-	hdr = quic.AppendVarint(hdr, uint64(cfg.MaxBodyBytes))
+	hdr := varint.Append(nil, h3Data)
+	hdr = varint.Append(hdr, uint64(cfg.MaxBodyBytes))
 	st := &h3Stream{declared: -1, gotHead: true, buf: readOnlyPage(t, hdr, 64<<10)}
 	first, length, capacity := &st.buf[0], len(st.buf), cap(st.buf)
 	if wrote := faults(func() {
@@ -46,8 +46,8 @@ func TestH3DrainIncompleteFrameLeavesBufferInPlace(t *testing.T) {
 	}
 
 	// The control stream: SETTINGS declared longer than what arrived.
-	hdr = quic.AppendVarint(nil, h3Settings)
-	hdr = quic.AppendVarint(hdr, 64)
+	hdr = varint.Append(nil, h3Settings)
+	hdr = varint.Append(hdr, 64)
 	u := &h3Uni{kind: h3StreamControl, buf: readOnlyPage(t, hdr, 32)}
 	first, length, capacity = &u.buf[0], len(u.buf), cap(u.buf)
 	if wrote := faults(func() {

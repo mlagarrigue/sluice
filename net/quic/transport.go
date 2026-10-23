@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Transport parameters, RFC 9000 §18. They travel inside the TLS handshake
@@ -424,16 +426,16 @@ func DefaultParameters() TransportParameters {
 // except the value.
 func appendParameters(dst []byte, p TransportParameters) []byte {
 	num := func(id, v uint64) {
-		dst = AppendVarint(dst, id)
-		dst = AppendVarint(dst, uint64(varintBytes(v))) //nolint:gosec // G115: varintBytes returns 1 to 8
-		dst = AppendVarint(dst, v)
+		dst = varint.Append(dst, id)
+		dst = varint.Append(dst, uint64(varintBytes(v))) //nolint:gosec // G115: varintBytes returns 1 to 8
+		dst = varint.Append(dst, v)
 	}
 	raw := func(id uint64, v []byte) {
 		if len(v) == 0 {
 			return
 		}
-		dst = AppendVarint(dst, id)
-		dst = AppendVarint(dst, uint64(len(v)))
+		dst = varint.Append(dst, id)
+		dst = varint.Append(dst, uint64(len(v)))
 		dst = append(dst, v...)
 	}
 	num(paramMaxIdleTimeout, uint64(max(p.MaxIdleTimeout, 0)/time.Millisecond))
@@ -450,16 +452,16 @@ func appendParameters(dst []byte, p TransportParameters) []byte {
 		num(paramActiveConnIDLimit, p.ActiveConnIDLimit)
 	}
 	if p.DisableActiveMigration {
-		dst = AppendVarint(dst, paramDisableActiveMigration)
-		dst = AppendVarint(dst, 0) // §18.2: a zero-length value
+		dst = varint.Append(dst, paramDisableActiveMigration)
+		dst = varint.Append(dst, 0) // §18.2: a zero-length value
 	}
 	raw(paramOriginalDCID, p.originalDCID)
 	// Always, even zero-length: §7.3 makes initial_source_connection_id
 	// mandatory for both endpoints, and raw's "nothing to say" shortcut
 	// would turn an endpoint's empty identifier into the omission the peer
 	// has to refuse.
-	dst = AppendVarint(dst, paramInitialSourceCID)
-	dst = AppendVarint(dst, uint64(len(p.initialSourceCID)))
+	dst = varint.Append(dst, paramInitialSourceCID)
+	dst = varint.Append(dst, uint64(len(p.initialSourceCID)))
 	dst = append(dst, p.initialSourceCID...)
 	raw(paramRetrySourceCID, p.retrySourceCID)
 	raw(paramStatelessResetToken, p.statelessResetToken)
@@ -506,11 +508,11 @@ func parseParameters(b []byte) (TransportParameters, error) {
 		// "badly formatted" (§20.1), and TRANSPORT_PARAMETER_ERROR names it
 		// better than the INTERNAL_ERROR an unwrapped parse error would close
 		// with.
-		id, rest, err := Varint(b)
+		id, rest, err := readVarint(b)
 		if err != nil {
 			return p, parameterError(fmt.Errorf("%w: a transport parameter identifier cut short", ErrQUIC))
 		}
-		length, rest, err := Varint(rest)
+		length, rest, err := readVarint(rest)
 		if err != nil {
 			return p, parameterError(fmt.Errorf("%w: transport parameter %#x has its length cut short", ErrQUIC, id))
 		}
@@ -644,7 +646,7 @@ const maxStreamsLimit = 1 << 60
 // left after it, or a varint cut short by it, are a value this end cannot
 // read, which §7.4 makes TRANSPORT_PARAMETER_ERROR.
 func integerParameter(id uint64, val []byte) (uint64, error) {
-	v, rest, err := Varint(val)
+	v, rest, err := readVarint(val)
 	if err != nil || len(rest) != 0 {
 		return 0, parameterError(fmt.Errorf("%w: transport parameter %#x is %d bytes, not one integer", ErrQUIC, id, len(val)))
 	}

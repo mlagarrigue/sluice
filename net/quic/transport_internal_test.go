@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Regression tests for the transport layer: each fails against the
@@ -126,18 +128,18 @@ func TestDialReportsAHandshakeCloseAsItself(t *testing.T) {
 		if err != nil {
 			return
 		}
-		frame := AppendVarint(nil, frameConnectionClose)
-		frame = AppendVarint(frame, transportConnectionRefused)
-		frame = AppendVarint(frame, 0)
-		frame = AppendVarint(frame, 0)
+		frame := varint.Append(nil, frameConnectionClose)
+		frame = varint.Append(frame, transportConnectionRefused)
+		frame = varint.Append(frame, 0)
+		frame = varint.Append(frame, 0)
 		const pnLen = 4
 		header := []byte{0xc0 | packetInitial<<4 | pnLen - 1, 0, 0, 0, 1}
 		header = append(header, byte(len(h.SCID)))
 		header = append(header, h.SCID...)
 		header = append(header, byte(len(h.DCID)))
 		header = append(header, h.DCID...)
-		header = AppendVarint(header, 0)
-		header = AppendVarint(header, uint64(pnLen+len(frame)+16))
+		header = varint.Append(header, 0)
+		header = varint.Append(header, uint64(pnLen+len(frame)+16))
 		pnOffset := len(header)
 		header = append(header, 0, 0, 0, 0)
 		pkt, err := sealer.Seal(nil, header, frame, 0, pnOffset, pnLen)

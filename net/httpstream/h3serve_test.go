@@ -13,6 +13,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/dgram"
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -579,8 +580,8 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			// of its payload follow, the rest never does. This used to end
 			// the stream with H3_EXCESSIVE_LOAD, where h1 and h2 answer 413.
 			req := h3Request("POST", "/x")
-			req = quic.AppendVarint(req, h3Data)
-			req = quic.AppendVarint(req, 1<<20)
+			req = varint.Append(req, h3Data)
+			req = varint.Append(req, 1<<20)
 			return append(req, "bbbb"...)
 		}(), "413"},
 	}
@@ -922,11 +923,11 @@ func readH3Frame(t *testing.T, s *quic.Stream) h3Frame {
 			t.Fatalf("no frame arrived on the stream: %v", err)
 		}
 		prefix = append(prefix, b[0])
-		typ, after, err := quic.Varint(prefix)
+		typ, after, err := varint.Read(prefix)
 		if err != nil {
 			continue
 		}
-		length, _, err := quic.Varint(after)
+		length, _, err := varint.Read(after)
 		if err != nil {
 			continue
 		}

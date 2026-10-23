@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
@@ -1130,7 +1131,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 			// by one, a packet of k challenges from an address off the
 			// path would earn k datagrams of 1200 bytes, many times what
 			// it cost to send.
-			pathResponses = AppendVarint(pathResponses, framePathResponse)
+			pathResponses = varint.Append(pathResponses, framePathResponse)
 			pathResponses = append(pathResponses, f.Data...)
 
 		case f.Type == framePathResponse:

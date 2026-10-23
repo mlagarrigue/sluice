@@ -3,6 +3,8 @@ package quic
 import (
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // FuzzDecodePacketNumber: RFC 9000 §12.3 bounds a packet number to
@@ -16,7 +18,7 @@ func FuzzDecodePacketNumber(f *testing.F) {
 	f.Add(uint64(1<<62-1), uint64(1), 1)
 	f.Add(uint64(1<<62-2), uint64(0xffffffff), 4)
 	f.Fuzz(func(t *testing.T, largest, truncated uint64, pnLen int) {
-		if pnLen < 1 || pnLen > 4 || largest > MaxVarint || truncated >= 1<<(8*pnLen) {
+		if pnLen < 1 || pnLen > 4 || largest > varint.Max || truncated >= 1<<(8*pnLen) {
 			return
 		}
 		got, ok := decodePacketNumber(largest, truncated, pnLen)
@@ -27,14 +29,14 @@ func FuzzDecodePacketNumber(f *testing.F) {
 		window := int64(1) << (8 * pnLen)
 		top := int64(largest) + 1 + window/2                        //nolint:gosec // G115: largest ≤ 2^62-1
 		want := top - ((top-int64(truncated))%window+window)%window //nolint:gosec // G115: truncated < 2^32
-		if want >= 0 && want <= MaxVarint && (!ok || got != uint64(want)) {
+		if want >= 0 && want <= varint.Max && (!ok || got != uint64(want)) {
 			t.Fatalf("decode(largest=%d, truncated=%#x, len=%d) = %d, %v; want %d, the value in the window",
 				largest, truncated, pnLen, got, ok, want)
 		}
 		if !ok {
 			return
 		}
-		if got > MaxVarint {
+		if got > varint.Max {
 			t.Fatalf("decode(largest=%d, truncated=%#x, len=%d) = %d, past 2^62-1",
 				largest, truncated, pnLen, got)
 		}
@@ -51,13 +53,13 @@ func FuzzDecodePacketNumber(f *testing.F) {
 func TestAckTrackerRefusesPacketNumberPastCeiling(t *testing.T) {
 	var a ackTracker
 	now := time.Now()
-	if !a.record(MaxVarint, now) {
+	if !a.record(varint.Max, now) {
 		t.Fatal("2^62-1 is a valid packet number and was refused")
 	}
 	if a.record(1<<62, now) {
 		t.Fatal("2^62 was recorded")
 	}
-	if want := []pnRange{{MaxVarint, MaxVarint}}; len(a.ranges) != 1 || a.ranges[0] != want[0] {
+	if want := []pnRange{{varint.Max, varint.Max}}; len(a.ranges) != 1 || a.ranges[0] != want[0] {
 		t.Fatalf("ranges = %v, want %v", a.ranges, want)
 	}
 	func() {
@@ -81,8 +83,8 @@ func TestReceiveRefusesPacketNumberPastCeiling(t *testing.T) {
 	dcid := []byte("scid0000")
 	c.mu.Lock()
 	sp := &c.spaces[spaceApplication]
-	sp.largest = MaxVarint
-	sp.ack.record(MaxVarint, time.Now())
+	sp.largest = varint.Max
+	sp.ack.record(varint.Max, time.Now())
 	c.mu.Unlock()
 
 	pkt := shortPacket(t, peer, 0, dcid, 1<<62, []byte{framePing})
@@ -91,13 +93,13 @@ func TestReceiveRefusesPacketNumberPastCeiling(t *testing.T) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if sp.largest != MaxVarint {
+	if sp.largest != varint.Max {
 		t.Errorf("largest received packet number is %d: the packet was accepted", sp.largest)
 	}
 	if c.discarded != 1 {
 		t.Errorf("discarded = %d, want 1", c.discarded)
 	}
-	if len(sp.ack.ranges) != 1 || sp.ack.ranges[0].hi != MaxVarint {
+	if len(sp.ack.ranges) != 1 || sp.ack.ranges[0].hi != varint.Max {
 		t.Errorf("ack ranges = %v: the packet past the ceiling is owed an ACK", sp.ack.ranges)
 	}
 	func() {

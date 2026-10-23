@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/dgram"
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // RFC 9000 §16's own examples, which pin the four widths and the fact that
@@ -28,24 +29,24 @@ func TestVarintRFCExamples(t *testing.T) {
 		{[]byte{0xc0, 0, 0, 0, 0, 0, 0, 0}, 0}, // zero in eight bytes
 	}
 	for _, tt := range tests {
-		got, rest, err := Varint(tt.raw)
+		got, rest, err := readVarint(tt.raw)
 		if err != nil {
-			t.Errorf("Varint(%x) returned %v", tt.raw, err)
+			t.Errorf("readVarint(%x) returned %v", tt.raw, err)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("Varint(%x) = %d, want %d", tt.raw, got, tt.want)
+			t.Errorf("readVarint(%x) = %d, want %d", tt.raw, got, tt.want)
 		}
 		if len(rest) != 0 {
-			t.Errorf("Varint(%x) left %d bytes", tt.raw, len(rest))
+			t.Errorf("readVarint(%x) left %d bytes", tt.raw, len(rest))
 		}
 	}
 }
 
 func TestVarintRoundTrip(t *testing.T) {
-	for _, v := range []uint64{0, 1, 62, 63, 64, 16382, 16383, 16384, 1<<30 - 2, 1<<30 - 1, 1 << 30, MaxVarint} {
-		raw := AppendVarint(nil, v)
-		got, rest, err := Varint(raw)
+	for _, v := range []uint64{0, 1, 62, 63, 64, 16382, 16383, 16384, 1<<30 - 2, 1<<30 - 1, 1 << 30, varint.Max} {
+		raw := varint.Append(nil, v)
+		got, rest, err := readVarint(raw)
 		if err != nil || got != v || len(rest) != 0 {
 			t.Errorf("%d round-tripped to (%d, %d bytes left, %v)", v, got, len(rest), err)
 		}
@@ -58,8 +59,8 @@ func TestVarintRoundTrip(t *testing.T) {
 
 func TestVarintRefusesATruncatedBuffer(t *testing.T) {
 	for _, raw := range [][]byte{{}, {0x40}, {0x80, 0x00}, {0xc0, 0, 0, 0}} {
-		if _, _, err := Varint(raw); !errors.Is(err, ErrTruncated) {
-			t.Errorf("Varint(%x) returned %v, want ErrTruncated", raw, err)
+		if _, _, err := readVarint(raw); !errors.Is(err, ErrTruncated) {
+			t.Errorf("readVarint(%x) returned %v, want ErrTruncated", raw, err)
 		}
 	}
 }
@@ -75,10 +76,10 @@ func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 	var payload []byte
 	for _, id := range []uint64{0, 4, 8, 12} {
 		payload = append(payload, FrameStream|streamLEN|streamOFF)
-		payload = AppendVarint(payload, id)
-		payload = AppendVarint(payload, 0) // offset
+		payload = varint.Append(payload, id)
+		payload = varint.Append(payload, 0) // offset
 		body := []byte("stream " + string(rune('0'+id/4)))
-		payload = AppendVarint(payload, uint64(len(body)))
+		payload = varint.Append(payload, uint64(len(body)))
 		payload = append(payload, body...)
 	}
 	payload = append(payload, framePing)
@@ -165,8 +166,8 @@ func TestParseLongHeader(t *testing.T) {
 	// An Initial packet: type bits 00, version 1, both identifiers, an empty
 	// token, then a length covering the packet number and payload.
 	pkt := []byte{0xc0, 0, 0, 0, 1, 4, 'd', 'c', 'i', 'd', 2, 's', 'c'}
-	pkt = AppendVarint(pkt, 0)  // token length
-	pkt = AppendVarint(pkt, 20) // length of packet number + payload
+	pkt = varint.Append(pkt, 0)  // token length
+	pkt = varint.Append(pkt, 20) // length of packet number + payload
 	pkt = append(pkt, make([]byte, 20)...)
 	pkt = append(pkt, "the next packet"...) // a coalesced datagram
 
@@ -235,8 +236,8 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	for _, pnLen := range []int{1, 2, 3, 4} {
 		for _, pn := range []uint64{0, 1, 42, 1000} {
 			header := []byte{0xc0 | byte(pnLen-1), 0, 0, 0, 1, 0, 0}
-			header = AppendVarint(header, 0)  // token length
-			header = AppendVarint(header, 64) // length, unused by Seal
+			header = varint.Append(header, 0)  // token length
+			header = varint.Append(header, 64) // length, unused by Seal
 			pnOffset := len(header)
 			for i := pnLen - 1; i >= 0; i-- {
 				header = append(header, byte(pn>>(8*uint(i))))
@@ -282,8 +283,8 @@ func TestOpenRefusesATamperedPacket(t *testing.T) {
 	opener, _ := newPacketOpener(secrets.Server)
 
 	header := []byte{0xc0, 0, 0, 0, 1, 0, 0}
-	header = AppendVarint(header, 0)
-	header = AppendVarint(header, 64)
+	header = varint.Append(header, 0)
+	header = varint.Append(header, 64)
 	pnOffset := len(header)
 	header = append(header, 0x00)
 
@@ -314,8 +315,8 @@ func TestDirectionsHaveDifferentSecrets(t *testing.T) {
 	opener, _ := newPacketOpener(s.Server)
 
 	header := []byte{0xc0, 0, 0, 0, 1, 0, 0}
-	header = AppendVarint(header, 0)
-	header = AppendVarint(header, 64)
+	header = varint.Append(header, 0)
+	header = varint.Append(header, 64)
 	pnOffset := len(header)
 	header = append(header, 0x00)
 	sealed, err := sealer.Seal(nil, header, []byte("a payload long enough to sample from"), 0, pnOffset, 1)
@@ -364,21 +365,21 @@ func TestDecodePacketNumber(t *testing.T) {
 // those fields, so nothing noticed, until HTTP/3 needed a stream reset and got
 // the wrong stream. A parser is only as checked as the questions asked of it.
 func TestFramesCarryTheirVarintFields(t *testing.T) {
-	reset := AppendVarint(nil, FrameResetStream)
-	reset = AppendVarint(reset, 12)    // stream
-	reset = AppendVarint(reset, 0x10e) // application error code
-	reset = AppendVarint(reset, 4096)  // final size
+	reset := varint.Append(nil, FrameResetStream)
+	reset = varint.Append(reset, 12)    // stream
+	reset = varint.Append(reset, 0x10e) // application error code
+	reset = varint.Append(reset, 4096)  // final size
 
-	stop := AppendVarint(nil, FrameStopSending)
-	stop = AppendVarint(stop, 8)
-	stop = AppendVarint(stop, 0x10c)
+	stop := varint.Append(nil, FrameStopSending)
+	stop = varint.Append(stop, 8)
+	stop = varint.Append(stop, 0x10c)
 
-	maxStream := AppendVarint(nil, frameMaxStreamData)
-	maxStream = AppendVarint(maxStream, 16)
-	maxStream = AppendVarint(maxStream, 1<<20)
+	maxStream := varint.Append(nil, frameMaxStreamData)
+	maxStream = varint.Append(maxStream, 16)
+	maxStream = varint.Append(maxStream, 1<<20)
 
-	maxData := AppendVarint(nil, frameMaxData)
-	maxData = AppendVarint(maxData, 1<<22)
+	maxData := varint.Append(nil, frameMaxData)
+	maxData = varint.Append(maxData, 1<<22)
 
 	frames, err := parseFrames(nil, concat(reset, stop, maxStream, maxData))
 	if err != nil {

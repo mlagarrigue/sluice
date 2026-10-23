@@ -1,6 +1,10 @@
 package quic
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
+)
 
 // A datagram may carry several packets end to end (RFC 9000 §12.2), and the
 // declared length of each is what separates them. Both must be processed —
@@ -31,8 +35,8 @@ func TestReceiveCoalescedPackets(t *testing.T) {
 		header = append(header, scid...)
 		header = append(header, byte(len(dcid)))
 		header = append(header, dcid...)
-		header = AppendVarint(header, 0) // no token
-		header = AppendVarint(header, uint64(4+len(payload)+16))
+		header = varint.Append(header, 0) // no token
+		header = varint.Append(header, uint64(4+len(payload)+16))
 		pnOffset := len(header)
 		for i := 3; i >= 0; i-- {
 			header = append(header, byte(pn>>(8*uint(i))))

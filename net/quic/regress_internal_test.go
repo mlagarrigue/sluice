@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Regression tests: each pins an RFC 9000/9001/
@@ -27,10 +29,10 @@ func TestStreamAndResetInOnePacketSettleFlowControlOnce(t *testing.T) {
 	c.OnStreamFrames(CreditOnDelivery, func([]Frame) error { return nil })
 
 	data := []byte("hello")
-	payload := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
-	payload = AppendVarint(payload, 0) // the peer's first bidi stream
-	payload = AppendVarint(payload, 0) // offset
-	payload = AppendVarint(payload, uint64(len(data)))
+	payload := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	payload = varint.Append(payload, 0) // the peer's first bidi stream
+	payload = varint.Append(payload, 0) // offset
+	payload = varint.Append(payload, uint64(len(data)))
 	payload = append(payload, data...)
 	payload = appendFrame(payload, FrameResetStream, 0, 7, uint64(len(data)))
 
@@ -173,10 +175,10 @@ func TestClientDiscardsAServerInitialCarryingAToken(t *testing.T) {
 		header = append(header, scid...) // the client's own identifier
 		header = append(header, byte(len(dcid)))
 		header = append(header, dcid...)
-		header = AppendVarint(header, uint64(len(token)))
+		header = varint.Append(header, uint64(len(token)))
 		header = append(header, token...)
 		payload := []byte{framePing}
-		header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+		header = varint.Append(header, uint64(pnLen+len(payload)+16))
 		pnOffset := len(header)
 		header = append(header, 0, 0, 0, 0) // packet number 0
 		pkt, err := sealer.Seal(nil, header, payload, 0, pnOffset, pnLen)
@@ -217,19 +219,19 @@ func TestClientDiscardsAServerInitialCarryingAToken(t *testing.T) {
 // preferred_address arriving from a client — are TRANSPORT_PARAMETER_ERROR.
 func TestTransportParameterRefusals(t *testing.T) {
 	appendParam := func(dst []byte, id uint64, val []byte) []byte {
-		dst = AppendVarint(dst, id)
-		dst = AppendVarint(dst, uint64(len(val)))
+		dst = varint.Append(dst, id)
+		dst = varint.Append(dst, uint64(len(val)))
 		return append(dst, val...)
 	}
 
 	t.Run("active_connection_id_limit below 2", func(t *testing.T) {
-		raw := appendParam(nil, paramActiveConnIDLimit, AppendVarint(nil, 1))
+		raw := appendParam(nil, paramActiveConnIDLimit, varint.Append(nil, 1))
 		_, err := parseParameters(raw)
 		te := &transportError{}
 		if !errors.As(err, &te) || te.code != transportParameterError {
 			t.Errorf("a limit of 1 returned %v, want TRANSPORT_PARAMETER_ERROR", err)
 		}
-		if _, err := parseParameters(appendParam(nil, paramActiveConnIDLimit, AppendVarint(nil, 2))); err != nil {
+		if _, err := parseParameters(appendParam(nil, paramActiveConnIDLimit, varint.Append(nil, 2))); err != nil {
 			t.Errorf("the minimum of 2 was refused: %v", err)
 		}
 	})
@@ -408,10 +410,10 @@ func TestFinBelowReceivedBytesIsAFinalSizeError(t *testing.T) {
 		if fin {
 			typ |= streamFIN
 		}
-		b := AppendVarint(nil, typ)
-		b = AppendVarint(b, 0)
-		b = AppendVarint(b, offset)
-		b = AppendVarint(b, uint64(len(data)))
+		b := varint.Append(nil, typ)
+		b = varint.Append(b, 0)
+		b = varint.Append(b, offset)
+		b = varint.Append(b, uint64(len(data)))
 		return append(b, data...)
 	}
 
@@ -633,13 +635,13 @@ func TestInvalidRetryTokenGetsAnImmediateClose(t *testing.T) {
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = AppendVarint(header, uint64(len(token)))
+	header = varint.Append(header, uint64(len(token)))
 	header = append(header, token...)
 	payload := []byte{framePing}
 	if pad := initialPadding(len(header), pnLen, len(payload)); pad > 0 {
 		payload = append(payload, make([]byte, pad)...)
 	}
-	header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+	header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	pnOffset := len(header)
 	header = append(header, 0, 0, 0, 0)
 	pkt, err := sealer.Seal(nil, header, payload, 0, pnOffset, pnLen)
@@ -726,10 +728,10 @@ func TestAcceptEnforcesTheAmplificationLimit(t *testing.T) {
 
 // streamFrameBytes encodes one STREAM frame on stream id at offset.
 func streamFrameBytes(id, offset uint64, data []byte) []byte {
-	b := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
-	b = AppendVarint(b, id)
-	b = AppendVarint(b, offset)
-	b = AppendVarint(b, uint64(len(data)))
+	b := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	b = varint.Append(b, id)
+	b = varint.Append(b, offset)
+	b = varint.Append(b, uint64(len(data)))
 	return append(b, data...)
 }
 
@@ -875,7 +877,7 @@ func TestHugePeerIdleTimeoutKeepsTheLocalOne(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 	p := DefaultParameters()
 	p.initialSourceCID = []byte{1, 2, 3, 4}
-	p.MaxIdleTimeout = MaxVarint
+	p.MaxIdleTimeout = varint.Max
 	if err := c.handlePeerParameters(appendParameters(nil, p)); err != nil {
 		t.Fatal(err)
 	}

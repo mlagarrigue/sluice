@@ -35,10 +35,11 @@ var allowed = map[string][]string{
 	"web":                  {"", "diagnostics", "web/internal/reqbody"},
 	"web/internal/reqbody": {"diagnostics"},
 	"web/stream":           {"", "diagnostics", "net/httpstream", "web", "web/internal/reqbody"},
-	"net/httpstream":       {"", "internal/ipkey", "net/quic"},
-	"net/quic":             {"internal/ipkey", "net/quic/udp"},
+	"net/httpstream":       {"", "internal/ipkey", "internal/varint", "net/quic"},
+	"net/quic":             {"internal/ipkey", "internal/varint", "net/quic/udp"},
 	"net/quic/udp":         nil,
 	"internal/ipkey":       nil,
+	"internal/varint":      nil,
 	"internal/pgwire":      nil,
 	"database/postgres":    {"", "internal/pgwire", "pushdown"},
 }

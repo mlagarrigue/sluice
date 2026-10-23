@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // The send path. Every packet leaves through sendPacketLocked, which is what
@@ -529,7 +531,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		header = append(header, byte(len(c.scid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 		header = append(header, c.scid...)
 		if typ == packetInitial {
-			header = AppendVarint(header, uint64(len(c.retryToken)))
+			header = varint.Append(header, uint64(len(c.retryToken)))
 			header = append(header, c.retryToken...)
 		}
 		// An Initial must leave in a 1200-byte datagram (RFC 9000 §14.1) —
@@ -759,7 +761,7 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	if p.space != spaceApplication || p.early {
 		// The length covers the packet number and the sealed payload, tag
 		// included.
-		header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+		header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	}
 	pnOffset := len(header)
 	for i := pnLen - 1; i >= 0; i-- {
@@ -848,9 +850,9 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 		if room := c.cryptoRoomLocked(); room > 0 && room < n {
 			n = room
 		}
-		frame := AppendVarint(nil, frameCrypto)
-		frame = AppendVarint(frame, c.spaces[space].cryptoOff)
-		frame = AppendVarint(frame, uint64(n)) //nolint:gosec // G115: a byte count, positive
+		frame := varint.Append(nil, frameCrypto)
+		frame = varint.Append(frame, c.spaces[space].cryptoOff)
+		frame = varint.Append(frame, uint64(n)) //nolint:gosec // G115: a byte count, positive
 		frame = append(frame, data[:n]...)
 		c.spaces[space].cryptoOff += uint64(n) //nolint:gosec // G115: a byte count, positive
 		data = data[n:]
@@ -1189,13 +1191,13 @@ func splitDataFrame(f Frame, room int) (first, second []byte) {
 	}
 	encode := func(dst []byte, off uint64, data []byte, fin bool) []byte {
 		if stream {
-			dst = AppendVarint(dst, FrameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
-			dst = AppendVarint(dst, f.StreamID)
+			dst = varint.Append(dst, FrameStream|streamOFF|streamLEN|boolBit(fin, streamFIN))
+			dst = varint.Append(dst, f.StreamID)
 		} else {
-			dst = AppendVarint(dst, frameCrypto)
+			dst = varint.Append(dst, frameCrypto)
 		}
-		dst = AppendVarint(dst, off)
-		dst = AppendVarint(dst, uint64(len(data)))
+		dst = varint.Append(dst, off)
+		dst = varint.Append(dst, uint64(len(data)))
 		return append(dst, data...)
 	}
 	first = encode(nil, f.offset, f.Data[:k], false)

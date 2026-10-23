@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Every violation RFC 9000 names leaves with its own code, not
@@ -18,8 +20,8 @@ import (
 // stream or parameter layer lost its code on the way to the wire.
 func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 	appendParam := func(dst []byte, id uint64, val []byte) []byte {
-		dst = AppendVarint(dst, id)
-		dst = AppendVarint(dst, uint64(len(val)))
+		dst = varint.Append(dst, id)
+		dst = varint.Append(dst, uint64(len(val)))
 		return append(dst, val...)
 	}
 	// What a well-behaved client announces to the server under test, which
@@ -35,17 +37,17 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 		if fin {
 			typ |= streamFIN
 		}
-		b := AppendVarint(nil, typ)
-		b = AppendVarint(b, 0)
-		b = AppendVarint(b, offset)
-		b = AppendVarint(b, uint64(len(data)))
+		b := varint.Append(nil, typ)
+		b = varint.Append(b, 0)
+		b = varint.Append(b, offset)
+		b = varint.Append(b, uint64(len(data)))
 		return append(b, data...)
 	}
 	resetStream := func(finalSize uint64) []byte {
-		b := AppendVarint(nil, FrameResetStream)
-		b = AppendVarint(b, 0)
-		b = AppendVarint(b, 0)
-		return AppendVarint(b, finalSize)
+		b := varint.Append(nil, FrameResetStream)
+		b = varint.Append(b, 0)
+		b = varint.Append(b, 0)
+		return varint.Append(b, finalSize)
 	}
 
 	cases := []struct {
@@ -96,7 +98,7 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 			name: "a transport parameter announced twice", section: "§7.4", want: transportParameterError,
 			provoke: func(c *Conn) error {
 				return c.handlePeerParameters(clientParams(func(_ *TransportParameters, raw []byte) []byte {
-					return appendParam(raw, paramInitialMaxData, AppendVarint(nil, 1<<20))
+					return appendParam(raw, paramInitialMaxData, varint.Append(nil, 1<<20))
 				}))
 			},
 		},
@@ -113,8 +115,8 @@ func TestProtocolViolationsCarryTheirNormativeCodes(t *testing.T) {
 			name: "a transport parameter longer than what remains", section: "§7.4", want: transportParameterError,
 			provoke: func(c *Conn) error {
 				return c.handlePeerParameters(clientParams(func(_ *TransportParameters, raw []byte) []byte {
-					raw = AppendVarint(raw, paramInitialMaxData)
-					return AppendVarint(raw, 40) // forty bytes announced, none follow
+					raw = varint.Append(raw, paramInitialMaxData)
+					return varint.Append(raw, 40) // forty bytes announced, none follow
 				}))
 			},
 		},

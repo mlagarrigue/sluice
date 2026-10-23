@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -222,7 +223,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
 	stop := context.AfterFunc(drain, func() {
-		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, h3MaxServerGoAway))); err != nil {
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, varint.Append(nil, h3MaxServerGoAway))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
@@ -233,7 +234,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			return
 		}
 		from, idle := a.beginDrain()
-		if _, err := control.Write(appendH3Frame(nil, h3GoAway, quic.AppendVarint(nil, from))); err != nil {
+		if _, err := control.Write(appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}

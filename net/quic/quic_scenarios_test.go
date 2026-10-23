@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Scenario tests that exercise the transport at a level below a full
@@ -37,10 +39,10 @@ func TestPeerExceedingStreamLimitIsRefused(t *testing.T) {
 	streamFrame := func(id uint64) []byte {
 		// A zero-length, non-FIN STREAM frame: enough to name the stream,
 		// nothing for flow control or reassembly to do.
-		frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
-		frame = AppendVarint(frame, id)
-		frame = AppendVarint(frame, 0) // offset
-		frame = AppendVarint(frame, 0) // length
+		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+		frame = varint.Append(frame, id)
+		frame = varint.Append(frame, 0) // offset
+		frame = varint.Append(frame, 0) // length
 		return frame
 	}
 
@@ -82,10 +84,10 @@ func TestPeerExceedingUniStreamLimitIsRefused(t *testing.T) {
 
 	limit := DefaultParameters().InitialMaxStreamsUni
 	streamFrame := func(id uint64) []byte {
-		frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
-		frame = AppendVarint(frame, id)
-		frame = AppendVarint(frame, 0)
-		frame = AppendVarint(frame, 0)
+		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+		frame = varint.Append(frame, id)
+		frame = varint.Append(frame, 0)
+		frame = varint.Append(frame, 0)
 		return frame
 	}
 

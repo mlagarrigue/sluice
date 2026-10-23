@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // The packet-path harness an allocation inventory of net/quic is taken on:
@@ -91,10 +93,10 @@ func benchSealStreamPacket(sealer *packetSealer, dcid []byte, pn uint64, offset 
 	var payload []byte
 	for i := range uint64(4) {
 		id := 4 * i // client-initiated bidi: 0, 4, 8, 12 — the peer’s streams, from a server’s seat
-		payload = AppendVarint(payload, FrameStream|streamOFF|streamLEN)
-		payload = AppendVarint(payload, id)
-		payload = AppendVarint(payload, offset)
-		payload = AppendVarint(payload, uint64(len(chunk)))
+		payload = varint.Append(payload, FrameStream|streamOFF|streamLEN)
+		payload = varint.Append(payload, id)
+		payload = varint.Append(payload, offset)
+		payload = varint.Append(payload, uint64(len(chunk)))
 		payload = append(payload, chunk...)
 	}
 	const pnLen = 4

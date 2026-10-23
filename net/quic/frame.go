@@ -1,6 +1,10 @@
 package quic
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
+)
 
 // Frame types, RFC 9000 §19. The ranges are types that carry flags in their
 // low bits — STREAM is eight types that differ by which fields follow.
@@ -125,7 +129,7 @@ func parseFrames(dst []Frame, payload []byte) ([]Frame, error) {
 func parseFrame(b []byte) (Frame, []byte, error) {
 	// The type is itself a variable-length integer, though every type this
 	// package knows fits in one byte.
-	typ, rest, err := Varint(b)
+	typ, rest, err := readVarint(b)
 	if err != nil {
 		return Frame{}, nil, err
 	}
@@ -142,13 +146,13 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 		return parseStream(f, rest)
 
 	case f.Type == frameCrypto:
-		if f.offset, rest, err = Varint(rest); err != nil {
+		if f.offset, rest, err = readVarint(rest); err != nil {
 			return f, nil, err
 		}
 		if f, rest, err = takeLengthPrefixed(f, rest); err != nil {
 			return f, nil, err
 		}
-		if f.offset > MaxVarint-uint64(len(f.Data)) {
+		if f.offset > varint.Max-uint64(len(f.Data)) {
 			// §19.6: offset plus length past 2^62-1 is FRAME_ENCODING_ERROR
 			// (the code every parse failure here maps to) or
 			// CRYPTO_BUFFER_EXCEEDED; the frame is malformed before any
@@ -216,11 +220,11 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 
 func parseStream(f Frame, b []byte) (Frame, []byte, error) {
 	var err error
-	if f.StreamID, b, err = Varint(b); err != nil {
+	if f.StreamID, b, err = readVarint(b); err != nil {
 		return f, nil, err
 	}
 	if f.Type&streamOFF != 0 {
-		if f.offset, b, err = Varint(b); err != nil {
+		if f.offset, b, err = readVarint(b); err != nil {
 			return f, nil, err
 		}
 	}
@@ -236,7 +240,7 @@ func parseStream(f Frame, b []byte) (Frame, []byte, error) {
 
 // takeLengthPrefixed reads a varint length and that many bytes.
 func takeLengthPrefixed(f Frame, b []byte) (Frame, []byte, error) {
-	n, b, err := Varint(b)
+	n, b, err := readVarint(b)
 	if err != nil {
 		return f, nil, err
 	}
@@ -259,7 +263,7 @@ func takeLengthPrefixed(f Frame, b []byte) (Frame, []byte, error) {
 func takeVarints(b []byte, into ...*uint64) ([]byte, error) {
 	var err error
 	for _, p := range into {
-		if *p, b, err = Varint(b); err != nil {
+		if *p, b, err = readVarint(b); err != nil {
 			return nil, err
 		}
 	}
@@ -288,10 +292,10 @@ func parseACK(f Frame, b []byte) (Frame, []byte, error) {
 	low := f.largest - first
 	for range count {
 		var gap, length uint64
-		if gap, b, err = Varint(b); err != nil {
+		if gap, b, err = readVarint(b); err != nil {
 			return f, nil, err
 		}
-		if length, b, err = Varint(b); err != nil {
+		if length, b, err = readVarint(b); err != nil {
 			return f, nil, err
 		}
 		// Each following range sits gap+2 below the previous one's low end
@@ -318,22 +322,22 @@ func parseACK(f Frame, b []byte) (Frame, []byte, error) {
 // calls visit with each acknowledged range, highest first. The bounds were
 // checked when the frame was parsed, so the walk here cannot underflow.
 func decodeAckRanges(largest uint64, data []byte, visit func(lo, hi uint64)) error {
-	count, b, err := Varint(data)
+	count, b, err := readVarint(data)
 	if err != nil {
 		return err
 	}
 	var first uint64
-	if first, b, err = Varint(b); err != nil {
+	if first, b, err = readVarint(b); err != nil {
 		return err
 	}
 	hi, lo := largest, largest-first
 	visit(lo, hi)
 	for range count {
 		var gap, length uint64
-		if gap, b, err = Varint(b); err != nil {
+		if gap, b, err = readVarint(b); err != nil {
 			return err
 		}
-		if length, b, err = Varint(b); err != nil {
+		if length, b, err = readVarint(b); err != nil {
 			return err
 		}
 		hi = lo - gap - 2
@@ -352,25 +356,25 @@ func decodeAckRanges(largest uint64, data []byte, visit func(lo, hi uint64)) err
 func appendAckFrame(dst []byte, ranges []pnRange, delayMicros uint64, ecn [3]uint64) []byte {
 	withECN := ecn != [3]uint64{}
 	if withECN {
-		dst = AppendVarint(dst, frameACK|1)
+		dst = varint.Append(dst, frameACK|1)
 	} else {
-		dst = AppendVarint(dst, frameACK)
+		dst = varint.Append(dst, frameACK)
 	}
 	top := ranges[0]
-	dst = AppendVarint(dst, top.hi)
-	dst = AppendVarint(dst, delayMicros>>3)
-	dst = AppendVarint(dst, uint64(len(ranges)-1)) //nolint:gosec // G115: ranges[0] above already requires one range
-	dst = AppendVarint(dst, top.hi-top.lo)
+	dst = varint.Append(dst, top.hi)
+	dst = varint.Append(dst, delayMicros>>3)
+	dst = varint.Append(dst, uint64(len(ranges)-1)) //nolint:gosec // G115: ranges[0] above already requires one range
+	dst = varint.Append(dst, top.hi-top.lo)
 	prev := top.lo
 	for _, r := range ranges[1:] {
-		dst = AppendVarint(dst, prev-r.hi-2)
-		dst = AppendVarint(dst, r.hi-r.lo)
+		dst = varint.Append(dst, prev-r.hi-2)
+		dst = varint.Append(dst, r.hi-r.lo)
 		prev = r.lo
 	}
 	if withECN {
-		dst = AppendVarint(dst, ecn[0])
-		dst = AppendVarint(dst, ecn[1])
-		dst = AppendVarint(dst, ecn[2])
+		dst = varint.Append(dst, ecn[0])
+		dst = varint.Append(dst, ecn[1])
+		dst = varint.Append(dst, ecn[2])
 	}
 	return dst
 }
@@ -379,9 +383,9 @@ func appendAckFrame(dst []byte, ranges []pnRange, delayMicros uint64, ecn [3]uin
 // variable-length integers, which is most of the control frames this package
 // sends.
 func appendFrame(dst []byte, typ uint64, fields ...uint64) []byte {
-	dst = AppendVarint(dst, typ)
+	dst = varint.Append(dst, typ)
 	for _, v := range fields {
-		dst = AppendVarint(dst, v)
+		dst = varint.Append(dst, v)
 	}
 	return dst
 }

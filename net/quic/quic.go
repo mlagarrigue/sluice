@@ -226,6 +226,8 @@ package quic
 import (
 	"errors"
 	"fmt"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // ErrQUIC marks the errors this package reports about QUIC itself: bytes it
@@ -245,55 +247,17 @@ var ErrTruncated = fmt.Errorf("%w: the buffer ends mid-field", ErrQUIC)
 // 2^62-1 (RFC 9000 §12.3); see decodePacketNumber.
 var errPacketNumberPastCeiling = fmt.Errorf("%w: the packet number is past 2^62-1", ErrQUIC)
 
-// MaxVarint is the largest value a variable-length integer can carry: the
-// encoding spends two bits of the first byte on the length, so 62 bits are
-// left (RFC 9000 §16).
-const MaxVarint = 1<<62 - 1
-
-// Varint decodes a variable-length integer and returns the rest of the
-// buffer.
-//
-// The two most significant bits of the first byte give the length — one, two,
-// four or eight bytes — and the value occupies what is left. The encoding is
-// not canonical: 0 may be written in any of the four widths, and a decoder
-// that refused the long forms would refuse traffic the RFC permits.
-func Varint(b []byte) (v uint64, rest []byte, err error) {
-	if len(b) == 0 {
+// readVarint is varint.Read with this package's own [ErrTruncated], which
+// its callers test for.
+func readVarint(b []byte) (v uint64, rest []byte, err error) {
+	v, rest, err = varint.Read(b)
+	if err != nil {
 		return 0, nil, ErrTruncated
 	}
-	n := 1 << (b[0] >> 6) // 1, 2, 4 or 8
-	if len(b) < n {
-		return 0, nil, ErrTruncated
-	}
-	v = uint64(b[0] & 0x3f)
-	for i := 1; i < n; i++ {
-		v = v<<8 | uint64(b[i])
-	}
-	return v, b[n:], nil
+	return v, rest, nil
 }
 
-// AppendVarint writes v in the shortest form that holds it.
-//
-// Shortest rather than fixed-width: the encoding allows either, and a
-// protocol whose lengths are mostly small pays for the choice on every frame.
-// AppendVarint panics on a value past [MaxVarint], which is a programming
-// error rather than a datum — there is no way to write it.
-func AppendVarint(dst []byte, v uint64) []byte {
-	switch {
-	case v <= 63:
-		return append(dst, byte(v))
-	case v <= 16383:
-		return append(dst, byte(v>>8)|0x40, byte(v)) //nolint:gosec // G115: varint encoding keeps the low octet of each shift
-	case v <= 1073741823:
-		return append(dst, byte(v>>24)|0x80, byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: varint encoding keeps the low octet of each shift
-	case v <= MaxVarint:
-		return append(dst, byte(v>>56)|0xc0, byte(v>>48), byte(v>>40), byte(v>>32), //nolint:gosec // G115: varint encoding keeps the low octet of each shift
-			byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: varint encoding keeps the low octet of each shift
-	}
-	panic("quic: a value larger than a variable-length integer can carry")
-}
-
-// varintBytes reports how many bytes AppendVarint would use, which a writer
+// varintBytes reports how many bytes varint.Append would use, which a writer
 // needs before it knows what it is about to write.
 func varintBytes(v uint64) int {
 	switch {

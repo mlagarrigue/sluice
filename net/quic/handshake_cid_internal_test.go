@@ -7,6 +7,8 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // sealedInitialFrom seals one Initial packet the way an endpoint's first
@@ -42,14 +44,14 @@ func sealedInitialCarrying(tb testing.TB, fromServer bool, keyID, dcid, scid []b
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = AppendVarint(header, 0) // no token
+	header = varint.Append(header, 0) // no token
 	payload := append([]byte(nil), frames...)
 	if padded {
 		if pad := initialPadding(len(header), pnLen, len(payload)); pad > 0 {
 			payload = append(payload, make([]byte, pad)...)
 		}
 	}
-	header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+	header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	pnOffset := len(header)
 	header = append(header, byte(pn>>24), byte(pn>>16), byte(pn>>8), byte(pn))
 	pkt, err := sealer.Seal(nil, header, payload, pn, pnOffset, pnLen)

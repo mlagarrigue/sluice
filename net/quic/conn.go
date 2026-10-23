@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // A connection: the TLS handshake driven by [crypto/tls], the packets sealed
@@ -1558,7 +1560,7 @@ func (c *Conn) HandshakeComplete() <-chan struct{} { return c.hsComplete }
 func (c *Conn) handshakeComplete() {
 	close(c.hsComplete)
 	if !c.isClient {
-		c.control = AppendVarint(c.control, frameHandshakeDone)
+		c.control = varint.Append(c.control, frameHandshakeDone)
 		c.confirmLocked()
 		c.flushControlLocked()
 	}

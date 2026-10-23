@@ -9,6 +9,8 @@ import (
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Connection lifecycle: how it ends, and what the peer is told.
@@ -402,12 +404,12 @@ func (c *Conn) sendCloseLocked(code uint64, app bool) {
 				spaceCode = transportApplicationError
 			}
 		}
-		frame := AppendVarint(nil, typ)
-		frame = AppendVarint(frame, spaceCode)
+		frame := varint.Append(nil, typ)
+		frame = varint.Append(frame, spaceCode)
 		if typ == frameConnectionClose {
-			frame = AppendVarint(frame, 0) // the frame type being answered; none
+			frame = varint.Append(frame, 0) // the frame type being answered; none
 		}
-		frame = AppendVarint(frame, 0) // no reason phrase, deliberately
+		frame = varint.Append(frame, 0) // no reason phrase, deliberately
 
 		// closeSent is already set, so sendPacketLocked would refuse; write
 		// the packet directly, marked as the close so writePacketLocked

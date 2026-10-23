@@ -1,6 +1,10 @@
 package quic
 
-import "time"
+import (
+	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
+)
 
 // Acknowledgement generation, RFC 9000 §13.2. Without it a conformant peer
 // retransmits into silence, backs off, and gives the connection up — sending
@@ -80,7 +84,7 @@ type ackTracker struct {
 // record notes one received packet number and returns false when it is a
 // duplicate — already covered — which the caller drops without processing.
 func (a *ackTracker) record(pn uint64, now time.Time) bool {
-	if pn > MaxVarint {
+	if pn > varint.Max {
 		// RFC 9000 §12.3: a packet number has to be "representable in
 		// whole in the Largest Acknowledged field of an ACK frame". The
 		// receive path refuses such a number before the AEAD

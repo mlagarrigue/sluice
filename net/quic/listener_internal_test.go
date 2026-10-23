@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // syntheticInitial builds a datagram that parses as an Initial long-header
@@ -35,9 +37,9 @@ func syntheticInitial(t *testing.T, dcid, scid []byte) []byte {
 	b = append(b, dcid...)
 	b = append(b, byte(len(scid)))
 	b = append(b, scid...)
-	b = AppendVarint(b, 0)        // token length
+	b = varint.Append(b, 0)       // token length
 	payload := make([]byte, 1180) // pn (1) + noise; enough to pass 1200 as a datagram
-	b = AppendVarint(b, uint64(len(payload)))
+	b = varint.Append(b, uint64(len(payload)))
 	return append(b, payload...)
 }
 
@@ -79,13 +81,13 @@ func sealedClientInitialFirstByte(tb testing.TB, first byte, dcid, scid, token [
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = AppendVarint(header, uint64(len(token)))
+	header = varint.Append(header, uint64(len(token)))
 	header = append(header, token...)
 	payload := []byte{framePing}
 	if pad := initialPadding(len(header), pnLen, len(payload)); pad > 0 {
 		payload = append(payload, make([]byte, pad)...)
 	}
-	header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+	header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	pnOffset := len(header)
 	header = append(header, 0, 0, 0, 0) // packet number 0
 	pkt, err := sealer.Seal(nil, header, payload, 0, pnOffset, pnLen)
@@ -454,10 +456,10 @@ func sealedSmallInitial(t *testing.T, dcid, scid []byte) []byte {
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = AppendVarint(header, 0)
+	header = varint.Append(header, 0)
 	payload := make([]byte, 16) // PING plus a little padding; nowhere near 1200
 	payload[0] = framePing
-	header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+	header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	pnOffset := len(header)
 	header = append(header, 0, 0, 0, 0)
 	pkt, err := sealer.Seal(nil, header, payload, 0, pnOffset, pnLen)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -87,8 +88,8 @@ func BenchmarkH3DrainIncomplete(b *testing.B) {
 			cfg := Config{MaxBodyBytes: 4 << 20}.mustResolve()
 			a := testAssembler(cfg)
 			buf := make([]byte, 0, parked+16)
-			buf = quic.AppendVarint(buf, h3Data)
-			buf = quic.AppendVarint(buf, uint64(cfg.MaxBodyBytes))
+			buf = varint.Append(buf, h3Data)
+			buf = varint.Append(buf, uint64(cfg.MaxBodyBytes))
 			buf = append(buf, make([]byte, parked)...)
 			st := &h3Stream{declared: -1, gotHead: true, buf: buf}
 			n := len(buf)

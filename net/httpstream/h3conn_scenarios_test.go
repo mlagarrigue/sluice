@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -291,13 +292,13 @@ func TestH3ContentLengthMustMatchTheBody(t *testing.T) {
 // owed all the same.
 func TestH3FinMidFrameIsAConnectionError(t *testing.T) {
 	inData := h3Request("POST", "/cut")
-	inData = quic.AppendVarint(inData, h3Data)
-	inData = quic.AppendVarint(inData, 10)
+	inData = varint.Append(inData, h3Data)
+	inData = varint.Append(inData, 10)
 	inData = append(inData, []byte("abc")...) // 3 of the 10 declared bytes
 
 	inReserved := h3Request("POST", "/grease")
-	inReserved = quic.AppendVarint(inReserved, 0x21+0x1f) // a reserved type
-	inReserved = quic.AppendVarint(inReserved, 10)
+	inReserved = varint.Append(inReserved, 0x21+0x1f) // a reserved type
+	inReserved = varint.Append(inReserved, 10)
 	inReserved = append(inReserved, []byte("abc")...)
 
 	for _, tt := range []struct {
@@ -347,7 +348,7 @@ func TestH3FinBeforeHeadersIsRequestIncomplete(t *testing.T) {
 // server never promised (§7.2.3) — each H3_ID_ERROR.
 func TestH3ControlIdentifiersAreChecked(t *testing.T) {
 	settings := settingsFrame(h3SettingMaxFieldSection, 64)
-	id := func(typ uint64, v uint64) []byte { return appendH3Frame(nil, typ, quic.AppendVarint(nil, v)) }
+	id := func(typ uint64, v uint64) []byte { return appendH3Frame(nil, typ, varint.Append(nil, v)) }
 	for _, tt := range []struct {
 		name   string
 		frames [][]byte
@@ -532,7 +533,7 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 	// what whole pairs say. It used to be the latter.
 	t.Run("a SETTINGS payload truncated inside a pair", func(t *testing.T) {
 		a := testAssembler(Config{})
-		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, quic.AppendVarint(nil, h3SettingMaxFieldSection))...)
+		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, varint.Append(nil, h3SettingMaxFieldSection))...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
 		connErr(t, err, h3FrameError)
 	})
@@ -571,12 +572,12 @@ func TestH3QPACKIntegerPastSixtyTwoBitsIsAStreamError(t *testing.T) {
 // uniOpen builds the bytes a client unidirectional stream opens with: its
 // type varint, then whatever follows.
 func uniOpen(typ uint64, rest ...byte) []byte {
-	return append(quic.AppendVarint(nil, typ), rest...)
+	return append(varint.Append(nil, typ), rest...)
 }
 
 func settingsFrame(id, value uint64) []byte {
-	payload := quic.AppendVarint(nil, id)
-	payload = quic.AppendVarint(payload, value)
+	payload := varint.Append(nil, id)
+	payload = varint.Append(payload, value)
 	return appendH3Frame(nil, h3Settings, payload)
 }
 
@@ -890,8 +891,8 @@ func TestH3HeadersFramesAreBoundedByMaxHeaderBytes(t *testing.T) {
 
 	// A declared-oversized HEADERS whose payload has barely begun to arrive:
 	// refused on the declaration, not buffered while it trickles in.
-	declared := quic.AppendVarint(nil, h3Headers)
-	declared = quic.AppendVarint(declared, 2000)
+	declared := varint.Append(nil, h3Headers)
+	declared = varint.Append(declared, 2000)
 	declared = append(declared, bytes.Repeat([]byte("h"), 10)...)
 	a = testAssembler(cfg)
 	_, _, failed, err = a.Frames([]quic.Frame{streamFrame(0, declared, false)})
@@ -944,11 +945,11 @@ func TestH3AssemblerKeepsOnlyTheSettingItUses(t *testing.T) {
 	control := func(unknown int) []byte {
 		var payload []byte
 		for i := range unknown {
-			payload = quic.AppendVarint(payload, 0x21+0x1f*uint64(i)) // reserved, unknown
-			payload = quic.AppendVarint(payload, 1)
+			payload = varint.Append(payload, 0x21+0x1f*uint64(i)) // reserved, unknown
+			payload = varint.Append(payload, 1)
 		}
-		payload = quic.AppendVarint(payload, h3SettingMaxFieldSection)
-		payload = quic.AppendVarint(payload, 4096)
+		payload = varint.Append(payload, h3SettingMaxFieldSection)
+		payload = varint.Append(payload, 4096)
 		return append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, payload)...)
 	}
 	cost := func(stream []byte) float64 {
@@ -969,10 +970,10 @@ func TestH3AssemblerKeepsOnlyTheSettingItUses(t *testing.T) {
 
 	t.Run("a repeated known identifier is refused", func(t *testing.T) {
 		a := testAssembler(Config{})
-		payload := quic.AppendVarint(nil, h3SettingMaxFieldSection)
-		payload = quic.AppendVarint(payload, 1)
-		payload = quic.AppendVarint(payload, h3SettingMaxFieldSection)
-		payload = quic.AppendVarint(payload, 2)
+		payload := varint.Append(nil, h3SettingMaxFieldSection)
+		payload = varint.Append(payload, 1)
+		payload = varint.Append(payload, h3SettingMaxFieldSection)
+		payload = varint.Append(payload, 2)
 		open := append(uniOpen(h3StreamControl), appendH3Frame(nil, h3Settings, payload)...)
 		_, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open, false)})
 		connErr(t, err, h3SettingsError)

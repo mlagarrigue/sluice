@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // mtuPC is a socket on a path of a given IP MTU: a datagram whose UDP
@@ -319,14 +321,14 @@ func TestPMTUBlackHoleCountsOnlyUnansweredFullSizeLosses(t *testing.T) {
 // the room: the same bytes at the same offsets, the FIN on the last part.
 func TestFitFramesCutsInsideDataFrames(t *testing.T) {
 	data := bytes.Repeat([]byte("0123456789"), 140)
-	stream := AppendVarint(nil, FrameStream|streamOFF|streamLEN|streamFIN)
-	stream = AppendVarint(stream, 4)
-	stream = AppendVarint(stream, 1<<20)
-	stream = AppendVarint(stream, uint64(len(data)))
+	stream := varint.Append(nil, FrameStream|streamOFF|streamLEN|streamFIN)
+	stream = varint.Append(stream, 4)
+	stream = varint.Append(stream, 1<<20)
+	stream = varint.Append(stream, uint64(len(data)))
 	stream = append(stream, data...)
-	crypto := AppendVarint(nil, frameCrypto)
-	crypto = AppendVarint(crypto, 300)
-	crypto = AppendVarint(crypto, uint64(len(data)))
+	crypto := varint.Append(nil, frameCrypto)
+	crypto = varint.Append(crypto, 300)
+	crypto = varint.Append(crypto, uint64(len(data)))
 	crypto = append(crypto, data...)
 	maxData := appendFrame(nil, frameMaxData, 1<<30)
 

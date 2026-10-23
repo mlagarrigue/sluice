@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Connection-identifier rotation and server-side passive migration, RFC 9000
@@ -306,9 +308,9 @@ func (c *Conn) issueLocalCIDsLocked() {
 		seq := c.nextLocalSeq
 		c.nextLocalSeq++
 		c.localCIDs = append(c.localCIDs, localCID{seq: seq, cid: cid})
-		c.control = AppendVarint(c.control, frameNewConnectionID)
-		c.control = AppendVarint(c.control, seq)
-		c.control = AppendVarint(c.control, c.localRetirePrior)
+		c.control = varint.Append(c.control, frameNewConnectionID)
+		c.control = varint.Append(c.control, seq)
+		c.control = varint.Append(c.control, c.localRetirePrior)
 		c.control = append(c.control, byte(len(cid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 		c.control = append(c.control, cid...)
 		c.control = append(c.control, token[:]...)
@@ -986,7 +988,7 @@ func (c *Conn) sendPathChallengeLocked() {
 	}
 	c.pathProbe.full = full
 	c.pathProbe.sent = true
-	payload := AppendVarint(nil, framePathChallenge)
+	payload := varint.Append(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.data[:]...)
 	// The control queue leaves first, in its own packet: the probe is
 	// never retransmitted, and grants riding it would be lost with it.
@@ -1078,7 +1080,7 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 		return nil, nil
 	}
 	if c.pathProbe.pending && c.pathProbe.via == c.rxVia {
-		return append(AppendVarint(nil, framePathChallenge), c.pathProbe.data[:]...), c.pathProbe.targetCID
+		return append(varint.Append(nil, framePathChallenge), c.pathProbe.data[:]...), c.pathProbe.targetCID
 	}
 	data, err := randomID(8)
 	if err != nil {
@@ -1091,7 +1093,7 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 	c.startPathChallengeData(data, now)
 	c.pathProbe.via, c.pathProbe.targetCID = c.rxVia, cid
 	c.pathProbe.sent, c.pathProbe.full = true, true
-	return append(AppendVarint(nil, framePathChallenge), data...), cid
+	return append(varint.Append(nil, framePathChallenge), data...), cid
 }
 
 // newPathCIDLocked chooses the peer identifier a PATH_RESPONSE to an
@@ -1213,7 +1215,7 @@ func (c *Conn) sendOldPathChallengeLocked() {
 			return
 		}
 	}
-	payload := AppendVarint(nil, framePathChallenge)
+	payload := varint.Append(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.oldData[:]...)
 	c.flushControlLocked()
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{

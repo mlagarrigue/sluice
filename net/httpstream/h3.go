@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 
-	"github.com/mlagarrigue/sluice/net/quic"
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // HTTP/3 (RFC 9114) over the QUIC stream layer, and QPACK (RFC 9204) as far
@@ -87,11 +87,11 @@ type h3Frame struct {
 // conforming, and §7.2.8 says to ignore it.
 func parseH3Frames(dst []h3Frame, buf []byte, maxFrame int) (frames []h3Frame, rest []byte, skip uint64, err error) {
 	for len(buf) > 0 {
-		typ, after, err := quic.Varint(buf)
+		typ, after, err := varint.Read(buf)
 		if err != nil {
 			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
-		length, after, err := quic.Varint(after)
+		length, after, err := varint.Read(after)
 		if err != nil {
 			return dst, buf, 0, nil //nolint:nilerr // not yet a whole varint: the rest waits for more bytes
 		}
@@ -152,7 +152,7 @@ func skipAhead(data []byte, skip uint64) (after []byte, owed uint64) {
 // §7.2.6, §7.2.7). Anything short or long is the frame's layout at fault,
 // H3_FRAME_ERROR (§7.1, §10.8), as a SETTINGS pair cut short is.
 func h3Identifier(payload []byte) (uint64, error) {
-	v, rest, err := quic.Varint(payload)
+	v, rest, err := varint.Read(payload)
 	if err != nil {
 		return 0, fmt.Errorf("%w: an identifier cut short", errH3FrameLayout)
 	}
@@ -203,8 +203,8 @@ func h3ReservedH2(typ uint64) bool {
 // appendH3Frame writes a frame: a variable-length type, a variable-length
 // length, then the payload.
 func appendH3Frame(dst []byte, typ uint64, payload []byte) []byte {
-	dst = quic.AppendVarint(dst, typ)
-	dst = quic.AppendVarint(dst, uint64(len(payload)))
+	dst = varint.Append(dst, typ)
+	dst = varint.Append(dst, uint64(len(payload)))
 	return append(dst, payload...)
 }
 
@@ -474,15 +474,15 @@ const (
 // a dynamic table from an incompleteness into a stated limit the peer is
 // bound by.
 func appendH3Control(dst []byte, maxFieldSection uint64) []byte {
-	dst = quic.AppendVarint(dst, h3StreamControl)
+	dst = varint.Append(dst, h3StreamControl)
 
 	var settings []byte
-	settings = quic.AppendVarint(settings, h3SettingQPACKMaxTableCapacity)
-	settings = quic.AppendVarint(settings, 0)
-	settings = quic.AppendVarint(settings, h3SettingQPACKBlockedStreams)
-	settings = quic.AppendVarint(settings, 0)
-	settings = quic.AppendVarint(settings, h3SettingMaxFieldSection)
-	settings = quic.AppendVarint(settings, maxFieldSection)
+	settings = varint.Append(settings, h3SettingQPACKMaxTableCapacity)
+	settings = varint.Append(settings, 0)
+	settings = varint.Append(settings, h3SettingQPACKBlockedStreams)
+	settings = varint.Append(settings, 0)
+	settings = varint.Append(settings, h3SettingMaxFieldSection)
+	settings = varint.Append(settings, maxFieldSection)
 	// One setting from the reserved 0x1f*N+0x21 space, with a meaningless
 	// value — RFC 9114 §7.2.4.1's SHOULD. A peer that chokes on an unknown
 	// identifier is found out now, not when the protocol grows a real one.
@@ -491,8 +491,8 @@ func appendH3Control(dst []byte, maxFieldSection uint64) []byte {
 	// of §4.1, §7.2.8 and §6.2.3 are read and ignored but never sent: a
 	// MAY that would cost a peer bytes to skip and this end a code path to
 	// keep, for a grease no peer of this package has shown to need.
-	settings = quic.AppendVarint(settings, 0x21+0x1f*rand.Uint64N(1<<16)) //nolint:gosec // G404: grease only has to vary, not be secret
-	settings = quic.AppendVarint(settings, rand.Uint64N(1<<16))           //nolint:gosec // G404: grease only has to vary, not be secret
+	settings = varint.Append(settings, 0x21+0x1f*rand.Uint64N(1<<16)) //nolint:gosec // G404: grease only has to vary, not be secret
+	settings = varint.Append(settings, rand.Uint64N(1<<16))           //nolint:gosec // G404: grease only has to vary, not be secret
 	return appendH3Frame(dst, h3Settings, settings)
 }
 
@@ -535,7 +535,7 @@ var errH3FrameLayout = fmt.Errorf("%w: a frame payload that ends inside a field"
 // truncated pair and the reserved HTTP/2 identifiers on the way.
 func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 	for len(payload) > 0 {
-		id, rest, err := quic.Varint(payload)
+		id, rest, err := varint.Read(payload)
 		if err != nil {
 			return fmt.Errorf("%w: a truncated setting", errH3FrameLayout)
 		}
@@ -543,7 +543,7 @@ func walkH3Settings(payload []byte, each func(id, v uint64) error) error {
 		case 0x00, 0x02, 0x03, 0x04, 0x05:
 			return fmt.Errorf("%w: reserved HTTP/2 setting %#x", ErrH3Protocol, id)
 		}
-		v, rest, err := quic.Varint(rest)
+		v, rest, err := varint.Read(rest)
 		if err != nil {
 			return fmt.Errorf("%w: setting %#x has no value", errH3FrameLayout, id)
 		}

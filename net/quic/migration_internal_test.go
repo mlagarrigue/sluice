@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Tests for connection-identifier rotation (RFC 9000 §5.1) and server-side
@@ -19,9 +21,9 @@ import (
 
 // ncidFrame encodes one NEW_CONNECTION_ID frame as a peer would send it.
 func ncidFrame(seq, retire uint64, cid, token []byte) []byte {
-	b := AppendVarint(nil, frameNewConnectionID)
-	b = AppendVarint(b, seq)
-	b = AppendVarint(b, retire)
+	b := varint.Append(nil, frameNewConnectionID)
+	b = varint.Append(b, seq)
+	b = varint.Append(b, retire)
 	b = append(b, byte(len(cid)))
 	b = append(b, cid...)
 	b = append(b, token...)
@@ -585,7 +587,7 @@ func TestProbingOnlyPacketDoesNotMovePath(t *testing.T) {
 	newAddr := fakeFuzzAddr("probe:peerB")
 	rxFromNewAddress(c, newAddr, 1200, true)
 
-	challenge := AppendVarint(nil, framePathChallenge)
+	challenge := varint.Append(nil, framePathChallenge)
 	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
 	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
 		t.Fatal(err)
@@ -708,7 +710,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 
 	// A response echoing the wrong data validates nothing (an old probe's
 	// answer, perhaps), and is not fatal.
-	wrong := AppendVarint(nil, framePathResponse)
+	wrong := varint.Append(nil, framePathResponse)
 	wrong = append(wrong, 9, 9, 9, 9, 9, 9, 9, 9)
 	rxFromNewAddress(c, newAddr, 100, true)
 	if err := c.frames(spaceApplication, wrong, time.Now()); err != nil {
@@ -722,7 +724,7 @@ func TestNonProbingPacketFromNewAddressMigrates(t *testing.T) {
 	}
 
 	// The right echo validates — from any address (§8.2.3).
-	right := AppendVarint(nil, framePathResponse)
+	right := varint.Append(nil, framePathResponse)
 	right = append(right, challengeData[:]...)
 	rxFromNewAddress(c, fakeFuzzAddr("mig:peerC"), 100, true)
 	if err := c.frames(spaceApplication, right, time.Now()); err != nil {
@@ -1472,7 +1474,7 @@ func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	resp := AppendVarint(nil, framePathResponse)
+	resp := varint.Append(nil, framePathResponse)
 	resp = append(resp, c.pathProbe.data[:]...)
 	c.mu.Unlock()
 	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
@@ -1493,7 +1495,7 @@ func TestRebindValidatedByAResponseIsNotFatal(t *testing.T) {
 
 // pathResponse encodes a PATH_RESPONSE echoing data.
 func pathResponse(data [8]byte) []byte {
-	return append(AppendVarint(nil, framePathResponse), data[:]...)
+	return append(varint.Append(nil, framePathResponse), data[:]...)
 }
 
 // writesTo filters recorded datagrams by destination.
@@ -1915,8 +1917,8 @@ func TestQueueRidingADataPacketIsCutToTheRoom(t *testing.T) {
 		c.grants = appendFrame(c.grants, frameMaxStreamData, uint64(i)<<40, 1<<40)
 	}
 	chunk := []byte{FrameStream | 0x02} // length present, offset 0
-	chunk = AppendVarint(chunk, 4)
-	chunk = AppendVarint(chunk, uint64(c.maxStreamChunk()-8))
+	chunk = varint.Append(chunk, 4)
+	chunk = varint.Append(chunk, uint64(c.maxStreamChunk()-8))
 	chunk = append(chunk, make([]byte, c.maxStreamChunk()-len(chunk))...)
 	if err := c.sendPacketLocked(spaceApplication, chunk, sendOpts{}); err != nil {
 		t.Fatal(err)
@@ -1975,12 +1977,12 @@ func TestDisableActiveMigrationParameter(t *testing.T) {
 			t.Errorf("%s: %v, want TRANSPORT_PARAMETER_ERROR", what, err)
 		}
 	}
-	oneByte := AppendVarint(nil, paramDisableActiveMigration)
-	oneByte = AppendVarint(oneByte, 1)
+	oneByte := varint.Append(nil, paramDisableActiveMigration)
+	oneByte = varint.Append(oneByte, 1)
 	oneByte = append(oneByte, 0)
 	wantParamError(t, oneByte, "a one-byte disable_active_migration")
-	twice := AppendVarint(nil, paramDisableActiveMigration)
-	twice = AppendVarint(twice, 0)
+	twice := varint.Append(nil, paramDisableActiveMigration)
+	twice = varint.Append(twice, 0)
 	wantParamError(t, append(twice, twice...), "disable_active_migration twice")
 }
 
@@ -2049,7 +2051,7 @@ func TestOffPathChallengesShareOneDatagramWithinBudget(t *testing.T) {
 	const k = 8
 	var challenges []byte
 	for i := range k {
-		challenges = AppendVarint(challenges, framePathChallenge)
+		challenges = varint.Append(challenges, framePathChallenge)
 		challenges = append(challenges, bytes.Repeat([]byte{byte(i + 1)}, 8)...)
 	}
 	rxFromNewAddress(c, source, 1200, true)
@@ -2254,7 +2256,7 @@ func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc
 		}
 		return pkt
 	}
-	challenge := AppendVarint(nil, framePathChallenge)
+	challenge := varint.Append(nil, framePathChallenge)
 	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
 	challenge = append(challenge, make([]byte, 1200-len(challenge)-1-8-4-16)...) // PADDING frames
 	newAddr = fakeFuzzAddr("np:peerB")
@@ -2300,7 +2302,7 @@ func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
 		t.Fatalf("answer to the new address names %q, want the never-used peercid1", got)
 	}
 	// The repeat (the first answer may have been lost) names the same one.
-	challenge := AppendVarint(nil, framePathChallenge)
+	challenge := varint.Append(nil, framePathChallenge)
 	challenge = append(challenge, 8, 7, 6, 5, 4, 3, 2, 1)
 	challenge = append(challenge, make([]byte, 1200-len(challenge)-1-8-4-16)...)
 	if err := c.receive(seal(2, challenge), newAddr); err != nil {
@@ -2310,7 +2312,7 @@ func TestNewPathChallengeIsAnsweredUnderAFreshCID(t *testing.T) {
 		t.Fatalf("repeated answer names %q, want peercid1 again", got)
 	}
 	// The migration adopts the identifier the answers went under.
-	if err := c.receive(seal(3, AppendVarint(nil, framePing)), newAddr); err != nil {
+	if err := c.receive(seal(3, varint.Append(nil, framePing)), newAddr); err != nil {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
@@ -2627,7 +2629,7 @@ func TestTheUnprovenPathLeftIsChallengedToo(t *testing.T) {
 		t.Fatal("the unproven path left (B) got no PATH_CHALLENGE at the second migration (§9.3.3)")
 	}
 	// B answers: it is proven now, and the path to fall back to.
-	resp := AppendVarint(nil, framePathResponse)
+	resp := varint.Append(nil, framePathResponse)
 	resp = append(resp, old[:]...)
 	if err := c.frames(spaceApplication, resp, time.Now()); err != nil {
 		t.Fatal(err)

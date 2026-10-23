@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // The bounds and presence checks RFC 9000 names: each case closes with the
@@ -20,8 +22,8 @@ func wantCode(t *testing.T, err error, code uint64, what string) {
 }
 
 func appendParam(dst []byte, id uint64, val []byte) []byte {
-	dst = AppendVarint(dst, id)
-	dst = AppendVarint(dst, uint64(len(val)))
+	dst = varint.Append(dst, id)
+	dst = varint.Append(dst, uint64(len(val)))
 	return append(dst, val...)
 }
 
@@ -46,9 +48,9 @@ func boundsConn(t *testing.T, isClient bool) *Conn {
 func TestMaxStreamsOverTheVarintCeilingIsAFrameEncodingError(t *testing.T) {
 	for _, typ := range []byte{frameMaxStreams, frameMaxStreams | 1} {
 		c := boundsConn(t, false)
-		err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit+1), time.Now())
+		err := c.frames(spaceApplication, varint.Append([]byte{typ}, maxStreamsLimit+1), time.Now())
 		wantCode(t, err, transportFrameEncoding, "MAX_STREAMS 2^60+1")
-		if err := c.frames(spaceApplication, AppendVarint([]byte{typ}, maxStreamsLimit), time.Now()); err != nil {
+		if err := c.frames(spaceApplication, varint.Append([]byte{typ}, maxStreamsLimit), time.Now()); err != nil {
 			t.Errorf("MAX_STREAMS 2^60 was refused: %v", err)
 		}
 	}
@@ -58,9 +60,9 @@ func TestMaxStreamsOverTheVarintCeilingIsAFrameEncodingError(t *testing.T) {
 // TRANSPORT_PARAMETER_ERROR.
 func TestInitialMaxStreamsOverTheVarintCeilingIsAParameterError(t *testing.T) {
 	for _, id := range []uint64{paramInitialMaxStreamsBidi, paramInitialMaxStreamsUni} {
-		_, err := parseParameters(appendParam(nil, id, AppendVarint(nil, maxStreamsLimit+1)))
+		_, err := parseParameters(appendParam(nil, id, varint.Append(nil, maxStreamsLimit+1)))
 		wantCode(t, err, transportParameterError, "initial_max_streams 2^60+1")
-		p, err := parseParameters(appendParam(nil, id, AppendVarint(nil, maxStreamsLimit)))
+		p, err := parseParameters(appendParam(nil, id, varint.Append(nil, maxStreamsLimit)))
 		if err != nil || p.InitialMaxStreamsBidi+p.InitialMaxStreamsUni != maxStreamsLimit {
 			t.Errorf("initial_max_streams 2^60 parsed as %+v, %v", p, err)
 		}
@@ -81,7 +83,7 @@ func TestNewTokenReceivedByAServerIsAProtocolViolation(t *testing.T) {
 // RFC 9000 §7.4: an identifier twice is TRANSPORT_PARAMETER_ERROR, whether
 // this package decodes it or not.
 func TestDuplicateParameterIsAParameterError(t *testing.T) {
-	twice := appendParam(appendParam(nil, paramInitialMaxData, AppendVarint(nil, 1)), paramInitialMaxData, AppendVarint(nil, 2))
+	twice := appendParam(appendParam(nil, paramInitialMaxData, varint.Append(nil, 1)), paramInitialMaxData, varint.Append(nil, 2))
 	_, err := parseParameters(twice)
 	wantCode(t, err, transportParameterError, "initial_max_data twice")
 
@@ -102,7 +104,7 @@ func TestDuplicateParameterIsAParameterError(t *testing.T) {
 // it, or a length that cuts it short, are an invalid value; so is a block
 // that stops mid-parameter.
 func TestIntegerParameterMustBeExactlyOneVarint(t *testing.T) {
-	trailing := appendParam(nil, paramInitialMaxData, append(AppendVarint(nil, 1), 0))
+	trailing := appendParam(nil, paramInitialMaxData, append(varint.Append(nil, 1), 0))
 	_, err := parseParameters(trailing)
 	wantCode(t, err, transportParameterError, "a varint followed by a byte")
 
@@ -119,7 +121,7 @@ func TestIntegerParameterMustBeExactlyOneVarint(t *testing.T) {
 	_, err = parseParameters([]byte{byte(paramInitialMaxData), 0x40}) // a 2-byte length, 1 byte given
 	wantCode(t, err, transportParameterError, "a length cut short")
 
-	if _, err := parseParameters(appendParam(nil, paramInitialMaxData, AppendVarint(nil, 1))); err != nil {
+	if _, err := parseParameters(appendParam(nil, paramInitialMaxData, varint.Append(nil, 1))); err != nil {
 		t.Errorf("one exact varint was refused: %v", err)
 	}
 }
@@ -139,7 +141,7 @@ func TestAckDelayParametersAnnouncedAtZeroAreNotTheDefaults(t *testing.T) {
 	}
 
 	c = boundsConn(t, false)
-	zeros := appendParam(appendParam(clientParamsFor(), paramAckDelayExponent, AppendVarint(nil, 0)), paramMaxAckDelay, AppendVarint(nil, 0))
+	zeros := appendParam(appendParam(clientParamsFor(), paramAckDelayExponent, varint.Append(nil, 0)), paramMaxAckDelay, varint.Append(nil, 0))
 	if err := c.handlePeerParameters(zeros); err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +199,8 @@ func TestRetryDrawsItsUnusedBits(t *testing.T) {
 // announcement of such a peer, and stays accepted.
 func TestMissingInitialSourceCIDIsRefusedEvenForAnEmptyPeerCID(t *testing.T) {
 	// A client block with every identifier parameter left out.
-	absent := appendParam(nil, paramInitialMaxData, AppendVarint(nil, 1<<20))
-	absent = appendParam(absent, paramInitialMaxStreamsBidi, AppendVarint(nil, 100))
+	absent := appendParam(nil, paramInitialMaxData, varint.Append(nil, 1<<20))
+	absent = appendParam(absent, paramInitialMaxStreamsBidi, varint.Append(nil, 100))
 
 	c := boundsConn(t, false)
 	c.mu.Lock()

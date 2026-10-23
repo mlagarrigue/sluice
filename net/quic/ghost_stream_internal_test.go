@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // streamFrame encodes one STREAM frame with its offset and length fields,
@@ -14,10 +16,10 @@ func streamFrame(dst []byte, id, off uint64, data string, fin bool) []byte {
 	if fin {
 		typ |= streamFIN
 	}
-	dst = AppendVarint(dst, typ)
-	dst = AppendVarint(dst, id)
-	dst = AppendVarint(dst, off)
-	dst = AppendVarint(dst, uint64(len(data)))
+	dst = varint.Append(dst, typ)
+	dst = varint.Append(dst, id)
+	dst = varint.Append(dst, off)
+	dst = varint.Append(dst, uint64(len(data)))
 	return append(dst, data...)
 }
 

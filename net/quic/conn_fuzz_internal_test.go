@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // controlCeiling is what the control queue may hold whatever the peer
@@ -28,12 +30,12 @@ const controlCeiling = 4 << 10
 // one to four times so that what accumulates across packets is reached.
 func FuzzConnFramesBudget(f *testing.F) {
 	ping := []byte{framePing}
-	challenge := append(AppendVarint(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
-	ncid := AppendVarint(nil, frameNewConnectionID)
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	ncid := varint.Append(nil, frameNewConnectionID)
 	ncid = append(ncid, 1, 1, 8, 's', 'r', 'v', '-', 'c', 'i', 'd', '1')
 	ncid = append(ncid, make([]byte, 16)...)
-	retire := append(AppendVarint(nil, frameRetireConnectionID), 0)
-	stream := append(AppendVarint(nil, FrameStream|0x02), 0, 4, 'a', 'b', 'c', 'd')
+	retire := append(varint.Append(nil, frameRetireConnectionID), 0)
+	stream := append(varint.Append(nil, FrameStream|0x02), 0, 4, 'a', 'b', 'c', 'd')
 	for _, frames := range [][]byte{ping, challenge, ncid, retire, stream, append(challenge, challenge...)} {
 		f.Add(frames, false, uint8(1), uint16(0))
 		f.Add(frames, true, uint8(1), uint16(0))

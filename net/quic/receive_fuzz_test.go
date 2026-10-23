@@ -5,6 +5,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // FuzzParseShortHeader: the first parse every 1-RTT datagram goes through.
@@ -85,8 +87,8 @@ func FuzzOpen(f *testing.F) {
 	}
 	sealer, _ := newPacketSealer(secrets.Client)
 	header := []byte{0xc0, 0, 0, 0, 1, 0, 0}
-	header = AppendVarint(header, 0)
-	header = AppendVarint(header, 64)
+	header = varint.Append(header, 0)
+	header = varint.Append(header, 64)
 	pnOffset := len(header)
 	header = append(header, 0x00)
 	sealed, _ := sealer.Seal(nil, header, []byte("a payload long enough to sample from"), 0, pnOffset, 1)

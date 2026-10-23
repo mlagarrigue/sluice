@@ -4,15 +4,17 @@ import (
 	"crypto/tls"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // closeFrameBytes is a transport CONNECTION_CLOSE with NO_ERROR, no
 // offending frame type and no reason phrase.
 func closeFrameBytes() []byte {
-	f := AppendVarint(nil, frameConnectionClose)
-	f = AppendVarint(f, 0)
-	f = AppendVarint(f, 0)
-	return AppendVarint(f, 0)
+	f := varint.Append(nil, frameConnectionClose)
+	f = varint.Append(f, 0)
+	f = varint.Append(f, 0)
+	return varint.Append(f, 0)
 }
 
 // drainingConn is a keyed connection whose datagrams a recordingPC keeps,
@@ -106,7 +108,7 @@ func handshakePacket(t *testing.T, s *packetSealer, dcid, scid []byte, pn uint64
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = AppendVarint(header, uint64(pnLen+len(payload)+16))
+	header = varint.Append(header, uint64(pnLen+len(payload)+16))
 	pnOffset := len(header)
 	header = append(header, byte(pn>>24), byte(pn>>16), byte(pn>>8), byte(pn))
 	pkt, err := s.Seal(nil, header, payload, pn, pnOffset, pnLen)

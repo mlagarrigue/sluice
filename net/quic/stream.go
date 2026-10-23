@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Stream is one QUIC stream, read and written as bytes.
@@ -459,10 +461,10 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		}
 
 		last := written+n >= len(p)
-		frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
-		frame = AppendVarint(frame, s.id)
-		frame = AppendVarint(frame, s.writeOff)
-		frame = AppendVarint(frame, uint64(n))
+		frame := varint.Append(nil, FrameStream|streamOFF|streamLEN|boolBit(fin && last, streamFIN))
+		frame = varint.Append(frame, s.id)
+		frame = varint.Append(frame, s.writeOff)
+		frame = varint.Append(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
 		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {

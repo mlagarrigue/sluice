@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Conformance regression tests: each one
@@ -198,7 +200,7 @@ func TestHandshakeDoneInAnInitialIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload := AppendVarint(nil, frameHandshakeDone)
+	payload := varint.Append(nil, frameHandshakeDone)
 	err := c.frames(spaceInitial, payload, time.Now())
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportProtocolViolation {
@@ -252,10 +254,10 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 	if _, err := c.Stream(2); err != nil {
 		t.Fatal(err)
 	}
-	frame := AppendVarint(nil, FrameStream|streamOFF|streamLEN)
-	frame = AppendVarint(frame, 2)
-	frame = AppendVarint(frame, 0)
-	frame = AppendVarint(frame, 3)
+	frame := varint.Append(nil, FrameStream|streamOFF|streamLEN)
+	frame = varint.Append(frame, 2)
+	frame = varint.Append(frame, 0)
+	frame = varint.Append(frame, 3)
 	frame = append(frame, "abc"...)
 	err = c.frames(spaceApplication, frame, time.Now())
 	if !errors.As(err, &te) || te.code != transportStreamState {
@@ -331,7 +333,7 @@ func TestPathResponseIsExpandedAndSentOnce(t *testing.T) {
 	c.spaces[spaceApplication].sealer = sealer
 	c.mu.Unlock()
 
-	payload := AppendVarint(nil, framePathChallenge)
+	payload := varint.Append(nil, framePathChallenge)
 	payload = append(payload, 1, 2, 3, 4, 5, 6, 7, 8)
 	if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
 		t.Fatal(err)

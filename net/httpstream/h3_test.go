@@ -20,6 +20,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/dgram"
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -660,7 +661,7 @@ func TestQPACKRefusesDynamicReferences(t *testing.T) {
 func TestH3ControlStreamCarriesSettings(t *testing.T) {
 	raw := appendH3Control(nil, 1<<16)
 
-	typ, rest, err := quic.Varint(raw)
+	typ, rest, err := varint.Read(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,8 +704,8 @@ func TestParseH3SettingsRefusesReservedH2Identifiers(t *testing.T) {
 	// RFC 9114 §7.2.4.1: HTTP/2's setting identifiers with no HTTP/3 meaning
 	// MUST NOT appear, and receiving one is H3_SETTINGS_ERROR, not a skip.
 	for _, id := range []uint64{0x00, 0x02, 0x03, 0x04, 0x05} {
-		payload := quic.AppendVarint(nil, id)
-		payload = quic.AppendVarint(payload, 1)
+		payload := varint.Append(nil, id)
+		payload = varint.Append(payload, 1)
 		if _, err := parseH3Settings(payload); !errors.Is(err, ErrH3Protocol) {
 			t.Errorf("reserved setting %#x was accepted: %v", id, err)
 		}
@@ -801,10 +802,10 @@ func TestH3GracefulCodeIsNoErrorOrReserved(t *testing.T) {
 
 func TestParseH3SettingsRefusesARepeatedIdentifier(t *testing.T) {
 	var payload []byte
-	payload = quic.AppendVarint(payload, h3SettingMaxFieldSection)
-	payload = quic.AppendVarint(payload, 1)
-	payload = quic.AppendVarint(payload, h3SettingMaxFieldSection)
-	payload = quic.AppendVarint(payload, 2)
+	payload = varint.Append(payload, h3SettingMaxFieldSection)
+	payload = varint.Append(payload, 1)
+	payload = varint.Append(payload, h3SettingMaxFieldSection)
+	payload = varint.Append(payload, 2)
 	if _, err := parseH3Settings(payload); !errors.Is(err, ErrH3Protocol) {
 		t.Fatalf("a repeated setting was accepted: %v", err)
 	}
@@ -1563,8 +1564,8 @@ func TestH3LongReservedFrameIsSkippedUnbuffered(t *testing.T) {
 	cfg := Config{MaxBodyBytes: 1 << 10, MaxHeaderBytes: 1 << 10}
 	const long = 1 << 20 // far past both bounds
 	reserved := func() []byte {
-		stream := quic.AppendVarint(nil, 0x21+0x1f) // a reserved frame type
-		return quic.AppendVarint(stream, long)
+		stream := varint.Append(nil, 0x21+0x1f) // a reserved frame type
+		return varint.Append(stream, long)
 	}
 
 	t.Run("on a request stream", func(t *testing.T) {
@@ -1601,7 +1602,7 @@ func TestH3LongReservedFrameIsSkippedUnbuffered(t *testing.T) {
 		open := append(uniOpen(h3StreamControl), settingsFrame(h3SettingMaxFieldSection, 64)...)
 		open = append(open, reserved()...)
 		open = append(open, make([]byte, long)...)
-		open = append(open, appendH3Frame(nil, h3MaxPushID, quic.AppendVarint(nil, 8))...)
+		open = append(open, appendH3Frame(nil, h3MaxPushID, varint.Append(nil, 8))...)
 		for len(open) > 0 {
 			n := min(1200, len(open))
 			if _, _, _, err := a.Frames([]quic.Frame{streamFrame(2, open[:n], false)}); err != nil {
@@ -1740,7 +1741,7 @@ func readH3GoAways(t *testing.T, control *quic.Stream, n int) []uint64 {
 	for {
 		m, err := control.Read(tmp)
 		raw = append(raw, tmp[:m]...)
-		if _, body, verr := quic.Varint(raw); verr == nil {
+		if _, body, verr := varint.Read(raw); verr == nil {
 			frames, _, _, perr := parseH3Frames(nil, body, 1<<20)
 			if perr != nil {
 				t.Fatalf("the control stream did not parse: %v", perr)
@@ -1748,7 +1749,7 @@ func readH3GoAways(t *testing.T, control *quic.Stream, n int) []uint64 {
 			var ids []uint64
 			for i := range frames {
 				if frames[i].Type == h3GoAway {
-					id, _, err := quic.Varint(frames[i].Payload)
+					id, _, err := varint.Read(frames[i].Payload)
 					if err != nil {
 						t.Fatalf("GOAWAY payload: %v", err)
 					}

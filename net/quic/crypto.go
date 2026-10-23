@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // Packet protection, RFC 9001 §5.
@@ -682,5 +684,5 @@ func decodePacketNumber(largest, truncated uint64, pnLen int) (pn uint64, ok boo
 	default:
 		pn = candidate
 	}
-	return pn, pn <= MaxVarint
+	return pn, pn <= varint.Max
 }

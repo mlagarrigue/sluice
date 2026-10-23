@@ -1,6 +1,10 @@
 package quic
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
+)
 
 // FuzzParseFrames: a datagram is whatever arrived on a UDP port, so this
 // parser sees hostile input by definition and with no handshake in front of
@@ -34,8 +38,8 @@ func FuzzParseFrames(f *testing.F) {
 // the one place a length field can be made to point past what arrived.
 func FuzzParseLongHeader(f *testing.F) {
 	pkt := []byte{0xc0, 0, 0, 0, 1, 4, 'd', 'c', 'i', 'd', 0}
-	pkt = AppendVarint(pkt, 0)
-	pkt = AppendVarint(pkt, 4)
+	pkt = varint.Append(pkt, 0)
+	pkt = varint.Append(pkt, 4)
 	f.Add(append(pkt, 1, 2, 3, 4))
 	f.Add([]byte{0xc0, 0, 0, 0, 1})
 	f.Add([]byte{})
@@ -68,19 +72,19 @@ func FuzzVarint(f *testing.F) {
 	f.Add([]byte{0xc0})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		v, rest, err := Varint(data)
+		v, rest, err := readVarint(data)
 		if err != nil {
 			return
 		}
 		if len(rest) > len(data) {
 			t.Fatal("decoding lengthened the buffer")
 		}
-		if v > MaxVarint {
+		if v > varint.Max {
 			t.Fatalf("decoded %d, over the 62-bit maximum", v)
 		}
 		// Re-encoding must give back the same value, though not necessarily
 		// the same bytes: the encoding is not canonical.
-		if again, _, err := Varint(AppendVarint(nil, v)); err != nil || again != v {
+		if again, _, err := readVarint(varint.Append(nil, v)); err != nil || again != v {
 			t.Fatalf("%d re-encoded to (%d, %v)", v, again, err)
 		}
 	})

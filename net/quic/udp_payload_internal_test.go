@@ -3,6 +3,8 @@ package quic
 import (
 	"strconv"
 	"testing"
+
+	"github.com/mlagarrigue/sluice/internal/varint"
 )
 
 // RFC 9000 §18.2 on this endpoint's own announcement: max_udp_payload_size
@@ -43,10 +45,10 @@ func TestMaxUDPPayloadSizeIsAnnouncedWithin18_2(t *testing.T) {
 // the absence the 65527 default stands in for.
 func TestMaxUDPPayloadSizeZeroIsAParameterError(t *testing.T) {
 	for _, n := range []uint64{0, 1199} {
-		_, err := parseParameters(appendParam(nil, paramMaxUDPPayloadSize, AppendVarint(nil, n)))
+		_, err := parseParameters(appendParam(nil, paramMaxUDPPayloadSize, varint.Append(nil, n)))
 		wantCode(t, err, transportParameterError, "max_udp_payload_size announced at "+strconv.FormatUint(n, 10))
 	}
-	p, err := parseParameters(appendParam(nil, paramMaxUDPPayloadSize, AppendVarint(nil, 1200)))
+	p, err := parseParameters(appendParam(nil, paramMaxUDPPayloadSize, varint.Append(nil, 1200)))
 	if err != nil || p.MaxUDPPayloadSize != 1200 {
 		t.Errorf("max_udp_payload_size 1200 parsed as %d, %v; want 1200 accepted", p.MaxUDPPayloadSize, err)
 	}
@@ -67,7 +69,7 @@ func TestAbsentMaxUDPPayloadSizeDefaultsTo65527(t *testing.T) {
 	// A client's block without the parameter, as the server conn expects
 	// it (initial_source_connection_id is what handlePeerParameters checks).
 	raw := appendParam(nil, paramInitialSourceCID, []byte{1, 2, 3, 4})
-	raw = appendParam(raw, paramInitialMaxData, AppendVarint(nil, 1<<20))
+	raw = appendParam(raw, paramInitialMaxData, varint.Append(nil, 1<<20))
 	c := boundsConn(t, false)
 	if err := c.handlePeerParameters(raw); err != nil {
 		t.Fatal(err)

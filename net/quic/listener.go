@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/ipkey"
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic/udp"
 )
 
@@ -1106,10 +1107,10 @@ func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initial
 		return
 	}
 
-	frame := AppendVarint(nil, frameConnectionClose)
-	frame = AppendVarint(frame, code)
-	frame = AppendVarint(frame, 0) // the frame type being answered; none
-	frame = AppendVarint(frame, 0) // no reason phrase, deliberately
+	frame := varint.Append(nil, frameConnectionClose)
+	frame = varint.Append(frame, code)
+	frame = varint.Append(frame, 0) // the frame type being answered; none
+	frame = varint.Append(frame, 0) // no reason phrase, deliberately
 
 	const pnLen = 4
 	header := []byte{0xc0 | packetInitial<<4 | pnLen - 1}
@@ -1117,8 +1118,8 @@ func (l *Listener) sendStatelessClose(from net.Addr, h longHeader, keys *initial
 	header = append(header, h.SCID...)
 	header = append(header, byte(len(h.DCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	header = append(header, h.DCID...)
-	header = AppendVarint(header, 0) // a server's Initial carries no token (§17.2.2)
-	header = AppendVarint(header, uint64(pnLen+len(frame)+16))
+	header = varint.Append(header, 0) // a server's Initial carries no token (§17.2.2)
+	header = varint.Append(header, uint64(pnLen+len(frame)+16))
 	pnOffset := len(header)
 	header = append(header, 0, 0, 0, 0) // packet number zero
 

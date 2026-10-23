@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/varint"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -911,7 +912,7 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 		// — under 8 bytes — stays parked: once it parses, the buffer keeps
 		// just what follows it.
 		u.buf = append(u.buf, f.Data...)
-		typ, rest, err := quic.Varint(u.buf)
+		typ, rest, err := varint.Read(u.buf)
 		if err != nil {
 			// Not yet a whole varint. A stream closed before its type byte
 			// is tolerated (§6.2), not an error.
@@ -1005,7 +1006,7 @@ func (a *h3Assembler) controlFrames(u *h3Uni) error {
 		// ParseH3Frames below skips GREASE frame types, as §7.2.8 wants
 		// everywhere else — so the first frame's type is read here, before
 		// the skip can hide a GREASE frame standing where SETTINGS has to be.
-		if typ, _, err := quic.Varint(u.buf); err == nil && typ != h3Settings {
+		if typ, _, err := varint.Read(u.buf); err == nil && typ != h3Settings {
 			return h3ConnectionError{Code: h3MissingSettings, Err: fmt.Errorf(
 				"%w: the control stream opened with frame %#x, not SETTINGS", ErrH3Protocol, typ)}
 		}
@@ -1253,7 +1254,7 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
 	// says so before any of the payload is buffered. Any other type keeps the
 	// refusal parseH3Frames gave it.
-	if typ, _, e := quic.Varint(rest); err != nil && (e != nil || typ != h3Data) {
+	if typ, _, e := varint.Read(rest); err != nil && (e != nil || typ != h3Data) {
 		return err
 	}
 	a.frames = keepFrames(frames)
@@ -1357,8 +1358,8 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	// would take the body past MaxBodyBytes, refused before a buffer near
 	// that size has been parked waiting for the payload. RFC 9114 §4.1 lets
 	// the server answer before the request has all arrived.
-	if typ, after, e := quic.Varint(rest); e == nil {
-		if length, _, e2 := quic.Varint(after); e2 == nil {
+	if typ, after, e := varint.Read(rest); e == nil {
+		if length, _, e2 := varint.Read(after); e2 == nil {
 			switch {
 			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
