@@ -203,7 +203,7 @@ func TestJoinOverflowDropNewest(t *testing.T) {
 	}
 	d := diags.All()[0]
 	if d.Severity != diagnostics.Critical {
-		t.Errorf("severity = %v, want Critical: §9.1 asks for overflow to be loud", d.Severity)
+		t.Errorf("severity = %v, want Critical: an overflow must be loud", d.Severity)
 	}
 	if d.Code != "Sluice.Join.BuildTableOverflow" {
 		t.Errorf("code = %q, want the overflow code", d.Code)
@@ -214,7 +214,7 @@ func TestJoinOverflowDropNewest(t *testing.T) {
 }
 
 // sluice.Overflow is reported once, not once per dropped row. A build side far larger
-// than the limit would otherwise produce the pathological batch §4.5 exists to
+// than the limit would otherwise produce a batch of diagnostics larger than the data, which the model exists to
 // prevent.
 func TestJoinOverflowReportedOnce(t *testing.T) {
 	customers := make([]customer, 1000)

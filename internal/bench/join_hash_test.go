@@ -11,7 +11,7 @@ import (
 // The hash join materialises one side, so what it costs is a map: one insert
 // per build row and one lookup per probe row. The per-stage budget does not
 // apply — it bounds stateless operators, where the only cost is the indirect
-// call — but the comparison against MergeJoinBy does, because §9.2 claims the
+// call — but the comparison against MergeJoinBy does, because the claim is that the
 // sorted-merge strategy does the same work in O(1) and that claim should carry
 // a number.
 
@@ -53,7 +53,7 @@ func BenchmarkJoinHash(b *testing.B) {
 }
 
 // BenchmarkJoinMerge is the same join over the same data through MergeJoinBy,
-// which needs both inputs sorted — they are — and holds O(1) memory. §9.2 says
+// which needs both inputs sorted — they are — and holds O(1) memory. The claim is that
 // this is the strategy to prefer when the inputs allow it; this is by how much.
 func BenchmarkJoinMerge(b *testing.B) {
 	left := joinData(joinRows)

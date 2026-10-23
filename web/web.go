@@ -259,9 +259,9 @@ func invalid(name, raw, kind string) diagnostics.Diagnostic {
 //
 // Warnings do **not** change the status. An element that carries three
 // warnings and kept moving forward was processed, and reporting that as a
-// failure would make a client retry work that succeeded — §1.1's "an element
-// can be valid, carry three warnings, and keep moving forward", read at the
-// transport.
+// failure would make a client retry work that succeeded — the diagnostics
+// model's "an element can be valid, carry three warnings, and keep moving
+// forward" (docs/design/architecture.md), read at the transport.
 //
 // 422 rather than 400 for both Error and Critical: the request parsed, its
 // syntax was fine, and what failed is a rule about its content. A 400 tells a
@@ -306,7 +306,7 @@ type Problem struct {
 
 // Remedy is an affordance in the shape a client reads it. Its Path is the same
 // path the problem carries, which is what lets a client pair the two by
-// comparison rather than by convention (§4.4).
+// comparison rather than by convention.
 type Remedy struct {
 	Action string  `json:"action"`
 	Method string  `json:"method,omitempty"`

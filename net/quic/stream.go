@@ -30,8 +30,8 @@ import (
 // Locking: the receive side (reassembly, the read buffer, the peer's reset)
 // lives under the stream's own lock; the send side (offsets, credit, this
 // end's reset) lives under the connection's, which serialises every packet
-// written. The lock order is c.mu → s.mu: [Conn.maybeRemoveLocked] takes s.mu
-// (via [Stream.recvState]) while holding c.mu, so s.mu must never be held
+// written. The lock order is c.mu → s.mu: Conn.maybeRemoveLocked takes s.mu
+// (via Stream.recvState) while holding c.mu, so s.mu must never be held
 // while taking c.mu.
 type Stream struct {
 	id   uint64

@@ -105,7 +105,7 @@ func AppendFieldNull(dst []byte) []byte {
 //
 // [AppendField] takes bytes that already exist, so an array field costs an
 // encode into a scratch buffer and then a copy of the whole thing into the
-// tuple. This writes it once, in place — the same trick [Writer.Begin] plays
+// tuple. This writes it once, in place — the same trick the wire writer's Begin plays
 // for a Bind carrying a batch of parameters, and for the same reason: the
 // value is the size of a batch, so copying it per row is copying the load.
 //

@@ -54,7 +54,7 @@ func TestPartitionGroupsByKey(t *testing.T) {
 		t.Errorf("globex saw %v, want [2 5]", groups[1])
 	}
 	if p.Len() != 2 {
-		t.Errorf("Len = %d, want 2 — this is the round-trip count §0.3 measures", p.Len())
+		t.Errorf("Len = %d, want 2 — this is the round-trip count batching is judged on", p.Len())
 	}
 }
 
@@ -227,7 +227,7 @@ func BenchmarkPartitionSingleTenant(b *testing.B) {
 }
 
 // And the shape that costs: sixty-four tenants in a batch of sixty-four, which
-// is where §0.3 says the gateway has bought nothing.
+// is where the gateway has bought nothing.
 func BenchmarkPartitionAllDistinct(b *testing.B) {
 	items := make([]req, 64)
 	for i := range items {

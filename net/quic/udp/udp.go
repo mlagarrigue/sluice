@@ -120,10 +120,8 @@ func isIPv6Socket(c *net.UDPConn) bool {
 	return len(a.IP) == net.IPv6len && a.IP.To4() == nil
 }
 
-// PacketInfoLen is the out-of-band buffer size [ReadMsgUDP] needs for the
-// control message [EnablePacketInfo] turns on, with room to spare.
-//
-// [ReadMsgUDP]: net.UDPConn.ReadMsgUDP
+// PacketInfoLen is the out-of-band buffer size [net.UDPConn.ReadMsgUDP] needs
+// for the control message [EnablePacketInfo] turns on, with room to spare.
 const PacketInfoLen = 128
 
 // EnablePacketInfo asks the kernel to report, with every datagram read

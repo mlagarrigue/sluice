@@ -16,7 +16,7 @@ import (
 // many complete requests as it held. A client that waits for each answer
 // produces batches of one; a client that pipelines produces the batches this
 // package exists to show. Nothing is ever waited for to fill a batch — the
-// latency a gateway spends deliberately (see [gateway.Config.Within]) is not
+// latency a gateway spends deliberately (see [github.com/mlagarrigue/sluice/gateway.Config.Within]) is not
 // spent here, because the requests are already on the wire or they are not.
 //
 // Every field of every [Request] borrows the connection's read buffer, which

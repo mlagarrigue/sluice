@@ -57,7 +57,7 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 //     panics with [ErrSplitDrained]. A branch route never chose is simply
 //     empty.
 //   - Branches that must all receive are read in alternation, from one
-//     goroutine ([iter.Pull], or lock-step as [ExampleSplit_broadcast] does):
+//     goroutine ([iter.Pull], or lock-step as the Split broadcast example does):
 //     each holds at most one pending batch, which is what keeps memory at one
 //     batch per branch, and draining one to the end while another is mid-read
 //     panics with [ErrSplitStalled]. Reading two branches from two goroutines

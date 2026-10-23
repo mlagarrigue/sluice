@@ -99,7 +99,7 @@ func CheckParamCount(n int) error {
 //
 // It takes no parameters, by construction rather than by omission: the simple
 // protocol interpolates values into SQL text, which is the injection surface
-// §8.8 removes. Use [Writer.Parse] and [Writer.Bind] for anything carrying a
+// §8.8 removes. Use [Writer.Parse] and [Writer.BindBinary] for anything carrying a
 // value — every value then travels as a parameter, and a thousand of them
 // travel as one.
 func (wr *Writer) Query(sql string) {
@@ -166,7 +166,7 @@ func (wr *Writer) Describe(kind byte, name string) {
 }
 
 // Execute appends an Execute for a portal. maxRows of zero means every row,
-// which is what a batched read wants: the batch bound lives in [Rows], where
+// which is what a batched read wants: the batch bound lives in postgres.Rows, where
 // it can be enforced without a round trip.
 func (wr *Writer) Execute(portal string, maxRows uint32) {
 	at := wr.Begin(FrontendExecute)
@@ -227,8 +227,8 @@ func (wr *Writer) Terminate() { wr.Message(FrontendTerminate, nil) }
 // Cleartext means cleartext: the bytes on the wire are the credential. That is
 // the caller's transport decision, taken when it chose whether to hand this
 // package a *tls.Conn or a plain socket. It is reached only through
-// [Config.AllowCleartextPassword]'s opt-in, which is why it is not
-// exported: nothing outside [Startup] should be able to put a credential on
+// postgres.Config.AllowCleartextPassword's opt-in, which is why it is not
+// exported: nothing outside [Writer.Startup] should be able to put a credential on
 // the wire in the clear by accident.
 func (wr *Writer) PasswordMessage(password string) {
 	at := wr.Begin(FrontendPassword)

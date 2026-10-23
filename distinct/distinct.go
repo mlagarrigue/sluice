@@ -15,8 +15,8 @@ import (
 // It remembers maxKeys keys. An element whose key left that window passes again, so
 // the output is deduplicated locally and not globally. That is the whole point:
 // global deduplication over a stream needs a set that grows with the number of
-// distinct keys, which is unbounded by construction and is why §7.1 rules out
-// an unsorted Union, Intersect or Except. A bound that the caller states is
+// distinct keys, which is unbounded by construction and is why the core has
+// no unsorted Union, Intersect or Except. A bound that the caller states is
 // what makes the operator expressible at all.
 //
 // Two consequences worth stating plainly, because assuming the other behaviour
@@ -27,7 +27,7 @@ import (
 //     is the case most callers actually have.
 //
 // If exact global deduplication is required and the key space is genuinely
-// unbounded, sort the stream and use [MergeJoinBy] — the sort-merge strategy —
+// unbounded, sort the stream and use [github.com/mlagarrigue/sluice/join.Merge] — the sort-merge strategy —
 // or accept O(distinct) memory outside this package. Do not reach for a larger
 // maxKeys and hope.
 //

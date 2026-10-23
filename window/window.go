@@ -66,7 +66,7 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 //
 // The input must be non-decreasing on ts, checked as each element is seen and
 // panicking with [sluice.ErrUnsorted] otherwise — the same requirement, check and
-// sentinel as [IntervalJoin], for the same reason: a window is closed by the
+// sentinel as [github.com/mlagarrigue/sluice/join.Interval], for the same reason: a window is closed by the
 // arrival of an element beyond it, so an element that goes backwards would
 // belong to a window already emitted and would be silently dropped or, worse,
 // silently reopen it.

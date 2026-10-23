@@ -236,7 +236,8 @@ func (rt *Router) Route(exchanges []Exchange) {
 			e.Headers = append(e.Headers, allowField(allowed))
 		case !slices.Contains(rt.methods, method) && !slices.Contains(standardMethods, method):
 			// A method neither the table nor the standard names is one the
-			// server supports for no resource, whatever the path (§15.6.2);
+			// server supports for no resource, whatever the path (RFC 9110
+			// §15.6.2);
 			// a standard one the table lacks is known and refused per path,
 			// 405 or 404, as §15.5.6 words it.
 			e.Refuse(501, diagnostics.NewDiagnostic(diagnostics.Error, CodeMethodNotImplemented, diagnostics.Path{}).

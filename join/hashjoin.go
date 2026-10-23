@@ -11,7 +11,8 @@ import (
 //
 // It is a required positional argument of [StreamTable] rather than an
 // option, because the alternative is a join that looks correct and runs until
-// the process dies. §9.1 takes the position from engines that learned it the
+// the process dies (docs/design/adr/0016-hash-join-bound.md). The position
+// comes from engines that learned it the
 // hard way: Spark refuses a stream-stream outer join without a watermark at
 // planning time, and Kafka deprecated its implicit 24-hour grace period
 // (KIP-633). Making unbounded state inexpressible beats detecting it at
@@ -62,12 +63,12 @@ func (l BuildLimit) valid() bool {
 //
 // Its chain indices are int32, which halves the memory the chain costs against
 // int on a 64-bit platform. Two billion rows in one join is far past where a
-// single-process engine stops being the right tool — §9.1 already says the
-// limit is a budget shared across the plan — so the ceiling is stated and
+// single-process engine stops being the right tool — the limit is already a
+// budget the caller states — so the ceiling is stated and
 // rejected at construction rather than left to overflow silently.
 //
 // The table is in memory and has no storage seam: spill to disk, the reason
-// one would exist (§9.1, and Kafka Streams' foreign-key join mandating
+// one would exist (Kafka Streams' foreign-key join mandating
 // RocksDB as the counter-example), has neither a consumer nor a measure.
 // Adding the seam back is a compatible change the day one does.
 const maxBuildEntries = 1<<31 - 1
@@ -270,8 +271,8 @@ func (t *mapTable[K, B]) Len() int { return len(t.vals) }
 // is, and it is the reason the cost is what it is rather than something a
 // tighter loop would fix (BenchmarkJoinHash in internal/bench).
 //
-// **Where both inputs are sorted on the key, use [Merge] instead.** §9.2
-// says the sorted-merge strategy does the same work in O(1); the gap is larger
+// **Where both inputs are sorted on the key, use [Merge] instead.** The
+// sorted-merge strategy does the same work in O(1) memory; the gap is larger
 // than "O(1) versus O(build)" conveys — several times the speed and orders of
 // magnitude less memory on the same data (BenchmarkJoinMerge against
 // BenchmarkJoinHash; the figures live in docs/design/architecture.md, "Strategies").
@@ -377,7 +378,8 @@ func fillTable[K comparable, B any](
 			// sluice.DropNewest: the table keeps what it has, and this row and every
 			// one after it are not joinable. Reported once rather than per row
 			// — a truncated table overflows for the whole rest of the stream,
-			// and a diagnostic per dropped row is the pathological batch §4.5
+			// and a diagnostic per dropped row would make a batch of diagnostics
+			// larger than the batch of data, which the diagnostics model
 			// exists to prevent.
 			reportBuildOverflow(limit, table.Len())
 			return false

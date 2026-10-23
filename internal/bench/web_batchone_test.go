@@ -44,7 +44,7 @@ type wResponse struct {
 	total int64
 }
 
-// The six steps of a §1.1-shaped request, written once so both sides run
+// The six steps of a typical web request, written once so both sides run
 // exactly the same work.
 func wDecode(v int64) wParams { return wParams{id: v, qty: v % 7, scope: v % 3} }
 func wAuthz(p wParams) bool   { return p.scope != 2 }

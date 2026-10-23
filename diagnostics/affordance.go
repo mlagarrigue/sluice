@@ -3,7 +3,7 @@ package diagnostics
 // Affordance says what can be done about a value: which action, against which
 // target, with what shape of input.
 //
-// It is the bet §4.4 describes, and the one part of this model with no
+// It is a bet, and the one part of this model with no
 // precedent to copy. The building blocks exist separately — HAL-FORMS
 // describes a property's constraints, Siren describes an action's method and
 // fields — and no format joins them to the location a diagnostic points at.

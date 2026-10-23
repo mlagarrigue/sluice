@@ -852,7 +852,7 @@ type QueryConfig struct {
 //
 // # Errors
 //
-// A [Source] carries them, which is what it exists for (§4.7): a query that
+// A [github.com/mlagarrigue/sluice.Source] carries them, which is what it exists for (§4.7): a query that
 // fails to start produced no row to attach an error to, and one that fails at
 // the end has already produced all of them. Consume, then check
 // [sluice.Source.Err]. A server error arrives as [*Error] with its SQLSTATE.

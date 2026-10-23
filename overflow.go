@@ -51,7 +51,7 @@ const (
 	Fail
 )
 
-// String renders the policy for logs, with the same rule as [diagnostics.Severity.String]:
+// String renders the policy for logs, with the same rule as [github.com/mlagarrigue/sluice/diagnostics.Severity.String]:
 // a value outside the constants shows its number rather than a label that would
 // misrepresent it.
 func (o Overflow) String() string {

@@ -89,7 +89,7 @@ func FuzzPathJSONPointerRoundTrip(f *testing.F) {
 // FuzzPathHasPrefix asserts the property the type exists for: a path is under a
 // prefix if and only if it was built by extending it.
 //
-// The subtree grouping in §4.4 rests on this. A string-matching implementation
+// The subtree grouping of diagnostics rests on this. A string-matching implementation
 // passes the obvious cases and fails on the ones a fuzzer finds first — a field
 // literally named "lines[7]" against the path lines[7], for instance.
 func FuzzPathHasPrefix(f *testing.F) {

@@ -6,7 +6,7 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// §7.3 predicts a batched merge at ~0.39 ns/element, measured on a hand-rolled
+// The batch model predicts a batched merge at ~0.39 ns/element, measured on a hand-rolled
 // harness in step 0. These benchmarks check the real operator against that
 // figure, and against a plain traversal of the same total volume.
 

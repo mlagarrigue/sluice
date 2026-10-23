@@ -5,5 +5,6 @@
 //
 // Both keep elements between batches and CoalesceWithin runs a goroutine for
 // its clock, which is why they live outside the core. The core's Coalesce,
-// which regroups by count alone and holds at most one batch, stays there.
+// which regroups by count alone and holds at most one batch, stays there
+// (docs/design/adr/0001-package-map.md: a package per thing retained).
 package window

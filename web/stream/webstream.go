@@ -96,7 +96,7 @@ const (
 const RouteNone = -1
 
 // Exchange is one request travelling the handler: the element the middle
-// arrows of §1.1 operate on. Stages fill its fields as the batch moves; a
+// stages operate on. Stages fill its fields as the batch moves; a
 // refusal is recorded on it rather than removing it, so the exchange keeps
 // the position its answer must be written at.
 type Exchange struct {

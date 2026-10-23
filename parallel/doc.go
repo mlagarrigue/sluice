@@ -6,5 +6,6 @@
 // Every operator here owns the goroutines it starts and stops them before it
 // returns, on every path out including a panic, so no goroutine outlives the
 // call. The core stays single-goroutine by construction; concurrency is
-// something a pipeline opts into, here, one stage at a time.
+// something a pipeline opts into, here, one stage at a time
+// (docs/design/adr/0001-package-map.md: a package per thing retained).
 package parallel

@@ -248,7 +248,7 @@ func BenchmarkParallelSkewedSerial(b *testing.B) {
 	}
 }
 
-// BenchmarkParallelSkewed: ordered fan-out on skewed work — the case §6.4's
+// BenchmarkParallelSkewed: ordered fan-out on skewed work — the case the ordering
 // trade gives up.
 func BenchmarkParallelSkewed(b *testing.B) {
 	b.ReportAllocs()

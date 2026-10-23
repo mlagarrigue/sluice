@@ -22,7 +22,7 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 
 // Interval joins two time-ordered streams on a key and a temporal
 // predicate, in memory bounded by the caller — the stream-stream join for
-// infinite inputs that §9.3 specifies.
+// infinite inputs.
 //
 //	attributed := Interval(clicks, impressions,
 //	    IntervalSpec[Click, Impression, string, Attribution]{
@@ -74,7 +74,7 @@ type IntervalSpec[L, R any, K comparable, Out any] struct {
 // not kept for rows yet to come, so the result is missing pairs, never wrong
 // ones. Under a dropping policy the first drop calls limit.Report when one is
 // set — typically to raise a Critical diagnostic — once rather than per row
-// (§4.5).
+// — a diagnostic per dropped row would outweigh the data it reports on.
 //
 // # Cost
 //

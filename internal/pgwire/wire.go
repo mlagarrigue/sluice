@@ -58,7 +58,7 @@ const (
 // Message is one protocol message.
 //
 // Body borrows the reader's buffer and is valid only until the next call to
-// [Reader.Next] — the same rule as [sluice.Batch], for the same reason: a
+// [Reader.Next] — the same rule as [github.com/mlagarrigue/sluice.Batch], for the same reason: a
 // connection that allocates per message allocates per row, and per row is the
 // cost this library exists to remove. Retaining a Body requires copying it.
 type Message struct {

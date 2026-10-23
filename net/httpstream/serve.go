@@ -22,7 +22,7 @@ import (
 // the nth response answers the nth request.
 //
 // It is a batch-to-batch function rather than a stream-to-stream one, and the
-// shape is the same one [parallel.Ordered] takes — a stage. That is not a
+// shape is the same one [github.com/mlagarrigue/sluice/parallel.Ordered] takes — a stage. That is not a
 // retreat from the stream model, it is what the model calls a stage; the
 // stream is the connection, and [Requests] hands it over whole to a caller
 // who wants to compose operators over it directly.

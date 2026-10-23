@@ -16,7 +16,7 @@ import (
 // way — one stdlib writer per level, reset per response, the whole buffered
 // body in one write — so this is the stage's own price, with the ratio it
 // buys. What the ratio is worth depends on the link, which only the study's
-// throttled network can say (study, §8.3 F); nothing here is a result.
+// throttled network can say (the comparison study); nothing here is a result.
 //
 // Pair each codec against none with versus.sh:
 //

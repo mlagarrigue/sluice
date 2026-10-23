@@ -4,6 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"go/ast"
+	godoc "go/doc"
+	"go/doc/comment"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -519,4 +524,163 @@ func TestInteropRunnerIsPinned(t *testing.T) {
 	if short := string(m[1][:7]); !bytes.Contains(guide, []byte(short)) {
 		t.Errorf("docs/guide/limits.md does not name the runner revision %s the script runs", short)
 	}
+}
+
+// packageDirs lists the directory of every package of the root module, test
+// files included or not: go list stops at nested modules, which have their
+// own go.mod and their own reviews.
+func packageDirs(t *testing.T) []string {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not installed")
+	}
+	out, err := exec.Command("go", "list", "-f", "{{.Dir}}", "./...").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	return strings.Fields(string(out))
+}
+
+// parseDir parses the Go files of one directory, its tests or the rest.
+func parseDir(t *testing.T, fset *token.FileSet, dir string, tests bool) []*ast.File {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") != tests {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	return files
+}
+
+// unresolvedLink is a doc link go doc leaves as plain text: [Name],
+// [Type.Method], [pkg.Name]. A lowercase single word in brackets is prose.
+var unresolvedLink = regexp.MustCompile(`(?:^|[^A-Za-z0-9_\]])\[([A-Z][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_.]*)\]`)
+
+// Doc links are resolved by go doc and pkg.go.dev against the package's own
+// symbols, its imports and the standard library; one that resolves to
+// nothing is shown as the bracketed text, a reader's dead end. The parser
+// below is go doc's own, so what it leaves unresolved is exactly that.
+func TestDocLinksResolve(t *testing.T) {
+	for _, dir := range packageDirs(t) {
+		fset := token.NewFileSet()
+		files := parseDir(t, fset, dir, false)
+		if len(files) == 0 {
+			continue
+		}
+		p, err := godoc.NewFromFiles(fset, files, "example.com/p", godoc.PreserveAST)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parse := p.Parser()
+		for _, d := range exportedDocs(p) {
+			for _, link := range plainLinks(parse.Parse(d.text).Content) {
+				t.Errorf("%s, doc of %s: [%s] resolves to nothing go doc can link to", filepath.Base(dir), d.name, link)
+			}
+		}
+	}
+}
+
+// plainLinks returns the bracketed identifiers left in the plain text of
+// blocks, code blocks excluded.
+func plainLinks(blocks []comment.Block) []string {
+	var out []string
+	var text func([]comment.Text)
+	text = func(ts []comment.Text) {
+		for _, x := range ts {
+			switch x := x.(type) {
+			case comment.Plain:
+				for _, m := range unresolvedLink.FindAllStringSubmatch(string(x), -1) {
+					out = append(out, m[1])
+				}
+			case *comment.Link:
+				text(x.Text)
+			}
+		}
+	}
+	for _, b := range blocks {
+		switch b := b.(type) {
+		case *comment.Paragraph:
+			text(b.Text)
+		case *comment.Heading:
+			text(b.Text)
+		case *comment.List:
+			for _, item := range b.Items {
+				out = append(out, plainLinks(item.Content)...)
+			}
+		}
+	}
+	return out
+}
+
+// A section number means something only beside the document it numbers.
+// The protocol packages cite their RFCs and protocol pages by section, and
+// name them in their package documentation; elsewhere a section sign and a number
+// pointed at a numbered specification of this repository that no longer
+// exists, and a reader could only guess. Outside the protocol packages, a
+// comment that cites a section names its source in the same comment.
+func TestSectionReferencesNameTheirSource(t *testing.T) {
+	protocol := regexp.MustCompile(`/(net/quic|net/httpstream|database/postgres|internal/pgwire|internal/dgram)(/|$)`)
+	section := regexp.MustCompile(`§\s?\d+(\.\d+)*`)
+	source := regexp.MustCompile(`\bRFC\s*[0-9]{3,5}|PostgreSQL|\bdraft-|\bADR\b|\bBCP\s*[0-9]+`)
+	for _, dir := range packageDirs(t) {
+		if protocol.MatchString(filepath.ToSlash(dir)) {
+			continue
+		}
+		fset := token.NewFileSet()
+		for _, tests := range []bool{false, true} {
+			for _, f := range parseDir(t, fset, dir, tests) {
+				for _, g := range f.Comments {
+					text := g.Text()
+					if s := section.FindString(text); s != "" && !source.MatchString(text) {
+						t.Errorf("%s: %s with no RFC, PostgreSQL page or ADR named in the comment", fset.Position(g.Pos()), s)
+					}
+				}
+			}
+		}
+	}
+}
+
+// namedDoc is one doc comment go doc shows, with what it documents.
+type namedDoc struct{ name, text string }
+
+// exportedDocs lists the doc comments of a package as go doc shows them: the
+// package's, and its exported declarations'.
+func exportedDocs(p *godoc.Package) []namedDoc {
+	out := []namedDoc{{"package " + p.Name, p.Doc}}
+	values := func(vs []*godoc.Value) {
+		for _, v := range vs {
+			out = append(out, namedDoc{strings.Join(v.Names, ", "), v.Doc})
+		}
+	}
+	funcs := func(fs []*godoc.Func) {
+		for _, f := range fs {
+			name := f.Name
+			if f.Recv != "" {
+				name = strings.TrimLeft(f.Recv, "*") + "." + f.Name
+			}
+			out = append(out, namedDoc{name, f.Doc})
+		}
+	}
+	values(p.Consts)
+	values(p.Vars)
+	funcs(p.Funcs)
+	for _, ty := range p.Types {
+		out = append(out, namedDoc{ty.Name, ty.Doc})
+		values(ty.Consts)
+		values(ty.Vars)
+		funcs(ty.Funcs)
+		funcs(ty.Methods)
+	}
+	return out
 }

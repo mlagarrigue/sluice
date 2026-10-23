@@ -170,7 +170,8 @@ func Take[T any](s Stream[T], n int) Stream[T] {
 // pushdown: the source produces them and this operator discards them. Where
 // the source can be told to skip instead, [github.com/mlagarrigue/sluice/pushdown]
 // is the mechanism — a demand the source consults once per batch, which is
-// §3.4's sideways information passing and measured at ×6.9 on a scan that can
+// sideways information passing (a later stage telling an earlier one what it
+// will not need), measured at ×6.9 on a scan that can
 // act on it.
 func Drop[T any](s Stream[T], n int) Stream[T] {
 	if n < 0 {

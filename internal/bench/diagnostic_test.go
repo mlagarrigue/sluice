@@ -14,7 +14,7 @@ import (
 
 var pathSink string
 
-// BenchmarkPathBuild builds the §4.1 example path. Each extension copies, which
+// BenchmarkPathBuild builds the example path of the diagnostics guide. Each extension copies, which
 // is what makes a prefix safe to hold across branches; the count here is what
 // that costs.
 func BenchmarkPathBuild(b *testing.B) {

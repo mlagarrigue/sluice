@@ -102,7 +102,7 @@
 //
 // **The two mechanisms compose.** The bottom row costs one round trip in both
 // shapes: the connection's batch is submitted to the gateway together —
-// [gateway.Gateway.DoBatch], one submission, no goroutine per element — and
+// [github.com/mlagarrigue/sluice/gateway.Gateway.DoBatch], one submission, no goroutine per element — and
 // callers on other connections still join the same batch. Neither mechanism
 // subsumes the other.
 //
@@ -225,7 +225,7 @@ import (
 
 // ErrMalformed reports a request this package will not parse. The connection
 // is answered with a status and closed: a stream whose framing is in doubt
-// cannot be resynchronised, exactly as [postgres.ErrProtocol] argues for the
+// cannot be resynchronised, exactly as [github.com/mlagarrigue/sluice/database/postgres.ErrProtocol] argues for the
 // other wire protocol in this repository.
 var ErrMalformed = errors.New("httpstream: malformed request")
 

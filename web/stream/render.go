@@ -19,7 +19,7 @@ import (
 // the exchange's index and returns the status and body of the business
 // answer; it is not called for a refused one. The two decisions that matter
 // — the status and what the body says — stay in the caller's callback,
-// where §1.1's example insists they remain visible; [web.Status] and
+// where they remain visible to whoever reads it; [web.Status] and
 // [web.Problems] are the defaults to reach for there.
 //
 // Every response with a body carries Content-Type: application/json, then

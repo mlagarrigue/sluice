@@ -239,7 +239,7 @@ func BenchmarkPullPerElement(b *testing.B) {
 }
 
 // BenchmarkPullPerBatch: the same Pull, but pulled in batches.
-// This is the argument of §7.3 — the coroutine cost amortized over 1024.
+// This is the batch model's argument — the coroutine cost amortized over 1024.
 func BenchmarkPullPerBatch(b *testing.B) {
 	src := data(N)
 	b.SetBytes(N * 8)
@@ -263,7 +263,7 @@ func BenchmarkPullPerBatch(b *testing.B) {
 }
 
 // BenchmarkMergeTwoStreams measures the real cost of an N->1 operator in both
-// models. This is the direct validation of §7.3: is the batch merge
+// models. This is the direct validation of the batch model: is the batch merge
 // really negligible?
 func BenchmarkMergeTwoStreams(b *testing.B) {
 	b.Run("element", func(b *testing.B) {
@@ -333,7 +333,7 @@ func BenchmarkMergeTwoStreams(b *testing.B) {
 
 // ---------------------------------------------------------------------------
 // Realistic case: selective filter followed by a transformation.
-// Checks that the batch model holds up when batches empty out (see Coalesce, §7.5).
+// Checks that the batch model holds up when batches empty out (see Coalesce).
 // ---------------------------------------------------------------------------
 
 func BenchmarkSelectiveFilter(b *testing.B) {

@@ -77,7 +77,7 @@ func TestZipLongest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Different batch sizes on each side: the two inputs are not
-			// aligned, which is the case §7.5 says nobody tries to fix.
+			// aligned, which is the case nobody tries to fix.
 			got := zipRows(ZipLongest(sluice.Of(tt.left, 2), sluice.Of(tt.right, 3)))
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("batch 2/3: got %v, want %v", got, tt.want)
@@ -91,7 +91,7 @@ func TestZipLongest(t *testing.T) {
 }
 
 // Zip — stopping at the shorter stream — is a filter over ZipLongest rather
-// than an operator. That is the claim §7.4 rests on.
+// than an operator. That is the claim the zip rests on.
 func TestZipLongestDerivesZip(t *testing.T) {
 	zipped := ZipLongest(sluice.Of([]int{1, 2, 3}, 2), sluice.Of([]string{"a", "b"}, 2))
 	got := zipRows(sluice.Filter(zipped, EitherOrBoth[int, string].Both))

@@ -98,7 +98,7 @@ func TestApplyAmendsALine(t *testing.T) {
 	}
 }
 
-// The bet of §4.4, exercised: a refusal carries both why and how to fix it, at
+// The affordance bet, exercised: a refusal carries both why and how to fix it, at
 // the same path.
 func TestRejectionCarriesItsRemedy(t *testing.T) {
 	store := newStore(orders.Line{OrderID: 42, Index: 7, SaleQty: 1})

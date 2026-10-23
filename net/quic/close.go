@@ -50,8 +50,8 @@ type transportError struct {
 func (e *transportError) Error() string { return e.err.Error() }
 func (e *transportError) Unwrap() error { return e.err }
 
-// Why a connection ended, as [Conn.Err] reports it (and [Conn.Dial] or
-// [Conn.Accept] when it ended during the handshake). Each cause has its own
+// Why a connection ended, as [Conn.Err] reports it (and [Dial] or
+// [Listener.Accept] when it ended during the handshake). Each cause has its own
 // value, so a caller distinguishes them with [errors.Is] and [errors.As]
 // rather than by reading the text: a server whose clients leave silently
 // sees [ErrIdleTimeout] once per client, a peer that rebooted shows as

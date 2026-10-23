@@ -52,8 +52,8 @@
 //
 // The gateway deliberately does not check, batch by batch, that every call
 // came back answered. Returning from a yield means the batch was accepted
-// downstream, not that it was handled: [parallel.Async] and
-// [parallel.Unordered] return as soon as a worker has taken it, with
+// downstream, not that it was handled: [github.com/mlagarrigue/sluice/parallel.Async] and
+// [github.com/mlagarrigue/sluice/parallel.Unordered] return as soon as a worker has taken it, with
 // the replies still to come. A check there would fail calls the pipeline is
 // about to answer, and the real answer arriving afterwards would panic as a
 // second one — so composing a fan-out inside the pipeline, which is exactly
@@ -95,7 +95,7 @@
 //
 // One gateway drives one pipeline on one goroutine, so batches are served one
 // after another. That is a ceiling, and lifting it is a composition rather
-// than a setting: put [parallel.Unordered] inside the pipeline and
+// than a setting: put [github.com/mlagarrigue/sluice/parallel.Unordered] inside the pipeline and
 // several batches are in flight at once. Unordered rather than ordered,
 // because nothing downstream of a request/reply gateway cares which batch
 // finishes first — every call carries its own way back.

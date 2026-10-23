@@ -329,7 +329,7 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 //
 // The order is the contract HTTP/1.1 imposes on a pipelined connection: the
 // nth response answers the nth request, and there is no field saying
-// otherwise. A pipeline that reorders — [parallel.Unordered], a filter
+// otherwise. A pipeline that reorders — [github.com/mlagarrigue/sluice/parallel.Unordered], a filter
 // that drops an element — breaks that silently, which is why [Serve] takes a
 // batch-to-batch function and checks the count rather than accepting any
 // stream and hoping.

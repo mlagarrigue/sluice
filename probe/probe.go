@@ -23,10 +23,10 @@
 // apart; no counter on a single goroutine can answer it.
 //
 // Across a boundary where the two sides run on different goroutines — an
-// [parallel.Async] — the lag also counts the elements queued in transit, and
+// [github.com/mlagarrigue/sluice/parallel.Async] — the lag also counts the elements queued in transit, and
 // there it does speak to pace: a lag that sits at the boundary's depth means
 // the side after it is the slower one, a lag near zero means the side before
-// it is. [parallel.Ordered] is not such a boundary: its source runs on the
+// it is. [github.com/mlagarrigue/sluice/parallel.Ordered] is not such a boundary: its source runs on the
 // consumer's goroutine and its reordering ring is kept full whatever the
 // pace, so the lag across it is up to its worker count in batches.
 //

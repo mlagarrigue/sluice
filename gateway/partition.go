@@ -46,7 +46,7 @@ import (
 // batch — including the ones whose principal was resolved first. Whether that
 // is affordable depends on how many distinct principals a real batch carries,
 // which is a measurement this repository has not been able to take yet.
-// See docs/BRIEF-PARITY.md §0.3: the number decides whether batching survives
+// That number decides whether batching survives
 // multi-tenancy, and until it exists this type is a mechanism without its
 // verdict.
 //
@@ -139,7 +139,7 @@ func (p *Partitions[T, K]) Each(b sluice.Batch[T], key func(T) K, fn func(K, []T
 
 // Len reports how many distinct keys the last [Partitions.Each] saw.
 //
-// It is the number §0.3 says has to be measured rather than assumed — the
+// It is the number that has to be measured rather than assumed — the
 // round trips a batch costs — so it is readable rather than inferred from
 // counting callbacks.
 func (p *Partitions[T, K]) Len() int { return len(p.keys) }

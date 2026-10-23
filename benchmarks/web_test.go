@@ -302,7 +302,7 @@ func (b *replayBody) rewind()      { b.pos = 0 }
 // httptest.NewRecorder allocates roughly 8 KiB per call — forty times the size
 // of the response these handlers write. Measured through one, all five
 // contenders came out within 15% of each other at ~3400 ns, which was the
-// recorder being measured rather than the frameworks. §2 says to look for the
+// recorder being measured rather than the frameworks. The study says to look for the
 // harness being wrong before believing a result, and this is what that looked
 // like.
 type discardWriter struct {

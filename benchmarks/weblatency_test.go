@@ -136,7 +136,7 @@ func gatewayHandler(tb testing.TB) http.Handler {
 		func(calls sluice.Stream[*gateway.Call[amendRequest, amendResult]]) {
 			var parts gateway.Partitions[*gateway.Call[amendRequest, amendResult], string]
 			calls(func(b sluice.Batch[*gateway.Call[amendRequest, amendResult]]) bool {
-				// Partitioned by principal, exactly as §0.3 requires — with no
+				// Partitioned by principal, exactly as multi-tenancy requires — with no
 				// database behind it, so the partitioning cost shows and the
 				// round trips it would save do not.
 				_ = parts.Each(b, func(c *gateway.Call[amendRequest, amendResult]) string {

@@ -18,8 +18,8 @@ import (
 // A drain that ends within the grace returns nil.
 var ErrShutdownForced = errors.New("httpstream: the shutdown grace passed with requests in flight")
 
-// Server serves HTTP/1.1 and HTTP/2 on the [net.Listener]s handed to
-// [Server.Serve] and HTTP/3 on the [quic.Listener]s handed to
+// Server serves HTTP/1.1 and HTTP/2 on the listeners ([net.Listener]) handed to
+// [Server.Serve] and HTTP/3 on the QUIC listeners ([quic.Listener]) handed to
 // [Server.ServeQUIC], and stops all of them two ways:
 //
 //   - [Server.Shutdown] is the normal stop: nothing new is accepted, the

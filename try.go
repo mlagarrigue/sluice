@@ -35,7 +35,8 @@ import (
 // error is the panic value as raised — for parallel.ErrState that is the
 // wrapping error, so errors.Is reaches both the sentinel and the cause.
 //
-// Try panics if consume is nil.
+// Try panics if consume is nil. Why sentinels panic and Try converts them:
+// docs/design/adr/0006-sentinel-panics-and-try.md.
 func Try(consume func()) (err error) {
 	if consume == nil {
 		panic("sluice: Try requires a non-nil consume function")

@@ -20,7 +20,8 @@ import (
 //
 // # Order is preserved
 //
-// Batches come out in the order they went in. §6.4 allows either that or
+// Batches come out in the order they went in. A parallel stage could offer
+// either that or
 // unordered output, and this takes the ordered side: an operator inserted into
 // an existing pipeline must not silently change what the pipeline means, and
 // nothing about the call site would reveal that it had.
@@ -29,7 +30,7 @@ import (
 // what keeps this in the bounded-state family rather than the unbounded one.
 // A caller who genuinely does not need order — and whose work is skewed enough
 // that waiting on the oldest batch idles the pool — reaches for
-// [Unordered], whose name is its contract; §6.4's worry about two
+// [Unordered], whose name is its contract; the worry about two
 // operators differing invisibly is answered by making the difference
 // impossible to type by accident.
 //
@@ -40,7 +41,7 @@ import (
 // however idle the others are: on work heavy enough to be worth distributing,
 // four workers measured at 4.10 ms against 5.27 ms serial — a factor of 1.29,
 // not 4. Independent workers with no ordering constraint would do better; that
-// is the trade §6.4 describes, taken deliberately.
+// is the trade, taken deliberately.
 //
 // Below that, the fan-out costs. On an f that only passes its batch through,
 // four workers measured at 127 microseconds against 37 serial — 3.5 times
@@ -94,14 +95,14 @@ import (
 // behind it.
 //
 // Because f runs on another goroutine, its stack is not the caller's: a panic
-// crossing back loses the native trace §6.4 warns about. Enrich the context in
+// crossing back loses the native trace. Enrich the context in
 // f rather than relying on the trace to say where it came from.
 //
 // # Degenerate arguments
 //
 // workers of 0 or 1 is an explicit no-op: f is applied inline on the calling
-// goroutine, with no channel, no goroutine and no reordering buffer. §6.4
-// requires this to be stated rather than silently concurrent, so that
+// goroutine, with no channel, no goroutine and no reordering buffer. It is
+// stated rather than silently concurrent, so that
 // Ordered(s, 1, f) is a way to turn the concurrency off and not a slower way
 // to keep it. A negative workers count panics.
 //
@@ -114,7 +115,7 @@ func Ordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]) 
 		panic(negativeWorkers("Ordered", workers))
 	}
 	if workers <= 1 {
-		// The explicit no-op §6.4 asks for: same shape, no concurrency.
+		// The explicit no-op: same shape, no concurrency.
 		return func(yield func(sluice.Batch[B]) bool) {
 			s(func(b sluice.Batch[A]) bool { return yield(f(b)) })
 		}

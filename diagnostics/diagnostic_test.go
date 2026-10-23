@@ -134,7 +134,7 @@ func TestDiagnosticNoCause(t *testing.T) {
 	}
 }
 
-// A Diagnostic must not satisfy the error interface. §4.6 says a warning is not
+// A Diagnostic must not satisfy the error interface: a warning is not
 // a processing error; with an Error method it would be one to the compiler, and
 // a Warning returned as an error fires every `if err != nil` it reaches.
 //
@@ -146,7 +146,7 @@ func TestDiagnosticIsNotAnError(t *testing.T) {
 
 	if _, isError := d.(error); isError {
 		t.Error("Diagnostic satisfies error: a Warning can now be returned where " +
-			"a failure is expected, which is exactly what §4.6 forbids")
+			"a failure is expected, which is exactly what a diagnostic must not say")
 	}
 	// It is a Stringer instead: the rendering stays available to fmt and logs.
 	if _, isStringer := d.(interface{ String() string }); !isStringer {

@@ -7,5 +7,6 @@
 // and not in the core: the core's operators hold nothing beyond the batch in
 // flight. The cost of each is stated in its documentation, and the bound that
 // keeps it finite — BuildLimit, or the input's ordering — is a required
-// argument rather than an option.
+// argument rather than an option. Decisions: docs/design/adr/0004-merge-join-signature.md
+// and docs/design/adr/0016-hash-join-bound.md.
 package join
