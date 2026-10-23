@@ -20,8 +20,14 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **quic:** rotate keys per RFC 9001 §6
-* **web:** NewRouter panics on a bad table
+* **quic:** rotate keys per RFC 9001 §6 — a connection now follows a peer's
+  key rotation and rotates its own keys before the AEAD limit instead of
+  dying of its packet count; `Stats` gains a `KeyUpdates` field, so an
+  unkeyed `quic.Stats{...}` literal no longer compiles.
+* **web:** NewRouter panics on a bad table — `stream.NewRouter` returns
+  `*Router` alone, no error: drop the `err` from `r, err := NewRouter(...)`;
+  a pattern it cannot read, or a row an earlier row of the same method
+  shadows, now panics at start-up, where the mistake is.
 
 ### Features
 

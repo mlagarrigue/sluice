@@ -64,6 +64,59 @@ sentence. Experimental means: no compatibility promise, and not yet
 confronted with other implementations. It does not live in a separate
 directory.
 
+## Checking
+
+Before every commit, all of this, and none of it may print anything:
+
+```bash
+gofumpt -l .
+go vet ./...
+go test -race -shuffle=on ./...
+golangci-lint run ./...
+go generate ./...        # generated files are committed; drift fails a test
+```
+
+`scripts/check.sh` runs the first four in that order and stops at the first
+failure, then `scripts/check-hygiene.sh`, which refuses personal tool
+configuration and attributions in tracked files and commits. CI runs the
+same scripts, plus `scripts/check-api.sh`, which compares the exported API
+of each commit with its parent's and refuses a break whose commit subject
+carries no `!`.
+
+The PostgreSQL integration tests run whenever `SLUICE_PG` is set and skip
+otherwise. In the devcontainer ([below](#the-development-container)) the `sluice-postgres` server is there and the
+variables are set: `go test ./database/postgres/` runs them. Outside it,
+`eval "$(internal/bench/scripts/pgdev.sh start)"` starts a throwaway cluster
+with a role that is **not a superuser** — row-level security does not apply
+to one, so a suite run as `postgres` passes without proving anything. A
+failed start is loud: a suite that skips its tests reads exactly like one
+that passes.
+
+Verify commits one by one, not only the tip:
+
+```bash
+git worktree add -q --detach /tmp/verify HEAD
+for sha in $(git rev-list --reverse main..HEAD); do
+  git -C /tmp/verify checkout -q "$sha"
+  (cd /tmp/verify && scripts/check.sh) >/dev/null 2>&1 \
+    && echo "OK   $sha" || echo "FAIL $sha"
+done
+git worktree remove --force /tmp/verify
+```
+
+After any scripted edit (`sed`, `python`), run the suite again: a
+substitution "from this marker to the end of the file" takes everything after
+it along.
+
+CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
+per-OS files a Linux build never compiles), runs the integration tests against
+PostgreSQL 17 with the same `init.sql` as the devcontainer, and runs every
+fuzz target for 30 seconds nightly (`.github/scripts/fuzz.sh`, which also
+runs locally); a failing input is uploaded as an artifact, and committing it
+under the package's `testdata/fuzz/` makes it a regression test. Test order
+is shuffled: a failure that depends on order prints its seed, and
+`-shuffle=<seed>` reproduces it.
+
 ## The development container
 
 `.devcontainer/` describes a *devcontainer*: a development environment that
@@ -153,59 +206,6 @@ Why this arrangement rather than a copy of the public configuration:
   (credentials, say), declare it under `dev.volumes` with `:ro` (read-only).
   In a Compose configuration, the devcontainer CLI ignores `readonly` in
   `devcontainer.json`'s `mounts` key; Compose honours `:ro`.
-
-## Checking
-
-Before every commit, all of this, and none of it may print anything:
-
-```bash
-gofumpt -l .
-go vet ./...
-go test -race -shuffle=on ./...
-golangci-lint run ./...
-go generate ./...        # generated files are committed; drift fails a test
-```
-
-`scripts/check.sh` runs the first four in that order and stops at the first
-failure, then `scripts/check-hygiene.sh`, which refuses personal tool
-configuration and attributions in tracked files and commits. CI runs the
-same scripts, plus `scripts/check-api.sh`, which compares the exported API
-of each commit with its parent's and refuses a break whose commit subject
-carries no `!`.
-
-The PostgreSQL integration tests run whenever `SLUICE_PG` is set and skip
-otherwise. In the devcontainer the `sluice-postgres` server is there and the
-variables are set: `go test ./database/postgres/` runs them. Outside it,
-`eval "$(internal/bench/scripts/pgdev.sh start)"` starts a throwaway cluster
-with a role that is **not a superuser** — row-level security does not apply
-to one, so a suite run as `postgres` passes without proving anything. A
-failed start is loud: a suite that skips its tests reads exactly like one
-that passes.
-
-Verify commits one by one, not only the tip:
-
-```bash
-git worktree add -q --detach /tmp/verify HEAD
-for sha in $(git rev-list --reverse main..HEAD); do
-  git -C /tmp/verify checkout -q "$sha"
-  (cd /tmp/verify && scripts/check.sh) >/dev/null 2>&1 \
-    && echo "OK   $sha" || echo "FAIL $sha"
-done
-git worktree remove --force /tmp/verify
-```
-
-After any scripted edit (`sed`, `python`), run the suite again: a
-substitution "from this marker to the end of the file" takes everything after
-it along.
-
-CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
-per-OS files a Linux build never compiles), runs the integration tests against
-PostgreSQL 17 with the same `init.sql` as the devcontainer, and runs every
-fuzz target for 30 seconds nightly (`.github/scripts/fuzz.sh`, which also
-runs locally); a failing input is uploaded as an artifact, and committing it
-under the package's `testdata/fuzz/` makes it a regression test. Test order
-is shuffled: a failure that depends on order prints its seed, and
-`-shuffle=<seed>` reproduces it.
 
 ## Measuring
 
