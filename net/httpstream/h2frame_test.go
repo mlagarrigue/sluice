@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,5 +243,34 @@ func TestFrameParsingAllocatesNothing(t *testing.T) {
 	}
 	if len(sink.Payload) != 7 {
 		t.Errorf("payload = %q", sink.Payload)
+	}
+}
+
+// A bound the configuration sets names its field when it refuses: the
+// operator who reads the error knows what to raise, without looking the
+// number up.
+func TestH2BoundErrorsNameTheirField(t *testing.T) {
+	cfg := Config{MaxHeaderBytes: 16, MaxContinuationFrames: 1}.mustResolve()
+	r := &frameReader{cfg: cfg}
+	block := h2Frame{Type: frameHeaders, StreamID: 1, Payload: make([]byte, 8)}
+	cont := h2Frame{Type: frameContinuation, StreamID: 1, Payload: make([]byte, 4)}
+	big := h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 3, Payload: make([]byte, 32)}
+	frame, _ := appendH2Frame(nil, h2Frame{Type: frameData, StreamID: 1, Payload: make([]byte, 64)})
+	_, _, frameErr := parseFrame(frame, 32)
+	for _, c := range []struct {
+		name, field string
+		err         error
+	}{
+		{"CONTINUATION count", "Config.MaxContinuationFrames", func() error {
+			_ = r.trackHeaderBlock(block)
+			_ = r.trackHeaderBlock(cont)
+			return r.trackHeaderBlock(cont)
+		}()},
+		{"header block", "Config.MaxHeaderBytes", (&frameReader{cfg: cfg}).trackHeaderBlock(big)},
+		{"frame size", "Config.MaxFrameSize", frameErr},
+	} {
+		if c.err == nil || !strings.Contains(c.err.Error(), c.field) {
+			t.Errorf("%s: %v, want an error naming %s", c.name, c.err, c.field)
+		}
 	}
 }

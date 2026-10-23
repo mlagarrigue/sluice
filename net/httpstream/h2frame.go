@@ -281,11 +281,11 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 		r.continuations++
 		r.headerBlock += len(f.Payload)
 		if r.continuations > r.cfg.MaxContinuationFrames {
-			return fmt.Errorf("%w: over %d CONTINUATION frames in one header block",
+			return fmt.Errorf("%w: over %d CONTINUATION frames in one header block (Config.MaxContinuationFrames)",
 				ErrH2Protocol, r.cfg.MaxContinuationFrames)
 		}
 		if r.headerBlock > r.cfg.MaxHeaderBytes {
-			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBytes)
+			return fmt.Errorf("%w: a header block over %d bytes (Config.MaxHeaderBytes)", ErrH2Protocol, r.cfg.MaxHeaderBytes)
 		}
 		if f.EndsHeaders() {
 			r.inHeaderBlock = false
@@ -299,7 +299,7 @@ func (r *frameReader) trackHeaderBlock(f h2Frame) error {
 	case frameHeaders:
 		r.headerBlock = len(f.Payload)
 		if r.headerBlock > r.cfg.MaxHeaderBytes {
-			return fmt.Errorf("%w: a header block over %d bytes", ErrH2Protocol, r.cfg.MaxHeaderBytes)
+			return fmt.Errorf("%w: a header block over %d bytes (Config.MaxHeaderBytes)", ErrH2Protocol, r.cfg.MaxHeaderBytes)
 		}
 		if !f.EndsHeaders() {
 			r.inHeaderBlock, r.openStream, r.continuations = true, f.StreamID, 0
@@ -397,7 +397,7 @@ func parseFrame(buf []byte, maxFrameSize int) (h2Frame, int, error) {
 	if length > maxFrameSize {
 		// §4.2 mandates FRAME_SIZE_ERROR for a frame over the advertised
 		// maximum, which errFrameSize puts on the GOAWAY.
-		return f, 0, fmt.Errorf("%w: %w: a frame declares %d bytes, over the %d-byte maximum",
+		return f, 0, fmt.Errorf("%w: %w: a frame declares %d bytes, over the %d-byte maximum (Config.MaxFrameSize)",
 			ErrH2Protocol, errFrameSize, length, maxFrameSize)
 	}
 	f.Type, f.Flags = buf[3], buf[4]
