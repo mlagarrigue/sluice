@@ -2,6 +2,7 @@ package sluice_test
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -95,6 +96,47 @@ func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
 		}
 		if !strings.Contains(body[i], "```sh\ngo ") {
 			t.Errorf("%s: \"## You can now\" has no sh block starting with a go command", page)
+		}
+	}
+}
+
+// maxRecordParagraph is the longest paragraph a decision record may hold.
+const maxRecordParagraph = 14
+
+// A decision record is read one idea at a time: no paragraph — the lines
+// between two blank ones, a list without blank lines between its items
+// counting as one — runs past fourteen lines outside code blocks.
+func TestDecisionRecordParagraphsAreShort(t *testing.T) {
+	records, err := filepath.Glob("docs/design/adr/[0-9][0-9][0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range records {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, n, fenced := 0, 0, false
+		for i, line := range append(strings.Split(string(b), "\n"), "") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				fenced = !fenced
+				n = 0
+				continue
+			}
+			if fenced {
+				continue
+			}
+			if strings.TrimSpace(line) != "" {
+				if n == 0 {
+					start = i + 1
+				}
+				n++
+				continue
+			}
+			if n > maxRecordParagraph {
+				t.Errorf("%s:%d: a paragraph of %d lines; one idea per paragraph", f, start, n)
+			}
+			n = 0
 		}
 	}
 }
