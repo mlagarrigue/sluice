@@ -180,8 +180,9 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 		measured = append(measured, nanos(m))
 	}
 	// A table may name its unit once, in the header ("ns per call"), and
-	// write bare numbers below it.
-	unit := regexp.MustCompile(`\b(ns|µs|ms)\b`)
+	// write bare numbers below it. The unit is bounded by a space rather than
+	// \b, which is ASCII-only and so never matches before "µs".
+	unit := regexp.MustCompile(`(?:^|\s)(ns|µs|ms)\b`)
 	bare := regexp.MustCompile(`^\s*(\d[\d,]*(?:\.\d+)?)\s*$`)
 	var header []string
 	lines := strings.Split(string(page), "\n")
@@ -209,7 +210,7 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range append([]string{"README.md"}, guides...) {
+	for _, f := range append([]string{"README.md", "docs/design/architecture.md"}, guides...) {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)
