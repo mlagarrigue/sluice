@@ -18,6 +18,13 @@ func ExampleOf() {
 	// [5]
 }
 
+// Empty is the stream a branch returns when it has nothing to say: it yields
+// no batch, so every operator downstream sees an ordinary end.
+func ExampleEmpty() {
+	fmt.Println(sluice.Count(sluice.Concat(sluice.Empty[int](), sluice.Of([]int{1, 2}, 2))))
+	// Output: 2
+}
+
 func ExampleMap() {
 	s := sluice.Of([]int{1, 2, 3}, sluice.DefaultBatchSize)
 	s = sluice.Map(s, func(v int) int { return v * 10 })
