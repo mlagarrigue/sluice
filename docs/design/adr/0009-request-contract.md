@@ -23,16 +23,20 @@ enforces it:
    three (RFC 9110 §7.2: a host, an optional port, no userinfo, never
    empty); `Host: u@h` is refused on HTTP/1.1 as `:authority: u@h` is on
    HTTP/2 and HTTP/3.
+
 2. **Target raw and origin-form.** Begins with `/`, query attached, nothing
    percent-decoded. The one exception is `*` on an `OPTIONS` request (RFC
    9110 §7.1), accepted on all three; other forms are refused by the parser.
+
 3. **Header names keep the case the protocol sent.** The handler matches
    case-insensitively (`Request.Get` does) rather than the package rewriting
    what the client sent.
+
 4. **The body is complete and bounded, or streamed when asked for.** An
    element is a whole request under `MaxBodyBytes`; no partial reads, no
    framing left to check — unless streaming is asked for, on any of the
    three protocols:
+
    - **Additive, through a bound.** `Config.MaxStreamedBodyBytes`: zero
      keeps the whole-body contract; positive turns streaming on and bounds
      a streamed body. A body is accepted up to the larger of the two
@@ -43,15 +47,18 @@ enforces it:
      body of unannounced length. The 100 Continue a client waits for goes
      out when the handler first waits for the body, so a handler that
      answers without reading never invites it.
+
    - **What stays batched.** A body already whole in the read that brought
      its headers, under `MaxBodyBytes`, arrives in `Body` as today, so
      small requests still batch. Any other body arrives through
      `Request.Stream`, a `sluice.Source[[]byte]`, with `Body` nil;
      `Request.ReadAll(dst, limit)` returns either form whole.
+
    - **Consumed within the call.** The stream is valid while the handler
      runs. A body left unread when it returns closes the connection after
      the response on HTTP/1.1, and resets the stream with `NO_ERROR` after
      the response on HTTP/2 and HTTP/3 (RFC 9113 §8.1, RFC 9114 §4.1).
+
    - **Batches and backpressure.** On HTTP/1.1 a streamed request ends its
      batch, and nothing past what the handler consumed is read; chunked
      coding is undone as it arrives. On HTTP/2 and HTTP/3 a batch may hold
@@ -62,6 +69,7 @@ enforces it:
      `MaxConcurrentStreams` times it across a connection; the aggregate
      bound (four times `MaxBodyBytes`) stays the bound of the bodies
      assembled whole.
+
    - **HTTP/3 streams on manual credit.** The connection's credit
      (`MAX_DATA`) and the stream's (`MAX_STREAM_DATA`) can only be returned
      apart when the transport credits on release, which it does once its
@@ -73,18 +81,22 @@ enforces it:
      `Config.TransportParameters` gives a streaming server the transport's
      default stream window rather than one sized to `MaxBodyBytes`, since
      that window, not `MaxBodyBytes`, bounds a streamed body.
+
    - **Progress, not duration.** Each read of a streamed body that waits
      for bytes has `ReadTimeout`; there is no total deadline. A stream ends
      with `ErrMalformed` when the client resets it or the connection closes
      midway, with `os.ErrDeadlineExceeded` when a wait passes
      `ReadTimeout`.
+
    - **The default switches** (a break) once the three protocols stream, a
      real consumer has used it, and a paired A/B of small requests shows
      noise.
+
 5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);
    the handler sees them joined again by `"; "` as one field, as HTTP/1.1
    delivers it, and `MaxHeaders` counts that one field, not the crumbs.
+
 6. **The response says its payload one way.** `Body` for a payload in
    hand, `Stream` for one produced as it goes, never both; `ContentLength`
    describes a `Stream` and nothing else. The forbidden combinations are
@@ -124,15 +136,16 @@ keeps one contract, and a handler that ignores the stream keeps working
 while the bound is zero. Returning a stream's window on consumption is what
 makes backpressure a property of the protocol rather than of the server's
 memory; returning the connection's on arrival is what keeps one unread body
-from stalling the others. Counting a streamed body against the aggregate
-bound as well was the first form and was measured wrong: two concurrent
-uploads, each within its window, had the second reset with
-`ENHANCE_YOUR_CALM` — a conforming client refused for doing what it was
-granted. The window already bounds what such a body holds; a workload that
-needs a tighter connection bound gets it by withholding windows, so that the
-client waits, never by resetting a client that kept to them. What is lost:
-with streaming on, a handler meets
-two forms (`ReadAll` joins them), and an unread body costs an HTTP/1.1
+from stalling the others.
+
+Counting a streamed body against the aggregate bound as well was the first
+form and was measured wrong: two concurrent uploads, each within its window,
+had the second reset with `ENHANCE_YOUR_CALM` — a conforming client refused
+for doing what it was granted. The window already bounds what such a body
+holds; a workload that needs a tighter connection bound gets it by
+withholding windows, so that the client waits, never by resetting a client
+that kept to them. What is lost: with streaming on, a handler meets two
+forms (`ReadAll` joins them), and an unread body costs an HTTP/1.1
 connection. That last choice is revisited if a consumer finds the closed
 connection too dear, by draining up to a bound instead.
 

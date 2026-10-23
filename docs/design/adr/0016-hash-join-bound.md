@@ -22,11 +22,13 @@ not see), `OnOverflow` (`Fail` panics with `sluice.ErrOverflow`;
 `DropNewest` joins against the truncated table; `DropOldest` is refused,
 because a hash table has no oldest entry), and `Report func(limit, held
 int)`, called once on overflow so the caller can raise its `Critical`
-diagnostic. The zero value is refused: a limit of zero under the zero
-policy would drop every row. The table is in memory and nothing supplies
-another: spill to disk, the reason an interface would exist, has neither a
-consumer nor a measure, and adding the interface back is a compatible change
-the day it does. The table is a flat value slice with an `int32` index chain, not
+diagnostic.
+
+The zero value is refused: a limit of zero under the zero policy would drop
+every row. The table is in memory and nothing supplies another: spill to
+disk, the reason an interface would exist, has neither a consumer nor a
+measure, and adding the interface back is a compatible change the day it
+does. The table is a flat value slice with an `int32` index chain, not
 `map[K][]B`: measured at 2.6× the time and 110× the allocations against the
 obvious shape, which caps `MaxEntries` at the chain's addressable range and
 refuses more at construction.

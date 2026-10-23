@@ -62,17 +62,18 @@ Four such modules exist, all on `main`:
 tree. The root's `go test ./...` does not see them; `scripts/check.sh` runs
 `go vet` and golangci-lint (the root's linters, with its configuration) in
 each of them, without their tests, which want PostgreSQL, a `quic-go` peer
-or a load campaign. The comparison module lives on `main` for the reason
-interop does: on a branch of its own it falls behind, and a measurement of
-code that is no longer the code proves nothing about it. The
-measurements are still taken on purpose, not on every push; what runs on
-every push is `go vet` and one pass of every benchmark in the
-`benchmarks-module` job, `go vet` and `go mod tidy -diff` of the study's two
-modules in the same job, golangci-lint in all four in the `lint` job, and
-`TestPGContendersAgree` against PostgreSQL 17
-and 18 in the `postgres` job, so an API change that breaks a module, a
-benchmark that hangs, or a connector that reads other rows than `pgx` goes
-red the day it lands.
+or a load campaign.
+
+The comparison module lives on `main` for the reason interop does: on a
+branch of its own it falls behind, and a measurement of code that is no
+longer the code proves nothing about it. The measurements are still taken on
+purpose, not on every push; what runs on every push is `go vet` and one pass
+of every benchmark in the `benchmarks-module` job, `go vet` and `go mod tidy
+-diff` of the study's two modules in the same job, golangci-lint in all four
+in the `lint` job, and `TestPGContendersAgree` against PostgreSQL 17 and 18
+in the `postgres` job, so an API change that breaks a module, a benchmark
+that hangs, or a connector that reads other rows than `pgx` goes red the day
+it lands.
 
 **The nested modules never ship, but they are watched.** They run on the
 project's machines and pin `quic-go`, `pgx`, `gin` and the `x/` modules

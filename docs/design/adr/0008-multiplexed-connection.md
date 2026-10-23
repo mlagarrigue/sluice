@@ -8,15 +8,18 @@
 
 Both multiplexed servers (HTTP/2, HTTP/3) ran everything on the goroutine
 that read the socket: parsing, the handler, response framing, and the
-draining of streamed bodies. One goroutine per connection is the shape the
-project wants; the same goroutine reading and writing is not. Observed: a
-streamed response past the 64 KiB default window killed the whole
-connection, because the goroutine that would read the `WINDOW_UPDATE` was
-blocked writing; the connection was deaf to `PING`, `GOAWAY` and
-`RST_STREAM` while a handler ran; on HTTP/3 the inline drain blocked the
-QUIC read loop and the handshake; and every refusal was a `GOAWAY`, so one
-bad request among a hundred lost all hundred. A multiplexed protocol exists
-to make requests independent.
+draining of streamed bodies.
+
+One goroutine per connection is the shape the project wants; the same
+goroutine reading and writing is not. Observed: a streamed response past the
+64 KiB default window killed the whole connection, because the goroutine
+that would read the `WINDOW_UPDATE` (the frame that gives a sender more
+credit) was blocked writing; the connection was deaf to `PING` (a frame the
+peer must echo), `GOAWAY` (the frame that says no new stream will be taken)
+and `RST_STREAM` (the frame that cancels one stream) while a handler ran; on
+HTTP/3 the inline drain blocked the QUIC read loop and the handshake; and
+every refusal was a `GOAWAY`, so one bad request among a hundred lost all
+hundred. A multiplexed protocol exists to make requests independent.
 
 ## Decision
 
@@ -28,15 +31,18 @@ hands each batch to a `Handler` call on a goroutine of its own, which it
 never waits for, and the responder frames what the calls return: a batch
 that arrives while another is being answered does not wait for it. Each
 call holds stream slots, so the calls in flight are bounded by
-`MaxConcurrentStreams`. HTTP/3 has no responder: its read callback hands
-each batch to a call on a goroutine of its own, which writes each answer on
-a goroutine per request stream, so a slow call holds only
-its batch and a slow body only its stream. Its bound is the assembler's own
-count of requests in flight — from a stream's first frame until its response
-is written — not the transport's stream slot, which QUIC gives back as soon
-as both directions are done: a client's STOP_SENDING on a complete request
-(RFC 9114 §4.1.1) frees the slot at once, with the handler call still
-running, and counting slots would let one call run per cancellation.
+`MaxConcurrentStreams`.
+
+HTTP/3 has no responder: its read callback hands each batch to a call on a
+goroutine of its own, which writes each answer on a goroutine per request
+stream, so a slow call holds only its batch and a slow body only its stream.
+Its bound is the assembler's own count of requests in flight — from a
+stream's first frame until its response is written — not the transport's
+stream slot, which QUIC gives back as soon as both directions are done: a
+client's STOP_SENDING on a complete request (RFC 9114 §4.1.1) frees the slot
+at once, with the handler call still running, and counting slots would let
+one call run per cancellation.
+
 Both servers close a connection whose cancellations and refusals
 outrun a flat allowance plus two per request answered — four batches of
 frames on HTTP/2, four times `MaxConcurrentStreams` on HTTP/3 — with
@@ -56,17 +62,18 @@ responder queues a batch and moves on to the next, so a stream waiting for
 its window no longer holds the others, and the writer hands the batch's
 buffer back once each of its answers is written, dropped or expired. A
 streamed body is still pulled by the responder, at the socket's pace, once
-its head is out. Flow control waits instead of refusing, bounded by
-`WriteTimeout` read as a time without progress (`WriteProgressBytes`, 4 KiB
-by default); scheduling is round-robin per byte-budget round, control
-frames first; failures are classified (stream error resets one stream,
-connection error is reserved for framing and HPACK state); closed streams
-are remembered so late `DATA` is tolerated and still counted, and a late
-header block on one, or on a closed stream the bounded memory has since
-forgotten, is decoded and dropped rather than refused — only a block on a
-stream the client never opened is the connection error; the idle
-clock does not run while answers are owed; the connection receive window
-starts at 1 MiB.
+its head is out.
+
+Flow control waits instead of refusing, bounded by `WriteTimeout` read as a
+time without progress (`WriteProgressBytes`, 4 KiB by default); scheduling
+is round-robin per byte-budget round, control frames first; failures are
+classified (stream error resets one stream, connection error is reserved for
+framing and HPACK state); closed streams are remembered so late `DATA` is
+tolerated and still counted, and a late header block on one, or on a closed
+stream the bounded memory has since forgotten, is decoded and dropped rather
+than refused — only a block on a stream the client never opened is the
+connection error; the idle clock does not run while answers are owed; the
+connection receive window starts at 1 MiB.
 
 The three goroutines of an HTTP/2 connection and the bound on each
 hand-off (HTTP/3 has no responder):
@@ -89,14 +96,16 @@ per stream. A write waiting for the client's window lasts as long as
 `WriteTimeout` sees it progress. `Body`, `Headers` and the fields `Trailers`
 returns must therefore stay valid and unchanged until the write is over,
 not until the handler returns nor until its next call, and nothing tells
-the handler when that is. A buffer the pipeline hands back to a pool or
-overwrites for its next batch is not one to borrow from: the body is
-allocated, or borrowed from data that no longer changes. HTTP/1.1 writes a
-batch before it reads the next, but a handler does not know which protocol
-called it, and the rule is the one that holds on all three. A defensive
-copy at the hand-off would have kept the original promise ("read during
-the write and not retained") true, at the price of copying every body on
-the hot path: the contract changed, not the writer.
+the handler when that is.
+
+A buffer the pipeline hands back to a pool or overwrites for its next batch
+is not one to borrow from: the body is allocated, or borrowed from data that
+no longer changes. HTTP/1.1 writes a batch before it reads the next, but a
+handler does not know which protocol called it, and the rule is the one that
+holds on all three. A defensive copy at the hand-off would have kept the
+original promise ("read during the write and not retained") true, at the
+price of copying every body on the hot path: the contract changed, not the
+writer.
 
 ## Rationale
 
@@ -124,12 +133,15 @@ because serialised ones make a stream wait twice: a handler that waits on
 something per call — a gateway's window, a round trip — holds a stream that
 arrives during the call until that call ends, then its own runs, where
 HTTP/1.1 carries the same request on a connection of its own and waits
-once. Measured on the comparison study's unit scenario (a 2 ms gateway
+once.
+
+Measured on the comparison study's unit scenario (a 2 ms gateway
 window, 8,000 requests per second, 256 and 1,024 connections, three paired
 rounds), the HTTP/2 p99 is 0.96-1.06 times the HTTP/1.1 figure with
 parallel calls and 1.35-1.63 serialised, the p50 0.96-1.00 against
 1.12-1.22. Merging the batches queued behind a busy call, without parallel
 calls, changes nothing there.
+
 Starting the goroutine costs 2.3% of a request answered alone
 (`BenchmarkH2FromNetHTTP/plain` on one core, about half a microsecond);
 reusing call goroutines is the known way down if a handler that waits on
@@ -146,23 +158,26 @@ quic-go from documents prepared at startup, the static scenario's HTTP/3 p99
 is 2.3-3.0 times the HTTP/1.1 figure at 256 connections and 1.9-3.3 at
 1,024; Sluice.go's is 0.93-0.98 times the trivial server's at 256, and 0.53
 then 1.20 at 1,024, where the tail is noise. The quic-go client and UDP on
-the loopback set that floor whatever the server. On the unit scenario,
-HTTP/2 holds HTTP/1.1 (1.01-1.05) and HTTP/3 stays at 1.34-1.62 times it at
-256 connections (1.26 and 2.76 at 1,024); four cores instead of two change
-nothing, so it is not CPU. The server's share follows the size of the
-bursts the gateway releases: at 64 keys, HTTP/3 is 0.43 ms over HTTP/1.1 at
-the p50; at 4 keys, 0.20 ms, the apparatus' own gap. The responses one
-window releases all leave through the listener's UDP socket, where
-HTTP/1.1 and HTTP/2 each write on a TCP socket of their own, and Go takes
-one write lock per descriptor; but spreading the server's writes over eight
-duplicated descriptors, which halves a burst of sixteen sends on the
-loopback (117 to 63 µs), left the p50 where it was (three alternated
-rounds), so the lock is not that share. What remains unmeasured is the rest
-of a burst's path: a goroutine, a seal and a datagram per response, and the
-quic-go client taking sixteen at once. The HTTP/3 p99 is therefore judged
-against the trivial server's HTTP/3 p99, not against HTTP/1.1. Measured
-locally on 2026-10-22, the server on two cores, 8,000 requests per second,
-two or three alternated rounds.
+the loopback set that floor whatever the server.
+
+On the unit scenario, HTTP/2 holds HTTP/1.1 (1.01-1.05) and HTTP/3 stays at
+1.34-1.62 times it at 256 connections (1.26 and 2.76 at 1,024); four cores
+instead of two change nothing, so it is not CPU. The server's share follows
+the size of the bursts the gateway releases: at 64 keys, HTTP/3 is 0.43 ms
+over HTTP/1.1 at the p50; at 4 keys, 0.20 ms, the apparatus' own gap.
+
+The responses one window releases all leave through the listener's UDP
+socket, where HTTP/1.1 and HTTP/2 each write on a TCP socket of their own,
+and Go takes one write lock per descriptor; but spreading the server's
+writes over eight duplicated descriptors, which halves a burst of sixteen
+sends on the loopback (117 to 63 µs), left the p50 where it was (three
+alternated rounds), so the lock is not that share. What remains unmeasured
+is the rest of a burst's path: a goroutine, a seal and a datagram per
+response, and the quic-go client taking sixteen at once.
+
+The HTTP/3 p99 is therefore judged against the trivial server's HTTP/3 p99,
+not against HTTP/1.1. Measured locally on 2026-10-22, the server on two
+cores, 8,000 requests per second, two or three alternated rounds.
 
 Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies

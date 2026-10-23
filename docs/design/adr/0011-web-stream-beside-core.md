@@ -25,6 +25,7 @@ it `Route`, `Authenticate`, `Authorize` and `Render` each take the
 place. **The shipped set is the minimum honest one**: route,
 authenticate and authorise (batch-shaped over `web`'s `Verifier` and
 `Authorizer` — one credential vocabulary, not a fork), decode, and render.
+
 **Context travels in the element**: an `Exchange` wraps the whole
 `httpstream.Request`, the peer included (`Request.RemoteAddr`,
 `Request.TLS`), plus the route, principal, grant, refusal status and

@@ -14,13 +14,16 @@ bound, again without a word. The godoc of `MaxConcurrentStreams` announced
 64, "the transport's own MAX_STREAMS grant", while `quic.DefaultParameters`
 grants 100 (RFC 9114 §6.1: an HTTP/3 server SHOULD grant at least 100) and
 `H2Config` advertised 100 on its own side; `Serve` carried a special case so
-that a zero would not become 64 over HTTP/2. Six bounds existed twice, in
-`Config` and in `H2Config`, with different defaults: an HTTP/2 header block
-of 64 KiB under `ServeH2Conn`, of 32 KiB under `Serve`. Three `Config` fields
-were never read by HTTP/3 — `MaxRequestsPerBatch` and `MaxRequestsPerConn`,
-which have no meaning there, and `IdleTimeout`, which has one: the transport
-kept its own 30 s whatever the configuration said. A deployer could not tell
-what a field did over HTTP/1.1, HTTP/2 and HTTP/3 without reading the code.
+that a zero would not become 64 over HTTP/2.
+
+Six bounds existed twice, in `Config` and in `H2Config`, with different
+defaults: an HTTP/2 header block of 64 KiB under `ServeH2Conn`, of 32 KiB
+under `Serve`. Three `Config` fields were never read by HTTP/3 —
+`MaxRequestsPerBatch` and `MaxRequestsPerConn`, which have no meaning there,
+and `IdleTimeout`, which has one: the transport kept its own 30 s whatever
+the configuration said. A deployer could not tell what a field did over
+HTTP/1.1, HTTP/2 and HTTP/3 without reading the code.
+
 Lastly, `H2Config.InitialWindowSize` — the window that carried an upload
 eleven times faster at 100 ms of RTT — was reachable through `ServeH2Conn`
 alone: `Serve` and `Server`, the entry points of a deployment, derived
@@ -42,11 +45,12 @@ never removed.**
    the streams `ServeH3Conn` serves on one connection), is refused before the
    first byte: `Serve`, `Server`, `ServeH2Conn`, `ServeH3Conn` and `TransportParameters`
    return an error naming the field, the value and what zero would have
-   meant, all errors joined (`errors.Join`). A default may depend on
-   another field: `LingerTimeout` at zero is one second, or `ReadTimeout`
-   if shorter; a value set is kept as is. There is no "unbounded" setting:
-   `math.MaxInt` is one. `Config{}` is a bounded server, not a server
-   waiting to be bounded.
+   meant, all errors joined (`errors.Join`).
+
+   A default may depend on another field: `LingerTimeout` at zero is one
+   second, or `ReadTimeout` if shorter; a value set is kept as is. There is
+   no "unbounded" setting: `math.MaxInt` is one. `Config{}` is a bounded
+   server, not a server waiting to be bounded.
 
 2. **The bound is mandatory.** No field removes a bound by its absence.
    The exceptions are named: `MaxConns` and `MaxConnsPerIP`, whose zero

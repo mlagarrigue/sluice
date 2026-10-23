@@ -8,16 +8,16 @@
 
 Cancelling the context of `Serve(ctx)` closed the listener and every
 connection in the same gesture. A response being written was cut without
-`Connection: close`; an HTTP/2 connection got no GOAWAY; an HTTP/3
-connection was closed `H3_NO_ERROR` without waiting for its requests;
-`web.Shutdown` only knew how to stop a `*http.Server`. And nothing wrote
-down in which order a process that serves streams stops: if the gateway
-(which batches calls toward the back end) closes before the handlers, the
-handlers in flight see their calls refused; if the connection pools close
-before the gateway, its last batches fail. Last, a grace that passed did not
-show: `Serve` returned `nil` whether it had answered everything or cut
-requests, and a `ServeH2Conn` called directly still cut the socket at the
-cancellation.
+`Connection: close`; an HTTP/2 connection got no GOAWAY (the frame that
+tells a client no new request will be taken); an HTTP/3 connection was
+closed `H3_NO_ERROR` without waiting for its requests; `web.Shutdown` only
+knew how to stop a `*http.Server`. And nothing wrote down in which order a
+process that serves streams stops: if the gateway (which batches calls
+toward the back end) closes before the handlers, the handlers in flight see
+their calls refused; if the connection pools close before the gateway, its
+last batches fail. Last, a grace that passed did not show: `Serve` returned
+`nil` whether it had answered everything or cut requests, and a
+`ServeH2Conn` called directly still cut the socket at the cancellation.
 
 ## Decision
 
@@ -90,31 +90,37 @@ sequenceDiagram
      shutdown that begins once the header is out can no longer be
      announced: the client finds the close at its next request, the case
      §9.6 describes for a connection the server closed.
-   - HTTP/2: GOAWAY `NO_ERROR` with the last stream identifier at 2^31−1
-     and a PING, then, at the PING's acknowledgement — the round trip
-     RFC 9113 §6.8 asks to allow for the streams already on the wire — a
-     second GOAWAY with the last stream actually taken; a stream opened
-     past it is refused `REFUSED_STREAM`, the open streams finish, the
-     connection closes. A peer that never acknowledges the PING is closed
-     by the grace. A connection with no stream open is told the same way
-     and closes at the PING's acknowledgement, one round trip later,
-     under `Serve` as under a `ServeH2Conn` called directly: closing it at
-     once, as an idle HTTP/1.1 one is, raced the GOAWAY its own goroutine
-     was queuing and left a POST crossing the close unanswered and
-     unannounced — the case RFC 9113 §6.8 names for its SHOULD. A client
-     that has sent only the preface, without the SETTINGS §3.4 makes
-     follow it, has opened no stream, and its acknowledgement would come,
-     if ever, behind that SETTINGS: it is the HTTP/2 form of the accepted
-     and silent connection of (4). Deciding at once would be wrong the
-     other way: a client sends its preface and SETTINGS together, and a
+
+   - HTTP/2: GOAWAY `NO_ERROR` with the last stream identifier at 2^31−1 and
+     a PING (a frame the client must echo), then, at the PING's
+     acknowledgement — the round trip RFC 9113 §6.8 asks to allow for the
+     streams already on the wire — a second GOAWAY with the last stream
+     actually taken; a stream opened past it is refused `REFUSED_STREAM`,
+     the open streams finish, the connection closes. A peer that never
+     acknowledges the PING is closed by the grace.
+
+     A connection with no stream open is told the same way and closes at the
+     PING's acknowledgement, one round trip later, under `Serve` as under a
+     `ServeH2Conn` called directly: closing it at once, as an idle HTTP/1.1
+     one is, raced the GOAWAY its own goroutine was queuing and left a POST
+     crossing the close unanswered and unannounced — the case RFC 9113 §6.8
+     names for its SHOULD.
+
+     A client that has sent only the preface, without the SETTINGS §3.4
+     makes follow it, has opened no stream, and its acknowledgement would
+     come, if ever, behind that SETTINGS: it is the HTTP/2 form of the
+     accepted and silent connection of (4). Deciding at once would be wrong
+     the other way: a client sends its preface and SETTINGS together, and a
      shutdown landing between the two reads would cut a connection whose
      SETTINGS, and perhaps a request, is already in the socket — unread
-     bytes a close answers with a reset that can erase the GOAWAY. So it is
-     told as the others are and given `LingerTimeout` (a second by default)
-     for its first frame; without one, a second GOAWAY names stream 0 —
-     nothing was processed, so a request crossing the close may be
+     bytes a close answers with a reset that can erase the GOAWAY.
+
+     So it is told as the others are and given `LingerTimeout` (a second by
+     default) for its first frame; without one, a second GOAWAY names stream
+     0 — nothing was processed, so a request crossing the close may be
      replayed as is — and the connection closes; a SETTINGS arriving after
      the decision opens nothing.
+
    - HTTP/3: as on HTTP/2, a pair of GOAWAY frames on the control stream.
      The first names 2^62−4, the highest identifier a server may send: the
      client opens nothing more, and everything it already sent is still
@@ -126,12 +132,15 @@ sequenceDiagram
      no stream is both admitted and named (§5.2: "requests with the
      indicated identifier or greater are rejected") — a request from there
      on reset `H3_REQUEST_REJECTED`. A client that never acknowledges is
-     closed by the grace. The admitted requests are answered, then
-     `H3_NO_ERROR` (or §8.1's grease) once the last answer is
-     acknowledged, which `quic.Conn.ShutdownWithError` waits for: an
-     application close sent at once can overtake the response it follows.
-     Past the grace the connection is closed under its handler and
-     `ServeH3Conn` returns without waiting for it, as `Serve` does (§2).
+     closed by the grace.
+
+     The admitted requests are answered, then `H3_NO_ERROR` (or §8.1's
+     grease) once the last answer is acknowledged, which
+     `quic.Conn.ShutdownWithError` waits for: an application close sent at
+     once can overtake the response it follows. Past the grace the
+     connection is closed under its handler and `ServeH3Conn` returns
+     without waiting for it, as `Serve` does (§2).
+
    - `web.Shutdown(ctx, srv web.Server, closers...)` stops every
      `Serve(ctx)` in this order, not only a `*http.Server`: `web.Server` is
      `Shutdown(context.Context) error`, which `*http.Server` already has;
