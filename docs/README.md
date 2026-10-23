@@ -39,8 +39,8 @@ place.
 
 - [Architecture](design/architecture.md) — the reasoning: two types, the
   batch as the unit of transport, stopping, diagnostics, joins.
-- [Decisions (ADR)](design/adr/) — every structural decision: the problem,
-  the decision, the rationale.
+- [Decisions (ADR)](design/adr/README.md) — every structural decision, by
+  theme: the problem, the decision, the rationale.
 - [Security — verifiable properties](design/architecture.md#security--verifiable-properties)
   — the fourteen guarantees, each with the check that holds it.
 - [Measurements](benchmarks.md) — the method, the ceiling, the current
