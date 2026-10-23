@@ -363,6 +363,10 @@ In review, comments follow
   blocks. Once a `v1.*` tag exists, a break of a stable package blocks with
   or without `!`: what v1 freezes, and what it leaves free, is
   [ADR 0020](docs/design/adr/0020-compatibility.md).
+- A commit with a `!` adds its entry to [docs/migration.md](docs/migration.md):
+  what changed and what to write instead, under its package, quoting the
+  commit's subject (its hash is not known yet). A test checks every `!`
+  commit since the last tag.
 - Deprecating: `// Deprecated: use X instead.` on the symbol. In v0 it is
   kept at least one minor before removal; from v1 it stays until v2.
 - A published tag never moves: the module proxy has frozen it. A version

@@ -16,6 +16,8 @@ place.
 
 ## I am building something
 
+- [Migrating from v0.2.2](migration.md) — what to change in code written
+  against the last release.
 - [Choosing an operator](guide/operators.md) — what each package retains
   between two batches, and what that costs.
 - [PostgreSQL](guide/postgres.md) — queries, binary parameters, `= ANY($1)`,
