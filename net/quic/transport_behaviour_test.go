@@ -960,3 +960,74 @@ func TestClientProbesUnblockAnAmplificationLimitedServer(t *testing.T) {
 		t.Errorf("the eighth client datagram left %v after the first; two probes per timeout put it under a second", gap)
 	}
 }
+
+// Several streams written at once against a connection window that binds:
+// the credit a write takes is charged before the packet waits for the
+// congestion window, which releases the connection's lock. Charged after, a
+// writer on another stream read the same credit during that wait, and the
+// connection overran the peer's MAX_DATA by a packet — a FLOW_CONTROL_ERROR
+// that closed it.
+func TestConcurrentStreamsKeepToTheConnectionWindow(t *testing.T) {
+	serverPC, clientPC := dgram.Pair()
+	defer serverPC.Close()
+	defer clientPC.Close()
+	params := quic.DefaultParameters()
+	params.InitialMaxData = 16 << 10
+	accepted := make(chan *quic.Conn, 1)
+	failed := make(chan error, 8)
+	go func() {
+		buf := make([]byte, 2048)
+		n, peer, err := serverPC.ReadFrom(buf)
+		if err != nil {
+			failed <- err
+			return
+		}
+		conn, err := quic.Accept(serverPC, quic.Datagram{Peer: peer, Payload: buf[:n]}, serverTLS(t), params)
+		if err != nil {
+			failed <- err
+			return
+		}
+		accepted <- conn
+		for {
+			s, err := conn.AcceptStream(t.Context())
+			if err != nil {
+				return
+			}
+			go func() {
+				if _, err := io.Copy(io.Discard, s); err != nil {
+					failed <- fmt.Errorf("server read: %w (conn: %v)", err, conn.Err()) //nolint:errorlint // conn.Err() is context and may be nil
+				}
+			}()
+		}
+	}()
+	conn, err := quic.Dial(context.Background(), clientPC, serverPC.LocalAddr(), clientTLS(), quic.DefaultParameters())
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	server := <-accepted
+	defer server.Close()
+
+	const streams, size = 4, 256 << 10
+	var wg sync.WaitGroup
+	for range streams {
+		s, err := conn.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Go(func() {
+			if _, err := s.WriteFinal(bytes.Repeat([]byte("x"), size)); err != nil {
+				failed <- fmt.Errorf("client write: %w", err)
+			}
+		})
+	}
+	wg.Wait()
+	select {
+	case err := <-failed:
+		t.Fatal(err)
+	default:
+	}
+	if err := server.Err(); err != nil {
+		t.Fatalf("the server's connection ended: %v", err)
+	}
+}

@@ -466,13 +466,21 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		frame = varint.Append(frame, s.writeOff)
 		frame = varint.Append(frame, uint64(n))
 		frame = append(frame, p[written:written+n]...)
+		// The credit is charged before the packet goes, not after: waiting
+		// for the congestion window releases mu, and a writer on another
+		// stream would read the same connection credit meanwhile and spend
+		// it too — one packet past the peer's MAX_DATA, which it must answer
+		// with FLOW_CONTROL_ERROR (RFC 9000 §4.1). A packet that does not
+		// go gives its credit back.
+		s.sendQ.sent += uint64(n)
+		c.connSend.sent += uint64(n)
 		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
+			s.sendQ.sent -= uint64(n)
+			c.connSend.sent -= uint64(n)
 			return written, err
 		}
 		s.writeOff += uint64(n)
-		s.sendQ.sent += uint64(n)
-		c.connSend.sent += uint64(n)
 		written += n
 		if last {
 			if fin {
