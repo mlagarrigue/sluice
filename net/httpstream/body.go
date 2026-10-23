@@ -24,12 +24,12 @@ import (
 // same bounds, so a streamed body is held to exactly the grammar a whole one
 // is, by the same code.
 //
-// An HTTP/2 body has none of that: h2 holds it, and the bodyStream is only
-// what Request.Stream reads it through. One pointer type for both keeps
-// Request one word over what it was before bodies streamed.
+// An HTTP/2 or HTTP/3 body has none of that: q holds it, and the bodyStream
+// is only what Request.Stream reads it through. One pointer type for all
+// three keeps Request one word over what it was before bodies streamed.
 type bodyStream struct {
-	r  *reader
-	h2 *h2Body
+	r *reader
+	q *bodyQueue
 
 	chunked bool
 	left    int // a Content-Length body's bytes still to come
@@ -100,11 +100,11 @@ func (b *bodyStream) source() sluice.Source[[]byte] {
 // next returns the next piece of the body, nil once it has ended, or the
 // error that ended it.
 func (b *bodyStream) next() ([]byte, error) {
-	if b.h2 != nil {
+	if b.q != nil {
 		if b.err != nil {
 			return nil, b.err
 		}
-		data, err := b.h2.next()
+		data, err := b.q.next()
 		if err != nil {
 			return nil, b.fail(err)
 		}
@@ -330,8 +330,9 @@ func streamedBody(batch []Request) *bodyStream {
 // client leaves, its chunked framing breaks, a read waits past ReadTimeout —
 // and Err says so once the stream ends. It is valid while the handler runs:
 // a body left unread when the handler returns closes the HTTP/1.1 connection
-// after the response, since nothing can be read past it, and resets the
-// HTTP/2 stream with NO_ERROR after it. Each element borrows the connection's
+// after the response, since nothing can be read past it, resets the HTTP/2
+// stream with NO_ERROR after it, and asks the HTTP/3 client to stop sending
+// (STOP_SENDING, H3_NO_ERROR) after it. Each element borrows the connection's
 // buffer until the next is pulled. The trailers of a streamed body are
 // checked against the header bounds and not kept: Trailers was handed over
 // before they arrived.

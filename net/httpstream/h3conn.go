@@ -106,6 +106,30 @@ type h3Assembler struct {
 	// returns. Nil means the transport credits on delivery, as before.
 	Credit func(streamID, n uint64)
 
+	// CreditConn and CreditStream are Credit's two levels apart, and Interim
+	// writes an interim 100 on a request stream. ServeH3Conn sets them when
+	// request bodies stream (Config.MaxStreamedBodyBytes) and the transport
+	// runs manual credit, which streaming needs: a streamed body's bytes are
+	// released at the connection level as they arrive and at the stream
+	// level as the handler consumes them (bodyQueue), so the stream window
+	// is the backpressure and one unread body does not stall the others.
+	CreditConn   func(n uint64)
+	CreditStream func(streamID, n uint64)
+	Interim      func(streamID, fieldSection uint64)
+
+	// pending lists the request streams whose head completed in this
+	// delivery, when bodies stream: at its end each one still assembling is
+	// handed over with its body as a stream. queued counts the body bytes a
+	// drain moved into a stream's queue, released at the connection level
+	// only.
+	pending []uint64
+	queued  int
+	// closedBodies lists the streams whose handler returned from a body still
+	// arriving, appended from the handler's goroutine under closedMu; the
+	// next delivery forgets them.
+	closedMu     sync.Mutex
+	closedBodies []uint64
+
 	// The peer's unidirectional streams (RFC 9114 §6.2): the control stream
 	// and the QPACK pair are critical — their closure, duplication or
 	// misframing is a connection error, not a stream one — and the control
@@ -162,6 +186,7 @@ type h3Assembler struct {
 const maxRefusedRemembered = 256
 
 type h3Stream struct {
+	id  uint64
 	buf []byte
 	// skip is what is left of an unknown frame being discarded off the
 	// stream (parseH3Frames, skipAhead): its bytes never enter buf. A FIN
@@ -190,6 +215,20 @@ type h3Stream struct {
 	// the stream. It travels with the stream to the batch (after) or to the
 	// refusal (h3StreamError.After) when the stream leaves the assembler.
 	interim chan struct{}
+
+	// body is the request's body once it streams (docs/design/adr/0009,
+	// article 4): set when the head is complete, bodies stream and the body
+	// has not ended by the end of the delivery that completed the head — or
+	// has outgrown MaxBodyBytes within it. handed marks the request given to
+	// the handler: the stream stays here, where its DATA is routed, until its
+	// FIN, its reset, or its handler's return.
+	body   *bodyQueue
+	handed bool
+	// dataLeft is what a DATA frame being streamed still owes: its payload
+	// is queued as each packet brings it, not once the frame is whole — a
+	// frame may be larger than the stream window, and waiting for all of it
+	// would wait forever.
+	dataLeft uint64
 }
 
 // h3Continue is one request stream owed an interim 100 by this delivery:
@@ -405,6 +444,9 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 	a.after, a.continues = a.after[:0], a.continues[:0]
 	now := time.Now() // one clock read per delivery, not per new stream
 	a.expire(now)
+	if a.streaming() {
+		a.forgetClosedBodies()
+	}
 	for _, f := range frames {
 		if f.Type == quic.FrameResetStream {
 			if err := a.reset(f.StreamID); err != nil {
@@ -478,7 +520,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				a.release(f.StreamID, len(f.Data))
 				continue
 			}
-			st = &h3Stream{declared: -1, deadline: now.Add(a.cfg.ReadTimeout)}
+			st = &h3Stream{id: f.StreamID, declared: -1, deadline: now.Add(a.cfg.ReadTimeout)}
 			a.streams[f.StreamID] = st
 			if a.nextExpiry.IsZero() || st.deadline.Before(a.nextExpiry) {
 				a.nextExpiry = st.deadline
@@ -489,7 +531,12 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// frame of that payload plus two frame headers, and a bound of
 		// MaxBodyBytes on the raw buffer refused it whenever it came in one
 		// delivery. The body bound itself is drain's, on the payload.
-		if bound := a.rawStreamBound(); len(st.buf)+len(f.Data) > bound {
+		// When bodies stream, a stream past its head keeps nothing in buf but
+		// a frame header or a trailer section: its DATA moves on to the queue
+		// in this very drain, and the stream window bounds the delta, which
+		// the transport's reassembly may make as large as the window.
+		streams := a.streaming() && st.gotHead
+		if bound := a.rawStreamBound(); !streams && len(st.buf)+len(f.Data) > bound {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf("%w: a stream over %d bytes",
 				ErrTooLarge, bound))
 			a.release(f.StreamID, len(f.Data)) // never appended; fail released the rest
@@ -501,7 +548,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// peer park per-stream bounds times the stream limit. ServeH3Conn's
 		// manual credit closes that at the window; this cap stays as the
 		// standalone bound and as defense in depth.
-		if a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
+		if !streams && a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf(
 				"%w: over %d bytes buffered across this connection's unfinished requests",
 				ErrTooLarge, 4*a.cfg.MaxBodyBytes))
@@ -512,16 +559,20 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		headBefore := st.gotHead
 		st.buf = append(st.buf, f.Data...)
 
+		a.queued = 0
 		err := a.drain(st)
 		a.assembling += len(st.buf) + len(st.req.Body) - before
 		// What drain consumed outright — header blocks decoded, frame
 		// headers parsed — stopped being retained now; the body bytes it
 		// kept are released by fail, Forget, or the handler call, whichever
-		// ends the request. (The credit arithmetic: delivered = released
-		// here + Δretained, every path, so the windows always balance.)
-		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body))
+		// ends the request. The bytes it queued for a streamed body are
+		// released at the connection level now and at the stream level by
+		// the queue. (The credit arithmetic: delivered = released here +
+		// Δretained, every path, so the windows always balance.)
+		a.release(f.StreamID, len(f.Data)+before-len(st.buf)-len(st.req.Body)-a.queued)
+		a.creditConn(a.queued)
 		if err != nil {
-			if se, ok := errors.AsType[h3StatusError](err); ok {
+			if se, ok := errors.AsType[h3StatusError](err); ok && !st.handed {
 				a.answer(f.StreamID, se.status, se.method, err)
 				continue
 			}
@@ -556,7 +607,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			a.continues = append(a.continues, h3Continue{StreamID: f.StreamID})
 		}
 		if f.Fin {
-			if len(st.buf) > 0 || st.skip > 0 {
+			if len(st.buf) > 0 || st.skip > 0 || st.dataLeft > 0 {
 				// A clean FIN inside a frame is a connection error of type
 				// H3_FRAME_ERROR (RFC 9114 §7.1: "if the last frame on the
 				// stream was truncated, this MUST be treated as a connection
@@ -565,7 +616,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// the next one either. Until 2026-10-21 the stream alone was
 				// reset with that code — the right code at the wrong scope.
 				return sluice.Batch[Request]{}, nil, a.failed, h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
-					"%w: stream %d ended inside a frame, %d bytes short", ErrH3Protocol, f.StreamID, len(st.buf)+int(st.skip))} //nolint:gosec // G115: skip is under the stream's bound, far below 2^63
+					"%w: stream %d ended inside a frame, %d bytes short", ErrH3Protocol, f.StreamID, len(st.buf)+int(st.skip)+int(st.dataLeft))} //nolint:gosec // G115: skip and dataLeft are under the stream's bounds, far below 2^63
 			}
 			if !st.gotHead {
 				// §4.1: a stream that ends "without enough of the HTTP
@@ -573,6 +624,18 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// H3_REQUEST_INCOMPLETE — a message that is short, not one
 				// that is malformed, which H3_MESSAGE_ERROR would say.
 				a.fail(f.StreamID, h3RequestIncomplete, fmt.Errorf("%w: a stream ended before its HEADERS", ErrH3Protocol))
+				continue
+			}
+			if st.body != nil {
+				// A streamed body's end: the request is the handler's
+				// already, or is handed over at the end of this delivery.
+				if err := st.body.end(); err != nil {
+					a.fail(f.StreamID, h3MessageError, err)
+					continue
+				}
+				if st.handed {
+					delete(a.streams, f.StreamID)
+				}
 				continue
 			}
 			if st.declared >= 0 && st.declared != len(st.req.Body) {
@@ -598,6 +661,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// datagram was folded in as usual, and none of it is handed over.
 		return sluice.Batch[Request]{}, nil, a.failed, a.excess
 	}
+	a.handOver()
 	// The interim 100s this delivery owes: a candidate head whose stream is
 	// still assembling once the whole datagram is in — not completed by a
 	// FIN, not refused. Those are owed the 100 now, as the h2 reader sends
@@ -608,13 +672,125 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 	// did not wait for costs it a few bytes.
 	owed := a.continues[:0]
 	for _, ct := range a.continues {
-		if st := a.streams[ct.StreamID]; st != nil && st.interim == nil {
+		if st := a.streams[ct.StreamID]; st != nil && st.interim == nil && st.body == nil {
 			st.interim = make(chan struct{})
 			owed = append(owed, h3Continue{StreamID: ct.StreamID, Done: st.interim})
 		}
 	}
 	a.continues = owed
 	return sluice.Batch[Request]{Items: a.batch}, a.ids, a.failed, nil
+}
+
+// streaming reports whether request bodies stream on this connection: asked
+// for by the configuration, and the transport on manual credit, which gives
+// the stream level its own release.
+func (a *h3Assembler) streaming() bool {
+	return a.cfg.MaxStreamedBodyBytes > 0 && a.CreditStream != nil
+}
+
+// creditConn releases n bytes at the connection level alone.
+func (a *h3Assembler) creditConn(n int) {
+	if n > 0 && a.CreditConn != nil {
+		a.CreditConn(uint64(n))
+	}
+}
+
+// newH3Body turns st, whose head is complete and whose body has not ended,
+// into a streamed body, with st's body so far as its first bytes. The caller
+// moves those bytes' accounting.
+func (a *h3Assembler) newH3Body(st *h3Stream) *bodyQueue {
+	b := newBodyQueue(a.cfg, st.id, st.req.Body, st.declared, expectsContinue(st.req))
+	id, credit := st.id, a.CreditStream
+	b.release = func(n int) { credit(id, uint64(n)) } //nolint:gosec // G115: a byte count
+	if interim := a.Interim; interim != nil {
+		fieldSection := a.peerMaxFieldSection()
+		b.interim = func() error { interim(id, fieldSection); return nil }
+	}
+	b.onClose = func() {
+		a.closedMu.Lock()
+		a.closedBodies = append(a.closedBodies, id)
+		a.closedMu.Unlock()
+	}
+	return b
+}
+
+// appendBody adds a DATA frame's payload, or the part of it a packet brought,
+// to st's body: to its queue once it streams; to Body otherwise, where a body
+// growing past MaxBodyBytes is refused with 413 — or, when bodies stream,
+// turned into a stream there and then.
+func (a *h3Assembler) appendBody(st *h3Stream, p []byte) error {
+	if st.body == nil && len(st.req.Body)+len(p) > a.cfg.MaxBodyBytes {
+		if !a.streaming() {
+			return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+		}
+		st.body = a.newH3Body(st)
+		a.queued += len(st.req.Body)
+		st.req.Body = nil
+	}
+	if st.body != nil {
+		st.body.add(p)
+		a.queued += len(p)
+		return nil
+	}
+	st.req.Body = append(st.req.Body, p...)
+	return nil
+}
+
+// handOver appends to the delivery's batch the requests whose head completed
+// in it and whose body is still arriving, with the body as a stream: a body
+// whole in the delivery was finished by its FIN and is in the batch already,
+// so small requests still batch (docs/design/adr/0009, article 4). The
+// request stays in flight as every request does, until its response's writer
+// retires it.
+func (a *h3Assembler) handOver() {
+	for _, id := range a.pending {
+		st := a.streams[id]
+		if st == nil || st.handed {
+			continue // finished whole, or refused, within the delivery
+		}
+		if st.body == nil {
+			moved := len(st.req.Body)
+			st.body = a.newH3Body(st)
+			st.req.Body = nil
+			a.assembling -= moved
+			a.creditConn(moved)
+		}
+		st.handed = true
+		req := st.req
+		req.body = &bodyStream{q: st.body}
+		a.batch = append(a.batch, req)
+		a.ids = append(a.ids, id)
+		a.after = append(a.after, nil) // its 100, if owed, leaves from the body
+		if !st.body.unread() {
+			delete(a.streams, id) // its FIN came within the delivery
+		}
+	}
+	a.pending = a.pending[:0]
+}
+
+// forgetClosedBodies drops the streams whose handler returned from a body
+// still arriving: what more comes for them lands on the tombstone and is
+// released, and the response's writer stops the peer (STOP_SENDING).
+func (a *h3Assembler) forgetClosedBodies() {
+	a.closedMu.Lock()
+	closed := a.closedBodies
+	a.closedBodies = nil
+	a.closedMu.Unlock()
+	for _, id := range closed {
+		if st := a.streams[id]; st != nil && st.handed {
+			a.drop(id)
+		}
+	}
+}
+
+// failBodies ends every streamed body still arriving with err: the
+// connection is over, and a handler waiting for the bytes learns it.
+func (a *h3Assembler) failBodies(err error) {
+	for _, st := range a.streams {
+		if st.body != nil {
+			st.body.fail(err)
+		}
+	}
 }
 
 // expire fails every request stream that has been assembling for longer than
@@ -640,6 +816,9 @@ func (a *h3Assembler) expire(now time.Time) {
 	}
 	var next time.Time
 	for id, st := range a.streams {
+		if st.handed {
+			continue // each wait for its bytes has ReadTimeout, on the handler's side
+		}
 		if now.After(st.deadline) {
 			a.fail(id, h3RequestIncomplete, fmt.Errorf(
 				"%w: stream %d assembled nothing complete within the read timeout", ErrH3Protocol, id))
@@ -718,9 +897,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // connection open indefinitely for the cost of one refusal each, the
 // rapid-reset shape with the roles swapped.
 func (a *h3Assembler) fail(id, code uint64, err error) {
-	if a.drop(id) != nil {
-		a.retire()
-	}
+	a.dropFailing(id, err)
 	a.countCancel()
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
 }
@@ -732,8 +909,13 @@ func (a *h3Assembler) fail(id, code uint64, err error) {
 // other answer.
 func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 	var after <-chan struct{}
-	if st := a.drop(id); st != nil && st.interim != nil {
-		after = st.interim // the status follows the 100 the head was owed
+	if st := a.drop(id); st != nil {
+		if st.body != nil {
+			st.body.fail(err) // converted within this delivery, never handed over
+		}
+		if st.interim != nil {
+			after = st.interim // the status follows the 100 the head was owed
+		}
 	}
 	a.countCancel()
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method, After: after})
@@ -808,7 +990,21 @@ func (a *h3Assembler) tombstone(id uint64) {
 // future frame can ever complete — each one a permanently burnt admission
 // slot.
 func (a *h3Assembler) Forget(id uint64) {
-	if a.drop(id) != nil {
+	a.dropFailing(id, errBodyReset)
+}
+
+// dropFailing drops a stream, fails its streamed body with err, and retires
+// it unless its request is the handler's: then the response's writer
+// retires it, as it does every request it answers.
+func (a *h3Assembler) dropFailing(id uint64, err error) {
+	st := a.drop(id)
+	if st == nil {
+		return
+	}
+	if st.body != nil {
+		st.body.fail(err)
+	}
+	if !st.handed {
 		a.retire()
 	}
 }
@@ -1247,6 +1443,18 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 		data, skip := skipAhead(st.buf, st.skip)
 		st.buf, st.skip = st.buf[:copy(st.buf, data)], skip
 	}
+	if st.dataLeft > 0 {
+		// The rest of a streamed DATA frame, as far as this delivery goes.
+		k := min(uint64(len(st.buf)), st.dataLeft)
+		if err := a.appendBody(st, st.buf[:k]); err != nil {
+			return err
+		}
+		st.dataLeft -= k
+		st.buf = st.buf[:copy(st.buf, st.buf[k:])]
+		if st.dataLeft > 0 {
+			return nil
+		}
+	}
 	frames, rest, skip, err := parseH3Frames(a.frames[:0], st.buf, a.cfg.MaxBodyBytes)
 	st.skip += skip // one of the two is zero: a skip owed empties the buffer first
 	// A frame over the bound leaves rest at its start. A DATA frame there is
@@ -1280,7 +1488,13 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				// Decoded behind the head's fields in the same storage:
 				// Request.Headers is capped at its own length, so neither
 				// overwrites the other.
-				trailers, err := a.qpack.Decode(st.headers[len(st.headers):], f.Payload)
+				dst := st.headers[len(st.headers):]
+				if st.handed {
+					// The handler is reading the head's storage: the
+					// trailers of a streamed body are checked and not kept.
+					dst = nil
+				}
+				trailers, err := a.qpack.Decode(dst, f.Payload)
 				if err != nil {
 					return sectionRefused(err)
 				}
@@ -1327,6 +1541,19 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			st.headers, st.declared, st.req = req.Headers, declared, req
 			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 			st.gotHead = true
+			if bound := max(a.cfg.MaxBodyBytes, a.cfg.MaxStreamedBodyBytes); declared > bound {
+				// A content-length past every bound a body is held to:
+				// refused before any of it is read, and before the 100 the
+				// client may be waiting for, as on HTTP/1.1 and HTTP/2.
+				return h3StatusFail(413, req.Method, "%w: a body over %d bytes", ErrTooLarge, bound)
+			}
+			if a.streaming() {
+				// The body may stream: handOver decides at the end of the
+				// delivery. Every head that completes while bodies stream is
+				// pending until then, so a stream with a head is pending or
+				// handed, and a DATA frame on it may be taken in part.
+				a.pending = append(a.pending, st.id)
+			}
 		case h3Data:
 			if !st.gotHead {
 				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
@@ -1335,13 +1562,12 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
 			}
 			// The unparsed buffer is bounded on arrival, but DATA moves out
-			// of it as it drains — without this check a client streaming
-			// DATA frames would grow the body without limit, bounded buffer
-			// notwithstanding.
-			if len(st.req.Body)+len(f.Payload) > a.cfg.MaxBodyBytes {
-				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
+			// of it as it drains — without appendBody's bound a client
+			// streaming DATA frames would grow the body without limit,
+			// bounded buffer notwithstanding.
+			if err := a.appendBody(st, f.Payload); err != nil {
+				return err
 			}
-			st.req.Body = append(st.req.Body, f.Payload...)
 		case h3Settings, h3GoAway, h3MaxPushID, h3CancelPush:
 			// §7.2.3, §7.2.4, §7.2.6, §7.2.7: each names a connection error
 			// of type H3_FRAME_UNEXPECTED for its frame off the control stream.
@@ -1359,8 +1585,23 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	// that size has been parked waiting for the payload. RFC 9114 §4.1 lets
 	// the server answer before the request has all arrived.
 	if typ, after, e := varint.Read(rest); e == nil {
-		if length, _, e2 := varint.Read(after); e2 == nil {
+		if length, payload, e2 := varint.Read(after); e2 == nil {
 			switch {
+			case typ == h3Data && st.gotHead && !st.gotTrailers && a.streaming():
+				// A DATA frame whose payload has not all arrived, when
+				// bodies stream: what is here is queued now and the rest as
+				// it comes, whatever the frame's length — a stream window
+				// smaller than the frame would otherwise never let it end.
+				k := min(uint64(len(payload)), length)
+				if err := a.appendBody(st, payload[:k]); err != nil {
+					return err
+				}
+				st.dataLeft = length - k
+				st.buf = keepStreamRest(st.buf, payload[k:])
+				if st.dataLeft == 0 && len(st.buf) > 0 {
+					return a.drain(st) // the frame ended here: frames follow it
+				}
+				return nil
 			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, length, a.cfg.MaxHeaderBytes)

@@ -37,7 +37,7 @@ func TestADR0018ListsMatchConfig(t *testing.T) {
 	// Decision 4: one list per label, each from its quoted label to the next
 	// semicolon or closing parenthesis.
 	four := between(t, text, "4. **A field says which protocols read it.**", "5. **")
-	labels := []string{"HTTP/1.1 only", "HTTP/2 only", "HTTP/3 only", "HTTP/2 and HTTP/3 only", "HTTP/1.1 and HTTP/2 only"}
+	labels := []string{"HTTP/1.1 only", "HTTP/2 only", "HTTP/3 only", "HTTP/2 and HTTP/3 only"}
 	for _, label := range labels {
 		listed := regexp.MustCompile(regexp.QuoteMeta(`"`+label+`":`) + `([^;)]*)`).FindStringSubmatch(four)
 		if listed == nil {
@@ -46,8 +46,9 @@ func TestADR0018ListsMatchConfig(t *testing.T) {
 		}
 		var documented []string
 		for name, doc := range fields {
-			// A field belongs to the longest label its doc holds: "HTTP/2
-			// only" is inside "HTTP/1.1 and HTTP/2 only".
+			// A field belongs to the longest label its doc holds, so that
+			// a label inside a longer one ("HTTP/2 only" in "HTTP/1.1 and
+			// HTTP/2 only") never claims the longer one's fields.
 			owner := ""
 			for _, l := range labels {
 				if strings.Contains(doc, l) && len(l) > len(owner) {

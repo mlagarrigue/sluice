@@ -218,7 +218,7 @@ type h2Stream struct {
 	// outgrown MaxBodyBytes within it. handed marks it given to the handler
 	// with its request: from there the stream is in flight rather than open,
 	// though the peer still sends on it, and DATA goes to stream.
-	stream *h2Body
+	stream *bodyQueue
 	handed bool
 
 	// deadline is when assembly of this request gives up — the h2 twin of
@@ -857,7 +857,7 @@ func (s *h2Server) handOver(ready []Request, ids []uint32) (reqs []Request, stre
 		s.inFlight.Add(1)
 		s.served++
 		req := st.req
-		req.body = &bodyStream{h2: st.stream}
+		req.body = &bodyStream{q: st.stream}
 		ready = append(ready, req)
 		ids = append(ids, st.id)
 		if !st.stream.unread() {
@@ -1395,7 +1395,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	if s.cfg.MaxStreamedBodyBytes > 0 {
 		// The body may stream: handOver decides at the end of the batch,
 		// and the 100 a client waits for goes out when the handler first
-		// waits for the body (h2Body.next).
+		// waits for the body (bodyQueue.next).
 		s.pending = append(s.pending, st)
 		return nil, nil
 	}
@@ -1545,7 +1545,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	// Rounded up: at a window of 1, initial/2 is 0 and a window at 0 would
 	// never be granted back. When bodies stream, a body still arriving at
 	// the end of this batch is handed over and its window goes back as the
-	// handler consumes (h2Body), so nothing is granted here: the bytes the
+	// handler consumes (bodyQueue), so nothing is granted here: the bytes the
 	// handler has not read stay spent.
 	if !last && s.cfg.MaxStreamedBodyBytes == 0 && st.recvWind < (initial+1)/2 {
 		inc := initial - st.recvWind
@@ -1878,7 +1878,7 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 func closeBodies(reqs []Request) {
 	for i := range reqs {
 		if body := reqs[i].body; body != nil {
-			body.h2.close()
+			body.q.close()
 		}
 	}
 }
@@ -1944,7 +1944,7 @@ func (s *h2Server) answer(got *h2Applied) {
 		if rb := b.reqs[i].body; rb != nil {
 			// A body the client may still be sending: RST_STREAM(NO_ERROR)
 			// after the response tells it to stop (RFC 9113 §8.1).
-			a.unread = rb.h2.unread()
+			a.unread = rb.q.unread()
 		}
 		if stream != nil {
 			a.length, a.trailers = r.ContentLength, r.Trailers

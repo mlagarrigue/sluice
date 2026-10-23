@@ -345,13 +345,15 @@ type Config struct {
 
 	// MaxStreamedBodyBytes turns request bodies into streams and bounds a
 	// streamed one. Zero means bodies are delivered whole, under
-	// MaxBodyBytes; a negative value is refused. HTTP/1.1 and HTTP/2 only:
-	// HTTP/3 delivers bodies whole whatever it says, until it streams too
-	// (docs/design/adr/0009, article 4).
+	// MaxBodyBytes; a negative value is refused. Every protocol
+	// (docs/design/adr/0009, article 4) — HTTP/3 when the QUIC connection's
+	// windows cover a request's head, MaxHeaderBytes and a few kilobytes of
+	// framing, which [Config.TransportParameters] gives: streaming needs the
+	// transport's manual credit, and on smaller windows bodies arrive whole.
 	//
 	// When it is positive, a body already whole in the read that brought
-	// the request's headers — over HTTP/2, in the frames read with them —
-	// and within MaxBodyBytes, is still delivered in [Request.Body] and
+	// the request's headers — over HTTP/2, in the frames read with them;
+	// over HTTP/3, in the packet — and within MaxBodyBytes, is still delivered in [Request.Body] and
 	// batched with its neighbours; any other body arrives through
 	// [Request.Stream], taken from the connection only as the handler pulls
 	// it. A body is accepted up to the larger of this bound and MaxBodyBytes,
@@ -363,10 +365,14 @@ type Config struct {
 	// ReadTimeout; there is no deadline on the whole body, so a large upload
 	// that keeps moving is not cut, and a client that stops is.
 	//
-	// Over HTTP/2 a streamed body's window is granted back as the handler
-	// consumes it, so what it holds is bounded by InitialWindowSize, and by
-	// MaxConcurrentStreams times that across a connection, rather than by
-	// the aggregate bound MaxBodyBytes states for the bodies assembled whole.
+	// Over HTTP/2 and HTTP/3 a streamed body's window is granted back as the
+	// handler consumes it, so what it holds is bounded by the stream window —
+	// InitialWindowSize, or the QUIC transport's — and by MaxConcurrentStreams
+	// times that across a connection, rather than by the aggregate bound
+	// MaxBodyBytes states for the bodies assembled whole. A body left unread
+	// when its handler returns is stopped after the response: the HTTP/1.1
+	// connection closes, the HTTP/2 stream is reset with NO_ERROR, and the
+	// HTTP/3 client is sent STOP_SENDING with H3_NO_ERROR.
 	MaxStreamedBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over

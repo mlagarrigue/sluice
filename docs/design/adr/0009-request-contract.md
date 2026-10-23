@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit)
 - **Theme:** httpstream
 
 ## Problem
@@ -31,9 +31,8 @@ enforces it:
    what the client sent.
 4. **The body is complete and bounded, or streamed when asked for.** An
    element is a whole request under `MaxBodyBytes`; no partial reads, no
-   framing left to check. Streaming is the next step, decided and landing
-   protocol by protocol: HTTP/1.1 and HTTP/2 have it, HTTP/3 follows; until
-   a protocol has it, the sentence before holds for it:
+   framing left to check — unless streaming is asked for, on any of the
+   three protocols:
    - **Additive, through a bound.** `Config.MaxStreamedBodyBytes`: zero
      keeps the whole-body contract; positive turns streaming on and bounds
      a streamed body. A body is accepted up to the larger of the two
@@ -59,9 +58,21 @@ enforces it:
      several streamed bodies; a stream's window is returned as its body is
      consumed, never as data arrives, and the connection's as data arrives.
      What a streamed body holds is therefore bounded by the stream window
-     (`InitialWindowSize`), and by `MaxConcurrentStreams` times it across a
-     connection; the aggregate bound (four times `MaxBodyBytes`) stays the
-     bound of the bodies assembled whole.
+     (`InitialWindowSize`; on HTTP/3 the transport's stream window), and by
+     `MaxConcurrentStreams` times it across a connection; the aggregate
+     bound (four times `MaxBodyBytes`) stays the bound of the bodies
+     assembled whole.
+   - **HTTP/3 streams on manual credit.** The connection's credit
+     (`MAX_DATA`) and the stream's (`MAX_STREAM_DATA`) can only be returned
+     apart when the transport credits on release, which it does once its
+     windows cover a request's head: with streaming on, a body is held whole
+     only when it ended in the delivery that completed its head, a packet at
+     most. On smaller windows streaming is off and bodies arrive whole. A
+     DATA frame is taken as each packet brings it, not once whole: one larger
+     than the stream window would otherwise never end.
+     `Config.TransportParameters` gives a streaming server the transport's
+     default stream window rather than one sized to `MaxBodyBytes`, since
+     that window, not `MaxBodyBytes`, bounds a streamed body.
    - **Progress, not duration.** Each read of a streamed body that waits
      for bytes has `ReadTimeout`; there is no total deadline. A stream ends
      with `ErrMalformed` when the client resets it or the connection closes

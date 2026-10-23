@@ -172,11 +172,27 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// the transport keeps crediting on delivery and the caps bound the
 	// exposure, exactly as before. [Config.TransportParameters] produces
 	// windows this check accepts.
+	//
+	// When request bodies stream (Config.MaxStreamedBodyBytes), a body is
+	// retained whole only when it ended in the delivery that completed its
+	// head — a packet's worth at most — and every other one is handed over
+	// as a stream whose bytes are released as it is read, so the windows
+	// need only cover a request's head; streaming takes manual credit, and
+	// on windows too small for that it is off and bodies arrive whole.
 	credit := quic.CreditOnDelivery
-	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote >= uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack && //nolint:gosec // G115: positive config, set by withDefaults
-		p.InitialMaxData >= uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack { //nolint:gosec // G115: positive config, set by withDefaults
+	streamWindow, connWindow := uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack, uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
+	if cfg.MaxStreamedBodyBytes > 0 {
+		streamWindow = uint64(cfg.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
+		connWindow = streamWindow
+	}
+	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote >= streamWindow && p.InitialMaxData >= connWindow {
 		credit = quic.CreditOnRelease
 		a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
+		if cfg.MaxStreamedBodyBytes > 0 {
+			a.CreditConn = c.ReleaseConnectionCredit
+			a.CreditStream = c.ReleaseStreamCredit
+			a.Interim = func(id, fieldSection uint64) { writeH3Interim(c, id, fieldSection, writeBoundOf(cfg)) }
+		}
 	}
 
 	// RFC 9114 §6.2.1: each endpoint opens a control stream and sends
@@ -525,8 +541,11 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 
 	<-c.Done()
 	// Nobody is left to answer: the handlers still running learn it before
-	// they are waited for.
+	// they are waited for, and so does one waiting for a body's bytes.
 	cancels.leaveAll()
+	amu.Lock()
+	a.failBodies(errBodyConnClosed)
+	amu.Unlock()
 	amu.Lock()
 	sweepDone = true
 	if sweepT != nil {
@@ -669,8 +688,11 @@ type h3Batch struct {
 // TransportParameters returns QUIC transport parameters sized to this
 // configuration's own admission bounds, for the connection ServeH3Conn will
 // serve: stream windows that fit a full request (MaxBodyBytes plus header
-// room), a connection window that fits the 4×MaxBodyBytes aggregate
-// assembly cap, the stream count ServeH3Conn admits, and [Config.IdleTimeout]
+// room) — or, when bodies stream, the transport's default stream window,
+// which is then what bounds a streamed body (see
+// [Config.MaxStreamedBodyBytes]) — a connection window that fits the
+// 4×MaxBodyBytes aggregate assembly cap, the stream count ServeH3Conn
+// admits, and [Config.IdleTimeout]
 // as the connection's max_idle_timeout — HTTP/3 has no idle clock of its
 // own above the transport's, so this is the one place the field reaches an
 // HTTP/3 connection, and a zero field is the two minutes every protocol
@@ -700,9 +722,16 @@ func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	}
 	p := quic.DefaultParameters()
 	p.MaxIdleTimeout = c.IdleTimeout
-	p.InitialMaxStreamDataBidiRemote = uint64(c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
-	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack               //nolint:gosec // G115: positive config
-	p.InitialMaxStreamsBidi = uint64(c.MaxConcurrentStreams)                                  //nolint:gosec // G115: positive config
+	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
+	if c.MaxStreamedBodyBytes > 0 {
+		// A streamed body is held to the stream window, not to MaxBodyBytes:
+		// the transport's own window, or the room for a head if that is
+		// larger.
+		p.InitialMaxStreamDataBidiRemote = max(p.InitialMaxStreamDataBidiRemote, uint64(c.MaxHeaderBytes)+h3FrameSlack) //nolint:gosec // G115: positive config
+	} else {
+		p.InitialMaxStreamDataBidiRemote = uint64(c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
+	}
+	p.InitialMaxStreamsBidi = uint64(c.MaxConcurrentStreams) //nolint:gosec // G115: positive config
 	return p, nil
 }
 
@@ -745,6 +774,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 		}
 	}
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
+	closeBodies(b.reqs)
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Every request of the batch is answered
@@ -771,6 +801,13 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 	date := dateFor(time.Now())
 	for i, id := range b.ids {
 		writers.Add(1)
+		// A streamed body the client may still be sending: once the response
+		// is out, STOP_SENDING with H3_NO_ERROR tells it to stop (RFC 9114
+		// §4.1).
+		unread := false
+		if rb := b.reqs[i].body; rb != nil {
+			unread = rb.q.unread()
+		}
 		go func(id uint64, r Response, method []byte, after <-chan struct{}) {
 			if after != nil {
 				<-after // the interim 100 the head was owed leaves first
@@ -794,6 +831,11 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 			})
 			if whole && b.answered != nil {
 				b.answered()
+			}
+			if unread {
+				if s, err := c.Stream(id); err == nil {
+					_ = s.StopSending(h3NoError)
+				}
 			}
 		}(id, res[i], b.reqs[i].Method, b.after[i])
 	}
