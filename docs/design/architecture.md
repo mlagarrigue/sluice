@@ -821,7 +821,9 @@ coordination cost is amortized.
 > for the oldest batch, so one slow worker holds the queue whatever the others
 > are doing. On work of about 34 µs per batch, four workers came out at
 > **2,051 µs against 2,160 µs serial — ×1.05, not ×4**: at that grain, handing
-> a batch to a worker and waking it eats what the fan-out would save. On a pass-through `f`,
+> a batch to a worker and waking it eats what the fan-out would save. With
+> more work per batch the gain grows — ×1.7 at 83 µs, ×2.9 at 850 µs
+> ([Measurements](../benchmarks.md#the-architectures-figures)). On a pass-through `f`,
 > four workers were **3.5× slower** than none. The operator earns its place only
 > where `f` is genuinely expensive, and the numbers are in its documentation so
 > that "add `parallel.Ordered`" is a claim to check rather than an assumption.

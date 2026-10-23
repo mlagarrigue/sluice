@@ -945,6 +945,21 @@ about 34 µs of work per batch or only passes its batch through
 | `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
 | `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
 
+Where four workers start to pay: `BenchmarkParallelWorkSize` runs the same
+65,536 elements with the work per element doubled from one row to the next,
+one worker against `parallel.Ordered` and `parallel.Unordered` on four
+(`internal/bench`, six runs of one second, medians). The work per batch is
+the serial run divided by its 64 batches; a gain is the serial run divided
+by the parallel one.
+
+| rounds | work per batch, µs | serial, µs per run | `Ordered` ×4, µs per run | `Unordered` ×4, µs per run | `Ordered` gain | `Unordered` gain |
+|---|---|---|---|---|---|---|
+| 64 | 34 | 2,148 | 2,063 | 1,356 | ×1.04 | ×1.58 |
+| 128 | 83 | 5,328 | 3,131 | 2,275 | ×1.70 | ×2.34 |
+| 256 | 192 | 12,307 | 5,139 | 4,432 | ×2.39 | ×2.78 |
+| 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
+| 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
+
 ---
 
 ## Measured in one session

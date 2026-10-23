@@ -39,10 +39,12 @@ import (
 // Ordering caps the speed-up, and by more than the word "parallel" suggests.
 // The emitter waits for the oldest batch, so one slow worker holds up the queue
 // however idle the others are, and handing a batch to a worker and waking it
-// costs about what a light f saves: on work of about 34 µs per batch, four
-// workers measured at 2.05 ms against 2.16 ms serial — a factor of 1.05, not
-// 4. Independent workers with no ordering constraint would do better; that is
-// the trade, taken deliberately.
+// costs about what a light f saves. Four workers start to pay from about
+// 80 µs of work per batch (a factor of 1.7), reach 2.4 near 190 µs and 2.9
+// near 850 µs — never 4; at 34 µs they gain nothing (1.04), where [Unordered]
+// still gains 1.6. Independent workers with no ordering constraint do better;
+// that is the trade, taken deliberately. Measure f per batch before adding
+// the stage.
 //
 // Below that, the fan-out costs. On an f that only passes its batch through,
 // four workers measured at 57 microseconds against 16 serial — 3.5 times
