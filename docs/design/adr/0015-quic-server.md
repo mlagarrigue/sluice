@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it), 2026-10-23 (session tickets on request; 0-RTT decided in ADR 0019)
 - **Theme:** quic
 
 ## Problem
@@ -166,4 +166,6 @@ directions, but the only rotation this end initiates is
 the one the AEAD limit forces, and the §6.2 refusal of a double rotation
 is applied strictly where the RFC says MAY; RTT samples from an abandoned
 path can inflate the probe timeout after a migration, in the conservative
-direction only; 0-RTT is absent.
+direction only; session tickets are issued on request
+(`ListenerConfig.SessionTickets`), and 0-RTT, absent today, is decided in
+[ADR 0019](0019-quic-early-data.md).
