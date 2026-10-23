@@ -767,3 +767,53 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSettingsHaveATableRow keeps the settings tables of the guides in step
+// with the code: every exported field of a configuration type a guide
+// tabulates has a row whose first cell names it, so a field added without a
+// row fails here rather than at the next review.
+func TestSettingsHaveATableRow(t *testing.T) {
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]bool{}
+	firstCell := regexp.MustCompile("^\\| `([A-Za-z0-9]+)` \\|")
+	for _, g := range guides {
+		b, err := os.ReadFile(g) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(string(b), "\n") {
+			if m := firstCell.FindStringSubmatch(line); m != nil {
+				rows[m[1]] = true
+			}
+		}
+	}
+	for _, c := range []struct{ file, typ string }{
+		{"net/httpstream/httpstream.go", "Config"},
+		{"net/quic/transport.go", "TransportParameters"},
+	} {
+		f, err := parser.ParseFile(token.NewFileSet(), c.file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields *ast.FieldList
+		ast.Inspect(f, func(n ast.Node) bool {
+			if ts, ok := n.(*ast.TypeSpec); ok && ts.Name.Name == c.typ {
+				fields = ts.Type.(*ast.StructType).Fields
+			}
+			return fields == nil
+		})
+		if fields == nil {
+			t.Fatalf("%s: no type %s", c.file, c.typ)
+		}
+		for _, field := range fields.List {
+			for _, name := range field.Names {
+				if name.IsExported() && !rows[name.Name] {
+					t.Errorf("%s: %s.%s has no row in a settings table of docs/guide", c.file, c.typ, name.Name)
+				}
+			}
+		}
+	}
+}
