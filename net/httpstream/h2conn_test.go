@@ -37,6 +37,9 @@ type h2client struct {
 	windows    map[uint32]int
 	resets     map[uint32]uint32
 	resetCount map[uint32]int
+	// resetEarly marks a stream reset before its response had ended, for
+	// the tests about what may follow an answer.
+	resetEarly map[uint32]bool
 	settings   map[uint16]uint32
 	pings      int
 	// pinged is the payload of each PING the server sent and this client
@@ -70,6 +73,7 @@ func dialH2(t *testing.T, addr string) *h2client {
 		windows:    map[uint32]int{},
 		resets:     map[uint32]uint32{},
 		resetCount: map[uint32]int{},
+		resetEarly: map[uint32]bool{},
 		settings:   map[uint16]uint32{},
 	}
 }
@@ -155,6 +159,9 @@ func (c *h2client) parse() {
 		case frameRSTStream:
 			c.resets[id] = binary.BigEndian.Uint32(payload)
 			c.resetCount[id]++
+			if !c.ended[id] {
+				c.resetEarly[id] = true
+			}
 		case frameSettings:
 			if flags&flagAck == 0 {
 				for p := payload; len(p) >= 6; p = p[6:] {

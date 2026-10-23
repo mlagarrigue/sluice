@@ -23,8 +23,13 @@ import (
 // walkChunks calls — cutCRLF, parseChunkSize, parseHeaderLine — under the
 // same bounds, so a streamed body is held to exactly the grammar a whole one
 // is, by the same code.
+//
+// An HTTP/2 body has none of that: h2 holds it, and the bodyStream is only
+// what Request.Stream reads it through. One pointer type for both keeps
+// Request one word over what it was before bodies streamed.
 type bodyStream struct {
-	r *reader
+	r  *reader
+	h2 *h2Body
 
 	chunked bool
 	left    int // a Content-Length body's bytes still to come
@@ -66,7 +71,7 @@ var errBodyAfterReturn = errors.New("httpstream: a request body read after its h
 func newBodyStream(r *reader, req Request, frame streamBody, start int) *bodyStream {
 	b := &bodyStream{
 		r: r, chunked: frame.chunked, left: frame.length,
-		limit: r.cfg.MaxStreamedBodyBytes, start: start, pos: start,
+		limit: max(r.cfg.MaxBodyBytes, r.cfg.MaxStreamedBodyBytes), start: start, pos: start,
 		expect: expectsContinue(req),
 	}
 	if !b.chunked && b.left == 0 {
@@ -95,6 +100,16 @@ func (b *bodyStream) source() sluice.Source[[]byte] {
 // next returns the next piece of the body, nil once it has ended, or the
 // error that ended it.
 func (b *bodyStream) next() ([]byte, error) {
+	if b.h2 != nil {
+		if b.err != nil {
+			return nil, b.err
+		}
+		data, err := b.h2.next()
+		if err != nil {
+			return nil, b.fail(err)
+		}
+		return data, nil
+	}
 	for {
 		if b.err != nil {
 			return nil, b.err
@@ -314,11 +329,12 @@ func streamedBody(batch []Request) *bodyStream {
 // It is a Source rather than a Stream because a body can fail midway — the
 // client leaves, its chunked framing breaks, a read waits past ReadTimeout —
 // and Err says so once the stream ends. It is valid while the handler runs:
-// a body left unread when the handler returns closes the connection after the
-// response, since nothing can be read past it. Each element borrows the
-// connection's read buffer until the next is pulled. The trailers of a
-// streamed chunked body are checked against the header bounds and not kept:
-// Trailers was handed over before they arrived.
+// a body left unread when the handler returns closes the HTTP/1.1 connection
+// after the response, since nothing can be read past it, and resets the
+// HTTP/2 stream with NO_ERROR after it. Each element borrows the connection's
+// buffer until the next is pulled. The trailers of a streamed body are
+// checked against the header bounds and not kept: Trailers was handed over
+// before they arrived.
 func (r Request) Stream() sluice.Source[[]byte] {
 	if r.body == nil {
 		return sluice.Source[[]byte]{}

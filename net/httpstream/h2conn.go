@@ -212,6 +212,15 @@ type h2Stream struct {
 	// DATA sum is two hops reading two different bodies out of one request.
 	declared int
 
+	// stream is the body once it streams (docs/design/adr/0009, article 4):
+	// set when the head is complete, streaming is on and the body has not
+	// ended by the end of the frame batch that brought the head — or has
+	// outgrown MaxBodyBytes within it. handed marks it given to the handler
+	// with its request: from there the stream is in flight rather than open,
+	// though the peer still sends on it, and DATA goes to stream.
+	stream *h2Body
+	handed bool
+
 	// deadline is when assembly of this request gives up — the h2 twin of
 	// the HTTP/1.1 side's fixed per-request ReadTimeout. The frame reader's
 	// own clock restarts on every frame it consumes, so without this a peer
@@ -254,6 +263,9 @@ type h2Answer struct {
 	// instead. job is its index in the jobs built from these answers, or -1.
 	skip bool
 	job  int
+	// unread marks a request whose streamed body had not ended when its
+	// handler returned.
+	unread bool
 }
 
 type h2Server struct {
@@ -335,6 +347,12 @@ type h2Server struct {
 	// as DATA is buffered, so this, not flow control, is what bounds the
 	// memory a peer can park by never finishing its uploads.
 	assembling int
+	// pending is the streams whose head completed in this frame batch with
+	// their body still to come, when bodies stream: at the end of the batch
+	// each one still open is handed over with a streamed body. handed counts
+	// the streams handed over and still in streams.
+	pending []*h2Stream
+	handed  int
 	// expired is the deadline sweep's scratch, reused across batches.
 	expired []uint32
 	// resets and served are the rapid-reset bound; the RST_STREAM branch
@@ -650,6 +668,13 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	if t := s.greetWait.Load(); t != nil {
 		t.Stop()
 	}
+	// A handler waiting for a streamed body's bytes learns that none are
+	// coming before it is waited for.
+	for _, st := range s.streams {
+		if st.stream != nil {
+			st.stream.fail(errBodyConnClosed)
+		}
+	}
 
 	told := false
 	if fatal != nil {
@@ -801,10 +826,49 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 			ids = append(ids, st.id)
 		}
 	}
+	ready, ids = s.handOver(ready, ids)
 	if err := s.expireAssembly(); err != nil {
 		return nil, nil, err
 	}
 	return ready, ids, nil
+}
+
+// handOver appends to ready the requests of the frame batch whose head is
+// complete and whose body is still arriving, with the body as a stream: a
+// body whole in the batch that brought its head was finished and is in ready
+// already, so small requests still batch (docs/design/adr/0009, article 4).
+//
+// The stream changes counts as finish has a request change them: it leaves
+// the open ones for the ones in flight, which keeps the sum the concurrency
+// bound reads — and the batch queue — what it was, and it is a request
+// served, for the rapid-reset bound. It stays in streams, where its DATA is
+// routed, until its body has ended or its handler has returned.
+func (s *h2Server) handOver(ready []Request, ids []uint32) (reqs []Request, streams []uint32) {
+	for _, st := range s.pending {
+		if s.streams[st.id] != st || st.state != stateOpen {
+			continue // reset, or finished, within the batch
+		}
+		if st.stream == nil {
+			st.stream = s.newH2Body(st)
+		}
+		st.handed = true
+		s.handed++
+		s.open.Add(-1)
+		s.inFlight.Add(1)
+		s.served++
+		req := st.req
+		req.body = &bodyStream{h2: st.stream}
+		ready = append(ready, req)
+		ids = append(ids, st.id)
+		if !st.stream.unread() {
+			// Ended within the batch, past what Body may hold: nothing more
+			// may arrive on it.
+			s.retire(st.id, stateHalfClosed)
+		}
+	}
+	clear(s.pending)
+	s.pending = s.pending[:0]
+	return ready, ids
 }
 
 // expireAssembly resets every stream whose request has been assembling for
@@ -815,13 +879,24 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 // a WINDOW_UPDATE, a byte of another stream — to keep the frame-level clock
 // alive, and each of those somethings arrives through consume. A peer that
 // sends nothing at all is the frame reader's own timeout's to end.
+//
+// A stream handed over with its body streaming has no such deadline — each
+// wait for its bytes has ReadTimeout, on the handler's side — and is
+// forgotten here once its handler has returned: nobody reads it, and its
+// response resets it if the peer is still sending.
 func (s *h2Server) expireAssembly() error {
-	if s.open.Load() == 0 {
+	if s.open.Load() == 0 && s.handed == 0 {
 		return nil
 	}
 	now := time.Now()
 	s.expired = s.expired[:0]
 	for id, st := range s.streams {
+		if st.handed {
+			if st.stream.isClosed() {
+				s.retire(id, stateClosed)
+			}
+			continue
+		}
 		if now.After(st.deadline) {
 			s.expired = append(s.expired, id)
 		}
@@ -854,6 +929,9 @@ func (s *h2Server) reset(se streamError) error {
 	}
 	if err := s.countReset(); err != nil {
 		return fmt.Errorf("%w: %w", err, se.err)
+	}
+	if st := s.streams[se.id]; st != nil && st.stream != nil {
+		st.stream.fail(se.err)
 	}
 	s.retire(se.id, stateClosed)
 	s.w.forget(se.id)
@@ -921,7 +999,14 @@ func (s *h2Server) retire(id uint32, state h2State) {
 		return
 	}
 	delete(s.streams, id)
-	s.open.Add(-1)
+	if st.handed {
+		// In flight since handOver, not open; its body is failed if it has
+		// not ended, which wakes a handler waiting on it.
+		s.handed--
+		st.stream.fail(errBodyConnClosed)
+	} else {
+		s.open.Add(-1)
+	}
 	// The body stops counting against the aggregate assembly bound here,
 	// whichever way the stream left the open state: completed, it is the
 	// handler's and bounded by the concurrency limit; reset, it is freed.
@@ -1089,11 +1174,15 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 		if s.idle(f.StreamID) {
 			return nil, fmt.Errorf("%w: RST_STREAM on stream %d, which is idle", ErrH2Protocol, f.StreamID)
 		}
-		if s.closed[f.StreamID] == stateHalfClosed {
+		st := s.streams[f.StreamID]
+		if s.closed[f.StreamID] == stateHalfClosed || st != nil && st.handed {
 			s.served--
 		}
 		if err := s.countReset(); err != nil {
 			return nil, err
+		}
+		if st != nil && st.stream != nil {
+			st.stream.fail(errBodyReset)
 		}
 		s.retire(f.StreamID, stateClosed)
 		// The cancellation reaches the response being written for it, which
@@ -1194,6 +1283,11 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	switch {
 	case st.state != stateOpen:
 		dst = s.discard[:0]
+	case st.handed:
+		// The trailers of a streamed body: the request went to the handler
+		// before they arrived, so they are checked and not kept, and the
+		// head's storage, which the handler is reading, is left alone.
+		dst = s.discard[:0]
 	case st.gotHead:
 		// Trailers, decoded behind the head's fields in the same storage:
 		// Request.Headers is capped at its own length, so neither overwrites
@@ -1255,6 +1349,10 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 				return nil, streamError{id: st.id, code: errProtocolError, err: err}
 			}
 		}
+		if st.handed {
+			s.discard = fields
+			return s.finish(st)
+		}
 		if len(fields) > 0 {
 			st.req.Trailers = fields
 		}
@@ -1285,8 +1383,21 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	}
 	st.headers, st.declared, st.req = req.Headers, declared, req
 	st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
+	if bound := max(s.cfg.MaxBodyBytes, s.cfg.MaxStreamedBodyBytes); declared > bound {
+		// A content-length past every bound a body is held to: refused
+		// before any of it is read, and before the 100 the client may be
+		// waiting for, as the HTTP/1.1 reader refuses it.
+		return nil, statusFail(st.id, 413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, bound)
+	}
 	if st.endStream {
 		return s.finish(st)
+	}
+	if s.cfg.MaxStreamedBodyBytes > 0 {
+		// The body may stream: handOver decides at the end of the batch,
+		// and the 100 a client waits for goes out when the handler first
+		// waits for the body (h2Body.next).
+		s.pending = append(s.pending, st)
+		return nil, nil
 	}
 	if expectsContinue(st.req) {
 		// The body is yet to come and the client is waiting to be told to
@@ -1372,8 +1483,27 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 		}
 		body = body[:len(body)-pad]
 	}
-	if len(st.body)+len(body) > s.cfg.MaxBodyBytes {
-		return nil, statusFail(st.id, 413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
+	if st.stream == nil && len(st.body)+len(body) > s.cfg.MaxBodyBytes {
+		if s.cfg.MaxStreamedBodyBytes == 0 {
+			return nil, statusFail(st.id, 413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
+		}
+		// Past what Body may hold, before the batch has ended: the body
+		// streams from here. The stream is in pending, as every stream with
+		// a head and a body to come is when bodies stream.
+		st.stream = s.newH2Body(st)
+	}
+	last := f.Flags&flagEndStream != 0
+	if st.stream != nil {
+		// The stream's window goes back as the handler consumes, not here,
+		// so the window bounds what the body holds and the aggregate bound
+		// below, which is the bodies assembled whole, does not apply.
+		if err := st.stream.receive(int32(len(f.Payload)), body, last); err != nil { //nolint:gosec // G115: bounded by MaxFrameSize
+			return nil, err
+		}
+		if last {
+			return s.finish(st)
+		}
+		return nil, nil
 	}
 	// The aggregate bound, beside the per-stream one: windows are granted
 	// back as DATA is buffered here, so flow control does not bound what a
@@ -1409,13 +1539,15 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	}
 	st.recvWind -= used
 
-	last := f.Flags&flagEndStream != 0
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
 	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by withDefaults
 	// Rounded up: at a window of 1, initial/2 is 0 and a window at 0 would
-	// never be granted back.
-	if !last && st.recvWind < (initial+1)/2 {
+	// never be granted back. When bodies stream, a body still arriving at
+	// the end of this batch is handed over and its window goes back as the
+	// handler consumes (h2Body), so nothing is granted here: the bytes the
+	// handler has not read stay spent.
+	if !last && s.cfg.MaxStreamedBodyBytes == 0 && st.recvWind < (initial+1)/2 {
 		inc := initial - st.recvWind
 		st.recvWind = initial
 		if err := s.w.control32(frameWindowUpdate, st.id, uint32(inc)); err != nil { //nolint:gosec // G115: positive by construction
@@ -1460,6 +1592,21 @@ func (s *h2Server) finish(st *h2Stream) (*h2Stream, error) {
 	if st.state != stateOpen {
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: stream %d ended twice", ErrH2Protocol, st.id)
+	}
+	if st.stream != nil {
+		// A streamed body's end: the request is the handler's already, or
+		// is handed over at the end of this batch, so nothing is returned.
+		// A content-length mismatch is the same malformed request, reset
+		// without the 400, since the handler is answering it.
+		if err := st.stream.end(); err != nil {
+			return nil, streamError{id: st.id, code: errProtocolError, err: err}
+		}
+		if !st.handed {
+			// Ended within the batch that converted it: handOver takes it.
+			return nil, nil
+		}
+		s.retire(st.id, stateHalfClosed)
+		return nil, nil
 	}
 	// §8.1.1: a content-length that disagrees with the DATA sum is a
 	// malformed request, checked here because END_STREAM is the first moment
@@ -1715,13 +1862,25 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 			// apply's recover sees no panic. Left unanswered, the batch
 			// keeps inFlight up for good: the connection never goes idle
 			// and its stream slots never come back.
+			closeBodies(b.reqs)
 			out <- &h2Applied{b: b, err: errors.New("httpstream: the handler exited its goroutine without answering")}
 		}
 	}()
 	s.peer.stamp(b.reqs)
 	res, err := apply(b.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
+	closeBodies(b.reqs)
 	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}
+}
+
+// closeBodies ends the streamed bodies of a batch whose handler has
+// returned: they are valid during the call and no longer.
+func closeBodies(reqs []Request) {
+	for i := range reqs {
+		if body := reqs[i].body; body != nil {
+			body.h2.close()
+		}
+	}
 }
 
 // answer hands what the handler returned for one batch to the writer. It is
@@ -1782,6 +1941,11 @@ func (s *h2Server) answer(got *h2Applied) {
 			body, stream = nil, nil
 		}
 		a := h2Answer{id: b.ids[i], from: len(sent.out), body: body, stream: stream, job: -1}
+		if rb := b.reqs[i].body; rb != nil {
+			// A body the client may still be sending: RST_STREAM(NO_ERROR)
+			// after the response tells it to stop (RFC 9113 §8.1).
+			a.unread = rb.h2.unread()
+		}
 		if stream != nil {
 			a.length, a.trailers = r.ContentLength, r.Trailers
 		}
@@ -1845,7 +2009,8 @@ func (s *h2Server) answer(got *h2Applied) {
 			end:  len(a.body) > 0 || tail != nil,
 			// A response with neither a body nor a stream carries END_STREAM
 			// on its head, so it closes the stream without a DATA frame.
-			closes: a.stream == nil,
+			closes:     a.stream == nil,
+			resetAfter: a.unread,
 		})
 	}
 	// The jobs are read through sent only until deliver: from there the
@@ -1874,7 +2039,7 @@ func (s *h2Server) answer(got *h2Applied) {
 			s.answered()
 		case a.stream != nil:
 			if !failed && s.w.await(heads[k]) == nil {
-				s.streamBody(a.id, a.stream, a.length, a.trailers)
+				s.streamBody(a.id, a.stream, a.length, a.trailers, a.unread)
 			}
 			k++
 			s.answered()
@@ -2074,7 +2239,10 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 // Every batch, empty or not, is also checked against the stream's and the
 // connection's state first, since an empty one is never handed to the writer
 // and so could not be refused by it.
-func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header) {
+//
+// unread is the request's streamed body left unread: the stream is reset
+// with NO_ERROR once the response's end is written.
+func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header, unread bool) {
 	// Both jobs start free: done is what marks a job as reusable.
 	s.streamJobs[0].done, s.streamJobs[1].done = true, true
 	s.streamCur = nil
@@ -2152,7 +2320,7 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length in
 	// The end: END_STREAM on the trailers, on the last DATA frame still
 	// queued, or on an empty one of its own — none costs credit, so the end
 	// always goes out.
-	_ = s.w.finish(id, s.streamCur, s.streamSpare(), tail)
+	_ = s.w.finish(id, s.streamCur, s.streamSpare(), tail, unread)
 }
 
 // streamSpare is the streamed-body job the last batch did not go to.

@@ -104,6 +104,12 @@ type h2Job struct {
 	// all.
 	closes bool
 
+	// resetAfter follows the job's last frame with RST_STREAM(NO_ERROR): the
+	// request's streamed body was left unread, and RFC 9113 §8.1 lets a
+	// server that has sent a complete response stop a request it will not
+	// read that way. Set only on a job that closes its stream.
+	resetAfter bool
+
 	headSent bool
 	endSent  bool
 
@@ -386,6 +392,11 @@ func (w *h2Writer) fill() []*h2Job {
 				// The stream is over on this side; its window is nobody's to
 				// spend now.
 				delete(w.windows, j.id)
+			}
+			if j.closes && j.resetAfter {
+				// Behind the response's END_STREAM, in the same write. A
+				// four-byte payload always frames.
+				w.out, _ = appendH2Frame(w.out, h2Frame{Type: frameRSTStream, StreamID: j.id, Payload: []byte{0, 0, 0, errNoError}})
 			}
 			j.queued = false
 			finished = append(finished, j)
@@ -696,19 +707,19 @@ func (w *h2Writer) claim(id uint32, cur, spare *h2Job) (*h2Job, error) {
 // queued when there is one, and on an empty DATA frame of its own otherwise.
 // It returns once the stream's last job has been written — or dropped, which
 // is not this connection's failure — so tail is free to reuse then.
-func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte) error {
+func (w *h2Writer) finish(id uint32, cur, spare *h2Job, tail []byte, resetAfter bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	j := cur
 	if j != nil && j.queued {
-		j.end, j.closes, j.tail = true, true, tail
+		j.end, j.closes, j.tail, j.resetAfter = true, true, tail, resetAfter
 		w.cond.Broadcast()
 	} else {
 		var err error
 		if j, err = w.claim(id, cur, spare); err != nil || j.err != nil {
 			return err
 		}
-		j.end, j.closes, j.tail = true, true, tail
+		j.end, j.closes, j.tail, j.resetAfter = true, true, tail, resetAfter
 		w.jobs = append(w.jobs, j)
 		w.cond.Broadcast()
 	}

@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, until HTTP/2 and HTTP/3 stream)
+- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, until HTTP/3 streams)
 - **Theme:** httpstream
 
 ## Problem
@@ -66,8 +66,9 @@ never removed.**
 
 4. **A field says which protocols read it.** A field read by one protocol
    stays in `Config` and says so ("HTTP/1.1 only": `MaxRequestLineBytes`,
-   `MaxRequestsPerBatch`, `MaxRequestsPerConn`, `LingerTimeout`,
-   `MaxStreamedBodyBytes`; "HTTP/2 and HTTP/3 only": `MaxConcurrentStreams`; "HTTP/2 only":
+   `MaxRequestsPerBatch`, `MaxRequestsPerConn`, `LingerTimeout`; "HTTP/1.1
+   and HTTP/2 only": `MaxStreamedBodyBytes`; "HTTP/2 and HTTP/3 only":
+   `MaxConcurrentStreams`; "HTTP/2 only":
    `MaxFrameSize`, `MaxFramesPerBatch`, `MaxContinuationFrames`,
    `InitialWindowSize`, `MaxPendingControlBytes`, `MaxWriteBufferBytes`;
    "HTTP/3 only": `QPACKStatic`). A field that reaches a protocol through another object

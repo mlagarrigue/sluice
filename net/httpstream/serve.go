@@ -70,7 +70,7 @@ import (
 //     element handed over is a whole request: its body has arrived in full,
 //     under [Config.MaxBodyBytes], with no partial reads to finish and no
 //     framing left to check. When [Config.MaxStreamedBodyBytes] turns
-//     streaming on (HTTP/1.1, for now), a body that was not whole in the read
+//     streaming on (HTTP/1.1 and HTTP/2), a body that was not whole in the read
 //     that brought its headers arrives through [Request.Stream] instead,
 //     consumed within the call; [Request.ReadAll] returns either form whole.
 //

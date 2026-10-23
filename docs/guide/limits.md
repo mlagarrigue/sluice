@@ -166,14 +166,15 @@ Three reasons come up, and the difference matters:
   `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental
   `web/stream` path has its own router (`stream.NewRouter`), because
   `http.ServeMux` does not see a batch.
-- **`net/httpstream` streams request bodies over HTTP/1.1 only, and only
-  when asked.** By default a body is delivered whole, under
+- **`net/httpstream` streams request bodies over HTTP/1.1 and HTTP/2, and
+  only when asked.** By default a body is delivered whole, under
   `Config.MaxBodyBytes` (1 MiB): an upload larger than memory is refused,
   and a slow body holds its connection's buffer until it is complete or
   `ReadTimeout` passes. `Config.MaxStreamedBodyBytes` turns streaming on for
-  HTTP/1.1 ([ADR 0009](../design/adr/0009-request-contract.md), article 4);
-  HTTP/2 and HTTP/3 still deliver bodies whole whatever it says, and a body
-  a handler leaves unread costs the HTTP/1.1 connection.
+  HTTP/1.1 and HTTP/2 ([ADR 0009](../design/adr/0009-request-contract.md),
+  article 4); HTTP/3 still delivers bodies whole whatever it says. A body a
+  handler leaves unread costs the HTTP/1.1 connection, and a reset of its
+  stream (`RST_STREAM` with `NO_ERROR`) after the response on HTTP/2.
 - **One token verifier provided**: HMAC (a symmetric signature with a
   shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
   not yet; the `Verifier` interface is the extension point.

@@ -345,20 +345,28 @@ type Config struct {
 
 	// MaxStreamedBodyBytes turns request bodies into streams and bounds a
 	// streamed one. Zero means bodies are delivered whole, under
-	// MaxBodyBytes; a negative value is refused. HTTP/1.1 only, for now:
-	// HTTP/2 and HTTP/3 deliver bodies whole whatever it says, until they
-	// stream too (docs/design/adr/0009, article 4).
+	// MaxBodyBytes; a negative value is refused. HTTP/1.1 and HTTP/2 only:
+	// HTTP/3 delivers bodies whole whatever it says, until it streams too
+	// (docs/design/adr/0009, article 4).
 	//
 	// When it is positive, a body already whole in the read that brought
-	// the request's headers, and within MaxBodyBytes, is still delivered in
-	// [Request.Body] and batched with its neighbours; any other body arrives
-	// through [Request.Stream], read from the connection only as the handler
-	// pulls it. A Content-Length past this bound is refused with 413 before
-	// any of the body is read, and before the 100 Continue a client may be
-	// waiting for; a chunked body that grows past it ends its stream with
-	// ErrTooLarge. Each read that waits for body bytes has ReadTimeout;
-	// there is no deadline on the whole body, so a large upload that keeps
-	// moving is not cut, and a client that stops is.
+	// the request's headers — over HTTP/2, in the frames read with them —
+	// and within MaxBodyBytes, is still delivered in [Request.Body] and
+	// batched with its neighbours; any other body arrives through
+	// [Request.Stream], taken from the connection only as the handler pulls
+	// it. A body is accepted up to the larger of this bound and MaxBodyBytes,
+	// whichever form it takes. A content length past that is refused with
+	// 413 before any of the body is read, and before the 100 Continue a
+	// client may be waiting for, which goes out when the handler first waits
+	// for the body; a body of unannounced length that grows past it ends its
+	// stream with ErrTooLarge. Each read that waits for body bytes has
+	// ReadTimeout; there is no deadline on the whole body, so a large upload
+	// that keeps moving is not cut, and a client that stops is.
+	//
+	// Over HTTP/2 a streamed body's window is granted back as the handler
+	// consumes it, so what it holds is bounded by InitialWindowSize, and by
+	// MaxConcurrentStreams times that across a connection, rather than by
+	// the aggregate bound MaxBodyBytes states for the bodies assembled whole.
 	MaxStreamedBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over

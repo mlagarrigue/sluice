@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body)
 - **Theme:** httpstream
 
 ## Problem
@@ -32,13 +32,18 @@ enforces it:
 4. **The body is complete and bounded, or streamed when asked for.** An
    element is a whole request under `MaxBodyBytes`; no partial reads, no
    framing left to check. Streaming is the next step, decided and landing
-   protocol by protocol (HTTP/1.1, then HTTP/2, then HTTP/3); until a
-   protocol has it, the sentence before holds for it:
+   protocol by protocol: HTTP/1.1 and HTTP/2 have it, HTTP/3 follows; until
+   a protocol has it, the sentence before holds for it:
    - **Additive, through a bound.** `Config.MaxStreamedBodyBytes`: zero
      keeps the whole-body contract; positive turns streaming on and bounds
-     a streamed body. Past it the request is refused — 413 before any body
-     is read when `Content-Length` says so, and no 100 Continue; an
-     `ErrTooLarge` from the stream midway for a body of unannounced length.
+     a streamed body. A body is accepted up to the larger of the two
+     bounds, whole or streamed: which form it takes depends on where a read
+     ended, and whether it is accepted must not. Past that the request is
+     refused — 413 before any body is read when the content length says
+     so, and no 100 Continue; an `ErrTooLarge` from the stream midway for a
+     body of unannounced length. The 100 Continue a client waits for goes
+     out when the handler first waits for the body, so a handler that
+     answers without reading never invites it.
    - **What stays batched.** A body already whole in the read that brought
      its headers, under `MaxBodyBytes`, arrives in `Body` as today, so
      small requests still batch. Any other body arrives through
@@ -52,10 +57,16 @@ enforces it:
      batch, and nothing past what the handler consumed is read; chunked
      coding is undone as it arrives. On HTTP/2 and HTTP/3 a batch may hold
      several streamed bodies; a stream's window is returned as its body is
-     consumed, the connection's as data arrives, under the existing
-     aggregate bound.
+     consumed, never as data arrives, and the connection's as data arrives.
+     What a streamed body holds is therefore bounded by the stream window
+     (`InitialWindowSize`), and by `MaxConcurrentStreams` times it across a
+     connection; the aggregate bound (four times `MaxBodyBytes`) stays the
+     bound of the bodies assembled whole.
    - **Progress, not duration.** Each read of a streamed body that waits
-     for bytes has `ReadTimeout`; there is no total deadline.
+     for bytes has `ReadTimeout`; there is no total deadline. A stream ends
+     with `ErrMalformed` when the client resets it or the connection closes
+     midway, with `os.ErrDeadlineExceeded` when a wait passes
+     `ReadTimeout`.
    - **The default switches** (a break) once the three protocols stream, a
      real consumer has used it, and a paired A/B of small requests shows
      noise.
@@ -102,7 +113,14 @@ keeps one contract, and a handler that ignores the stream keeps working
 while the bound is zero. Returning a stream's window on consumption is what
 makes backpressure a property of the protocol rather than of the server's
 memory; returning the connection's on arrival is what keeps one unread body
-from stalling the others. What is lost: with streaming on, a handler meets
+from stalling the others. Counting a streamed body against the aggregate
+bound as well was the first form and was measured wrong: two concurrent
+uploads, each within its window, had the second reset with
+`ENHANCE_YOUR_CALM` — a conforming client refused for doing what it was
+granted. The window already bounds what such a body holds; a workload that
+needs a tighter connection bound gets it by withholding windows, so that the
+client waits, never by resetting a client that kept to them. What is lost:
+with streaming on, a handler meets
 two forms (`ReadAll` joins them), and an unread body costs an HTTP/1.1
 connection. That last choice is revisited if a consumer finds the closed
 connection too dear, by draining up to a bound instead.
