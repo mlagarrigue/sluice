@@ -68,7 +68,14 @@ type Request struct {
 	// refuses one with a 415: it has no view on what a handler accepts, and
 	// a second parser between the socket and the handler is what this
 	// package exists not to be.
+	//
+	// Body is nil when the body arrives through [Request.Stream] instead.
 	Body []byte
+
+	// body is a streamed body's state, nil when the body is whole in Body:
+	// one pointer, so that streaming costs the requests that do not stream
+	// nothing but its copy.
+	body *bodyStream
 
 	// KeepAlive reports whether the connection may serve another request
 	// after this one, per the version and the Connection header.
@@ -735,6 +742,16 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 
 	if chunked {
 		body, n, trailers, cerr := decodeChunked(rest, cfg, progress, consumed, out)
+		if cfg.MaxStreamedBodyBytes > 0 && (errors.Is(cerr, errIncomplete) || errors.Is(cerr, ErrTooLarge)) {
+			// Not whole in this read, or past what Body may hold: the body
+			// streams, decoded as it arrives (bodyStream), and the head is
+			// handed over now. The interim 100 a client may be waiting for is
+			// sent when the handler first reads.
+			if progress != nil {
+				*progress = chunkProgress{}
+			}
+			return req, consumed, out, streamBody{chunked: true}
+		}
 		if cerr != nil {
 			if errors.Is(cerr, errIncomplete) && expectsContinue(req) {
 				return req, 0, out, errExpectContinue
@@ -754,6 +771,9 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	length, err := contentLength(req, cfg)
 	if err != nil {
 		return req, 0, out, err
+	}
+	if cfg.MaxStreamedBodyBytes > 0 && (len(rest) < length || length > cfg.MaxBodyBytes) {
+		return req, consumed, out, streamBody{length: length}
 	}
 	if len(rest) < length {
 		expect := expectsContinue(req)
@@ -1337,6 +1357,9 @@ func contentLength(req Request, cfg Config) (int, error) {
 	if len(raw) == 0 {
 		return 0, fmt.Errorf("%w: an empty Content-Length", ErrMalformed)
 	}
+	// A streamed body has a bound of its own; the whole-body bound still
+	// decides, in parseRequest, which bodies are handed over whole.
+	bound := max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes)
 	n := 0
 	for _, c := range raw {
 		// Digits only: no sign, no whitespace, no hex. strconv would accept a
@@ -1345,8 +1368,8 @@ func contentLength(req Request, cfg Config) (int, error) {
 			return 0, fmt.Errorf("%w: Content-Length %q is not a number", ErrMalformed, raw)
 		}
 		n = n*10 + int(c-'0')
-		if n > cfg.MaxBodyBytes {
-			return 0, fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, cfg.MaxBodyBytes)
+		if n > bound {
+			return 0, fmt.Errorf("%w: a body over %d bytes", ErrTooLarge, bound)
 		}
 	}
 	return n, nil

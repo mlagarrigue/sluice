@@ -325,8 +325,8 @@ type Config struct {
 	MaxHeaders int
 
 	// MaxBodyBytes bounds one request body. Zero means 1 MiB. Every
-	// protocol. A body is delivered whole, never streamed
-	// (docs/design/adr/0009, article 4), so this is also what one connection
+	// protocol. A body is delivered whole unless MaxStreamedBodyBytes streams
+	// it (docs/design/adr/0009, article 4), so this is also what one connection
 	// may hold in its read buffer: the buffer grows from 4 KiB toward
 	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes as a request
 	// arrives, and a request that has not arrived in full after ReadTimeout
@@ -342,6 +342,24 @@ type Config struct {
 	// full-size concurrent uploads legal while bounding the parked memory to
 	// the same order as one window's worth of honest traffic.
 	MaxBodyBytes int
+
+	// MaxStreamedBodyBytes turns request bodies into streams and bounds a
+	// streamed one. Zero means bodies are delivered whole, under
+	// MaxBodyBytes; a negative value is refused. HTTP/1.1 only, for now:
+	// HTTP/2 and HTTP/3 deliver bodies whole whatever it says, until they
+	// stream too (docs/design/adr/0009, article 4).
+	//
+	// When it is positive, a body already whole in the read that brought
+	// the request's headers, and within MaxBodyBytes, is still delivered in
+	// [Request.Body] and batched with its neighbours; any other body arrives
+	// through [Request.Stream], read from the connection only as the handler
+	// pulls it. A Content-Length past this bound is refused with 413 before
+	// any of the body is read, and before the 100 Continue a client may be
+	// waiting for; a chunked body that grows past it ends its stream with
+	// ErrTooLarge. Each read that waits for body bytes has ReadTimeout;
+	// there is no deadline on the whole body, so a large upload that keeps
+	// moving is not cut, and a client that stops is.
+	MaxStreamedBodyBytes int
 
 	// MaxRequestsPerBatch bounds how many pipelined requests are handed over
 	// at once. Zero means 64. HTTP/1.1 only: an HTTP/2 batch is bounded in
@@ -721,6 +739,9 @@ func (c Config) resolve() (Config, error) {
 	case c.InitialWindowSize < 0 || c.InitialWindowSize > maxWindow:
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.InitialWindowSize %d is outside 1..%d (RFC 9113 §6.5.2) — zero means %d",
 			c.InitialWindowSize, maxWindow, defaultInitialWindow))
+	}
+	if c.MaxStreamedBodyBytes < 0 {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxStreamedBodyBytes %d is negative — zero means bodies are delivered whole", c.MaxStreamedBodyBytes))
 	}
 	if c.MaxConns < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))

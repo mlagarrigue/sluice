@@ -112,6 +112,10 @@ type reader struct {
 	// restarting it — see chunkProgress. It indexes buf, and consume keeps
 	// it pointed at the same request as the buffer shifts under it.
 	progress chunkProgress
+
+	// body is the streamed body of the batch just handed over, if it has
+	// one: the next request cannot be read before it has ended.
+	body *bodyStream
 }
 
 func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
@@ -122,6 +126,15 @@ func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
 		}
 		if !yield(sluice.Batch[Request]{Items: batch}) {
 			return
+		}
+		if body := r.body; body != nil {
+			r.body = nil
+			body.closed = true
+			if !body.done {
+				// Unread or broken, the body still stands between the
+				// connection and its next request: nothing more is read.
+				return
+			}
 		}
 		if !r.keepAlive(batch) {
 			return
@@ -232,6 +245,23 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 			break
 		}
 		if errors.Is(perr, errIncomplete) {
+			break
+		}
+		if frame, ok := perr.(streamBody); ok {
+			// A body that streams ends the batch: the next request lies
+			// behind it. Requests parsed ahead are served first, and the next
+			// pass hands this one over alone.
+			if len(r.batch) > 0 {
+				break
+			}
+			r.body = newBodyStream(r, req, frame, used+n)
+			req.body = r.body
+			r.bounds = append(r.bounds, [3]int{start, start + len(req.Headers), len(r.headers)})
+			r.batch = append(r.batch, req)
+			used += n
+			if r.served+len(r.batch) >= r.cfg.MaxRequestsPerConn {
+				r.batch[0].KeepAlive = false // the connection's budget ends here
+			}
 			break
 		}
 		if perr != nil {

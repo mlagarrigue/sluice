@@ -66,9 +66,13 @@ import (
 //     Cookie into one field per pair for compression's sake; they reach the
 //     handler joined again by "; " as one field, which is what HTTP/1.1
 //     delivers, and count as one field under [Config.MaxHeaders].
-//   - **The body is complete and bounded.** An element handed over is a whole
-//     request: its body has arrived in full, under [Config.MaxBodyBytes].
-//     There are no partial reads to finish and no framing left to check.
+//   - **The body is complete and bounded, or streamed when asked for.** An
+//     element handed over is a whole request: its body has arrived in full,
+//     under [Config.MaxBodyBytes], with no partial reads to finish and no
+//     framing left to check. When [Config.MaxStreamedBodyBytes] turns
+//     streaming on (HTTP/1.1, for now), a body that was not whole in the read
+//     that brought its headers arrives through [Request.Stream] instead,
+//     consumed within the call; [Request.ReadAll] returns either form whole.
 //
 // # The context
 //
@@ -408,8 +412,21 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		who.stamp(b.Items)
 		call := newClientCtx(ctx, c, cfg.maxBuffer())
 		defer call.written()
+		body := streamedBody(b.Items)
+		if body != nil && !body.done {
+			call.bodyPending = true
+			body.onDone = call.bodyEnded
+		}
 		res, err := apply(call, handle, b, cfg.EarlyData)
 		call.returned()
+		if body != nil {
+			body.closed = true
+			if !body.done {
+				// The body was left unread, or broke: the next request is
+				// behind it, so this response is the connection's last.
+				b.Items[len(b.Items)-1].KeepAlive = false
+			}
+		}
 		if err != nil {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
@@ -1035,6 +1052,13 @@ type clientCtx struct {
 	limit   int
 	calling bool // the handler is running: the watch may start
 	watch   *peerWatch
+
+	// bodyPending holds the watch back while a streamed request body is
+	// still on the wire: the watch reads the connection, and would take the
+	// body's bytes. A Done asked for meanwhile is remembered in wanted, and
+	// the watch starts when the body ends; until then a client leaving shows
+	// in the body's own read.
+	bodyPending, wanted bool
 }
 
 func newClientCtx(parent context.Context, c *prefixConn, limit int) *clientCtx {
@@ -1045,6 +1069,16 @@ func (x *clientCtx) Done() <-chan struct{} {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	done := x.doneLocked()
+	if x.bodyPending {
+		x.wanted = true
+		return done
+	}
+	x.armLocked()
+	return done
+}
+
+// armLocked starts the watch, once, while the handler runs.
+func (x *clientCtx) armLocked() {
 	if x.calling && x.watch == nil && x.err == nil && x.cancel != nil {
 		x.watch = watchPeerThen(x.c, x.limit, func(w *peerWatch) {
 			if w.gone.Load() || w.halfClosed.Load() {
@@ -1052,7 +1086,17 @@ func (x *clientCtx) Done() <-chan struct{} {
 			}
 		})
 	}
-	return done
+}
+
+// bodyEnded lets the watch start, if a Done was asked for while the body was
+// still being read.
+func (x *clientCtx) bodyEnded() {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.bodyPending = false
+	if x.wanted {
+		x.armLocked()
+	}
 }
 
 // returned is called when the handler returns: the watch stops, and the
