@@ -100,6 +100,25 @@ func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
 	}
 }
 
+// Every guide explains at least one term for a beginner: in a box of its
+// own, "> **In plain terms…", the form the guides share, or inline, "In
+// plain words:", the form the limits page uses in each of its entries.
+func TestEveryGuideHasAPlainTermsBox(t *testing.T) {
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range guides {
+		b, err := os.ReadFile(g) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "\n> **In plain terms") && !strings.Contains(string(b), "In plain words:") {
+			t.Errorf("%s: no \"> **In plain terms\" box and no \"In plain words:\"", g)
+		}
+	}
+}
+
 // maxRecordParagraph is the longest paragraph a decision record may hold.
 const maxRecordParagraph = 14
 
