@@ -8,13 +8,43 @@ session by `internal/bench/scripts/consolidate.sh`, which rewrites only what
 lies between their `consolidate` markers; the session's conditions are
 written with them, and every other line of this page is edited by hand.
 
+## Contents
+
+- **How to read this page**
+  - [The ceiling and the budget](#the-ceiling-and-the-budget)
+  - [Measuring on a laptop](#measuring-on-a-laptop)
+  - [Reading the tables](#reading-the-tables)
+  - [Not yet measured](#not-yet-measured)
+- **HTTP servers**
+  - [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
+  - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
+  - [Web pipeline, in process](#web-pipeline-in-process)
+  - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
+  - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
+  - [Partitioning by principal](#partitioning-by-principal)
+  - [Paired verdicts](#paired-verdicts)
+- **QUIC**
+  - [QUIC, on an emulated path](#quic-on-an-emulated-path)
+- **The PostgreSQL connector**
+  - [Connector, against pgx / lib/pq / database/sql](#connector-against-pgx--libpq--databasesql)
+  - [Remote reads](#remote-reads)
+  - [Codec, in isolation](#codec-in-isolation)
+  - [Statement cache](#statement-cache)
+- **The core and the architecture's decisions**
+  - [Joins and hydration, in isolation](#joins-and-hydration-in-isolation)
+  - [The architecture's figures](#the-architectures-figures)
+
+`consolidate.sh` regenerates the tables under
+[Measured in one session](#measured-in-one-session); the sections before it
+are measurements of their own, each dated.
+
 ## The ceiling and the budget
 
 **A native `for range` loop over `[]int64`: 0.219 ns per element, zero
 allocations** ([measured](#the-architectures-figures)). That is the ceiling;
-every measurement of the core is expressed as a multiple of it. A core operator has a budget of **about 1.5 ns
-per stage per element**; `TestStageBudget` in `internal/bench` guards it in
-CI, with a tolerance.
+every measurement of the core is expressed as a multiple of it. A core
+operator has a budget of **about 1.5 ns per stage per element**;
+`TestStageBudget` in `internal/bench` guards it in CI, with a tolerance.
 
 The batch is what makes that budget reachable. Measured: a batched pipeline
 is ~2× faster than an element-wise one for the same useful work from two
@@ -817,6 +847,104 @@ hand against the tree before a change:
 internal/bench/scripts/gate-path.sh main
 ```
 
+## Joins and hydration, in isolation
+
+The figures the guides quote for choosing a join and for the generated
+hydration. Six runs of one second, median, 2026-10-23, go1.26.9, 15 cores,
+under WSL2, not pinned. `JoinMerge` and `JoinHash` join 65,536 rows a side,
+sorted, through `join.Merge` and through the hash table (`internal/bench`);
+`GeneratedHydrate` decodes 1,024 rows of six columns into a struct through
+the code `sluicegen` writes, a nullable `*string` and a copied string
+included (`database/postgres/internal/entity`).
+
+| benchmark | ns per element or row | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
+| `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
+| `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
+
+## The architecture's figures
+
+The figures [the architecture](design/architecture.md) quotes for its
+decisions, each from the benchmark named beside it. Six runs of one second,
+median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
+counts in the unit its header names; the spread is the lowest and highest of
+the six runs.
+
+Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
+the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
+pushed through an `iter.Seq`; the two `MergeTwoStreams` rows merge two halves
+by `iter.Pull`, one value or one batch of 1024 at a time.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBaselineLoop` | 0.219 | 0.215–0.222 | 0 | 0 |
+| `BenchmarkSeqStages/stages=0` | 1.05 | 1.03–1.05 | 72 | 3 |
+| `BenchmarkPullPerElement` | 53.3 | 52.9–58.9 | 267 | 7 |
+| `BenchmarkPullPerBatch` | 0.299 | 0.293–0.300 | 272 | 7 |
+| `BenchmarkMergeTwoStreams/element` | 53.2 | 53.0–53.7 | 559 | 14 |
+| `BenchmarkMergeTwoStreams/batch1024` | 0.295 | 0.291–0.300 | 544 | 14 |
+| `BenchmarkMergeOperator` | 0.305 | 0.300–0.327 | 568 | 16 |
+| `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
+| `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
+
+The joins, 65,536 rows a side. The interval join and the two joins it is
+compared with are measured in the same runs here; the hash join's spread is
+wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
+is the one the guides quote.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.5 | 81.4–83.1 | 24,248 | 56 |
+| `BenchmarkIntervalJoinWide` (±2 s window) | 141 | 139–141 | 92,538 | 105 |
+| `BenchmarkJoinHash` | 93.5 | 76.9–101.6 | 8,421,980 | 599 |
+| `BenchmarkJoinMerge` | 21.8 | 21.0–22.1 | 25,464 | 20 |
+
+Per row, six columns decoded into a struct (`database/postgres`), over a
+batch of 1,024 rows or of one.
+
+| benchmark | ns per row | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkHydrateRowMajor` | 29.6 | 29.1–30.5 | 15,584 | 1,024 |
+| `BenchmarkHydrateReflect` | 56.7 | 56.2–59.3 | 15,608 | 1,025 |
+| `BenchmarkHydrateReflectBoxed` | 187.5 | 185.4–190.5 | 163,764 | 8,192 |
+| `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
+| `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
+| `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
+
+Per call: one request through the six steps of the
+[request path](design/architecture.md#the-request-path), written by hand,
+through a pipeline built per request, or through one built once
+(`internal/bench`); the first `Add` to a diagnostics collector, and an `Add`
+past its ceiling.
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkWebHandwritten` | 1.98 | 1.95–2.02 | 0 | 0 |
+| `BenchmarkWebBatchOne` | 280 | 277–288 | 368 | 13 |
+| `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
+| `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
+| `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
+
+Per run of a whole pipeline. The four `Scan` rows read a simulated table
+through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
+that never changes, and with a consumer that skips ahead, publishing its
+position or not (`pushdown`). The four `Parallel` rows run 65,536 elements
+through `parallel.Ordered` with one worker or four, on an `f` that does
+about 34 µs of work per batch or only passes its batch through
+(`internal/bench`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanNoDemand` | 1,908 | 1,868–1,947 | 8,192 | 1 |
+| `BenchmarkScanQuietDemand` | 1,868 | 1,854–1,936 | 8,192 | 1 |
+| `BenchmarkScanSkipAheadControl` | 445 | 441–452 | 8,192 | 1 |
+| `BenchmarkScanSkipAhead` | 64.4 | 63.2–66.9 | 9,344 | 138 |
+| `BenchmarkParallelSerialBaseline` | 2,160 | 2,131–2,229 | 524,430 | 69 |
+| `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
+| `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
+| `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
+
 ---
 
 ## Measured in one session
@@ -827,7 +955,7 @@ figures do not transfer across sessions, and the tables it replaced had been
 assembled from a dozen runs over several hours — each honest, none comparable
 to the next.
 
-## Conditions
+### Conditions
 
 <!-- consolidate: conditions -->
 | | |
@@ -855,7 +983,7 @@ being read for. Raise `BENCHTIME` and re-run before believing them — a point
 read measured 127 µs in one run and 318 µs in another at `BENCHTIME=300ms`,
 and settled at 285-298 µs across five runs of 1s.
 
-## Connector, against pgx / lib/pq / database/sql
+### Connector, against pgx / lib/pq / database/sql
 
 One connection each, since this connector has no pool and a comparison that
 ignores that measures pooling.
@@ -1019,7 +1147,7 @@ compare with it; the ratios within a round do:
 `SLUICE_PG_COUNT=1` adds the socket counts to the output of the wide reads,
 `SLUICE_PG_SPIN=300us` the consumer's work per batch.
 
-## Remote reads
+### Remote reads
 
 **Measured on 2026-10-19**, in the conditions of the "Connector" re-measure
 above (the same PostgreSQL 17.11 container, core 14, `GOMAXPROCS=1`), with a
@@ -1062,7 +1190,7 @@ they are the controls.
   a deferred constraint — is logged, not returned. A read inside a block
   and a statement that may write still wait for their `ReadyForQuery`.
 
-### Under a demand that holds
+#### Under a demand that holds
 
 **Measured on 2026-10-19**, same conditions, same proxy. Before: a demand
 asked one batch at a time; after: a demand whose bound does not move and
@@ -1088,7 +1216,7 @@ changed code: it is each series' control.
   holds for a batch: `AdvanceBy`, which moves on every batch, pays that
   once per read. A limit asks for one batch at a time, sized to it.
 
-### Asking ahead by the shortest batch
+#### Asking ahead by the shortest batch
 
 **Measured on 2026-10-19**, same conditions, same proxy. Before: the depth
 came from the statement's latest first batch; after: a statement's depth (⌈RTT / T₁⌉ + 1, the number of
@@ -1135,7 +1263,7 @@ depth costs a consumer that stops. `FetchAll` and pgx are the controls.
   shortest batch, but by asking for two round trips of the server's work,
   which every stop would drain, instead of correcting the estimate.
 
-## Codec, in isolation
+### Codec, in isolation
 
 <!-- consolidate: codec -->
 | benchmark | median | spread | B/op | allocs/op |
@@ -1148,105 +1276,7 @@ depth costs a consumer that stops. `FetchAll` and pgx are the controls.
 | `BenchmarkPGEncodeInt8ArraySluice` | 492 ns | ±4% | 0 B | 0 |
 <!-- /consolidate -->
 
-## Joins and hydration, in isolation
-
-The figures the guides quote for choosing a join and for the generated
-hydration. Six runs of one second, median, 2026-10-23, go1.26.9, 15 cores,
-under WSL2, not pinned. `JoinMerge` and `JoinHash` join 65,536 rows a side,
-sorted, through `join.Merge` and through the hash table (`internal/bench`);
-`GeneratedHydrate` decodes 1,024 rows of six columns into a struct through
-the code `sluicegen` writes, a nullable `*string` and a copied string
-included (`database/postgres/internal/entity`).
-
-| benchmark | ns per element or row | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
-| `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
-| `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
-
-## The architecture's figures
-
-The figures [the architecture](design/architecture.md) quotes for its
-decisions, each from the benchmark named beside it. Six runs of one second,
-median, 2026-10-23, go1.26.9, 15 cores, under WSL2, not pinned. Each table
-counts in the unit its header names; the spread is the lowest and highest of
-the six runs.
-
-Per element, over 1,048,576 `int64` (`internal/bench`). `BaselineLoop` is
-the ceiling, a native `for range`; `SeqStages/stages=0` is the same traversal
-pushed through an `iter.Seq`; the two `MergeTwoStreams` rows merge two halves
-by `iter.Pull`, one value or one batch of 1024 at a time.
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkBaselineLoop` | 0.219 | 0.215–0.222 | 0 | 0 |
-| `BenchmarkSeqStages/stages=0` | 1.05 | 1.03–1.05 | 72 | 3 |
-| `BenchmarkPullPerElement` | 53.3 | 52.9–58.9 | 267 | 7 |
-| `BenchmarkPullPerBatch` | 0.299 | 0.293–0.300 | 272 | 7 |
-| `BenchmarkMergeTwoStreams/element` | 53.2 | 53.0–53.7 | 559 | 14 |
-| `BenchmarkMergeTwoStreams/batch1024` | 0.295 | 0.291–0.300 | 544 | 14 |
-| `BenchmarkMergeOperator` | 0.305 | 0.300–0.327 | 568 | 16 |
-| `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
-| `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
-
-The joins, 65,536 rows a side. The interval join and the two joins it is
-compared with are measured in the same runs here; the hash join's spread is
-wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
-is the one the guides quote.
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.5 | 81.4–83.1 | 24,248 | 56 |
-| `BenchmarkIntervalJoinWide` (±2 s window) | 141 | 139–141 | 92,538 | 105 |
-| `BenchmarkJoinHash` | 93.5 | 76.9–101.6 | 8,421,980 | 599 |
-| `BenchmarkJoinMerge` | 21.8 | 21.0–22.1 | 25,464 | 20 |
-
-Per row, six columns decoded into a struct (`database/postgres`), over a
-batch of 1,024 rows or of one.
-
-| benchmark | ns per row | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkHydrateRowMajor` | 29.6 | 29.1–30.5 | 15,584 | 1,024 |
-| `BenchmarkHydrateReflect` | 56.7 | 56.2–59.3 | 15,608 | 1,025 |
-| `BenchmarkHydrateReflectBoxed` | 187.5 | 185.4–190.5 | 163,764 | 8,192 |
-| `BenchmarkHydrateColumnar` | 36.7 | 36.1–36.9 | 15,589 | 1,024 |
-| `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
-| `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
-
-Per call: one request through the six steps of the
-[request path](design/architecture.md#the-request-path), written by hand,
-through a pipeline built per request, or through one built once
-(`internal/bench`); the first `Add` to a diagnostics collector, and an `Add`
-past its ceiling.
-
-| benchmark | ns per call | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkWebHandwritten` | 1.98 | 1.95–2.02 | 0 | 0 |
-| `BenchmarkWebBatchOne` | 280 | 277–288 | 368 | 13 |
-| `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
-| `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
-| `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
-
-Per run of a whole pipeline. The four `Scan` rows read a simulated table
-through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
-that never changes, and with a consumer that skips ahead, publishing its
-position or not (`pushdown`). The four `Parallel` rows run 65,536 elements
-through `parallel.Ordered` with one worker or four, on an `f` that does
-about 34 µs of work per batch or only passes its batch through
-(`internal/bench`).
-
-| benchmark | µs per run | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkScanNoDemand` | 1,908 | 1,868–1,947 | 8,192 | 1 |
-| `BenchmarkScanQuietDemand` | 1,868 | 1,854–1,936 | 8,192 | 1 |
-| `BenchmarkScanSkipAheadControl` | 445 | 441–452 | 8,192 | 1 |
-| `BenchmarkScanSkipAhead` | 64.4 | 63.2–66.9 | 9,344 | 138 |
-| `BenchmarkParallelSerialBaseline` | 2,160 | 2,131–2,229 | 524,430 | 69 |
-| `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
-| `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
-| `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
-
-## Web pipeline, in process
+### Web pipeline, in process
 
 No socket, no kernel. See the socket table below before drawing anything from
 the ordering here.
@@ -1261,7 +1291,7 @@ the ordering here.
 | `BenchmarkWebSluice` | 1764 ns | ±0% | 1952 B | 22 |
 <!-- /consolidate -->
 
-## Web pipeline, over a socket
+### Web pipeline, over a socket
 
 Not pinned: a socket benchmark needs a client and a server at once, and pinning
 both to one core measures their contention.
@@ -1280,7 +1310,7 @@ both to one core measures their contention.
 | `BenchmarkSocketSluice` | 184708 ns | ±1% | 10120 B | 112 |
 <!-- /consolidate -->
 
-### The connection budget and the batch bound (2026-10-14)
+#### The connection budget and the batch bound (2026-10-14)
 
 `net/httpstream` closes an HTTP/1.1 connection after
 `Config.MaxRequestsPerConn` requests (1024 by default), and a client that
@@ -1306,7 +1336,7 @@ any answer is read: 8 against 64, +83% per request (0 of 14); 256 against
 default stays at 64, the bound on what one burst may allocate; a consumer
 measured pipelining more than 64 deep is the condition to revisit it.
 
-## The gateway, with a database behind it
+### The gateway, with a database behind it
 
 Sixty-four concurrent requests, each needing one row. Not pinned, for the same
 reason.
@@ -1321,7 +1351,7 @@ reason.
 | `BenchmarkWebDBSluiceOneConn` | 898204 ns | ±6% | 470318 B | 2251 |
 <!-- /consolidate -->
 
-### The gateway, against a bounded backend
+#### The gateway, against a bounded backend
 
 The benchmarks of `gateway/`, outside the paired gate: they measure the
 scheduler as much as the code. A resource serves 16 queries at once and each
@@ -1344,7 +1374,7 @@ the clock, not for company. The "65 times slower" of earlier versions came
 from a first benchmark with no bound on the resource, since removed; the
 benchmark's comment tells why.
 
-## Partitioning by principal
+### Partitioning by principal
 
 <!-- consolidate: partitioning -->
 | benchmark | median | spread | B/op | allocs/op |
@@ -1353,7 +1383,7 @@ benchmark's comment tells why.
 | `BenchmarkPartitionSingleTenant` | 454 ns | ±3% | 0 B | 0 |
 <!-- /consolidate -->
 
-## Statement cache
+### Statement cache
 
 <!-- consolidate: statement-cache -->
 | benchmark | median | spread | B/op | allocs/op |
@@ -1365,15 +1395,13 @@ benchmark's comment tells why.
 | `BenchmarkStmtCacheHit` | 16 ns | ±0% | 0 B | 0 |
 <!-- /consolidate -->
 
-## Paired verdicts
+### Paired verdicts
 
 A single run of each contender produces numbers in an order, which invites
 ranking. The sign test says which of those differences survive interleaving.
 
 <!-- consolidate: verdicts -->
-```
-BenchmarkSocketNetHTTP vs BenchmarkSocketSluice                                     183857.0000 -> 183752.5000  noise            wins=5/12 (need 10)
-BenchmarkSocketGin vs BenchmarkSocketSluice                                     177060.0000 -> 177126.0000  noise            wins=8/12 (need 10)
-BenchmarkSocketNetHTTP vs BenchmarkSocketFiberFasthttp                                     175211.0000 -> 191202.0000  SLOWER +8.8%     wins=0/12 (need 10)
-```
+| `BenchmarkSocketNetHTTP` vs `BenchmarkSocketSluice` | 183857 ns | 183752 ns | noise | 5/12 wins, 10 needed |
+| `BenchmarkSocketGin` vs `BenchmarkSocketSluice` | 177060 ns | 177126 ns | noise | 8/12 wins, 10 needed |
+| `BenchmarkSocketNetHTTP` vs `BenchmarkSocketFiberFasthttp` | 175211 ns | 191202 ns | SLOWER +8.8% | 0/12 wins, 10 needed |
 <!-- /consolidate -->

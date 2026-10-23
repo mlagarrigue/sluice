@@ -201,15 +201,22 @@ table gateway-db benchmarks . 'BenchmarkWebDB' free
 table partitioning . ./gateway/ 'BenchmarkPartition'
 table statement-cache . './database/postgres/ ./internal/bench/' 'BenchmarkStmtCache|BenchmarkPGPrepare'
 
+# versus.sh ends on "A vs B  x -> y  <verdict>  wins=w/n (need k)"; the page
+# reads it as a table, one pair per row.
 {
-  echo '```'
+  echo '| pair | first | second | verdict | sign test |'
+  echo '|---|---|---|---|---|'
   for pair in \
     "BenchmarkSocketNetHTTP BenchmarkSocketSluice" \
     "BenchmarkSocketGin BenchmarkSocketSluice" \
     "BenchmarkSocketNetHTTP BenchmarkSocketFiberFasthttp"; do
     "$ROOT/internal/bench/scripts/versus.sh" $pair 13 2>/dev/null | tail -1
-  done
-  echo '```'
+  done | awk '{
+    v = ""
+    for (i = 7; i <= NF && $i !~ /^wins=/; i++) v = v (v == "" ? "" : " ") $i
+    w = $i; sub(/^wins=/, "", w); k = $(i + 2); sub(/\)$/, "", k)
+    printf "| `%s` vs `%s` | %.0f ns | %.0f ns | %s | %s wins, %s needed |\n", $1, $3, $4, $6, v, w, k
+  }'
 } >"$OUT/verdicts"
 
 # The fill: the page with what lies between each pair of markers replaced by
