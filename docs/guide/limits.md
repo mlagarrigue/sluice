@@ -343,11 +343,14 @@ checkable:
   runner's at revision `ab039a4`. The cases
   it refuses, as the runner's
   exit status 127 asks, are the features documented as not there — 0-RTT,
-  resumption, QUIC v2 (see the `net/quic` versions line below) — plus
+  QUIC v2 (see the `net/quic` versions line below) — plus
   chacha20 on the client side (Go's TLS 1.3
   offers no way to restrict the cipher suites it offers), a forced key update and HTTP/3 on the client
   side (no HTTP/3 client in the module). Green means every one of these
-  passed against at least two peers.
+  passed against at least two peers. Session resumption was refused in
+  those runs; the endpoint has served and fetched it since 23 October 2026
+  (session tickets on request, `ListenerConfig.SessionTickets`), with no
+  runner pass since.
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
   the same response over HTTP/2 with every core available, and catches up
   on two; the figures, their date and the machine that measured them are

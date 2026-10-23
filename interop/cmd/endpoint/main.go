@@ -17,8 +17,8 @@
 // failed; anything else that goes wrong exits with 1.
 //
 // What is refused here, and why, is one table (supported); the cases it
-// refuses are the features net/quic documents as not there (0-RTT, session
-// resumption, QUIC v2) or that crypto/tls offers no knob for (a client
+// refuses are the features net/quic documents as not there (0-RTT, QUIC v2)
+// or that crypto/tls offers no knob for (a client
 // that offers only ChaCha20 — Go does not let a TLS 1.3 cipher suite list
 // be restricted — and a key update forced inside the first megabyte, which
 // net/quic performs at the AEAD's confidentiality limit and not before).
@@ -26,7 +26,9 @@
 // and crypto/tls picks the one suite offered. The ecn case is a transfer
 // on both sides: net/quic marks its packets ECT(0) and reports the marks
 // it reads in its ACK frames (RFC 9000 §13.4). The HTTP/3 case is served,
-// by net/httpstream, but not fetched: the module has no HTTP/3 client.
+// by net/httpstream, but not fetched: the module has no HTTP/3 client. The
+// resumption case is served by a listener that issues session tickets, and
+// fetched over two connections, the second presenting the first's ticket.
 package main
 
 import (
@@ -91,10 +93,11 @@ var supported = map[string]map[string]bool{
 	"server": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
 		"http3": true, "connectionmigration": true, "chacha20": true, "ecn": true,
+		"resumption": true,
 	},
 	"client": {
 		"handshake": true, "transfer": true, "retry": true, "multiconnect": true,
-		"ipv6": true, "ecn": true,
+		"ipv6": true, "ecn": true, "resumption": true,
 	},
 }
 
@@ -161,7 +164,7 @@ func runServer(testcase string) error {
 	if err != nil {
 		return err
 	}
-	lcfg := quic.ListenerConfig{AlwaysRetry: testcase == "retry"}
+	lcfg := quic.ListenerConfig{AlwaysRetry: testcase == "retry", SessionTickets: testcase == "resumption"}
 	if testcase == "connectionmigration" {
 		// One dual-stack socket, announced in both families: a client only
 		// moves to a preferred address of the family it already uses
@@ -330,18 +333,34 @@ func runClient(testcase string, requests []string) error {
 		// One connection per file, one after the other: the case counts
 		// handshakes under heavy loss.
 		for _, r := range requests {
-			if err := fetchAll([]string{r}, kl); err != nil {
+			if err := fetchAll([]string{r}, kl, nil); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return fetchAll(requests, kl)
+	if testcase == "resumption" {
+		// The first file on one connection, the rest on a second that
+		// presents the ticket the first received: the case checks that
+		// the second handshake carries no certificate. The ticket arrives
+		// beside HANDSHAKE_DONE, before any answer, so it is stored by the
+		// time the first file is.
+		cache := tls.NewLRUClientSessionCache(1)
+		if err := fetchAll(requests[:1], kl, cache); err != nil {
+			return err
+		}
+		if len(requests) == 1 {
+			return nil
+		}
+		return fetchAll(requests[1:], kl, cache)
+	}
+	return fetchAll(requests, kl, nil)
 }
 
 // fetchAll opens one connection to the host of the first URL and fetches
-// every URL over it, concurrently within maxStreamsInFlight.
-func fetchAll(requests []string, kl io.Writer) error {
+// every URL over it, concurrently within maxStreamsInFlight. A non-nil cache
+// resumes from a ticket it holds and stores the one the server sends.
+func fetchAll(requests []string, kl io.Writer, cache tls.ClientSessionCache) error {
 	first, err := url.Parse(requests[0])
 	if err != nil {
 		return err
@@ -382,12 +401,14 @@ func fetchAll(requests []string, kl io.Writer) error {
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{alpnHQ},
 		KeyLogWriter: kl,
+
+		ClientSessionCache: cache,
 	}
 	c, err := quic.Dial(context.Background(), pc, addr, cfg, quic.DefaultParameters())
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
-	log.Printf("connected to %s, %d request(s)", addr, len(requests))
+	log.Printf("connected to %s, %d request(s), resumed %v", addr, len(requests), c.ConnectionState().DidResume)
 
 	var (
 		wg       sync.WaitGroup

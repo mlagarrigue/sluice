@@ -400,6 +400,10 @@ type Conn struct {
 	// ownerRegistrar for one that owns its socket. The peer needs them to
 	// follow this end across a NAT rebind (RFC 9000 §9.5).
 	registrar cidRegistrar
+	// sendsTicket is [ListenerConfig.SessionTickets] on a connection the
+	// listener accepts: one session ticket leaves once the handshake
+	// completes (issueTicket).
+	sendsTicket bool
 	// localCIDs are the identifiers this end currently answers to, sequence
 	// 0 being scid; nextLocalSeq numbers the next one issued.
 	// localRetirePrior is the Retire Prior To this end has asked for: the
@@ -1206,6 +1210,9 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 		deadline = c.hsDeadline // extendHandshakeLocked may have moved it
 		c.mu.Unlock()
 		done, err := c.pump()
+		if done && err == nil && c.sendsTicket {
+			err = c.issueTicket()
+		}
 		c.mu.Lock()
 		if done {
 			c.handshakeComplete()
@@ -1372,6 +1379,19 @@ func (c *Conn) endedDuringHandshakeErr() error {
 	return fmt.Errorf("%w: the connection closed during the handshake", ErrQUIC)
 }
 
+// issueTicket has crypto/tls write the connection's one session ticket and
+// sends it, in the application space where RFC 9001 §4.5 puts it, beside
+// the HANDSHAKE_DONE handshakeComplete adds — gathered into one datagram.
+// Called once the handshake is complete, on a server: before then
+// crypto/tls refuses, and on a client it has no ticket to send.
+func (c *Conn) issueTicket() error {
+	if err := c.tls.SendSessionTicket(tls.QUICSessionTicketOptions{}); err != nil {
+		return err
+	}
+	_, err := c.pump()
+	return err
+}
+
 // handshakeComplete is the transition TLS reports: the server confirms at
 // once and tells the client with HANDSHAKE_DONE; the client confirms when
 // that frame arrives (§4.1.2 of RFC 9001). Handshake keys are dropped on
@@ -1460,7 +1480,7 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			// application space, where it sealed 1-RTT packets with a
 			// key the peer holds only for 0-RTT: dropped by the peer,
 			// declared lost here, until the 1-RTT secret replaced it.
-			// 0-RTT is not planned (quic.go, "what is not there").
+			// 0-RTT is not served (quic.go, "What is not here").
 			return false, nil
 		}
 		return false, c.install(e.Level, e.Suite, e.Data, e.Kind == tls.QUICSetWriteSecret)

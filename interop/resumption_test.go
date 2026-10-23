@@ -121,3 +121,94 @@ func TestResumptionAgainstQuicGoServer(t *testing.T) {
 		t.Errorf("LostPackets = %d on loopback; a packet left under a key the server does not hold", got)
 	}
 }
+
+// TestQuicGoClientResumesAgainstSluiceServer is the other direction: a sluice
+// listener asked for session tickets (ListenerConfig.SessionTickets) issues
+// one after the handshake, quic-go stores it, and its next connection
+// resumes the session (RFC 9001 §4.5). Each connection echoes a stream, so
+// what resumed is a connection that works, not a handshake alone.
+func TestQuicGoClientResumesAgainstSluiceServer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	pc := listenUDP(t)
+	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{SessionTickets: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				st, err := c.AcceptStream(ctx)
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(st, st)
+				_ = st.CloseWrite()
+				<-c.Done()
+			}()
+		}
+	}()
+
+	cfg := clientTLS()
+	cache := tls.NewLRUClientSessionCache(1)
+	cfg.ClientSessionCache = cache
+	want := payload()
+	dial := func() *quicgo.Conn {
+		t.Helper()
+		client, err := quicgo.Dial(ctx, listenUDP(t), pc.LocalAddr(), cfg, &quicgo.Config{MaxIdleTimeout: timeout})
+		if err != nil {
+			t.Fatalf("quic-go could not complete a handshake with sluice: %v", err)
+		}
+		st, err := client.OpenStreamSync(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		written := make(chan error, 1)
+		go func() {
+			if _, err := st.Write(want); err != nil {
+				written <- err
+				return
+			}
+			written <- st.Close()
+		}()
+		got, err := io.ReadAll(st)
+		if err != nil {
+			t.Fatalf("reading the echo: %v", err)
+		}
+		if err := <-written; err != nil {
+			t.Fatalf("writing the payload: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("echo differs: got %d bytes, want %d", len(got), len(want))
+		}
+		return client
+	}
+
+	first := dial()
+	if first.ConnectionState().TLS.DidResume {
+		t.Fatal("the first connection resumed; the cache was not empty")
+	}
+	for deadline := time.Now().Add(timeout); ; {
+		if _, ok := cache.Get(cfg.ServerName); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sluice issued no session ticket quic-go stored")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = first.CloseWithError(0, "")
+
+	second := dial()
+	defer second.CloseWithError(0, "")
+	if !second.ConnectionState().TLS.DidResume {
+		t.Fatal("quic-go's second connection did not resume the session sluice's ticket names")
+	}
+}

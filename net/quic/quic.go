@@ -138,9 +138,11 @@
 //   - **Server migration.** A server never changes its own address (§9):
 //     it may announce a preferred one (see above), nothing else; a
 //     client's preferred_address is refused (§18.2).
-//   - 0-RTT. A server issues no session ticket; a client given a
-//     [tls.ClientSessionCache] resumes against a server that does ([Dial]),
-//     still in one round trip and with nothing sent in 0-RTT.
+//   - 0-RTT. Neither end sends or accepts data in 0-RTT packets. Session
+//     resumption is here: a [Listener] issues a ticket when asked
+//     ([ListenerConfig.SessionTickets]) and a client given a
+//     [tls.ClientSessionCache] presents it ([Dial]), both still in one
+//     round trip.
 //   - **Versions other than 1.** QUIC version 2 (RFC 9369) and compatible
 //     version negotiation (RFC 9368, the version_information parameter)
 //     are not implemented: the only version spoken is 1. A Version

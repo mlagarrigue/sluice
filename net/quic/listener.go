@@ -207,6 +207,25 @@ type ListenerConfig struct {
 	// StatelessResetKey and secret: anyone holding it can mint tokens that
 	// pass address validation.
 	TokenKey [32]byte
+
+	// SessionTickets makes every connection send the client one session
+	// ticket once its handshake completes (RFC 8446 §4.6.1, carried in a
+	// 1-RTT CRYPTO frame as RFC 9001 §4.5 says). A client that presents it
+	// on a later connection resumes the session: the server sends no
+	// certificate chain and the client verifies none, though the handshake
+	// still takes its round trip — no data travels in 0-RTT, and the
+	// ticket does not offer it. Off by default, no ticket is sent, which
+	// keeps the session state a ticket carries off the wire.
+	//
+	// The ticket is sealed with the [tls.Config]'s session ticket keys:
+	// random per Config unless set ([tls.Config.SetSessionTicketKeys]), so
+	// a restart, or another instance, cannot open the tickets of this one
+	// and the client simply falls back to a full handshake. A Config with
+	// SessionTicketsDisabled is refused by [NewListener] alongside this
+	// field: crypto/tls would send nothing, silently. One ticket per
+	// connection is all crypto/tls sends, and the client, which presents a
+	// ticket once (see [Dial]), gets the next one on the resumed connection.
+	SessionTickets bool
 }
 
 // Listener owns one [net.PacketConn] shared by the connections it serves, and
@@ -385,6 +404,10 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	lcfg, err := lcfg.resolve()
 	if err != nil {
 		return nil, err
+	}
+	if lcfg.SessionTickets && cfg.SessionTicketsDisabled {
+		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets is set and tls.Config.SessionTicketsDisabled too — "+
+			"crypto/tls would send no ticket", ErrQUIC)
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
 	if lcfg.PreferredAddress != nil {
@@ -1115,6 +1138,7 @@ func (l *Listener) prepareConn(c *Conn) error {
 	c.params.statelessResetToken = t[:]
 	c.registrar = l
 	c.incoming = make(chan rawDatagram, l.lcfg.ConnQueueLen)
+	c.sendsTicket = l.lcfg.SessionTickets
 	if l.preferred == nil {
 		return nil
 	}
