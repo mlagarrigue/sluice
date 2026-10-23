@@ -1845,10 +1845,10 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := late.Write(h3Request("GET", "/late")); err != nil {
-		t.Fatal(err)
-	}
-	if err := late.CloseWrite(); err != nil {
+	// Request and FIN in one call: the server may refuse the stream on its
+	// HEADERS alone, and its STOP_SENDING used to beat a separate
+	// CloseWrite, which then failed the test on a correct rejection.
+	if _, err := late.WriteFinal(h3Request("GET", "/late")); err != nil {
 		t.Fatal(err)
 	}
 	if err := late.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
