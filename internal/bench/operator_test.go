@@ -55,8 +55,8 @@ func BenchmarkScan(b *testing.B) {
 }
 
 // BenchmarkFlatMap expands one element into one, the shape that isolates the
-// operator's own cost from the expansion's. A scratch slice is returned so the
-// benchmark measures FlatMap's copy rather than an allocation per element.
+// operator's own cost from the expansion's, through the idiom the signature
+// asks for: the result appended to dst, in place.
 //
 // It was once over the per-stage budget, at ~2.3 ns/element; it now sits
 // inside it (figures in docs/benchmarks.md, which this comment does not
@@ -67,11 +67,9 @@ func BenchmarkFlatMap(b *testing.B) {
 	b.SetBytes(N * 8)
 	b.ReportAllocs()
 	for b.Loop() {
-		scratch := make([]int64, 1)
 		var acc int64
-		sluice.FlatMap(sluice.Of(src, 1024), func(v int64) []int64 {
-			scratch[0] = v
-			return scratch
+		sluice.FlatMap(sluice.Of(src, 1024), func(dst []int64, v int64) []int64 {
+			return append(dst, v)
 		})(func(bt sluice.Batch[int64]) bool {
 			for _, v := range bt.Items {
 				acc += v

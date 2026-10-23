@@ -34,7 +34,7 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 		{"sluice.Map", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Map(s, func(v int) int { return v }) }},
 		{"sluice.Filter", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Filter(s, func(int) bool { return true }) }},
 		{"sluice.FlatMap", func(s sluice.Stream[int]) sluice.Stream[int] {
-			return sluice.FlatMap(s, func(v int) []int { return []int{v} })
+			return sluice.FlatMap(s, func(dst []int, v int) []int { return append(dst, v) })
 		}},
 		{"sluice.Peek", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Peek(s, func(int) {}) }},
 		{"sluice.Scan", func(s sluice.Stream[int]) sluice.Stream[int] {

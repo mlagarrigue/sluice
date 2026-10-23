@@ -10,9 +10,12 @@ import (
 func ExampleFlatMap() {
 	s := sluice.Of([]string{"a b", "c", ""}, 3)
 
-	// Returning an empty slice drops the element. The whole input batch
-	// expands into one output batch rather than several small ones.
-	words := sluice.FlatMap(s, strings.Fields)
+	// f appends to the batch being built; appending nothing drops the
+	// element. The whole input batch expands into one output batch rather
+	// than several small ones.
+	words := sluice.FlatMap(s, func(dst []string, line string) []string {
+		return append(dst, strings.Fields(line)...)
+	})
 
 	fmt.Println(sluice.Collect(words))
 	// Output:

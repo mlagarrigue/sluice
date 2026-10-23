@@ -10,30 +10,30 @@ func TestFlatMap(t *testing.T) {
 	tests := []struct {
 		name string
 		src  []int
-		f    func(int) []string
+		f    func([]string, int) []string
 		want []string
 	}{
 		{
 			"expands each element",
 			[]int{1, 2},
-			func(v int) []string { return []string{strconv.Itoa(v), strconv.Itoa(v * 10)} },
+			func(dst []string, v int) []string { return append(dst, strconv.Itoa(v), strconv.Itoa(v*10)) },
 			[]string{"1", "10", "2", "20"},
 		},
 		{
-			"an empty slice drops the element",
+			"returning dst unchanged drops the element",
 			[]int{1, 2, 3},
-			func(v int) []string {
+			func(dst []string, v int) []string {
 				if v%2 == 0 {
-					return nil
+					return dst
 				}
-				return []string{strconv.Itoa(v)}
+				return append(dst, strconv.Itoa(v))
 			},
 			[]string{"1", "3"},
 		},
 		{
 			"everything dropped",
 			[]int{1, 2, 3},
-			func(int) []string { return nil },
+			func(dst []string, _ int) []string { return dst },
 			nil,
 		},
 	}
@@ -51,8 +51,8 @@ func TestFlatMap(t *testing.T) {
 // would undo the batching the operator is supposed to preserve.
 func TestFlatMapDoesNotFragment(t *testing.T) {
 	var sizes []int
-	FlatMap(Of([]int{1, 2, 3}, 3), func(v int) []int {
-		return []int{v, v, v}
+	FlatMap(Of([]int{1, 2, 3}, 3), func(dst []int, v int) []int {
+		return append(dst, v, v, v)
 	})(func(b Batch[int]) bool {
 		sizes = append(sizes, b.Len())
 		return true
@@ -62,17 +62,15 @@ func TestFlatMapDoesNotFragment(t *testing.T) {
 	}
 }
 
-// f may return a scratch slice it reuses; FlatMap copies out of it, so that
-// must not corrupt the output.
-func TestFlatMapCopiesFromReusedSlice(t *testing.T) {
-	scratch := make([]int, 2)
-	got := Collect(FlatMap(Of([]int{1, 2, 3}, 3), func(v int) []int {
-		scratch[0], scratch[1] = v, -v
-		return scratch
-	}))
-	if want := []int{1, -1, 2, -2, 3, -3}; !slices.Equal(got, want) {
-		t.Errorf("FlatMap over a reused slice = %v, want %v", got, want)
-	}
+// An f that returns a slice of its own instead of dst would drop the batch's
+// earlier results without a word; FlatMap refuses it rather than adopt it.
+func TestFlatMapRefusesAnFThatDropsDst(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("FlatMap adopted a slice of f's own, dropping the batch's earlier results")
+		}
+	}()
+	Collect(FlatMap(Of([]int{1, 2, 3}, 3), func(_ []int, v int) []int { return []int{v} }))
 }
 
 func TestPeek(t *testing.T) {

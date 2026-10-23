@@ -8,58 +8,70 @@ import "github.com/mlagarrigue/sluice/internal/batch"
 
 // FlatMap expands every element into zero or more elements of another type.
 //
-// f returns a slice; an empty or nil one drops the element. The results are
-// concatenated into output batches, so a batch of 1000 elements each expanding
-// to 3 yields one batch of 3000 rather than 1000 small ones — the expansion
-// does not fragment the stream. Use [Coalesce] the other way round, when f
-// mostly returns nothing.
+// f appends the results for one element to dst and returns the extended
+// slice, the shape of strconv.AppendInt: returning dst unchanged drops the
+// element. dst is the output batch being built, so the results land where the
+// consumer reads them, with no copy and no slice of their own. A batch of 1000
+// elements each expanding to 3 yields one batch of 3000 rather than 1000 small
+// ones — the expansion does not fragment the stream. Use [Coalesce] the other
+// way round, when f mostly appends nothing.
+//
+// f must only append: the slice it returns must begin with dst, whose
+// elements are the batch's earlier results. A function that already returns a
+// slice composes by appending it:
+//
+//	sluice.FlatMap(lines, func(dst []string, line string) []string {
+//	    return append(dst, strings.Fields(line)...)
+//	})
+//
+// Returning a slice of f's own instead would drop those earlier results
+// without a word, so FlatMap checks once per batch and panics when the batch
+// did not end on the buffer it reserved while it would have fitted there —
+// the trace such a slice leaves. The check is per batch, not per element: in
+// the loop it cost the 1-to-1 shape a fifth of its time.
 //
 // The output batch reuses an internal buffer and is valid only for the duration
-// of the call. f must not retain its argument beyond the call, and the slice it
-// returns is copied out, so returning a reused scratch slice is safe.
+// of the call. f must not retain its argument or dst beyond the call.
 //
-// FlatMap is the most expensive operator in this file, at ~0.90 ns/element for
-// a 1-to-1 expansion against ~0.33 for a pass-through stage, allocation-free.
-// What remains is structural: f returns a slice rather than a value, so it
-// cannot inline and hands back a header per element, and the results are copied
-// into a second array the consumer then walks.
-//
-// The loop below takes the one-element result separately rather than through
-// a variadic append: routed through the append, a single value cost a memmove
-// per element — 36% of the runtime, and the difference between ~2.3 ns and
-// the per-stage budget. A cost called "structural" is read off a profile, not
-// asserted from the shape of the code.
+// The appending form is what the measurement chose. When f returned its own
+// slice, the natural body — return []B{x, y} — allocated on every element as
+// soon as f did not inline: 13.6 ns and one allocation per element against
+// 1.4 ns and none, for two results per element. Inlined, the returned form
+// cost 1.6 to 3 times as much as appending, for the copy out of each slice.
 //
 // Reach for [Map] when f yields exactly one element for every input: it
-// writes by index into a buffer it owns and does not pay for a slice header at
-// all. FlatMap earns its cost when the count actually varies.
+// writes by index into a buffer it owns and pays for no append at all.
+// FlatMap earns its cost when the count actually varies.
 //
 // FlatMap panics if f is nil.
-func FlatMap[A, B any](s Stream[A], f func(A) []B) Stream[B] {
+func FlatMap[A, B any](s Stream[A], f func(dst []B, a A) []B) Stream[B] {
 	if f == nil {
 		panic("sluice: FlatMap requires a non-nil f function")
 	}
 	return func(yield func(Batch[B]) bool) {
-		var out []B
+		var buf []B
 		s(func(b Batch[A]) bool {
 			// The output is at least the input's length whenever f is 1-to-1 —
 			// the common case — so without this reservation the buffer regrows
 			// from empty on every batch and the operator allocates per batch
 			// instead of once. Expansions beyond it still fall back to append's
 			// growth.
-			out = batch.Reserve(out, len(b.Items))
+			reserved := batch.Reserve(buf, len(b.Items))
+			out := reserved
 			for _, v := range b.Items {
-				// Variadic append copies through memmove, whose call overhead
-				// dwarfs the copy when f returns one element — the common case,
-				// and the shape of every 1-to-1 expansion. Measured at 36% of
-				// this operator's runtime spent in memmove for single-element
-				// results. Appending the element directly skips it; longer
-				// results still go through the variadic form.
-				if r := f(v); len(r) == 1 {
-					out = append(out, r[0])
-				} else {
-					out = append(out, r...)
-				}
+				out = f(out, v)
+			}
+			// append moves the array only when it is full, so a batch that
+			// fits in what was reserved and does not start there went through
+			// a slice of f's own, which dropped the results before it. One
+			// check per batch rather than per element: a guard in the loop
+			// cost the 1-to-1 shape a fifth of its time.
+			if len(out) > 0 && len(out) <= cap(reserved) && &out[0] != &reserved[:1][0] {
+				panic("sluice: FlatMap's f must return dst with its results appended")
+			}
+			buf = out
+			if cap(out) < cap(reserved) {
+				buf = reserved
 			}
 			return yield(Batch[B]{Items: out})
 		})
