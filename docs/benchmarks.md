@@ -127,7 +127,9 @@ on a change that moves code and nothing else, seven benchmarks called
 SLOWER by 3 to 32% became one at 4%, the same in two passes of one job, and a
 15% slowdown injected into `Scan` was still SLOWER. The alignment is that of
 a function's entry, not of the loops inside it, which is what the remaining
-case shows.
+case shows. A diff that only moves one function within `database/postgres`
+left the four benchmarks that depend on it at noise in two passes of one job
+(2026-10-23, two different runners), and the gate measured no other.
 
 **Host settings that raise the floor**, none of them required: disabling
 Core Performance Boost in the BIOS, which removes the clock ramp at the cost
