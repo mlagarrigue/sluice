@@ -43,9 +43,15 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: "build"
+  # The CodeQL sub-actions (init, autobuild, analyze) are one release pinned
+  # at one SHA: bumped one by one, each pull request mixes two versions and
+  # fails the CodeQL workflow. Grouped, they move in one pull request.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      codeql:
+        patterns: ["github/codeql-action/*"]
     commit-message:
       prefix: "ci"
