@@ -176,6 +176,23 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 // nothing) and no stateless reset, which a listener that had already
 // forgotten the connection would send to its identifier.
 func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
+	// The replay must leave inside the draining period, which a loaded
+	// machine can make it miss; such a run measured the load, not the
+	// draining state. It is run again rather than skipped, so that a
+	// machine where it never fits says so instead of passing for nothing.
+	for attempt := 1; attempt <= 3; attempt++ {
+		if drainingAttempt(t) {
+			return
+		}
+		t.Logf("attempt %d: the replay left after the draining period's floor; again", attempt)
+	}
+	t.Fatal("three attempts, none sent the replay inside the draining period: the machine is too loaded to measure it")
+}
+
+// drainingAttempt runs the scenario once and reports whether its replay left
+// in time to say anything about the draining state.
+func drainingAttempt(t *testing.T) bool {
+	t.Helper()
 	const delay = 200 * time.Millisecond
 	l := delayedListener(t, delay)
 	addr := l.Addr()
@@ -256,7 +273,8 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 	// resets it (§10.2): that run measured the machine's load, not the
 	// draining state.
 	if late := time.Since(closed); late >= 3*delay {
-		t.Skipf("the late packet would leave %v after the close, past the draining period's floor of %v", late, 3*delay)
+		t.Logf("the late packet would leave %v after the close, past the draining period's floor of %v", late, 3*delay)
+		return false
 	}
 	if _, err := own.WriteTo(replay, addr); err != nil {
 		t.Fatal(err)
@@ -272,7 +290,7 @@ func TestDrainingAbsorbsALatePacketWithoutAReset(t *testing.T) {
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatal(err)
 			}
-			return
+			return true
 		}
 		if from.String() == addr.String() {
 			t.Fatalf("a late packet after the peer's close earned a %d-byte reply, want silence", n)
