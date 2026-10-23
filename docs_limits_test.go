@@ -52,3 +52,33 @@ func TestLimitsAreShort(t *testing.T) {
 	}
 	flush()
 }
+
+// maxQuoteLines is the longest run of quotation the architecture may hold
+// without a heading: past it, several subjects run together in one aside and
+// a reader cannot find the one they came for.
+const maxQuoteLines = 40
+
+// The architecture quotes what the implementation learned, under the decision
+// it revised. No run of quoted lines — blank ">" lines included — goes past
+// forty: a longer one is a journal, and its subjects get headings.
+func TestArchitectureQuotesAreShort(t *testing.T) {
+	const page = "docs/design/architecture.md"
+	b, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, n := 0, 0
+	for i, line := range append(strings.Split(string(b), "\n"), "") {
+		if strings.HasPrefix(line, ">") {
+			if n == 0 {
+				start = i + 1
+			}
+			n++
+			continue
+		}
+		if n > maxQuoteLines {
+			t.Errorf("%s:%d: %d quoted lines in a row; give their subjects headings", page, start, n)
+		}
+		n = 0
+	}
+}
