@@ -97,7 +97,7 @@ callback to enroll in; every blocking convenience (`httpstream.Serve`,
 `quic.Listener.Accept` return a `*quic.Conn` you drive yourself; `httpstream.Requests`
 reads a connection you opened). Composition is with the standard library —
 `net.PacketConn`, `tls.Config`, `io`, `iter.Seq` — never a substitute for
-it. What the library implements itself — QUIC, and experimentally the HTTP
+it. What the library implements itself — QUIC (experimental) and the HTTP
 transports — is what the standard library does not offer, or offers only in
 a shape that cannot batch; it is built on the standard library's primitives,
 not beside them. An API that breaks this rule is a defect, whatever it saves
