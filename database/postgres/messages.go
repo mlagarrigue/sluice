@@ -396,7 +396,7 @@ func (r *Rows) appendRow(body []byte) error {
 		return fmt.Errorf("%w: DataRow has %d fields, the description declared %d", ErrProtocol, n, r.fields)
 	}
 	if r.rows >= r.maxRows {
-		return fmt.Errorf("%w: %d rows", ErrTooManyRows, r.maxRows)
+		return fmt.Errorf("%w: %d rows (QueryConfig.BatchRows)", ErrTooManyRows, r.maxRows)
 	}
 	// The byte bound (QueryConfig.BatchBytes) is not checked here: it is a
 	// threshold Rows.full reports once crossed, and the reader closes the

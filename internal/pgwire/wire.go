@@ -26,7 +26,9 @@ const MaxOutgoingMessage = 1<<30 - 1
 // attacker-controlled, and a reader that allocates first and checks second
 // can be made to allocate two gigabytes by four bytes of input. Written, it
 // is a message past [MaxOutgoingMessage], reported by [Writer.Flush] before
-// a byte of the batch goes out.
+// a byte of the batch goes out. The read limit is the connector's
+// Config.MaxMessage, which the connector's error names when it breaks the
+// connection.
 var ErrMessageTooLarge = errors.New("postgres: message longer than the limit")
 
 // ErrMalformedMessage reports a length prefix that cannot describe a message —

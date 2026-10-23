@@ -312,8 +312,13 @@ func TestRowsBounded(t *testing.T) {
 	if !r.full() {
 		t.Error("Full is false at the limit")
 	}
-	if err := r.appendRow(dataRow([]byte("x"))); !errors.Is(err, ErrTooManyRows) {
+	err := r.appendRow(dataRow([]byte("x")))
+	if !errors.Is(err, ErrTooManyRows) {
 		t.Errorf("got %v, want ErrTooManyRows", err)
+	}
+	// The bound is the caller's: the error names the field that raises it.
+	if err == nil || !strings.Contains(err.Error(), "QueryConfig.BatchRows") {
+		t.Errorf("%v does not name QueryConfig.BatchRows", err)
 	}
 }
 
