@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
@@ -289,5 +290,47 @@ func BenchmarkParallelUnorderedHeavyWork(b *testing.B) {
 			return true
 		})
 		sink = acc
+	}
+}
+
+// BenchmarkParallelWorkSize finds where four workers start to pay: the same
+// source and f as BenchmarkParallelHeavyWork, with the work per element
+// doubled from one size to the next, serial against Ordered and Unordered on
+// four workers. At 64 rounds a batch is about 34 µs of work on the reference
+// machine, and handing it to a worker costs about as much as it saves.
+func BenchmarkParallelWorkSize(b *testing.B) {
+	src := data(N / 16)
+	shapes := []struct {
+		name string
+		run  func(sluice.Stream[int64], func(sluice.Batch[int64]) sluice.Batch[int64]) sluice.Stream[int64]
+	}{
+		{"serial", func(s sluice.Stream[int64], f func(sluice.Batch[int64]) sluice.Batch[int64]) sluice.Stream[int64] {
+			return parallel.Ordered(s, 1, f)
+		}},
+		{"ordered4", func(s sluice.Stream[int64], f func(sluice.Batch[int64]) sluice.Batch[int64]) sluice.Stream[int64] {
+			return parallel.Ordered(s, 4, f)
+		}},
+		{"unordered4", func(s sluice.Stream[int64], f func(sluice.Batch[int64]) sluice.Batch[int64]) sluice.Stream[int64] {
+			return parallel.Unordered(s, 4, f)
+		}},
+	}
+	for _, rounds := range []int{64, 128, 256, 512, 1024} {
+		for _, sh := range shapes {
+			b.Run(fmt.Sprintf("rounds=%d/%s", rounds, sh.name), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var acc int64
+					sh.run(sluice.Of(src, 1024), func(bt sluice.Batch[int64]) sluice.Batch[int64] {
+						return parallelWork(bt, rounds)
+					})(func(bt sluice.Batch[int64]) bool {
+						for _, v := range bt.Items {
+							acc += v
+						}
+						return true
+					})
+					sink = acc
+				}
+			})
+		}
 	}
 }
