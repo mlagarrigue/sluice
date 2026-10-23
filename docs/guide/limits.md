@@ -166,6 +166,12 @@ Three reasons come up, and the difference matters:
   `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental
   `web/stream` path has its own router (`stream.NewRouter`), because
   `http.ServeMux` does not see a batch.
+- **`net/httpstream` delivers a request body whole**, under
+  `Config.MaxBodyBytes` (1 MiB by default): an upload larger than memory is
+  refused, and a slow body holds its connection's buffer until it is
+  complete or `ReadTimeout` passes. Streaming request bodies is decided
+  ([ADR 0009](../design/adr/0009-request-contract.md), article 4) and lands
+  protocol by protocol; until then this bound is the contract.
 - **One token verifier provided**: HMAC (a symmetric signature with a
   shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
   not yet; the `Verifier` interface is the extension point.
