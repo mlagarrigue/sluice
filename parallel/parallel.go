@@ -154,8 +154,7 @@ type job[A, B any] struct {
 
 	// panicked holds what f panicked with, if it did, so the emitter can
 	// re-panic on the caller's goroutine rather than crashing a worker.
-	panicked any
-	hadPanic bool
+	panicked batch.Panic
 }
 
 // runParallel is the concurrent path, split out so the no-op above stays free
@@ -219,9 +218,7 @@ func runParallel[A, B any](s sluice.Stream[A], fs []func(sluice.Batch[A]) sluice
 			return
 		}
 		for i := range count {
-			if j := &slots[(head+i)%workers]; j.hadPanic {
-				panic(j.panicked)
-			}
+			slots[(head+i)%workers].panicked.Raise()
 		}
 	}()
 
@@ -232,11 +229,9 @@ func runParallel[A, B any](s sluice.Stream[A], fs []func(sluice.Batch[A]) sluice
 		head = (head + 1) % workers
 		count--
 		<-j.done
-		if j.hadPanic {
-			// Re-panicked on this goroutine, after the deferred shutdown above
-			// has released the workers.
-			panic(j.panicked)
-		}
+		// Re-panicked on this goroutine, after the deferred shutdown above
+		// has released the workers, with the worker's stack.
+		j.panicked.Raise()
 		return yield(j.out)
 	}
 
@@ -292,11 +287,6 @@ func runJob[A, B any](j *job[A, B], f func(sluice.Batch[A]) sluice.Batch[B]) {
 	// stops early, whose tokens the shutdown never collects: it waits on the
 	// workers instead.
 	defer func() { j.done <- struct{}{} }()
-	defer func() {
-		if r := recover(); r != nil {
-			j.panicked, j.hadPanic = r, true
-		}
-	}()
-	j.hadPanic = false
+	defer func() { j.panicked = batch.Recovered(recover()) }()
 	j.out = f(j.in)
 }

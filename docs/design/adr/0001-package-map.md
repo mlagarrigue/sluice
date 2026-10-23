@@ -52,7 +52,7 @@ The periphery is grouped like the standard library, by external system:
 and `web` with `web/stream` beside it. Cross-cutting extensions
 (`diagnostics`, `gateway`, `probe`, `pushdown`) stay as root-level
 packages. Shared machinery is internal: `internal/batch`, `internal/dgram`,
-`internal/ipkey`, `internal/pgwire`, `internal/streamtest`,
+`internal/handoff`, `internal/ipkey`, `internal/pgwire`, `internal/streamtest`,
 `internal/varint` for the module, and an `internal/` under the one package
 that needs it (`database/postgres/internal/entity`, `web/internal/reqbody`,
 `net/httpstream/internal/interopserver`). The root imports nothing of the

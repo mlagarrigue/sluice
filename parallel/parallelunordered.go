@@ -74,8 +74,7 @@ func Unordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]
 // unorderedResult carries one completed batch, or the panic that stopped it.
 type unorderedResult[B any] struct {
 	out      sluice.Batch[B]
-	panicked any
-	hadPanic bool
+	panicked batch.Panic
 }
 
 // runParallelUnordered is the concurrent path.
@@ -134,7 +133,7 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		}
 		for r := range results {
 			switch {
-			case r.hadPanic && !ferried.hadPanic:
+			case r.panicked.Occurred() && !ferried.panicked.Occurred():
 				// Kept to re-raise after the drain, early stop or not; a
 				// second panic in flight is dropped — one arrival, like
 				// Ordered.
@@ -165,7 +164,7 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 		for {
 			select {
 			case r := <-results:
-				if r.hadPanic {
+				if r.panicked.Occurred() {
 					ferried, stopped = r, true
 					return false
 				}
@@ -187,9 +186,7 @@ func runParallelUnordered[A, B any](s sluice.Stream[A], workers int, f func(slui
 
 	finish()
 	completed = true
-	if ferried.hadPanic {
-		panic(ferried.panicked)
-	}
+	ferried.panicked.Raise()
 }
 
 // runUnorderedJob applies f, frees the input slot, and ships the result — or
@@ -198,7 +195,7 @@ func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluic
 	defer func() {
 		if r := recover(); r != nil {
 			free <- j
-			results <- unorderedResult[B]{panicked: r, hadPanic: true}
+			results <- unorderedResult[B]{panicked: batch.Recovered(r)}
 		}
 	}()
 	out := f(*j)

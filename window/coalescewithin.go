@@ -5,15 +5,8 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
-	"github.com/mlagarrigue/sluice/internal/batch"
+	"github.com/mlagarrigue/sluice/internal/handoff"
 )
-
-// slot carries one copied batch from the producer goroutine to the consumer.
-// Slots travel a fixed loop — free list, producer, data channel, consumer,
-// free list — so the steady state allocates nothing.
-type slot[T any] struct {
-	items []T
-}
 
 // CoalesceWithin regroups batches to size elements like [sluice.Coalesce], but never
 // holds an element longer than within: a partial batch is emitted when the
@@ -116,61 +109,15 @@ func runCoalesceWithin[T any](s sluice.Stream[T], size int, within time.Duration
 	// hand-off is short and a deeper queue would only add latency to an
 	// operator whose whole purpose is to bound it.
 	const depth = 2
-	data := make(chan *slot[T], depth)
-	free := make(chan *slot[T], depth)
-	for range depth {
-		free <- &slot[T]{}
-	}
-
-	// Closed exactly once, by the consumer's deferred exit below.
-	stop := make(chan struct{})
-
-	var panicked any
-	var hadPanic bool
-	prodDone := make(chan struct{})
-	go func() {
-		defer close(prodDone)
-		defer close(data)
-		defer func() {
-			if r := recover(); r != nil {
-				panicked, hadPanic = r, true
-			}
-		}()
-		s(func(b sluice.Batch[T]) bool {
-			if len(b.Items) == 0 {
-				return true // no element, nothing to hand over or to time
-			}
-			var sl *slot[T]
-			select {
-			case sl = <-free:
-			case <-stop:
-				return false
-			}
-			// The S14 copy: the slot outlives this call.
-			sl.items = batch.Grow(sl.items, len(b.Items))
-			copy(sl.items, b.Items)
-			select {
-			case data <- sl:
-				return true
-			case <-stop:
-				return false
-			}
-		})
-	}()
+	p := handoff.Start(s, depth, depth, true) // no element, nothing to hand over or to time
 
 	// Wakes the producer wherever it is parked and waits for it, on every path
 	// out — normal end, early stop, a panic in yield. Then, on a return,
-	// re-raises a panic the source died from, early stop or not: the source
-	// may panic while it unwinds from the refusal. Unwinding, the consumer's
-	// own panic wins. hadPanic is written before prodDone closes.
+	// raises a panic the source died from, early stop or not: the source may
+	// panic while it unwinds from the refusal. Unwinding, the consumer's own
+	// panic wins.
 	returned := false
-	defer func() {
-		close(stop)
-		<-prodDone
-		if returned && hadPanic {
-			panic(panicked)
-		}
-	}()
+	defer func() { p.Stop(returned) }()
 
 	// Created stopped: the deadline is armed when the first element of a batch
 	// arrives and disarmed on every flush. Since Go 1.23 a stopped or reset
@@ -194,7 +141,7 @@ func runCoalesceWithin[T any](s sluice.Stream[T], size int, within time.Duration
 
 	for {
 		select {
-		case sl, ok := <-data:
+		case sl, ok := <-p.Data:
 			if !ok {
 				// The upstream is exhausted: flush what is held; the deferred
 				// shutdown then reports a panic it may have died from, whether
@@ -213,20 +160,20 @@ func runCoalesceWithin[T any](s sluice.Stream[T], size int, within time.Duration
 				timer.Reset(within)
 			}
 			// The slot is held until it has been fully drained, not returned
-			// on receipt: items aliases sl.items, so releasing it early lets
+			// on receipt: items aliases sl.Items, so releasing it early lets
 			// the producer refill the very buffer still being copied out —
 			// which is the S14 rule read from the receiving end, and what the
 			// sluice.Convert-upstream race test catches when it is broken. The
 			// producer stalling on the free list while a slow consumer works
 			// is back-pressure, and correct.
-			items := sl.items
+			items := sl.Items
 			for len(items) > 0 {
 				n := min(size-len(buf), len(items))
 				buf = append(buf, items[:n]...)
 				items = items[n:]
 				if len(buf) == size {
 					if !flush() {
-						free <- sl
+						p.Recycle(sl)
 						returned = true
 						return
 					}
@@ -237,7 +184,7 @@ func runCoalesceWithin[T any](s sluice.Stream[T], size int, within time.Duration
 					}
 				}
 			}
-			free <- sl
+			p.Recycle(sl)
 
 		case <-timer.C:
 			if !flush() {

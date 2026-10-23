@@ -1,7 +1,7 @@
 # ADR 0006 — Sentinel panics and `Try`: named errors an iterator has nowhere to return
 
 - **Created:** 2026-10-07
-- **Revised:** —
+- **Revised:** 2026-10-23 (a runtime error that crosses an operator's goroutine keeps its stack)
 - **Theme:** core
 
 ## Problem
@@ -31,6 +31,14 @@ is re-raised untouched. The root declares `ErrOverflow`, `ErrUnsorted`,
 test asserts that every exported `Err*` of the root is a sentinel, so a new
 one cannot be declared any other way by mistake.
 
+A panic raised on an operator's goroutine — a worker of `Ordered`,
+`OrderedWithState` or `Unordered`, the producer of `Async` or
+`CoalesceWithin` — is raised again on the consumer's, the one goroutine the
+caller sees. A runtime error (a nil dereference, an index out of range) is
+raised wrapped in an error that carries the stack it was raised on, and
+`errors.As` still finds the `runtime.Error` in it. Any other value is raised
+as it was.
+
 ## Rationale
 
 **Sentinels only** is the whole design. A `Try` that recovered every panic
@@ -40,6 +48,13 @@ with its stack. The marker type is what lets each operator package declare
 its own sentinels without the core knowing any of them — a registry filled
 at `init` time would also work but makes the set depend on link order, and
 a list in the root would import its own extensions.
+
+The same promise holds across an operator's goroutine. Raised again as it
+was, a worker's runtime error crashed the process from the consumer's stack,
+and the faulty line was nowhere in the output. Other values are not wrapped,
+because the caller compares them — `Try` recognises a sentinel by its value,
+a test or a handler its own — and their message is already the caller's
+account of the failure.
 
 Panic rather than an error field on `Batch`: an error in the batch would
 have to be checked by every operator (the ADR 0005 argument again), and a
