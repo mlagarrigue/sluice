@@ -21,8 +21,6 @@ func TestDemandTightens(t *testing.T) {
 	d.LimitTo(40)
 	d.AdvanceTo(key(10))
 	d.AdvanceTo(key(25))
-	d.NeedColumns("id", "total", "label")
-	d.NeedColumns("id", "total")
 
 	snap := d.Snapshot()
 	if snap.Limit != 40 {
@@ -30,9 +28,6 @@ func TestDemandTightens(t *testing.T) {
 	}
 	if want := key(25); !slices.Equal(snap.LowerBound, want) {
 		t.Errorf("LowerBound = % x, want % x", snap.LowerBound, want)
-	}
-	if want := []string{"id", "total"}; !slices.Equal(snap.Columns, want) {
-		t.Errorf("Columns = %v, want %v", snap.Columns, want)
 	}
 	if d.Violations() != 0 {
 		t.Errorf("%d violations on a demand that only tightened", d.Violations())
@@ -46,11 +41,9 @@ func TestDemandRefusesToLoosen(t *testing.T) {
 	d := new(Demand)
 	d.LimitTo(10)
 	d.AdvanceTo(key(50))
-	d.NeedColumns("id")
 
-	d.LimitTo(99)            // higher limit
-	d.AdvanceTo(key(1))      // lower bound going backwards
-	d.NeedColumns("id", "x") // asking for a column already dropped
+	d.LimitTo(99)       // higher limit
+	d.AdvanceTo(key(1)) // lower bound going backwards
 
 	snap := d.Snapshot()
 	if snap.Limit != 10 {
@@ -59,11 +52,8 @@ func TestDemandRefusesToLoosen(t *testing.T) {
 	if want := key(50); !slices.Equal(snap.LowerBound, want) {
 		t.Errorf("LowerBound = % x, want it to stay at % x", snap.LowerBound, want)
 	}
-	if want := []string{"id"}; !slices.Equal(snap.Columns, want) {
-		t.Errorf("Columns = %v, want %v", snap.Columns, want)
-	}
-	if d.Violations() != 3 {
-		t.Errorf("Violations = %d, want 3 — each loosening must be visible", d.Violations())
+	if d.Violations() != 2 {
+		t.Errorf("Violations = %d, want 2 — each loosening must be visible", d.Violations())
 	}
 }
 
@@ -124,17 +114,12 @@ func TestNilDemandIsUnlimited(t *testing.T) {
 func TestSnapshotDoesNotAlias(t *testing.T) {
 	d := new(Demand)
 	d.AdvanceTo(key(1))
-	d.NeedColumns("a", "b")
 	snap := d.Snapshot()
 
 	d.AdvanceTo(key(2))
-	d.NeedColumns("a")
 
 	if want := key(1); !slices.Equal(snap.LowerBound, want) {
 		t.Errorf("the held snapshot's bound changed to % x", snap.LowerBound)
-	}
-	if want := []string{"a", "b"}; !slices.Equal(snap.Columns, want) {
-		t.Errorf("the held snapshot's columns changed to %v", snap.Columns)
 	}
 }
 
@@ -241,30 +226,6 @@ func TestZeroReaderIsUnlimited(t *testing.T) {
 	}
 }
 
-// Nil columns mean "all of them", so a consumer that needs none — a count —
-// must not come back looking like one that never narrowed at all. It asked for
-// the tightest demand this type can express and used to receive the loosest.
-func TestNarrowingToNoColumnsIsNotTheSameAsNeverNarrowing(t *testing.T) {
-	never := new(Demand)
-	if cols := never.Snapshot().Columns; cols != nil {
-		t.Errorf("Columns = %v for a demand nobody narrowed, want nil", cols)
-	}
-
-	// Two consumers whose needs do not overlap: the intersection is empty, and
-	// empty is a real answer.
-	narrowed := new(Demand)
-	narrowed.NeedColumns("a")
-	narrowed.NeedColumns("b")
-
-	cols := narrowed.Snapshot().Columns
-	if cols == nil {
-		t.Fatal("Columns = nil after narrowing to nothing, which reads as every column")
-	}
-	if len(cols) != 0 {
-		t.Errorf("Columns = %v, want the empty set", cols)
-	}
-}
-
 // An empty key advances nothing — it is the bytewise minimum, so there is
 // nothing below it to give up on — and it must stay cheap to say so.
 //
@@ -301,7 +262,7 @@ func TestAdvanceToAnEmptyKeyIsANonEvent(t *testing.T) {
 //
 // Consuming the flag there left Current reporting "nothing changed" for an
 // update Exhausted had already absorbed, so the source kept a stale plan —
-// decoding columns nobody wants, scanning below a bound that has risen —
+// reading past a limit that has fallen, scanning below a bound that has risen —
 // while believing it was current.
 func TestExhaustedDoesNotConsumeTheChange(t *testing.T) {
 	d := new(Demand)
@@ -325,27 +286,6 @@ func TestExhaustedDoesNotConsumeTheChange(t *testing.T) {
 	// And the change is news exactly once.
 	if _, changed := r.Current(); changed {
 		t.Error("the same change was reported twice")
-	}
-}
-
-// Violations counts an attempt to loosen the demand, which is a bug in the
-// operators. Two consumers narrowing independently is not one: the
-// documentation invites later calls to intersect, and counting that would fire
-// the alarm on a healthy pipeline.
-func TestViolationsCountWideningNotIntersection(t *testing.T) {
-	d := new(Demand)
-	d.NeedColumns("a", "b")
-	d.NeedColumns("b", "c") // an ordinary intersection: keeps b, drops a
-	if v := d.Violations(); v != 0 {
-		t.Errorf("Violations = %d for an intersection, want 0", v)
-	}
-	if cols := d.Snapshot().Columns; !slices.Equal(cols, []string{"b"}) {
-		t.Errorf("Columns = %v, want [b]", cols)
-	}
-
-	d.NeedColumns("b", "z") // asks for a column that is already gone, keeps b
-	if v := d.Violations(); v != 1 {
-		t.Errorf("Violations = %d after asking for more than remains, want 1", v)
 	}
 }
 

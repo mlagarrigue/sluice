@@ -728,9 +728,8 @@ type QueryConfig struct {
 	//     for an integer key, which is what [pushdown.AdvanceBy]'s key
 	//     function produces when it encodes the key the way the wire does.
 	//
-	// The column set is not pushed down: the SQL is the caller's, and
-	// rewriting its select list is not this package's job. A consumer that
-	// narrows columns is not refused; the narrowing is simply not acted on.
+	// The demand carries no column set: the SQL is the caller's, and its
+	// select list already says which columns travel.
 	//
 	// # What the query must look like
 	//

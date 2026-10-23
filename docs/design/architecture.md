@@ -397,7 +397,7 @@ path pays only one atomic read **per batch**.
 ```go
 type Demand struct {
     generation atomic.Uint64   // the scan compares, without a lock
-    // thresholds, required columns, remaining limit…
+    // remaining limit, lower bound of the key…
 }
 ```
 
@@ -412,14 +412,21 @@ type Demand struct {
 > smaller; the ratio is what transposes.
 >
 > Two decisions shape it. **The demand only tightens** — a limit falls, a bound
-> rises, a column set shrinks, never the reverse. A source that has already
-> skipped a thousand rows cannot un-skip them, so a loosening is a programming
+> rises, never the reverse. A source that has already skipped a thousand rows
+> cannot un-skip them, so a loosening is a programming
 > error rather than a case to handle: it is ignored and counted where a test
 > can see it, instead of quietly yielding a result missing rows. And
 > **`pushdown` lives outside the core**: an operator publishing its remaining
 > count would make `Stream` and `Batch` know about pushdown, and a core that
 > knows its extensions can no longer evolve. The demand-aware operators
 > compose with the core ones instead.
+>
+> **The demand carries no column set**, although "I no longer need column Y"
+> is half of the idea above. No source in the library could act on one: the
+> PostgreSQL connector hands over the bytes and leaves decoding to the caller,
+> whose select list already says which columns travel. A setting nothing
+> reads is a promise not kept; it comes back with a source that can skip
+> decoding a column on its own, and adding it then breaks nobody.
 >
 > **One operator was written, measured and removed.** A `Take` publishing its
 > remaining count measured 8.63 µs against the core operator's 8.35 — a 3% cost

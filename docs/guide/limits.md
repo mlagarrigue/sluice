@@ -147,8 +147,10 @@ Three reasons come up, and the difference matters:
   `QueryConfig.BatchBytes` sets it, up to 1 GiB; past it, or below zero, the
   query is refused. A single row wider than the bound travels alone, so
   memory per batch is the bound plus one row.
-- **`pushdown` pushes the limit and the key bound, not the column set**:
-  the SQL is the caller's and its select list is not rewritten.
+- **`pushdown` pushes the limit and the key bound, not a column set**:
+  the SQL is the caller's, and its select list already says which columns
+  travel. A column demand would come back with a source that can skip
+  decoding a column on its own.
 
 ## Web and gateway
 

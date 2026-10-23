@@ -22,10 +22,9 @@
 //
 // # The demand only tightens
 //
-// A limit may fall, a lower bound may rise, a column set may shrink — never
-// the reverse. This is not a restriction, it is what makes the mechanism
-// sound: a source that has already skipped a thousand rows on the strength of
-// a bound cannot un-skip them if the bound relaxes, so a relaxation is a
+// A limit may fall and a lower bound may rise — never the reverse. This is
+// not a restriction, it is what makes the mechanism sound: a source that has
+// already skipped a thousand rows on the strength of a bound cannot un-skip them if the bound relaxes, so a relaxation is a
 // programming error rather than a case to handle. Attempting one is ignored
 // and reported by [Demand.Violations], where a test can see it, rather than
 // silently producing a result that is missing rows.
@@ -53,8 +52,8 @@ const Unlimited int64 = -1
 // Demand is what a consumer knows and its source does not: how much is still
 // wanted, and what can be skipped to get there.
 //
-// The zero value is usable and means "everything": no limit, no lower bound,
-// every column. It is safe for concurrent use — a source reads it while
+// The zero value is usable and means "everything": no limit and no lower
+// bound. It is safe for concurrent use — a source reads it while
 // operators tighten it — and the read side is lock-free in the case that
 // matters, which is the one where nothing changed.
 type Demand struct {
@@ -67,8 +66,6 @@ type Demand struct {
 	limit      int64
 	hasLimit   bool
 	lowerBound []byte
-	columns    []string
-	hasColumns bool
 	violations atomic.Int64
 }
 
@@ -83,14 +80,6 @@ type Snapshot struct {
 	// bytes and does not interpret them, because the ordering that matters is
 	// the source's.
 	LowerBound []byte
-
-	// Columns is the set of columns still needed, or nil for all of them.
-	//
-	// Nil and empty are different answers, and both occur: nil means the
-	// consumer never narrowed, empty — non-nil — means it narrowed to nothing,
-	// a count-only consumer that needs no payload column at all. Test for nil
-	// to ask "was there a narrowing", never for length.
-	Columns []string
 }
 
 // generation reports the demand's current version.
@@ -117,15 +106,6 @@ func (d *Demand) Snapshot() Snapshot {
 		// Copied out: the caller holds this while the demand keeps tightening,
 		// and a shared slice would change underneath a source mid-scan.
 		s.LowerBound = bytes.Clone(d.lowerBound)
-	}
-	if d.hasColumns {
-		// make rather than a bare append: a column set narrowed to nothing —
-		// NeedColumns with no survivors — must come out empty and non-nil,
-		// because nil is the "never narrowed, decode everything" answer. An
-		// append onto nil of zero elements returns nil, which would silently
-		// widen a demand at exactly the moment it tightened the most.
-		s.Columns = make([]string, len(d.columns))
-		copy(s.Columns, d.columns)
 	}
 	return s
 }
@@ -199,49 +179,6 @@ func (d *Demand) AdvanceTo(key []byte) {
 	// aliases this slice, and the steady state — one advance per batch —
 	// allocates only until the buffer reaches the key size.
 	d.lowerBound = append(d.lowerBound[:0], key...)
-	d.gen.Add(1)
-}
-
-// NeedColumns narrows the set of columns the consumer needs.
-//
-// Narrowing only: a column already dropped cannot be asked for again, since
-// the source may have stopped decoding it batches ago. The first call sets the
-// set; later calls intersect it.
-func (d *Demand) NeedColumns(names ...string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if !d.hasColumns {
-		d.columns = append([]string(nil), names...)
-		d.hasColumns = true
-		d.gen.Add(1)
-		return
-	}
-
-	want := make(map[string]bool, len(names))
-	for _, n := range names {
-		want[n] = true
-	}
-	kept := d.columns[:0]
-	for _, c := range d.columns {
-		if want[c] {
-			kept = append(kept, c)
-			delete(want, c)
-		}
-	}
-	if len(kept) == len(d.columns) {
-		// Nothing was dropped, so any name left in want means the call asked
-		// for strictly more than remains — a widening attempt, which is the
-		// loosening Violations exists to count. An ordinary intersection —
-		// two independent narrowers each stating their own need — both drops
-		// and misses, and is not a violation: each caller is narrowing, and
-		// the doc invites exactly that shape.
-		if len(want) > 0 {
-			d.violations.Add(1)
-		}
-		return
-	}
-	d.columns = kept
 	d.gen.Add(1)
 }
 
