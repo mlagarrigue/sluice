@@ -53,10 +53,10 @@ asking anything of anyone — the library's thesis, verified at the transport
 level.
 
 ```go
-conn, err := quic.Dial(ctx, pc, addr, tlsConfig, quic.DefaultParameters())                // client side
+client, err := quic.Dial(ctx, pc, addr, tlsConfig, quic.DefaultParameters())               // client side
 ln, err := quic.NewListener(pc, tlsConfig, quic.DefaultParameters(), quic.ListenerConfig{}) // server side
-conn, err := ln.Accept()
-stats := conn.Stats() // counters, RTT, congestion window, bytes in flight, losses
+server, err := ln.Accept()
+stats := server.Stats() // counters, RTT, congestion window, bytes in flight, losses
 ```
 
 The **transport parameters** are the limits each end announces to the

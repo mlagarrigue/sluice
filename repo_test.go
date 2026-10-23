@@ -3,12 +3,15 @@ package sluice_test
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	godoc "go/doc"
 	"go/doc/comment"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -913,4 +916,178 @@ func TestEveryDecisionRecordIsLinked(t *testing.T) {
 			t.Errorf("%s is linked by name from no document outside docs/design/adr", r)
 		}
 	}
+}
+
+// TestGuideCodeBlocksTypeCheck holds the Go blocks of the README and the
+// guides to the code: each is type-checked as a reader would paste it, so a
+// renamed field, a changed signature or a := that redeclares fails here
+// rather than in the reader's editor. A block that declares at package level
+// is checked as a file, any other as the body of a function. The names a
+// block leaves to the reader — ctx, ln, handle, the reader's own types — are
+// the one error tolerated: "undefined: x", never "undefined: pkg.X".
+func TestGuideCodeBlocksTypeCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("type-checks the module from source")
+	}
+	packages := importablePackages(t)
+	fset := token.NewFileSet()
+	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
+	files, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append([]string{"README.md"}, files...)
+	tolerated := regexp.MustCompile(`^(undefined: \w+|declared and not used: \w+|"[\w/.]+" imported and not used)$`)
+	qualifier := regexp.MustCompile(`\b([a-z][a-z0-9]*)\.[A-Za-z]`)
+	for _, f := range files {
+		for _, b := range goBlocks(t, f) {
+			var imports []string
+			seen := map[string]bool{}
+			for _, m := range qualifier.FindAllStringSubmatch(b.code, -1) {
+				if path, ok := packages[m[1]]; ok && !seen[path] {
+					seen[path] = true
+					imports = append(imports, fmt.Sprintf("%q", path))
+				}
+			}
+			head := "package guide\n"
+			if len(imports) > 0 {
+				head += "import (\n" + strings.Join(imports, "\n") + "\n)\n"
+			}
+			// The prefix is what goes before the block's first line. A body
+			// that returns a value of its own — "return err" — was written
+			// inside a function returning an error; any other, inside one
+			// returning nothing, as a net/http handler does.
+			var prefix, src string
+			switch {
+			case strings.HasPrefix(strings.TrimSpace(b.code), "package "):
+				src = b.code
+			case parses(head + b.code):
+				prefix = head
+				src = head + b.code
+			case returnsAValue(head + "func _() {\n" + b.code + "\n}\n"):
+				prefix = head + "func _() error {\n"
+				src = prefix + b.code + "return nil\n}\n"
+			default:
+				prefix = head + "func _() {\n"
+				src = prefix + b.code + "\n}\n"
+			}
+			at := func(p token.Pos) int { return b.line + fset.Position(p).Line - 1 - strings.Count(prefix, "\n") }
+			file, err := parser.ParseFile(fset, f, src, parser.SkipObjectResolution)
+			if err != nil {
+				t.Errorf("%s:%d: the block does not parse: %v", f, b.line, err)
+				continue
+			}
+			conf.Error = func(err error) {
+				var te types.Error
+				if !errors.As(err, &te) {
+					t.Errorf("%s:%d: %v", f, b.line, err)
+					return
+				}
+				if !tolerated.MatchString(te.Msg) {
+					t.Errorf("%s:%d: %s", f, at(te.Pos), te.Msg)
+				}
+			}
+			_, _ = conf.Check("guide", fset, []*ast.File{file}, nil)
+		}
+	}
+}
+
+// goBlock is a fenced Go block of a document and the line its code starts on.
+type goBlock struct {
+	line int
+	code string
+}
+
+// goBlocks returns the blocks fenced as ```go in a document.
+func goBlocks(t *testing.T, path string) []goBlock {
+	t.Helper()
+	b, err := os.ReadFile(path) //nolint:gosec // G304: a repository path, not input
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []goBlock
+	var cur *goBlock
+	var code strings.Builder
+	for i, line := range strings.Split(string(b), "\n") {
+		switch {
+		case cur == nil && strings.TrimSpace(line) == "```go":
+			cur = &goBlock{line: i + 2}
+			code.Reset()
+		case cur != nil && strings.TrimSpace(line) == "```":
+			cur.code = code.String()
+			out = append(out, *cur)
+			cur = nil
+		case cur != nil:
+			code.WriteString(line)
+			code.WriteByte('\n')
+		}
+	}
+	return out
+}
+
+// parses reports whether src is a Go file as it stands.
+func parses(src string) bool {
+	_, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
+	return err == nil
+}
+
+// returnsAValue reports whether a return with results appears in src outside
+// the function literals it holds: the block's own returns, not a handler's.
+func returnsAValue(src string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return false
+	}
+	found := false
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.ReturnStmt:
+				found = found || len(n.Results) > 0
+			}
+			return !found
+		})
+	}
+	return found
+}
+
+// importablePackages maps the name a block qualifies an identifier with to
+// the package it means: the module's packages by their last element, and the
+// standard library's where no module package takes the name — the shortest
+// path when two share one, as crypto/rand and math/rand do.
+func importablePackages(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	add := func(list string, prefer bool) {
+		for path := range strings.FieldsSeq(list) {
+			if strings.Contains(path, "internal") || strings.HasPrefix(path, "vendor/") {
+				continue
+			}
+			name := path[strings.LastIndex(path, "/")+1:]
+			if old, ok := out[name]; ok && (!prefer || strings.Count(old, "/") <= strings.Count(path, "/")) {
+				continue
+			}
+			out[name] = path
+		}
+	}
+	std, err := exec.Command("go", "list", "std").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := exec.Command("go", "list", "./...").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	add(string(std), true)
+	for path := range strings.FieldsSeq(string(module)) {
+		out[path[strings.LastIndex(path, "/")+1:]] = path
+	}
+	out["sluice"] = "github.com/mlagarrigue/sluice"
+	return out
 }
