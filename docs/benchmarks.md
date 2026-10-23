@@ -83,7 +83,14 @@ diff touches a package its file imports, or a dependency of one. The test
 binary links every package `internal/bench` imports, so a change to
 `net/quic` moves the code of all the others within the binary, and that move
 alone has declared an untouched benchmark 4 to 19% slower, always in the same
-direction, which the sign test takes for a regression.
+direction, which the sign test takes for a regression. Both binaries are
+therefore linked with every function aligned on 64 bytes
+(`-ldflags=-funcalign=64`, measured 2026-10-23 on an AMD EPYC 7763 runner):
+on a change that moves code and nothing else, seven benchmarks called
+SLOWER by 3 to 32% became one at 4%, the same in two passes of one job, and a
+15% slowdown injected into `Scan` was still SLOWER. The alignment is that of
+a function's entry, not of the loops inside it, which is what the remaining
+case shows.
 
 **Host settings that raise the floor**, none of them required: disabling
 Core Performance Boost in the BIOS, which removes the clock ramp at the cost

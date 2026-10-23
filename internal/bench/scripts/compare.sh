@@ -27,13 +27,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Every function starts on a 64-byte boundary in both binaries. Without it, a
+# change that only moves code — 2a9a2ab renumbered two constants and touched
+# no measured path — shifted where the hot loops of other packages landed,
+# and the gate on an AMD EPYC 7763 runner called seven benchmarks SLOWER by
+# 3% to 32%, the same in two passes of one job; with it, one remained, at 4%.
+# An injected 15% slowdown of Scan stays SLOWER. Alignment of function
+# entries only: a loop inside a function can still fall across a boundary.
+LDFLAGS=-funcalign=64
+
 echo "building 'after' from the working tree..."
-go test -c -o "$BINDIR/bench.after" "$ROOT/internal/bench"
+go test -c -ldflags="$LDFLAGS" -o "$BINDIR/bench.after" "$ROOT/internal/bench"
 
 WORKTREE="$(mktemp -d)"
 echo "building 'before' from $BASE..."
 git -C "$ROOT" worktree add -q --detach "$WORKTREE" "$BASE"
-( cd "$WORKTREE" && go test -c -o "$BINDIR/bench.before" ./internal/bench )
+( cd "$WORKTREE" && go test -c -ldflags="$LDFLAGS" -o "$BINDIR/bench.before" ./internal/bench )
 git -C "$ROOT" worktree remove --force "$WORKTREE"
 WORKTREE=""
 
