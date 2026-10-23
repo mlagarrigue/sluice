@@ -1,0 +1,32 @@
+# net/httpstream behind nginx, HAProxy and Envoy (scripts/interop-proxy.sh):
+# streamed and chunked bodies, Expect: 100-continue, pooled connections the
+# server closes when idle, trailers, HAProxy's OPTIONS * health check.
+# Weekly and by hand, not on every push: three images to pull and a few
+# seconds of deliberate idling per proxy, for a path that changes rarely,
+# and a proxy's new release is the other thing that can break it.
+name: Interop proxy
+
+on:
+  schedule:
+    - cron: '43 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_LATEST: 'stable'
+
+jobs:
+  interop-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+      - name: curl through nginx, HAProxy and Envoy to the server
+        run: scripts/interop-proxy.sh

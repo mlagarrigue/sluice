@@ -1,8 +1,9 @@
 // Command interopserver is the server that third-party clients are pointed
 // at: curl over HTTP/1.1 and HTTP/2, and h2spec for RFC 9113 conformance;
-// with -h3, curl and aioquic over HTTP/3, and h3spec for RFC 9114.
-// scripts/interop-http.sh and scripts/interop-http3.sh run it, locally and
-// in continuous integration.
+// with -h3, curl and aioquic over HTTP/3, and h3spec for RFC 9114; behind
+// nginx, HAProxy and Envoy, the reverse proxies a deployment puts in front
+// of it. scripts/interop-http.sh, scripts/interop-http3.sh and
+// scripts/interop-proxy.sh run it, locally and in continuous integration.
 //
 // It is deliberately small. Every request is answered with its own target,
 // which lets a client check that the response it got is the one it asked
@@ -51,6 +52,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "address to listen on; port 0 picks a free one")
 	withTLS := flag.Bool("tls", false, "terminate TLS with a self-signed certificate and ALPN")
 	h3 := flag.Bool("h3", false, "serve HTTP/3 over QUIC on UDP instead of TCP")
+	flag.DurationVar(&config.IdleTimeout, "idle", config.IdleTimeout, "close a connection idle this long")
 	flag.Parse()
 
 	if *h3 {
@@ -149,14 +151,30 @@ func tlsConfig() *tls.Config {
 	}
 }
 
-// handle answers each request with its target, and /stream with a streamed
-// body: one response per request, in order, as every httpstream handler.
+// handle answers each request with its target, /stream with a streamed
+// body, /trailers with the same body and a trailer field after it, and
+// /echo with the request's own body: one response per request, in order, as
+// every httpstream handler.
 func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for i := range b.Items {
 		r := &b.Items[i]
-		if string(r.Target) == "/stream" {
+		switch string(r.Target) {
+		case "/stream":
 			out = append(out, httpstream.Response{Status: 200, Stream: streamed})
+			continue
+		case "/trailers":
+			out = append(out, httpstream.Response{
+				Status:   200,
+				Headers:  []httpstream.Header{{Name: []byte("trailer"), Value: []byte("x-checksum")}},
+				Stream:   streamed,
+				Trailers: func() []httpstream.Header { return checksum },
+			})
+			continue
+		case "/echo":
+			// The body borrows the read buffer, which outlives this call
+			// only as a copy.
+			out = append(out, httpstream.Response{Status: 200, Body: append([]byte(nil), r.Body...)})
 			continue
 		}
 		out = append(out, httpstream.Response{
@@ -166,6 +184,9 @@ func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[
 	}
 	return sluice.Batch[httpstream.Response]{Items: out}
 }
+
+// checksum is the trailer /trailers sends after its body.
+var checksum = []httpstream.Header{{Name: []byte("x-checksum"), Value: []byte("three batches")}}
 
 // streamed yields three batches of one line each. The client sees the
 // concatenation; what the transport sees is three pulls, each framed when

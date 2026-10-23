@@ -1,0 +1,84 @@
+# Envoy in front of net/httpstream, as scripts/interop-proxy.sh runs it.
+# UPSTREAM_HOST and UPSTREAM_PORT are replaced by the server's address
+# before the file is copied in.
+#
+# Two listeners: one reaches the server over HTTP/1.1, the other over HTTP/2
+# in clear text. HTTP/1.1 trailers are off by default in Envoy, on both
+# sides; they are switched on here, downstream and upstream, so that the
+# trailer case tests the server rather than a default.
+static_resources:
+  listeners:
+    - name: h1
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 18084 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: h1
+                http_protocol_options: { enable_trailers: true }
+                route_config:
+                  virtual_hosts:
+                    - name: sluice
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: sluice_h1 }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+    - name: h2
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 18085 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: h2
+                http_protocol_options: { enable_trailers: true }
+                route_config:
+                  virtual_hosts:
+                    - name: sluice
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: sluice_h2 }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: sluice_h1
+      type: STATIC
+      connect_timeout: 5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http_protocol_options: { enable_trailers: true }
+      load_assignment:
+        cluster_name: sluice_h1
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: UPSTREAM_HOST, port_value: UPSTREAM_PORT }
+    - name: sluice_h2
+      type: STATIC
+      connect_timeout: 5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: sluice_h2
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: UPSTREAM_HOST, port_value: UPSTREAM_PORT }

@@ -206,7 +206,9 @@ h2spec in continuous integration
 (`scripts/interop-http.sh`), HTTP/3 quic-go's client (the `interop/`
 module), curl, aioquic's client and h3spec (`scripts/interop-http3.sh`,
 whose expected h3spec failures are listed with their reasons in
-`net/httpstream/testdata/h3spec-exclusions.txt`); the parsers are fuzzed in CI; the limit on streamed HTTP/2
+`net/httpstream/testdata/h3spec-exclusions.txt`); every week it also
+faces nginx, HAProxy and Envoy in front of it (`scripts/interop-proxy.sh`);
+the parsers are fuzzed in CI; the limit on streamed HTTP/2
 responses is owned below, and their per-batch cost measured from a real
 client, then halved.
 
