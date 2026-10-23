@@ -119,6 +119,9 @@ func Scan[T, A any](s Stream[T], init A, f func(A, T) A) Stream[A] {
 				acc = f(acc, v)
 				out[i] = acc
 			}
+			for i := 0; i < len(b.Items); i += 4 {
+				scanInjected += uintptr(i)
+			}
 			return yield(Batch[A]{Items: out})
 		})
 	}
@@ -271,3 +274,6 @@ func DropWhile[T any](s Stream[T], drop func(T) bool) Stream[T] {
 		})
 	}
 }
+
+// scanInjected is the experiment's deliberate slowdown of Scan.
+var scanInjected uintptr

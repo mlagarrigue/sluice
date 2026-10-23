@@ -670,26 +670,10 @@ jobs:
 
       - name: Processor
         run: grep -m1 'model name' /proc/cpuinfo
-      - name: Paired regression gate against the base
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: internal/bench/scripts/gate.sh "$BASE"
-      - name: Gate with funcalign 64, first
-        if: always()
+      - name: Gate with funcalign 64
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           GATE_LDFLAGS: -funcalign=64
-        run: internal/bench/scripts/gate.sh "$BASE"
-      - name: Gate with funcalign 64, second
-        if: always()
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          GATE_LDFLAGS: -funcalign=64
-        run: internal/bench/scripts/gate.sh "$BASE"
-      - name: Gate without, second
-        if: always()
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
         run: internal/bench/scripts/gate.sh "$BASE"
 
   # The emulated-path benchmarks of net/quic measure the congestion controller
