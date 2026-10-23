@@ -28,12 +28,12 @@ cleanup() {
 trap cleanup EXIT
 
 echo "building 'after' from the working tree..."
-go test -c -ldflags=-funcalign=64 -o "$BINDIR/bench.after" "$ROOT/internal/bench"
+go test -c ${GATE_LDFLAGS:+-ldflags=$GATE_LDFLAGS} -o "$BINDIR/bench.after" "$ROOT/internal/bench"
 
 WORKTREE="$(mktemp -d)"
 echo "building 'before' from $BASE..."
 git -C "$ROOT" worktree add -q --detach "$WORKTREE" "$BASE"
-( cd "$WORKTREE" && go test -c -ldflags=-funcalign=64 -o "$BINDIR/bench.before" ./internal/bench )
+( cd "$WORKTREE" && go test -c ${GATE_LDFLAGS:+-ldflags=$GATE_LDFLAGS} -o "$BINDIR/bench.before" ./internal/bench )
 git -C "$ROOT" worktree remove --force "$WORKTREE"
 WORKTREE=""
 
