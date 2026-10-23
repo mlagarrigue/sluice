@@ -233,7 +233,89 @@ func (c *Conn) receive(datagram []byte, from net.Addr) error {
 // the ACK delay reported back and the round-trip samples taken from its ACKs
 // must not include time it spent parked waiting for keys (RFC 9000 §13.2.5,
 // RFC 9002 §5.3).
+//
+// A datagram is read in four steps, each its own method: whether its sender
+// may be heard at all (admitSource), then for each packet coalesced in it the
+// header and the keys it names (readHeader), the open (openPacket), what the
+// open says about keys and identifiers (afterOpen), and the frames
+// (processPacket). Each step says what becomes of the packet: read on, skip
+// to the next one, or stop the datagram there.
 func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
+	if !c.admitSource(datagram, from) {
+		return nil
+	}
+	datagramLen := len(datagram)
+	// RFC 9000 §12.2: every packet coalesced into a datagram names the
+	// destination identifier of the first one; a later packet naming
+	// another is ignored — that packet alone, the rest of the datagram
+	// is still read. Checked on the plaintext header, before any key is
+	// tried, so a forgery coalesced behind a genuine packet costs no open.
+	var datagramDCID []byte
+	var pkt rxPacket
+	for len(datagram) > 0 {
+		verdict, err := c.readHeader(&pkt, datagram, datagramLen, &datagramDCID)
+		switch verdict {
+		case rxStop:
+			return err
+		case rxSkip:
+			datagram = pkt.rest
+			continue
+		}
+		verdict, err = c.openPacket(&pkt, now)
+		switch verdict {
+		case rxStop:
+			return err
+		case rxSkip:
+			datagram = pkt.rest
+			continue
+		}
+		verdict, err = c.afterOpen(&pkt, now)
+		switch verdict {
+		case rxStop:
+			return err
+		case rxSkip:
+			datagram = pkt.rest
+			continue
+		}
+		if err := c.processPacket(pkt.space, pkt.early, pkt.pn, pkt.payload, now); err != nil {
+			return err
+		}
+		datagram = pkt.rest
+	}
+	return nil
+}
+
+// rxPacket is one packet of a datagram once its header is read, and once
+// opened: what the steps of receiveAt hand each other.
+type rxPacket struct {
+	space    int
+	early    bool // a 0-RTT packet, read with earlyOpener
+	pnOffset int
+	peerSCID []byte
+	raw      []byte
+	rest     []byte // what follows the packet in the datagram
+
+	// Set by openPacket: the keys that opened the packet, which phase of
+	// them, and what they opened.
+	opener  *packetOpener
+	used    keyUse
+	pn      uint64
+	payload []byte
+}
+
+// rxVerdict is what a step of receiveAt decided for the packet.
+type rxVerdict uint8
+
+const (
+	rxRead rxVerdict = iota // go on with this packet
+	rxSkip                  // drop this packet, read the next one
+	rxStop                  // drop the rest of the datagram, with the step's error
+)
+
+// admitSource decides whether a datagram from this sender is read at all,
+// counts its bytes for the amplification limit, and resets the per-datagram
+// receive state.
+func (c *Conn) admitSource(datagram []byte, from net.Addr) bool {
 	c.mu.Lock()
 	fromPeer := from == nil || sameAddr(from, c.peer)
 	if !fromPeer && c.isClient && c.pathProbe.pending && c.pathProbe.target != nil && sameAddr(from, c.pathProbe.target) {
@@ -254,7 +336,7 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 		if c.isClient || !c.handshakeConfirmed || len(datagram) == 0 || datagram[0]&0x80 != 0 {
 			c.discarded++
 			c.mu.Unlock()
-			return nil
+			return false
 		}
 	}
 	if c.amplActive && fromPeer {
@@ -278,270 +360,269 @@ func (c *Conn) receiveAt(datagram []byte, from net.Addr, now time.Time) error {
 	c.rxHighest = false
 	c.rxStaleCrypto = false
 	c.mu.Unlock()
-	datagramLen := len(datagram)
-	// RFC 9000 §12.2: every packet coalesced into a datagram names the
-	// destination identifier of the first one; a later packet naming
-	// another is ignored — that packet alone, the rest of the datagram
-	// is still read. Checked on the plaintext header, before any key is
-	// tried, so a forgery coalesced behind a genuine packet costs no open.
-	var datagramDCID []byte
-	for len(datagram) > 0 {
-		if datagram[0] == 0 {
-			// Datagram padding: PADDING frames fill the *packet*, but a peer
-			// may also pad the datagram itself with zeros, and zeros never
-			// begin a QUIC packet.
-			if !allZero(datagram) {
-				c.noteDiscard()
-			}
-			return nil
-		}
+	return true
+}
 
-		var (
-			space    int
-			early    bool // a 0-RTT packet, read with earlyOpener
-			pnOffset int
-			peerSCID []byte
-			raw      []byte
-			rest     []byte
-		)
-		if datagram[0]&0x80 != 0 {
-			if len(datagram) >= 5 && datagram[1]|datagram[2]|datagram[3]|datagram[4] == 0 {
-				c.handleVersionNegotiation(datagram)
-				return nil
-			}
-			h, after, err := parseLongHeader(datagram)
-			if err != nil {
-				c.noteDiscard()
-				return nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
-			}
-			if datagramDCID == nil {
-				datagramDCID = h.DCID
-			} else if !bytes.Equal(h.DCID, datagramDCID) {
-				c.noteDiscard()
-				datagram = after
-				continue
-			}
-			switch h.Type {
-			case packetInitial:
-				// §17.2.2: only clients send tokens; a server's Initial must
-				// carry a zero-length token field, and one that does not is
-				// discarded (the MUST offers discard or PROTOCOL_VIOLATION —
-				// discarding keeps unauthenticated bytes unable to end the
-				// connection, same as every other refusal here).
-				if c.isClient && len(h.Token) > 0 {
-					c.noteDiscard()
-					datagram = after
-					continue
-				}
-				// §14.1: a server discards an Initial carried in a
-				// datagram under 1200 bytes, on this path as on a
-				// Listener's first one — a real client pads every one of
-				// them, and answering a short forgery amplifies it toward
-				// whoever its source address names. The Initial alone is
-				// discarded; a packet coalesced after it is still read.
-				if !c.isClient && datagramLen < 1200 {
-					c.noteDiscard()
-					datagram = after
-					continue
-				}
-				space = spaceInitial
-			case packetHandshake:
-				space = spaceHandshake
-			case packetRetry:
-				c.handleRetry(h)
-				return nil
-			default:
-				// 0-RTT (the only long type left, §17.2): a client's early
-				// data, read on a server whose listener accepted it, in the
-				// application space it shares with 1-RTT (§12.3). A client
-				// never receives one — a server does not send 0-RTT — and
-				// drops it.
-				if c.isClient {
-					c.noteDiscard()
-					datagram = after
-					continue
-				}
-				space, early = spaceApplication, true
-			}
-			// A client's 0-RTT names the identifier its Initial named
-			// until the server's first packet tells it another, so it is
-			// checked by the Initial's rule.
-			dcidSpace := space
-			if early {
-				dcidSpace = spaceInitial
-			}
-			if !c.expectedDCID(h.DCID, dcidSpace) {
-				c.noteDiscard()
-				datagram = after
-				continue
-			}
-			peerSCID, raw, pnOffset, rest = h.SCID, h.Raw, h.PNOffset, after
-		} else {
-			// Every identifier this end issues is listenerCIDLen bytes —
-			// the invariant that lets the length be known before knowing
-			// which identifier it is.
-			h, err := parseShortHeader(datagram, len(c.scid))
-			if err != nil {
-				c.noteDiscard()
-				return nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
-			}
-			if datagramDCID != nil && !bytes.Equal(h.DCID, datagramDCID) {
-				// A short header closes the datagram: nothing follows it.
-				c.noteDiscard()
-				return nil
-			}
-			seq, ok := c.localCIDSeqFor(h.DCID)
-			if !ok {
-				// A short datagram naming no identifier of this end's is
-				// either noise or the peer's stateless reset (§10.3.1): a
-				// reset is built to look exactly like this, found only by
-				// its trailing token.
-				if c.isStatelessReset(datagram) {
-					return c.handleStatelessReset()
-				}
-				c.noteDiscard()
-				return nil
-			}
-			c.mu.Lock()
-			c.rxLocalCIDSeq = seq
-			c.mu.Unlock()
-			space, raw, pnOffset, rest = spaceApplication, h.Raw, h.PNOffset, nil
+// readHeader reads the header of the packet datagram starts with and decides,
+// before any key is tried, whether it is one to open: its type, the space
+// its keys belong to, and the identifiers it names. datagramDCID is the
+// identifier the datagram's first packet named, set by the first call. pkt
+// is filled in place, one packet after another, rather than returned: a
+// packet is a hundred bytes, and copying it per packet showed on the
+// receive benchmarks.
+func (c *Conn) readHeader(pkt *rxPacket, datagram []byte, datagramLen int, datagramDCID *[]byte) (rxVerdict, error) {
+	if datagram[0] == 0 {
+		// Datagram padding: PADDING frames fill the *packet*, but a peer
+		// may also pad the datagram itself with zeros, and zeros never
+		// begin a QUIC packet.
+		if !allZero(datagram) {
+			c.noteDiscard()
 		}
+		return rxStop, nil
+	}
+	if datagram[0]&0x80 == 0 {
+		return c.readShortHeader(pkt, datagram, *datagramDCID)
+	}
+	if len(datagram) >= 5 && datagram[1]|datagram[2]|datagram[3]|datagram[4] == 0 {
+		c.handleVersionNegotiation(datagram)
+		return rxStop, nil
+	}
+	h, after, err := parseLongHeader(datagram)
+	if err != nil {
+		c.noteDiscard()
+		return rxStop, nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
+	}
+	pkt.rest = after
+	if *datagramDCID == nil {
+		*datagramDCID = h.DCID
+	} else if !bytes.Equal(h.DCID, *datagramDCID) {
+		c.noteDiscard()
+		return rxSkip, nil
+	}
+	pkt.peerSCID, pkt.raw, pkt.pnOffset, pkt.early = h.SCID, h.Raw, h.PNOffset, false
+	switch h.Type {
+	case packetInitial:
+		// §17.2.2: only clients send tokens; a server's Initial must
+		// carry a zero-length token field, and one that does not is
+		// discarded (the MUST offers discard or PROTOCOL_VIOLATION —
+		// discarding keeps unauthenticated bytes unable to end the
+		// connection, same as every other refusal here).
+		if c.isClient && len(h.Token) > 0 {
+			c.noteDiscard()
+			return rxSkip, nil
+		}
+		// §14.1: a server discards an Initial carried in a
+		// datagram under 1200 bytes, on this path as on a
+		// Listener's first one — a real client pads every one of
+		// them, and answering a short forgery amplifies it toward
+		// whoever its source address names. The Initial alone is
+		// discarded; a packet coalesced after it is still read.
+		if !c.isClient && datagramLen < 1200 {
+			c.noteDiscard()
+			return rxSkip, nil
+		}
+		pkt.space = spaceInitial
+	case packetHandshake:
+		pkt.space = spaceHandshake
+	case packetRetry:
+		c.handleRetry(h)
+		return rxStop, nil
+	default:
+		// 0-RTT (the only long type left, §17.2): a client's early
+		// data, read on a server whose listener accepted it, in the
+		// application space it shares with 1-RTT (§12.3). A client
+		// never receives one — a server does not send 0-RTT — and
+		// drops it.
+		if c.isClient {
+			c.noteDiscard()
+			return rxSkip, nil
+		}
+		pkt.space, pkt.early = spaceApplication, true
+	}
+	// A client's 0-RTT names the identifier its Initial named
+	// until the server's first packet tells it another, so it is
+	// checked by the Initial's rule.
+	dcidSpace := pkt.space
+	if pkt.early {
+		dcidSpace = spaceInitial
+	}
+	if !c.expectedDCID(h.DCID, dcidSpace) {
+		c.noteDiscard()
+		return rxSkip, nil
+	}
+	return rxRead, nil
+}
 
-		c.mu.Lock()
-		sp := &c.spaces[space]
-		if space == spaceApplication && !c.ku.dropPrevAt.IsZero() && !now.Before(c.ku.dropPrevAt) {
-			// RFC 9001 §6.5: the previous phase's read keys outlived their
-			// three probe timeouts; a straggler under them is lost now.
-			sp.opener = sp.opener.withoutPrevious()
-			c.ku.dropPrevAt = time.Time{}
+// readShortHeader is readHeader for a 1-RTT packet, which closes its
+// datagram: nothing follows a short header.
+func (c *Conn) readShortHeader(pkt *rxPacket, datagram, datagramDCID []byte) (rxVerdict, error) {
+	// Every identifier this end issues is listenerCIDLen bytes —
+	// the invariant that lets the length be known before knowing
+	// which identifier it is.
+	h, err := parseShortHeader(datagram, len(c.scid))
+	if err != nil {
+		c.noteDiscard()
+		return rxStop, nil //nolint:nilerr // RFC 9000 §12.2: an unparseable packet is dropped, not fatal
+	}
+	if datagramDCID != nil && !bytes.Equal(h.DCID, datagramDCID) {
+		c.noteDiscard()
+		return rxStop, nil
+	}
+	seq, ok := c.localCIDSeqFor(h.DCID)
+	if !ok {
+		// A short datagram naming no identifier of this end's is
+		// either noise or the peer's stateless reset (§10.3.1): a
+		// reset is built to look exactly like this, found only by
+		// its trailing token.
+		if c.isStatelessReset(datagram) {
+			return rxStop, c.handleStatelessReset()
 		}
-		opener, largest, discarded := sp.opener, sp.largest, sp.discarded
-		if early {
-			opener = c.earlyOpener
-			if opener == nil && !c.earlyOver() {
-				// Before the early secret: the ClientHello that carries it
-				// may be in this very datagram, ahead of this packet, and
-				// crypto/tls reads it only once the datagram is through.
-				if len(c.deferredEarly) < 16 {
-					c.deferredEarly = append(c.deferredEarly, deferredPacket{
-						raw: append([]byte(nil), raw...),
-						at:  now,
-						ecn: c.rxECN,
-					})
-				}
-				c.mu.Unlock()
-				datagram = rest
-				continue
-			}
-			// No early secret and none coming: 0-RTT refused, or its keys
-			// already dropped. Not one of these packets is read (RFC 9001
-			// §4.6.2), and a reordered one is resent by the client in
-			// 1-RTT.
-			discarded = discarded || opener == nil
-		}
-		c.mu.Unlock()
-		if discarded {
-			datagram = rest
-			continue
-		}
-		if opener == nil {
-			// The keys for this level have not arrived yet. Held rather than
-			// dropped: a peer that finishes its handshake and writes at once
-			// hits this every time rather than rarely (§5.7).
-			c.mu.Lock()
-			if len(c.deferred[space]) < 16 {
-				c.deferred[space] = append(c.deferred[space], deferredPacket{
-					raw: append([]byte(nil), raw...),
+		c.noteDiscard()
+		return rxStop, nil
+	}
+	c.mu.Lock()
+	c.rxLocalCIDSeq = seq
+	c.mu.Unlock()
+	pkt.space, pkt.early, pkt.peerSCID, pkt.raw, pkt.pnOffset, pkt.rest = spaceApplication, false, nil, h.Raw, h.PNOffset, nil
+	return rxRead, nil
+}
+
+// openPacket finds the keys for pkt and opens it: held for later when its
+// keys have not arrived, dropped when they are gone, refused when it does not
+// authenticate — which past the AEAD's integrity limit ends the connection.
+func (c *Conn) openPacket(pkt *rxPacket, now time.Time) (rxVerdict, error) {
+	c.mu.Lock()
+	sp := &c.spaces[pkt.space]
+	if pkt.space == spaceApplication && !c.ku.dropPrevAt.IsZero() && !now.Before(c.ku.dropPrevAt) {
+		// RFC 9001 §6.5: the previous phase's read keys outlived their
+		// three probe timeouts; a straggler under them is lost now.
+		sp.opener = sp.opener.withoutPrevious()
+		c.ku.dropPrevAt = time.Time{}
+	}
+	opener, largest, discarded := sp.opener, sp.largest, sp.discarded
+	if pkt.early {
+		opener = c.earlyOpener
+		if opener == nil && !c.earlyOver() {
+			// Before the early secret: the ClientHello that carries it
+			// may be in this very datagram, ahead of this packet, and
+			// crypto/tls reads it only once the datagram is through.
+			if len(c.deferredEarly) < 16 {
+				c.deferredEarly = append(c.deferredEarly, deferredPacket{
+					raw: append([]byte(nil), pkt.raw...),
 					at:  now,
 					ecn: c.rxECN,
 				})
 			}
 			c.mu.Unlock()
-			datagram = rest
-			continue
+			return rxSkip, nil
 		}
-		payload, pn, used, err := opener.openPhased(raw, pnOffset, largest)
-		if err != nil {
-			// A transportError is the one refusal of a packet that did
-			// authenticate (reserved bits, §17.2): the peer's own
-			// violation, ended as one. Everything below is bytes nobody
-			// proved they sent.
-			if te, ok := errors.AsType[*transportError](err); ok {
-				c.abort(te)
-				return te
-			}
-			// A datagram that names this connection but does not
-			// authenticate can still be the peer's stateless reset: a
-			// resetting peer may reuse the identifier it was sent (§10.3).
-			if space == spaceApplication && c.isStatelessReset(raw) {
-				return c.handleStatelessReset()
-			}
-			// Failed authentication: anyone can send these bytes.
-			c.mu.Lock()
-			c.discarded++
-			c.failedOpens++
-			overIntegrity := c.failedOpens >= opener.k.intLimit
-			c.mu.Unlock()
-			if overIntegrity {
-				// RFC 9001 §6.6: the failed opens are counted over the whole
-				// connection, every level and key together, and past the
-				// integrity limit of the AEAD that just refused one — the
-				// selected suite's once 1-RTT keys exist, Initial's before —
-				// the bound is worn out: the one case where unauthenticated
-				// bytes end the connection, because tolerating more
-				// forgeries would erode the AEAD's integrity bound. Closed
-				// with AEAD_LIMIT_REACHED, the way §6.6 recommends, rather
-				// than falling silent: the same reading as send.go's
-				// confidentiality limit.
-				err := &transportError{
-					code: transportAEADLimitReached,
-					err:  fmt.Errorf("%w: the connection refused its %d forged packets", ErrQUIC, opener.k.intLimit),
-				}
-				c.abort(err)
-				return err
-			}
-			datagram = rest
-			continue
-		}
-
-		if peerSCID != nil && !c.pinPeerSCID(peerSCID) {
-			// RFC 9000 §7.2: a long-header packet under another source
-			// identifier than the one pinned is discarded — authenticated
-			// or not, since Initial keys are public and a Handshake packet
-			// that changes it is the peer's own fault. Nothing in it is
-			// acted on and no acknowledgement is owed for it.
-			c.noteDiscard()
-			datagram = rest
-			continue
-		}
-		if space == spaceApplication && used == usedCurrent {
-			// A number read under the current keys bounds what the previous
-			// keys may still open (RFC 9001 §6.5, noteCurrentPN).
-			c.mu.Lock()
-			if sp.opener == opener {
-				opener.noteCurrentPN(pn)
-			}
-			c.mu.Unlock()
-		}
-		if used == usedNext {
-			// The peer moved to the next key phase (RFC 9001 §6.2): the
-			// read keys follow, and the send keys with them unless this end
-			// is the one that moved first.
-			c.mu.Lock()
-			err := c.onKeyPhaseOpenedLocked(opener, pn, now)
-			c.mu.Unlock()
-			if err != nil {
-				c.abort(err)
-				return err
-			}
-		}
-		if err := c.processPacket(space, early, pn, payload, now); err != nil {
-			return err
-		}
-		datagram = rest
+		// No early secret and none coming: 0-RTT refused, or its keys
+		// already dropped. Not one of these packets is read (RFC 9001
+		// §4.6.2), and a reordered one is resent by the client in
+		// 1-RTT.
+		discarded = discarded || opener == nil
 	}
-	return nil
+	c.mu.Unlock()
+	if discarded {
+		return rxSkip, nil
+	}
+	if opener == nil {
+		// The keys for this level have not arrived yet. Held rather than
+		// dropped: a peer that finishes its handshake and writes at once
+		// hits this every time rather than rarely (§5.7).
+		c.mu.Lock()
+		if len(c.deferred[pkt.space]) < 16 {
+			c.deferred[pkt.space] = append(c.deferred[pkt.space], deferredPacket{
+				raw: append([]byte(nil), pkt.raw...),
+				at:  now,
+				ecn: c.rxECN,
+			})
+		}
+		c.mu.Unlock()
+		return rxSkip, nil
+	}
+	payload, pn, used, err := opener.openPhased(pkt.raw, pkt.pnOffset, largest)
+	if err == nil {
+		pkt.opener, pkt.used, pkt.pn, pkt.payload = opener, used, pn, payload
+		return rxRead, nil
+	}
+	// A transportError is the one refusal of a packet that did
+	// authenticate (reserved bits, §17.2): the peer's own
+	// violation, ended as one. Everything below is bytes nobody
+	// proved they sent.
+	if te, ok := errors.AsType[*transportError](err); ok {
+		c.abort(te)
+		return rxStop, te
+	}
+	// A datagram that names this connection but does not
+	// authenticate can still be the peer's stateless reset: a
+	// resetting peer may reuse the identifier it was sent (§10.3).
+	if pkt.space == spaceApplication && c.isStatelessReset(pkt.raw) {
+		return rxStop, c.handleStatelessReset()
+	}
+	// Failed authentication: anyone can send these bytes.
+	c.mu.Lock()
+	c.discarded++
+	c.failedOpens++
+	overIntegrity := c.failedOpens >= opener.k.intLimit
+	c.mu.Unlock()
+	if overIntegrity {
+		// RFC 9001 §6.6: the failed opens are counted over the whole
+		// connection, every level and key together, and past the
+		// integrity limit of the AEAD that just refused one — the
+		// selected suite's once 1-RTT keys exist, Initial's before —
+		// the bound is worn out: the one case where unauthenticated
+		// bytes end the connection, because tolerating more
+		// forgeries would erode the AEAD's integrity bound. Closed
+		// with AEAD_LIMIT_REACHED, the way §6.6 recommends, rather
+		// than falling silent: the same reading as send.go's
+		// confidentiality limit.
+		err := &transportError{
+			code: transportAEADLimitReached,
+			err:  fmt.Errorf("%w: the connection refused its %d forged packets", ErrQUIC, opener.k.intLimit),
+		}
+		c.abort(err)
+		return rxStop, err
+	}
+	return rxSkip, nil
+}
+
+// afterOpen acts on what an authenticated packet's open says before its
+// frames are read: the source identifier it pins, and the key phase it was
+// read under.
+func (c *Conn) afterOpen(pkt *rxPacket, now time.Time) (rxVerdict, error) {
+	opener, pn, used := pkt.opener, pkt.pn, pkt.used
+	if pkt.peerSCID != nil && !c.pinPeerSCID(pkt.peerSCID) {
+		// RFC 9000 §7.2: a long-header packet under another source
+		// identifier than the one pinned is discarded — authenticated
+		// or not, since Initial keys are public and a Handshake packet
+		// that changes it is the peer's own fault. Nothing in it is
+		// acted on and no acknowledgement is owed for it.
+		c.noteDiscard()
+		return rxSkip, nil
+	}
+	if pkt.space == spaceApplication && used == usedCurrent {
+		// A number read under the current keys bounds what the previous
+		// keys may still open (RFC 9001 §6.5, noteCurrentPN).
+		c.mu.Lock()
+		if c.spaces[pkt.space].opener == opener {
+			opener.noteCurrentPN(pn)
+		}
+		c.mu.Unlock()
+	}
+	if used == usedNext {
+		// The peer moved to the next key phase (RFC 9001 §6.2): the
+		// read keys follow, and the send keys with them unless this end
+		// is the one that moved first.
+		c.mu.Lock()
+		err := c.onKeyPhaseOpenedLocked(opener, pn, now)
+		c.mu.Unlock()
+		if err != nil {
+			c.abort(err)
+			return rxStop, err
+		}
+	}
+	return rxRead, nil
 }
 
 // earlyOver reports, under mu, that no early secret will come: the 1-RTT
