@@ -1138,7 +1138,8 @@ func TestH2RefusesAStatusThatIsNotOne(t *testing.T) {
 // connection. It used to be a GOAWAY: one panic on one request cost every
 // other request in flight on that connection.
 func TestH2HandlerPanicAnswersOneStream(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	logger, logged := recordingLogger(t)
+	addr, _ := serveTest(t, Config{Logger: logger}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		for _, r := range b.Items {
 			if string(r.Target) == "/boom" {
 				panic("SECRET-/var/run/keys")
@@ -1164,6 +1165,7 @@ func TestH2HandlerPanicAnswersOneStream(t *testing.T) {
 	if c.sawGoAway {
 		t.Fatal("a handler panic ended the connection")
 	}
+	logged("SECRET-/var/run/keys", t.Name())
 
 	// And the connection still serves.
 	c.request(3, "GET", "/ok")
@@ -2322,7 +2324,8 @@ func TestH2AnsweredBodiesAreNotRetained(t *testing.T) {
 // there used to end the process; it costs its own stream, and the connection
 // keeps serving.
 func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
-	addr, _ := serveH2(t, Config{}, panickingProducer)
+	logger, logged := recordingLogger(t)
+	addr, _ := serveH2(t, Config{Logger: logger}, panickingProducer)
 	c := dialH2(t, addr)
 
 	c.request(1, "GET", "/boom")
@@ -2333,6 +2336,7 @@ func TestH2StreamProducerPanicResetsOneStream(t *testing.T) {
 	if c.sawGoAway {
 		t.Fatal("a producer panic ended the connection")
 	}
+	logged("producer bug", "panickingProducer")
 
 	c.request(3, "GET", "/ok")
 	c.flush()

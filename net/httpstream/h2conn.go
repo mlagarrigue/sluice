@@ -1869,6 +1869,9 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 	s.peer.stamp(b.reqs)
 	res, err := apply(b.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
 	closeBodies(b.reqs)
+	if err != nil {
+		reportFailure(s.cfg.logger(), err)
+	}
 	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}
 }
@@ -2167,6 +2170,7 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 func (s *h2Server) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
 	fields, err := r.trailers()
 	if err != nil {
+		reportPanic(s.cfg.logger(), err)
 		return nil, err
 	}
 	block := s.block[:0]
@@ -2294,6 +2298,9 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length in
 	})
 	if stopped {
 		return
+	}
+	if perr != nil {
+		reportFailure(s.cfg.logger(), perr)
 	}
 	if perr != nil || wrong || sent < length {
 		// The producer panicked partway through its answer, or did not

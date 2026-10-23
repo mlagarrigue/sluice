@@ -569,9 +569,15 @@ type Config struct {
 	KeepAlive time.Duration
 
 	// Logger receives what the server reports besides the errors it
-	// returns — today, a warning with the number of connections a forced
-	// stop cut with requests in flight. Nil means [slog.Default]. Every
-	// protocol.
+	// returns. At the error level, a panic in the handler, in a streamed
+	// response's producer or in a Trailers function — its value and stack,
+	// which never reach the client's 500 or reset — and a handler that
+	// answered the wrong number of requests. At the warn level, the number
+	// of connections a forced stop cut with requests in flight, and the
+	// error that ended a connection [Serve] or [Server] accepted when it is
+	// not an ordinary end (the peer's close, a deadline, a reset): a peer
+	// that broke the protocol, a transport that failed. Nil means
+	// [slog.Default]. Every protocol.
 	Logger *slog.Logger
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side

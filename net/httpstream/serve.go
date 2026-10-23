@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -428,6 +429,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 			}
 		}
 		if err != nil {
+			reportFailure(cfg.logger(), err)
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
 			return false
@@ -459,8 +461,10 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		var werr error
 		if out, werr = WriteBatch(out[:0], cfg, b.Items, res); werr != nil {
 			// A response this package refuses to put on the wire — an
-			// injected header, a framing header the caller set. The caller's
-			// bug, answered as one rather than written out.
+			// injected header, a framing header the caller set, trailers
+			// that panicked. The caller's bug, answered as one rather than
+			// written out.
+			reportPanic(cfg.logger(), werr)
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
 			return false
@@ -564,8 +568,9 @@ func call(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []R
 		if r := recover(); r != nil {
 			// A panic in the handler is the caller's bug and must not take
 			// the process down; it becomes a 500 on this connection, the same
-			// bargain [web.Recover] makes.
-			err = fmt.Errorf("httpstream: the handler panicked: %v", r)
+			// bargain [web.Recover] makes, and its value and stack go to the
+			// log where the 500 is written (reportFailure).
+			err = recovered("handler", r)
 		}
 	}()
 	out := handle(ctx, b)
@@ -699,10 +704,11 @@ func writeAll(c net.Conn, cfg Config, buf []byte) error {
 type writeBound struct {
 	timeout  time.Duration
 	progress int
+	log      *slog.Logger // where a producer's or trailers' failure is reported
 }
 
 func writeBoundOf(cfg Config) writeBound {
-	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.WriteProgressBytes}
+	return writeBound{timeout: cfg.WriteTimeout, progress: cfg.WriteProgressBytes, log: cfg.logger()}
 }
 
 // write puts p on the wire with write, under deadlines it sets through
@@ -755,7 +761,8 @@ func serveAny(ctx context.Context, c net.Conn, st *connState, cfg Config, handle
 		if st != nil {
 			st.h2.Store(true)
 		}
-		_ = serveH2Conn(ctx, prefixed(c, peek), st, cfg, handle)
+		err := serveH2Conn(ctx, prefixed(c, peek), st, cfg, handle)
+		reportConnEnd(cfg.logger(), "h2", c.RemoteAddr(), err)
 		return
 	}
 	// The peeked bytes are the start of a request: busy from here, and the
@@ -1334,6 +1341,7 @@ func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Req
 			// responses gathered so far, which is what lets fail flush them.
 			out, err := WriteBatch(buf, cfg, oneReq, []Response{r})
 			if err != nil {
+				reportPanic(cfg.logger(), err)
 				return fail(i, err)
 			}
 			buf = out
@@ -1416,6 +1424,9 @@ func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Req
 			return true
 		})
 		watch.stop()
+		if perr != nil {
+			reportFailure(cfg.logger(), perr)
+		}
 		if werr == nil {
 			werr = perr
 		}
@@ -1446,6 +1457,7 @@ func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Req
 			// closes, as for a producer that panicked.
 			fields, err := r.trailers()
 			if err != nil {
+				reportPanic(cfg.logger(), err)
 				return buf, false, err
 			}
 			buf = appendLastChunkTrailers(buf[:0], fields)

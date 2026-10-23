@@ -203,7 +203,8 @@ func (s *Server) ServeQUIC(ln *quic.Listener) error {
 			s.mu.Unlock()
 			go func() {
 				defer conns.Done()
-				_ = serveH3(s.live.draining, s.forced, c, s.cfg, s.Handler)
+				err := serveH3(s.live.draining, s.forced, c, s.cfg, s.Handler)
+				reportConnEnd(s.cfg.logger(), "h3", c.RemoteAddr(), err)
 				s.mu.Lock()
 				delete(s.h3Conns, c)
 				s.mu.Unlock()

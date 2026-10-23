@@ -230,7 +230,8 @@ func TestHandlerThatDropsARequestIsRefused(t *testing.T) {
 // A panic in the handler is the caller's bug and must not take the process
 // down with it — the same bargain web.Recover makes over net/http.
 func TestHandlerPanicBecomesA500(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] {
+	logger, logged := recordingLogger(t)
+	addr, _ := serveTest(t, Config{Logger: logger}, func(context.Context, sluice.Batch[Request]) sluice.Batch[Response] {
 		panic("the caller's own bug")
 	})
 	c := dial(t, addr)
@@ -240,6 +241,7 @@ func TestHandlerPanicBecomesA500(t *testing.T) {
 	if !strings.HasPrefix(status, "HTTP/1.1 500") {
 		t.Errorf("status = %q, want 500", status)
 	}
+	logged("the caller's own bug", t.Name())
 }
 
 // A header value carrying CRLF would end the field early and let what follows
@@ -931,7 +933,8 @@ func TestExpect100WaitsForTheFinalsPipelinedAheadOfIt(t *testing.T) {
 // is no status left to change: the connection closes with the chunked body
 // unterminated, and the server goes on serving everyone else.
 func TestStreamProducerPanicClosesOnlyItsConnection(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, panickingProducer)
+	logger, logged := recordingLogger(t)
+	addr, _ := serveTest(t, Config{Logger: logger}, panickingProducer)
 
 	c := dial(t, addr)
 	if _, err := io.WriteString(c, "GET /boom HTTP/1.1\r\nHost: h\r\n\r\n"); err != nil {
@@ -947,6 +950,7 @@ func TestStreamProducerPanicClosesOnlyItsConnection(t *testing.T) {
 	if strings.HasSuffix(string(got), "0\r\n\r\n") {
 		t.Errorf("the body was terminated as if it had completed: %q", got)
 	}
+	logged("producer bug", "panickingProducer")
 
 	// The process, and the server in it, are still up.
 	c2 := dial(t, addr)

@@ -787,6 +787,7 @@ func answerH3(ctx context.Context, c *quic.Conn, state *tls.ConnectionState, b h
 	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
 	closeBodies(b.reqs)
 	if err != nil {
+		reportFailure(wb.log, err)
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Every request of the batch is answered
 		// 500 and the connection carries on.
@@ -913,6 +914,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	defer h3ScratchPool.Put(sc)
 	head, err := appendH3Response(sc.head[:0], r, method, fieldSection, sc, date)
 	if err != nil {
+		reportPanic(wb.log, err)
 		r = transportError(500)
 		if head, err = appendH3Response(sc.head[:0], r, method, fieldSection, sc, date); err != nil {
 			// The peer's MAX_FIELD_SECTION_SIZE is under the line's own two
@@ -961,6 +963,7 @@ func writeH3Response(c *quic.Conn, id uint64, r Response, method []byte, fieldSe
 	}
 	tail, err := appendH3Trailers(sc.head[:0], r, fieldSection, sc)
 	if err != nil {
+		reportPanic(wb.log, err)
 		// The body is out: a refused trailer resets the stream, as a
 		// producer that panicked does, so the client never reads the
 		// answer as whole.
@@ -1034,6 +1037,9 @@ func streamH3Body(c *quic.Conn, s *quic.Stream, stream sluice.Stream[[]byte], le
 		}
 		return true
 	})
+	if perr != nil {
+		reportFailure(wb.log, perr)
+	}
 	if perr != nil || wrong || ok && sent < length {
 		// The producer panicked or missed its length: its stream is reset,
 		// the same answer a response that cannot be framed gets, and nothing

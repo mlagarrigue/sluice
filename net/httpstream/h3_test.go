@@ -1376,6 +1376,7 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 // process; over a real connection, it resets its own stream with
 // H3_INTERNAL_ERROR and the connection keeps serving.
 func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
+	logger, logged := recordingLogger(t)
 	serverPC, clientPC := dgram.Pair()
 	defer func() { _ = serverPC.Close() }()
 	defer func() { _ = clientPC.Close() }()
@@ -1392,7 +1393,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{Logger: logger}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				if string(r.Target) != "/boom" {
@@ -1472,6 +1473,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	} else if code != h3InternalError {
 		t.Errorf("the stream was reset with %#x, want H3_INTERNAL_ERROR (%#x)", code, h3InternalError)
 	}
+	logged("producer bug", t.Name())
 
 	ok := ask("/ok")
 	reply, err := readAll(ok)

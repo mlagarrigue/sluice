@@ -176,7 +176,7 @@ func (r Response) streamed() bool { return r.Stream != nil }
 func (r Response) trailers() (fields []Header, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("httpstream: the response trailers panicked: %v", p)
+			err = recovered("response trailers", p)
 		}
 	}()
 	fields = r.Trailers()
@@ -262,7 +262,7 @@ func checkResponseField(name []byte) error {
 func pull(stream sluice.Stream[[]byte], yield func(sluice.Batch[[]byte]) bool) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("httpstream: the response producer panicked: %v", r)
+			err = recovered("response producer", r)
 		}
 	}()
 	stream(yield)
