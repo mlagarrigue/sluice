@@ -6,12 +6,17 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
+	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -41,6 +46,13 @@ func earlyServer(t *testing.T, cfg *tls.Config, lcfg quic.ListenerConfig) (addr 
 			}
 			go func() {
 				defer c.Close()
+				// Written the moment Accept returns, as an HTTP/3 server
+				// writes its SETTINGS: a 0-RTT connection is handed out
+				// before its handshake completes, and must already be able
+				// to write in 1-RTT.
+				if u, err := c.OpenUniStream(context.Background()); err == nil {
+					_, _ = u.Write([]byte("first write"))
+				}
 				st, err := c.AcceptStream(context.Background())
 				if err != nil {
 					return
@@ -212,5 +224,144 @@ func TestZeroRTTStaysWithTheInstanceThatIssuedTheTicket(t *testing.T) {
 			t.Errorf("EarlyData %v: the other instance accepted 0-RTT on a ticket it did not issue", lcfg.EarlyData)
 		}
 		cancel()
+	}
+}
+
+// lateFinishPC delays every datagram the client writes once it has heard
+// from the server, by delay: what the client sends in its first flight —
+// ClientHello and 0-RTT — arrives at once, and its Finished arrives late,
+// which holds the server's handshake open long enough to see what happens
+// to a 0-RTT request before it completes.
+type lateFinishPC struct {
+	net.PacketConn // the interface only: a *net.UDPConn would let quic-go write around WriteTo
+	delay          time.Duration
+	heard          atomic.Bool
+}
+
+func (p *lateFinishPC) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := p.PacketConn.ReadFrom(b)
+	if err == nil {
+		p.heard.Store(true)
+	}
+	return n, addr, err
+}
+
+func (p *lateFinishPC) WriteTo(b []byte, addr net.Addr) (int, error) {
+	if !p.heard.Load() {
+		return p.PacketConn.WriteTo(b, addr)
+	}
+	late := append([]byte(nil), b...)
+	time.AfterFunc(p.delay, func() { _, _ = p.PacketConn.WriteTo(late, addr) })
+	return len(b), nil
+}
+
+// TestHTTP3EarlyRequestWaitsForTheHandshake: quic-go sends a GET in 0-RTT
+// and holds back its Finished. Without Config.EarlyData the handler is
+// called only once the handshake has completed, since the request could be
+// a replay; with a predicate that allows GET it is called before.
+func TestHTTP3EarlyRequestWaitsForTheHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		early         func(*httpstream.Request) bool
+		wantCompleted bool
+	}{
+		{"no predicate", nil, true},
+		{"GET allowed", func(r *httpstream.Request) bool { return string(r.Method) == "GET" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout, EarlyData: tc.early}
+			params, err := cfg.TransportParameters()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pc := listenUDP(t)
+			ln, err := quic.NewListener(pc, serverTLS(t), params, quic.ListenerConfig{EarlyData: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			type call struct{ early, completed bool }
+			calls := make(chan call, 4)
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					var acceptedEarly bool
+					select {
+					case <-c.HandshakeComplete():
+					default:
+						acceptedEarly = true
+					}
+					handle := func(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+						completed := false
+						select {
+						case <-c.HandshakeComplete():
+							completed = true
+						default:
+						}
+						calls <- call{acceptedEarly, completed}
+						out := make([]httpstream.Response, b.Len())
+						for i := range out {
+							out[i] = httpstream.Response{Status: 200, Body: []byte("ok")}
+						}
+						return sluice.Batch[httpstream.Response]{Items: out}
+					}
+					go func() { _ = httpstream.ServeH3Conn(ctx, c, cfg, handle) }()
+				}
+			}()
+
+			tlsCfg := clientTLS()
+			tlsCfg.NextProtos = []string{"h3"}
+			tlsCfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
+			get := func(method string, pc net.PacketConn) {
+				t.Helper()
+				tr := &http3.Transport{
+					TLSClientConfig: tlsCfg,
+					QUICConfig:      &quicgo.Config{MaxIdleTimeout: timeout},
+					Dial: func(ctx context.Context, _ string, tc *tls.Config, qc *quicgo.Config) (*quicgo.Conn, error) {
+						return quicgo.DialEarly(ctx, pc, ln.Addr(), tc, qc)
+					},
+				}
+				defer tr.Close()
+				req, err := http.NewRequestWithContext(ctx, method, "https://"+ln.Addr().String()+"/x", http.NoBody)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := tr.RoundTrip(req)
+				if err != nil {
+					t.Fatalf("%s: %v", method, err)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("%s: %s", method, resp.Status)
+				}
+			}
+
+			get(http.MethodGet, listenUDP(t))
+			<-calls
+			for deadline := time.Now().Add(timeout); ; {
+				if _, ok := tlsCfg.ClientSessionCache.Get(tlsCfg.ServerName); ok {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("no session ticket reached quic-go")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			get(http3.MethodGet0RTT, &lateFinishPC{PacketConn: listenUDP(t), delay: 300 * time.Millisecond})
+			got := <-calls
+			if !got.early {
+				t.Fatal("the resumed connection was not accepted in 0-RTT; the test proves nothing")
+			}
+			if got.completed != tc.wantCompleted {
+				t.Errorf("the handler ran with the handshake completed = %v, want %v", got.completed, tc.wantCompleted)
+			}
+		})
 	}
 }

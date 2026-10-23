@@ -647,6 +647,28 @@ type Config struct {
 	// Nothing outside this package's tests sets it, and a deployment has no
 	// reason to: a real client speaks the RFC's table and no other.
 	QPACKStatic []Header
+
+	// EarlyData says which requests may be acted on although they could be
+	// a replay: an HTTP/3 request that arrived in 0-RTT, on a connection
+	// whose handshake has not completed yet ([quic.ListenerConfig.EarlyData]
+	// accepts it), and on any protocol a request carrying Early-Data, which
+	// an intermediary adds to a request it received in early data itself
+	// (RFC 8470 §5.1). Nil allows none, which is RFC 8470 §2's rule when
+	// the resource has said nothing. ADR 0019 has the design.
+	//
+	// A 0-RTT request it does not allow waits for the handshake to complete
+	// and is then handled like any other: a replay never completes it, so
+	// it is never handled, and the client pays nothing more than without
+	// 0-RTT. A request carrying Early-Data it does not allow is answered
+	// 425 Too Early without reaching the handler, since waiting does not
+	// make it safe (§5.2): the client retries it once its own handshake is
+	// through.
+	//
+	// The method alone does not decide — a resource may have side effects
+	// on GET (§2) — so the predicate sees the whole request. It is called
+	// on the connection's goroutine, concurrently across connections, and
+	// must not keep r.
+	EarlyData func(r *Request) bool
 }
 
 // The defaults a bound takes when its field is zero, named because more than

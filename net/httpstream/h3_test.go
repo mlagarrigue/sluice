@@ -73,7 +73,7 @@ func serveH3Datagram(a *h3Assembler, frames []quic.Frame, handle Handler) (
 	if err != nil || batch.Len() == 0 {
 		return nil, nil, failed, err
 	}
-	res, err := apply(context.Background(), handle, batch)
+	res, err := apply(context.Background(), handle, batch, nil)
 	if err != nil {
 		return nil, nil, failed, err
 	}

@@ -825,6 +825,8 @@ func reason(status int) string {
 		return "Content Too Large"
 	case 422:
 		return "Unprocessable Content"
+	case 425:
+		return "Too Early"
 	case 431:
 		return "Request Header Fields Too Large"
 	case 500:

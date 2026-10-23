@@ -1703,7 +1703,7 @@ func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
 			out <- &h2Applied{b: b, err: errors.New("httpstream: the handler exited its goroutine without answering")}
 		}
 	}()
-	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs})
+	res, err := apply(s.ctx, s.handler, sluice.Batch[Request]{Items: b.reqs}, s.cfg.EarlyData)
 	answered = true
 	out <- &h2Applied{b: b, res: res, err: err}
 }

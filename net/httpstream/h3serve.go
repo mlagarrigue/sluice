@@ -469,6 +469,27 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			credit:       a.Credit,
 			retire:       a.retire,
 			answered:     a.answered,
+			early:        cfg.EarlyData,
+		}
+		select {
+		case <-c.HandshakeComplete():
+		default:
+			// Arrived in 0-RTT, before the handshake completed: it may be
+			// a replay (ADR 0019). A batch Config.EarlyData does not allow
+			// in full waits for the handshake — a replay never completes
+			// it, so it is never handled — and is dropped with the
+			// connection otherwise. The wait is a call like any other, in
+			// calls, so the drain below waits for it too.
+			if !allowedEarly(b.reqs, cfg.EarlyData) {
+				launch(&calls, func() {
+					select {
+					case <-c.HandshakeComplete():
+						answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers)
+					case <-c.Done():
+					}
+				})
+				return nil
+			}
 		}
 		launch(&calls, func() { answerH3(forced, c, b, handle, writeBoundOf(cfg), &writers) })
 		return nil
@@ -519,6 +540,22 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		}
 	}
 	return h3CloseErr(c.Err())
+}
+
+// allowedEarly reports whether early allows every request of a batch that
+// arrived before the handshake completed. Holding the whole batch for one
+// request it does not allow costs the others the rest of the handshake, a
+// round trip at most, and keeps every request of a batch in one call.
+func allowedEarly(reqs []Request, early func(*Request) bool) bool {
+	if early == nil {
+		return false
+	}
+	for i := range reqs {
+		if !early(&reqs[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // controlStopped is the connection error for a client that asked the control
@@ -596,6 +633,8 @@ type h3Batch struct {
 	// answered, when set, is called once per response written in full,
 	// before retire: what the rapid-reset allowance grows with.
 	answered func()
+	// early is Config.EarlyData, for the requests carrying Early-Data.
+	early func(*Request) bool
 }
 
 // TransportParameters returns QUIC transport parameters sized to this
@@ -658,7 +697,7 @@ func h3GracefulCode() uint64 {
 // A response that cannot be framed resets its own stream rather than failing
 // the connection: the caller's bug costs the caller's request.
 func answerH3(ctx context.Context, c *quic.Conn, b h3Batch, handle Handler, wb writeBound, writers *sync.WaitGroup) {
-	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs})
+	res, err := apply(ctx, handle, sluice.Batch[Request]{Items: b.reqs}, b.early)
 	if err != nil {
 		// The handler panicked, or answered a number of requests that does
 		// not match what it was given. Every request of the batch is answered

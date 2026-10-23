@@ -386,7 +386,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 
 	stopped := false
 	src.Stream()(func(b sluice.Batch[Request]) bool {
-		res, err := apply(ctx, handle, b)
+		res, err := apply(ctx, handle, b, cfg.EarlyData)
 		if err != nil {
 			_ = writeStatus(c, cfg, firstMethod(b.Items), 500)
 			stopped = true
@@ -507,8 +507,19 @@ func firstMethod(reqs []Request) []byte {
 }
 
 // apply runs the handler and checks what it returned, since a batch of the
-// wrong length would answer the wrong caller.
-func apply(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
+// wrong length would answer the wrong caller. A request carrying Early-Data
+// that early does not allow is answered 425 in its place without reaching
+// the handler (RFC 8470 §5.2), which sees the others in their order.
+func apply(ctx context.Context, handle Handler, b sluice.Batch[Request], early func(*Request) bool) (res []Response, err error) {
+	if tooEarly(b.Items, early) {
+		return applyTooEarly(ctx, handle, b, early)
+	}
+	return call(ctx, handle, b)
+}
+
+// call is apply once no request is left to refuse: the handler, its panic
+// turned into an error, and the length of its answer checked.
+func call(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []Response, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// A panic in the handler is the caller's bug and must not take
@@ -524,6 +535,55 @@ func apply(ctx context.Context, handle Handler, b sluice.Batch[Request]) (res []
 			"element answers the wrong caller", len(out.Items), b.Len())
 	}
 	return out.Items, nil
+}
+
+// tooEarly reports whether any request carries an Early-Data field that
+// early does not allow. Any value counts: RFC 8470 §5.1 has an invalid or
+// repeated field read as a single "1".
+func tooEarly(reqs []Request, early func(*Request) bool) bool {
+	for i := range reqs {
+		if refusedEarly(&reqs[i], early) {
+			return true
+		}
+	}
+	return false
+}
+
+func refusedEarly(r *Request, early func(*Request) bool) bool {
+	for _, h := range r.Headers {
+		if equalFold(h.Name, "early-data") {
+			return early == nil || !early(r)
+		}
+	}
+	return false
+}
+
+// applyTooEarly is apply for a batch where some requests are answered 425:
+// the handler is called on the others, and its answers are put back in
+// their positions.
+func applyTooEarly(ctx context.Context, handle Handler, b sluice.Batch[Request], early func(*Request) bool) ([]Response, error) {
+	res := make([]Response, b.Len())
+	var rest []Request
+	var at []int
+	for i := range b.Items {
+		if refusedEarly(&b.Items[i], early) {
+			res[i] = transportError(425)
+			continue
+		}
+		rest = append(rest, b.Items[i])
+		at = append(at, i)
+	}
+	if len(rest) == 0 {
+		return res, nil
+	}
+	out, err := call(ctx, handle, sluice.Batch[Request]{Items: rest})
+	if err != nil {
+		return nil, err
+	}
+	for k, i := range at {
+		res[i] = out[k]
+	}
+	return res, nil
 }
 
 // isTimeout reports whether err, or an error it wraps, is a deadline that
