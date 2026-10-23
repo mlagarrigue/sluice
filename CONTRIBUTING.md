@@ -266,6 +266,29 @@ transfer is more than 6% slower;
 `gate-cc.sh` holds the controllers other than the default to their own
 bounds (`docs/benchmarks.md`, "QUIC, on an emulated path").
 
+## Adding a peer or a benchmark
+
+Three places, depending on what the peer or the benchmark needs:
+
+- **A peer that is a Go library** (quic-go, say) goes in
+  [`interop/`](interop/README.md), a second Go module: it depends on the
+  framework and the framework does not depend on it, so the peer never
+  enters the dependency graph CI checks. One test per direction — the peer
+  as client, the peer as server. Its README lists what runs, what is
+  pinned, and how the public QUIC Interop Runner is played.
+- **A peer that is a program** (curl, h2load, h2spec, nginx, Envoy) is
+  driven by a script in `scripts/` (`interop-http.sh`, `interop-http3.sh`,
+  `interop-proxy.sh`). A case of a conformance suite (h2spec, h3spec)
+  expected to fail is written, with its reason, in that suite's exclusion
+  list (`net/httpstream/testdata/*-exclusions.txt`), never skipped in
+  silence.
+- **A benchmark** against this code lives in `internal/bench`, paired by
+  `compare.sh` as above. Against another library (pgx, gin, echo…) it goes
+  in [`benchmarks/`](benchmarks/README.md), a second module for the same
+  reason, with `versus.sh` to pair the two inside one binary.
+  [`comparison/`](comparison/README.md) holds the comparison study's
+  apparatus, not results.
+
 ## Style and conventions
 
 - **Everything in the repository is in English**: code, comments, tests,
@@ -368,6 +391,10 @@ In review, comments follow
   harness that cannot say "these are the same" will say anything.
 - **Adversarial tests** on the core invariants: immediate release, early-stop
   propagation, absence of unbounded buffers.
+- **One more interop peer**: a QUIC, HTTP/2 or HTTP/3 implementation that
+  shares no code with this one. Each peer reads the RFCs its own way, and
+  the disagreement is what is being looked for; where it goes is in
+  [Adding a peer or a benchmark](#adding-a-peer-or-a-benchmark).
 
 ## Security
 

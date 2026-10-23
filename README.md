@@ -297,6 +297,10 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── cmd/sluicegen/      generator of hydration code
 ├── example/            orders (supported path) · vertical (native path)
 ├── internal/           shared machinery, measurement harness, wire protocol
+├── interop/            confrontation with other implementations (own module)
+├── benchmarks/         measurements against other libraries (own module)
+├── comparison/         the comparison study's apparatus
+├── scripts/            checks, interop runs, PostgreSQL test setups
 └── docs/               guides, architecture, decisions, measurements
 ```
 
