@@ -437,6 +437,25 @@ func TestIntegrationSASLprepPassword(t *testing.T) {
 }
 
 // exec runs a statement for its effect, draining whatever it returns.
+// A session the server ends on idle_session_timeout is reported as that: the
+// next call finds the FATAL 57P05 the server sent before closing, under
+// ErrConnBroken, not the end of the stream that followed it.
+func TestIntegrationIdleSessionTimeoutIsReported(t *testing.T) {
+	conn := dial(t)
+	if err := conn.Exec(t.Context(), "SET idle_session_timeout = '100ms'"); err != nil {
+		t.Fatalf("SET idle_session_timeout: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	err := conn.Exec(t.Context(), "SELECT 1")
+	var pgErr *postgres.Error
+	if !errors.As(err, &pgErr) || pgErr.Code != "57P05" {
+		t.Fatalf("err = %v; want the server's 57P05 (idle_session_timeout)", err)
+	}
+	if !errors.Is(err, postgres.ErrConnBroken) {
+		t.Errorf("err = %v; want ErrConnBroken as well", err)
+	}
+}
+
 func exec(t *testing.T, conn *postgres.Conn, sql string) error {
 	t.Helper()
 	return execContext(t.Context(), conn, sql)

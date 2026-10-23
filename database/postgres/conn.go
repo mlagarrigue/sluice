@@ -1680,6 +1680,9 @@ func (q *query) resync() error {
 					return withoutOwnCancel(serverErr)
 				}
 			}
+			if closed := c.closedAfter(serverErr, err); closed != nil {
+				return closed
+			}
 			return c.breakConn(fmt.Errorf("resynchronising: %w", err))
 		}
 		switch m.Type {
@@ -1833,4 +1836,29 @@ func (c *Conn) breakConn(cause error) error {
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
 	}
 	return c.broken
+}
+
+// serverClosed is a connection the server ended after saying why: a FATAL or
+// PANIC ErrorResponse — an administrator's termination (57P01), an idle
+// session timeout (57P05), an idle-in-transaction one (25P03) — then the
+// close. The read that met the close is not the cause; the message before it
+// is, and errors.As finds it under ErrConnBroken.
+type serverClosed struct{ server *Error }
+
+func (e *serverClosed) Error() string { return "connection closed by the server: " + e.server.Error() }
+func (e *serverClosed) Unwrap() error { return e.server }
+
+// closedAfter breaks the connection on a read that failed after serverErr was
+// received, keeping the server's reason when it announced the close; it
+// returns nil when the read failed for some other reason, which the caller
+// reports as before.
+func (c *Conn) closedAfter(serverErr, readErr error) error {
+	var e *Error
+	if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return nil
+	}
+	if !errors.As(serverErr, &e) || (e.Severity != "FATAL" && e.Severity != "PANIC") {
+		return nil
+	}
+	return c.breakConn(&serverClosed{server: e})
 }

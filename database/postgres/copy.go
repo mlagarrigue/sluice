@@ -566,6 +566,9 @@ func (cp *Copier) endCopy() error {
 		}
 	}
 	if rd.broken != nil {
+		if closed := c.closedAfter(rd.serverErr, rd.broken); closed != nil {
+			return closed
+		}
 		return c.breakConn(rd.broken)
 	}
 	if c.broken != nil {
@@ -738,6 +741,9 @@ func (c *Conn) drainToReadyRolledBack() (rolledBack bool, err error) {
 	for {
 		m, err := c.r.Next()
 		if err != nil {
+			if closed := c.closedAfter(serverErr, err); closed != nil {
+				return rolledBack, closed
+			}
 			return rolledBack, c.breakConn(eofToUnexpected(err))
 		}
 		switch m.Type {

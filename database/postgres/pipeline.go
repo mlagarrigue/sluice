@@ -272,6 +272,9 @@ func (c *Conn) readPipeline(ctx context.Context, parts []Part, batchRows, batchB
 	for {
 		m, err := c.r.Next()
 		if err != nil {
+			if closed := c.closedAfter(failed, err); closed != nil {
+				return closed
+			}
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
