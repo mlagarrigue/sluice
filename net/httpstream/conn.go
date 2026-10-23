@@ -247,7 +247,7 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 		if errors.Is(perr, errIncomplete) {
 			break
 		}
-		if frame, ok := perr.(streamBody); ok {
+		if frame, ok := errors.AsType[streamBody](perr); ok {
 			// A body that streams ends the batch: the next request lies
 			// behind it. Requests parsed ahead are served first, and the next
 			// pass hands this one over alone.

@@ -23,7 +23,8 @@ func streamCfg() Config {
 // through ReadAll: "<length> <first byte> <last byte>", or the error.
 func readAllHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 	out := make([]Response, b.Len())
-	for i, r := range b.Items {
+	for i := range b.Items {
+		r := &b.Items[i]
 		body, err := r.ReadAll(nil, 1<<20)
 		switch {
 		case err != nil:
