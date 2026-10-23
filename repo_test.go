@@ -448,9 +448,18 @@ func readmePackageRows(t *testing.T, module string) (status map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := regexp.MustCompile("^\\| (`[^`]+`(?: · `[^`]+`)*) \\|.*\\| ([^|]+) \\|$")
+	// The packages are listed in small tables under "### The packages", one
+	// per group; a group's "####" title is the status of its rows.
+	_, section, _ := strings.Cut(string(b), "\n### The packages\n")
+	section, _, _ = strings.Cut(section, "\n### ")
+	row := regexp.MustCompile("^\\| (`[^`]+`(?: · `[^`]+`)*) \\| [^|]+ \\|$")
 	status = map[string]string{}
-	for _, line := range strings.Split(string(b), "\n") {
+	group := ""
+	for _, line := range strings.Split(section, "\n") {
+		if g, ok := strings.CutPrefix(line, "#### "); ok {
+			group = strings.ToLower(g)
+			continue
+		}
 		m := row.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -465,7 +474,7 @@ func readmePackageRows(t *testing.T, module string) (status map[string]string) {
 			default:
 				n = module + "/" + n
 			}
-			status[n] = strings.TrimSpace(m[2])
+			status[n] = group
 		}
 	}
 	return status

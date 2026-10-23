@@ -123,26 +123,44 @@ special "handler" in the middle that would be of another nature.
 ### The packages
 
 The terms below — source, pane, demand, principal, grant — are defined in
-the [glossary](docs/glossary.md).
+the [glossary](docs/glossary.md). Every package is supported but the last
+group's, which are experimental.
 
-| Package | Role | Status |
-|---|---|---|
-| `sluice` | the core: `Stream`, `Batch`, `Source`, and the operators that keep nothing in memory between two batches | supported |
-| `sluice/join` | joins (pairing two streams by a key): they keep one side in memory | supported |
-| `sluice/window` | time windows and regrouping with a delay: they keep time | supported |
-| `sluice/parallel` | work spread over several goroutines, and the decoupling of two stages | supported |
-| `sluice/distinct` | bounded deduplication: it keeps keys | supported |
-| `sluice/diagnostics` | errors, warnings and remedies that travel with the data without stopping the stream | supported |
-| `sluice/web` | an HTTP request's path over `net/http`: bounded reading, authentication, authorisation, clean shutdown | supported |
-| `sluice/gateway` | simultaneous calls grouped into one batch | supported |
-| `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)`, COPY | supported |
-| `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed | supported |
-| `cmd/sluicegen` | generates the code that turns rows into structs | supported |
-| `sluice/probe` | counters to find the stage that makes the others wait | supported |
-| `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens | supported |
-| `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages | supported |
-| `sluice/web/stream` | the request path for the native transport | **experimental** |
-| `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket | **experimental** |
+#### The core and its operators
+
+| Package | Role |
+|---|---|
+| `sluice` | the core: `Stream`, `Batch`, `Source`, and the operators that keep nothing in memory between two batches |
+| `sluice/join` | joins (pairing two streams by a key): they keep one side in memory |
+| `sluice/window` | time windows and regrouping with a delay: they keep time |
+| `sluice/parallel` | work spread over several goroutines, and the decoupling of two stages |
+| `sluice/distinct` | bounded deduplication: it keeps keys |
+
+#### Building an application
+
+| Package | Role |
+|---|---|
+| `sluice/diagnostics` | errors, warnings and remedies that travel with the data without stopping the stream |
+| `sluice/web` | an HTTP request's path over `net/http`: bounded reading, authentication, authorisation, clean shutdown |
+| `sluice/gateway` | simultaneous calls grouped into one batch |
+| `sluice/probe` | counters to find the stage that makes the others wait |
+| `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens |
+
+#### Talking to PostgreSQL and to HTTP clients
+
+| Package | Role |
+|---|---|
+| `sluice/database/postgres` | PostgreSQL by speaking its protocol: `= ANY($1)`, COPY |
+| `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed |
+| `cmd/sluicegen` | generates the code that turns rows into structs |
+| `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages |
+
+#### Experimental
+
+| Package | Role |
+|---|---|
+| `sluice/web/stream` | the request path for the native transport |
+| `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket |
 
 > **In plain terms: "experimental".** The code exists, is tested and
 > measured, but nothing promises it will keep this shape, and it has not
