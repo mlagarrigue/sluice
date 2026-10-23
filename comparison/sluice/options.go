@@ -23,6 +23,10 @@ type options struct {
 	cert   string
 	key    string
 
+	// cpuprofile is where the server's CPU profile goes, written when it
+	// stops; empty writes none. A diagnostic, not an axis of the study.
+	cpuprofile string
+
 	// Axis A — protocol and transport.
 	transport string
 
@@ -86,6 +90,7 @@ func parseOptions(args []string) (options, error) {
 	fs.BoolVar(&o.tls, "tls", true, "serve TLS (R); false is cleartext HTTP/1.1, for local tooling only")
 	fs.StringVar(&o.cert, "cert", "", "TLS certificate file (PEM); empty generates a self-signed ECDSA P-256 certificate at startup")
 	fs.StringVar(&o.key, "key", "", "TLS key file (PEM), with -cert")
+	fs.StringVar(&o.cpuprofile, "cpuprofile", "", "write the server's CPU profile to this file when it stops (SIGINT)")
 
 	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
 		"axis A: nethttp-h1 (R), nethttp-h2, httpstream-h1, httpstream-h2, httpstream-h3 (QUIC, UDP)")

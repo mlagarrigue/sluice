@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 )
 
 func main() {
@@ -25,6 +26,19 @@ func mainErr() int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "sluice-study:", err)
 		return 2
+	}
+	if o.cpuprofile != "" {
+		f, err := os.Create(o.cpuprofile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sluice-study:", err)
+			return 2
+		}
+		defer func() { _ = f.Close() }()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintln(os.Stderr, "sluice-study:", err)
+			return 2
+		}
+		defer pprof.StopCPUProfile()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
