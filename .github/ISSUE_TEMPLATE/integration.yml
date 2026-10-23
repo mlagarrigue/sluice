@@ -8,8 +8,9 @@ body:
         Sluice.go reads from and writes to external systems through
         *providers* (a source of batches) and *consumers* (a sink of
         batches). Only PostgreSQL has one today. This template is how the
-        next ones get chosen; docs/README.md says what exists and what the
-        batch model asks of an integration.
+        next ones get chosen; docs/README.md ("I want to connect another
+        system") says what exists and what the batch model asks of a
+        connector.
 
   - type: textarea
     id: dependencies

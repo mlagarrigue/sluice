@@ -31,11 +31,34 @@ place.
   batch as the unit of transport, stopping, diagnostics, joins.
 - [Decisions (ADR)](design/adr/) — every structural decision: the problem,
   the decision, the rationale.
+- [Security — verifiable properties](design/architecture.md#security--verifiable-properties)
+  — the fourteen guarantees, each with the check that holds it.
 - [Measurements](benchmarks.md) — the method, the ceiling, the current
   figures.
 - [QUIC interop results](https://github.com/mlagarrigue/sluice/tree/interop-results)
   — the latest weekly pass of the QUIC Interop Runner, sluice against every
   implementation, peer by case.
+
+## I want to connect another system
+
+A **connector** links Sluice.go to an external system (a database, a
+queue, a file format, a protocol). It is a **provider** when it produces
+batches (a `Source`), a **consumer** when it receives them (a function that
+takes batches, like the PostgreSQL connector's `COPY`), or both. Only
+PostgreSQL has one today ([guide](guide/postgres.md)); what is missing is in
+[Limits](guide/limits.md).
+
+What the batch model asks of a connector:
+
+- whole batches, never one element at a time: one round trip per batch
+  where the system allows it (`= ANY($1)`, `COPY`);
+- a bound the caller states, never memory that grows with the data
+  (guarantees S1 and S11 in
+  [Security — verifiable properties](design/architecture.md#security--verifiable-properties));
+- the stop honoured: a consumer that stops stops the provider, and
+  resources are released on every path (S9, S10).
+
+An integration is requested with the "Integration request" issue template.
 
 ## I am contributing
 
