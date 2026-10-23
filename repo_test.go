@@ -725,13 +725,14 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 		docs.Write(b)
 	}
 	text := docs.String()
-	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", ".claude", ".git"}
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop"}
 	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if slices.Contains(skip, d.Name()) {
+			// Hidden directories are not packages of the module.
+			if slices.Contains(skip, d.Name()) || (p != "." && strings.HasPrefix(d.Name(), ".")) {
 				return filepath.SkipDir
 			}
 			return nil
