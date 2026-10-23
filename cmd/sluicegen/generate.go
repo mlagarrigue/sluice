@@ -364,6 +364,13 @@ func snakeCase(s string) string {
 	return b.String()
 }
 
+// Hydrate's loop runs row by row, every column of a row before the next row,
+// rather than column by column across the batch: measured when the generator
+// was first written, 31.2 ns a row against 34.7, and 26.3 against 37.6 on a
+// batch of one. The reason stays here, not in the generated comment, which
+// is read in the user's repository, where neither the measurement nor this
+// project's documents are.
+//
 // The import block below is fixed, and that is a property of the output
 // rather than an oversight: generated code infers every value's type with
 // `:=`, so it never names time.Time or any other type a field might have. A
@@ -425,9 +432,6 @@ func Bind{{.Type}}(fields []postgres.Field) ({{.Type}}Plan, error) {
 
 // Hydrate{{.Type}} appends one batch of rows to dst.
 //
-// The loop is row-major, which measurement chose over the columnar shape
-// §8.6 originally specified: 31.2 ns/row against 34.7, and 26.3 against 37.6
-// on a batch of one (measured, see docs/benchmarks.md).
 // On an error dst is returned as it stood before this batch — capacity and
 // prior contents intact — so a caller that logs and moves on keeps its reuse
 // buffer rather than having it replaced by nil.

@@ -150,9 +150,6 @@ func BindProduct(fields []postgres.Field) (ProductPlan, error) {
 
 // HydrateProduct appends one batch of rows to dst.
 //
-// The loop is row-major, which measurement chose over the columnar shape
-// §8.6 originally specified: 31.2 ns/row against 34.7, and 26.3 against 37.6
-// on a batch of one (measured, see docs/benchmarks.md).
 // On an error dst is returned as it stood before this batch — capacity and
 // prior contents intact — so a caller that logs and moves on keeps its reuse
 // buffer rather than having it replaced by nil.
