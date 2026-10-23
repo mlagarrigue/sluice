@@ -57,6 +57,9 @@ func Example_anyArray() {
 // is not a slow option but a defect at scale: nothing is durable until the
 // end, restart is all or nothing, and a long transaction pins the vacuum
 // horizon for the whole database.
+//
+// Like the other examples here that reach a server, it has no "// Output:"
+// line: go test compiles it and does not run it.
 func Example_copy() {
 	conn := mustConnect()
 	defer func() { _ = conn.Close() }()
@@ -119,6 +122,8 @@ func ExampleError() {
 // nothing of it stays on the connection. Everything from the startup packet
 // onwards is this package's, including the SCRAM-SHA-256 exchange the server
 // will almost certainly ask for.
+//
+// Compiled but not run, for the same reason: it needs a server.
 func ExampleConnect() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
