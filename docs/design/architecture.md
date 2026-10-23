@@ -1168,7 +1168,9 @@ for the best effort-to-gain ratio in the project.
 > COPY, rows, CopyDone, COMMIT — and `RowsPerTx` drives a loop that re-issues
 > the COPY. That consequence is worth stating because it is what makes the
 > parameter structural rather than cosmetic.
->
+
+#### Delivery, at least once
+
 > **Delivery is at-least-once, and this is stated rather than implied.** A copy
 > interrupted after its third commit leaves three transactions' rows and no
 > record of where it stopped; the caller owns the idempotence. The connector
@@ -1184,6 +1186,8 @@ for the best effort-to-gain ratio in the project.
 > connector cannot do it for the caller, since only the caller knows which
 > indexes may be dropped — but the sentence belongs here, where it costs one
 > line and otherwise costs a rediscovery.
+
+#### The framing layer
 
 > **The framing layer is where S8 is kept or lost.** `internal/pgwire` turns
 > a byte stream into messages and back, on the standard library alone.
@@ -1205,7 +1209,9 @@ for the best effort-to-gain ratio in the project.
 > one. And the length prefix is read as the signed `int32` the protocol
 > declares, so a negative length is reported as malformed rather than as an
 > implausibly large message.
->
+
+#### Results decoded flat
+
 > **The message layer above it decodes results flat, which is
 > [hydration](#hydration)'s layout arriving early.** `Rows` packs every field of a batch end to end in one buffer with a
 > table of offsets beside it, rather than a slice per row or per field: a
@@ -1231,7 +1237,9 @@ for the best effort-to-gain ratio in the project.
 > writer/reader round trip, `ErrorResponse`, `RowDescription`, `DataRow`, the
 > scalar decoders and the array decoder — run at ~62 million executions with no
 > crash and no allocation past the limit.
->
+
+#### Codecs checked by golden vectors
+
 > **The binary codecs are checked by golden vectors, and by `pgx` from the
 > separate `benchmarks` module.** Round-tripping every codec against `pgx`
 > as a test-only import of the root module would put `pgx` in every
@@ -1248,7 +1256,9 @@ for the best effort-to-gain ratio in the project.
 > not values a person derives by eye, so **a golden vector is only as good as
 > the independence of its derivation**, and one that cannot be derived
 > structurally says where it came from — the test file does.
->
+
+#### `= ANY($1)`, end to end
+
 > **`= ANY($1)` works end to end, and the pull reaches the server.** `Conn.Query`
 > sends Parse, Bind, Describe and Execute together — [Pipelining and COPY](#pipelining-and-copy)'s pipelining, two
 > round trips rather than eleven — and returns its rows as a
@@ -1276,7 +1286,9 @@ for the best effort-to-gain ratio in the project.
 > carries on, while a **framing** error does not, because the position in the
 > stream is no longer known. The second marks the connection broken and every
 > later query refuses rather than pretends.
->
+
+#### Exact `numeric`
+
 > **`numeric` is exact.** Go has no decimal type and every approximation
 > loses what the column was chosen to keep — both true, and neither an
 > obstacle once a representation is chosen deliberately. The value is kept
@@ -1328,7 +1340,9 @@ reflection works **row by row and field by field**, which breaks vectorization.
 > are genuinely for: extracting a column, which is what feeds the next
 > `= ANY($1)` in a batched pipeline. Their documentation says which of the two
 > they are good at.
->
+
+#### The generator, `cmd/sluicegen`
+
 > **The generator is `cmd/sluicegen`**, and two properties of its output
 > matter more than its speed. **Columns bind by name, never by position**: a
 > SELECT whose two `bigint` columns are reordered would otherwise write `total`
