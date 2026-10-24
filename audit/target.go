@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
+	"strings"
 )
 
 // A Target is what an audit was pointed at. One run may hold several: a
@@ -31,6 +33,18 @@ type Target struct {
 	// that came out of it is another source and another rule.
 	DockerfilePath string
 	Dockerfile     string
+
+	// Root is where the host's own files are read from, "/" on the machine
+	// being audited. A test gives it a directory it seeded: a tool that
+	// can only be tried against the machine running it cannot be tried at
+	// all, and the one value that matters — a setting too low — is one
+	// nobody wants to set on their own machine to find out.
+	Root string
+
+	// PID is the process whose own limits and environment are read, zero
+	// when none was named. Its limits are not the host's: a server started
+	// by a unit file with its own LimitNOFILE answers for itself.
+	PID int
 }
 
 // A Spec names what to read. Every field is optional, and a Target with
@@ -40,6 +54,15 @@ type Spec struct {
 	Binary     string
 	Module     string
 	Dockerfile string
+
+	// Root is the host's filesystem root to read, "/" on the machine
+	// itself. Empty means no host is read at all, so the rules that read
+	// one stay silent.
+	Root string
+
+	// PID names a process whose limits and environment to read. Zero means
+	// none.
+	PID int
 }
 
 // Open reads what a [Spec] names. Anything named must be readable: a path
@@ -66,7 +89,50 @@ func Open(s Spec) (*Target, error) {
 		}
 		t.DockerfilePath, t.Dockerfile = s.Dockerfile, string(b)
 	}
+	if s.Root != "" {
+		info, err := os.Stat(s.Root)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%s: not a directory", s.Root)
+		}
+		t.Root = s.Root
+	}
+	t.PID = s.PID
 	return t, nil
+}
+
+// hostFile reads a file of the host under [Target.Root], and says whether
+// it was there. A file absent is not a setting at zero: a kernel without
+// a module has no knob for it, and a rule must stay silent rather than
+// report a bound nobody set.
+func (t *Target) hostFile(rel string) (string, bool) {
+	if t.Root == "" {
+		return "", false
+	}
+	b, err := os.ReadFile(filepath.Join(t.Root, rel)) //nolint:gosec // G304: under the root the caller named
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
+}
+
+// hostInt reads a single number of the host.
+func (t *Target) hostInt(rel string) (int64, bool) {
+	text, ok := t.hostFile(rel)
+	if !ok {
+		return 0, false
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return 0, false // a knob that exists and holds nothing says nothing
+	}
+	n, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // setting returns a build setting and whether the toolchain recorded it.

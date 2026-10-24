@@ -59,6 +59,26 @@ func TestVerdictsFollowWhatTheAnalysisProved(t *testing.T) {
 		})
 	}
 
+	// The same advisory reported at three levels is one line, at the
+	// strongest verdict: govulncheck emits a finding per level it reached,
+	// and judging one thing three ways leaves the reader to pick.
+	threeLevels := strings.Join([]string{
+		`{"osv":{"id":"GO-2024-0005","summary":"One advisory, three traces"}}`,
+		`{"finding":{"osv":"GO-2024-0005","fixed_version":"v1.1.0","trace":[{"module":"example.com/w","version":"v1.0.0"}]}}`,
+		`{"finding":{"osv":"GO-2024-0005","fixed_version":"v1.1.0","trace":[{"module":"example.com/w","version":"v1.0.0","package":"example.com/w/p"}]}}`,
+		`{"finding":{"osv":"GO-2024-0005","fixed_version":"v1.1.0","trace":[{"module":"example.com/w","version":"v1.0.0","package":"example.com/w/p","function":"Do"}]}}`,
+	}, "\n")
+	judged, err := judgeVulns([]byte(threeLevels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(judged) != 1 || judged[0].Verdict != VerdictApplies {
+		t.Fatalf("%+v: want one line at %q", judged, VerdictApplies)
+	}
+	if !strings.Contains(judged[0].Because, "example.com/w/p.Do") {
+		t.Errorf("the strongest verdict lost what proved it: %q", judged[0].Because)
+	}
+
 	// An advisory the stream loaded but never reported is not a finding:
 	// the database holds hundreds of them, and a report that listed every
 	// one as "does not apply" would bury the three that matter.
@@ -98,8 +118,8 @@ func TestEveryCVEFindingCarriesItsVerdictAndAdvisory(t *testing.T) {
 		if f.Why == "" {
 			t.Errorf("%s: a verdict with nothing behind it", f.Current)
 		}
-		if !strings.HasPrefix(f.Doc, "https://pkg.go.dev/vuln/GO-") && !strings.HasPrefix(f.Doc, "https://go.dev/doc/security") {
-			t.Errorf("%s: the link %q is not the advisory's page", f.Current, f.Doc)
+		if !strings.HasPrefix(f.Doc, "https://pkg.go.dev/vuln/GO-") {
+			t.Errorf("%s: the link %q is not the advisory's own page", f.Current, f.Doc)
 		}
 	}
 	// And the same selection without the tools source reads nothing at all.

@@ -111,7 +111,7 @@ func judgeVulns(stream []byte) ([]vulnFinding, error) {
 		aliases []string
 	}
 	advisories := map[string]osvEntry{}
-	var out []vulnFinding
+	strongest := map[string]vulnFinding{}
 
 	dec := json.NewDecoder(strings.NewReader(string(stream)))
 	for {
@@ -155,11 +155,35 @@ func judgeVulns(stream []byte) ([]vulnFinding, error) {
 				v.Verdict = VerdictUndetermined
 				v.Because = "govulncheck reported the advisory with no trace to judge it by"
 			}
-			out = append(out, v)
+			// One line per advisory, at its strongest verdict. govulncheck
+			// reports a finding per level it reached — module, package,
+			// symbol — so the same advisory arrives two or three times; a
+			// report that printed each of them would judge one thing three
+			// ways and leave the reader to pick.
+			if before, seen := strongest[v.ID]; !seen || rank(v.Verdict) > rank(before.Verdict) {
+				strongest[v.ID] = v
+			}
 		}
+	}
+	out := make([]vulnFinding, 0, len(strongest))
+	for id := range strongest {
+		out = append(out, strongest[id])
 	}
 	slices.SortFunc(out, func(a, b vulnFinding) int { return strings.Compare(a.ID, b.ID) })
 	return out, nil
+}
+
+// rank orders the verdicts, so that the strongest one an analysis reached
+// is the one published.
+func rank(verdict string) int {
+	switch verdict {
+	case VerdictApplies:
+		return 3
+	case VerdictUndetermined:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // requiresSomething reports whether a go.mod has a require directive. The

@@ -253,7 +253,15 @@ func Run(sel Selection, answers Answers, t *Target) ([]Finding, error) {
 			continue
 		}
 		for _, f := range r.Check(t, answers) {
-			f.Rule, f.Doc = r.Name, r.Doc
+			f.Rule = r.Name
+			if f.Doc == "" {
+				// The rule's link is the default, not the law: an advisory
+				// has a page of its own, and a finding that named it must
+				// keep it. Overwriting it sent every CVE to the same
+				// general page, which a reader cannot check anything
+				// against.
+				f.Doc = r.Doc
+			}
 			if f.Goal == "" {
 				f.Goal = r.Needs[Goals][0]
 			}

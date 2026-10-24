@@ -50,6 +50,8 @@ sets one.
 | `gobuild/*` | the binary | what the build fixed: `-trimpath`, `CGO_ENABLED`, `GOAMD64`, the profile, the toolchain, the revision stamped |
 | `deps/*` | the module, and `govulncheck` | the requirements, their sums, and every advisory with its verdict |
 | `docker/*` | the Dockerfile's text | stages, the bases and their digests, the runtime image, `USER`, secrets in layers, `.dockerignore` |
+| `linux/*` | `/proc` and `/sys` under `-root` | the listen and device queues, the UDP buffers, the ephemeral ports, connection tracking, swap, hugepages, the CPU governor, and the process's own `nofile` under `-pid` |
+| `go/*` | the cgroup and the module's `go` directive | whether the runtime will read the CPU quota, or use every core of the machine |
 | `-sbom` | the binary | the bill of materials: the main module, the toolchain, every dependency linked |
 
 **The build is read in the binary, not in the files that built it.** A
@@ -66,6 +68,18 @@ path was, **does not apply** when the module is only required — and each
 verdict says what decided it. A machine without the tool produces a
 finding that says so, because a report silent about vulnerabilities reads
 as a report that found none.
+
+Every reason says where the value shows up under load, because that is
+what makes it actionable: a listen queue too short is `ListenOverflows` in
+`nstat`, not an abstraction. And a knob the kernel does not have is not a
+knob set to zero — a host that tracks no connection has no
+`nf_conntrack_max`, and the rule stays silent rather than filling the
+report with settings nobody set.
+
+The host is read under `-root`, which is `/` on the machine itself and a
+seeded directory in the tests. That is deliberate: the settings worth
+reporting are the ones nobody would apply to their own machine to see the
+report, so they are tried against a root written for the purpose.
 
 ## What it does not do
 

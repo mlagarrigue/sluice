@@ -6,6 +6,7 @@
 // This first form reads a Go binary's build record:
 //
 //	go run -C audit ./cmd/audit -binary ./sluice-interop
+//	go run -C audit ./cmd/audit -root / -pid 1234 -goals performance
 //	go run -C audit ./cmd/audit -binary ./x -goals security -output json
 //
 // Every parameter is an axis, and every combination of them is valid. An
@@ -44,6 +45,8 @@ func run(args []string, out *os.File) error {
 	binary := fs.String("binary", "", "the Go binary to read")
 	module := fs.String("module", "", "a directory holding a go.mod, whose requirements and advisories to read")
 	dockerfile := fs.String("dockerfile", "", "a Dockerfile to read as text")
+	root := fs.String("root", "", `the host's filesystem root to read, "/" for this machine`)
+	pid := fs.Int("pid", 0, "a process whose own limits to read, under -root")
 	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
@@ -66,8 +69,8 @@ func run(args []string, out *os.File) error {
 		}
 		return nil
 	}
-	if *binary == "" && *module == "" && *dockerfile == "" {
-		return errors.New("name what to read: -binary, -module or -dockerfile")
+	if *binary == "" && *module == "" && *dockerfile == "" && *root == "" {
+		return errors.New("name what to read: -binary, -module, -dockerfile or -root")
 	}
 
 	sel := audit.Selection{}
@@ -76,7 +79,9 @@ func run(args []string, out *os.File) error {
 			sel[a] = strings.Split(*v, ",")
 		}
 	}
-	target, err := audit.Open(audit.Spec{Binary: *binary, Module: *module, Dockerfile: *dockerfile})
+	target, err := audit.Open(audit.Spec{
+		Binary: *binary, Module: *module, Dockerfile: *dockerfile, Root: *root, PID: *pid,
+	})
 	if err != nil {
 		return err
 	}
