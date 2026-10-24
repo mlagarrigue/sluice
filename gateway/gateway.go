@@ -172,6 +172,22 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+// Validate reports what [New] would refuse in c — a Size or a Within that is
+// not positive — and nil when it would accept it. New panics on it, since a
+// configuration written in the code is a programmer's mistake; one read at
+// deployment, from the environment or a file, is checked with Validate
+// before the program starts serving, and refused as an error.
+func (c Config) Validate() error {
+	var errs []error
+	if c.Size <= 0 {
+		errs = append(errs, errors.New("gateway: Config.Size must be positive — it is the largest batch the pipeline sees"))
+	}
+	if c.Within <= 0 {
+		errs = append(errs, errors.New("gateway: Config.Within must be positive — it is the latency ceiling calls are held under"))
+	}
+	return errors.Join(errs...)
+}
+
 // Call is one request travelling through the pipeline, and the way back to
 // the goroutine waiting for it.
 //
@@ -259,11 +275,8 @@ func New[In, Out any](cfg Config, pipeline func(sluice.Stream[*Call[In, Out]])) 
 	if pipeline == nil {
 		panic("gateway: New requires a non-nil pipeline")
 	}
-	if cfg.Size <= 0 {
-		panic("gateway: Config.Size must be positive — it is the largest batch the pipeline sees")
-	}
-	if cfg.Within <= 0 {
-		panic("gateway: Config.Within must be positive — it is the latency ceiling calls are held under")
+	if err := cfg.Validate(); err != nil {
+		panic(err.Error())
 	}
 	size := cfg.Size
 

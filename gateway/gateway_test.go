@@ -446,6 +446,13 @@ func TestNewPanicsAsDocumented(t *testing.T) {
 		{"negative Within", Config{Size: 8, Within: -time.Millisecond}, pipeline, "Within must be positive"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Validate refuses the same configurations with the same words,
+			// as an error a deployment can report before it serves.
+			if tc.pipeline != nil {
+				if err := tc.cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("Validate = %v, want an error containing %q", err, tc.want)
+				}
+			}
 			defer func() {
 				msg, _ := recover().(string)
 				if !strings.Contains(msg, tc.want) {
@@ -454,6 +461,9 @@ func TestNewPanicsAsDocumented(t *testing.T) {
 			}()
 			New(tc.cfg, tc.pipeline)
 		})
+	}
+	if err := usable.Validate(); err != nil {
+		t.Errorf("a usable configuration: Validate = %v", err)
 	}
 	drain := func(s sluice.Stream[*Call[int, int]]) {
 		s(func(sluice.Batch[*Call[int, int]]) bool { return true })
