@@ -413,3 +413,56 @@ func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
 		t.Errorf("an empty page from key %d was accepted", other.key)
 	}
 }
+
+// listPage is a page as the study's server writes it: rows from+1 ..
+// from+n, id, total 7·id, label "order-id".
+func listPage(from int64, n int) []byte {
+	b := fmt.Appendf(nil, `{"from":%d,"limit":%d,"items":[`, from, listLimit)
+	for i := range n {
+		id := from + int64(i) + 1
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = fmt.Appendf(b, `{"id":%d,"total":%d,"label":"order-%d"}`, id, 7*id, id)
+	}
+	return append(b, "]}"...)
+}
+
+// CMP-02: the list's cheap control is one validation pass and one scan; it
+// must refuse what the encoding/json control refused.
+func TestCheckListRefusesWhatItMust(t *testing.T) {
+	rq := request{kind: list, keyField: "from", key: 10}
+	for _, tc := range []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{"a full page", string(listPage(10, 1000)), true},
+		{"spaces after the colons", `{"from": 10, "items": [{"id": 11}, {"id": 12}]}`, true},
+		{"another bound", string(listPage(11, 3)), false},
+		{"ids that go back", `{"from":10,"items":[{"id":12},{"id":11}]}`, false},
+		{"an id at the bound", `{"from":10,"items":[{"id":10}]}`, false},
+		{"an empty page", `{"from":10,"items":[]}`, false},
+		{"no items", `{"from":10}`, false},
+		{"no bound", `{"items":[{"id":11}]}`, false},
+		{"cut short", string(listPage(10, 3)[:40]), false},
+		{"an id inside a label is not an id", `{"from":10,"items":[{"id":12,"label":"x\"id\":5"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := check(rq, []byte(tc.body)); (err == nil) != tc.ok {
+				t.Errorf("check = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
+
+func BenchmarkCheckList(b *testing.B) {
+	body := listPage(10, 1000)
+	rq := request{kind: list, keyField: "from", key: 10}
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		if err := check(rq, body); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

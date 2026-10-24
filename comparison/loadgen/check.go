@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strconv"
 )
 
 // listLimit is the list scenario's page: 1 000 rows (§2.2).
@@ -97,6 +99,9 @@ type orderRow struct {
 // above its bound and the page is full. On the sampled 1 %, the whole
 // document is compared to the one the dataset predicts.
 func check(rq request, body []byte) error {
+	if rq.kind == list && !rq.full {
+		return checkList(rq, body)
+	}
 	if rq.keyField == "" {
 		var v any
 		if err := json.Unmarshal(body, &v); err != nil {
@@ -202,4 +207,69 @@ func equalJSON(got any, want []byte) bool {
 		return false
 	}
 	return bytes.Equal(x, y)
+}
+
+// checkList is a list's cheap control in one validation pass and one scan.
+// encoding/json took three passes over the ~50 KB page and reflected a
+// thousand rows, about 75 % of the generator's CPU on lists (CMP-02); here
+// json.Valid proves the body parses to the end, and the scan reads the
+// bound and the ids in order. A key is matched with its quotes and colon,
+// so an id inside a label, where the quotes are escaped, is not one. The
+// sampled 1 % still goes through validateList, which decodes every row.
+func checkList(rq request, body []byte) error {
+	if !json.Valid(body) {
+		return errors.New("body is not JSON")
+	}
+	from, _, ok := intAfter(body, keyFrom)
+	if !ok {
+		return fmt.Errorf("field %q: missing or not an integer", rq.keyField)
+	}
+	if from != rq.key {
+		return fmt.Errorf("asked for key %d, answer carries %d", rq.key, from)
+	}
+	at := bytes.Index(body, keyItems)
+	if at < 0 {
+		return errors.New("items: missing")
+	}
+	rest, prev, n := body[at+len(keyItems):], rq.key, 0
+	for {
+		id, after, ok := intAfter(rest, keyID)
+		if !ok {
+			break
+		}
+		if id <= prev {
+			return fmt.Errorf("list from %d: ids not strictly increasing at %d", rq.key, id)
+		}
+		rest, prev, n = after, id, n+1
+	}
+	// Empty at the end of the table and nowhere else (see check).
+	if n == 0 && !rq.atEnd {
+		return fmt.Errorf("list from %d: empty", rq.key)
+	}
+	return nil
+}
+
+var (
+	keyFrom  = []byte(`"from":`)
+	keyItems = []byte(`"items":`)
+	keyID    = []byte(`"id":`)
+)
+
+// intAfter finds key in b and reads the integer after it, spaces allowed
+// before; it returns the rest of b past the integer.
+func intAfter(b, key []byte) (v int64, rest []byte, ok bool) {
+	i := bytes.Index(b, key)
+	if i < 0 {
+		return 0, nil, false
+	}
+	b = bytes.TrimLeft(b[i+len(key):], " \t\r\n")
+	end := 0
+	for end < len(b) && (b[end] == '-' && end == 0 || b[end] >= '0' && b[end] <= '9') {
+		end++
+	}
+	v, err := strconv.ParseInt(string(b[:end]), 10, 64)
+	if err != nil {
+		return 0, nil, false
+	}
+	return v, b[end:], true
 }
