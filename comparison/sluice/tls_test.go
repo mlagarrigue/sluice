@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ import (
 // summary written at startup says which.
 func TestTLSResume(t *testing.T) {
 	for _, resume := range []bool{false, true} {
-		args := []string{"-transport", transportNetHTTPH2}
+		args := dbArgs("-transport", transportNetHTTPH2)
 		if resume {
 			args = append(args, "-tls-resume")
 		}
@@ -64,10 +65,11 @@ func TestTLSResume(t *testing.T) {
 			t.Errorf("-tls-resume %v: resumed %v, want [false %v]", resume, resumed, resume)
 		}
 	}
-	if _, err := parseOptions([]string{"-tls=false", "-tls-resume"}); err == nil {
-		t.Error("-tls-resume in clear accepted")
+	if _, err := parseOptions(dbArgs("-tls=false", "-tls-resume")); err == nil ||
+		!strings.Contains(err.Error(), "-tls-resume needs -tls") {
+		t.Errorf("-tls-resume in clear: %v", err)
 	}
-	o, err := parseOptions([]string{"-transport", transportHTTPStreamH3, "-tls-resume"})
+	o, err := parseOptions(dbArgs("-transport", transportHTTPStreamH3, "-tls-resume"))
 	if err != nil {
 		t.Fatal(err)
 	}

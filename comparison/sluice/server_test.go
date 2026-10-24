@@ -86,6 +86,14 @@ func requirePG(tb testing.TB) {
 	}
 }
 
+// dbArgs names a database parseOptions will not dial, for the tests that
+// check the options alone. Without it they read $SLUICE_PG, which the
+// devcontainer sets and the runner does not: the same test then refuses for
+// the wrong reason, or fails where it passed here.
+func dbArgs(args ...string) []string {
+	return append([]string{"-db", "x:1", "-db-user", "u"}, args...)
+}
+
 type server struct {
 	url    string
 	client *http.Client
@@ -447,12 +455,12 @@ func TestUnimplementedVariantsRefuse(t *testing.T) {
 		{"-transport", "nope"},
 	}
 	for _, args := range refused {
-		_, err := parseOptions(append([]string{"-db", "x:1", "-db-user", "u"}, args...))
+		_, err := parseOptions(dbArgs(args...))
 		if err == nil {
 			t.Errorf("%v: accepted", args)
 		}
 	}
-	if _, err := parseOptions([]string{"-db", "x:1", "-db-user", "u"}); err != nil {
+	if _, err := parseOptions(dbArgs()); err != nil {
 		t.Errorf("R refused: %v", err)
 	}
 }
