@@ -32,7 +32,7 @@ updates:
   # The base images are pinned by digest (TestDockerImagesArePinned); these
   # entries move the digests, the interop endpoint's and the devcontainer's.
   - package-ecosystem: docker
-    directories: ["/interop", "/.devcontainer"]
+    directories: ["/interop", "/.devcontainer", "/comparison/sluice", "/comparison/loadgen"]
     schedule:
       interval: weekly
     # The golang image follows the floor go.mod declares; raising it is the

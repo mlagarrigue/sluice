@@ -1,7 +1,9 @@
-# The only image built from this tree is the QUIC Interop Runner endpoint
-# (interop/Dockerfile): it needs the Go sources of both modules and the
-# container's entry script, nothing else. Everything is excluded by
-# default so that nothing outside those files can reach an image.
+# Three images are built from this tree: the QUIC Interop Runner endpoint
+# (interop/Dockerfile), and the comparison study's server and load
+# generator (comparison/sluice/Dockerfile, comparison/loadgen/Dockerfile).
+# They need the Go sources of their modules and the endpoint's entry
+# script, nothing else. Everything is excluded by default so that nothing
+# outside those files can reach an image.
 *
 !**/*.go
 !**/go.mod

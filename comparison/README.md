@@ -88,6 +88,39 @@ curl -k https://127.0.0.1:8443/orders/42
 Without `-cert`/`-key` the server generates a self-signed ECDSA P-256
 certificate at startup; the campaign passes a fixed one.
 
+### In a container
+
+```
+docker build -f comparison/sluice/Dockerfile --target opt -t sluice-study:opt .   # from the repository root
+docker build -f comparison/sluice/Dockerfile --target doc -t sluice-study:doc .
+docker build -f comparison/loadgen/Dockerfile -t sluice-loadgen .
+docker run -d --name study --network <net> -e PGHOST=… -e PGUSER=… -e PGPASSWORD -e PGDATABASE=… sluice-study:opt
+docker run --rm --network <net> sluice-loadgen -conformance https://<reference>:8443 -url https://study:8443
+```
+
+Two versions of the server's image (§1.4, §2.4): `doc` is what Docker's
+guide for Go writes, one stage on the Go image (1.6 GB); `opt` is the
+static binary alone on a distroless image, run as a user with no rights
+(34 MB). Both are configured by the contract's variables alone and listen
+on `0.0.0.0:8443`, TCP and UDP; the generator's image is the static
+binary on the same base. Every base is pinned by digest, as
+`interop/Dockerfile`'s, and Dependabot moves the pins. Both server images
+answer like `go run` does: `-conformance` against it, 300 requests under
+gzip, conformant.
+
+A short container's output can be lost on the way back from `docker run`
+on some engines; `docker run -d`, `docker wait`, then `docker logs` reads
+it whole.
+
+What a developer's machine under WSL2 offers the local chain (§0),
+probed on a 6.18 kernel with Docker 29: `--cpuset-cpus` holds (a container
+on core 2 sees one CPU, `cpuset.cpus.effective` 2); `netem` works from a
+container started with `--cap-add NET_ADMIN` as root (a 20 ms delay on
+`eth0` reads +20 ms on a TCP connect); so do the `ingress` qdisc, `u32`,
+`mirred` and an `ifb` device carrying `netem` loss, which the inbound
+direction needs; a sibling container on the same Docker network is
+reachable by name. The kernel loads these modules on first use.
+
 ### Validating it
 
 ```
