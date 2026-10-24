@@ -192,14 +192,14 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// on windows too small for that it is off and bodies arrive whole.
 	credit := quic.CreditOnDelivery
 	streamWindow, connWindow := uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack, uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
-	if cfg.MaxStreamedBodyBytes > 0 {
+	if cfg.BodyDelivery == BodyStreamed {
 		streamWindow = uint64(cfg.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
 		connWindow = streamWindow
 	}
 	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote >= streamWindow && p.InitialMaxData >= connWindow {
 		credit = quic.CreditOnRelease
 		a.Credit = func(id, n uint64) { h3ReleaseStreamBytes(c, id, n) }
-		if cfg.MaxStreamedBodyBytes > 0 {
+		if cfg.BodyDelivery == BodyStreamed {
 			a.CreditConn = c.ReleaseConnectionCredit
 			a.CreditStream = c.ReleaseStreamCredit
 			a.Interim = func(id, fieldSection uint64) { writeH3Interim(c, id, fieldSection, writeBoundOf(cfg)) }
@@ -734,7 +734,7 @@ func (c Config) TransportParameters() (quic.TransportParameters, error) {
 	p := quic.DefaultParameters()
 	p.MaxIdleTimeout = c.IdleTimeout
 	p.InitialMaxData = uint64(4*c.MaxBodyBytes+c.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config
-	if c.MaxStreamedBodyBytes > 0 {
+	if c.BodyDelivery == BodyStreamed {
 		// A streamed body is held to the stream window, not to MaxBodyBytes:
 		// the transport's own window, or the room for a head if that is
 		// larger.

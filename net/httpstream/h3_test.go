@@ -1305,13 +1305,13 @@ func TestH3UploadLargerThanTheInitialWindows(t *testing.T) {
 	t.Cleanup(func() { <-serverDone })
 	go func() {
 		defer close(serverDone)
-		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), mustTransportParameters(Config{}))
+		conn, err := acceptOne(t, serverPC, h3ServerTLS(t), mustTransportParameters(Config{BodyDelivery: BodyWhole}))
 		if err != nil {
 			serverUp <- err
 			return
 		}
 		serverUp <- nil
-		_ = ServeH3Conn(t.Context(), conn, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		_ = ServeH3Conn(t.Context(), conn, Config{BodyDelivery: BodyWhole}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			res := make([]Response, 0, b.Len())
 			for _, r := range b.Items {
 				select {

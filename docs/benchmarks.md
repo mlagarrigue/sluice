@@ -487,8 +487,8 @@ path on these stages, stays open (`docs/guide/limits.md`).
 
 ## Request bodies, whole or streamed
 
-`Config.MaxStreamedBodyBytes` at zero delivers a request body whole in
-`Request.Body`; positive, it streams what one read did not bring whole. A
+`Config.BodyDelivery` streams a request body by default and delivers it
+whole in `Request.Body` under `BodyWhole`. A
 body already whole in the read that brought its headers stays in
 `Request.Body` and stays batched with its neighbours either way
 ([ADR 0009](design/adr/0009-request-contract.md), article 4), so what this

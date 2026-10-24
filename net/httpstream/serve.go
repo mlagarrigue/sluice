@@ -67,13 +67,15 @@ import (
 //     Cookie into one field per pair for compression's sake; they reach the
 //     handler joined again by "; " as one field, which is what HTTP/1.1
 //     delivers, and count as one field under [Config.MaxHeaders].
-//   - **The body is complete and bounded, or streamed when asked for.** An
-//     element handed over is a whole request: its body has arrived in full,
-//     under [Config.MaxBodyBytes], with no partial reads to finish and no
-//     framing left to check. When [Config.MaxStreamedBodyBytes] turns
-//     streaming on, a body that was not whole in the read
-//     that brought its headers arrives through [Request.Stream] instead,
-//     consumed within the call; [Request.ReadAll] returns either form whole.
+//   - **The body is streamed, or complete and bounded.** By default
+//     ([Config.BodyDelivery] at [BodyStreamed]) a body that was not whole
+//     in the read that brought its headers arrives through
+//     [Request.Stream], consumed within the call, with [Request.Body] nil.
+//     Under [BodyWhole] an element handed over is a whole request: its body
+//     has arrived in full, under [Config.MaxBodyBytes], with no partial
+//     reads to finish and no framing left to check. [Request.ReadAll]
+//     returns either form whole, so a handler written against it needs no
+//     change.
 //
 // # The context
 //

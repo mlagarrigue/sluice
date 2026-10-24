@@ -60,6 +60,11 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 		{"MaxHeaderBytes", Config{MaxHeaderBytes: -1}, "-1"},
 		{"MaxHeaders", Config{MaxHeaders: -1}, "-1"},
 		{"MaxBodyBytes", Config{MaxBodyBytes: -1}, "-1"},
+		{"MaxStreamedBodyBytes", Config{MaxStreamedBodyBytes: -1}, "-1"},
+		// BodyDelivery names a form, so every value that is neither is out
+		// of range, on both sides of the two.
+		{"BodyDelivery", Config{BodyDelivery: -1}, "-1"},
+		{"BodyDelivery", Config{BodyDelivery: BodyWhole + 1}, "2"},
 		{"MaxRequestsPerBatch", Config{MaxRequestsPerBatch: -1}, "-1"},
 		{"MaxConcurrentStreams", Config{MaxConcurrentStreams: -1}, "-1"},
 		{"MaxRequestsPerConn", Config{MaxRequestsPerConn: -1}, "-1"},

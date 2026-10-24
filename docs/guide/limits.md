@@ -158,14 +158,15 @@ Three reasons come up, and the difference matters:
   `web.TryHandler` a sentinel panic into the answer the caller writes. The experimental
   `web/stream` path has its own router (`stream.NewRouter`), because
   `http.ServeMux` does not see a batch.
-- **`net/httpstream` streams request bodies only when asked.** By default a
-  body is delivered whole, under `Config.MaxBodyBytes` (1 MiB): an upload
-  larger than memory is refused, and a slow body holds its connection's
-  buffer until it is complete or `ReadTimeout` passes.
-  `Config.MaxStreamedBodyBytes` turns streaming on for the three protocols
-  ([ADR 0009](../design/adr/0009-request-contract.md), article 4) — on
-  HTTP/3 when the QUIC windows cover a request's head, which those of
-  `Config.TransportParameters` do. A body a handler leaves unread costs the
+- **`net/httpstream` streams request bodies by default.** A body that did
+  not arrive whole with its headers reaches the handler through
+  `Request.Stream` as it comes, on the three protocols — on HTTP/3 when
+  the QUIC windows cover a request's head, which those of
+  `Config.TransportParameters` do; on smaller windows bodies arrive whole.
+  `Config.BodyDelivery: BodyWhole` asks for the other contract, every body
+  complete before its handler runs, bounded by `Config.MaxBodyBytes`
+  (1 MiB). What is accepted is the same either way
+  ([ADR 0009](../design/adr/0009-request-contract.md), article 4). A body a handler leaves unread costs the
   HTTP/1.1 connection, a reset of its stream (`RST_STREAM` with `NO_ERROR`)
   after the response on HTTP/2, and a `STOP_SENDING` with `H3_NO_ERROR`
   after it on HTTP/3.

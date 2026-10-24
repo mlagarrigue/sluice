@@ -685,7 +685,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 // for by the configuration, and the transport on manual credit, which gives
 // the stream level its own release.
 func (a *h3Assembler) streaming() bool {
-	return a.cfg.MaxStreamedBodyBytes > 0 && a.CreditStream != nil
+	return a.cfg.BodyDelivery == BodyStreamed && a.CreditStream != nil
 }
 
 // creditConn releases n bytes at the connection level alone.

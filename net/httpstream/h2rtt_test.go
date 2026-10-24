@@ -82,6 +82,9 @@ func TestH2ConnWindowFollowsStreams(t *testing.T) {
 func uploadThroughput(t *testing.T, window, size int) float64 {
 	t.Helper()
 	cfg := Config{
+		// The upload is measured as one assembled body, the window's own
+		// round trips and nothing else.
+		BodyDelivery:      BodyWhole,
 		InitialWindowSize: window,
 		MaxBodyBytes:      2 * size,
 		// The default upload takes seconds at this RTT; the clocks that

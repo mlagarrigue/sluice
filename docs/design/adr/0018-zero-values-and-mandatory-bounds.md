@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams)
+- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split)
 - **Theme:** httpstream
 
 ## Problem
@@ -48,9 +48,20 @@ never removed.**
    meant, all errors joined (`errors.Join`).
 
    A default may depend on another field: `LingerTimeout` at zero is one
-   second, or `ReadTimeout` if shorter; a value set is kept as is. There is
+   second, or `ReadTimeout` if shorter; `MaxStreamedBodyBytes` at zero is
+   `MaxBodyBytes`; a value set is kept as is. There is
    no "unbounded" setting: `math.MaxInt` is one. `Config{}` is a bounded
    server, not a server waiting to be bounded.
+
+   A zero is not always a size. `BodyDelivery` is a named type whose zero
+   value, `BodyStreamed`, is the default form a request body arrives in,
+   and `BodyWhole` the other; a value that names neither is refused like
+   any other out of range. One field cannot carry both a switch and a
+   bound once the default inverts: `MaxStreamedBodyBytes` used to mean
+   "stream, and here is the bound", so its zero had to mean "do not
+   stream" — and a default that streams would have left no value for "hold
+   it whole". The field was therefore split rather than reinterpreted, and
+   each half has a zero of its own.
 
 2. **The bound is mandatory.** No field removes a bound by its absence.
    The exceptions are named: `MaxConns` and `MaxConnsPerIP`, whose zero

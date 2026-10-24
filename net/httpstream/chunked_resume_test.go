@@ -19,7 +19,7 @@ import (
 // is cheapest to see.
 func TestChunkedWalkResumesWhereItStopped(t *testing.T) {
 	raw := chunkedReq("5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n")
-	cfg := Config{}.mustResolve()
+	cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
 	var progress chunkProgress
 	last := progress
 	for n := 1; n < len(raw); n++ {
@@ -127,7 +127,7 @@ func TestChunkedBodyArrivingOneChunkPerReadIsLinear(t *testing.T) {
 
 	client, server := net.Pipe()
 	t.Cleanup(func() { client.Close(); server.Close() })
-	r := &reader{cfg: Config{ReadTimeout: 30 * time.Second}.mustResolve()}
+	r := &reader{cfg: Config{BodyDelivery: BodyWhole, ReadTimeout: 30 * time.Second}.mustResolve()}
 	r.conn = &rewalkProbe{Conn: server, r: r, writes: writes, at: len(head)}
 	var bodies [][]byte
 	r.stream(func(b sluice.Batch[Request]) bool {
@@ -152,7 +152,7 @@ func TestChunkedWalkSurvivesBufferCompaction(t *testing.T) {
 	second := chunkedReq("5\r\nhello\r\n")
 	rest := []byte("6\r\n world\r\n0\r\n\r\n" + "GET /c HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
 
-	bodies, err := readAll(t, oneWritePerRead(t, append(first, second...), rest), Config{ReadTimeout: 5 * time.Second})
+	bodies, err := readAll(t, oneWritePerRead(t, append(first, second...), rest), Config{BodyDelivery: BodyWhole, ReadTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("stream ended with %v", err)
 	}
@@ -173,7 +173,7 @@ func TestChunkedWalkSurvivesBufferCompaction(t *testing.T) {
 // incomplete calls return errExpectContinue instead, must not reopen the
 // path.
 func TestBodyDripDoesNotReparseHeaders(t *testing.T) {
-	cfg := Config{}.mustResolve()
+	cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
 	for _, expect := range []bool{false, true} {
 		var head strings.Builder
 		head.WriteString("POST /up HTTP/1.1\r\nHost: h\r\nContent-Length: 64\r\n")

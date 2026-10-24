@@ -240,3 +240,70 @@ func TestStreamedBodyEndSharesAReadWithTheNextRequest(t *testing.T) {
 		t.Fatalf("the request behind it: %s %q", status, got)
 	}
 }
+
+// The zero Config streams: a body too large to have arrived with its
+// headers reaches the handler through Request.Stream, with Request.Body
+// nil, and the handler answers before the last byte is in memory. This is
+// the switch of docs/design/adr/0009 article 4, and the one assertion that
+// says which way it went: every other test here names the form it wants.
+//
+// The same request under BodyWhole takes the other path, so the test tells
+// the two apart rather than only proving a body arrives.
+func TestTheZeroConfigStreamsTheBody(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string // what sawStream reports
+	}{
+		{"the zero Config", Config{}, "stream"},
+		{"BodyWhole", Config{BodyDelivery: BodyWhole}, "body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _ := serveTest(t, tc.cfg, sawStream)
+			c := dial(t, addr)
+			// The 100 the client waits for splits the head from the body
+			// into two reads, whichever form the body takes: without it the
+			// two could land in one read, where a body arrives whole under
+			// either setting and the test would say nothing.
+			head := "POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: 4000\r\nExpect: 100-continue\r\n\r\n"
+			if _, err := c.Write([]byte(head)); err != nil {
+				t.Fatal(err)
+			}
+			br := bufio.NewReader(c)
+			line, err := br.ReadString('\n')
+			if err != nil || !strings.Contains(line, "100 Continue") {
+				t.Fatalf("first line = %q, %v; want the 100 Continue", line, err)
+			}
+			if _, err := br.ReadString('\n'); err != nil { // the blank line closing the interim
+				t.Fatal(err)
+			}
+			if _, err := c.Write(pattern(4000)); err != nil {
+				t.Fatal(err)
+			}
+			if status, got := readResponse(t, br); !strings.Contains(status, "200") || got != tc.want {
+				t.Fatalf("%s: %s %q, want %q", tc.name, status, got, tc.want)
+			}
+		})
+	}
+}
+
+// sawStream answers with which half of the contract the request carried,
+// and drains a streamed body so the connection is not cut under it.
+func sawStream(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	out := make([]Response, b.Len())
+	for i := range b.Items {
+		r := &b.Items[i]
+		if r.Body != nil {
+			out[i] = Response{Status: 200, Body: []byte("body")}
+			continue
+		}
+		// A body that did not arrive whole is drained, so the connection is
+		// not cut under the client between the two cases.
+		if _, err := r.ReadAll(nil, 1<<20); err != nil {
+			out[i] = Response{Status: 400, Body: []byte(err.Error())}
+			continue
+		}
+		out[i] = Response{Status: 200, Body: []byte("stream")}
+	}
+	return sluice.Batch[Response]{Items: out}
+}

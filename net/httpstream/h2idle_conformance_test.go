@@ -171,7 +171,7 @@ func TestH2FirstFlightMayExceedASmallWindow(t *testing.T) {
 // At a window of 1, initial/2 rounded down to 0 and the stream was never
 // granted anything back once its one byte was spent.
 func TestH2TinyWindowIsReplenished(t *testing.T) {
-	addr, _ := serveH2(t, Config{InitialWindowSize: 1}, echoTarget)
+	addr, _ := serveH2(t, Config{BodyDelivery: BodyWhole, InitialWindowSize: 1}, echoTarget)
 	c := dialH2(t, addr)
 	c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock("POST", "/tiny")})
 	c.frame(h2Frame{Type: frameData, StreamID: 1, Payload: []byte("a")})

@@ -681,7 +681,7 @@ func TestH2HeaderBlockSplitInsideAFieldIsAccepted(t *testing.T) {
 // The client here honours its window, which is what makes the test fail
 // before the fix instead of passing by ignoring the protocol.
 func TestH2UploadPastTheInitialStreamWindow(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: fmt.Append(nil, len(r.Body))})
@@ -1360,7 +1360,7 @@ func TestH2PaddedPriorityHeadersPadConsumesWholeBlock(t *testing.T) {
 // with it: a conformant client treats the illegal setting as a connection
 // error, and refuses 16384-byte frames the server was obliged to take.
 func TestH2AdvertisedMaxFrameSizeKeepsTheProtocolFloor(t *testing.T) {
-	addr, _ := serveTest(t, Config{MaxBodyBytes: 1000}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1000}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.pump(func() bool { _, ok := c.settings[0x5]; return ok })
@@ -1475,7 +1475,7 @@ func TestH2AnswersPingAfterPeerGoAway(t *testing.T) {
 func TestH2BoundsBuffersAcrossUnfinishedUploads(t *testing.T) {
 	// MaxBodyBytes 1000 makes the aggregate bound 4000: four 900-byte
 	// unfinished uploads fit, the fifth does not.
-	addr, _ := serveTest(t, Config{MaxBodyBytes: 1000}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1000}, echoTarget)
 	c := dialH2(t, addr)
 
 	for _, id := range []uint32{1, 3, 5, 7, 9} {
@@ -1507,7 +1507,7 @@ func TestH2BoundsBuffersAcrossUnfinishedUploads(t *testing.T) {
 // forever for the price of one PING per interval; ReadTimeout bounds the
 // request's whole assembly instead, as it does on the HTTP/1.1 side.
 func TestH2AssemblyDeadlineEndsAStalledUpload(t *testing.T) {
-	addr, _ := serveTest(t, Config{ReadTimeout: 300 * time.Millisecond}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, ReadTimeout: 300 * time.Millisecond}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.frame(h2Frame{
@@ -2829,7 +2829,7 @@ func TestH2AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			}
 			c.request(1, "GET", "/x", extra...)
 		}, 431},
-		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func(c *h2client) {
+		{"a body over MaxBodyBytes", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, func(c *h2client) {
 			c.frame(h2Frame{
 				Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1,
 				Payload: headBlock("POST", "/x"),
@@ -3027,7 +3027,7 @@ func TestH2ForgetsOpenedStreamsPastTheWindow(t *testing.T) {
 // the content before sending the 100), as the HTTP/1.1 reader sends one; the
 // final response follows the body on the same stream.
 func TestH2AnswersExpectContinueWithAnInterim100(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole}, echoTarget)
 	c := dialH2(t, addr)
 
 	c.frame(h2Frame{
@@ -3065,7 +3065,7 @@ func TestH2AnswersExpectContinueWithAnInterim100(t *testing.T) {
 func TestServeBoundsHTTP2ByConfig(t *testing.T) {
 	const size = 2 << 20
 	var seen atomic.Int64
-	addr, _ := serveTest(t, Config{MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 3 << 20, ReadTimeout: time.Minute}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			seen.Store(int64(len(r.Body)))
@@ -3135,7 +3135,7 @@ func TestH2RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 // nothing for the DATA frame, and gets the head alone with END_STREAM on it
 // rather than a reader held on its WINDOW_UPDATE.
 func TestH2RefusalBodyFollowsMethodAndCredit(t *testing.T) {
-	addr, _ := serveTest(t, Config{MaxBodyBytes: 1024}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, echoTarget)
 	over := func(c *h2client, method string) {
 		c.frame(h2Frame{Type: frameHeaders, Flags: flagEndHeaders, StreamID: 1, Payload: headBlock(method, "/x")})
 		c.data(1, bytes.Repeat([]byte{'b'}, 2048), true)
