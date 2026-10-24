@@ -37,18 +37,19 @@ format() {
 }
 
 # nested <dir>: vet and lint a module beside the root one, which the root's
-# ./... skips, and run the tests that need nothing of their own. Those of
-# interop/ and benchmarks/ want a quic-go peer or a campaign and stay in CI;
-# the two comparison modules' do not — the server's skip without SLUICE_PG,
-# the generator's calibrate against the clock — and a check that does not run
-# them is a gate that goes green while CI is red, which is how main stayed
-# red for four commits on 2026-10-24. interop's result guard reads a recorded
-# pass and needs no peer either, so an edit of
-# interop/expected-results.json is checked here rather than in CI.
+# ./... skips, and run the tests that need nothing of their own. Only
+# benchmarks/ stays in CI, its tests being a campaign; the others need
+# nothing — the comparison server's skip without SLUICE_PG, the generator's
+# calibrate against the clock, and interop/ links quic-go rather than
+# reaching for a peer, so its nineteen tests run here in under a second with
+# nothing skipped. A check that does not run them is a gate that goes green
+# while CI is red: that is how main stayed red for four commits on
+# 2026-10-24, and how a change of the root module broke interop/ undetected
+# the same evening (the request body streaming by default, b2b76e2).
 nested() {
   (cd "$1" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./...) || return 1
   case $1 in
-    interop) (cd "$1" && GOWORK=off go test -run '^TestExpectedResultsGuard$' .) ;;
+    interop) (cd "$1" && GOWORK=off go test ./...) ;;
     # SLUICE_PG emptied on purpose: the runner has none, so its integration
     # tests skip there and what this reproduces is the runner's own result.
     # On a machine that has the variable they want the study's tables loaded

@@ -619,7 +619,7 @@ func TestCheckRunsTheNestedTestsCIRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range []string{"comparison/sluice) ", "comparison/loadgen) "} {
+	for _, m := range []string{"interop) ", "comparison/sluice) ", "comparison/loadgen) "} {
 		if !strings.Contains(string(b), m) {
 			t.Errorf("scripts/check.sh runs no tests for %s", strings.TrimSuffix(m, ") "))
 		}
