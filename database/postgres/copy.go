@@ -398,6 +398,27 @@ func (cp *Copier) beginTx() error {
 		}
 		switch m.Type {
 		case pgwire.BackendCopyInResponse:
+			// The body opens with the overall format, 0 for text and 1 for
+			// binary (Message Formats, CopyInResponse). This copier writes binary rows, and the
+			// statement is the caller's: one that does not say FORMAT BINARY
+			// puts the server in text mode, where the signature would come
+			// back as a server error about malformed text. Refused here, by
+			// name, before a row is sent; CopyFail ends the copy-in the
+			// server is waiting in, and its ErrorResponse is the answer.
+			if len(m.Body) < 1 {
+				return c.breakConn(fmt.Errorf("%w: an empty CopyInResponse", ErrProtocol))
+			}
+			if m.Body[0] != 1 {
+				c.w.Message(pgwire.FrontendCopyFail, append([]byte(copyTextReason), 0))
+				if err := c.w.Flush(); err != nil {
+					return c.breakConn(fmt.Errorf("refusing a text-format copy: %w", err))
+				}
+				if err := c.drainToReady(); err != nil && c.broken != nil {
+					return err
+				}
+				cp.rollback()
+				return fmt.Errorf("%w: the server copies in text format; the statement needs FORMAT BINARY, the rows this copier writes are binary", ErrCopyRefused)
+			}
 			cp.inTx, cp.rowsTx = true, 0
 			cp.buf = append(cp.buf[:0], copySignature...)
 			cp.buf = binary.BigEndian.AppendUint32(cp.buf, 0) // flags
@@ -683,6 +704,10 @@ var (
 // copyFailReason is what the server logs when a COPY reached a path that
 // refuses it; the client-side explanation is errCopyFromStdin.
 const copyFailReason = "the client issued COPY FROM STDIN outside CopyFrom and cannot supply data on this path"
+
+// copyTextReason is what the server's log says when CopyFrom refuses a
+// statement without FORMAT BINARY.
+const copyTextReason = "the client writes binary rows and the COPY statement does not say FORMAT BINARY"
 
 // refuseCopyIn answers an unexpected CopyInResponse with CopyFail, followed
 // by a Sync when the statement's own Sync has already gone out.

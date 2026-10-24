@@ -245,6 +245,39 @@ func TestCopyServerRefuses(t *testing.T) {
 	}
 }
 
+// A statement without FORMAT BINARY puts the server in text mode, and this
+// copier writes binary rows: the CopyInResponse says so in its first byte,
+// and the copy is refused there, by name, before a row is sent — not by a
+// server error about malformed text after the signature. CopyFail ends the
+// copy-in the server waits in, and the connection stays usable.
+func TestCopyRefusesATextFormatCopy(t *testing.T) {
+	srv := &fakeServer{responses: [][]byte{
+		append(beCommandComplete("BEGIN"), beReadyForQuery()...),
+		frame(pgwire.BackendCopyInResponse, string([]byte{0, 0, 2, 0, 0, 0, 0})),
+		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...),
+		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
+	}}
+	conn := NewConn(srv)
+	cp, err := conn.CopyFrom(t.Context(), "COPY t FROM STDIN", CopyConfig{RowsPerTx: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cp.WriteTuples(tuple(new(int64(1)), nil), 1)
+	if !errors.Is(err, ErrCopyRefused) || !strings.Contains(err.Error(), "FORMAT BINARY") {
+		t.Fatalf("WriteTuples returned %v, want ErrCopyRefused naming FORMAT BINARY", err)
+	}
+	if conn.Err() != nil {
+		t.Errorf("a refused text copy broke the connection: %v", conn.Err())
+	}
+	sent := srv.clientMessages(t)
+	if !bytes.Contains(sent, []byte{pgwire.FrontendCopyFail}) {
+		t.Errorf("client sent %q, with no CopyFail — the server would wait in copy-in", sent)
+	}
+	if bytes.Contains(sent, []byte{pgwire.FrontendCopyData}) {
+		t.Errorf("client sent %q: a row left before the format was checked", sent)
+	}
+}
+
 // Abort tells the server why, then rolls back — so the reason appears in the
 // server's log rather than only in the client's.
 func TestCopyAbort(t *testing.T) {
