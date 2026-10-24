@@ -960,7 +960,7 @@ func TestStreamedBatchKeepsBufferedNeighboursInOrder(t *testing.T) {
 // ahead of the Expect one: RFC 9112 §9.3 orders everything on the connection.
 // The reader defers the 100 until the batch in front of it has been answered.
 func TestExpect100WaitsForTheFinalsPipelinedAheadOfIt(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole}, echoTarget)
 	c := dial(t, addr)
 
 	// One write: a complete GET, then a POST whose body waits on the 100.
@@ -1475,7 +1475,7 @@ func TestAnEmptyLineBeforeARequestLineIsIgnored(t *testing.T) {
 // RFC 9110 §15.2: a server MUST NOT send a 1xx to an HTTP/1.0 client, and
 // §10.1.1 says Expect is ignored there; the request is otherwise served.
 func TestNo100ContinueToAnHTTP10Client(t *testing.T) {
-	addr, _ := serveTest(t, Config{}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole}, echoTarget)
 	c := dial(t, addr)
 	fmt.Fprint(c, "POST /x HTTP/1.0\r\nHost: h\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")
 	if err := c.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {

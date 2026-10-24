@@ -20,9 +20,13 @@ import (
 // startH3 serves one HTTP/3 connection over an in-memory datagram pair, with
 // the server's transport parameters given, and returns the client end, a
 // cancel for the server's context, and what ServeH3Conn returned once it has.
+// The whole-body form is named rather than left to the zero Config: these
+// tests were written against it, and their handlers answer without reading
+// a body, which under BodyStreamed resets the stream instead of assembling
+// it. The streaming form has its own tests in h3body_test.go.
 func startH3(t *testing.T, params quic.TransportParameters, handle Handler) (*quic.Conn, context.CancelFunc, <-chan error) {
 	t.Helper()
-	return startH3With(t, Config{}, params, quic.DefaultParameters(), handle)
+	return startH3With(t, Config{BodyDelivery: BodyWhole}, params, quic.DefaultParameters(), handle)
 }
 
 // startH3With is startH3 with the server's Config and the client's transport
@@ -384,7 +388,7 @@ func TestH3CreditsRequestBytesOnce(t *testing.T) {
 		manual bool
 	}{
 		{"delivery", quic.DefaultParameters(), false},
-		{"manual", mustTransportParameters(Config{}), true},
+		{"manual", mustTransportParameters(Config{BodyDelivery: BodyWhole}), true},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			released.Store(0)
@@ -426,7 +430,7 @@ func TestH3ServeCreditsOnRelease(t *testing.T) {
 	t.Cleanup(func() { h3ReleaseStreamBytes = orig })
 
 	got := make(chan int, 8)
-	conn, _, _ := startH3(t, mustTransportParameters(Config{}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	conn, _, _ := startH3(t, mustTransportParameters(Config{BodyDelivery: BodyWhole}), func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		for _, r := range b.Items {
 			got <- len(r.Body)
 		}
@@ -568,14 +572,14 @@ func TestH3AnswersAStatusOnAnOversizedStream(t *testing.T) {
 			}
 			return h3Request("GET", "/x", extra...)
 		}(), "431"},
-		{"a body over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func() []byte {
+		{"a body over MaxBodyBytes", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, func() []byte {
 			// Two DATA frames each within the bound, whose sum is not: the
 			// body bound, not the frame-length one.
 			req := h3Request("POST", "/x")
 			req = appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
 			return appendH3Frame(req, h3Data, bytes.Repeat([]byte{'b'}, 1024))
 		}(), "413"},
-		{"one DATA frame declared over MaxBodyBytes", Config{MaxBodyBytes: 1024}, func() []byte {
+		{"one DATA frame declared over MaxBodyBytes", Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, func() []byte {
 			// The frame's declared length is the whole refusal: a few bytes
 			// of its payload follow, the rest never does. This used to end
 			// the stream with H3_EXCESSIVE_LOAD, where h1 and h2 answer 413.
@@ -639,7 +643,7 @@ func TestTransportParametersCarryIdleTimeout(t *testing.T) {
 // HTTP/3 carries nowhere else; a HEAD read before the refusal states the
 // line's length and type and gets no DATA (§9.3.2).
 func TestH3TransportErrorCarriesBody(t *testing.T) {
-	conn, _, _ := startH3With(t, Config{MaxBodyBytes: 1024}, quic.DefaultParameters(), quic.DefaultParameters(),
+	conn, _, _ := startH3With(t, Config{BodyDelivery: BodyWhole, MaxBodyBytes: 1024}, quic.DefaultParameters(), quic.DefaultParameters(),
 		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 			return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 		})

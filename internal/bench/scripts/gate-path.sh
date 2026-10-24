@@ -93,8 +93,23 @@ PATHEFFECT="${PATHEFFECT:-0.06}"
 # initial window halved moves neither (Bottleneck 0.957, TwoFlows 1.038) and
 # turns the job red on the rows that keep 6% — Clean 1.140, RTT80 1.077,
 # BurstLoss 1.069 — while the restored tree passes.
+#
+# BBR reads TwoFlows the same way, which eight rounds had missed: the job
+# turned red on 47a8b93 at 1.065, a commit whose whole diff is three action
+# SHAs in a workflow, and the immediate rerun read 1.009. Measured
+# 2026-10-24, BBR, an identical tree, four cores, 80 interleaved rounds cut
+# into ten passes of eight: the seven other names within 0.986-1.015, one
+# transfer anywhere in a 1-3% band; TwoFlows within 0.984-1.007 by the pass
+# but one transfer anywhere in 1449-1642 ms, the same bimodal spread CUBIC
+# shows. Resampled from those 160 transfers, the chance that one pass reads
+# more than 6% slower is 0.84%, the order of CUBIC's TwoFlows (1.1%); at 10%
+# it is 0.01%. Nothing is lost on the injection: under BBR the initial
+# window halved leaves TwoFlows at 1.018 and turns the job red four times
+# over on the rows that keep 6% — Clean 1.094, RTT80 1.109, BurstLoss 1.080,
+# Loss1pct 1.076 — while the restored tree passes.
 case "$CC" in
   cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
+  bbr) WIDE='BenchmarkTransferTwoFlows$' ;;
   *) WIDE='' ;;
 esac
 WIDEEFFECT="${WIDEEFFECT:-0.10}"

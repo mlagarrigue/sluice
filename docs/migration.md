@@ -151,6 +151,24 @@ that never passed a negative value has nothing to change there.
   `(quic.TransportParameters, error)`.
 - **`ServeH2Conn` drains on cancellation** (`735873e`) instead of cutting
   the connection: see [ADR 0017](design/adr/0017-graceful-shutdown.md).
+- **Request bodies stream by default**
+  (`feat(httpstream)!: stream request bodies by default`): the zero `Config` now
+  hands a handler a body through `Request.Stream` as it arrives, with
+  `Request.Body` nil, unless the body was already whole in the read that
+  brought the request's headers. A handler written against the old
+  contract reads `Request.Body` and finds nothing; `Request.ReadAll(dst,
+  limit)` returns either form whole and is the one-line change. A handler
+  that never reads the body no longer makes the server assemble it: the
+  body is stopped after the response, and a client waiting for `100
+  Continue` is never invited.
+
+  To keep the old contract, set `Config.BodyDelivery: httpstream.BodyWhole`.
+  `Config.MaxStreamedBodyBytes` is now the bound of a streamed body and
+  nothing else — it no longer turns streaming on — and its zero is
+  `MaxBodyBytes`, so what a server accepts is unchanged either way. A
+  configuration that set it to a positive value keeps that value and that
+  meaning; one that left it at zero to mean "whole" says `BodyWhole`
+  instead. See [ADR 0009](design/adr/0009-request-contract.md), article 4.
 
 ## QUIC: `net/quic`
 

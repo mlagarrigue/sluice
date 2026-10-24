@@ -299,7 +299,8 @@ anything is read. The "Protocols" column says where the field acts.
 | `MaxHeaderBytes` | 32 KiB | bytes | all | all the headers of one request; announced on 2 and 3 |
 | `MaxHeaders` | 64 | fields | all | how many headers one request carries |
 | `MaxBodyBytes` | 1 MiB | bytes | all | a body delivered whole; four times that per HTTP/2 or HTTP/3 connection |
-| `MaxStreamedBodyBytes` | bodies delivered whole | bytes | all | a streamed body; positive turns streaming on |
+| `BodyDelivery` | `BodyStreamed` | form | all | whether a body streams or is held whole (`BodyWhole`) |
+| `MaxStreamedBodyBytes` | `MaxBodyBytes` | bytes | all | a streamed body; the bound alone, never the switch |
 | `MaxRequestsPerBatch` | 64 | requests | 1.1 | the pipelined requests of one batch |
 | `MaxConcurrentStreams` | 100 | streams; at most 4096 on 3 | 2, 3 | the requests open at once on one connection |
 | `MaxRequestsPerConn` | 1024 | requests | 1.1 | the requests of one connection before it closes |

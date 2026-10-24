@@ -77,7 +77,7 @@ one failed, see the `probe` package.
 | Error | When | What to do |
 |---|---|---|
 | `httpstream.ErrMalformed` | A request this package will not parse. The server answers with a status and closes. | Fix the client; a request whose framing is in doubt cannot be resynchronised. |
-| `httpstream.ErrTooLarge` | A request past one of `Config`'s bounds. The server answers it (413, or 414 for the request line, 431 for headers) before any handler runs. | Raise the matching `Config` field if the size is legitimate; for large uploads, see `Config.MaxStreamedBodyBytes`. |
+| `httpstream.ErrTooLarge` | A request past one of `Config`'s bounds. The server answers it (413, or 414 for the request line, 431 for headers) before any handler runs. | Raise the matching `Config` field if the size is legitimate; for large uploads, raise `Config.MaxStreamedBodyBytes`, which bounds a body that streams. |
 | `httpstream.ErrHeaderInjection` | A response header carries CR, LF or another control byte; it is not written. | Remove the control bytes from the value your handler sets. |
 | `httpstream.ErrHPACK` | An HTTP/2 header block this package will not decode. The connection ends. | Fix the client's HTTP/2 encoder; one rule set per sentinel: HPACK here. |
 | `httpstream.ErrH2Protocol` | An HTTP/2 frame sequence this package will not accept. The connection ends. | Fix the client's HTTP/2 framing. |

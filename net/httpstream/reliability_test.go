@@ -191,7 +191,7 @@ func TestNoContentResponseCarriesNoLengthOrBody(t *testing.T) {
 // instead — both sides blocking until ReadTimeout killed a perfectly valid
 // request.
 func TestExpectContinueGetsAnInterimResponse(t *testing.T) {
-	addr, _ := serveTest(t, Config{ReadTimeout: 2 * time.Second}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, ReadTimeout: 2 * time.Second}, echoTarget)
 	c := dial(t, addr)
 	br := bufio.NewReader(c)
 
@@ -545,7 +545,7 @@ func TestConnectionCloseInsideAListEndsTheConnection(t *testing.T) {
 // "Expect: 100-continue, x" is still waiting for the interim response, and
 // matching the value whole left it waiting out ReadTimeout for a 408.
 func TestExpectContinueInsideAListGetsTheInterim(t *testing.T) {
-	addr, _ := serveTest(t, Config{ReadTimeout: 2 * time.Second}, echoTarget)
+	addr, _ := serveTest(t, Config{BodyDelivery: BodyWhole, ReadTimeout: 2 * time.Second}, echoTarget)
 	c := dial(t, addr)
 	br := newReader(c)
 

@@ -1392,7 +1392,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	if st.endStream {
 		return s.finish(st)
 	}
-	if s.cfg.MaxStreamedBodyBytes > 0 {
+	if s.cfg.BodyDelivery == BodyStreamed {
 		// The body may stream: handOver decides at the end of the batch,
 		// and the 100 a client waits for goes out when the handler first
 		// waits for the body (bodyQueue.next).
@@ -1484,7 +1484,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 		body = body[:len(body)-pad]
 	}
 	if st.stream == nil && len(st.body)+len(body) > s.cfg.MaxBodyBytes {
-		if s.cfg.MaxStreamedBodyBytes == 0 {
+		if s.cfg.BodyDelivery == BodyWhole {
 			return nil, statusFail(st.id, 413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, s.cfg.MaxBodyBytes)
 		}
 		// Past what Body may hold, before the batch has ended: the body
@@ -1547,7 +1547,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 	// the end of this batch is handed over and its window goes back as the
 	// handler consumes (bodyQueue), so nothing is granted here: the bytes the
 	// handler has not read stay spent.
-	if !last && s.cfg.MaxStreamedBodyBytes == 0 && st.recvWind < (initial+1)/2 {
+	if !last && s.cfg.BodyDelivery == BodyWhole && st.recvWind < (initial+1)/2 {
 		inc := initial - st.recvWind
 		st.recvWind = initial
 		if err := s.w.control32(frameWindowUpdate, st.id, uint32(inc)); err != nil { //nolint:gosec // G115: positive by construction

@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone)
 - **Theme:** httpstream
 
 ## Problem
@@ -37,11 +37,13 @@ enforces it:
    framing left to check — unless streaming is asked for, on any of the
    three protocols:
 
-   - **Additive, through a bound.** `Config.MaxStreamedBodyBytes`: zero
-     keeps the whole-body contract; positive turns streaming on and bounds
-     a streamed body. A body is accepted up to the larger of the two
-     bounds, whole or streamed: which form it takes depends on where a read
-     ended, and whether it is accepted must not. Past that the request is
+   - **A form, then a bound.** `Config.BodyDelivery`: its zero value,
+     `BodyStreamed`, streams; `BodyWhole` keeps the whole-body contract.
+     `Config.MaxStreamedBodyBytes` bounds a streamed body and nothing else;
+     its zero is `MaxBodyBytes`, so the switch changes how a body arrives
+     and never what is accepted. A body is accepted up to the larger of the
+     two bounds, whole or streamed: which form it takes depends on where a
+     read ended, and whether it is accepted must not. Past that the request is
      refused — 413 before any body is read when the content length says
      so, and no 100 Continue; an `ErrTooLarge` from the stream midway for a
      body of unannounced length. The 100 Continue a client waits for goes
@@ -88,9 +90,14 @@ enforces it:
      midway, with `os.ErrDeadlineExceeded` when a wait passes
      `ReadTimeout`.
 
-   - **The default switches** (a break) once the three protocols stream, a
-     real consumer has used it, and a paired A/B of small requests shows
-     noise.
+   - **The default has switched** (a break, 0.3.0). The three protocols
+     stream since fb556c5, and a paired A/B of small h1, h2 and h3
+     requests read noise on all six pairs with identical allocations
+     (`docs/benchmarks.md`, `body_bench_test.go`). The third condition
+     written here — a real consumer had used it — was waived rather than
+     met: the first consumer builds on 0.3.0, so the switch had to be in
+     that release or cost a second breaking version for a change already
+     decided and measured (decision 235: one breaking version).
 
 5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);

@@ -29,7 +29,7 @@ func FuzzReaderChunkedAcrossReads(f *testing.F) {
 	f.Add([]byte(chunked+"5\r\nhel"), []byte{60})                // cut short: the same refusal either way
 	f.Add([]byte(chunked+"zz\r\nhello\r\n0\r\n\r\n"), []byte{2}) // a bad size line
 
-	cfg := Config{ReadTimeout: time.Minute}.mustResolve()
+	cfg := Config{BodyDelivery: BodyWhole, ReadTimeout: time.Minute}.mustResolve()
 	f.Fuzz(func(t *testing.T, data, cuts []byte) {
 		if len(data) > 8<<10 {
 			return

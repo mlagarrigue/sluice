@@ -47,8 +47,11 @@ type Request struct {
 	// Trailers is the request's trailer section, in the order the client
 	// sent it, or nil when it sent none: the fields after the body of a
 	// chunked HTTP/1.1 request, or of a trailing HEADERS on HTTP/2 and
-	// HTTP/3. The whole request is read before the handler is called, so
-	// they are here as soon as the body is. They are held to the bounds the
+	// HTTP/3. Under [BodyWhole] the whole request is read before the
+	// handler is called, so they are here as soon as the body is; a
+	// streamed body's trailers arrive after the handler was given the
+	// request and are checked against the header bounds without being
+	// kept, so this is nil for it ([Request.Stream]). They are held to the bounds the
 	// headers are held to, separately: a trailer section of its own up to
 	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
 	//
@@ -742,7 +745,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 
 	if chunked {
 		body, n, trailers, cerr := decodeChunked(rest, cfg, progress, consumed, out)
-		if cfg.MaxStreamedBodyBytes > 0 && (errors.Is(cerr, errIncomplete) || errors.Is(cerr, ErrTooLarge)) {
+		if cfg.BodyDelivery == BodyStreamed && (errors.Is(cerr, errIncomplete) || errors.Is(cerr, ErrTooLarge)) {
 			// Not whole in this read, or past what Body may hold: the body
 			// streams, decoded as it arrives (bodyStream), and the head is
 			// handed over now. The interim 100 a client may be waiting for is
@@ -772,7 +775,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 	if err != nil {
 		return req, 0, out, err
 	}
-	if cfg.MaxStreamedBodyBytes > 0 && (len(rest) < length || length > cfg.MaxBodyBytes) {
+	if cfg.BodyDelivery == BodyStreamed && (len(rest) < length || length > cfg.MaxBodyBytes) {
 		return req, consumed, out, streamBody{length: length}
 	}
 	if len(rest) < length {

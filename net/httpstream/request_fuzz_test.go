@@ -23,7 +23,7 @@ func FuzzParseRequest(f *testing.F) {
 	f.Add([]byte("\r\n\r\n"))
 	f.Add([]byte{})
 
-	cfg := Config{}.mustResolve()
+	cfg := Config{BodyDelivery: BodyWhole}.mustResolve()
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// A chunked body is decoded in place, so a successful parse may
 		// rewrite data's consumed region; the determinism check at the end

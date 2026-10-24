@@ -18,9 +18,12 @@ func req(lines ...string) []byte {
 	return []byte(strings.Join(lines, "\r\n") + "\r\n\r\n")
 }
 
+// parse reads one whole request, the contract BodyDelivery's other form
+// keeps: these tests are about the parser finishing a body, which a
+// streamed one leaves to the reader.
 func parse(t *testing.T, raw []byte) (Request, int, error) {
 	t.Helper()
-	req, n, _, err := parseRequest(raw, Config{}.mustResolve(), nil, nil)
+	req, n, _, err := parseRequest(raw, Config{BodyDelivery: BodyWhole}.mustResolve(), nil, nil)
 	return req, n, err
 }
 
@@ -427,7 +430,7 @@ func TestRequestLineAndHeaderBoundsAreExact(t *testing.T) {
 // Trailers are bounded in count as headers are: a thousand one-byte trailer
 // fields fit any byte bound and still cost a parse each.
 func TestTrailerFieldsAreBoundedInCount(t *testing.T) {
-	cfg := Config{MaxHeaders: 4}.mustResolve()
+	cfg := Config{BodyDelivery: BodyWhole, MaxHeaders: 4}.mustResolve()
 	trailers := func(n int) []byte {
 		return chunkedReq("0\r\n" + strings.Repeat("T: v\r\n", n) + "\r\n")
 	}

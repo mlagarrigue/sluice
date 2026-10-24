@@ -324,8 +324,8 @@ func streamedBody(batch []Request) *bodyStream {
 	return batch[len(batch)-1].body
 }
 
-// Stream yields the body as it arrives, when [Config.MaxStreamedBodyBytes]
-// turned streaming on and the body was not whole in the read that brought the
+// Stream yields the body as it arrives, when [Config.BodyDelivery] streams
+// it — the default — and the body was not whole in the read that brought the
 // request's headers (docs/design/adr/0009, article 4). For a body whole in
 // [Request.Body] it yields nothing, so reading it is always safe;
 // [Request.ReadAll] returns either form whole.

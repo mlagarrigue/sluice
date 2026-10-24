@@ -138,7 +138,7 @@ func TestInteropReadsChunkedStreamedResponse(t *testing.T) {
 // server's 100-continue handling from a client this package never had to
 // special-case for it.
 func TestInteropExpectContinue(t *testing.T) {
-	base := interopServer(t, Config{ReadTimeout: 2 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	base := interopServer(t, Config{BodyDelivery: BodyWhole, ReadTimeout: 2 * time.Second}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
 		out := make([]Response, 0, b.Len())
 		for _, r := range b.Items {
 			out = append(out, Response{Status: 200, Body: append([]byte(nil), r.Body...)})

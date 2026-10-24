@@ -297,6 +297,32 @@ var errIdleTimeout = errors.New("httpstream: idle timeout")
 // still recognise it; the reader distinguishes it to answer the 100 once.
 var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w", errIncomplete)
 
+// BodyDelivery says how a request body reaches the handler
+// (docs/design/adr/0009, article 4). The zero value streams it: a body is
+// handed over as it arrives, so a server holds a stream window rather than
+// a whole upload, and a handler can answer before the last byte. A server
+// that wants the older contract — every body complete and in memory before
+// its handler runs — asks for [BodyWhole].
+//
+// It is what a body arrives as, not what is accepted: the accepted size is
+// [Config.MaxBodyBytes] and [Config.MaxStreamedBodyBytes] either way.
+type BodyDelivery int
+
+const (
+	// BodyStreamed hands a body to the handler as it arrives, through
+	// [Request.Stream], except one already whole in the read that brought
+	// the request's headers and under [Config.MaxBodyBytes], which still
+	// arrives in [Request.Body] and batches with its neighbours.
+	BodyStreamed BodyDelivery = iota
+
+	// BodyWhole holds a body until it is complete, so every request handed
+	// to a handler has its body in [Request.Body] and [Request.Stream] is
+	// nil. What one connection may hold is then bounded by
+	// [Config.MaxBodyBytes], and four times it across the bodies an HTTP/2
+	// or HTTP/3 connection assembles at once.
+	BodyWhole
+)
+
 // Config bounds everything a client controls, for every protocol this package
 // serves: [Serve] reads it for HTTP/1.1 and HTTP/2, [ServeH3Conn] for HTTP/3.
 // Every bound is mandatory and none is a required parameter: the zero value
@@ -327,8 +353,8 @@ type Config struct {
 	MaxHeaders int
 
 	// MaxBodyBytes bounds one request body. Zero means 1 MiB. Every
-	// protocol. A body is delivered whole unless MaxStreamedBodyBytes streams
-	// it (docs/design/adr/0009, article 4), so this is also what one connection
+	// protocol. A body is delivered whole when BodyDelivery asks for it
+	// (docs/design/adr/0009, article 4), and this is then what one connection
 	// may hold in its read buffer: the buffer grows from 4 KiB toward
 	// MaxRequestLineBytes + MaxHeaderBytes + MaxBodyBytes as a request
 	// arrives, and a request that has not arrived in full after ReadTimeout
@@ -345,15 +371,21 @@ type Config struct {
 	// the same order as one window's worth of honest traffic.
 	MaxBodyBytes int
 
-	// MaxStreamedBodyBytes turns request bodies into streams and bounds a
-	// streamed one. Zero means bodies are delivered whole, under
-	// MaxBodyBytes; a negative value is refused. Every protocol
-	// (docs/design/adr/0009, article 4) — HTTP/3 when the QUIC connection's
-	// windows cover a request's head, MaxHeaderBytes and a few kilobytes of
-	// framing, which [Config.TransportParameters] gives: streaming needs the
-	// transport's manual credit, and on smaller windows bodies arrive whole.
+	// BodyDelivery says whether a request body is streamed or held whole.
+	// The zero value, [BodyStreamed], streams it on every protocol
+	// (docs/design/adr/0009, article 4) — on HTTP/3 when the QUIC
+	// connection's windows cover a request's head, MaxHeaderBytes and a few
+	// kilobytes of framing, which [Config.TransportParameters] gives:
+	// streaming needs the transport's manual credit, and on smaller windows
+	// bodies arrive whole. A value that names neither form is refused.
+	BodyDelivery BodyDelivery
+
+	// MaxStreamedBodyBytes bounds a streamed body. Zero means MaxBodyBytes;
+	// a negative value is refused. It is read when BodyDelivery streams, and
+	// raises what is accepted above MaxBodyBytes for a body that arrives as
+	// a stream.
 	//
-	// When it is positive, a body already whole in the read that brought
+	// When bodies stream, a body already whole in the read that brought
 	// the request's headers — over HTTP/2, in the frames read with them;
 	// over HTTP/3, in the packet — and within MaxBodyBytes, is still delivered in [Request.Body] and
 	// batched with its neighbours; any other body arrives through
@@ -775,7 +807,11 @@ func (c Config) resolve() (Config, error) {
 			c.InitialWindowSize, maxWindow, defaultInitialWindow))
 	}
 	if c.MaxStreamedBodyBytes < 0 {
-		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxStreamedBodyBytes %d is negative — zero means bodies are delivered whole", c.MaxStreamedBodyBytes))
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxStreamedBodyBytes %d is negative — zero means Config.MaxBodyBytes", c.MaxStreamedBodyBytes))
+	}
+	if c.BodyDelivery != BodyStreamed && c.BodyDelivery != BodyWhole {
+		err = errors.Join(err, fmt.Errorf("httpstream: Config.BodyDelivery %d names neither form — %d streams a body, %d holds it whole",
+			c.BodyDelivery, BodyStreamed, BodyWhole))
 	}
 	if c.MaxConns < 0 {
 		err = errors.Join(err, fmt.Errorf("httpstream: Config.MaxConns %d is negative — zero means no bound", c.MaxConns))
@@ -795,6 +831,11 @@ func (c Config) resolve() (Config, error) {
 	}
 	if c.LingerTimeout == 0 {
 		c.LingerTimeout = min(c.ReadTimeout, time.Second)
+	}
+	// After MaxBodyBytes has its own default: the two are read together,
+	// and a streamed body's bound is the whole one unless it is raised.
+	if c.MaxStreamedBodyBytes == 0 {
+		c.MaxStreamedBodyBytes = c.MaxBodyBytes
 	}
 	return c, nil
 }

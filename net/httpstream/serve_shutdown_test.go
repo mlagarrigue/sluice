@@ -274,7 +274,7 @@ func TestServeShutdownDrainsH2Stream(t *testing.T) {
 // never comes: open, so the drain cannot finish, and without a handler in
 // flight, so the error's GOAWAY is not held back by one.
 func TestH2GoAwayLastStreamIdentifierNeverRises(t *testing.T) {
-	addr, cancel, _ := serveUntilCancelled(t, Config{ShutdownGrace: 10 * time.Second}, echoTarget)
+	addr, cancel, _ := serveUntilCancelled(t, Config{BodyDelivery: BodyWhole, ShutdownGrace: 10 * time.Second}, echoTarget)
 
 	c := dialH2(t, addr)
 	c.frame(h2Frame{
