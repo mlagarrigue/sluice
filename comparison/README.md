@@ -322,6 +322,40 @@ would run; the image is tagged `study-measured:<target>`. It reports:
   for every contender) is idle and warms nothing. Its resolution is one
   window.
 
+### The cross-check against two independent clients
+
+```
+docker build -f comparison/crosscheck/Dockerfile -t sluice-crosscheck .
+comparison/chain/crosscheck.sh
+PAIRS="h3:h2load" RATE=2000 comparison/chain/crosscheck.sh
+```
+
+A bias in the generator shows up in nothing the generator measures: an
+A/A comparison carries it on both sides and reads as agreement. So one
+point of the chain is played twice, by the generator and by a client that
+shares no code with it, and the two are printed side by side — one JSON
+line per protocol, with the tool's gap at the p50 and at the p99.
+
+The two clients are built in `comparison/crosscheck/Dockerfile`, every
+piece pinned by checksum: **oha** for HTTP/1.1 and HTTP/2, which imposes
+the rate and counts each request from the instant it was due, as the
+generator does; and **h2load** from nghttp2 built against ngtcp2 for
+HTTP/3 — a QUIC stack the generator and the server do not share, so a bug
+symmetric between them cannot hide. Alpine's own h2load shows the HTTP/3
+options but is built without ngtcp2, hence the build here.
+
+How to read a gap. The protocols both clients speak are the control: where
+oha and the generator agree, a gap left on h2load is h2load's — it times
+from the instant a request was sent rather than from the instant it was
+due, and its QUIC client needs threads of its own before it stops being
+the bottleneck (`THREADS`, five by default). What the cross-check can show
+is the generator reading differently from a tool that times the same way;
+that is the signal, and it is why oha carries HTTP/1.1 and HTTP/2.
+
+Both clients get the connections the generator would use for the same
+rate, C = 2 R (RTT + X), and the same keys drawn without repetition. The
+figures are a run's own output: a laptop's belong to that laptop.
+
 ### Validating it
 
 ```

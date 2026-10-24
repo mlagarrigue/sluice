@@ -9,6 +9,7 @@
 #   comparison/chain/chain.sh web     # a fresh server: a repetition starts here (§7.1)
 #   comparison/chain/chain.sh stage   # one stage, its line merged with the collector's
 #   comparison/chain/chain.sh boot    # a fresh server timed: cold start, RSS at rest, time to steady state (§1.4)
+#   comparison/chain/chain.sh tool …  # TOOL_IMAGE with these arguments, in the tester's place
 #   comparison/chain/chain.sh down    # every container and network removed
 #
 # run.sh plays the four in a row, for one stage; the orchestrator
@@ -316,6 +317,23 @@ boot() {
               never: ($i == null)}}' "$OUT/settle.jsonl"
 }
 
+# tool runs TOOL_IMAGE in the tester's place — its network namespace, its
+# cores, its limits — with the verb's arguments as its command, and prints
+# what it wrote on stdout: a client independent of the generator, on the
+# same path, which the cross-check script plays.
+tool() {
+  docker rm -f "$tester" >/dev/null 2>&1 || true
+  docker run -d --name "$tester" --network "container:$tnet" --cpuset-cpus "$TESTER_CPUS" \
+    --ulimit nofile="$NOFILE:$NOFILE" "${TOOL_IMAGE:?names the image of the tool}" "$@" >/dev/null
+  local code; code=$(docker wait "$tester")
+  docker logs "$tester" 2>/dev/null
+  if [ "$code" != 0 ]; then
+    docker logs "$tester" 2>&1 >/dev/null | tail -20 >&2
+  fi
+  docker rm "$tester" >/dev/null
+  return "$code"
+}
+
 # Before the stage (§2.2): the write table emptied, everything flushed, and
 # the counters a checkpoint or an autovacuum would move read.
 steady() {
@@ -509,6 +527,7 @@ case ${1:-} in
   web) web ;;
   stage) stage ;;
   boot) boot ;;
+  tool) shift; tool "$@" ;;
   down) down ;;
-  *) echo "usage: chain.sh up|web|stage|boot|down" >&2; exit 1 ;;
+  *) echo "usage: chain.sh up|web|stage|boot|tool|down" >&2; exit 1 ;;
 esac
