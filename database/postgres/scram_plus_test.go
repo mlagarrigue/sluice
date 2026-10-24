@@ -106,6 +106,37 @@ func TestTLSServerEndPointMaxSaltPSS(t *testing.T) {
 	}
 }
 
+// The two sides of the limit docs/guide/limits.md states for these
+// certificates. Placed in RootCAs, one is trusted as it stands: Verify
+// accepts it, its own signature never read. Once its signature has to be
+// checked — what verifying a chain does with every certificate an
+// authority signed — crypto/x509 refuses the algorithm, and the TLS
+// handshake fails before any authentication. If a Go release starts
+// verifying these signatures, the second assertion turns red and the
+// limit is to be lifted.
+func TestMaxSaltPSSFailsWhereItsSignatureIsChecked(t *testing.T) {
+	pemBytes, err := os.ReadFile(filepath.Join("testdata", "rsa-pss-maxsalt-sha384.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		t.Fatal("no PEM block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: roots, CurrentTime: cert.NotBefore.Add(time.Minute)}); err != nil {
+		t.Errorf("the certificate placed in RootCAs did not verify: %v", err)
+	}
+	if err := cert.CheckSignatureFrom(cert); !errors.Is(err, x509.ErrUnsupportedAlgorithm) {
+		t.Errorf("checking its signature returned %v, want x509.ErrUnsupportedAlgorithm", err)
+	}
+}
+
 // selfSigned returns a certificate for "db.test" signed by its own key, with
 // the signature algorithm the key type implies.
 func selfSigned(t *testing.T, key any, pub any) tls.Certificate {
