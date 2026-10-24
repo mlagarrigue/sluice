@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // variant serves what h serves, with the body of every 200 passed
@@ -157,5 +158,29 @@ func TestFetchMetrics(t *testing.T) {
 	c.url = srv.URL + "/nowhere"
 	if err := fetchMetrics(context.Background(), c.stage, &out); err == nil {
 		t.Fatal("a 404 accepted")
+	}
+}
+
+// -ready waits through a server that is not listening yet, and stops at
+// its first answer ok.
+func TestWaitReady(t *testing.T) {
+	s := startTrivial(t, 10000)
+	c := testCampaign(t, protoH1, s.URL, "-scenario", "unit")
+	var out bytes.Buffer
+	before := time.Now().UnixNano()
+	if err := waitReady(t.Context(), c.stage, 5*time.Second, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Ready    int64 `json:"ready_unix_ns"`
+		Attempts int   `json:"attempts"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil || got.Ready < before || got.Attempts != 1 {
+		t.Fatalf("%s %v: want one attempt, after the call", out.String(), err)
+	}
+	c.url = "https://127.0.0.1:1" // nothing listens there
+	start := time.Now()
+	if err := waitReady(t.Context(), c.stage, 300*time.Millisecond, &out); err == nil || time.Since(start) < 300*time.Millisecond {
+		t.Fatalf("%v after %s: want an error once the 300ms are spent", err, time.Since(start))
 	}
 }

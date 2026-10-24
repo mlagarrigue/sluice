@@ -69,6 +69,13 @@ func run() int {
 		}
 		return 0
 	}
+	if c.ready > 0 {
+		if err := waitReady(ctx, c.stage, c.ready, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if c.verdicts != "" {
 		f, err := verdictsFile(c.verdicts)
 		if err == nil {
@@ -142,13 +149,14 @@ type campaign struct {
 	drain    time.Duration
 	maxConns int // the tester's ceiling on C, 0 for none
 
-	trivial    string // run the trivial server of §4 on this address instead
-	cpuprofile string // write the generator's CPU profile here
-	reference  string // check -url against this server instead of loading it (§4 "same answer")
-	checks     int    // how many requests the check sends
-	metrics    bool   // print -url's metrics point instead of loading it
-	verdicts   string // judge the rounds in this file instead (§7.4), "-" for stdin
-	compare    string // the comparisons declared for -verdicts, a:b,…
+	trivial    string        // run the trivial server of §4 on this address instead
+	cpuprofile string        // write the generator's CPU profile here
+	reference  string        // check -url against this server instead of loading it (§4 "same answer")
+	checks     int           // how many requests the check sends
+	metrics    bool          // print -url's metrics point instead of loading it
+	ready      time.Duration // wait at most this long for -url's first answer ok, and print its instant
+	verdicts   string        // judge the rounds in this file instead (§7.4), "-" for stdin
+	compare    string        // the comparisons declared for -verdicts, a:b,…
 	floors     stats.Floors
 }
 
@@ -195,6 +203,7 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&c.reference, "conformance", "", "check -url against the server at this URL instead of loading it: the same requests to both, the answers compared after parsing (§4 \"same answer\"); exit status 1 at the first difference")
 	fs.IntVar(&c.checks, "checks", 200, "how many requests -conformance sends to each server")
 	fs.BoolVar(&c.metrics, "metrics", false, "print the contract's metrics point of -url (GET /study/metrics) in -proto, instead of loading it")
+	fs.DurationVar(&c.ready, "ready", 0, "poll -url with the scenario's requests every 10 ms, a fresh connection each, until one answer is ok, at most this long, and print its instant (the end of a cold start, §1.4) instead of loading it")
 	fs.StringVar(&c.verdicts, "verdicts", "", "judge the rounds in this file (\"-\" for stdin) instead of loading a server: one JSON line per contender per round, one verdict line per declared comparison and metric (§7.4)")
 	fs.StringVar(&c.compare, "compare", "", "the comparisons -verdicts judges, a:b,… (A against B), declared before the campaign")
 	fs.IntVar(&c.floors.CapacitySteps, "floor-steps", stats.DefaultFloors.CapacitySteps, "the capacity floor in steps of the grid, raised by the A/A (§7.5)")

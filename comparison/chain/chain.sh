@@ -8,6 +8,7 @@
 #   comparison/chain/chain.sh up      # networks, the database loaded, the injected network
 #   comparison/chain/chain.sh web     # a fresh server: a repetition starts here (§7.1)
 #   comparison/chain/chain.sh stage   # one stage, its line merged with the collector's
+#   comparison/chain/chain.sh boot    # a fresh server timed: cold start, RSS at rest, time to steady state (§1.4)
 #   comparison/chain/chain.sh down    # every container and network removed
 #
 # run.sh plays the four in a row, for one stage; the orchestrator
@@ -68,7 +69,7 @@ watch=$CHAIN-watch burn=$CHAIN-burn
 back=$CHAIN-back front=$CHAIN-front
 
 down() {
-  docker rm -f "$db" "$web" "$tester" "$sampler" "$tnet" "$watch" "$burn" >/dev/null 2>&1 || true
+  docker rm -f "$db" "$web" "$tester" "$sampler" "$tnet" "$watch" "$burn" "$CHAIN-ready" >/dev/null 2>&1 || true
   docker network rm "$back" "$front" >/dev/null 2>&1 || true
 }
 
@@ -225,28 +226,94 @@ SQL
   trap - ERR
 }
 
-# web starts a fresh server, the previous one removed: a repetition is one
-# process from its warm-up to its last stage (§7.1). The database's write
-# table is emptied with it, the stage empties it again.
-web() {
-  docker rm -f "$web" >/dev/null 2>&1 || true
+# launch starts a fresh server, the previous one removed, and waits for its
+# first answer ok — read by the generator's -ready from the tester's side,
+# whatever the contender writes in its logs. It prints "t0 ready attempts":
+# the instant before docker create and the instant of that answer, in
+# nanoseconds. The server starts with both networks attached.
+launch() {
+  local ready=$CHAIN-ready
+  docker rm -f "$web" "$ready" >/dev/null 2>&1 || true
+  docker run -d --name "$ready" --network "container:$tnet" "$TESTER_IMAGE" \
+    -ready "${READY_WITHIN:-120s}" -url "https://$web:8443" -proto "$PROTO" \
+    -scenario "$SCENARIO" -keyspace "$ROWS" >/dev/null
+  until [ "$(docker inspect "$ready" --format '{{.State.Running}}' 2>/dev/null)" = true ]; do
+    [ "$(docker inspect "$ready" --format '{{.State.Status}}')" = exited ] && break
+    sleep 0.05
+  done
+  local t0; t0=$(date +%s%N)
   # shellcheck disable=SC2086 # WEB_ARGS is a list of flags, split on purpose
-  docker run -d --name "$web" --network "$back" --cpuset-cpus "$WEB_CPUS" \
+  docker create --name "$web" --network "$back" --cpuset-cpus "$WEB_CPUS" \
     --memory "$WEB_MEMORY" --ulimit nofile="$NOFILE:$NOFILE" \
     -e PGHOST="$db" -e PGUSER=study -e PGPASSWORD="$DBPASS" -e PGDATABASE=study \
     -e STUDY_DB_POOL="$DB_POOL" -e STUDY_PROTOCOL="$PROTO" \
     "$WEB_IMAGE" $WEB_ARGS >/dev/null
   docker network connect "$front" "$web"
-  for _ in $(seq 60); do
-    docker logs "$web" 2>&1 | grep -q '^sluice-study:' && break
-    if [ "$(docker inspect "$web" --format '{{.State.Running}}')" != true ]; then
-      docker logs "$web" >&2
-      echo "chain: web exited before it served" >&2
-      return 1
-    fi
-    sleep 0.5
-  done
+  docker start "$web" >/dev/null
+  local code; code=$(docker wait "$ready")
+  local out; out=$(docker logs "$ready" 2>&1)
+  docker rm "$ready" >/dev/null
+  if [ "$code" != 0 ]; then
+    echo "$out" >&2
+    docker logs "$web" >&2
+    echo "chain: web never answered ok" >&2
+    return 1
+  fi
+  echo "$t0 $(jq -r '"\(.ready_unix_ns) \(.attempts)"' <<<"$out")"
+}
+
+# web starts a fresh server: a repetition is one process from its warm-up
+# to its last stage (§7.1).
+web() {
+  launch >/dev/null
   docker logs "$web" 2>&1 | head -1
+}
+
+# boot measures a start (§1.4) on the chain up built: from docker create to
+# the first answer ok (the cold start, never the first log line), the RSS
+# at rest right after it, then the time to steady state — a plateau at RATE
+# read in WINDOW windows, steady from the first of three windows whose p99
+# hold within ±15 % of one another (max ≤ 1.15 min), within SETTLE (5 min),
+# "never" past it. That time runs from the start of the load, to the
+# window: the generator's own start in between (load_after_ready_ms, the
+# same for every contender) is idle, and warms nothing. One JSON line.
+boot() {
+  local window=${WINDOW:-5s} settle=${SETTLE:-300s}
+  local t0 ready attempts rss
+  local l; l=$(launch) || return 1
+  read -r t0 ready attempts <<<"$l"
+  rss=$(in_web 'awk "/^VmRSS/ {print \$2}" /proc/1/status')
+  local OUT=${OUT:-$(mktemp -d)}
+  docker rm -f "$tester" >/dev/null 2>&1 || true
+  docker run -d --name "$tester" --network "container:$tnet" --cpuset-cpus "$TESTER_CPUS" \
+    --ulimit nofile="$NOFILE:$NOFILE" \
+    "$TESTER_IMAGE" -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
+    -profile plateau -window "$window" -rate "$RATE" -duration "$settle" -warmup 0s \
+    -keyspace "$ROWS" -rtt "$RTT" -seed "$SEED" -conns "$CONNS" >/dev/null
+  docker wait "$tester" >/dev/null
+  docker logs "$tester" > "$OUT/settle.jsonl" 2> "$OUT/tester.err"
+  docker rm "$tester" >/dev/null
+  local start0; start0=$(jq -r 'select(.window == 0) | .start' "$OUT/settle.jsonl")
+  if [ -z "$start0" ]; then
+    cat "$OUT/tester.err" >&2
+    echo "chain: the plateau wrote no window" >&2
+    return 1
+  fi
+  start0=$(date -d "$start0" +%s%N)
+  jq -sc --arg image "$WEB_IMAGE" --arg args "$WEB_ARGS" --argjson t0 "$t0" --argjson ready "$ready" \
+    --argjson attempts "$attempts" --argjson rss "$rss" --argjson start0 "$start0" \
+    --arg window "$window" --arg settle "$settle" '
+    [.[] | select(.window != null)] | sort_by(.window) as $w |
+    ($w | map(.ttlb_ms.p99)) as $p |
+    ($window | rtrimstr("s") | tonumber) as $ws |
+    ([range(0; ($p | length) - 2) | select(($p[.:.+3] | max) <= 1.15 * ($p[.:.+3] | min))] | first) as $i |
+    {image: $image, args: $args, scenario: $w[0].scenario, proto: $w[0].proto, rate: $w[0].rate,
+     cold_start_ms: (($ready - $t0) / 1e6), ready_attempts: $attempts, rss_kb_rest: $rss,
+     settle: {window: $window, within: $settle, p99_ms: $p, held: ($w | map(.held)),
+              steady_from_window: $i,
+              load_after_ready_ms: (($start0 - $ready) / 1e6),
+              steady_ms: (if $i == null then null else $i * $ws * 1000 end),
+              never: ($i == null)}}' "$OUT/settle.jsonl"
 }
 
 # Before the stage (§2.2): the write table emptied, everything flushed, and
@@ -441,6 +508,7 @@ case ${1:-} in
   up) up ;;
   web) web ;;
   stage) stage ;;
+  boot) boot ;;
   down) down ;;
-  *) echo "usage: chain.sh up|web|stage|down" >&2; exit 1 ;;
+  *) echo "usage: chain.sh up|web|stage|boot|down" >&2; exit 1 ;;
 esac

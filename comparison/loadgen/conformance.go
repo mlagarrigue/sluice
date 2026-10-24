@@ -280,3 +280,40 @@ func fetchMetrics(ctx context.Context, st stage, out io.Writer) error {
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
+
+// waitReady polls -url with the scenario's requests, every 10 ms, until
+// one answer passes every check, and prints the instant it came back, in
+// nanoseconds since the epoch: the end of a cold start (§1.4) is the first
+// response that succeeded, never the first log line. Each attempt dials
+// afresh, so a server not yet listening, or a name not yet resolved, is
+// one more attempt, not an error.
+func waitReady(ctx context.Context, st stage, within time.Duration, out io.Writer) error {
+	cl, err := campaign{stage: st}.newClient()
+	if err != nil {
+		return err
+	}
+	defer cl.close()
+	next := st.scenario.draw(st.seed, st.keyspace)
+	give := time.Now().Add(within)
+	for attempt := 1; ; attempt++ {
+		cn := cl.dial(false)
+		r := cl.do(ctx, cn.hc, job{req: next(attempt - 1), due: time.Now(), win: -1}, time.Second)
+		cn.close()
+		if r.nature == natureOK {
+			return json.NewEncoder(out).Encode(map[string]int64{"ready_unix_ns": time.Now().UnixNano(), "attempts": int64(attempt)})
+		}
+		if r.nature == natureBadKey {
+			return fmt.Errorf("%s answered, but not the key asked for", st.url)
+		}
+		if time.Now().After(give) {
+			last := r.err
+			if last == nil { // an answer with a status other than 200
+				last = fmt.Errorf("status %d", r.status)
+			}
+			return fmt.Errorf("%s: no answer ok within %s, %d attempts (last: %w)", st.url, within, attempt, last)
+		}
+		if !sleepUntil(ctx, time.Now().Add(10*time.Millisecond)) {
+			return ctx.Err()
+		}
+	}
+}

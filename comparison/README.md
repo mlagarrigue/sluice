@@ -286,6 +286,42 @@ each, the tester's cores pass 70 % before web breaks), it runs end to end
 in 23 minutes, 81 stages, none invalidated, and nothing it measures is a
 figure.
 
+### An image, built and started
+
+```
+comparison/chain/image.sh comparison/sluice/Dockerfile opt
+SCENARIO=unit RATE=1000 TOUCH=main.go comparison/chain/image.sh comparison/sluice/Dockerfile doc
+```
+
+The containerisation of one image (§1.4), one JSON line. The build
+context is the committed tree (`git archive HEAD`) in a directory of its
+own, so the working tree is never touched and the build is the one a CI
+would run; the image is tagged `study-measured:<target>`. It reports:
+
+- **size**: the image's bytes as Docker counts them, the gzip of `docker
+  save` (no registry here; the size a registry stores is of that order),
+  and its layers;
+- **build**: from nothing (`--no-cache`, the bases already pulled), then
+  after one line of code added to `TOUCH` (under the Dockerfile's
+  directory, `main.go` by default), the cache of the first build warm;
+- **cold start**, by `chain.sh boot` on the chain `up` built: from the
+  instant before `docker create` — the server then gets both networks and
+  starts — to its **first answer ok**, never its first log line. The
+  generator's `-ready` polls from the tester's side every 10 ms, a fresh
+  connection each time, with the scenario's requests, their keys checked;
+  a name not resolved yet or a port not listening is one more attempt.
+  `chain.sh web` waits for a server the same way, whatever the contender
+  writes in its logs;
+- **RSS at rest**, read in the server's namespaces right after that
+  answer;
+- **time to steady state**: a plateau at `RATE` (unit, 1 000 req/s by
+  default) read in 5 s windows (`WINDOW`), steady from the first of three
+  windows whose p99 hold within ±15 % of one another, at most 5 min
+  (`SETTLE`), `never` past it. It is counted from the start of the load:
+  the generator's own start in between (`load_after_ready_ms`, the same
+  for every contender) is idle and warms nothing. Its resolution is one
+  window.
+
 ### Validating it
 
 ```
