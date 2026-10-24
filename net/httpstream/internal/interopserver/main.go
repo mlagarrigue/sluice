@@ -80,7 +80,19 @@ func main() {
 // config leaves every bound at its default: h2spec probes the protocol's
 // edges, and a bound tighter than the protocol's own would be reported as a
 // failure of ours. The timeouts are long enough for a slow runner.
+//
+// Bodies are held whole, against the package's own default. h2spec reads a
+// malformed request by the first frame that comes back, and /echo answers
+// the body it was sent: both want the request finished before the response
+// starts. Streaming lets a handler answer first — RFC 9113 §8.1 allows it,
+// and a content-length that disagrees with the DATA sum is still a stream
+// error (PROTOCOL_ERROR) when END_STREAM makes the sum final — but whether
+// the response or the reset leaves first then depends on whether the DATA
+// arrived with the headers, and h2spec's 8.1.2.6/2 reads one as a failure
+// one run in several. The streamed form is exercised by the package's own
+// tests and by the QUIC Interop Runner, not here.
 var config = httpstream.Config{
+	BodyDelivery: httpstream.BodyWhole,
 	IdleTimeout:  10 * time.Second,
 	ReadTimeout:  10 * time.Second,
 	WriteTimeout: 10 * time.Second,

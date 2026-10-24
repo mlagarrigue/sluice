@@ -108,7 +108,10 @@ func h3Paced(yield func(sluice.Batch[[]byte]) bool) {
 func startH3Server(tb testing.TB, handle httpstream.Handler) (base string, ln *quic.Listener, served <-chan error) {
 	tb.Helper()
 	pc := listenUDP(tb)
-	cfg := httpstream.Config{IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
+	// Whole bodies: this server reports what each request carried, body
+	// and trailers included, and a streamed body's trailers are checked
+	// against the header bounds without being kept.
+	cfg := httpstream.Config{BodyDelivery: httpstream.BodyWhole, IdleTimeout: timeout, ReadTimeout: timeout, WriteTimeout: timeout}
 	params, err := cfg.TransportParameters()
 	if err != nil {
 		tb.Fatal(err)
