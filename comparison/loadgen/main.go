@@ -88,6 +88,7 @@ type stage struct {
 	rtt      time.Duration // the RTT injected on the wire, for C only (§3.5)
 	newConns int           // percent of requests that open a fresh connection (§3.6)
 	encoding string        // the content coding asked for, "" for identity (§2.3 bis)
+	resume   bool          // keep a client session cache, so fresh connections resume (§4 "TLS fixed")
 }
 
 // campaign is what the command runs: one stage, or a ramp of stages that
@@ -118,7 +119,7 @@ func parse(args []string) (campaign, error) {
 	var c campaign
 	st := &c.stage
 	var name, rates string
-	fs.StringVar(&st.url, "url", "https://127.0.0.1:8443", "the server under test, scheme and host")
+	fs.StringVar(&st.url, "url", "https://127.0.0.1:8443", "the server under test, scheme and host; http:// is HTTP/1.1 in clear (TLS off, level 2)")
 	fs.StringVar(&st.proto, "proto", protoH1, "h1, h2 or h3: HTTP/1.1, HTTP/2 or HTTP/3, one connection per virtual client, at most 8 streams on it")
 	fs.IntVar(&st.rate, "rate", 100, "requests per second, sent at a constant interval; with -ramp, where the grid starts")
 	fs.DurationVar(&st.duration, "duration", 10*time.Second, "length of the measurement of a stage")
@@ -131,6 +132,7 @@ func parse(args []string) (campaign, error) {
 	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
 	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
 	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip or deflate (br and zstd once their decoders are in go.mod)")
+	fs.BoolVar(&st.resume, "tls-resume", false, "keep a TLS session cache: fresh connections resume a session (the study's R does not)")
 	fs.IntVar(&st.newConns, "new-conns", 0, "percent of requests that open a fresh connection and close it, 0 or 10 (§3.6)")
 	fs.BoolVar(&c.ramp, "ramp", false, "run the stages of the grid 100 × 1.05^k from -rate up, until one breaks")
 	fs.StringVar(&rates, "rates", "", "run these stages instead of the grid, comma-separated req/s, until one breaks")
@@ -154,6 +156,14 @@ func parse(args []string) (campaign, error) {
 	st.name, st.scenario = name, sc
 	if st.proto != protoH1 && st.proto != protoH2 && st.proto != protoH3 {
 		return c, fmt.Errorf("-proto %q: want h1, h2 or h3", st.proto)
+	}
+	// In clear, HTTP/1.1 only: h2c is no configuration of the study, as the
+	// server refuses it too, and QUIC is always TLS.
+	switch {
+	case strings.HasPrefix(st.url, "http://") && st.proto != protoH1:
+		return c, fmt.Errorf("-url %s: in clear, -proto h1 only (h2c is not a configuration of the study, QUIC is always TLS)", st.url)
+	case !strings.HasPrefix(st.url, "http://") && !strings.HasPrefix(st.url, "https://"):
+		return c, fmt.Errorf("-url %s: want http:// or https://", st.url)
 	}
 	if st.slo == 0 {
 		st.slo = defaultSLO[name]

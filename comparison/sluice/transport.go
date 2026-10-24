@@ -3,18 +3,22 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -26,16 +30,14 @@ import (
 const maxBody = 1 << 16
 
 // serve runs the app on ln with the transport the options name, until ctx is
-// cancelled. It takes a listener rather than an address so that the test can
-// bind port 0 and read the port back. httpstream-h3 runs on a packet socket,
-// not a stream listener: see serveH3.
-func serve(ctx context.Context, o options, a *app, ln net.Listener) error {
-	if o.tls {
-		cfg, err := tlsConfig(o)
-		if err != nil {
-			return err
-		}
-		ln = tls.NewListener(ln, cfg)
+// cancelled, under TLS when tlsCfg is not nil. It takes a listener rather
+// than an address so that the test can bind port 0 and read the port back,
+// and the TLS config as a parameter so that it hands over the certificate
+// its client trusts; run passes tlsConfig(o). httpstream-h3 runs on a
+// packet socket, not a stream listener: see serveH3.
+func serve(ctx context.Context, o options, a *app, ln net.Listener, tlsCfg *tls.Config) error {
+	if tlsCfg != nil {
+		ln = tls.NewListener(ln, tlsCfg)
 	}
 	if o.httpstream() {
 		return httpstream.Serve(ctx, ln, httpstreamConfig(o), a.handler())
@@ -64,7 +66,7 @@ func serveH3(ctx context.Context, o options, a *app, pc net.PacketConn, tlsCfg *
 	if err != nil {
 		return err
 	}
-	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{})
+	ln, err := quic.NewListener(pc, tlsCfg, params, quic.ListenerConfig{SessionTickets: o.tlsResume})
 	if err != nil {
 		return err
 	}
@@ -312,7 +314,9 @@ func (a *app) encodedHeaders() []httpstream.Header {
 
 // tlsConfig is the certificate the options name, or a self-signed ECDSA P-256
 // one for a local run (§4 fixes P-256 for the campaign). ALPN narrows the
-// protocol to the one the transport flag names.
+// protocol to the one the transport flag names. Session tickets are issued
+// under -tls-resume only: crypto/tls issues them by default, and R does not
+// resume (under QUIC the listener sends them, quic.ListenerConfig).
 func tlsConfig(o options) (*tls.Config, error) {
 	var cert tls.Certificate
 	var err error
@@ -325,6 +329,9 @@ func tlsConfig(o options) (*tls.Config, error) {
 		return nil, err
 	}
 	cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}
+	if o.transport != transportHTTPStreamH3 {
+		cfg.SessionTicketsDisabled = !o.tlsResume
+	}
 	switch o.transport {
 	case transportNetHTTPH1, transportHTTPStreamH1:
 		cfg.NextProtos = []string{"http/1.1"}
@@ -336,6 +343,33 @@ func tlsConfig(o options) (*tls.Config, error) {
 		return nil, errors.New("tlsConfig: transport without a TLS protocol")
 	}
 	return cfg, nil
+}
+
+// tlsSummary is the TLS the server runs under, written at startup so that
+// a campaign's log says it (§4 "TLS fixed"): the version floor, the
+// certificate's key, the ALPN, whether sessions resume. TLS 1.3's suites
+// are crypto/tls's, which no Config sets.
+func tlsSummary(cfg *tls.Config, resume bool) string {
+	key := "unknown key"
+	if len(cfg.Certificates) > 0 {
+		switch k := cfg.Certificates[0].PrivateKey.(type) {
+		case *ecdsa.PrivateKey:
+			key = "ECDSA " + k.Curve.Params().Name
+		case *rsa.PrivateKey:
+			key = fmt.Sprintf("RSA %d", k.N.BitLen())
+		case ed25519.PrivateKey:
+			key = "Ed25519"
+		}
+	}
+	resumption := "off"
+	if resume {
+		resumption = "on"
+	}
+	return fmt.Sprintf("TLS %s+, %s certificate, ALPN %s, resumption %s", tlsVersion(cfg.MinVersion), key, strings.Join(cfg.NextProtos, ","), resumption)
+}
+
+func tlsVersion(v uint16) string {
+	return strings.TrimPrefix(tls.VersionName(v), "TLS ")
 }
 
 func selfSigned() (tls.Certificate, error) {

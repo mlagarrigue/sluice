@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -74,6 +76,9 @@ type client struct {
 
 	mu    sync.Mutex
 	conns []conn
+	// negotiated is every distinct TLS setting a handshake ended on: one,
+	// unless the server is not what it says.
+	negotiated []tlsSetting
 }
 
 // conn is one virtual client: an http.Client over a transport that holds
@@ -109,6 +114,11 @@ func (c campaign) newClient() (*client, error) {
 			return nil, fmt.Errorf("-ca %s: no certificate in it", st.ca)
 		}
 		cfg.RootCAs = pool
+	}
+	if st.resume {
+		// One cache for every connection: the budget's handshakes, before
+		// the clock, leave the tickets the fresh ones resume with.
+		cfg.ClientSessionCache = copyingCache{tls.NewLRUClientSessionCache(1024)}
 	}
 	return &client{url: st.url, proto: st.proto, encoding: st.encoding, deadline: st.deadline(), tls: cfg}, nil
 }
@@ -157,8 +167,9 @@ func (c *client) dial(budget bool) conn {
 // uses, with the same httptrace hooks (ConnectStart, TLSHandshakeDone,
 // ConnectDone), on a UDP socket of the connection's own, closed with it;
 // a connection of the budget is counted when it opens and when it ends.
-// It dials early, which is a plain 1-RTT handshake with no session cache
-// in the config.
+// It waits for the handshake to complete, never sending in 0-RTT, which
+// the study does not measure: with a session cache, an early dial would
+// hand the connection over before the handshake said what it negotiated.
 func (c *client) dialQUIC(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config, budget bool) (*quic.Conn, error) {
 	ua, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -172,7 +183,7 @@ func (c *client) dialQUIC(ctx context.Context, addr string, tlsCfg *tls.Config, 
 	pc, err := net.ListenUDP("udp", nil)
 	if err == nil {
 		tr := &quic.Transport{Conn: pc}
-		qc, err = tr.DialEarly(ctx, ua, tlsCfg, cfg)
+		qc, err = tr.Dial(ctx, ua, tlsCfg, cfg)
 		if err != nil {
 			_ = tr.Close()
 			_ = pc.Close()
@@ -250,15 +261,77 @@ func (w *watched) abandon() {
 }
 
 // watchedOf is the watched connection under what httptrace's GotConn
-// hands out: net/http's TLS connection over it, under HTTP/1.1 and
-// HTTP/2. quic-go hands out a stand-in, and abandoning a request under
+// hands out: itself in clear, net/http's TLS connection over it under
+// HTTP/1.1 and HTTP/2. quic-go hands out a stand-in, and abandoning a request under
 // HTTP/3 resets its stream, never the connection.
 func watchedOf(nc net.Conn) *watched {
+	if w, ok := nc.(*watched); ok { // HTTP/1.1 in clear
+		return w
+	}
 	if tc, ok := nc.(*tls.Conn); ok {
 		w, _ := tc.NetConn().(*watched)
 		return w
 	}
 	return nil
+}
+
+// tlsSetting is what one handshake negotiated.
+type tlsSetting struct{ version, suite, alpn string }
+
+// copyingCache hands every Get a session state of its own. quic-go v0.63
+// writes into the state it resumes with (EarlyData, in
+// handshake.cryptoSetup.handleEvent), and two fresh connections resuming
+// the one cached session at once would write into the same one: a data
+// race the detector catches under -tls-resume -proto h3.
+type copyingCache struct{ tls.ClientSessionCache }
+
+func (c copyingCache) Get(key string) (*tls.ClientSessionState, bool) {
+	cs, ok := c.ClientSessionCache.Get(key)
+	if !ok || cs == nil {
+		return cs, ok
+	}
+	ticket, st, err := cs.ResumptionState()
+	if err != nil || st == nil {
+		return cs, ok
+	}
+	own := *st
+	cp, err := tls.NewResumptionState(ticket, &own)
+	if err != nil {
+		return cs, ok
+	}
+	return cp, true
+}
+
+// note records the TLS setting a handshake ended on.
+func (c *client) note(cs tls.ConnectionState) {
+	n := tlsSetting{tls.VersionName(cs.Version), tls.CipherSuiteName(cs.CipherSuite), cs.NegotiatedProtocol}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !slices.Contains(c.negotiated, n) {
+		c.negotiated = append(c.negotiated, n)
+	}
+}
+
+// tlsSettings is what the handshakes so far negotiated, for the report:
+// "none" in clear, the distinct values joined by " | " if they differ.
+func (c *client) tlsSettings() (version, suite, alpn string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.negotiated) == 0 {
+		return "none", "none", ""
+	}
+	var vs, ss, as []string
+	for _, n := range c.negotiated {
+		vs, ss, as = appendNew(vs, n.version), appendNew(ss, n.suite), appendNew(as, n.alpn)
+	}
+	return strings.Join(vs, " | "), strings.Join(ss, " | "), strings.Join(as, " | ")
+}
+
+func appendNew(xs []string, x string) []string {
+	if slices.Contains(xs, x) {
+		return xs
+	}
+	return append(xs, x)
 }
 
 func (c *client) close() {
@@ -326,6 +399,7 @@ type result struct {
 	compressed bool // in the coding asked for
 	raw        bool // deflate without its zlib wrapper
 	handshake  bool // a TLS handshake happened inside this request's delays
+	resumed    bool // and it resumed a session
 }
 
 // nature is what became of a request (§1.2): answered right, answered
@@ -377,7 +451,7 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.D
 	// A dial the transport started for this request can outlive it, when
 	// another connection became free first: these are written from that
 	// goroutine, hence the atomics.
-	var connecting, gotConn, handshake atomic.Bool
+	var connecting, gotConn, handshake, resumed atomic.Bool
 	var on atomic.Pointer[watched]
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		GotFirstResponseByte: func() { firstByte = time.Now() },
@@ -388,7 +462,13 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.D
 			}
 			gotConn.Store(true)
 		},
-		TLSHandshakeDone: func(tls.ConnectionState, error) { handshake.Store(true) },
+		TLSHandshakeDone: func(cs tls.ConnectionState, err error) {
+			handshake.Store(true)
+			if err == nil {
+				resumed.Store(cs.DidResume)
+				c.note(cs)
+			}
+		},
 	}))
 	failed := func(err error) result {
 		res.err = err
@@ -401,7 +481,7 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.D
 		return res
 	}
 	resp, err := hc.Do(req) //nolint:gosec // G704: same
-	res.handshake = handshake.Load()
+	res.handshake, res.resumed = handshake.Load(), resumed.Load()
 	if err != nil {
 		return failed(err)
 	}

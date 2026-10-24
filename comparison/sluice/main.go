@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -64,13 +65,21 @@ func run(ctx context.Context, o options) (err error) {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "sluice-study: %s on udp %s\n", o.transport, pc.LocalAddr())
+		fmt.Fprintf(os.Stderr, "sluice-study: %s on udp %s (%s)\n", o.transport, pc.LocalAddr(), tlsSummary(tlsCfg, o.tlsResume))
 		return serveH3(ctx, o, a, pc, tlsCfg)
 	}
 	ln, err := net.Listen("tcp", o.listen)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "sluice-study: %s on %s (tls=%v)\n", o.transport, ln.Addr(), o.tls)
-	return serve(ctx, o, a, ln)
+	var tlsCfg *tls.Config
+	summary := "in clear"
+	if o.tls {
+		if tlsCfg, err = tlsConfig(o); err != nil {
+			return err
+		}
+		summary = tlsSummary(tlsCfg, o.tlsResume)
+	}
+	fmt.Fprintf(os.Stderr, "sluice-study: %s on %s (%s)\n", o.transport, ln.Addr(), summary)
+	return serve(ctx, o, a, ln, tlsCfg)
 }

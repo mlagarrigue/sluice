@@ -22,6 +22,13 @@ type report struct {
 	NewConns int     `json:"new_conns_pct"`
 	Encoding string  `json:"encoding"` // the content coding asked for (§2.3 bis)
 
+	// TLS as negotiated (§4 "TLS fixed"): "none" in clear; two values
+	// joined by " | " mean the connections did not all agree.
+	TLSVersion string `json:"tls_version"`
+	TLSSuite   string `json:"tls_suite"`
+	ALPN       string `json:"alpn"`
+	TLSResume  bool   `json:"tls_resume"` // a client session cache was kept
+
 	Held  bool   `json:"held"`  // the SLO held and the stage is a measurement
 	Cause string `json:"cause"` // why not, by precedence: key, connect, queue, slo
 
@@ -58,6 +65,7 @@ type report struct {
 	QueueMax   int `json:"queue_max"`  // most requests due at once with no connection free (§3.5)
 	Queued     int `json:"queued"`     // requests that were due with no connection free
 	Handshakes int `json:"handshakes"` // TLS handshakes inside the measurement: the fresh connections (§3.6), the reconnections
+	Resumed    int `json:"resumed"`    // those of them that resumed a session
 
 	Late quantiles `json:"late_ms"` // due → dispatched: the generator's own lateness, its noise floor
 	Wait quantiles `json:"wait_ms"` // due → taken by a worker: the queue seen from one request
@@ -115,7 +123,7 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 	rep := report{
 		URL: st.url, Proto: st.proto, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
 		Conns: st.conns, Seed: st.seed, Sent: len(all),
-		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns, Encoding: cmp.Or(st.encoding, "identity"),
+		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns, Encoding: cmp.Or(st.encoding, "identity"), TLSResume: st.resume,
 		QueueMax: int(queueMax), Queued: int(queued),
 	}
 	if elapsed > 0 {
@@ -127,6 +135,9 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 		wait = append(wait, r.wait)
 		if r.handshake {
 			rep.Handshakes++
+		}
+		if r.resumed {
+			rep.Resumed++
 		}
 		switch r.nature {
 		case natureOK:

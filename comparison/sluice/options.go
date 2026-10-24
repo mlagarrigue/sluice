@@ -22,6 +22,10 @@ type options struct {
 	tls    bool
 	cert   string
 	key    string
+	// tlsResume issues session tickets, so that a returning client resumes
+	// its session: off in R, since the study's fresh connection is a new
+	// visitor (§3.6, §4 "TLS fixed").
+	tlsResume bool
 
 	// cpuprofile is where the server's CPU profile goes, written when it
 	// stops; empty writes none. A diagnostic, not an axis of the study.
@@ -87,9 +91,10 @@ func parseOptions(args []string) (options, error) {
 	var o options
 	fs := flag.NewFlagSet("sluice-study", flag.ContinueOnError)
 	fs.StringVar(&o.listen, "listen", "127.0.0.1:8443", "address to listen on")
-	fs.BoolVar(&o.tls, "tls", true, "serve TLS (R); false is cleartext HTTP/1.1, for local tooling only")
+	fs.BoolVar(&o.tls, "tls", true, "serve TLS (R); false is HTTP/1.1 in clear, the study's level 2 \"TLS off\"")
 	fs.StringVar(&o.cert, "cert", "", "TLS certificate file (PEM); empty generates a self-signed ECDSA P-256 certificate at startup")
 	fs.StringVar(&o.key, "key", "", "TLS key file (PEM), with -cert")
+	fs.BoolVar(&o.tlsResume, "tls-resume", false, "issue TLS session tickets, so that a returning client resumes (R: off)")
 	fs.StringVar(&o.cpuprofile, "cpuprofile", "", "write the server's CPU profile to this file when it stops (SIGINT)")
 
 	fs.StringVar(&o.transport, "transport", transportNetHTTPH1,
@@ -184,6 +189,9 @@ func (o options) validate() error {
 	}
 	if (o.cert == "") != (o.key == "") {
 		return errors.New("-cert and -key go together")
+	}
+	if o.tlsResume && !o.tls && o.transport != transportHTTPStreamH3 {
+		return errors.New("-tls-resume needs -tls")
 	}
 	return nil
 }

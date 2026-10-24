@@ -103,6 +103,7 @@ func (st stage) run(ctx context.Context, cl *client) (report, error) {
 	rep.Late = summarise(late)
 	rep.Reconnects = int(cl.dials.Load() - dials)
 	rep.Closed = int(cl.closes.Load() - closes)
+	rep.TLSVersion, rep.TLSSuite, rep.ALPN = cl.tlsSettings()
 	return rep, nil
 }
 

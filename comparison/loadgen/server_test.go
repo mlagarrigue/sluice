@@ -129,6 +129,13 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]
 
 	srv := httptest.NewUnstartedServer(handler)
 	srv.Config.ConnContext = func(ctx context.Context, _ net.Conn) context.Context { return newConn(ctx) }
+	if proto == clearH1 {
+		srv.Start()
+		tb.Cleanup(srv.Close)
+		tb.Cleanup(func() { close(release) })
+		ts.URL = srv.URL
+		return ts
+	}
 	srv.EnableHTTP2 = proto == protoH2
 	srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 	if proto == protoH1 {
@@ -201,6 +208,9 @@ func (ts *testServer) write(w http.ResponseWriter, r *http.Request, doc []byte, 
 	http.NewResponseController(w).Flush() //nolint:errcheck // all three servers flush
 	_, _ = w.Write(body[half:])
 }
+
+// clearH1 asks sleepServer for HTTP/1.1 in clear, an http:// URL.
+const clearH1 = "h1-clear"
 
 // connKey carries one connection's connState in its requests'
 // context: net/http's and quic-go's servers both derive a request's

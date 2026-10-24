@@ -38,6 +38,32 @@ response under load:
 | list | `GET /orders?from=K&limit=1000` | `from`; `items` strictly increasing above it |
 | write | `POST /orders` with `{"key":K,"total":T}` | `key` |
 
+### The TLS every contender runs under
+
+What a TLS handshake costs weighs more than the framework once a tenth of
+the connections are fresh (§3.6), so it is fixed, and published, for every
+contender alike (§4 "TLS fixed"):
+
+- TLS 1.3 only, on an ECDSA P-256 certificate (`-cert`/`-key`, or one
+  generated at startup for a local run). TLS 1.3's cipher suites are the
+  stack's own, which Go's `crypto/tls` does not let a configuration set;
+  the generator publishes the one negotiated (`tls_suite`), and a
+  contender that negotiates another is compared knowing it.
+- ALPN names the one protocol of the run: `http/1.1`, `h2` or `h3`.
+- Session resumption off in R: a fresh connection is a new visitor, who
+  holds no ticket. `-tls-resume` on the server issues tickets (Go's
+  `crypto/tls` issues them by default; R turns that off), and
+  `-tls-resume` on the generator keeps the session cache that uses them;
+  `resumed` counts the handshakes that did.
+- In clear (level 2, "TLS off"): HTTP/1.1 only, `-tls=false` on the server
+  and an `http://` URL for the generator; h2c is no configuration of the
+  study, and QUIC is always TLS.
+
+The server writes this at startup, `sluice-study: nethttp-h1 on
+127.0.0.1:8443 (TLS 1.3+, ECDSA P-256 certificate, ALPN http/1.1,
+resumption off)`; the generator writes what it negotiated on every stage
+line.
+
 The mixed scenario (80 % unit, 15 % list, 5 % write) is the generator's
 business. Unit reads go through the gateway and leave as one `= ANY($1)`
 per batch; under `httpstream` the requests of one transport batch are
@@ -97,7 +123,8 @@ closed-loop generator's figures too good. Everything it prints is a JSON
 line per stage, never a result of the study. It shares no code with
 Sluice.go: a bug symmetric between client and server would mask itself.
 
-What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
+What one stage does, over TLS (or HTTP/1.1 in clear for an `http://`
+URL) under `-proto h1` (HTTP/1.1, the default),
 `h2` or `h3`:
 
 - opens its connection budget before the clock starts (the TLS handshakes
@@ -163,10 +190,14 @@ What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
   wire per answer, `ratio` the decoded size over it, over the compressed
   answers. `br` and `zstd` are refused until their decoders are in
   `loadgen/go.mod`;
+- publishes the TLS it negotiated, `tls_version`, `tls_suite`, `alpn`
+  (`none` in clear; two values joined by ` | ` would mean the connections
+  did not all agree), and `tls_resume`, whether it kept a session cache;
 - with `-new-conns 10`, a tenth of the requests, drawn by `(seed, index)`,
   open a fresh connection whose handshake falls inside their own delays and
   close it, so that `TIME_WAIT` lands on the tester (§3.6); `handshakes`
-  counts them, with the reconnections' own.
+  counts them, with the reconnections' own, and `resumed` those that
+  resumed a session (`-tls-resume`).
 
 ```
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s

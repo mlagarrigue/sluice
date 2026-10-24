@@ -159,9 +159,7 @@ func start(tb testing.TB, args ...string) *server {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	tlsLn := tls.NewListener(ln, cfg)
-	o.tls = false
-	go func() { done <- serve(ctx, o, a, tlsLn) }()
+	go func() { done <- serve(ctx, o, a, ln, cfg) }()
 
 	h2 := strings.HasSuffix(o.transport, "-h2")
 	tr := &http.Transport{
