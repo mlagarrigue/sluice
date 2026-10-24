@@ -258,6 +258,16 @@ func TestVerifyValidityWindow(t *testing.T) {
 		}
 	})
 
+	// RFC 7519 §4.1.4: exp is the time "on or after which" the token MUST
+	// NOT be accepted — the instant itself is too late.
+	t.Run("expiring this very second", func(t *testing.T) {
+		v := verifier(t, web.HMACConfig{Now: func() time.Time { return now }})
+		token := hs256(t, map[string]any{"sub": "u", "exp": now.Unix()})
+		if _, err := v.Verify(token); !errors.Is(err, web.ErrTokenExpired) {
+			t.Fatalf("err = %v, want ErrTokenExpired at the instant of expiry", err)
+		}
+	})
+
 	t.Run("expired but inside the leeway", func(t *testing.T) {
 		v := verifier(t, web.HMACConfig{
 			Leeway: time.Minute,
@@ -357,6 +367,62 @@ func TestVerifyChecksIssuerAndAudience(t *testing.T) {
 			t.Fatalf("err = %v, want ErrTokenClaims", err)
 		}
 	})
+
+	// RFC 7519 §4.1.3: a recipient that does not identify itself with a
+	// value in a present aud MUST reject the token. A verifier with no
+	// Audience identifies with none: the token was minted for someone else.
+	t.Run("an audience, and none configured", func(t *testing.T) {
+		v := verifier(t, web.HMACConfig{})
+		for _, aud := range []any{"billing", []any{"billing", "orders"}, []any{}} {
+			claims := map[string]any{"sub": "u", "exp": 1_700_000_600, "aud": aud}
+			if _, err := v.Verify(hs256(t, claims)); !errors.Is(err, web.ErrTokenClaims) {
+				t.Errorf("aud %v: err = %v, want ErrTokenClaims", aud, err)
+			}
+		}
+	})
+}
+
+// signRaw signs header and payload exactly as given, for the cases json.Marshal
+// cannot express: a parameter name in another case, invalid UTF-8.
+func signRaw(header, payload string) string {
+	signed := base64.RawURLEncoding.EncodeToString([]byte(header)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(payload))
+	mac := hmac.New(sha256.New, testSecret)
+	mac.Write([]byte(signed))
+	return signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// The header as RFC 7515 and RFC 7519 read it: member names compared
+// exactly (RFC 7519 §7.3), an unknown parameter ignored (RFC 7515 §4), typ a
+// media type whose "application/" prefix may be left out (RFC 7515 §4.1.9),
+// and the JSON UTF-8 and nothing else (RFC 8725 §3.7). All tokens here carry
+// a valid signature: what is tested is how the signed bytes are read.
+func TestVerifyReadsTheHeaderAsTheRFCsDo(t *testing.T) {
+	const payload = `{"sub":"u","exp":1700000600}`
+	tests := []struct {
+		name    string
+		header  string
+		payload string
+		want    error
+	}{
+		{"ALG is not alg", `{"ALG":"HS256"}`, payload, web.ErrTokenAlgorithm},
+		{"CRIT is an unknown parameter, ignored", `{"alg":"HS256","CRIT":["x"]}`, payload, nil},
+		{"typ application/jwt is JWT", `{"alg":"HS256","typ":"application/jwt"}`, payload, nil},
+		{"typ of another media type", `{"alg":"HS256","typ":"application/jose"}`, payload, web.ErrTokenMalformed},
+		{"alg that is not a string", `{"alg":256}`, payload, web.ErrTokenMalformed},
+		{"a duplicate alg keeps its last value", `{"alg":"none","alg":"HS256"}`, payload, nil},
+		{"header not UTF-8", "{\"alg\":\"HS256\",\"x\":\"\xff\"}", payload, web.ErrTokenMalformed},
+		{"payload not UTF-8", `{"alg":"HS256"}`, "{\"sub\":\"\xff\",\"exp\":1700000600}", web.ErrTokenMalformed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := verifier(t, web.HMACConfig{})
+			_, err := v.Verify(signRaw(tt.header, tt.payload))
+			if tt.want == nil && err != nil || tt.want != nil && !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+		})
+	}
 }
 
 // The tenant is what becomes part of the batching key, so a verifier told to

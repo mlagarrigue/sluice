@@ -77,6 +77,14 @@ that never passed a negative value has nothing to change there.
 - **A zero shutdown grace is five seconds** (`66a4787`,
   `web.DefaultShutdownGrace`), not "no grace".
 - **A negative `MaxTokenBytes` is refused** (`dae2743`).
+- **`HMACVerifier` refuses what RFC 7519 and RFC 8725 refuse**
+  (`fix(web)!: verify tokens as RFC 7519 and 8725 ask`). A token that
+  carries an `aud` claim is refused when `HMACConfig.Audience` is empty:
+  set `Audience` to the value your issuer puts in `aud`. A token is refused
+  at the second its `exp` names, not one second later; a header or payload
+  that is not UTF-8 is refused; header names are compared exactly, so
+  `"ALG"` is no longer read as `alg`. A `typ` of `application/jwt` is now
+  accepted, like `JWT`.
 
 ## PostgreSQL: `database/postgres`
 

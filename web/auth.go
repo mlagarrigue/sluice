@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mlagarrigue/sluice/diagnostics"
 )
@@ -135,8 +136,10 @@ type Verifier interface {
 type HMACConfig struct {
 	// Secret is the shared HMAC key. It must be at least 32 bytes: shorter
 	// than the hash it feeds, and the security of the whole thing rests on
-	// guessing difficulty this package cannot restore. [NewHMACVerifier]
-	// copies it, so the caller may zero its own slice afterwards.
+	// guessing difficulty this package cannot restore. Only the length is
+	// checked: draw it from crypto/rand, never from a password, however long
+	// (RFC 8725 §3.5). [NewHMACVerifier] copies it, so the caller may zero
+	// its own slice afterwards.
 	Secret []byte
 
 	// Previous are retired secrets still accepted while a rotation is under
@@ -147,9 +150,10 @@ type HMACConfig struct {
 	// have signed has expired; until then it is as good as the current key.
 	Previous [][]byte
 
-	// Audience, when set, is the `aud` claim a token must carry. Leaving it
-	// empty accepts any audience, which means accepting a token minted for a
-	// different service that happens to share the secret.
+	// Audience, when set, is the `aud` claim a token must carry. Left empty,
+	// the verifier is in no audience: a token without `aud` is accepted, and
+	// one that carries `aud` is refused (RFC 7519 §4.1.3), since it was
+	// minted for a service this verifier cannot claim to be.
 	Audience string
 
 	// Issuer, when set, is the `iss` claim a token must carry.
@@ -231,22 +235,19 @@ func NewHMACVerifier(cfg HMACConfig) (*HMACVerifier, error) {
 	return v, nil
 }
 
-// jwtHeader is the part of a token's header this verifier reads. `kid` is
-// deliberately absent: selecting a key by a value the token supplies is how a
-// verifier is talked into using the attacker's key.
-type jwtHeader struct {
-	Alg string `json:"alg"`
-	Typ string `json:"typ"`
-
-	// Crit is read only to be refused. RFC 7515 §4.1.11: a verifier MUST
-	// reject a token whose `crit` lists an extension it does not implement —
-	// and this verifier implements none, so any `crit` at all means the token
-	// demands semantics that will not be enforced here. Raw rather than a
-	// slice: a slice decodes "crit": null to nil, which reads as absent, where
-	// json.RawMessage keeps the null and the presence check below sees it —
-	// RFC 7515 §4.1.11 allows no null, no empty list, no value of any kind
-	// this verifier could honour.
-	Crit json.RawMessage `json:"crit"`
+// headerString reads the header parameter name as a JSON string, "" when it
+// is absent. The header is decoded into a map, not a struct: encoding/json
+// matches struct fields without regard to case, so a struct read "ALG" as
+// `alg`, where RFC 7515 §4 makes "ALG" an unknown parameter to ignore and
+// RFC 7519 §7.3 compares member names exactly. A duplicate name keeps its
+// last value, the choice RFC 7515 §4 allows a parser.
+func headerString(hdr map[string]json.RawMessage, name string) (string, bool) {
+	raw, present := hdr[name]
+	if !present {
+		return "", true
+	}
+	var s string
+	return s, json.Unmarshal(raw, &s) == nil
 }
 
 // Verify checks a token and returns who it is from.
@@ -287,25 +288,45 @@ func (v *HMACVerifier) Verify(token string) (Principal, error) {
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: the header is not base64url", ErrTokenMalformed)
 	}
-	var hdr jwtHeader
+	// RFC 8725 §3.7: the JSON of a token is UTF-8 and nothing else, where
+	// encoding/json would quietly turn an invalid sequence into U+FFFD.
+	if !utf8.Valid(headerJSON) {
+		return Principal{}, fmt.Errorf("%w: the header is not UTF-8", ErrTokenMalformed)
+	}
+	// The parameters this verifier reads are alg, typ and crit. `kid` is
+	// deliberately not among them: selecting a key by a value the token
+	// supplies is how a verifier is talked into using the attacker's key.
+	var hdr map[string]json.RawMessage
 	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
-		return Principal{}, fmt.Errorf("%w: the header is not JSON", ErrTokenMalformed)
+		return Principal{}, fmt.Errorf("%w: the header is not a JSON object", ErrTokenMalformed)
+	}
+	alg, okAlg := headerString(hdr, "alg")
+	typ, okTyp := headerString(hdr, "typ")
+	if !okAlg || !okTyp {
+		return Principal{}, fmt.Errorf("%w: alg or typ is not a string", ErrTokenMalformed)
 	}
 
 	// The algorithm is checked against a constant, never used to *choose*
 	// anything. `alg: none` is refused by the same comparison that refuses
 	// RS256, which is what makes both impossible rather than one of them
 	// remembered.
-	if hdr.Alg != "HS256" {
-		return Principal{}, fmt.Errorf("%w: %q, and this verifier accepts only HS256", ErrTokenAlgorithm, hdr.Alg)
+	if alg != "HS256" {
+		return Principal{}, fmt.Errorf("%w: %q, and this verifier accepts only HS256", ErrTokenAlgorithm, alg)
 	}
 	// Case-insensitive on purpose: typ is a media type, and RFC 7515 §4.1.9
-	// makes its comparison case-insensitive; RFC 7519 §5.1 only RECOMMENDS
-	// the uppercase spelling "JWT", so "jwt" is a conforming token.
-	if hdr.Typ != "" && !strings.EqualFold(hdr.Typ, "JWT") {
-		return Principal{}, fmt.Errorf("%w: type %q", ErrTokenMalformed, hdr.Typ)
+	// makes its comparison case-insensitive and reads a value without a '/'
+	// as if "application/" preceded it, so "JWT", "jwt" and
+	// "application/jwt" are one type; RFC 7519 §5.1 only RECOMMENDS the
+	// uppercase short spelling.
+	if typ != "" && !strings.EqualFold(typ, "JWT") && !strings.EqualFold(typ, "application/jwt") {
+		return Principal{}, fmt.Errorf("%w: type %q", ErrTokenMalformed, typ)
 	}
-	if hdr.Crit != nil {
+	// crit is read only to be refused. RFC 7515 §4.1.11: a verifier MUST
+	// reject a token whose crit lists an extension it does not implement —
+	// and this verifier implements none, so any crit at all, null and the
+	// empty list included, means the token demands semantics that will not
+	// be enforced here.
+	if _, present := hdr["crit"]; present {
 		return Principal{}, fmt.Errorf("%w: the header carries crit, and this verifier implements no extension it could name (RFC 7515 §4.1.11)", ErrTokenMalformed)
 	}
 
@@ -321,6 +342,9 @@ func (v *HMACVerifier) Verify(token string) (Principal, error) {
 	payloadJSON, err := jwtEncoding.DecodeString(token[first+1 : last])
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: the payload is not base64url", ErrTokenMalformed)
+	}
+	if !utf8.Valid(payloadJSON) {
+		return Principal{}, fmt.Errorf("%w: the payload is not UTF-8", ErrTokenMalformed)
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
@@ -369,7 +393,9 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 	if !ok {
 		return Principal{}, fmt.Errorf("%w: no usable exp claim, and a token that never expires is not one this package will believe", ErrTokenClaims)
 	}
-	if now.After(exp.Add(v.cfg.Leeway)) {
+	// RFC 7519 §4.1.4: exp is the time "on or after which" the token is
+	// refused — the instant itself is already too late.
+	if !now.Before(exp.Add(v.cfg.Leeway)) {
 		return Principal{}, fmt.Errorf("%w: expired at %s", ErrTokenExpired, exp.UTC().Format(time.RFC3339))
 	}
 	// nbf and iat are optional, but one that is present and unreadable is
@@ -397,7 +423,15 @@ func (v *HMACVerifier) principalFrom(claims map[string]any) (Principal, error) {
 			return Principal{}, fmt.Errorf("%w: issuer %q", ErrTokenClaims, iss)
 		}
 	}
-	if v.cfg.Audience != "" && !audienceContains(claims["aud"], v.cfg.Audience) {
+	// RFC 7519 §4.1.3: a token that names its audience MUST be refused by a
+	// recipient that is not in it — and a verifier with no Audience is in
+	// no audience at all. Accepting it was accepting a token minted for
+	// some other service that shares the secret.
+	if v.cfg.Audience == "" {
+		if _, present := claims["aud"]; present {
+			return Principal{}, fmt.Errorf("%w: the token names an audience, and this verifier was given none to be part of", ErrTokenClaims)
+		}
+	} else if !audienceContains(claims["aud"], v.cfg.Audience) {
 		return Principal{}, fmt.Errorf("%w: audience does not include %q", ErrTokenClaims, v.cfg.Audience)
 	}
 
