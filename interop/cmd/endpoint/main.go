@@ -252,7 +252,11 @@ func serveHQ(c *quic.Conn) {
 // status line, and a reset would read as a transport failure.
 func serveHQStream(s *quic.Stream) error {
 	r := bufio.NewReaderSize(s, 4096)
-	line, err := r.ReadString('\n')
+	// ReadSlice rather than ReadString: a line longer than the buffer ends
+	// with bufio.ErrBufferFull instead of growing until the stream's flow
+	// control stops it — a request line has a bound of its own here.
+	b, err := r.ReadSlice('\n')
+	line := string(b)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
