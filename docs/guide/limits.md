@@ -207,9 +207,22 @@ Three reasons come up, and the difference matters:
   shape a handler could serve — its target is a host and port, not a path.
   On HTTP/2 and HTTP/3 a CONNECT that carries `:scheme` or `:path`, or
   omits `:authority`, is malformed (RFC 9113 §8.5, RFC 9114 §4.4) and its
-  stream is reset as such. In plain words: a client that asks this server
+  stream is reset as such. On HTTP/1.1 the connection closes with the 501
+  and nothing that follows the CONNECT is read (RFC 9931 §8): a client that
+  already sent the tunnel's bytes does not see them read as a request. In
+  plain words: a client that asks this server
   to open a connection to somewhere else is told, with a status, that the
   server does not do that; it is not told its request was wrong.
+- **Misdirected requests are the handler's to answer.** An `https` request
+  on a connection whose certificate does not cover its host must be refused
+  (RFC 9110 §7.4), with a 421 when a client reused a connection for another
+  name. The transport does not check it: it never sees the certificate
+  (the caller sets up TLS, [ADR 0014](../design/adr/0014-tls-stays-in-front.md)),
+  and clear text may come from a trusted gateway that ended TLS upstream,
+  the case §7.4 sets apart. A handler can: `Request.TLS` holds the
+  handshake's `ServerName` (nil in clear text), and a 421 goes out as it
+  is. In plain words: if you serve several names on one address, compare
+  `Host` with what your certificate covers and answer 421 to the rest.
 - **The never-indexed bit is not carried.** An HTTP/2 or HTTP/3 client may
   mark a field as never to be indexed (RFC 7541 §6.2.3, RFC 9204 §4.5.4);
   `Header` keeps the name and the value only, and the bit is lost at

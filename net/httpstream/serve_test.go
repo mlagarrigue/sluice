@@ -351,6 +351,30 @@ func TestARejectedCONNECTEndsTheConnection(t *testing.T) {
 	}
 }
 
+// RFC 9110 §7.4 leaves a misdirected request to the handler, the one that
+// knows which names its certificate covers (limits.md, "Misdirected
+// requests are the handler's to answer"): its 421 goes out as it is, and
+// the clear-text request it judges has a nil TLS to judge by.
+func TestAHandlerAnswersAMisdirectedRequest(t *testing.T) {
+	addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, 0, b.Len())
+		for i := range b.Items {
+			r := &b.Items[i]
+			status := 200
+			if r.TLS == nil && string(r.Get("Host")) != "served.example" {
+				status = 421
+			}
+			out = append(out, Response{Status: status})
+		}
+		return sluice.Batch[Response]{Items: out}
+	})
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /x HTTP/1.1\r\nHost: other.example\r\n\r\n")
+	if status, _ := readResponse(t, bufio.NewReader(c)); !strings.HasPrefix(status, "HTTP/1.1 421") {
+		t.Errorf("status = %q, want the handler's 421", status)
+	}
+}
+
 // RFC 9112 §3.2.2: an absolute-form target is served as the origin-form it
 // holds, and the handler's Host is the target's authority, not the field the
 // client sent beside it. The connection persists like any other.
