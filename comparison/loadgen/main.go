@@ -172,7 +172,7 @@ func parse(args []string) (campaign, error) {
 	fs.IntVar(&st.rate, "rate", 100, "requests per second, sent at a constant interval; with -ramp, where the grid starts")
 	fs.DurationVar(&st.duration, "duration", 10*time.Second, "length of the measurement of a stage")
 	fs.DurationVar(&st.warmup, "warmup", 5*time.Second, "sent at the stage's rate before its clock starts, never counted")
-	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1, up to 8 under HTTP/2 and HTTP/3 (a single stage; a ramp computes it)")
+	fs.IntVar(&st.conns, "conns", 64, "connections kept open: the budget C, one request in flight each under HTTP/1.1, up to 8 under HTTP/2 and HTTP/3 (a single stage; a ramp computes it, and 0 asks a single stage for the same C = 2 R (RTT + X) of §3.5)")
 	fs.StringVar(&name, "scenario", "unit", "static, unit, list, write or mixed (80 % unit, 15 % list, 5 % write)")
 	fs.IntVar(&st.keyspace, "keyspace", 100000, "ids the table holds, 1..keyspace; every request draws a different one")
 	fs.Uint64Var(&st.seed, "seed", 1, "seed of the draw, the same for every contender of a round (§2.1)")
@@ -258,8 +258,8 @@ func parse(args []string) (campaign, error) {
 		return c, errors.New("-duration must be positive")
 	case st.warmup < 0 || c.drain < 0:
 		return c, errors.New("-warmup and -drain cannot be negative")
-	case st.conns <= 0:
-		return c, errors.New("-conns must be positive")
+	case st.conns < 0:
+		return c, errors.New("-conns cannot be negative")
 	case c.maxConns < 0:
 		return c, errors.New("-max-conns cannot be negative")
 	case st.keyspace <= listLimit:
@@ -289,10 +289,15 @@ func parse(args []string) (campaign, error) {
 	if st.window > 0 && (st.duration%st.window != 0 || st.profile == profilePeak && st.peakFor%st.window != 0) {
 		return c, fmt.Errorf("-window %s must divide -duration (and -peak-for under a peak): no window straddles two phases", st.window)
 	}
-	if st.profile == profilePeak && !connsSet {
+	switch {
+	case st.profile == profilePeak && (!connsSet || st.conns == 0):
 		// C is sized on the peak (§3.5): otherwise the generator's
 		// connections limit during it, not the server.
 		st.conns = c.budget(st.peakRate())
+	case st.conns == 0:
+		// A campaign that plays its stages one process each asks for the
+		// budget a ramp would compute at the same rate.
+		st.conns = c.budget(st.rate)
 	}
 	if !c.ramp && len(c.rates) == 0 {
 		if err := st.fits(); err != nil {

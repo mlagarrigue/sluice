@@ -291,14 +291,24 @@ func MedianCI(xs []float64) (med, lo, hi float64) {
 	return med, s[k-1], s[n-k]
 }
 
+// MinStep is the lowest k of the grid, about 16 req/s: below it, rounding
+// to the unit gives two neighbours the same rate. k is negative under
+// 100 req/s, where a slow contender on the 1 000-row list sits (§7.6).
+const MinStep = -37
+
+// Grid is the k-th point of the study's grid, round(100 × 1.05^k).
+func Grid(k int) float64 { return math.Round(100 * math.Pow(1.05, float64(k))) }
+
 // Step is the index k of a rate on the study's grid, round(100 × 1.05^k)
 // (loadgen's gridFrom): a capacity is always one of its points, so a rate
 // off the grid is refused rather than rounded.
 func Step(rate float64) (int, error) {
-	k := int(math.Round(math.Log(rate/100) / math.Log(1.05)))
-	for _, c := range []int{k - 1, k, k + 1} {
-		if c >= 0 && math.Round(100*math.Pow(1.05, float64(c))) == rate {
-			return c, nil
+	if rate > 0 {
+		k := int(math.Round(math.Log(rate/100) / math.Log(1.05)))
+		for _, c := range []int{k - 1, k, k + 1} {
+			if c >= MinStep && Grid(c) == rate {
+				return c, nil
+			}
 		}
 	}
 	return 0, fmt.Errorf("%v req/s is not a point of the grid 100 × 1.05^k", rate)

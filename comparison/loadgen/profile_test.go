@@ -135,3 +135,18 @@ func TestBrowserShape(t *testing.T) {
 		}
 	})
 }
+
+// -conns 0 is the budget a ramp computes at the stage's rate (§3.5): a
+// campaign that plays one stage per process gets the same C.
+func TestConnsZeroIsTheBudget(t *testing.T) {
+	c, err := parse([]string{"-scenario", "unit", "-rate", "1000", "-rtt", "20ms", "-conns", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := c.at(1000).conns; c.conns != want || want != 90 {
+		t.Errorf("-conns 0 at 1000 req/s, RTT 20ms, X 25ms: C = %d, want the ramp's %d = 2 R (RTT + X) = 90", c.conns, want)
+	}
+	if _, err := parse([]string{"-conns", "-1"}); err == nil {
+		t.Error("-conns -1 accepted")
+	}
+}

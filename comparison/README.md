@@ -136,11 +136,12 @@ core 0 to the system, and gives a third to each role (the tester the
 rest, since it will also carry netem's softirq). Two Docker networks keep
 the tester from reaching the database: db and web on one, web and tester
 on the other. PostgreSQL is tuned so that nothing fires during a stage
-(§2.2): `bench_orders` loaded and frozen (`VACUUM FREEZE`), checkpoints by
-time only (`checkpoint_timeout` 1 h, `max_wal_size` 8 GB),
-`max_connections` above any pool, and before the stage the write table
-emptied, vacuumed and a checkpoint taken. Web and tester get the same
-`nofile`; web a memory limit; the tester a wide port range and
+(§2.2): `bench_orders` loaded, frozen (`VACUUM FREEZE`) and left out of
+autovacuum, which its load's statistics would otherwise fire a minute
+later, mid-stage; checkpoints by time only (`checkpoint_timeout` 1 h,
+`max_wal_size` 8 GB), `max_connections` above any pool, and before the
+stage the write table emptied, vacuumed and a checkpoint taken. Web and
+tester get the same `nofile`; web a memory limit; the tester a wide port range and
 `tcp_tw_reuse` (§3.6). The script plays one stage with the generator's
 image against the server's (`WEB_IMAGE`, `TESTER_IMAGE`; `SCENARIO`,
 `PROTO`, `RATE`, `DURATION`…), writes `chain.json` — the cores of each
@@ -150,6 +151,18 @@ line, and fails unless every answer was valid. Everything it created is
 removed on exit, error or not. On a developer's machine it holds under
 h1, h2 and h3, the mixed scenario included, with the cache at 99.9 % and
 the database steady.
+
+`run.sh` is four verbs of `comparison/chain/chain.sh` in a row, which a
+campaign calls itself: `up` (the networks, the database loaded, the
+injected network), `web` (a fresh server, the previous one removed: a
+repetition starts there, §7.1), `stage` (one stage on that server, as
+many times as the repetition has stages), `down`. Every verb reads the
+same environment, so `stage` reads back the network `up` shaped. A
+campaign's stage exits 0 for a measurement, held or broken, since a ramp
+breaks by design past the capacity; `run.sh` alone also fails on any
+answer not ok. The generator's connection budget is the C = 2 R (RTT + X)
+of §3.5 at the stage's rate (`-conns 0`), as in a ramp. `CORES="db web
+tester"` counts the physical cores of each role otherwise than by thirds.
 
 ```
 RTT=20ms SCENARIO=static RATE=200 comparison/chain/run.sh       # latency felt (§3.4)
@@ -200,6 +213,78 @@ halfway or the tester's cores taken by a burner; both come out invalid
 with their cause, the generator's own line still reading `held`. Not
 collected on this kernel: `write_bytes`, which needs per-task I/O
 accounting (`/proc/<pid>/io`), absent from WSL2's (`null`).
+
+### A campaign on the chain
+
+```
+CORES="2 1 4" go run -C comparison/loadgen ./campaign -matrix ../chain/trial.json -out /tmp/trial
+go run -C comparison/loadgen . -verdicts /tmp/trial/rounds.jsonl -compare R:httpstream-h1
+```
+
+`loadgen/campaign` plays a matrix on the chain (§3.3, §6, §7.1, §7.2,
+§7.6). The matrix is a JSON file: the contenders (an image, and the flags
+that make a variant of the study's server), the families they meet in (a
+scenario × a protocol, the survey's first rate, the scenario's absolute
+fixed points), and the protocol's numbers, each defaulting to the
+protocol's value — 21 rounds, 40 at most, 5 more at a time, 7 full rounds,
+a minute of warm-up, stages of 30 s with their first 5 s not counted,
+fixed points of 90 s, 5 s of drain, capacity at 0 ms and fixed points at
+20 ms of client round trip, 1 ms to the database. Per family, in this
+order:
+
+- **survey** (§3.3): per contender, in an order drawn, a repetition of
+  its own from the first rate up by ×1.25 until a stage breaks, which
+  gives the last stage held, L, and the first broken, H. One broken at its
+  first stage starts again four times lower;
+- **capacity** (§7.6): rounds, each in an order drawn at random; in each,
+  every contender plays one repetition — a fresh server (`chain.sh web`),
+  its warm-up at the first stage's rate, then the common grid
+  `100 × 1.05^k` from its largest point at or below 0.9 L to its smallest
+  at or above 1.1 H, stopped at the first broken stage. The capacity is
+  the stage before it; no broken stage is replayed. A ramp broken at its
+  first stage, or held to its last, is censored: a new survey widens the
+  window and the repetition is played again;
+- **fixed points** (§7.1, §7.6), on a chain rebuilt at the points' round
+  trip: a contender is measured at the points at most 0.8 × the low bound
+  of its capacity's interval (§3.2), and the designated point is the
+  highest one eligible for all. The full rounds are drawn among the rounds
+  after the first and written down; in those, every eligible point, in
+  one process, ascending; in the others, the designated point alone.
+
+A stage the apparatus invalidates (exit 2 of `chain.sh stage`, §4)
+replays its whole repetition, a fresh server again, never the stage; five
+invalidated in a row stop the campaign, which is then the chain's to fix.
+A wrong answer stops it at once. A stage is lengthened until it counts
+the requests its percentile needs (§7.3: 1 000 for a capacity stage,
+10 000 for a fixed point, whose p99.9 is published only from those that
+did), and refused if the keyspace (`rows`) cannot hold it without a
+repeated key (§2.1); a warm-up is cut into stages the keyspace holds. The
+adaptive stop (§7.2) runs on the width of the intervals, never on a
+test's result: past the minimum, while the 95 % interval of one
+contender's median covers more than one step on either side (capacity)
+or reaches past ±5 % (the designated point's p99), everyone plays five
+rounds more, up to the maximum, where the one still wide is published
+unstable. The generator's draw is the same for every contender of a
+round.
+
+It writes `matrix.json` (the matrix as played, defaults filled in),
+`plan.jsonl` (every draw: survey order, each round's order, the full
+rounds, from the matrix's `seed`), `raw.jsonl` (every stage's merged
+line, with its family, measure, round, contender, attempt and kind),
+`rounds.jsonl` (what `-verdicts` reads) and `summary.json` (windows,
+medians and intervals, the unstable, the points eligible, the designated
+one, the descriptive points with their median and the interval from
+their lowest to their highest value, 98 % at 7 rounds). A matrix with
+fewer rounds than a verdict needs must say `"trial": true`: its rounds
+carry the mark, its summary says it is not publishable, and `-verdicts`
+refuses them for want of rounds.
+
+`trial.json` is the brief's reduced matrix: R against `httpstream-h1`
+on the 1 000-row list under h1, three rounds, short stages. Played on a
+developer's machine with web on one core (`CORES="2 1 4"`: with a third
+each, the tester's cores pass 70 % before web breaks), it runs end to end
+in 23 minutes, 81 stages, none invalidated, and nothing it measures is a
+figure.
 
 ### Validating it
 

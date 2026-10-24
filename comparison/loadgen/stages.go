@@ -7,6 +7,8 @@ import (
 	"io"
 	"math"
 	"time"
+
+	"github.com/mlagarrigue/sluice/comparison/loadgen/stats"
 )
 
 // budget is C = 2 R (RTT + X) of §3.5, the connections a rate needs so that
@@ -24,13 +26,14 @@ func (c campaign) budget(rate int) int {
 }
 
 // gridFrom yields the study's common grid 100 × 1.05^k (§3.3, §7.6), from
-// the first point at or above `from`, rounded to the unit: every contender
-// is measured at the same rates, whichever stage it breaks at.
+// the first point at or above `from`, rounded to the unit, k negative under
+// 100 req/s: every contender is measured at the same rates, whichever stage
+// it breaks at.
 func gridFrom(from int) func(yield func(int) bool) {
 	return func(yield func(int) bool) {
 		prev := 0
-		for k := 0; ; k++ {
-			r := int(math.Round(100 * math.Pow(1.05, float64(k))))
+		for k := stats.MinStep; ; k++ {
+			r := int(stats.Grid(k))
 			if r <= prev || r < from {
 				continue
 			}

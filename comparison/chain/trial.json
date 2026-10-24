@@ -1,0 +1,22 @@
+{
+  "name": "trial-list-h1",
+  "trial": true,
+  "seed": 1,
+  "rounds": 3,
+  "max_rounds": 3,
+  "full_rounds": 1,
+  "warmup": "10s",
+  "stage": "5s",
+  "stage_warmup": "2s",
+  "survey_stage": "5s",
+  "point_stage": "5s",
+  "drain": "2s",
+  "contenders": {
+    "R": {"image": "sluice-study:opt"},
+    "httpstream-h1": {"image": "sluice-study:opt", "args": ["-transport", "httpstream-h1"]}
+  },
+  "families": [
+    {"scenario": "list", "proto": "h1", "contenders": ["R", "httpstream-h1"],
+     "survey_from": 400, "points": [250, 500, 1000]}
+  ]
+}

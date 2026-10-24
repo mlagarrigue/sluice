@@ -169,7 +169,7 @@ func TestPieces(t *testing.T) {
 	if med, lo, hi := MedianCI(xs); med != 10.5 || lo != 6 || hi != 15 {
 		t.Errorf("rank interval of 1..20: %v [%v, %v], want 10.5 [6, 15]", med, lo, hi)
 	}
-	for k := range 120 {
+	for k := MinStep; k < 120; k++ {
 		if got, err := Step(grid(k)); err != nil || got != k {
 			t.Fatalf("step of %v: %d %v, want %d", grid(k), got, err, k)
 		}
