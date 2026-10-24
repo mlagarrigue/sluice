@@ -73,7 +73,9 @@ tolerated and still counted, and a late header block on one, or on a closed
 stream the bounded memory has since forgotten, is decoded and dropped rather
 than refused — only a block on a stream the client never opened is the
 connection error; the idle clock does not run while answers are owed; the
-connection receive window starts at 1 MiB.
+connection receive window is the sum of the stream windows
+(`MaxConcurrentStreams` × `InitialWindowSize`, 6,553,500 bytes at the
+defaults), never less than 1 MiB.
 
 The three goroutines of an HTTP/2 connection and the bound on each
 hand-off (HTTP/3 has no responder):

@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-16 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories, and what `scripts/check.sh` and the `lint` job check in them)
+- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-18 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories, and what `scripts/check.sh` and the `lint` job check in them)
 - **Theme:** ci
 
 ## Problem

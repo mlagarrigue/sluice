@@ -649,7 +649,8 @@ type Config struct {
 	// PING acknowledgements, WINDOW_UPDATE, RST_STREAM — waiting to be
 	// written. Zero means 16 KiB. HTTP/2 only.
 	//
-	// It is the S1 bound on the one queue a peer fills directly: a client can
+	// It is the bounded-memory guarantee (S1 of the architecture's security
+	// properties) on the one queue a peer fills directly: a client can
 	// send PING faster than this end can answer, and the answer to that is to
 	// stop reading until the queue drains, not to buffer without limit. The
 	// pressure then sits in the peer's send buffer, which is what TCP flow

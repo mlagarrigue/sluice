@@ -309,7 +309,10 @@ Three places, depending on what the peer or the benchmark needs:
   included, so the caller has one path to handle rather than two. The reason
   is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
   program itself wrote is a silent failure waiting for its first request,
-  while a panic at startup is a crash with a name.
+  while a panic at startup is a crash with a name. A configuration the
+  program reads at deployment is checked first with its type's `Validate`
+  (`gateway.Config`, `httpstream.Config`), which returns the same refusals
+  as an error.
 - **The godoc of every exported symbol starts with its name**, says what it
   retains and what it costs where that matters, and links to the
   architecture's named anchors, never to section numbers.

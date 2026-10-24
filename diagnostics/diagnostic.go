@@ -22,7 +22,8 @@
 //
 // Affordances have no collector of their own. A batch offers a handful of
 // remedies where it may raise thousands of diagnostics, so the ceiling that
-// [Collector] exists for (S12) has nothing to bound on that side, and the
+// [Collector] exists for (the per-batch bound on diagnostics, S12 of the
+// architecture's security properties) has nothing to bound on that side, and the
 // consumer — web/stream's Exchange — carries them as a plain slice.
 //
 // [Path] is the reason they belong together rather than in three packages: a

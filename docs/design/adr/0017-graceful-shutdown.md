@@ -192,7 +192,7 @@ response.
 What this decision does not do: the staged close against the TCP reset
 (RFC 9112 §9.6, last paragraphs: half-close, then read until the client
 closes). A client that pipelined a request behind the one the shutdown
-closed on may see a RST erase the last response. It is a backlog entry,
+closed on may see a RST erase the last response. It is left for later,
 to be measured against a real client before it is built. Revision
 expected if a conformant client loses responses at shutdown, or when the
 HTTP/2 and HTTP/3 slices show the grace has to be per protocol.

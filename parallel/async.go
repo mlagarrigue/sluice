@@ -21,8 +21,9 @@ import (
 // middle lets the three proceed at once, and the wall clock tends toward the
 // slowest stage instead of the sum.
 //
-// The batch is what makes the operator affordable: the hand-off and the S14
-// copy together measured +0.31 ns/element at 1024-element batches — inside
+// The batch is what makes the operator affordable: the hand-off and the copy
+// of each batch (a batch is not kept past its call, S14 of the
+// architecture's security properties) together measured +0.31 ns/element at 1024-element batches — inside
 // the per-stage budget, where the same operator element-wise would be two
 // orders of magnitude out (the arithmetic that disqualified iter.Pull per
 // element at 53 ns). On equal producer and consumer work the overlap
@@ -31,7 +32,8 @@ import (
 //
 // # Bounded, and blocking is the semantics
 //
-// depth is required, per S1: it is the number of batches the operator may run
+// depth is required, since memory is bounded by the caller (S1): it is the
+// number of batches the operator may run
 // ahead, and its memory bound — depth+2 recycled buffers, two more than the
 // slack because one may be in each party's hands. There is deliberately no
 // [sluice.Overflow] policy: dropping data in transport is never the right default,

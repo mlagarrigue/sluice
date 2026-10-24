@@ -76,7 +76,7 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 // means every earlier window is complete. Memory is O(elements in one window),
 // which is why maxPerWindow bounds that count.
 //
-// # sluice.Empty windows are not emitted
+// # Empty windows are not emitted
 //
 // A window that received no element produces no pane. The alternative would
 // let a bounded input produce unbounded output — a one-second window over a

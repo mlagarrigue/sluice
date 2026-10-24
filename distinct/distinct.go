@@ -31,7 +31,7 @@ import (
 // or accept O(distinct) memory outside this package. Do not reach for a larger
 // maxKeys and hope.
 //
-// # sluice.Overflow
+// # Overflow
 //
 // The policy applies when a new key arrives and the window is full:
 //
