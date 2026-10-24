@@ -55,7 +55,7 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 		}},
 		{"sluice.Merge/all", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Merge(sluice.WhenAll, s) }},
 		{"sluice.Merge/any", func(s sluice.Stream[int]) sluice.Stream[int] { return sluice.Merge(sluice.WhenAny, s) }},
-		// MergeJoinBy is absent on purpose: it fills an output batch before
+		// join.Merge is absent on purpose: it fills an output batch before
 		// yielding anything, so the first refusal comes late. Its own
 		// propagation is covered by TestMergeJoinByEarlyStopEveryBranch.
 		{"sluice.Split", func(s sluice.Stream[int]) sluice.Stream[int] {

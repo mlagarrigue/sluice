@@ -221,6 +221,42 @@ func TestSplitAbandonedBranchReleasesSource(t *testing.T) {
 	}
 }
 
+// S9 of the architecture's security properties: a branch whose consumer
+// panics is a branch that stopped, and when it is the last live one the
+// shared traversal is released on the way out, exactly as when it stops by
+// returning false. (A branch never consumed still counts as live: a caller
+// may finish one branch before starting the next, so the sibling is
+// stopped first here.)
+func TestSplitReleasesSourceOnPanic(t *testing.T) {
+	finalized := false
+	src := Stream[int](func(yield func(Batch[int]) bool) {
+		defer func() { finalized = true }()
+		for i := range 100 {
+			if !yield(Batch[int]{Items: []int{i}}) {
+				return
+			}
+		}
+	})
+
+	branches := Split(src, 2, func(Batch[int]) []int { return []int{0, 1} })
+	branches[1](func(Batch[int]) bool { return false })
+	if finalized {
+		t.Fatal("the source was finalized while branch 0 could still consume")
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic did not propagate")
+			}
+		}()
+		branches[0](func(Batch[int]) bool { panic("consumer failure") })
+	}()
+
+	if !finalized {
+		t.Error("the source was not finalized after the last live branch panicked")
+	}
+}
+
 // route is the caller's function and may carry state — round-robin, the mode
 // the documentation recommends, is exactly that. Calling it more than once per
 // batch would advance that state twice and misroute the data.
