@@ -722,6 +722,17 @@ const (
 	defaultWriteTimeout   = 10 * time.Second
 )
 
+// Validate reports what [Serve], [ServeH2Conn], [ServeH3Conn] and the
+// other entry points would refuse in c, naming each field out of range, and
+// nil when they would accept it. A configuration read at deployment — from
+// the environment, flags, a file — is checked with it before any socket is
+// opened, so a bad value stops the program at start instead of after it
+// has taken its port.
+func (c Config) Validate() error {
+	_, err := c.resolve()
+	return err
+}
+
 // resolve returns c with every zero bound replaced by its default, or an
 // error naming each field whose value is out of range. Zero is the one value
 // that stands for another: a negative bound is the caller's mistake, said at

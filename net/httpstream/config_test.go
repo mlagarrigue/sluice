@@ -40,6 +40,13 @@ func nopHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Respons
 	return sluice.Batch[Response]{Items: make([]Response, b.Len())}
 }
 
+// The zero Config is every default, and valid.
+func TestValidateAcceptsTheZeroConfig(t *testing.T) {
+	if err := (Config{}).Validate(); err != nil {
+		t.Errorf("Config{}.Validate() = %v, want nil", err)
+	}
+}
+
 // A configuration value out of its range is refused at start, by an error
 // that names the field and the value, rather than replaced by the default,
 // raised to a floor or lowered to a ceiling.
@@ -83,6 +90,12 @@ func TestConfigRefusesAnOutOfRangeValue(t *testing.T) {
 	} {
 		t.Run(tc.field+"="+tc.value, func(t *testing.T) {
 			want := fmt.Sprintf("Config.%s %s", tc.field, tc.value)
+
+			// Validate says it first, with no socket at all: what a
+			// deployment checks a configuration it loaded with.
+			if err := tc.cfg.Validate(); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("Validate: %v, want an error naming %q", err, want)
+			}
 
 			// Serve refuses before the listener is read: a closed one would
 			// otherwise fail on Accept, with an error that names no field.
