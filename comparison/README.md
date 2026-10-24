@@ -121,6 +121,36 @@ container started with `--cap-add NET_ADMIN` as root (a 20 ms delay on
 direction needs; a sibling container on the same Docker network is
 reachable by name. The kernel loads these modules on first use.
 
+### The local chain
+
+```
+comparison/chain/run.sh                                  # unit, h1, 1 000 req/s, 10 s
+SCENARIO=mixed PROTO=h2 RATE=500 comparison/chain/run.sh
+```
+
+The study's three roles (§0) — db, web, tester — as containers on one
+machine, to validate the chain before the campaign runs it on three VMs;
+what it measures is never published, not even a ratio. It reads the
+physical cores from `lscpu`, keeps hyperthread siblings together, leaves
+core 0 to the system, and gives a third to each role (the tester the
+rest, since it will also carry netem's softirq). Two Docker networks keep
+the tester from reaching the database: db and web on one, web and tester
+on the other. PostgreSQL is tuned so that nothing fires during a stage
+(§2.2): `bench_orders` loaded and frozen (`VACUUM FREEZE`), checkpoints by
+time only (`checkpoint_timeout` 1 h, `max_wal_size` 8 GB),
+`max_connections` above any pool, and before the stage the write table
+emptied, vacuumed and a checkpoint taken. Web and tester get the same
+`nofile`; web a memory limit; the tester a wide port range and
+`tcp_tw_reuse` (§3.6). The script plays one stage with the generator's
+image against the server's (`WEB_IMAGE`, `TESTER_IMAGE`; `SCENARIO`,
+`PROTO`, `RATE`, `DURATION`…), writes `chain.json` — the cores of each
+role, the limits, the images, the cache hit rate and whether a checkpoint
+or an autovacuum ran during the stage (`db_steady`) — and the stage's
+line, and fails unless every answer was valid. Everything it created is
+removed on exit, error or not. On a developer's machine it holds under
+h1, h2 and h3, the mixed scenario included, with the cache at 99.9 % and
+the database steady.
+
 ### Validating it
 
 ```
