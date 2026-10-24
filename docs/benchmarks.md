@@ -22,6 +22,7 @@ its row.
 - **HTTP servers**
   - [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
   - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
+  - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -483,6 +484,41 @@ stages'.
 **What remains for the exit from experimental.** This measurement was one of
 the two conditions; the other, a first real consumer building its request
 path on these stages, stays open (`docs/guide/limits.md`).
+
+## Request bodies, whole or streamed
+
+`Config.MaxStreamedBodyBytes` at zero delivers a request body whole in
+`Request.Body`; positive, it streams what one read did not bring whole. A
+body already whole in the read that brought its headers stays in
+`Request.Body` and stays batched with its neighbours either way
+([ADR 0009](design/adr/0009-request-contract.md), article 4), so what this
+A/B measures is what the setting costs the traffic that never streams — a
+256-byte request, the bulk of an API's.
+
+Measured 2026-10-24. The two sides are sub-benchmarks of one binary over
+the same frames; `internal/bench/scripts/versus.sh` runs them back to back,
+fifteen rounds of `-benchtime 300ms` on core 3, the ratio taken inside the
+round and the verdict from the sign test. Each benchmark checks that the
+bodies arrived whole and that every request was handed over, so a side that
+took the streaming path fails rather than passing for the other.
+
+| benchmark | whole | streamed | rounds won | verdict |
+|---|---|---|---|---|
+| `BenchmarkReadSmallBody/depth=1` (HTTP/1.1) | 219 ns | 219 ns | 9 of 14 | noise |
+| `BenchmarkReadSmallBody/depth=8` | 158 ns | 158 ns | 9 of 14 | noise |
+| `BenchmarkH2ConsumeBody/depth=1` (HTTP/2) | 749 ns | 711 ns | 8 of 14 | noise |
+| `BenchmarkH2ConsumeBody/depth=8` | 743 ns | 734 ns | 8 of 14 | noise |
+| `BenchmarkH3AssembleBody/depth=1` (HTTP/3) | 708 ns | 721 ns | 5 of 14 | noise |
+| `BenchmarkH3AssembleBody/depth=8` | 684 ns | 690 ns | 5 of 14 | noise |
+
+Per request, medians; twelve rounds of fourteen are needed for a verdict.
+The allocations are identical on both sides, byte for byte: 12 and 21 per
+batch of 4,096 requests over HTTP/1.1 (depths 1 and 8), 10 and 71 over
+HTTP/2, 8 and 64 over HTTP/3.
+
+What this does not say is what streaming itself costs — a body that does
+not fit in one read. That is paid when it is asked for, and the default
+does not move it.
 
 ## QUIC, on an emulated path
 

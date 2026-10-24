@@ -56,9 +56,19 @@ run() { # run <benchmark-regex>
 }
 
 # A short burst of work before the first measured round, so neither contender
-# pays for a cold allocator that the other does not.
-run "$A" >/dev/null || true
-run "$B" >/dev/null || true
+# pays for a cold allocator that the other does not — and the one place where
+# a name that matches nothing is caught. Without this the rounds below run to
+# the end, print no verdict at all and exit 0: a measurement that reads as a
+# clean one. The usual cause is MODULE, which names the directory of the
+# package holding the benchmarks and defaults to the competitors'.
+for side in "$A" "$B"; do
+  # Captured rather than piped to grep: grep -q leaves the test binary with a
+  # SIGPIPE, which pipefail would report as the mismatch being looked for.
+  if case "$(run "$side" || true)" in *"ns/op"*) false ;; *) true ;; esac; then
+    echo "versus.sh: no benchmark matches '^$side\$' in module '$MODULE'" >&2
+    exit 1
+  fi
+done
 
 echo "measuring $ROUNDS paired rounds: $A vs $B" >&2
 {
