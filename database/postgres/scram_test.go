@@ -252,6 +252,21 @@ func TestSCRAMBeginRefusals(t *testing.T) {
 	}
 }
 
+// The mechanism list comes before anything has authenticated the server: a
+// flood of names is counted in the error, not copied into it — the error
+// lives on the connection, and its text should not be the peer's to size.
+func TestSCRAMBeginCountsAFloodOfMechanisms(t *testing.T) {
+	list := strings.Repeat("X-UNKNOWN-MECHANISM\x00", 2000) + "\x00"
+	var s scram
+	_, _, err := s.begin([]byte(list), rfcPassword, nil, false)
+	if !errors.Is(err, ErrAuthUnsupported) {
+		t.Fatalf("begin = %v, want ErrAuthUnsupported", err)
+	}
+	if len(err.Error()) > 512 || !strings.Contains(err.Error(), "2000 mechanisms") {
+		t.Errorf("error is %d bytes: %.120s…; want the count, not the list", len(err.Error()), err.Error())
+	}
+}
+
 // scramProof reports a derivation it should not run rather than returning a
 // proof nobody should trust. The exchange judges the salt before it gets here,
 // but the function is callable on its own and its contract is its own.

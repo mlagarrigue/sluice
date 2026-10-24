@@ -192,11 +192,21 @@ func (b Bits) At(i int) (bool, error) {
 	if i < 0 || i >= b.Len {
 		return false, fmt.Errorf("%w: bit %d of a %d-bit string", ErrCodec, i, b.Len)
 	}
+	// A value built by hand can claim more bits than Bytes holds; the wire
+	// decoder never makes one (DecodeBits checks the two agree).
+	if i/8 >= len(b.Bytes) {
+		return false, fmt.Errorf("%w: bit %d of a %d-bit string held in %d bytes", ErrCodec, i, b.Len, len(b.Bytes))
+	}
 	return b.Bytes[i/8]&(0x80>>(i%8)) != 0, nil
 }
 
-// String renders the bits the way PostgreSQL prints them.
+// String renders the bits the way PostgreSQL prints them. A value whose Len
+// and Bytes disagree — only one built by hand can — renders as such rather
+// than reading past Bytes.
 func (b Bits) String() string {
+	if b.Len < 0 || b.Len > 8*len(b.Bytes) {
+		return fmt.Sprintf("<invalid Bits: %d bits in %d bytes>", b.Len, len(b.Bytes))
+	}
 	out := make([]byte, b.Len)
 	for i := range b.Len {
 		if b.Bytes[i/8]&(0x80>>(i%8)) != 0 {

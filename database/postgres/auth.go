@@ -394,6 +394,21 @@ type Config struct {
 	replication bool
 }
 
+// String prints the configuration with the password hidden: %v and %+v on
+// a struct print every field, and a password that reaches a log is a
+// credential anyone reading the log holds.
+func (cfg Config) String() string {
+	type plain Config // no methods: printing it does not come back here
+	p := plain(cfg)
+	if p.Password != "" {
+		p.Password = "<redacted>"
+	}
+	return fmt.Sprintf("postgres.Config%+v", p)
+}
+
+// GoString hides the password from %#v too.
+func (cfg Config) GoString() string { return cfg.String() }
+
 // maxProtocol is [Config.MaxProtocol] with its default applied.
 func (cfg Config) maxProtocol() ProtocolVersion {
 	if cfg.MaxProtocol == 0 {
@@ -689,7 +704,10 @@ func (c *Conn) authenticate(cfg Config, ts tlsStater) error {
 			// it is the server's first word that the session is usable, and a
 			// server that cannot frame it is not one to hand queries to.
 			if len(m.Body) != 1 || (m.Body[0] != 'I' && m.Body[0] != 'T' && m.Body[0] != 'E') {
-				return c.breakConn(fmt.Errorf("%w: ReadyForQuery with a %d-byte body %q during startup, want one status byte", ErrProtocol, len(m.Body), m.Body))
+				// The body is not quoted: nothing has authenticated the peer
+				// yet, and its bytes have no place in an error the Conn keeps
+				// for its life (the posture of connect.go's SSLRequest).
+				return c.breakConn(fmt.Errorf("%w: ReadyForQuery with a %d-byte body during startup, want one status byte", ErrProtocol, len(m.Body)))
 			}
 			c.noteTxStatus(m.Body)
 			c.protocol = st.version

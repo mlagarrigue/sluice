@@ -234,6 +234,25 @@ func TestBitsRejectsACountThatDisagreesWithTheBytes(t *testing.T) {
 	}
 }
 
+// The decoder never makes a Bits whose Len and Bytes disagree, but a caller
+// can: At and String must refuse to read past Bytes rather than panic with
+// an index out of range.
+func TestBitsBuiltByHandStaysInsideItsBytes(t *testing.T) {
+	b := Bits{Len: 16, Bytes: []byte{0xff}} // sixteen bits claimed, eight held
+	if _, err := b.At(12); !errors.Is(err, ErrCodec) {
+		t.Errorf("At(12) = %v, want ErrCodec", err)
+	}
+	if got, err := b.At(3); err != nil || !got {
+		t.Errorf("At(3) = %v, %v; want true, nil", got, err)
+	}
+	if got := b.String(); got != "<invalid Bits: 16 bits in 1 bytes>" {
+		t.Errorf("String() = %q", got)
+	}
+	if got := (Bits{Len: -1}).String(); got != "<invalid Bits: -1 bits in 0 bytes>" {
+		t.Errorf("String() of a negative length = %q", got)
+	}
+}
+
 // The decoded bytes must not alias the wire buffer: it is reused per batch, so
 // a borrowed Bits would change under whoever kept it.
 func TestBitsCopiesOutOfTheWireBuffer(t *testing.T) {

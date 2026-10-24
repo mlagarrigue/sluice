@@ -216,7 +216,13 @@ func (s *scram) begin(mechanisms []byte, password string, cs *tls.ConnectionStat
 			return "", nil, fmt.Errorf("%w: the server offers only %s, which binds the exchange to a TLS connection and this one is not TLS. It will not be downgraded silently, because a stripped mechanism list is what channel binding exists to detect",
 				ErrAuthUnsupported, mechSCRAMSHA256Plus)
 		}
-		return "", nil, fmt.Errorf("%w: the server offers %v, none of which this package speaks", ErrAuthUnsupported, names)
+		// The list is the server's, before anything has authenticated it:
+		// named when it is a mechanism list, counted when it is a flood.
+		offered := fmt.Sprint(names)
+		if len(offered) > 256 {
+			offered = fmt.Sprintf("%d mechanisms (%d bytes of names)", len(names), len(offered))
+		}
+		return "", nil, fmt.Errorf("%w: the server offers %s, none of which this package speaks", ErrAuthUnsupported, offered)
 	case cs != nil:
 		// TLS, but the server did not offer -PLUS. 'y' says this client could
 		// have bound the exchange: a server that does support binding — and

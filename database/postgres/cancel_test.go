@@ -307,6 +307,21 @@ func TestCancelKeyStringHidesTheSecret(t *testing.T) {
 	}
 }
 
+// The password is the same kind of credential, and a Config is the value a
+// program most often prints whole when a connection fails.
+func TestConfigStringHidesThePassword(t *testing.T) {
+	cfg := Config{User: "app", Database: "orders", Password: "hunter2-pw"}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		got := fmt.Sprintf(verb, cfg)
+		if strings.Contains(got, "hunter2") {
+			t.Errorf("Sprintf(%s) = %q, and the password is in it", verb, got)
+		}
+		if !strings.Contains(got, "app") || !strings.Contains(got, "orders") {
+			t.Errorf("Sprintf(%s) = %q, and the role or database is not: the point is to be diagnosable", verb, got)
+		}
+	}
+}
+
 // Before 3.2 the secret is exactly four bytes; from 3.2 on it is 4 to 256.
 func TestParseBackendKeyDataBounds(t *testing.T) {
 	for _, tc := range []struct {
