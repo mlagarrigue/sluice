@@ -17,7 +17,7 @@ compression — and every axis of the internal study is a flag:
 |---|---|---|
 | A — transport | `-transport nethttp-h1` (R), `nethttp-h2`, `httpstream-h1`, `httpstream-h2`, `httpstream-h3` | all five; `httpstream-h3` listens on UDP (`net/quic`), TLS always |
 | B — driver | `-driver sluice` (R), `pgx` | both, under the same gateway and connection budget |
-| C — grouping | `-gateway-size 64 -gateway-within 2ms` | any positive values |
+| C — grouping | `-gateway-size 64 -gateway-within 2ms`, `-gateway-eager` | any positive values; eager: no window, batches form while the pipeline works |
 | D — transport batch | `-max-requests-per-batch`, `-max-requests-per-conn` (`-1` unbounded) | httpstream transports only |
 | E — response | `-response buffered` (R), `stream` | the list is written as the store delivers it, one flush per batch of rows, no `Content-Length`; with `-compression`, the encoder is flushed per batch too; the other scenarios stay buffered |
 | F — compression | `-compression none` (R), `gzip1`, `gzip6`, `deflate6` | stdlib encoders on the buffered body when the client accepts it (`deflate` in its zlib wrapper, RFC 9110 §8.4.1.2); `Vary: Accept-Encoding` |

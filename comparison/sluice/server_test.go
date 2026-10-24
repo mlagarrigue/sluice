@@ -61,6 +61,7 @@ var variants = []variant{
 	{"pgx", []string{"-driver", "pgx"}},
 	{"gateway-16-500us", []string{"-gateway-size", "16", "-gateway-within", "500us"}},
 	{"gateway-256-8ms", []string{"-gateway-size", "256", "-gateway-within", "8ms"}},
+	{"gateway-eager", []string{"-gateway-eager"}},
 	{"httpstream-h1-batch8-conn16", []string{"-transport", "httpstream-h1", "-max-requests-per-batch", "8", "-max-requests-per-conn", "16"}},
 	{"httpstream-h1-conn-unbounded", []string{"-transport", "httpstream-h1", "-max-requests-per-conn", "-1"}},
 	{"gzip1", []string{"-compression", "gzip1"}},

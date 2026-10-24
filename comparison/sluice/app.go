@@ -120,7 +120,11 @@ func newApp(o options) (*app, error) {
 		codec: lookupCodec(o.compression), stream: o.response == responseStream,
 		appendJSON: o.json == jsonAppend,
 	}
-	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
+	gwCfg := gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin}
+	if o.gatewayEager {
+		gwCfg = gateway.Config{Size: o.gatewaySize, Eager: true}
+	}
+	a.gw = gateway.New(gwCfg,
 		unitPipeline(st, o.gatewaySize, &a.batches))
 	return a, nil
 }

@@ -164,16 +164,22 @@ and what never leaves the log, is
 > no gateway. And under WSL2, a `Within` below one millisecond is rounded up
 > by the system clock: 500 µs cost a lone call 1.11 ms. The benchmarks are in
 > [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend).
+> If your traffic is often low, `Eager` removes the wait: a lone call leaves
+> at once, and batches form only when the database slows down. The price is
+> more queries while the database has room to spare
+> ([ADR 0012](../design/adr/0012-gateway-batch-submission.md)).
 
 ### Gateway settings
 
 `New` panics, and `Config.Validate` returns an error, on the same thing: a
-size or a window that is not positive.
+size that is not positive, a window that is not positive — or not zero
+under `Eager`.
 
 | Field | Zero | Bounds | What it sets |
 |---|---|---|---|
 | `Size` | — (required) | > 0 | the largest batch handed to the pipeline |
-| `Within` | — (required) | > 0 | how long the first call of a batch waits for company |
+| `Within` | — (required) | > 0, or 0 under `Eager` | how long the first call of a batch waits for company |
+| `Eager` | `false` | `Within` zero | leave at once; batches form while the pipeline works |
 | `Logger` | `slog.Default` | | where the pipeline's panic is logged |
 
 ## Authenticating, authorizing

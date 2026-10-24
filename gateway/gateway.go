@@ -88,8 +88,16 @@
 // other caller shares.
 //
 // So: a gateway suits many callers, not one caller in a hurry. If the clients
-// pipeline, the wait is pure cost and Within should be small or the gateway
-// left out.
+// pipeline, the wait is pure cost and Within should be small, the gateway
+// [Config.Eager], or left out.
+//
+// # Waiting only when it pays
+//
+// A window costs every call of a quiet moment its whole length.
+// [Config.Eager] has none: a batch leaves as soon as the loop holds a call,
+// with everyone queued behind it, and batches grow on their own as the
+// backend slows — the lowest latency at low traffic, more queries while the
+// backend has room to spare. The default keeps the window.
 //
 // # Fan out inside the pipeline, not around the gateway
 //
@@ -164,6 +172,22 @@ type Config struct {
 	// 200 ms is not.
 	Within time.Duration
 
+	// Eager sends a batch as soon as the run loop holds a call, with every
+	// call already queued behind it, instead of holding the first for
+	// Within. Batches then form while the pipeline works: a call that
+	// arrives while a batch is being served waits for that batch, and
+	// leaves with everyone who arrived meanwhile. At low traffic a call
+	// goes alone and pays no wait; as the backend slows, more calls arrive
+	// per batch served and the batches grow by themselves, up to Size —
+	// with no threshold to cross, so nothing oscillates. This is how
+	// PostgreSQL's group commit fills a flush.
+	//
+	// It batches only while the pipeline is busy: a pipeline that returns
+	// from its yield before serving the batch ([parallel.Unordered])
+	// batches once all its workers are busy, not before. Within must be
+	// zero under Eager: there is no window.
+	Eager bool
+
 	// Logger receives the pipeline's panic — its value and the stack it was
 	// raised on, at the error level — before the callers are released with
 	// [ErrPipelinePanicked]. Nil means [slog.Default]. The value goes to the
@@ -172,8 +196,9 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// Validate reports what [New] would refuse in c — a Size or a Within that is
-// not positive — and nil when it would accept it. New panics on it, since a
+// Validate reports what [New] would refuse in c — a Size that is not
+// positive, a Within that is not positive (or not zero under Eager) — and
+// nil when it would accept it. New panics on it, since a
 // configuration written in the code is a programmer's mistake; one read at
 // deployment, from the environment or a file, is checked with Validate
 // before the program starts serving, and refused as an error.
@@ -182,7 +207,10 @@ func (c Config) Validate() error {
 	if c.Size <= 0 {
 		errs = append(errs, errors.New("gateway: Config.Size must be positive — it is the largest batch the pipeline sees"))
 	}
-	if c.Within <= 0 {
+	switch {
+	case c.Eager && c.Within != 0:
+		errs = append(errs, errors.New("gateway: Config.Within must be zero under Eager — an eager gateway holds no call for company"))
+	case !c.Eager && c.Within <= 0:
 		errs = append(errs, errors.New("gateway: Config.Within must be positive — it is the latency ceiling calls are held under"))
 	}
 	return errors.Join(errs...)
@@ -239,6 +267,7 @@ type Gateway[In, Out any] struct {
 	in     chan *Call[In, Out]
 	size   int
 	within time.Duration
+	eager  bool
 	logger *slog.Logger // where the pipeline's panic is reported
 
 	// closing is closed by Close to stop the run loop. The call channel
@@ -292,6 +321,7 @@ func New[In, Out any](cfg Config, pipeline func(sluice.Stream[*Call[In, Out]])) 
 		in:      make(chan *Call[In, Out], size),
 		size:    size,
 		within:  cfg.Within,
+		eager:   cfg.Eager,
 		logger:  cfg.Logger,
 		closing: make(chan struct{}),
 		drained: make(chan struct{}),
@@ -352,7 +382,7 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 		// Created stopped, with no drain: since Go 1.23 (and this module
 		// requires 1.26) Stop guarantees no stale value is left in C, so the
 		// old `if !Stop() { <-C }` idiom has nothing to drain.
-		timer := time.NewTimer(g.within)
+		timer := time.NewTimer(time.Hour)
 		timer.Stop()
 		defer timer.Stop()
 
@@ -383,6 +413,24 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 		for {
 			select {
 			case c := <-g.in:
+				if g.eager {
+					// Everyone who arrived while the last batch was served
+					// leaves with this call, and nobody waits for more.
+					buf = append(buf, c)
+				take:
+					for len(buf) < g.size {
+						select {
+						case c := <-g.in:
+							buf = append(buf, c)
+						default:
+							break take
+						}
+					}
+					if !flush() {
+						return
+					}
+					continue
+				}
 				if len(buf) == 0 {
 					// The ceiling is on how long a call waits, so it runs from
 					// the first call of the batch, not the last.
