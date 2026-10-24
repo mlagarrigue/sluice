@@ -289,7 +289,7 @@ producer may be, per stream.
 ### `net/httpstream` settings
 
 Each field left at zero takes the value of the "Zero" column; a negative
-value is refused, with the field's name, by `Serve`, `Server`,
+value is refused, with the field's name, by `Config.Validate`, `Serve`, `Server`,
 `ServeH2Conn`, `ServeH3Conn` and `Config.TransportParameters`, before
 anything is read. The "Protocols" column says where the field acts.
 

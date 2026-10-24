@@ -197,6 +197,25 @@ negotiated: it reads neither the version, nor the suite, nor the ALPN, and
 the preface picks the protocol, as in clear text. `scripts/interop-http.sh`
 replays curl and h2spec over `https://` with exactly this configuration.
 
+## Settings at deployment
+
+The library reads no environment variable and no command-line flag: your
+program reads its settings, with `os.LookupEnv`, `flag` or `encoding/json`,
+and puts them in the `Config` types. A field left at zero takes the default
+the tables give. Before listening, call `Validate` (`httpstream.Config`,
+`gateway.Config`): a value the server would refuse stops the program at
+start, naming the field, before it takes its port.
+[`example/settings`](../../example/settings/settings.go) does it for the
+gateway and the HTTP timeouts. The tables:
+[PostgreSQL](postgres.md#connection-settings),
+[gateway](web.md#gateway-settings),
+[token verifier](web.md#verifier-settings),
+[`net/quic`](experimental.md#netquic-settings) and
+[`net/httpstream`](experimental.md#nethttpstream-settings).
+
+> **In plain words:** your settings come from wherever you like; check
+> them with `Validate`, and only then open the port.
+
 ## What applies to every section
 
 Two behaviors of `ServeH3Conn` complete the sections above without fitting

@@ -165,6 +165,17 @@ and what never leaves the log, is
 > by the system clock: 500 µs cost a lone call 1.11 ms. The benchmarks are in
 > [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend).
 
+### Gateway settings
+
+`New` panics, and `Config.Validate` returns an error, on the same thing: a
+size or a window that is not positive.
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Size` | — (required) | > 0 | the largest batch handed to the pipeline |
+| `Within` | — (required) | > 0 | how long the first call of a batch waits for company |
+| `Logger` | `slog.Default` | | where the pipeline's panic is logged |
+
 ## Authenticating, authorizing
 
 **Authenticating** is knowing who is calling; **authorizing** is deciding
@@ -214,6 +225,21 @@ implement `Authorizer` against whatever knows the policy. The grant is then
 passed to the database through `tx.SetLocal`, so that PostgreSQL's
 row-level security filters the right tenant's data — without ever writing
 the tenant into the SQL text.
+
+### Verifier settings
+
+`NewHMACVerifier` refuses what cannot be safe.
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Secret` | — (required) | ≥ 32 bytes, from `crypto/rand` | the HMAC key |
+| `Previous` | none | each ≥ 32 bytes | retired keys still accepted during a rotation |
+| `Audience` | none: a token carrying `aud` is refused | | the `aud` value required |
+| `Issuer` | any issuer | | the `iss` value required |
+| `TenantClaim` | none | | the claim holding the tenant, then required |
+| `Leeway` | none | ≥ 0 | clock skew allowed on `exp`, `nbf`, `iat` |
+| `MaxTokenBytes` | 8 KiB | ≥ 0 | the largest token read |
+| `Now` | `time.Now` | | the clock, for tests |
 
 ## Starting and stopping cleanly
 

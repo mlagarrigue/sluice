@@ -76,6 +76,33 @@ authentication method the package refuses (`md5`, deprecated) arrives as
 `ErrAuthUnsupported`. Two different errors because they are fixed
 differently.
 
+### Connection settings
+
+Each field left at zero takes the value of the "Zero" column; what
+`Connect` refuses, it refuses before anything is sent, naming the field.
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `User` | — (required) | | the role |
+| `Database` | the database named like `User` | | the database |
+| `Password` | none | | sent only if the server asks for one |
+| `AllowCleartextPassword` | refused | | answering a cleartext password request; only over verified TLS or a local socket |
+| `RequireAuth` | not required | | refusing a server that asked for no credential |
+| `ChannelBinding` | `ChannelBindingPrefer` | Prefer, Require, Disable | binding SCRAM to the server's certificate |
+| `MinSCRAMIterations` | 4096 | ≥ 0, ≤ Max | PBKDF2 iterations below which the server is refused |
+| `MaxSCRAMIterations` | 1,048,576 | ≥ Min | above which it is refused |
+| `MinSCRAMSaltLen` | 16 bytes | ≥ 0 | a shorter salt is refused |
+| `Params` | none | not `user`, `database`, `replication` | runtime parameters sent at startup |
+| `MaxMessage` | 64 MiB | 64 KiB to 1 GiB | the largest message accepted from the server |
+| `MaxProtocol` | `Protocol32` | versions this package speaks | the version asked for |
+| `MinProtocol` | any known version | ≤ `MaxProtocol` | the version below which the connection is refused |
+| `StatementCacheSize` | 512 | negative: no cache | statements kept prepared on the server |
+| `CancelTimeout` | 5 s | ≥ 0 | how long a cancellation the connection sends may take |
+| `Logger` | `slog.Default` | | warnings with no error to return through |
+
+`QueryConfig` and `CopyConfig` are set per query, in the code beside it;
+their fields are in the package documentation.
+
 ## Reading
 
 A query returns a `Source[Row]`: a stream of batches of rows, and the error
