@@ -177,6 +177,30 @@ under its limit. Measured here: a 20 ms RTT moves the static p50 from
 0.37 ms to 20.39 ms; a 1 % loss reads 1.08 % and 1.07 % on the two
 directions over 14 000 packets each, the queue at most 22 packets.
 
+At the end of the stage the script writes `stage-merged.jsonl`: the
+generator's line, and what the three roles did while it ran (§1.2), every
+counter the difference across the stage. web is read from inside its own
+namespaces by the tools image (its server is PID 1 there): CPU seconds,
+RSS mean, max and peak, bytes written, established connections and the
+listen queue at most, the interface's bytes and packets, the accept
+queue's kernel counters (`ListenOverflows`, `ListenDrops`,
+`SyncookiesSent`), its PID, restarts and OOM; the database: connections
+and the oldest unfrozen transaction; the tester: its cores' busy share as
+the host counts it, softirq included; and the contract's metrics point
+at the start and the end, read by the generator itself (`loadgen
+-metrics`, in the stage's protocol). Then the controls of §4, all on the
+apparatus, never the contender: the injected network, the tester's cores
+past 70 %, a checkpoint or an autovacuum during the stage, a connection
+the tester could not open. `valid` and `invalid` (the causes) are on the
+line; the exit status is 0 for a valid stage, 2 for an invalid one, 1 for
+an answer that was wrong. A crash of web is the contender's (§1.2): it is
+recorded (`crash`), never an invalidation. `FORCE=checkpoint` and
+`FORCE=tester-cpu` invalidate a stage on purpose, a checkpoint requested
+halfway or the tester's cores taken by a burner; both come out invalid
+with their cause, the generator's own line still reading `held`. Not
+collected on this kernel: `write_bytes`, which needs per-task I/O
+accounting (`/proc/<pid>/io`), absent from WSL2's (`null`).
+
 ### Validating it
 
 ```

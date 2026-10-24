@@ -8,6 +8,7 @@
 #   comparison/chain/run.sh                                  # unit, h1, 1 000 req/s, 10 s
 #   SCENARIO=list RATE=300 PROTO=h2 comparison/chain/run.sh
 #   RTT=20ms LOSS=1% LINK=100mbit comparison/chain/run.sh     # the network of §3.4, §8.4
+#   FORCE=checkpoint comparison/chain/run.sh                  # an invalid stage, on purpose
 #
 # The images are the ones comparison/README.md builds ("In a container"):
 # WEB_IMAGE (sluice-study:opt by default) and TESTER_IMAGE (sluice-loadgen).
@@ -47,13 +48,14 @@ LINK=${LINK:-}
 LOSS=${LOSS:-}
 NETEM_LIMIT=1000000 # §0: netem's default queue of 1 000 drops at ~50 000 packets/s
 ALPINE=alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
-TC_IMAGE=sluice-chain-tc:local
+TC_IMAGE=sluice-chain-tools:local # tc, ss, nstat
 
 db=$CHAIN-db web=$CHAIN-web tester=$CHAIN-tester tnet=$CHAIN-tnet sampler=$CHAIN-sampler
+watch=$CHAIN-watch burn=$CHAIN-burn
 back=$CHAIN-back front=$CHAIN-front
 
 cleanup() {
-  docker rm -f "$db" "$web" "$tester" "$sampler" "$tnet" >/dev/null 2>&1 || true
+  docker rm -f "$db" "$web" "$tester" "$sampler" "$tnet" "$watch" "$burn" >/dev/null 2>&1 || true
   docker network rm "$back" "$front" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -75,6 +77,48 @@ tc_in() {
   return "$code"
 }
 on() { [ -n "$1" ] && [ "$1" != 0ms ] && [ "$1" != 0 ]; }
+
+# The collector (§1.2, §4). web is read from inside its own namespaces —
+# its process is PID 1 there — by the tools image, so the measured image
+# carries nothing: CPU ticks, RSS and its peak, bytes written, established
+# connections and the listen queue, the accept queue's kernel counters,
+# the interface's bytes and packets. One line of numbers, in that order.
+in_web() {
+  local name=$CHAIN-probe-$RANDOM
+  docker run -d --name "$name" --pid "container:$web" --network "container:$web" \
+    --cap-add SYS_PTRACE "$TC_IMAGE" sh -ec "$*" >/dev/null
+  docker wait "$name" >/dev/null
+  docker logs "$name" 2>&1
+  docker rm "$name" >/dev/null
+}
+probe_web() {
+  in_web '
+    set -- $(cut -d" " -f14,15 /proc/1/stat)
+    echo $(( $1 + $2 )) \
+      $(awk "/^VmRSS/ {r=\$2} /^VmHWM/ {h=\$2} END {print r, h}" /proc/1/status) \
+      $(if [ -r /proc/1/io ]; then awk "/^write_bytes/ {print \$2}" /proc/1/io; else echo -1; fi) \
+      $(ss -Htn state established "( sport = :8443 )" | wc -l) \
+      $(ss -Hltn "( sport = :8443 )" | awk "{q = \$2} END {print q + 0}") \
+      $(awk "/eth/ {rb+=\$2; rp+=\$3; tb+=\$10; tp+=\$11} END {print rb, rp, tb, tp}" /proc/net/dev) \
+      $(nstat -az TcpExtListenOverflows TcpExtListenDrops TcpExtSyncookiesSent | awk "NR>1 {printf \"%s \", \$2}")'
+}
+# The tester's cores as the host's scheduler counts them, softirq
+# included (netem's work runs there, §1.2): "busy total" in ticks.
+host_cpu() {
+  awk -v set=",$1," 'index(set, "," substr($1, 4) ",") && $1 ~ /^cpu[0-9]/ {
+    t = 0; for (i = 2; i <= NF; i++) t += $i; idle += $5 + $6; total += t
+  } END {print total - idle, total}' /proc/stat
+}
+# The contract's metrics point, read by the generator itself from the
+# tester's side of the network, in the stage's protocol (h3 included).
+metrics_point() {
+  local name=$CHAIN-metrics-$RANDOM
+  docker run -d --name "$name" --network "container:$tnet" "$TESTER_IMAGE" \
+    -metrics -url "https://$web:8443" -proto "$PROTO" >/dev/null
+  docker wait "$name" >/dev/null
+  docker logs "$name" 2>/dev/null || echo null
+  docker rm "$name" >/dev/null
+}
 egress_args() {
   local a="" ; on "$RTT" && a+=" delay $RTT"; on "$LOSS" && a+=" loss $LOSS"; echo "$a"
 }
@@ -177,11 +221,38 @@ fi
 docker run -d --name "$sampler" --network "container:$tnet" "$TC_IMAGE" \
   sh -c 'while :; do tc -s qdisc show; sleep 1; done' >/dev/null
 
+# Before the stage: web, the tester's cores, the metrics point, web's
+# identity (a crash is the contender's, never an invalidation, §4).
+w0=$(probe_web) c0=$(host_cpu "$TESTER_CPUS") m0=$(metrics_point)
+id0=$(docker inspect "$web" --format '{{.State.Pid}} {{.RestartCount}}')
+# web's memory and connections, every second through the stage.
+docker run -d --name "$watch" --pid "container:$web" --network "container:$web" "$TC_IMAGE" \
+  sh -c 'while :; do echo $(awk "/^VmRSS/ {print \$2}" /proc/1/status) \
+    $(ss -Htn state established "( sport = :8443 )" | wc -l) \
+    $(ss -Hltn "( sport = :8443 )" | awk "{q = \$2} END {print q + 0}"); sleep 1; done' >/dev/null
+# FORCE invalidates the stage on purpose, to prove the controls see it: a
+# checkpoint requested halfway, or the tester's cores taken by a burner.
+case ${FORCE:-} in
+  checkpoint) (sleep "$(( ${DURATION%s} / 2 + ${WARMUP%s} ))"; psql -c CHECKPOINT) & ;;
+  tester-cpu)
+    docker run -d --name "$burn" --cpuset-cpus "$TESTER_CPUS" "$ALPINE" \
+      sh -c "for i in \$(seq $(tr ',' '\n' <<<"$TESTER_CPUS" | wc -l)); do (while :; do :; done) & done; wait" >/dev/null ;;
+  '') ;;
+  *) echo "chain: FORCE=$FORCE: want checkpoint or tester-cpu" >&2; exit 1 ;;
+esac
+
 docker run -d --name "$tester" --network "container:$tnet" --cpuset-cpus "$TESTER_CPUS" \
   --ulimit nofile="$NOFILE:$NOFILE" \
   "$TESTER_IMAGE" -url "https://$web:8443" -proto "$PROTO" -scenario "$SCENARIO" \
   -rate "$RATE" -duration "$DURATION" -warmup "$WARMUP" -keyspace "$ROWS" -rtt "$RTT" >/dev/null
 code=$(docker wait "$tester")
+c1=$(host_cpu "$TESTER_CPUS") w1=$(probe_web) m1=$(metrics_point)
+id1=$(docker inspect "$web" --format '{{.State.Pid}} {{.RestartCount}}')
+oom=$(docker inspect "$web" --format '{{.State.OOMKilled}} {{.State.Running}}')
+docker rm -f "$burn" >/dev/null 2>&1 || true
+watched=$(docker logs "$watch" 2>&1 | awk 'NF >= 2 {n++; rss += $1; if ($1 > mr) mr = $1; if ($2 > me) me = $2; if ($3 > mq) mq = $3}
+  END {printf "%d %d %d %d", (n ? rss / n : 0), mr, me, mq}')
+docker rm -f "$watch" >/dev/null 2>&1 || true
 backlog=$(docker logs "$sampler" 2>&1 | awk '/backlog/ {sub(/p$/, "", $3); if ($3+0 > m) m = $3+0} END {print m+0}')
 docker rm -f "$sampler" >/dev/null 2>&1 || true
 
@@ -237,17 +308,59 @@ jq -n --arg db "$DB_CPUS" --arg web "$WEB_CPUS" --arg tester "$TESTER_CPUS" \
     cache_hit_pct: $hit, db_steady: $steady,
     network: {rtt: $rtt, db_rtt: $dbrtt, link: $link, loss: $loss},
     netem: {qdiscs: $qdiscs, max_backlog_pkts: $backlog, ok: $netemok}}' > "$OUT/chain.json"
-cat "$OUT/chain.json"
+db_extra=$(psql -At <<'SQL'
+SELECT (SELECT count(*) FROM pg_stat_activity WHERE datname = 'study') || ' ' ||
+       (SELECT max(age(datfrozenxid)) FROM pg_database);
+SQL
+)
+
+# One line per stage: the generator's, and what the three roles did while
+# it ran (§1.2), every counter as the difference across the stage; then
+# the controls of §4 that invalidate it — the apparatus, never the
+# contender: the injected network, the tester's CPU past 70 %, a
+# checkpoint or an autovacuum, a connection the tester could not open. A
+# crash of web is the contender's: recorded, never an invalidation.
+read -r ut0 rss0 hwm0 wb0 est0 q0 rb0 rp0 tb0 tp0 lo0 ld0 sc0 <<<"$w0"
+read -r ut1 rss1 hwm1 wb1 est1 q1 rb1 rp1 tb1 tp1 lo1 ld1 sc1 <<<"$w1"
+read -r rssmean rssmax estmax qmax <<<"$watched"
+read -r busy0 total0 <<<"$c0"
+read -r busy1 total1 <<<"$c1"
+read -r dbconns frozen <<<"$db_extra"
+seconds=$(( ${DURATION%s} + ${WARMUP%s} ))
+cpu_s=$(awk -v t=$(( ut1 - ut0 )) 'BEGIN {printf "%.2f", t / 100}')
+for m in m0 m1; do jq -e . <<<"${!m}" >/dev/null 2>&1 || printf -v "$m" null; done
+jq -c --slurpfile chain "$OUT/chain.json" \
+  --argjson web "{\"cpu_s\": $cpu_s, \"rss_kb_mean\": $rssmean, \"rss_kb_max\": $rssmax,
+    \"rss_kb_peak\": $hwm1, \"write_bytes\": $( (( wb0 < 0 )) && echo null || echo $(( wb1 - wb0 )) ), \"established_max\": $estmax, \"listen_recvq_max\": $qmax,
+    \"rx_bytes\": $(( rb1 - rb0 )), \"rx_packets\": $(( rp1 - rp0 )),
+    \"tx_bytes\": $(( tb1 - tb0 )), \"tx_packets\": $(( tp1 - tp0 )), \"listen_overflows\": $(( lo1 - lo0 )),
+    \"listen_drops\": $(( ld1 - ld0 )), \"syncookies_sent\": $(( sc1 - sc0 )),
+    \"pid_restarts\": \"$id0 -> $id1\", \"oom_killed_running\": \"$oom\"}" \
+  --argjson tester "{\"cores_busy_pct\": $(awk -v b="$((busy1 - busy0))" -v t="$((total1 - total0))" 'BEGIN {printf "%.1f", t ? 100 * b / t : 0}'), \"seconds\": $seconds}" \
+  --argjson db "{\"connections\": $dbconns, \"max_frozen_xid_age\": $frozen}" \
+  --argjson m0 "${m0:-null}" --argjson m1 "${m1:-null}" \
+  --arg crash "$([ "$id0" = "$id1" ] && [ "$oom" = "false true" ] && echo no || echo "yes: pid/restarts $id0 -> $id1, oom/running $oom")" \
+  '. as $g | $chain[0] as $c |
+   ([ (if $c.netem.ok != "yes" then "network: \($c.netem.ok)" else empty end),
+      (if $tester.cores_busy_pct > 70 then "tester: its cores \($tester.cores_busy_pct) % busy, over 70 %" else empty end),
+      (if $c.db_steady != "yes" then "db: a checkpoint or an autovacuum ran (\($c.db_steady))" else empty end),
+      (if ($g.tester // 0) > 0 then "tester: \($g.tester) connections it could not open" else empty end)
+    ]) as $invalid |
+   $g + {chain: $c, roles: {web: $web, db: $db, tester: $tester},
+         metrics: {start: $m0, end: $m1}, crash: $crash,
+         valid: ($invalid | length == 0), invalid: $invalid}' \
+  "$OUT/stage.jsonl" > "$OUT/stage-merged.jsonl"
 jq -c '{scenario, proto, rate, held, cause, sent, ok, bad_key, errors, timed_out,
-        p50: .ttlb_ms.p50, p99: .ttlb_ms.p99, tls_version, alpn}' "$OUT/stage.jsonl"
-echo "chain: stage line in $OUT/stage.jsonl, tester exit $code" >&2
+        p50: .ttlb_ms.p50, p99: .ttlb_ms.p99, valid, invalid, crash,
+        tester_busy: .roles.tester.cores_busy_pct, web_cpu_s: .roles.web.cpu_s, rss_kb_max: .roles.web.rss_kb_max}' "$OUT/stage-merged.jsonl"
+echo "chain: merged line in $OUT/stage-merged.jsonl, tester exit $code" >&2
 if ! jq -e '.bad_key == 0 and .tester == 0 and (.ok == .sent or ($loss | length > 0))' --arg loss "$LOSS" "$OUT/stage.jsonl" >/dev/null; then
   echo "chain: answers not all valid" >&2
   exit 1
 fi
-if [ "$netem_ok" != yes ]; then
-  echo "chain: the injected network invalidates the stage: $netem_ok" >&2
-  exit 1
+if ! jq -e .valid "$OUT/stage-merged.jsonl" >/dev/null; then
+  echo "chain: the stage is invalid: $(jq -r '.invalid | join("; ")' "$OUT/stage-merged.jsonl")" >&2
+  exit 2
 fi
 # The generator exits 1 for a stage that is not a measurement, which a
 # stage under injected loss rarely is; the chain itself held.

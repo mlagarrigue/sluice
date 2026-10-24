@@ -135,3 +135,27 @@ func TestCompareJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestFetchMetrics: -metrics writes the server's metrics point as it came,
+// and refuses a status other than 200.
+func TestFetchMetrics(t *testing.T) {
+	const doc = `{"runtime":"go1.26.0","cpu_seconds":1.5,"gc":null,"batches":null}`
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/study/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(doc))
+	}))
+	defer srv.Close()
+	c := testCampaign(t, protoH1, srv.URL)
+	var out bytes.Buffer
+	if err := fetchMetrics(context.Background(), c.stage, &out); err != nil || out.String() != doc {
+		t.Fatalf("%q %v", out.String(), err)
+	}
+	c.url = srv.URL + "/nowhere"
+	if err := fetchMetrics(context.Background(), c.stage, &out); err == nil {
+		t.Fatal("a 404 accepted")
+	}
+}

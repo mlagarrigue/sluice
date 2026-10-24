@@ -251,3 +251,32 @@ func clip(s string) string {
 	}
 	return s[:most] + "…"
 }
+
+// fetchMetrics writes the contract's metrics point of the server at -url
+// (comparison/README.md, "The contract every contender honours") as the
+// server wrote it: the collector reads it at the start and the end of a
+// stage, in the stage's protocol, from the tester's side of the network.
+func fetchMetrics(ctx context.Context, st stage, out io.Writer) error {
+	cl, err := campaign{stage: st}.newClient()
+	if err != nil {
+		return err
+	}
+	cn := cl.dial(false)
+	defer cn.close()
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, st.url+"/study/metrics", http.NoBody)
+	if err != nil {
+		return err
+	}
+	resp, err := cn.hc.Do(req) //nolint:gosec // G704: the URL is the -url flag
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck // read to the end below
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s/study/metrics: status %d", st.url, resp.StatusCode)
+	}
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
