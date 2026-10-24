@@ -322,6 +322,42 @@ would run; the image is tagged `study-measured:<target>`. It reports:
   for every contender) is idle and warms nothing. Its resolution is one
   window.
 
+### The report of a campaign
+
+```
+go run -C comparison/loadgen ./report -campaign /tmp/trial -out /tmp/trial/report
+```
+
+The publication of §5, written by a program rather than by hand: one
+document and its charts, from `matrix.json`, `summary.json`, `raw.jsonl`
+and the verdicts `loadgen -verdicts` wrote. A figure and the sentence
+beside it then move together, and re-running the campaign re-runs the
+report.
+
+The nine points of §5 are each present, or say why they are not. Two are
+left to a person and marked in the output: the three sentences that read
+the gap — the mechanism, where Sluice.go loses, what is arithmetic rather
+than framework — and the two columns CMP-32 counts, lines of code and
+dependencies. Everything else is rendered: the diagram of the three
+roles, the two curves (latency p50 and p99, then the server's memory,
+both against the rate on a logarithmic scale, because the grid is
+geometric), the short table with each capacity and its interval, the
+verdicts of the two primary metrics with the scope of Holm beside them,
+the batch sizes the contract's counters report, and the four counters §5
+publishes **even at zero**: wrong answers, the server's closures and the
+accept queue's overflows per rate, the errors by nature, and the crashes
+with their cause.
+
+The charts are SVG written with the standard library: an open standard a
+browser, a document and a diff all read, and no dependency. Counters of
+rare events are published as totals with the number of stages they cover,
+never as a median — the median of a rare event is zero in every stage but
+the one that mattered.
+
+The output directory is a working one. Nothing measured here is published:
+what reaches `docs/COMPARISON.md` comes from a campaign on the machines
+the protocol names.
+
 ### The cross-check against two independent clients
 
 ```
