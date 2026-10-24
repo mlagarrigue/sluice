@@ -107,16 +107,19 @@ func goModRequires(t *testing.T) []requirement {
 	return out
 }
 
-// The nested modules — the comparison module (benchmarks/) and the interop
-// module (interop/) — have to keep pointing at this tree by a replace
-// directive rather than at a published version. Without it the comparison
-// silently measures whatever was last tagged, and the interop test silently
-// proves a quic-go handshake against it, which is not what the person running
-// either is trying to find out. A missing module is a failure, not a skip: a
-// skip would turn green the day one of them moved away.
+// The nested modules — the comparison module (benchmarks/), the interop
+// module (interop/) and the study's server (comparison/sluice/) — have to
+// keep pointing at this tree by a replace directive rather than at a
+// published version. Without it the comparison silently measures whatever
+// was last tagged, and the interop test silently proves a quic-go handshake
+// against it, which is not what the person running either is trying to find
+// out. The study's load generator (comparison/loadgen/) is left out on
+// purpose: it must not share this tree with the server it measures. A
+// missing module is a failure, not a skip: a skip would turn green the day
+// one of them moved away.
 func TestNestedModulesReplaceThisOne(t *testing.T) {
-	for _, dir := range []string{"benchmarks", "interop"} {
-		src, err := os.ReadFile(dir + "/go.mod") //nolint:gosec // G304: the two paths are the literals above
+	for _, dir := range []string{"benchmarks", "interop", "comparison/sluice"} {
+		src, err := os.ReadFile(dir + "/go.mod") //nolint:gosec // G304: the paths are the literals above
 		if err != nil {
 			t.Errorf("no %s module here: %v", dir, err)
 			continue
