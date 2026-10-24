@@ -591,6 +591,41 @@ func TestWorkflowCheckoutsDropTheirCredentials(t *testing.T) {
 	}
 }
 
+// TestCheckRunsTheNestedTestsCIRuns: scripts/check.sh is the acceptance
+// criterion, so what it skips of a nested module's tests must be what CI
+// skips — no more. The two lists are written twice, once in the script and
+// once in the workflow, and a list that drifts turns the script green while
+// CI is red: on 2026-10-24 main stayed red for four commits behind a check
+// that ran neither module's tests at all.
+func TestCheckRunsTheNestedTestsCIRuns(t *testing.T) {
+	skip := regexp.MustCompile(`-skip\s+'([^']+)'`)
+	find := func(path string) string {
+		b, err := os.ReadFile(path) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := skip.FindAllStringSubmatch(string(b), -1)
+		if len(m) != 1 {
+			t.Fatalf("%s: %d -skip expressions, want exactly one", path, len(m))
+		}
+		return m[0][1]
+	}
+	if a, b := find("scripts/check.sh"), find(".github/workflows/ci.yml"); a != b {
+		t.Errorf("check.sh skips %s, ci.yml skips %s", a, b)
+	}
+	// And the script does run them: a `nested` that only vets is the state
+	// this test exists to prevent.
+	b, err := os.ReadFile("scripts/check.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"comparison/sluice) ", "comparison/loadgen) "} {
+		if !strings.Contains(string(b), m) {
+			t.Errorf("scripts/check.sh runs no tests for %s", strings.TrimSuffix(m, ") "))
+		}
+	}
+}
+
 // TestDockerImagesArePinned: a tag moves, a digest does not. The interop
 // image is published, so its base is pinned for the same reason the
 // workflows pin every action by commit; Dependabot moves the digests.

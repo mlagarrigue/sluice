@@ -218,7 +218,7 @@ jobs:
         working-directory: comparison/loadgen
         run: |
           go vet ./... && go mod tidy -diff
-          go test -skip '^(TestCalibration|TestTrivialServesEveryScenario)$' ./...
+          go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...
 
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about

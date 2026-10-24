@@ -37,16 +37,33 @@ format() {
 }
 
 # nested <dir>: vet and lint a module beside the root one, which the root's
-# ./... skips. Their tests want PostgreSQL, a quic-go peer or a load campaign
-# and stay in CI; compiling, vet and lint are what a push would otherwise
-# learn from CI first. The one exception is interop's result guard, which
-# reads a recorded pass and needs no peer: an edit of
+# ./... skips, and run the tests that need nothing of their own. Those of
+# interop/ and benchmarks/ want a quic-go peer or a campaign and stay in CI;
+# the two comparison modules' do not — the server's skip without SLUICE_PG,
+# the generator's calibrate against the clock — and a check that does not run
+# them is a gate that goes green while CI is red, which is how main stayed
+# red for four commits on 2026-10-24. interop's result guard reads a recorded
+# pass and needs no peer either, so an edit of
 # interop/expected-results.json is checked here rather than in CI.
 nested() {
   (cd "$1" && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./...) || return 1
-  if [ "$1" = interop ]; then
-    (cd "$1" && GOWORK=off go test -run '^TestExpectedResultsGuard$' .)
-  fi
+  case $1 in
+    interop) (cd "$1" && GOWORK=off go test -run '^TestExpectedResultsGuard$' .) ;;
+    # SLUICE_PG emptied on purpose: the runner has none, so its integration
+    # tests skip there and what this reproduces is the runner's own result.
+    # On a machine that has the variable they want the study's tables loaded
+    # (go run ./internal/bench/cmd/pgfixtures), which is a campaign's
+    # preparation and not a gate's.
+    comparison/sluice) (cd "$1" && SLUICE_PG= GOWORK=off go test -race ./...) ;;
+    # The two tests skipped are the calibration the study demands of its own
+    # machines; the list is the one in .github/workflows/ci.yml, and
+    # TestCheckRunsTheNestedTestsCIRuns holds the two equal. Each name is
+    # anchored on its own rather than grouped in parentheses: a parser that
+    # splits a command on parentheses then reads the end anchor as the start
+    # of a command whose name comes from a variable, which is a shape a shell
+    # wrapper may well refuse to run.
+    comparison/loadgen) (cd "$1" && GOWORK=off go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...) ;;
+  esac
 }
 
 step vet go vet ./...
