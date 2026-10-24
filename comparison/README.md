@@ -111,6 +111,90 @@ go test -C comparison/sluice -run '^$' -bench . -cpuprofile cpu.out
 go tool pprof -top cpu.out
 ```
 
+## The contract every contender honours
+
+Every server the study measures, Sluice.go and the others alike, keeps the
+same outside: whatever it is built with, the campaign starts it, loads it
+and reads it the same way. What it must honour:
+
+- **Routes and documents**: the four of the table above, with the
+  response contract (the key asked for is in the body), JSON as R writes
+  it: `/orders/{id}` answers `{"id":…,"total":…,"label":…}`, a list
+  `{"from":…,"limit":…,"items":[…]}`, a write `{"key":…}`, the static
+  document R's own. An unknown order is a 404 with a JSON body. Key order,
+  spaces and the way a number is written are free; values are not.
+- **Environment**: it reads these variables, and nothing else decides how
+  it runs.
+
+  | Variable | Meaning |
+  |---|---|
+  | `STUDY_LISTEN` | address to listen on, `host:port` |
+  | `STUDY_PROTOCOL` | `h1`, `h2` or `h3` |
+  | `STUDY_TLS` | `on` (default) or `off`, HTTP/1.1 in clear (level 2) |
+  | `STUDY_TLS_CERT`, `STUDY_TLS_KEY` | PEM files of the certificate (ECDSA P-256) and its key |
+  | `STUDY_TLS_RESUME` | `off` (default) or `on`: issue session tickets |
+  | `STUDY_COMPRESSION` | `off` (default), `gzip` (level 1), `deflate`, `br`, `zstd`, as far as the contender offers them |
+  | `STUDY_DB_POOL` | size of the PostgreSQL pool |
+  | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` | the database, under libpq's names, which every driver knows |
+
+  The study's server maps them onto its flags, which still win:
+  `STUDY_PROTOCOL` picks R's transport for the protocol (`nethttp-h1`,
+  `nethttp-h2`, `httpstream-h3`), `-transport` the study's other variants.
+- **Logs, declared** (§4): its log level and whether it writes an access
+  log are published with its figures. The standard version keeps its
+  framework's default, the optimised one may cut it as a listed
+  optimisation. The study's server writes one startup line and its errors
+  to stderr, no access log.
+- **A metrics point**, `GET /study/metrics`, JSON, read at the start and
+  the end of every stage (the campaign takes the difference): it explains
+  a p99, it is never a verdict (§1.3).
+
+  ```
+  {
+    "runtime": "go1.26.0",
+    "cpu_seconds": 812.4,                      // the process's CPU so far
+    "gc": {                                    // null for a runtime with no GC
+      "cpu_seconds": 21.7,                     // CPU the collector took so far
+      "pauses": {"count": 5310, "seconds": 0.41,
+                 "buckets": [{"le": 0.0001, "count": 4800}, …]}
+    },
+    "batches": {                               // null for a variant without grouping
+      "count": 120400, "keys": 2891000,        // SQL batches of unit reads, keys in them
+      "sizes": [{"le": 1, "count": 300}, {"le": 2, "count": 900}, …]
+    }
+  }
+  ```
+
+  Every number is cumulative since the server started; a bucket counts
+  what is at most `le` and above the bucket before. The study's server
+  does not serve it yet.
+
+### Checking a contender against R
+
+```
+go run -C comparison/loadgen . -conformance https://127.0.0.1:8443 -url https://127.0.0.1:9443 -checks 300
+```
+
+Before a series, every contender answers the requests a seed draws — unit
+reads, lists and writes in the mixed scenario's proportions, a static
+request every twentieth — one at a time, and so does the reference named
+by `-conformance`. The two answers are compared as §4 asks: the status, the
+`Content-Type` (media type and parameters, `charset=utf-8` counting as
+JSON's own), and the JSON after parsing — keys in any order, numbers by
+their exact value (`7`, `7.0` and `7e0` are one number; `0.1` and
+`0.10000000000000001` are two), spaces ignored. It stops at the first
+difference and writes it on its JSON line, with the request and the place
+in the document (`$.items[3].label`); the exit status is then 1. Under
+`-encoding`, both are asked for that coding and decoded first. What a
+write does in the database is not seen from here: the campaign checks it
+on the database's side.
+
+On a developer's machine with PostgreSQL, R against R, against
+`-transport httpstream-h1`, `-json append` and `-compression gzip1`, 300
+requests each under `-encoding gzip`: conformant; the trivial server
+against R parts at the first static request (`$.service`), as it should,
+and agrees on everything else it was asked.
+
 ## `loadgen/` — the load generator
 
 The study's own client (§3 and §4 of its protocol; "home-made" is a

@@ -75,3 +75,32 @@ func TestTLSResume(t *testing.T) {
 		t.Errorf("h3: %v, SessionTicketsDisabled %v: quic.NewListener refuses it with SessionTickets", err, cfg.SessionTicketsDisabled)
 	}
 }
+
+// TestContractEnv: the variables every contender reads set the flags'
+// defaults, and a flag still wins; a value outside the contract is refused
+// before anything listens.
+func TestContractEnv(t *testing.T) {
+	t.Setenv("STUDY_PROTOCOL", "h2")
+	t.Setenv("STUDY_TLS_RESUME", "on")
+	t.Setenv("STUDY_COMPRESSION", "gzip")
+	t.Setenv("STUDY_DB_POOL", "16")
+	t.Setenv("STUDY_LISTEN", "127.0.0.1:9443")
+	t.Setenv("PGHOST", "db.local")
+	t.Setenv("PGPORT", "6432")
+	t.Setenv("PGUSER", "study")
+	o, err := parseOptions(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.transport != transportNetHTTPH2 || !o.tlsResume || o.compression != codecGzip1 || o.dbConns != 16 ||
+		o.listen != "127.0.0.1:9443" || o.db.addr != "db.local:6432" || o.db.user != "study" {
+		t.Fatalf("%+v", o)
+	}
+	if o, err = parseOptions([]string{"-transport", transportHTTPStreamH2, "-db-conns", "4"}); err != nil || o.transport != transportHTTPStreamH2 || o.dbConns != 4 {
+		t.Fatalf("a flag does not win over the environment: %v %+v", err, o)
+	}
+	t.Setenv("STUDY_TLS", "yes")
+	if _, err := parseOptions(nil); err == nil {
+		t.Fatal("STUDY_TLS=yes accepted")
+	}
+}

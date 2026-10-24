@@ -1,11 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"math"
+	"net"
 	"os"
+	"slices"
 	"time"
 )
 
@@ -122,6 +126,9 @@ func parseOptions(args []string) (options, error) {
 	fs.IntVar(&o.dbConns, "db-conns", 8, "connections for list and write requests; unit reads share the gateway's own connection")
 	fs.IntVar(&o.listMax, "list-max", 100000, "largest limit a list request may ask for")
 
+	if err := contractEnv(fs, os.Getenv); err != nil {
+		return o, err
+	}
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -132,6 +139,57 @@ func parseOptions(args []string) (options, error) {
 }
 
 var errNotImplemented = errors.New("not implemented")
+
+// contractEnv sets the flags' defaults from the variables every contender
+// of the study reads (comparison/README.md, "The contract"): the libpq
+// names for PostgreSQL, STUDY_* for the rest. A flag on the command line
+// still wins. The repository's own SLUICE_PG* stay the defaults' defaults.
+func contractEnv(fs *flag.FlagSet, getenv func(string) string) error {
+	set := func(flagName, value string) error {
+		if err := fs.Set(flagName, value); err != nil {
+			return fmt.Errorf("from the environment, -%s %q: %w", flagName, value, err)
+		}
+		return nil
+	}
+	onOff := map[string]string{"on": "true", "off": "false"}
+	for _, m := range []struct {
+		env, flag string
+		values    map[string]string // the contract's value → the flag's, nil for as is
+	}{
+		{"STUDY_LISTEN", "listen", nil},
+		{"STUDY_TLS", "tls", onOff},
+		{"STUDY_TLS_CERT", "cert", nil},
+		{"STUDY_TLS_KEY", "key", nil},
+		{"STUDY_TLS_RESUME", "tls-resume", onOff},
+		// The protocol picks R's transport for it; -transport names the
+		// study's other variants.
+		{"STUDY_PROTOCOL", "transport", map[string]string{"h1": transportNetHTTPH1, "h2": transportNetHTTPH2, "h3": transportHTTPStreamH3}},
+		{"STUDY_COMPRESSION", "compression", map[string]string{"off": "none", "gzip": codecGzip1, "deflate": codecDeflate6}},
+		{"STUDY_DB_POOL", "db-conns", nil},
+		{"PGUSER", "db-user", nil},
+		{"PGDATABASE", "db-name", nil},
+		{"PGPASSWORD", "db-password", nil},
+	} {
+		v := getenv(m.env)
+		if v == "" {
+			continue
+		}
+		if m.values != nil {
+			mapped, ok := m.values[v]
+			if !ok {
+				return fmt.Errorf("%s=%q: want one of %v", m.env, v, slices.Sorted(maps.Keys(m.values)))
+			}
+			v = mapped
+		}
+		if err := set(m.flag, v); err != nil {
+			return err
+		}
+	}
+	if host := getenv("PGHOST"); host != "" {
+		return set("db", net.JoinHostPort(host, cmp.Or(getenv("PGPORT"), "5432")))
+	}
+	return nil
+}
 
 // validate refuses what the binary cannot serve as asked. Every refusal names
 // the axis whose brief will lift it: nothing here falls back to R.

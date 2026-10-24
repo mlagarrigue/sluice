@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,6 +56,20 @@ func run() int {
 	if c.trivial != "" {
 		if err := runTrivial(ctx, c.trivial, c.keyspace, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if c.reference != "" {
+		rep, err := conformance{stage: c.stage, reference: c.reference, n: c.checks}.run(ctx)
+		if err == nil {
+			err = json.NewEncoder(os.Stdout).Encode(rep)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if !rep.Conformant {
 			return 1
 		}
 		return 0
@@ -108,6 +123,8 @@ type campaign struct {
 
 	trivial    string // run the trivial server of §4 on this address instead
 	cpuprofile string // write the generator's CPU profile here
+	reference  string // check -url against this server instead of loading it (§4 "same answer")
+	checks     int    // how many requests the check sends
 }
 
 // defaultSLO is X by scenario (§3.2, orders of magnitude before the local
@@ -150,6 +167,8 @@ func parse(args []string) (campaign, error) {
 	fs.DurationVar(&c.drain, "drain", 5*time.Second, "pause between two stages, once every request of the first has been answered")
 	fs.IntVar(&c.maxConns, "max-conns", 0, "the tester's ceiling on the budget C of a ramp; 0 for none")
 	fs.StringVar(&c.trivial, "trivial", "", "serve the trivial server of §4 on this address instead (h1, h2 and h3 at once, -keyspace rows), to prove the generator is not the bottleneck")
+	fs.StringVar(&c.reference, "conformance", "", "check -url against the server at this URL instead of loading it: the same requests to both, the answers compared after parsing (§4 \"same answer\"); exit status 1 at the first difference")
+	fs.IntVar(&c.checks, "checks", 200, "how many requests -conformance sends to each server")
 	fs.StringVar(&c.cpuprofile, "cpuprofile", "", "write the generator's CPU profile to this file, or the trivial server's under -trivial (written when it is stopped)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -218,6 +237,8 @@ func parse(args []string) (campaign, error) {
 		return c, errors.New("-new-conns is a percentage")
 	case c.ramp && len(c.rates) > 0:
 		return c, errors.New("-ramp and -rates exclude each other")
+	case c.reference != "" && (c.checks <= 0 || c.checks > st.keyspace):
+		return c, errors.New("-checks must be positive and at most -keyspace")
 	case st.shape != shapeAPI && st.shape != shapeBrowser:
 		return c, fmt.Errorf("-shape %q: want api or browser", st.shape)
 	case st.profile != profileStage && st.profile != profilePlateau && st.profile != profilePeak:
