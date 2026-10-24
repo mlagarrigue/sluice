@@ -29,7 +29,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/labstack/echo/v4 v4.15.4
+	github.com/labstack/echo/v4 v4.16.1
 	github.com/lib/pq v1.12.3
 	github.com/mlagarrigue/sluice v0.0.0
 )
