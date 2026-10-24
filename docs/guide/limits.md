@@ -478,7 +478,10 @@ or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
 1452; 8952 for a 9000-byte jumbo path), bounded by the
 `MaxUDPPayloadSize` the peer announces; the size reached reads in
 `Stats.DatagramSize`. The search starts over at 1200 after each
-migration. A path that shrinks under a connection (a "black hole",
+migration. It needs a socket that refuses to fragment (the "Don't
+Fragment" option, which the package sets on a `*net.UDPConn` on Linux,
+macOS and Windows): on a platform without the option, datagrams stay at
+1200 bytes, since a probe the network may fragment proves nothing. A path that shrinks under a connection (a "black hole",
 RFC 8899 §4.3) shows as three probe timeouts in a row, or three
 full-size packets lost while only smaller ones are acknowledged: the size
 falls back to 1200, what was lost is resent cut to that size, the search

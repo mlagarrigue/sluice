@@ -142,13 +142,19 @@ func ecnSocket(pc net.PacketConn) bool {
 // datagrams fragmentable and the transport's search (pmtu.go) the only
 // guard. Idempotent: a socket udp.Listen already configured, or a
 // Listener's shared one, takes the option again without change.
-func dfSocket(pc net.PacketConn) {
+//
+// It reports false when pc is a socket it configures and the option could
+// not be set — a platform without it, a socket that refused it: the path
+// search must not run there (Conn.fragmentable). A socket of another type
+// reports true: it is the caller's, configured as the caller chose.
+func dfSocket(pc net.PacketConn) bool {
 	switch pc := pc.(type) {
 	case *net.UDPConn:
-		_ = udp.Configure(pc)
+		return udp.Configure(pc) == nil
 	case *sourcedConn:
-		_ = udp.Configure(pc.UDPConn)
+		return udp.Configure(pc.UDPConn) == nil
 	}
+	return true
 }
 
 // readDatagram reads one datagram from pc and, where the socket reports it

@@ -146,11 +146,13 @@ func (c *Conn) resetPMTULocked() {
 // the path is validated — a probe cut to the amplification budget would
 // prove a smaller size than the one asked, and a path still under
 // challenge may never be used — and the congestion window has room for it
-// (§14.4). What stops it today is re-checked after every processed packet,
-// so the probe leaves as soon as the path or the window allows. Callers
-// hold mu.
+// (§14.4). Nor does it leave from a socket Don't Fragment could not be set
+// on (fragmentable): RFC 8899 §3 sends a probe with DF, and one a router
+// may fragment proves nothing. What stops it today is re-checked after
+// every processed packet, so the probe leaves as soon as the path or the
+// window allows. Callers hold mu.
 func (c *Conn) maybeProbePMTULocked() {
-	if c.pmtu.done || c.pmtu.inFlight || !c.handshakeConfirmed || c.amplActive || c.pathProbe.pending || c.closeSent || c.draining {
+	if c.pmtu.done || c.pmtu.inFlight || c.fragmentable || !c.handshakeConfirmed || c.amplActive || c.pathProbe.pending || c.closeSent || c.draining {
 		return
 	}
 	target := c.pmtuTargetLocked()

@@ -697,6 +697,10 @@ func (c *Conn) movePreferredLocked(now time.Time) {
 func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
 	c.resetPMTULocked()
+	// A new socket — Rebind's, the preferred address's — is asked for
+	// Don't Fragment like the first one was (§14); until 2026-10-24 a
+	// rebound socket kept whatever the caller opened it with.
+	c.fragmentable = !dfSocket(c.pc)
 	// ECN is validated per path (§13.4.2): the new one starts its test.
 	c.ecnRecv = ecnSocket(c.pc)
 	c.ecn.reset(c.ecnRecv)

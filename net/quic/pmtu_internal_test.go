@@ -394,6 +394,32 @@ func btoi(b bool) int {
 	return 0
 }
 
+// RFC 8899 §3: a probe leaves with Don't Fragment set, or it proves
+// nothing — a router may carry it in fragments the full-size datagrams
+// after it would then depend on. On a socket DF could not be set on
+// (dfSocket false: a platform without the option), the search does not
+// run and datagrams stay at the 1200 bytes every path carries (RFC 9000
+// §14.2). The pair's sockets do take DF, so the state is installed by hand
+// on a connection whose search had already completed: the restart that
+// would probe again must not.
+func TestPMTUSearchNeedsDontFragment(t *testing.T) {
+	client, server, clientPC := pmtuPair(t, 1500)
+	waitFor(t, "the client's probe acknowledged", func() bool { return client.datagramSize() == 1452 })
+	client.mu.Lock()
+	client.fragmentable = true
+	client.resetPMTULocked()
+	client.maybeProbePMTULocked()
+	client.mu.Unlock()
+	clientPC.resetLargest()
+	transfer(t, client, server)
+	if largest, _ := clientPC.stats(); largest > 1200 {
+		t.Errorf("largest datagram on a fragmentable socket = %d, want 1200 at most", largest)
+	}
+	if st := client.pmtuSnapshot(); st.probes != 0 || st.inFlight {
+		t.Errorf("pmtu state on a fragmentable socket = %+v, want no probe", st)
+	}
+}
+
 // RFC 9000 §14.3: the size is per path. A rebind forgets the proof — the
 // datagram size is 1200 again at once — and probes the new path once it is
 // validated.

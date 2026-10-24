@@ -34,7 +34,9 @@
 //     send no longer surfaces as WSAECONNRESET on the next read. Tested
 //     here.
 //   - Anything else: [Configure] returns [errors.ErrUnsupported] and
-//     changes nothing. The socket still works; it just may be fragmented.
+//     changes nothing. The socket still works; it just may be fragmented,
+//     and the [quic] package then keeps its datagrams at 1200 bytes rather
+//     than search the path (RFC 8899 §3).
 //
 // [EnablePacketInfo], [PacketDestination] and [AppendPacketSource] are the
 // second concern: a socket bound to the unspecified address learning which

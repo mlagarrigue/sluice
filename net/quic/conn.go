@@ -180,6 +180,11 @@ type Conn struct {
 	// a DPLPMTUD probe proves more (pmtu.go).
 	maxDatagram int
 	pmtu        pmtuState
+	// fragmentable says Don't Fragment could not be set on pc (dfSocket):
+	// a probe on it could arrive in fragments and prove a size the path
+	// does not carry whole, so no probe leaves and datagrams stay at 1200
+	// (RFC 8899 §3, RFC 9000 §14.2). Per socket, like ecnRecv.
+	fragmentable bool
 	// pmtuBlackHoles counts the falls back to 1200 (pmtu.go), for Stats.
 	pmtuBlackHoles uint64
 	spin           byte // 0 or 0x20, OR-ed into every short header (§17.4)
@@ -1140,7 +1145,7 @@ func assembleConn(pc net.PacketConn, peer net.Addr, dcid, scid []byte, isClient 
 	c.closing.hold = params.HoldClosing
 	// §14: the datagrams this end sends must not be fragmented, so the
 	// socket is asked to say no (DF) before the first one leaves.
-	dfSocket(pc)
+	c.fragmentable = !dfSocket(pc)
 	// ECN marks and counts need a socket that reports the field; one that
 	// cannot leaves the path on failed, which marks nothing (§13.4.2.2).
 	c.ecnRecv = ecnSocket(pc)
