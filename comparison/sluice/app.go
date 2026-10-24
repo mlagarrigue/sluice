@@ -36,6 +36,7 @@ type app struct {
 	static  staticDoc
 	st      store
 	gw      *gateway.Gateway[int64, orderRow]
+	batches batchStats // the unit reads' SQL batches, for the metrics point
 	listMax int
 	codec   *codec // axis F; nil in R
 	stream  bool   // axis E: the list is written as it comes
@@ -120,7 +121,7 @@ func newApp(o options) (*app, error) {
 		appendJSON: o.json == jsonAppend,
 	}
 	a.gw = gateway.New(gateway.Config{Size: o.gatewaySize, Within: o.gatewayWithin},
-		unitPipeline(st, o.gatewaySize))
+		unitPipeline(st, o.gatewaySize, &a.batches))
 	return a, nil
 }
 
@@ -147,7 +148,7 @@ func newStaticDoc() staticDoc {
 // unitPipeline is the gateway's pipeline, the same whatever the driver: the
 // keys of a batch go to the store as one slice and come back as one map, and
 // every caller gets its row or a miss.
-func unitPipeline(st store, size int) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
+func unitPipeline(st store, size int, stats *batchStats) func(sluice.Stream[*gateway.Call[int64, orderRow]]) {
 	return func(calls sluice.Stream[*gateway.Call[int64, orderRow]]) {
 		ids := make([]int64, 0, size)
 		found := make(map[int64]orderRow, size)
@@ -157,6 +158,7 @@ func unitPipeline(st store, size int) func(sluice.Stream[*gateway.Call[int64, or
 			for _, c := range batch.Items {
 				ids = append(ids, c.In)
 			}
+			stats.record(len(ids))
 			if err := st.unit(context.Background(), ids, found); err != nil {
 				for _, c := range batch.Items {
 					c.Fail(err)
@@ -188,6 +190,8 @@ func (a *app) route(ctx context.Context, method, target string, body []byte) ans
 	switch {
 	case path == "/static" && method == "GET":
 		return answer{status: 200, body: a.static}
+	case path == "/study/metrics" && method == "GET":
+		return answer{status: 200, body: a.metrics()}
 	case strings.HasPrefix(path, "/orders/") && method == "GET":
 		return a.unit(ctx, path[len("/orders/"):])
 	case path == "/orders" && method == "GET":

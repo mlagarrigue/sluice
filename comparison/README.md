@@ -166,8 +166,14 @@ and reads it the same way. What it must honour:
   ```
 
   Every number is cumulative since the server started; a bucket counts
-  what is at most `le` and above the bucket before. The study's server
-  does not serve it yet.
+  what is at most `le` and above the bucket before, and only the buckets
+  that counted something are written. The study's server reads its part
+  from `runtime/metrics`: `cpu_seconds` is the runtime's own estimate
+  (`/cpu/classes/total` minus `idle`), so that the collector's share
+  (`/cpu/classes/gc/total`) is a ratio in one unit, the pauses are
+  `/sched/pauses/total/gc:seconds` and their total the pause CPU over
+  `GOMAXPROCS`; `batches` counts the SQL queries of the unit reads, one
+  per gateway batch, by size in powers of two.
 
 ### Checking a contender against R
 
