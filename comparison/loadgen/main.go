@@ -26,6 +26,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mlagarrigue/sluice/comparison/loadgen/stats"
 )
 
 func main() { os.Exit(run()) }
@@ -55,6 +57,18 @@ func run() int {
 	}
 	if c.trivial != "" {
 		if err := runTrivial(ctx, c.trivial, c.keyspace, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if c.verdicts != "" {
+		f, err := verdictsFile(c.verdicts)
+		if err == nil {
+			err = runVerdicts(f, c.compare, c.floors, os.Stdout)
+			_ = f.Close()
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -125,6 +139,9 @@ type campaign struct {
 	cpuprofile string // write the generator's CPU profile here
 	reference  string // check -url against this server instead of loading it (§4 "same answer")
 	checks     int    // how many requests the check sends
+	verdicts   string // judge the rounds in this file instead (§7.4), "-" for stdin
+	compare    string // the comparisons declared for -verdicts, a:b,…
+	floors     stats.Floors
 }
 
 // defaultSLO is X by scenario (§3.2, orders of magnitude before the local
@@ -169,12 +186,19 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&c.trivial, "trivial", "", "serve the trivial server of §4 on this address instead (h1, h2 and h3 at once, -keyspace rows), to prove the generator is not the bottleneck")
 	fs.StringVar(&c.reference, "conformance", "", "check -url against the server at this URL instead of loading it: the same requests to both, the answers compared after parsing (§4 \"same answer\"); exit status 1 at the first difference")
 	fs.IntVar(&c.checks, "checks", 200, "how many requests -conformance sends to each server")
+	fs.StringVar(&c.verdicts, "verdicts", "", "judge the rounds in this file (\"-\" for stdin) instead of loading a server: one JSON line per contender per round, one verdict line per declared comparison and metric (§7.4)")
+	fs.StringVar(&c.compare, "compare", "", "the comparisons -verdicts judges, a:b,… (A against B), declared before the campaign")
+	fs.IntVar(&c.floors.CapacitySteps, "floor-steps", stats.DefaultFloors.CapacitySteps, "the capacity floor in steps of the grid, raised by the A/A (§7.5)")
+	fs.Float64Var(&c.floors.P99, "floor-p99", stats.DefaultFloors.P99, "the p99 floor as a fraction, raised by the A/A and the generator's tail (§7.4)")
 	fs.StringVar(&c.cpuprofile, "cpuprofile", "", "write the generator's CPU profile to this file, or the trivial server's under -trivial (written when it is stopped)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
 	connsSet := false
 	fs.Visit(func(f *flag.Flag) { connsSet = connsSet || f.Name == "conns" })
+	if c.verdicts != "" {
+		return c, nil
+	}
 	if c.trivial != "" {
 		if st.keyspace <= listLimit {
 			return c, fmt.Errorf("-keyspace must exceed the list limit %d", listLimit)

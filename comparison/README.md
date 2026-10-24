@@ -425,3 +425,40 @@ capacity in that scenario; otherwise the tester gets more cores before
 anything else is measured.
 
 Not yet here: the `oha` cross-check.
+
+### From rounds to verdicts
+
+```
+go run -C comparison/loadgen . -verdicts rounds.jsonl -compare sluice-std:go-std,sluice-opt:go-opt
+```
+
+A verdict comes out of a program, never out of a reading (§7.4). The
+campaign writes one JSON line per contender per round,
+`{"scenario":"unit","proto":"h1","contender":"sluice-std","round":3,"capacity_rps":8000,"p99_ms":11.2}`;
+`-verdicts` reads them, and for every comparison declared with `-compare`
+(A against B, fixed before the campaign) writes one line per primary
+metric. A family is a scenario × a protocol over both metrics, and every
+comparison in it is judged together:
+
+- **paired by round**: the first round is dropped (it absorbs the
+  machine's own ramp), and a comparison needs 21 rounds (§7.2: below that,
+  the sign test cannot pass Holm's first threshold in a family of 46);
+- **the gap**: for capacity, the difference in whole steps of the grid
+  `100 × 1.05^k` per round (a rate off the grid is refused, no float
+  decides a verdict), shown as a percentage; for p99, the median of the
+  per-round ratios A/B, never the ratio of the medians; both with their
+  95 % interval by ranks;
+- **the test**: the exact two-sided sign test over the untied rounds, its
+  p-value published, then Holm's correction over the family (the smallest
+  p must pass 0.05/n, the next 0.05/(n−1)…);
+- **the verdict**, in that order: `faster` or `slower` when the test
+  passes Holm and the gap reaches the floor (one step, 3 % of p99, raised
+  by `-floor-steps` and `-floor-p99` once the A/A tests have measured the
+  noise, §7.5); `equivalent` when the interval lies inside the margin (the
+  floor, at least ±5 % for p99, one step either way for capacity);
+  `inconclusive` otherwise.
+
+Holm holds the risk of a false `faster` to 5 % per family, not to zero:
+on 400 synthetic A/A families under a laptop's noise, 4 read a difference,
+and none past its floor by more than a step. That is the rate §7.5 expects
+of its A/A tests, and the reason the floors are raised by them.
