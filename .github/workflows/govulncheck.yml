@@ -36,7 +36,10 @@ jobs:
           govulncheck ./...
 
   # The nested modules never ship, but they run on this repository's
-  # machines and pin quic-go, pgx, gin and the x/ modules they bring.
+  # machines and pin quic-go, pgx, gin and the x/ modules they bring. The
+  # audit module requires nothing at all, and is here for the standard
+  # library it links like any other: a module with no dependency still has
+  # the one every Go program has.
   # govulncheck fails only on a vulnerability the module's code reaches, and
   # the fix is a bump in that module's go.mod; nothing waits on this
   # workflow, so a red run here reports without holding a commit back.
@@ -45,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [interop, benchmarks, comparison/sluice, comparison/loadgen]
+        module: [interop, benchmarks, comparison/sluice, comparison/loadgen, audit]
     env:
       GOWORK: off
     steps:
@@ -55,7 +58,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
-          cache-dependency-path: ${{ matrix.module }}/go.sum
+          # go.mod rather than go.sum: the audit module has no go.sum to
+          # key on, and a module's requirements move with its go.mod anyway.
+          cache-dependency-path: ${{ matrix.module }}/go.mod
       - name: govulncheck
         working-directory: ${{ matrix.module }}
         run: |
