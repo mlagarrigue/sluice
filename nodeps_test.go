@@ -276,3 +276,104 @@ func TestCIKeepsItsPromises(t *testing.T) {
 		}
 	}
 }
+
+// Three modules replace the root with this tree, so `go mod tidy` writes
+// the root's own version of its dependencies into their indirect
+// requirements; and the study's two modules take quic-go from interop/ and
+// pgx from benchmarks/, which their go.mod headers say in prose. A bump
+// that moves one copy and not the others is the shape of failure seen
+// twice: a dependabot pull request raising golang.org/x/crypto in the root
+// alone left the nested modules behind and `go` refused them with "updates
+// to go.mod needed", and one raising quic-go in interop/ alone would have
+// made the study measure two versions of the same HTTP/3 client. Both are
+// invisible until a job that builds the nested modules runs; here they are
+// a `go test` away.
+//
+// benchmarks/ is left out of the quic-go row on purpose: its copy is a
+// competitor's indirect requirement, which moves when the competitor's own
+// go.mod moves, and that is not a disagreement to report.
+func TestSharedDependenciesAgreeAcrossModules(t *testing.T) {
+	for _, shared := range []struct {
+		mod       string
+		reference string   // the module whose version the others follow
+		followers []string // their directories, as go.mod names them
+		why       string
+	}{
+		{
+			"golang.org/x/crypto", ".",
+			[]string{"interop", "benchmarks", "comparison/sluice"},
+			"they replace the root with this tree, so tidy writes the root's version",
+		},
+		{
+			"golang.org/x/text", ".",
+			[]string{"interop", "benchmarks", "comparison/sluice"},
+			"they replace the root with this tree, so tidy writes the root's version",
+		},
+		{
+			"golang.org/x/sys", ".",
+			[]string{"interop", "benchmarks", "comparison/sluice"},
+			"they replace the root with this tree, so tidy writes the root's version",
+		},
+		{
+			"github.com/quic-go/quic-go", "interop",
+			[]string{"comparison/sluice", "comparison/loadgen"},
+			"the study's client is the one the interop module pins (comparison/sluice/go.mod says so)",
+		},
+		{
+			"github.com/quic-go/qpack", "interop",
+			[]string{"comparison/sluice", "comparison/loadgen"},
+			"it follows quic-go, which the study takes from the interop module",
+		},
+		{
+			"github.com/jackc/pgx/v5", "benchmarks",
+			[]string{"comparison/sluice"},
+			"the two modules measure the same driver (comparison/sluice/go.mod says so)",
+		},
+	} {
+		want, ok := moduleVersion(t, shared.reference, shared.mod)
+		if !ok {
+			t.Errorf("%s/go.mod no longer requires %s, which %v follow", shared.reference, shared.mod, shared.followers)
+			continue
+		}
+		for _, dir := range shared.followers {
+			got, ok := moduleVersion(t, dir, shared.mod)
+			if !ok {
+				t.Errorf("%s/go.mod no longer requires %s, which it took from %s/go.mod", dir, shared.mod, shared.reference)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s/go.mod has %s %s while %s/go.mod has %s: %s.\n"+
+					"Move them in one commit (`go get` in the root, `go mod tidy` in each nested module); "+
+					"a pull request that raises one alone cannot be merged on its own.",
+					dir, shared.mod, got, shared.reference, want, shared.why)
+			}
+		}
+	}
+}
+
+// moduleVersion reads the version a module's go.mod requires for one
+// dependency, direct or indirect, and reports whether it requires it at
+// all. The require block of the four nested go.mod files is `go mod tidy`'s
+// own output, one requirement per line.
+func moduleVersion(t *testing.T, dir, mod string) (string, bool) {
+	t.Helper()
+	path := "go.mod"
+	if dir != "." {
+		path = dir + "/go.mod"
+	}
+	src, err := os.ReadFile(path) //nolint:gosec // G304: the paths are the literals of the table above
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	for line := range strings.Lines(string(src)) {
+		line, _, _ = strings.Cut(line, "//")
+		f := strings.Fields(line)
+		if len(f) > 0 && f[0] == "require" {
+			f = f[1:]
+		}
+		if len(f) == 2 && f[0] == mod {
+			return f[1], true
+		}
+	}
+	return "", false
+}
