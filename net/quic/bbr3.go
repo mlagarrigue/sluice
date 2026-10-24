@@ -652,6 +652,14 @@ func (b *bbr3) startProbeBWRefill() {
 	b.pacingGain, b.cwndGain = 1, bbr3DefaultCwndGain
 }
 
+// startProbeBWUp is BBRStartProbeBW_UP, with one departure: the plateau
+// estimator is seeded with max_bw where the draft's pseudo-code takes
+// RS.delivery_rate, the latest sample. That sample comes from REFILL, at a
+// flight held down, and is usually under max_bw: seeded with it, a probe
+// that merely finds max_bw again reads as growth and runs a round longer.
+// Seeded with max_bw, only a rate above what is already known counts.
+// Decided 2026-10-16 with paired benchmarks at noise either way; the same
+// seed is used after the precautionary reset in isTimeToGoDown.
 func (b *bbr3) startProbeBWUp() {
 	b.ackPhase = bbr3AcksProbeStarting
 	b.startRound()
@@ -761,7 +769,7 @@ func (b *bbr3) isTimeToGoDown(priorInFlight int) bool {
 	}
 	if b.cwndLimited() && b.cwnd >= b.inflightLongterm {
 		b.resetFullBw()
-		b.fullBw = b.maxBw
+		b.fullBw = b.maxBw // max_bw, not RS.delivery_rate: see startProbeBWUp
 		return false
 	}
 	return b.fullBwNow

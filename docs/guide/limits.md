@@ -251,6 +251,15 @@ Three reasons come up, and the difference matters:
   sections, request streams, cancellations — has a bound of its own
   (`MaxHeaderBytes`, the per-stream cap, the cancellation allowance); to
   revisit if a frame is measured to cost the processor disproportionately.
+- **A QUIC server belongs behind ingress filtering.** A client that spoofs
+  its source address can have a QUIC server send packets to an address of
+  its choosing (request forgery, RFC 9000 §21.5). The server bounds what it
+  sends before an address is validated, but the RFC asks that no QUIC
+  server be deployed in a network without ingress filtering (BCP 38:
+  dropping a packet whose source address cannot come from where it enters)
+  that also holds poorly secured UDP services. That is the network's to
+  provide, not the library's. In plain words: have your network drop
+  spoofed source addresses before they reach the server.
 
 ## Experimental: the exit conditions
 

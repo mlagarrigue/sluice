@@ -24,6 +24,11 @@ import (
 // used (randomID(8), every call site), so a short-header packet's DCID can
 // be peeled off with [ParseShortHeader] without first knowing which
 // connection it belongs to.
+// RFC 9000 §8.1 lets an endpoint treat a peer address as validated once
+// the peer uses a connection ID this end chose with 64 bits of entropy, as
+// these are; not done: validation waits for a Handshake packet or a Retry
+// token, one round trip later at most, and the earlier lift would only
+// matter to 0-RTT, which this server does not serve.
 const listenerCIDLen = 8
 
 // defaultMaxPendingConns is [ListenerConfig.MaxPendingConns]'s value when
@@ -522,6 +527,10 @@ func packetInfoSocket(pc net.PacketConn) *net.UDPConn {
 // Accept blocks until a new connection's handshake completes, mirroring
 // [net.Listener.Accept]'s shape, with [Dial]'s return contract: what comes
 // back is already past its handshake, not merely dialled.
+//
+// No application data leaves before that point: RFC 8446 §4.4.4 lets a
+// server send it after its first flight (0.5-RTT), to a client not yet
+// authenticated, and a server here answers requests, which come after.
 func (l *Listener) Accept() (*Conn, error) {
 	select {
 	case <-l.stop:

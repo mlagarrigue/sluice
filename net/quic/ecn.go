@@ -48,6 +48,10 @@ type ecnState struct {
 
 // reset arms validation for a new path, or disables it where the socket
 // cannot set the field at all.
+// A path whose validation failed stays failed until the path changes:
+// RFC 9000 §13.4.2.2 lets an endpoint revalidate later, which would mark
+// again on a path that already dropped or bleached marks, for what the next
+// migration gives anyway.
 func (e *ecnState) reset(markable bool) {
 	*e = ecnState{phase: ecnFailed}
 	if markable {
@@ -78,6 +82,10 @@ func (e *ecnState) mark() uint8 {
 // that space (§13.4.2.1's "increase in the ECN-CE count"): the congestion
 // signal the controller reads, zero when the counts fail validation or
 // the frame is old news. Callers hold mu.
+// Appendix A.4's two extra failure cases — every marked packet lost, or
+// every one CE-marked — are not applied: they would fail ECN on a burst of
+// loss or on a queue fully congested, where the marks are doing their job;
+// the counts' own checks (§13.4.2.1) are the ones kept.
 func (c *Conn) validateECNLocked(space int, f Frame, out ackOutcome) (newCE int) {
 	if c.ecn.phase == ecnFailed || !out.raisedLargest {
 		// A frame that does not increase the largest acknowledged number

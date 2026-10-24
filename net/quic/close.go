@@ -37,6 +37,10 @@ const (
 	// reserves for TLS alerts: 0x0100 plus the alert's own code, which is
 	// how ALPN failure (0x0178), a missing extension (0x016d) and the rest
 	// travel without QUIC inventing names for them.
+	// RFC 9001 §4.8 lets an endpoint use a generic code instead, to hide
+	// which check failed; the alert is kept: it tells an operator what
+	// broke, and tells the peer that sent the bad handshake nothing it did
+	// not send.
 	transportCryptoErrorBase = 0x0100
 )
 

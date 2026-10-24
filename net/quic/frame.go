@@ -126,6 +126,10 @@ func parseFrames(dst []Frame, payload []byte) ([]Frame, error) {
 	return dst, nil
 }
 
+// A frame type is read by value: RFC 9000 §12.4 lets a receiver refuse a
+// type encoded longer than necessary (0x4001 for PING) as
+// PROTOCOL_VIOLATION; not done, since no implementation emits one and the
+// check would run on every frame.
 func parseFrame(b []byte) (Frame, []byte, error) {
 	// The type is itself a variable-length integer, though every type this
 	// package knows fits in one byte.

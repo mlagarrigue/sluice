@@ -176,6 +176,13 @@ func parseShortHeader(b []byte, dcidLen int) (shortHeader, error) {
 // header form are Unused: set "to an arbitrary value by the server", and
 // "Clients MUST ignore the value of this field". They are drawn at random
 // with 0x40 kept on, as appendRetryPacket draws its own four.
+//
+// The list holds the versions served and nothing else. RFC 9000 §6.3 (and
+// RFC 9368 §2.1) let it carry a reserved version, and let an endpoint send
+// whole packets of one, to keep peers' parsers honest; not done: a VN only
+// ever goes to a client that offered a version this server does not speak,
+// a path no conformant client takes, and a test packet would spend a
+// datagram per connection on a bug only the peer pays for.
 func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte {
 	// §17.2.1: the seven bits under the header form are "set to an
 	// arbitrary value by the server", with the SHOULD of keeping 0x40 on so

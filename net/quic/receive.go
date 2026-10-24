@@ -611,6 +611,9 @@ func (c *Conn) afterOpen(pkt *rxPacket, now time.Time) (rxVerdict, error) {
 		c.mu.Unlock()
 	}
 	if used == usedNext {
+		// An ACK under old keys that acknowledges a packet sent under
+		// newer ones is honoured: §6.2 lets it be a connection error, and
+		// it is a peer bug that costs this end nothing.
 		// The peer moved to the next key phase (RFC 9001 §6.2): the
 		// read keys follow, and the send keys with them unless this end
 		// is the one that moved first.
@@ -1236,6 +1239,10 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 		case f.Type == framePathResponse:
 			c.handlePathResponse(f, now)
 
+		// The client confirms the handshake here and nowhere else: RFC 9001
+		// §4.1.2 also lets it confirm on an acknowledged 1-RTT packet, which
+		// would drop the Handshake keys a round trip earlier at most, and
+		// HANDSHAKE_DONE always comes.
 		case f.Type == frameHandshakeDone:
 			if !c.isClient {
 				return &transportError{

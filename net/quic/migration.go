@@ -374,6 +374,13 @@ func (c *Conn) handleRetireConnectionID(seq uint64) error {
 // (§19.15) and honours its Retire Prior To field — including switching this
 // end's sends to a fresh identifier when the one in use is among the
 // retired, which is the rotation a load balancer forces.
+//
+// Two MAYs are left aside: a stateless-reset token repeated under another
+// sequence (§10.3.2) and an identifier repeated under another sequence
+// (§19.15) are not looked for. Finding them is a scan of every active entry
+// per frame, and the repetition only confuses the peer's own resets and
+// retirements; the same sequence with other contents is refused (§19.15's
+// MUST).
 func (c *Conn) handleNewConnectionID(f Frame) error {
 	cid := f.Data[:len(f.Data)-16]
 	var token [16]byte
@@ -484,6 +491,11 @@ func (c *Conn) queueRetireLocked(seq uint64) error {
 // identifier, preferring one never used on any path (§9.5) and the lowest
 // sequence among those, and falling back to a used one: its callers keep
 // the local address, where §9.5's MUST NOT does not bite. Callers hold mu.
+//
+// RFC 9000 §9.5 lets an endpoint change the identifier it sends under at
+// any time; this one changes it on a new path only. On the same path a
+// change unlinks nothing that address and timing do not already link, and
+// it spends the peer's identifiers.
 func (c *Conn) switchToFreshPeerCIDLocked() bool {
 	pick := c.pickPeerCIDLocked(false)
 	if pick < 0 {
@@ -1256,6 +1268,8 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 		if c.closeErr == nil {
 			c.closeErr = fmt.Errorf("%w: the migrated path never validated and no validated path remains", ErrQUIC)
 		}
+		// §8.2.4's NO_VIABLE_PATH (a MAY) is not sent: it would leave on
+		// the path that just failed to carry anything.
 		c.closeSent = true            // silently: §9.3.2 discards the state, it says nothing
 		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
 		return
