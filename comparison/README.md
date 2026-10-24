@@ -151,6 +151,32 @@ removed on exit, error or not. On a developer's machine it holds under
 h1, h2 and h3, the mixed scenario included, with the cache at 99.9 % and
 the database steady.
 
+```
+RTT=20ms SCENARIO=static RATE=200 comparison/chain/run.sh       # latency felt (§3.4)
+LOSS=1% LINK=100mbit RTT=20ms comparison/chain/run.sh           # §8.4's lossy link
+```
+
+The network of §3.4 is injected with `netem`, never on web: the whole
+client round trip on the tester's egress (`RTT`, 0 by default, the
+capacity condition), the whole web↔db one on the database's (`DB_RTT`,
+1 ms by default); `LINK` caps the rate web → tester and `LOSS` drops in
+both directions, the inbound one on an `ifb` device at the tester's
+entrance. Every queue is `limit 1000000` (§0). `tc` runs from a small
+Alpine image of its own (`iproute2`), in the network namespace of the
+container it shapes, so neither the server's image nor the generator's
+carries it; the tester's namespace is held by a container of its own,
+shaped before the generator starts, so that its first request already
+crosses the injected network, and the generator is told the round trip
+(`-rtt`). After the stage, `netem`'s counters decide (`chain.json`,
+`netem`): with no loss injected, one drop invalidates the stage; with
+loss, each direction's rate must sit within 10 % of the one injected, or
+within three standard deviations of the binomial draw when that is wider
+(over 20 000 packets, 10 % of 1 % is 1.4 of them: a correct setting would
+fail one stage in six); the largest queue, sampled every second, must stay
+under its limit. Measured here: a 20 ms RTT moves the static p50 from
+0.37 ms to 20.39 ms; a 1 % loss reads 1.08 % and 1.07 % on the two
+directions over 14 000 packets each, the queue at most 22 packets.
+
 ### Validating it
 
 ```
@@ -321,9 +347,10 @@ URL) under `-proto h1` (HTTP/1.1, the default),
   due while another still waited, and `wait_ms`, the queue seen from one request. `late_ms` is the
   dispatcher's own lateness after its due instant, the generator's noise
   floor on the median: it sleeps until 2 ms before, then spins;
-- gives its verdict under the scenario's SLO (§3.2: `p99 ≤ X` and errors
-  and timeouts under 0.1 %; X is `-slo`, by default static 10 ms, unit and
-  write 25 ms, list 100 ms, mixed 50 ms): `held`, or `cause` by precedence
+- gives its verdict under the scenario's SLO (§3.2: `p99 ≤ X + RTT` and
+  errors and timeouts under 0.1 %; X is `-slo`, by default static 10 ms,
+  unit and write 25 ms, list 100 ms, mixed 50 ms, fixed net of the round
+  trip `-rtt` injects): `held`, or `cause` by precedence
   — `key` (the contract broken, a bug of the server), `tester` (a
   connection the tester could not open, §4; a refusal or a silence of the
   server is the contender's, and counts against the SLO), `queue` (the

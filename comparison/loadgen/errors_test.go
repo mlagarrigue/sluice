@@ -160,3 +160,19 @@ func TestClassify(t *testing.T) {
 		})
 	}
 }
+
+// TestVerdictAddsTheInjectedRTT: X is fixed net of the injected network
+// (§3.2), so a p99 of 25 ms over a 20 ms link holds a 10 ms X, and the
+// same p99 on a loopback does not.
+func TestVerdictAddsTheInjectedRTT(t *testing.T) {
+	for _, tc := range []struct {
+		rtt  float64
+		held bool
+	}{{20, true}, {0, false}} {
+		r := report{SLO: 10, RTT: tc.rtt, Sent: 1000, OK: 1000, TTLB: quantiles{P99: 25}}
+		r.verdict()
+		if r.Held != tc.held {
+			t.Errorf("rtt %v ms: held %v cause %q, want held %v", tc.rtt, r.Held, r.Cause, tc.held)
+		}
+	}
+}

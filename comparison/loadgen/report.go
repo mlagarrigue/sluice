@@ -115,9 +115,11 @@ const (
 )
 
 // verdict applies the SLO of §3.2: p99 ≤ X and errors and timeouts under
-// 0.1 % of what was sent, with the guards above.
+// 0.1 % of what was sent, with the guards above. X is fixed "net of the
+// injected network" (§3.2): the round trip injected on the wire is added
+// to it, or a 10 ms static X would break on any 20 ms link.
 func (r *report) verdict() {
-	underX := r.TTLB.P99 <= r.SLO
+	underX := r.TTLB.P99 <= r.SLO+r.RTT
 	switch {
 	case r.BadKey > 0:
 		r.Cause = causeKey
