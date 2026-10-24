@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mlagarrigue/sluice/comparison/loadgen/stats"
 )
 
 // testCampaign parses the flags of a test: no warm-up and no drain unless
@@ -286,15 +288,28 @@ func TestBudget(t *testing.T) {
 	if got := c.budget(8000); got != 500 {
 		t.Fatalf("C(8000) = %d under a ceiling of 500", got)
 	}
-	var grid []int
-	for r := range gridFrom(95) {
-		grid = append(grid, r)
-		if len(grid) == 6 {
-			break
+	// The grid holds points under 100 req/s (k negative, down to
+	// stats.MinStep), so a ramp asked to start at one of them starts there
+	// rather than at 100: 95 is Grid(-1), and asking for 96 takes the next
+	// point up. The floor is the lowest k, about 16 req/s.
+	first := func(from, n int) []int {
+		var grid []int
+		for r := range gridFrom(from) {
+			grid = append(grid, r)
+			if len(grid) == n {
+				break
+			}
 		}
+		return grid
 	}
-	if want := []int{100, 105, 110, 116, 122, 128}; !slices.Equal(grid, want) {
-		t.Fatalf("grid %v, want %v", grid, want)
+	if want := []int{95, 100, 105, 110, 116, 122}; !slices.Equal(first(95, 6), want) {
+		t.Fatalf("grid from 95: %v, want %v", first(95, 6), want)
+	}
+	if want := []int{100, 105}; !slices.Equal(first(96, 2), want) {
+		t.Fatalf("grid from 96: %v, want %v", first(96, 2), want)
+	}
+	if want := []int{int(stats.Grid(stats.MinStep))}; !slices.Equal(first(1, 1), want) {
+		t.Fatalf("grid from 1: %v, want %v — the lowest k is the floor", first(1, 1), want)
 	}
 	if _, err := parse([]string{"-ramp", "-rates", "100"}); err == nil {
 		t.Fatal("-ramp with -rates was accepted")
