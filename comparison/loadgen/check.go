@@ -41,17 +41,26 @@ type request struct {
 // one (§2.1), and every contender of a round sees the same sequence.
 type scenario func(i int, key int64, full bool) request
 
+// Past the keyspace (a plateau or a peak of reads, `stage.wraps`), pass p
+// walks a permutation of its own, drawn from (seed, seed+p); the draw keeps
+// the current pass only, the dispatcher asking in order.
 func (sc scenario) draw(seed uint64, keyspace int) func(i int) request {
-	r := rand.New(rand.NewPCG(seed, seed)) //nolint:gosec // G404: a seeded draw is the point
-	perm := r.Perm(keyspace)
+	pass, perm := 0, permutation(seed, 0, keyspace)
 	return func(i int) request {
+		if p := i / keyspace; p != pass {
+			pass, perm = p, permutation(seed, p, keyspace)
+		}
 		// The 1 % is a function of (seed, i), not of the calls before it:
 		// the i-th request is the same whoever asks for it.
 		full := rand.New(rand.NewPCG(seed, uint64(i))).IntN(100) == 0 //nolint:gosec // G404: same
-		rq := sc(i, int64(perm[i]+1), full)
+		rq := sc(i, int64(perm[i%keyspace]+1), full)
 		rq.atEnd = rq.kind == list && rq.key == int64(keyspace)
 		return rq
 	}
+}
+
+func permutation(seed uint64, pass, keyspace int) []int {
+	return rand.New(rand.NewPCG(seed, seed+uint64(pass))).Perm(keyspace) //nolint:gosec // G404: a seeded draw is the point
 }
 
 var scenarios = map[string]scenario{

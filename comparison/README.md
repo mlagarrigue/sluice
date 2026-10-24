@@ -234,6 +234,38 @@ clock starts, the ones a smaller stage leaves idle never age out. The exit
 status is 0 when every stage is a measurement and the last broke on the
 SLO alone, or none broke.
 
+### Plateau, peak, and the browser's shape
+
+```
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -profile plateau -rate 3000 -duration 10m -window 30s
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -profile peak -rate 1000 -duration 60s -peak-for 30s
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -proto h2 -shape browser -rate 2000
+```
+
+`-window` cuts a run into lines of that length, written before the run's
+own line: each carries `window` (its index), its counts and quantiles, and
+`start`, the wall-clock instant it began, which a record taken on the
+server's side (RSS, CPU, §1.2) joins on, since the generator does not see
+the server's memory. `-profile plateau` is one rate held long (§3.3: about
+70 % of the contender's capacity, 10 minutes) to read the drift of p99
+and memory, window by window (10 s unless `-window` says otherwise).
+`-profile peak` holds `-rate` for `-duration`, `-peak-factor` (5) times it
+for `-peak-for` (30 s), then `-rate` again for `-duration`: absorption and
+recovery, each window tagged `base`, `peak` or `back` with its own `rate`.
+Its budget C is the peak's, `2 × 5R × (RTT + X)` (§3.5), opened before the
+clock, unless `-conns` is given. A window never straddles two phases:
+`-window` must divide `-duration` and `-peak-for`. Both run longer than a
+table holds keys: for reads only (static, unit, list), the draw walks the
+keyspace again, each pass in an order of its own, and `keyspace_passes`
+says how many; a write never repeats its key, so a plateau of writes is
+bounded by the keyspace like any stage.
+
+`-shape browser` (§8.4) keeps the requests in flight the API shape has and
+groups them as a browser does: six connections to a virtual client under
+HTTP/1.1, and under HTTP/2 and HTTP/3 the `8 × C` streams on connections
+that carry up to 50 each — fewer connections, more streams on each, where
+HTTP/2's head-of-line blocking shows. `conns` and `clients` are published.
+
 ### Calibrating it
 
 ```
@@ -256,7 +288,12 @@ connections counts their handshakes apart and fails no connect. A 404, a
 after 10 requests, by `Connection: close` under HTTP/1.1 and the `GOAWAY`
 it becomes under HTTP/2, shows 10 `closed` and 10 `reconnects` and loses
 no request; a port nothing listens on is `refused` over TCP and a
-`connect_timeout` over QUIC. Under each protocol and each coding, buffered
+`connect_timeout` over QUIC. A plateau of 2 s in four windows of 500 ms that walks its keyspace
+twice writes four lines of 500 requests each, half a second apart; a peak
+writes its six windows at 100, 500 and 100 req/s on the peak's budget,
+and no other connection opens; the browser shape is seen from the server
+as 12 connections under HTTP/1.1, and 2 connections carrying 50 requests
+at once under HTTP/2 and HTTP/3. Under each protocol and each coding, buffered
 and streamed, a server that answers one key in clear, cuts one body, uses
 an unasked coding for another and raw deflate for a fourth sees two wrong
 answers and the rest decoded.

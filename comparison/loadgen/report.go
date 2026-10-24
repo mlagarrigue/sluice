@@ -22,6 +22,19 @@ type report struct {
 	NewConns int     `json:"new_conns_pct"`
 	Encoding string  `json:"encoding"` // the content coding asked for (§2.3 bis)
 
+	// The run's profile and shape (§3.3, §8.4), and where this line sits in
+	// it: a window line carries its index, its phase and its rate, the
+	// run's own line none. Start is the wall-clock instant the line's
+	// measurement began, which a server-side record (RSS, CPU) joins on.
+	Profile  string `json:"profile"`
+	Shape    string `json:"shape"`
+	Clients  int    `json:"clients"`
+	Window   *int   `json:"window,omitempty"`
+	Phase    string `json:"phase,omitempty"`
+	PeakRate int    `json:"peak_rate,omitempty"`
+	Passes   int    `json:"keyspace_passes"` // how many times the draw walked the keyspace (§2.1: 1 but for a plateau or a peak)
+	Start    string `json:"start"`
+
 	// TLS as negotiated (§4 "TLS fixed"): "none" in clear; two values
 	// joined by " | " mean the connections did not all agree.
 	TLSVersion string `json:"tls_version"`
@@ -120,9 +133,11 @@ func (r *report) verdict() {
 }
 
 func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int64) report {
+	conns, _ := st.layout()
 	rep := report{
 		URL: st.url, Proto: st.proto, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
-		Conns: st.conns, Seed: st.seed, Sent: len(all),
+		Conns: conns, Seed: st.seed, Sent: len(all),
+		Profile: st.profile, Shape: st.shape, Clients: st.clients(), PeakRate: st.peakRate(), Passes: st.passes(),
 		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns, Encoding: cmp.Or(st.encoding, "identity"), TLSResume: st.resume,
 		QueueMax: int(queueMax), Queued: int(queued),
 	}

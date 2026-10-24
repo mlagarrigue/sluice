@@ -56,9 +56,14 @@ func (c campaign) run(ctx context.Context, out io.Writer) (bool, error) {
 	enc := json.NewEncoder(out)
 
 	if !c.ramp && len(c.rates) == 0 {
-		rep, err := c.stage.run(ctx, cl)
+		rep, windows, err := c.stage.run(ctx, cl)
 		if err != nil {
 			return false, err
+		}
+		for w := range windows {
+			if err := enc.Encode(&windows[w]); err != nil {
+				return false, err
+			}
 		}
 		return !rep.Failed(), enc.Encode(rep)
 	}
@@ -83,7 +88,7 @@ func (c campaign) run(ctx context.Context, out io.Writer) (bool, error) {
 			return false, ctx.Err()
 		}
 		first = false
-		rep, err := st.run(ctx, cl)
+		rep, _, err := st.run(ctx, cl)
 		if err != nil {
 			return false, err
 		}

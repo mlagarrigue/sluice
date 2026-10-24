@@ -89,6 +89,12 @@ type stage struct {
 	newConns int           // percent of requests that open a fresh connection (§3.6)
 	encoding string        // the content coding asked for, "" for identity (§2.3 bis)
 	resume   bool          // keep a client session cache, so fresh connections resume (§4 "TLS fixed")
+
+	profile    string        // stage, plateau or peak (§3.3)
+	window     time.Duration // report the measurement window by window, 0 for one line
+	peakFactor int           // the peak's rate over the base rate
+	peakFor    time.Duration // how long the peak lasts
+	shape      string        // api or browser (§8.4)
 }
 
 // campaign is what the command runs: one stage, or a ramp of stages that
@@ -132,6 +138,11 @@ func parse(args []string) (campaign, error) {
 	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
 	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
 	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip or deflate (br and zstd once their decoders are in go.mod)")
+	fs.StringVar(&st.profile, "profile", profileStage, "stage (one rate for -duration), plateau (the same, long, read by -window) or peak (-duration at -rate, -peak-for at -peak-factor times it, -duration at -rate again)")
+	fs.DurationVar(&st.window, "window", 0, "also write one line per window of this length; a plateau or a peak defaults to 10s")
+	fs.IntVar(&st.peakFactor, "peak-factor", 5, "the peak's rate over -rate, under -profile peak")
+	fs.DurationVar(&st.peakFor, "peak-for", 30*time.Second, "how long the peak lasts, under -profile peak")
+	fs.StringVar(&st.shape, "shape", shapeAPI, "api (one connection per virtual client, at most 8 streams on it) or browser (6 connections per client under HTTP/1.1, one carrying up to 50 under HTTP/2 and HTTP/3)")
 	fs.BoolVar(&st.resume, "tls-resume", false, "keep a TLS session cache: fresh connections resume a session (the study's R does not)")
 	fs.IntVar(&st.newConns, "new-conns", 0, "percent of requests that open a fresh connection and close it, 0 or 10 (§3.6)")
 	fs.BoolVar(&c.ramp, "ramp", false, "run the stages of the grid 100 × 1.05^k from -rate up, until one breaks")
@@ -143,6 +154,8 @@ func parse(args []string) (campaign, error) {
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
+	connsSet := false
+	fs.Visit(func(f *flag.Flag) { connsSet = connsSet || f.Name == "conns" })
 	if c.trivial != "" {
 		if st.keyspace <= listLimit {
 			return c, fmt.Errorf("-keyspace must exceed the list limit %d", listLimit)
@@ -205,6 +218,27 @@ func parse(args []string) (campaign, error) {
 		return c, errors.New("-new-conns is a percentage")
 	case c.ramp && len(c.rates) > 0:
 		return c, errors.New("-ramp and -rates exclude each other")
+	case st.shape != shapeAPI && st.shape != shapeBrowser:
+		return c, fmt.Errorf("-shape %q: want api or browser", st.shape)
+	case st.profile != profileStage && st.profile != profilePlateau && st.profile != profilePeak:
+		return c, fmt.Errorf("-profile %q: want stage, plateau or peak", st.profile)
+	case st.profile != profileStage && (c.ramp || len(c.rates) > 0):
+		return c, errors.New("-profile plateau and peak are one run at one rate: no -ramp, no -rates")
+	case st.window < 0 || st.window > 0 && (c.ramp || len(c.rates) > 0):
+		return c, errors.New("-window cuts one run: no -ramp, no -rates")
+	case st.profile == profilePeak && (st.peakFactor < 2 || st.peakFor <= 0):
+		return c, errors.New("-peak-factor must be 2 or more and -peak-for positive")
+	}
+	if st.profile != profileStage && st.window == 0 {
+		st.window = 10 * time.Second
+	}
+	if st.window > 0 && (st.duration%st.window != 0 || st.profile == profilePeak && st.peakFor%st.window != 0) {
+		return c, fmt.Errorf("-window %s must divide -duration (and -peak-for under a peak): no window straddles two phases", st.window)
+	}
+	if st.profile == profilePeak && !connsSet {
+		// C is sized on the peak (§3.5): otherwise the generator's
+		// connections limit during it, not the server.
+		st.conns = c.budget(st.peakRate())
 	}
 	if !c.ramp && len(c.rates) == 0 {
 		if err := st.fits(); err != nil {
@@ -214,34 +248,10 @@ func parse(args []string) (campaign, error) {
 	return c, nil
 }
 
-// fits refuses a stage that would repeat a key (§2.1): the warm-up draws
-// from the same permutation as the measurement.
-func (st stage) fits() error {
-	if n := st.requests(); n > st.keyspace {
-		return fmt.Errorf("%d requests at %d req/s for %s (warm-up %s), but the keyspace holds %d keys: a stage never repeats a key (§2.1)", n, st.rate, st.duration, st.warmup, st.keyspace)
-	}
-	return nil
-}
-
-// requests is how many requests the stage sends, warm-up included: one per
-// interval.
-func (st stage) requests() int {
-	return int((st.warmup + st.duration) / st.interval())
-}
-
-// warmRequests is how many of them fall before the clock starts.
-func (st stage) warmRequests() int {
-	return int(st.warmup / st.interval())
-}
-
 // deadline is how long a request has, from its due instant, to be answered
 // to the end before it counts as timed out (§1.2): ten times X, and four
 // round trips for a fresh connection's TCP and TLS 1.3 handshakes, the
 // request and a margin.
 func (st stage) deadline() time.Duration {
 	return 10*st.slo + 4*st.rtt
-}
-
-func (st stage) interval() time.Duration {
-	return time.Second / time.Duration(st.rate)
 }

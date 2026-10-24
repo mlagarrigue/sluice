@@ -39,22 +39,13 @@ const (
 // connection, not its cost.
 const streamsPerConn = 8
 
-// inFlightPerConn is how many requests one connection carries at once
-// under the protocol: the workers a stage runs are C times this.
-func (st stage) inFlightPerConn() int {
-	if st.proto == protoH1 {
-		return 1
-	}
-	return streamsPerConn
-}
-
 // client is the generator's HTTP side: keep-alive connections to one
 // server, nothing shared with Sluice.go. Each connection of the budget C
 // is a transport of its own, so that the transport can never coalesce two
 // virtual clients onto one connection (net/http's HTTP/2 and quic-go's
 // HTTP/3 both share a connection per host) and never opens a second one:
 // what the budget says is what is on the wire. Worker w of a stage uses
-// connection w / inFlightPerConn. A ramp grows the budget between two
+// connection w / the in-flight requests one connection carries (`layout`). A ramp grows the budget between two
 // stages: `warm` opens the connections a stage lacks, and the ones a
 // smaller stage leaves idle never age out. A fresh connection (§3.6) is
 // a transport that lives for one request, opened inside its delays and
@@ -400,6 +391,7 @@ type result struct {
 	raw        bool // deflate without its zlib wrapper
 	handshake  bool // a TLS handshake happened inside this request's delays
 	resumed    bool // and it resumed a session
+	win        int  // the window it was due in, -1 for none
 }
 
 // nature is what became of a request (§1.2): answered right, answered

@@ -30,11 +30,19 @@ func runStage(tb testing.TB, c campaign) report {
 		tb.Fatal(err)
 	}
 	defer cl.close()
-	rep, err := c.stage.run(context.Background(), cl)
+	rep, _ := runWindows(tb, cl, c)
+	return rep
+}
+
+// runWindows runs a single stage on a client of the test's and returns its
+// line and its window lines.
+func runWindows(tb testing.TB, cl *client, c campaign) (report, []report) {
+	tb.Helper()
+	rep, windows, err := c.stage.run(context.Background(), cl)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	return rep
+	return rep, windows
 }
 
 // TestCalibration is the calibration the study asks of its generator: against
