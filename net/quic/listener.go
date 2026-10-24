@@ -150,8 +150,12 @@ type ListenerConfig struct {
 	// connection's read loop is still busy. At 8, HTTP/3 bulk lost 55
 	// datagrams in 1,200 requests, and each loss stalled its request for a
 	// client PTO (~27 ms, 45% of the send-to-receive time); at 32 none were
-	// lost. Zero means 64, twice that margin for about 3.5 KB of channel per
-	// connection; a negative value is refused by [NewListener].
+	// lost. Zero means 64, twice that margin. The channel itself is about
+	// 3.5 KB per connection, but each queued datagram is a copy: a
+	// connection whose reader is stalled holds up to ConnQueueLen ×
+	// max(MaxUDPPayloadSize, 2048) bytes, 128 KiB at the defaults —
+	// the figure to multiply by MaxConns when sizing memory. A negative
+	// value is refused by [NewListener].
 	ConnQueueLen int
 
 	// RetryTokenTTL is how long a Retry token stays acceptable: generous

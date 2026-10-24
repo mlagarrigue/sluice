@@ -255,7 +255,7 @@ const (
 	// Experimental: measured on this package's emulated paths only.
 	CongestionCubic
 
-	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr, the
+	// CongestionBBR is BBR as the IETF drafts it (draft-ietf-ccwg-bbr-06, the
 	// version Linux ships as BBRv3): a model of the path — the highest
 	// delivery rate and the lowest round trip seen recently — with loss read
 	// as evidence about how much the path holds. A round that loses more than 2% while probing bounds the

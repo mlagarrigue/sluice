@@ -466,6 +466,9 @@ func (c *Conn) flushDatagramLocked() {
 		if c.dgramPad {
 			pad = initialPaddingAfter(len(c.dgram), len(p.prefix), 4, len(p.payload))
 		}
+		// sealLocked fails only on Seal's invariant guards (a header
+		// sample too short), which the constant 4-byte packet number makes
+		// unreachable: there is no error here to handle.
 		c.dgram, _ = c.sealLocked(c.dgram, p, pad)
 	}
 	if len(c.dgram) > 0 {
@@ -698,7 +701,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 		if p := c.dgramPend; p != nil {
 			c.dgramPend = nil
-			c.dgram, _ = c.sealLocked(c.dgram, p, 0)
+			c.dgram, _ = c.sealLocked(c.dgram, p, 0) // unreachable error, as in flushDatagramLocked
 		}
 		if c.dgramPend == nil && len(c.dgram) == 0 {
 			// The datagram's mark is decided when it opens; every packet
