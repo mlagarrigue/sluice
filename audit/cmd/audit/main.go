@@ -42,6 +42,9 @@ type axisFlags map[audit.Axis]*string
 func run(args []string, out *os.File) error {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	binary := fs.String("binary", "", "the Go binary to read")
+	module := fs.String("module", "", "a directory holding a go.mod, whose requirements and advisories to read")
+	dockerfile := fs.String("dockerfile", "", "a Dockerfile to read as text")
+	sbom := fs.Bool("sbom", false, "print the binary's bill of materials instead of the findings")
 	axesOnly := fs.Bool("axes", false, "print the axes and their values, and stop")
 	var answers answerFlag
 	fs.Var(&answers, "answer", "answer a question, key=value, repeatable")
@@ -63,8 +66,8 @@ func run(args []string, out *os.File) error {
 		}
 		return nil
 	}
-	if *binary == "" {
-		return errors.New("-binary names the Go binary to read")
+	if *binary == "" && *module == "" && *dockerfile == "" {
+		return errors.New("name what to read: -binary, -module or -dockerfile")
 	}
 
 	sel := audit.Selection{}
@@ -73,26 +76,50 @@ func run(args []string, out *os.File) error {
 			sel[a] = strings.Split(*v, ",")
 		}
 	}
-	target, err := audit.OpenBinary(*binary)
+	target, err := audit.Open(audit.Spec{Binary: *binary, Module: *module, Dockerfile: *dockerfile})
 	if err != nil {
 		return err
+	}
+	asJSON := sel.Has(audit.Output, "json") && !sel.Has(audit.Output, "text")
+	if *sbom {
+		if *binary == "" {
+			return errors.New("-sbom reads a binary: name one with -binary")
+		}
+		modules := audit.SBOM(target)
+		if asJSON {
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode(modules)
+		}
+		for _, m := range modules {
+			main := ""
+			if m.Main {
+				main = "  (main)"
+			}
+			_, _ = fmt.Fprintf(out, "%-60s %s%s\n", m.Path, m.Version, main)
+		}
+		return nil
 	}
 	findings, err := audit.Run(sel, audit.Answers(answers), target)
 	if err != nil {
 		return err
 	}
-	if sel.Has(audit.Output, "json") && !sel.Has(audit.Output, "text") {
+	if asJSON {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(findings)
 	}
 	if len(findings) == 0 {
-		_, _ = fmt.Fprintf(out, "%s: nothing to propose under this selection\n", *binary)
+		_, _ = fmt.Fprintf(out, "nothing to propose under this selection\n")
 		return nil
 	}
 	for _, f := range findings {
-		_, _ = fmt.Fprintf(out, "%s (%s)\n  found:    %s\n  proposed: %s\n  why:      %s\n  doc:      %s\n\n",
-			f.Rule, f.Goal, f.Current, f.Proposed, wrap(f.Why, 72, "            "), f.Doc)
+		head := f.Rule + " (" + f.Goal + ")"
+		if f.Verdict != "" {
+			head += " — " + f.Verdict
+		}
+		_, _ = fmt.Fprintf(out, "%s\n  found:    %s\n  proposed: %s\n  why:      %s\n  doc:      %s\n\n",
+			head, f.Current, f.Proposed, wrap(f.Why, 72, "            "), f.Doc)
 	}
 	return nil
 }

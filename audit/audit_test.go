@@ -91,8 +91,29 @@ func TestEveryCombinationIsValidAndSelectsOnlyWhatItAsked(t *testing.T) {
 		t.Fatalf("the product reached %d combinations: walk the pairs instead", total)
 	}
 
-	target := &Target{} // no binary: the rules must still be selected or not
+	// A target that really holds something: walking the combinations
+	// against an empty one would check the properties below on zero
+	// findings, which is a green on nothing. The module is left out so
+	// that no combination calls an external tool a thousand times; the
+	// advisory rules have their own test.
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"go.mod":     "module probe\n\ngo 1.26.0\n",
+		"main.go":    "package main\n\nfunc main() {}\n",
+		"Dockerfile": "FROM golang:latest\nENV API_TOKEN=s3cret\nRUN true\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bin := filepath.Join(dir, "probe")
+	build(t, dir, bin)
+	target, err := Open(Spec{Binary: bin, Dockerfile: filepath.Join(dir, "Dockerfile")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen := map[string]bool{}
+	combinations := 0
 	var walk func(i int, sel Selection)
 	walk = func(i int, sel Selection) {
 		if i == len(axes) {
@@ -103,6 +124,7 @@ func TestEveryCombinationIsValidAndSelectsOnlyWhatItAsked(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v: %v", sel, err)
 			}
+			combinations++
 			for _, f := range findings {
 				r, ok := byName[f.Rule]
 				if !ok {
@@ -126,14 +148,41 @@ func TestEveryCombinationIsValidAndSelectsOnlyWhatItAsked(t *testing.T) {
 	}
 	walk(0, Selection{})
 
-	// An axis left out means all of its values, which is what a bare run
-	// asks for: every rule of the registry must then be reachable.
-	findings, err := Run(Selection{}, nil, target)
+	// Pointed at nothing, every rule stays silent: a rule that reports on
+	// a source it was not given reports on something it never read. Two
+	// of them used to, and were caught by reading a run's output rather
+	// than by this test, which is why the assertion is here now.
+	findings, err := Run(Selection{}, nil, &Target{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) == 0 {
-		t.Error("a selection naming no axis selected no rule at all")
+	if len(findings) != 0 {
+		t.Errorf("a target holding nothing produced %d findings: %+v", len(findings), findings)
+	}
+	if combinations != total {
+		t.Errorf("%d combinations walked, want the whole product of %d", combinations, total)
+	}
+	// The walk must have exercised the families the target carries, or the
+	// properties above were checked on an empty report. By family rather
+	// than by rule: a rule is allowed to stay silent on a healthy target,
+	// and gobuild/toolchain does — this binary was built by the toolchain
+	// running the test.
+	families := map[string]bool{}
+	for name := range seen {
+		family, _, _ := strings.Cut(name, "/")
+		families[family] = true
+	}
+	for _, want := range []string{"gobuild", "docker"} {
+		if !families[want] {
+			t.Errorf("no rule of %s produced anything in any of the %d combinations", want, total)
+		}
+	}
+	// And every registered rule is reachable: the selection made of a
+	// rule's own needs must cover it, or the rule can never run at all.
+	for name, r := range byName {
+		if !r.Needs.Covers(r.Needs) {
+			t.Errorf("%s declares needs no selection can cover: %v", name, r.Needs)
+		}
 	}
 }
 
@@ -196,28 +245,14 @@ func TestBuildSettingsAreReadFromTheBinary(t *testing.T) {
 	write("go.mod", "module probe\n\ngo 1.26.0\n")
 	write("main.go", "package main\n\nfunc main() {}\n")
 
-	build := func(out string, env ...string) string {
-		t.Helper()
-		path := filepath.Join(dir, out)
-		args := []string{"build", "-o", path}
-		if out == "hardened" {
-			args = append(args, "-trimpath")
-		}
-		cmd := exec.Command("go", append(args, ".")...) //nolint:gosec // G204: the arguments are this test's own
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), env...)
-		if b, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("go build %v: %v\n%s", args, err, b)
-		}
-		return path
-	}
-
-	lax := build("lax", "CGO_ENABLED=1", "GOAMD64=v1", "GOFLAGS=")
-	hardened := build("hardened", "CGO_ENABLED=0", "GOAMD64=v3", "GOFLAGS=")
+	lax := filepath.Join(dir, "lax")
+	build(t, dir, lax, "CGO_ENABLED=1", "GOAMD64=v1", "GOFLAGS=")
+	hardened := filepath.Join(dir, "hardened")
+	build(t, dir, hardened, "-trimpath", "CGO_ENABLED=0", "GOAMD64=v3", "GOFLAGS=")
 
 	rules := func(path string) []string {
 		t.Helper()
-		target, err := OpenBinary(path)
+		target, err := Open(Spec{Binary: path})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -261,7 +296,29 @@ func TestBuildSettingsAreReadFromTheBinary(t *testing.T) {
 		t.Errorf("the toolchain rule fired on a build by the toolchain running this test: %v", onHardened)
 	}
 
-	if _, err := OpenBinary(filepath.Join(dir, "main.go")); err == nil {
+	if _, err := Open(Spec{Binary: filepath.Join(dir, "main.go")}); err == nil {
 		t.Error("a file that is not a Go binary was read as one")
+	}
+}
+
+// build compiles the module in dir to out. An argument starting with a
+// dash goes to go build, anything else is an environment variable: the
+// settings a build fixes are exactly what these tests vary.
+func build(t *testing.T, dir, out string, args ...string) {
+	t.Helper()
+	flags := []string{"build", "-o", out}
+	var env []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			continue
+		}
+		env = append(env, a)
+	}
+	cmd := exec.Command("go", append(flags, ".")...) //nolint:gosec // G204: the arguments are this test's own
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build %v: %v\n%s", flags, err, b)
 	}
 }

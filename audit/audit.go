@@ -172,8 +172,14 @@ type Finding struct {
 	Current  string `json:"current"`
 	Proposed string `json:"proposed"`
 	Goal     string `json:"goal"`
-	Why      string `json:"why"`
-	Doc      string `json:"doc"`
+
+	// Verdict is set by the rules that judge an advisory rather than a
+	// setting, and holds one of [VerdictApplies], [VerdictUndetermined]
+	// and [VerdictAbsent]. Empty everywhere else: a setting is not judged,
+	// it is proposed.
+	Verdict string `json:"verdict,omitempty"`
+	Why     string `json:"why"`
+	Doc     string `json:"doc"`
 }
 
 // A Rule reads a target and says what it would change. Needs are the axis

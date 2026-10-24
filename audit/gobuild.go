@@ -1,10 +1,7 @@
 package audit
 
 import (
-	"debug/buildinfo"
-	"fmt"
 	"go/version"
-	"runtime/debug"
 	"strings"
 )
 
@@ -13,44 +10,6 @@ import (
 // was done, and the gap between the two is exactly what an audit exists
 // to find. Everything here comes from debug/buildinfo, which is the
 // toolchain's own record, written into every Go binary.
-
-// A Target is what an audit was pointed at. This slice reads one thing,
-// a Go binary; the hosts, images and databases of v1 to v5 become fields
-// beside it, read only when the Sources axis allows them.
-type Target struct {
-	// BinaryPath is the binary read, empty when none was given.
-	BinaryPath string
-
-	// Build is what the toolchain recorded in it, nil when no binary was
-	// given. A file that is not a Go binary is an error at open time, not
-	// a nil here: an audit that silently found nothing is a false green.
-	Build *debug.BuildInfo
-}
-
-// OpenBinary reads a Go binary's build record.
-func OpenBinary(path string) (*Target, error) {
-	if path == "" {
-		return &Target{}, nil
-	}
-	info, err := buildinfo.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return &Target{BinaryPath: path, Build: info}, nil
-}
-
-// setting returns a build setting and whether the toolchain recorded it.
-func (t *Target) setting(key string) (string, bool) {
-	if t.Build == nil {
-		return "", false
-	}
-	for _, s := range t.Build.Settings {
-		if s.Key == key {
-			return s.Value, true
-		}
-	}
-	return "", false
-}
 
 // minGoVersion is the oldest toolchain a binary of this repository should
 // have been built by: the floor its go.mod states. Older ones are missing
@@ -72,6 +31,9 @@ func init() {
 		Needs: needs("security"),
 		Doc:   "https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_dependencies",
 		Check: func(t *Target, _ Answers) []Finding {
+			if t.Build == nil {
+				return nil
+			}
 			if v, ok := t.setting("-trimpath"); ok && v == "true" {
 				return nil
 			}
@@ -90,6 +52,9 @@ func init() {
 		Needs: needs("security"),
 		Doc:   "https://pkg.go.dev/cmd/cgo",
 		Check: func(t *Target, _ Answers) []Finding {
+			if t.Build == nil {
+				return nil
+			}
 			if v, ok := t.setting("CGO_ENABLED"); !ok || v == "0" {
 				return nil
 			}
@@ -108,6 +73,9 @@ func init() {
 		Needs: needs("performance"),
 		Doc:   "https://pkg.go.dev/cmd/go#hdr-Build_constraints",
 		Check: func(t *Target, _ Answers) []Finding {
+			if t.Build == nil {
+				return nil
+			}
 			if arch, _ := t.setting("GOARCH"); arch != "amd64" {
 				return nil
 			}
@@ -134,6 +102,9 @@ func init() {
 		Needs: needs("performance"),
 		Doc:   "https://go.dev/doc/pgo",
 		Check: func(t *Target, _ Answers) []Finding {
+			if t.Build == nil {
+				return nil
+			}
 			if v, ok := t.setting("-pgo"); ok && v != "" && v != "off" {
 				return nil
 			}
