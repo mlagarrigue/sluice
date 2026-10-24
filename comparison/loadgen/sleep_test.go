@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -384,5 +385,31 @@ func TestCheck(t *testing.T) {
 				t.Fatalf("check: %v, want ok=%v", err, c.ok)
 			}
 		})
+	}
+}
+
+// CMP-01: a list drawn on the table's last key asks for ids above the
+// highest one, and its page is rightly empty — it used to be counted a
+// wrong key. Empty anywhere else is still a wrong answer.
+func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
+	const keyspace = 50
+	draw := scenarios["list"].draw(10, keyspace)
+	var last, other request
+	for i := range keyspace {
+		if rq := draw(i); rq.key == keyspace {
+			last = rq
+		} else if other.key == 0 {
+			other = rq
+		}
+	}
+	if last.key != keyspace || other.key == 0 {
+		t.Fatalf("the draw gave no list from the last key (%d) or from another (%d)", last.key, other.key)
+	}
+	empty := func(from int64) []byte { return fmt.Appendf(nil, `{"from":%d,"items":[]}`, from) }
+	if err := check(last, empty(keyspace)); err != nil {
+		t.Errorf("the empty page from the last key was refused: %v", err)
+	}
+	if err := check(other, empty(other.key)); err == nil {
+		t.Errorf("an empty page from key %d was accepted", other.key)
 	}
 }

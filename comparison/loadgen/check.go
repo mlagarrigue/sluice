@@ -29,6 +29,9 @@ type request struct {
 	keyField string
 	key      int64
 	full     bool
+	// atEnd marks a list drawn from the last key of the table: the one
+	// list whose page is rightly empty, since no id lies above it.
+	atEnd bool
 }
 
 // scenario draws the i-th request of a stage from one seed: the keys form
@@ -43,7 +46,9 @@ func (sc scenario) draw(seed uint64, keyspace int) func(i int) request {
 		// The 1 % is a function of (seed, i), not of the calls before it:
 		// the i-th request is the same whoever asks for it.
 		full := rand.New(rand.NewPCG(seed, uint64(i))).IntN(100) == 0 //nolint:gosec // G404: same
-		return sc(i, int64(perm[i]+1), full)
+		rq := sc(i, int64(perm[i]+1), full)
+		rq.atEnd = rq.kind == list && rq.key == int64(keyspace)
+		return rq
 	}
 }
 
@@ -122,7 +127,10 @@ func check(rq request, body []byte) error {
 			}
 			prev = it.ID
 		}
-		if len(items) == 0 {
+		// Empty at the end of the table and nowhere else. Rows from the
+		// last key are not refused: the trivial server's table runs a page
+		// past the keyspace on purpose, so that every list it serves is full.
+		if len(items) == 0 && !rq.atEnd {
 			return fmt.Errorf("list from %d: empty", rq.key)
 		}
 		if rq.full {
