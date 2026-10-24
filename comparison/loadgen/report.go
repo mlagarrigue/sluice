@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"slices"
 	"time"
 )
@@ -19,6 +20,7 @@ type report struct {
 	SLO      float64 `json:"slo_ms"` // X: the p99 to hold (§3.2)
 	RTT      float64 `json:"rtt_ms"` // the round trip injected, what C was computed with (§3.5)
 	NewConns int     `json:"new_conns_pct"`
+	Encoding string  `json:"encoding"` // the content coding asked for (§2.3 bis)
 
 	Held  bool   `json:"held"`  // the SLO held and the stage is a measurement
 	Cause string `json:"cause"` // why not, by precedence: key, connect, queue, slo
@@ -46,6 +48,12 @@ type report struct {
 	// (§3.6).
 	Closed     int `json:"closed"`     // connections of the budget the server ended: Connection: close, GOAWAY, FIN or RST
 	Reconnects int `json:"reconnects"` // connections of the budget opened again: after a closure, or a request given up on under HTTP/1.1
+
+	// What the answers cost on the wire (§2.3 bis), over the ok ones.
+	Compressed float64 `json:"compressed_pct"` // in the coding asked for; the rest came in clear, which is no fault
+	WireBytes  float64 `json:"wire_bytes"`     // body bytes on the wire per answer, headers aside
+	Ratio      float64 `json:"ratio"`          // decoded over wire bytes, over the compressed answers
+	DeflateRaw int     `json:"deflate_raw"`    // deflate sent without its zlib wrapper (RFC 9110 §8.4.1.2), decoded all the same
 
 	QueueMax   int `json:"queue_max"`  // most requests due at once with no connection free (§3.5)
 	Queued     int `json:"queued"`     // requests that were due with no connection free
@@ -107,13 +115,14 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 	rep := report{
 		URL: st.url, Proto: st.proto, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
 		Conns: st.conns, Seed: st.seed, Sent: len(all),
-		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns,
+		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns, Encoding: cmp.Or(st.encoding, "identity"),
 		QueueMax: int(queueMax), Queued: int(queued),
 	}
 	if elapsed > 0 {
 		rep.Achieved = float64(len(all)) / elapsed.Seconds()
 	}
 	var ttfb, ttlb, wait []time.Duration
+	var wire, zwire, zsize, compressed int
 	for _, r := range all {
 		wait = append(wait, r.wait)
 		if r.handshake {
@@ -124,6 +133,15 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 			rep.OK++
 			ttfb = append(ttfb, r.ttfb)
 			ttlb = append(ttlb, r.ttlb)
+			wire += r.wire
+			if r.compressed {
+				compressed++
+				zwire += r.wire
+				zsize += r.size
+			}
+			if r.raw {
+				rep.DeflateRaw++
+			}
 		case natureBadKey:
 			rep.BadKey++
 		case natureTimedOut:
@@ -143,6 +161,13 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 		case natureOther:
 			rep.Other++
 		}
+	}
+	if rep.OK > 0 {
+		rep.Compressed = 100 * float64(compressed) / float64(rep.OK)
+		rep.WireBytes = float64(wire) / float64(rep.OK)
+	}
+	if zwire > 0 {
+		rep.Ratio = float64(zsize) / float64(zwire)
 	}
 	rep.Errors = rep.Status4xx + rep.Status5xx + rep.Refused + rep.Reset + rep.ConnectTimeout + rep.Other
 	rep.Wait = summarise(wait)

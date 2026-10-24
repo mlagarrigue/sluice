@@ -60,6 +60,7 @@ func (st stage) inFlightPerConn() int {
 type client struct {
 	url      string
 	proto    string
+	encoding string        // the content coding asked for, "" for identity (§2.3 bis)
 	deadline time.Duration // a request's whole life from its due instant (§1.2)
 	tls      *tls.Config
 
@@ -109,7 +110,7 @@ func (c campaign) newClient() (*client, error) {
 		}
 		cfg.RootCAs = pool
 	}
-	return &client{url: st.url, proto: st.proto, deadline: st.deadline(), tls: cfg}, nil
+	return &client{url: st.url, proto: st.proto, encoding: st.encoding, deadline: st.deadline(), tls: cfg}, nil
 }
 
 // dial makes one connection's transport; the connection itself opens on
@@ -321,6 +322,9 @@ type result struct {
 	status     int
 	err        error
 	nature     nature
+	wire, size int  // an answer's body on the wire and decoded
+	compressed bool // in the coding asked for
+	raw        bool // deflate without its zlib wrapper
 	handshake  bool // a TLS handshake happened inside this request's delays
 }
 
@@ -365,6 +369,9 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.D
 	}
 	if j.req.body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.encoding != "" {
+		req.Header.Set("Accept-Encoding", c.encoding)
 	}
 	var firstByte time.Time
 	// A dial the transport started for this request can outlive it, when
@@ -423,7 +430,13 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.D
 		}
 		return res
 	}
-	if err := check(j.req, body); err != nil {
+	d, err := decode(c.encoding, resp.Header.Get("Content-Encoding"), body)
+	if err != nil {
+		res.err, res.nature = err, natureBadKey
+		return res
+	}
+	res.wire, res.size, res.compressed, res.raw = len(body), len(d.doc), d.compressed, d.raw
+	if err := check(j.req, d.doc); err != nil {
 		res.err, res.nature = err, natureBadKey
 	}
 	return res

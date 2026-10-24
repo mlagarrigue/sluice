@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +37,10 @@ type testServer struct {
 	// under HTTP/2. closes counts the connections so ended.
 	closeEvery atomic.Int64
 	closes     atomic.Int64
+
+	// stream sends every answer in two writes with a flush between, so
+	// that it goes out with no Content-Length (chunked under HTTP/1.1).
+	stream atomic.Bool
 }
 
 // A fault is what the test server does to one key instead of answering it.
@@ -42,6 +51,10 @@ const (
 	silent                       // never answer, until the request is given up on
 	notFound                     // 404
 	unavailable                  // 503
+	inClear                      // ignore Accept-Encoding: the document in clear
+	truncated                    // half the encoded body, under a Content-Length that says so
+	unasked                      // encoded in a coding the request did not ask for
+	rawDeflate                   // deflate without its zlib wrapper
 )
 
 // connState is one connection's view in the test server: the requests in
@@ -55,8 +68,10 @@ type connState struct {
 // ~0.2 ms here and the calibration wants the reference exact — with a
 // document that honours the response contract for the key the path
 // carries, so that the generator's checks all pass and only the delay is
-// under test. A key listed in `faults` gets the fault instead: another
-// key, a 404, a 503 or no answer. Under h1 and h2 it is net/http's
+// under test. The document is encoded in the coding the request asks for,
+// gzip or deflate. A key listed in `faults` gets the fault instead:
+// another key, a 404, a 503, no answer, or a body in clear, cut, in
+// another coding or in raw deflate. Under h1 and h2 it is net/http's
 // server; under h3, quic-go's, on a UDP socket, with the same certificate.
 func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]fault) *testServer {
 	tb.Helper()
@@ -82,7 +97,7 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/static":
-			fmt.Fprint(w, `{"status":"ok"}`)
+			ts.write(w, r, []byte(`{"status":"ok"}`), 0)
 		case strings.HasPrefix(r.URL.Path, "/orders/"):
 			var id int64
 			id, _ = strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/orders/"), 10, 64)
@@ -102,7 +117,7 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]
 				http.Error(w, "try again", http.StatusServiceUnavailable)
 				return
 			}
-			fmt.Fprintf(w, `{"id":%d,"total":%d,"label":"order-%d"}`, id, id*7, id)
+			ts.write(w, r, fmt.Appendf(nil, `{"id":%d,"total":%d,"label":"order-%d"}`, id, id*7, id), faults[id])
 		default:
 			http.Error(w, "no such route", http.StatusNotFound)
 		}
@@ -144,6 +159,47 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]
 	// the servers wait for it.
 	tb.Cleanup(func() { close(release) })
 	return ts
+}
+
+// write sends doc in the coding the request asks for, the generator
+// asking for one at most, or as the fault says.
+func (ts *testServer) write(w http.ResponseWriter, r *http.Request, doc []byte, f fault) {
+	coding := r.Header.Get("Accept-Encoding")
+	switch f {
+	case inClear:
+		coding = ""
+	case unasked:
+		coding = map[string]string{"": codingGzip, codingGzip: codingDeflate, codingDeflate: codingGzip}[coding]
+	}
+	body := doc
+	if coding != "" {
+		var buf bytes.Buffer
+		var zw io.WriteCloser
+		switch {
+		case coding == codingGzip:
+			zw = gzip.NewWriter(&buf)
+		case f == rawDeflate:
+			zw, _ = flate.NewWriter(&buf, flate.DefaultCompression)
+		default:
+			zw = zlib.NewWriter(&buf)
+		}
+		_, _ = zw.Write(doc)
+		_ = zw.Close()
+		body = buf.Bytes()
+		w.Header().Set("Content-Encoding", coding)
+	}
+	if f == truncated {
+		body = body[:len(body)/2]
+	}
+	if !ts.stream.Load() {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+		return
+	}
+	half := len(body) / 2
+	_, _ = w.Write(body[:half])
+	http.NewResponseController(w).Flush() //nolint:errcheck // all three servers flush
+	_, _ = w.Write(body[half:])
 }
 
 // connKey carries one connection's connState in its requests'

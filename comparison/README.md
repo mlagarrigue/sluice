@@ -149,6 +149,20 @@ What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
   server is the contender's, and counts against the SLO), `queue` (the
   generator's queue was not empty while p99 sat under X: the generator
   limits, §3.5), `slo`;
+- with `-encoding gzip` or `deflate` (`identity` by default, nothing
+  asked), sends that one coding in `Accept-Encoding` and decodes every
+  answer before checking it: a body is complete once the decoder reaches
+  its end (a gzip member's trailer, a zlib stream's checksum), with or
+  without a `Content-Length`, so an answer streamed in batches is read
+  the same way. HTTP's `deflate` is a deflate stream in the zlib format
+  (RFC 9110 §8.4.1.2); a raw one, which some servers send and browsers
+  accept, is decoded and counted in `deflate_raw`. An answer in clear is
+  no fault (§2.3 bis): `compressed_pct` says how many came in the coding
+  asked for. A body that does not decode, or in a coding not asked for,
+  is a wrong answer (`bad_key`). `wire_bytes` is the body's size on the
+  wire per answer, `ratio` the decoded size over it, over the compressed
+  answers. `br` and `zstd` are refused until their decoders are in
+  `loadgen/go.mod`;
 - with `-new-conns 10`, a tenth of the requests, drawn by `(seed, index)`,
   open a fresh connection whose handshake falls inside their own delays and
   close it, so that `TIME_WAIT` lands on the tester (§3.6); `handshakes`
@@ -156,6 +170,7 @@ What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
 
 ```
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
+go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -encoding gzip
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -proto h3 -rates 1000,4000 -duration 3s
 go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, empty trusts it
 ```
@@ -210,7 +225,10 @@ connections counts their handshakes apart and fails no connect. A 404, a
 after 10 requests, by `Connection: close` under HTTP/1.1 and the `GOAWAY`
 it becomes under HTTP/2, shows 10 `closed` and 10 `reconnects` and loses
 no request; a port nothing listens on is `refused` over TCP and a
-`connect_timeout` over QUIC.
+`connect_timeout` over QUIC. Under each protocol and each coding, buffered
+and streamed, a server that answers one key in clear, cuts one body, uses
+an unasked coding for another and raw deflate for a fourth sees two wrong
+answers and the rest decoded.
 
 ### Not the bottleneck
 

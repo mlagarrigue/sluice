@@ -86,6 +86,7 @@ type stage struct {
 	slo      time.Duration // X: the p99 the scenario must hold (§3.2)
 	rtt      time.Duration // the RTT injected on the wire, for C only (§3.5)
 	newConns int           // percent of requests that open a fresh connection (§3.6)
+	encoding string        // the content coding asked for, "" for identity (§2.3 bis)
 }
 
 // campaign is what the command runs: one stage, or a ramp of stages that
@@ -128,6 +129,7 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&st.ca, "ca", "", "PEM file of the CA that signed the server's certificate; empty trusts any certificate")
 	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
 	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
+	fs.StringVar(&st.encoding, "encoding", "identity", "the content coding asked for in Accept-Encoding: identity, gzip or deflate (br and zstd once their decoders are in go.mod)")
 	fs.IntVar(&st.newConns, "new-conns", 0, "percent of requests that open a fresh connection and close it, 0 or 10 (§3.6)")
 	fs.BoolVar(&c.ramp, "ramp", false, "run the stages of the grid 100 × 1.05^k from -rate up, until one breaks")
 	fs.StringVar(&rates, "rates", "", "run these stages instead of the grid, comma-separated req/s, until one breaks")
@@ -154,6 +156,15 @@ func parse(args []string) (campaign, error) {
 	}
 	if st.slo == 0 {
 		st.slo = defaultSLO[name]
+	}
+	switch st.encoding {
+	case "identity":
+		st.encoding = ""
+	case codingGzip, codingDeflate:
+	case "br", "zstd":
+		return c, fmt.Errorf("-encoding %s: its decoder is not in loadgen/go.mod yet; identity, gzip or deflate", st.encoding)
+	default:
+		return c, fmt.Errorf("-encoding %q: want identity, gzip or deflate", st.encoding)
 	}
 	if rates != "" {
 		for part := range strings.SplitSeq(rates, ",") {
