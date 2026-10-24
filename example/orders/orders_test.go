@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -261,6 +262,29 @@ func TestInvalidRequestsDoNotReachTheStore(t *testing.T) {
 		}
 		if rows := store.rows.Load(); rows != 1 {
 			t.Errorf("the store was asked for %d keys, want 1 — the invalid request reached it", rows)
+		}
+	})
+}
+
+// The store keeps a line's index as an int4: an index past its range is
+// refused before the store, rather than wrapped into another line's index.
+func TestAnIndexPastInt32IsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := newStore(orders.Line{OrderID: 1, Index: 0, SaleQty: 1})
+		svc := orders.New(store, 4, 30*time.Millisecond)
+		defer func() { _ = svc.Close() }()
+
+		ctx, cancel := ctx5(t)
+		defer cancel()
+		res, _ := svc.Apply(ctx, orders.Amendment{OrderID: 1, Index: math.MaxInt32 + 1, SaleQty: 5})
+		if res.Applied {
+			t.Fatal("an index past int32 was applied")
+		}
+		if len(res.Diagnostics) == 0 || res.Diagnostics[0].Code != "Sales.Line.BadIndex" {
+			t.Errorf("diagnostics = %+v, want Sales.Line.BadIndex", res.Diagnostics)
+		}
+		if rows := store.rows.Load(); rows != 0 {
+			t.Errorf("the store was asked for %d keys, want 0", rows)
 		}
 	})
 }

@@ -60,7 +60,7 @@ func (s *PGStore) LoadLines(ctx context.Context, keys []LineKey) (map[LineKey]Li
 	s.indexes = s.indexes[:0]
 	for _, k := range keys {
 		s.orderIDs = append(s.orderIDs, k.OrderID)
-		s.indexes = append(s.indexes, int32(k.Index)) //nolint:gosec // G115: a line index within a batch
+		s.indexes = append(s.indexes, int32(k.Index)) //nolint:gosec // G115: validate refuses an index past MaxInt32
 	}
 
 	src := s.conn.Query(ctx, loadSQL,
@@ -163,7 +163,7 @@ func (s *PGStore) SaveLines(ctx context.Context, lines []Line) error {
 	qty := make([]int64, 0, len(lines))
 	for _, l := range lines {
 		s.orderIDs = append(s.orderIDs, l.OrderID)
-		s.indexes = append(s.indexes, int32(l.Index)) //nolint:gosec // G115: a line index within a batch
+		s.indexes = append(s.indexes, int32(l.Index)) //nolint:gosec // G115: validate refuses an index past MaxInt32
 		qty = append(qty, l.SaleQty)
 	}
 

@@ -31,6 +31,7 @@ package orders
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -246,6 +247,13 @@ func validate(a Amendment, st *state) bool {
 
 	if a.Index < 0 {
 		st.reject(diagnostics.Error, "Sales.Line.BadIndex", "IndexMustNotBeNegative",
+			diagnostics.Field("lines").Index(a.Index), diagnostics.OriginBusinessRule,
+			diagnostics.Affordance{})
+	}
+	// The store keeps the index as an int4 (pgstore.go): one past its range
+	// would wrap into another line's index rather than fail.
+	if a.Index > math.MaxInt32 {
+		st.reject(diagnostics.Error, "Sales.Line.BadIndex", "IndexTooLarge",
 			diagnostics.Field("lines").Index(a.Index), diagnostics.OriginBusinessRule,
 			diagnostics.Affordance{})
 	}
