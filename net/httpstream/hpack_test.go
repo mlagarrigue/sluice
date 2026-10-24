@@ -88,6 +88,8 @@ func TestHPACKAppendixCVectors(t *testing.T) {
 			[]string{":method: GET", ":scheme: http", ":path: /", ":authority: www.example.com"})
 		equal(t, decoded(t, d, unhex(t, "8286 84be 5808 6e6f 2d63 6163 6865")),
 			[]string{":method: GET", ":scheme: http", ":path: /", ":authority: www.example.com", "cache-control: no-cache"})
+		equal(t, decoded(t, d, unhex(t, "8287 85bf 400a 6375 7374 6f6d 2d6b 6579 0c63 7573 746f 6d2d 7661 6c75 65")),
+			[]string{":method: GET", ":scheme: https", ":path: /index.html", ":authority: www.example.com", "custom-key: custom-value"})
 	})
 
 	// C.4: the same, Huffman coded. This is what validates the 256-entry
@@ -98,7 +100,54 @@ func TestHPACKAppendixCVectors(t *testing.T) {
 			[]string{":method: GET", ":scheme: http", ":path: /", ":authority: www.example.com"})
 		equal(t, decoded(t, d, unhex(t, "8286 84be 5886 a8eb 1064 9cbf")),
 			[]string{":method: GET", ":scheme: http", ":path: /", ":authority: www.example.com", "cache-control: no-cache"})
+		equal(t, decoded(t, d, unhex(t, "8287 85bf 4088 25a8 49e9 5ba9 7d7f 8925 a849 e95b b8e8 b4bf")),
+			[]string{":method: GET", ":scheme: https", ":path: /index.html", ":authority: www.example.com", "custom-key: custom-value"})
 	})
+
+	// C.1.2: an integer past its prefix, 1337 on five bits — the
+	// continuation octets every length and index above 30 goes through.
+	t.Run("C.1.2 integer 1337 on a 5-bit prefix", func(t *testing.T) {
+		v, rest, err := hpackInt(unhex(t, "1f9a 0a"), 5)
+		if err != nil || v != 1337 || len(rest) != 0 {
+			t.Errorf("hpackInt = %d, rest %x, %v; want 1337 and nothing left", v, rest, err)
+		}
+	})
+
+	// C.5 and C.6: responses through a 256-octet table, so that entries
+	// are evicted — the half of the dynamic table C.3 and C.4 never reach.
+	responses := []struct {
+		name string
+		hex  [3]string
+	}{
+		{"C.5 response sequence", [3]string{
+			"4803 3330 3258 0770 7269 7661 7465 611d 4d6f 6e2c 2032 3120 4f63 7420 3230 3133 2032 303a 3133 3a32 3120 474d 546e 1768 7474 7073 3a2f 2f77 7777 2e65 7861 6d70 6c65 2e63 6f6d",
+			"4803 3330 37c1 c0bf",
+			"88c1 611d 4d6f 6e2c 2032 3120 4f63 7420 3230 3133 2032 303a 3133 3a32 3220 474d 54c0 5a04 677a 6970 7738 666f 6f3d 4153 444a 4b48 514b 425a 584f 5157 454f 5049 5541 5851 5745 4f49 553b 206d 6178 2d61 6765 3d33 3630 303b 2076 6572 7369 6f6e 3d31",
+		}},
+		{"C.6 response sequence, Huffman coded", [3]string{
+			"4882 6402 5885 aec3 771a 4b61 96d0 7abe 9410 54d4 44a8 2005 9504 0b81 66e0 82a6 2d1b ff6e 919d 29ad 1718 63c7 8f0b 97c8 e9ae 82ae 43d3",
+			"4883 640e ffc1 c0bf",
+			"88c1 6196 d07a be94 1054 d444 a820 0595 040b 8166 e084 a62d 1bff c05a 839b d9ab 77ad 94e7 821d d7f2 e6c7 b335 dfdf cd5b 3960 d5af 2708 7f36 72c1 ab27 0fb5 291f 9587 3160 65c0 03ed 4ee5 b106 3d50 07",
+		}},
+	}
+	for _, r := range responses {
+		t.Run(r.name, func(t *testing.T) {
+			d := newHPACKDecoder(256, 0)
+			equal(t, decoded(t, d, unhex(t, r.hex[0])),
+				[]string{":status: 302", "cache-control: private", "date: Mon, 21 Oct 2013 20:13:21 GMT", "location: https://www.example.com"})
+			equal(t, decoded(t, d, unhex(t, r.hex[1])),
+				[]string{":status: 307", "cache-control: private", "date: Mon, 21 Oct 2013 20:13:21 GMT", "location: https://www.example.com"})
+			equal(t, decoded(t, d, unhex(t, r.hex[2])),
+				[]string{
+					":status: 200", "cache-control: private", "date: Mon, 21 Oct 2013 20:13:22 GMT", "location: https://www.example.com",
+					"content-encoding: gzip", "set-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1",
+				})
+			// The RFC's own accounting after the third response.
+			if d.size != 215 || d.n != 3 {
+				t.Errorf("dynamic table = %d entries, size %d; want 3 entries, size 215", d.n, d.size)
+			}
+		})
+	}
 }
 
 // The refusals. HPACK is stateful, so a block decoded wrongly poisons every
