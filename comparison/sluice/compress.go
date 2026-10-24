@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"io"
 	"strconv"
 	"strings"
@@ -14,6 +14,8 @@ import (
 
 // Axis F of the internal study: the buffered body of every answer, encoded
 // with gzip or deflate from the standard library when the client accepts it.
+// HTTP's "deflate" is a deflate stream inside the zlib format (RFC 9110
+// §8.4.1.2), not the raw stream some servers send.
 // Nothing here is an API of web: the study measures this stage first, and
 // the measurement decides whether web offers one (study, §8.5).
 //
@@ -46,12 +48,12 @@ func lookupCodec(name string) *codec {
 	case codecGzip6:
 		return &codec{token: "gzip", level: gzip.DefaultCompression}
 	case codecDeflate6:
-		return &codec{token: "deflate", level: flate.DefaultCompression}
+		return &codec{token: "deflate", level: zlib.DefaultCompression}
 	}
 	return nil
 }
 
-// resetWriter is what gzip.Writer and flate.Writer have in common: a reset
+// resetWriter is what gzip.Writer and zlib.Writer have in common: a reset
 // re-targets the encoder without rebuilding its tables, and a flush ends the
 // current deflate block so that everything written so far can be decoded.
 type resetWriter interface {
@@ -124,7 +126,7 @@ func (c *codec) newWriter(w io.Writer) resetWriter {
 		}
 		return zw
 	case "deflate":
-		zw, err := flate.NewWriter(w, c.level)
+		zw, err := zlib.NewWriterLevel(w, c.level)
 		if err != nil {
 			panic(err)
 		}

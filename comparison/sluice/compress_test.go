@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"io"
 	"testing"
 	"unicode/utf8"
@@ -89,7 +89,9 @@ func TestEncodeRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				r = flate.NewReader(bytes.NewReader(enc))
+				if r, err = zlib.NewReader(bytes.NewReader(enc)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			got, err := io.ReadAll(r)
 			if err != nil {

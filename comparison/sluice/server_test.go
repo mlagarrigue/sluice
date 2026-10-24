@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -220,7 +220,9 @@ func (s *server) do(method, path string, body []byte) (reply, error) {
 			return reply{}, err
 		}
 	case "deflate":
-		r = flate.NewReader(resp.Body)
+		if r, err = zlib.NewReader(resp.Body); err != nil {
+			return reply{}, err
+		}
 	default:
 		return reply{}, fmt.Errorf("Content-Encoding %q", ce)
 	}
