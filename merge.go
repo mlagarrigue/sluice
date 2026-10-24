@@ -43,6 +43,11 @@ func (c Completion) String() string {
 // construction: an undeclared value — the zero value of a field nobody set
 // among them — would otherwise pick a policy in silence, which is the one
 // choice this type exists to make explicit.
+//
+// Unexported, where [Overflow.Valid] is exported, because [Merge] is the only
+// caller and it is in this package: a caller holding a Completion compares it
+// to the two constants, and one it passes is refused by name. See
+// [Overflow.Valid] for the rule.
 func (c Completion) valid() bool { return c == WhenAll || c == WhenAny }
 
 // Merge interleaves several streams, one batch at a time from each.

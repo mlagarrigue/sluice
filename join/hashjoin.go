@@ -55,6 +55,9 @@ type BuildLimit struct {
 // misconfigured join fails where it is wired rather than when the data arrives.
 // It knows nothing of the table's capacity: that ceiling belongs to the
 // table, and the interval join has one of its own.
+//
+// Unexported for the reason [sluice.Overflow.Valid] gives: every caller is in
+// this package, and [StreamTable] names the field it refuses.
 func (l BuildLimit) valid() bool {
 	return l.MaxEntries > 0 && (l.OnOverflow == sluice.Fail || l.OnOverflow == sluice.DropNewest)
 }

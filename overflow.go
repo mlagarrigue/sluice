@@ -72,4 +72,9 @@ func (o Overflow) String() string {
 // configuration value must not lie dormant until the day the bound is reached,
 // which is the day the pipeline is already under stress. The zero value is not
 // valid: it is the field nobody set.
+//
+// It is exported because the operators that check it live in other packages —
+// distinct, join and window all take a policy. A validity check whose
+// callers are all in one package stays unexported there, as [Completion]'s
+// and join's BuildLimit do: the surface says who has to ask, not who may.
 func (o Overflow) Valid() bool { return o >= DropOldest && o <= Fail }
