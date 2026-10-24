@@ -198,7 +198,8 @@ not against HTTP/1.1. Measured locally on 2026-10-22 and 2026-10-23, the
 server on two cores, 8,000 requests per second, two or three alternated
 rounds, eight for the grouped sends.
 
-Deliberately not built: stream priorities (RFC 9113 deprecated the scheme),
+Deliberately not built: stream priorities (RFC 9113 deprecated the scheme,
+and the extensible priorities of RFC 9218 that replace it are not read),
 server push (`ENABLE_PUSH` 0), and the interleaving of two streamed bodies
 on one HTTP/2 connection — while a producer is pulled, the responder frames
 no other answer, so other requests on that connection wait for theirs. Accepted because the

@@ -56,7 +56,9 @@ type Response struct {
 	// one line per field unless its definition makes it a list (§5.3 —
 	// two Content-Type lines go out as two). A writer that checked these
 	// would carry a catalogue of every field, and be wrong about the ones
-	// defined after it.
+	// defined after it. Nor does the package add a Content-Type: a response
+	// with content SHOULD carry one (RFC 9110 §8.3), and only the handler
+	// knows what the bytes are.
 	Headers []Header
 
 	// Body is the payload, sent verbatim. Use it for an answer that is

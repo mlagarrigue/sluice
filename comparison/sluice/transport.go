@@ -147,8 +147,9 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Axis F: the same document, encoded. Vary is set whatever the outcome
-	// of the negotiation, so a cache keys on the header that decided it.
+	// Axis F: the same document, encoded. Vary is set on the encoded answer,
+	// so a cache never hands it to a client that did not ask for the coding;
+	// the identity answer above goes without, as a cache may serve it to any.
 	enc, err := a.codec.encode(b)
 	if err != nil {
 		_ = web.WriteJSON(w, http.StatusInternalServerError, errDoc{Error: "compress"})

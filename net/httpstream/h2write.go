@@ -42,7 +42,7 @@ import (
 // budget and pays one syscall for it; eight streams share it evenly and none
 // is starved by a large neighbour. No priorities: RFC 9113 deprecated the
 // scheme and RFC 9218's replacement is not implemented here, which is a choice
-// rather than an omission — see the ADR.
+// rather than an omission — see ADR 0008.
 //
 // The buffered bodies of every batch the writer holds interleave: a batch is
 // queued whole and the responder moves on to the next without waiting for
