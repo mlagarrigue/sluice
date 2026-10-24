@@ -38,6 +38,14 @@ Three reasons come up, and the difference matters:
   useless code, not a count: a maintained compressor (zstd, brotli) beats a
   home-made one, and it will enter when the measurement says it pays. What
   is excluded is the dependency that arrives without a decision.
+- **Platforms: Linux first.** The whole suite runs on Linux amd64; the
+  network transport (`net/quic`, `net/quic/udp`, `net/httpstream`) also
+  runs on Windows, macOS and Linux arm64; the rest of the code is only
+  compiled and vetted there. Supported means: CI runs it on every push,
+  and a failure on that platform is a defect to fix. Elsewhere (the BSDs)
+  the code builds with no guarantee, and QUIC datagrams stay at 1200 bytes
+  for want of a "Don't Fragment" option. The table:
+  [Platforms, in detail](#platforms-in-detail).
 
 ## The core
 
@@ -408,6 +416,24 @@ is not started, and each item needs a written decision first.
 The entries above say the limit; what follows is the full record of the
 longest ones — how each was measured or argued, and where it departs from
 a specification.
+
+### Platforms, in detail
+
+What CI runs on every push, for Go 1.26 (the floor `go.mod` names) and the
+latest stable release:
+
+| System | Architecture | What runs | Supported |
+|---|---|---|---|
+| Linux | amd64 | the whole suite under `-race`, PostgreSQL 14 to 18, QUIC and HTTP interop | yes |
+| Linux | arm64 | `net/quic/udp`, `net/quic`, `net/httpstream` under `-race` | yes for these packages; the rest is pure Go, not run |
+| Windows | amd64 | the same packages, plus `go vet` of all the code | likewise |
+| macOS | arm64 | the same packages, plus `go vet` of all the code | likewise |
+| BSD, others | — | nothing | no: builds, without "Don't Fragment" (QUIC stays at 1200 bytes) |
+
+To contribute on Windows, use WSL: the scripts are `sh`
+([CONTRIBUTING](../../CONTRIBUTING.md)). In plain words: in production,
+Linux is the safe platform; Windows and macOS run the tested network code,
+and the rest of the code is Go that compiles there.
 
 ### Authentication, in detail
 
