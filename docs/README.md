@@ -16,20 +16,53 @@ place.
 
 ## I am building something
 
-- [Migrating from v0.2.2](migration.md) — what to change in code written
-  against the last release.
 - [Choosing an operator](guide/operators.md) — what each package retains
   between two batches, and what that costs.
 - [PostgreSQL](guide/postgres.md) — queries, binary parameters, `= ANY($1)`,
   COPY, transactions, generated hydrators.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
-- [Deployments](guide/deployments.md) — behind nginx or Envoy, TLS in
-  front, QUIC behind a NAT, 0-RTT: what is supported and what to set.
 - [Experimental](guide/experimental.md) — QUIC and the native request path
   as stream stages; `net/httpstream` and `pushdown`, now supported.
   What is promised, and what is not.
-- [Limits](guide/limits.md) — what is not done, module by module.
+
+## I want to…
+
+| I want to… | Where |
+|---|---|
+| install the library | [Getting started: Installing](guide/getting-started.md#installing) |
+| write a first pipeline | [Getting started: A first program](guide/getting-started.md#a-first-program) |
+| know what an operator keeps in memory | [Operators: One question](guide/operators.md#one-question-what-does-it-keep-in-memory) |
+| join two streams | [Operators: `join`](guide/operators.md#join-retains-one-side) |
+| spread work over several goroutines | [Operators: `parallel`](guide/operators.md#parallel-retains-goroutines) |
+| connect to PostgreSQL | [PostgreSQL: Connecting](guide/postgres.md#connecting) |
+| write many rows at once | [PostgreSQL: In bulk, COPY](guide/postgres.md#in-bulk-copy) |
+| follow the changes of a database | [PostgreSQL: Following changes](guide/postgres.md#following-changes-logical-replication) |
+| cancel a running query | [PostgreSQL: Cancelling](guide/postgres.md#cancelling-a-running-query) |
+| authenticate a request by its token | [Web: Authenticating](guide/web.md#authenticating-authorizing) |
+| group calls into batches | [Web: `gateway`](guide/web.md#grouping-calls-with-gateway) |
+| stop a server cleanly | [Web: Starting and stopping](guide/web.md#starting-and-stopping-cleanly) |
+| put TLS in front of the server | [Deployments: TLS in front](guide/deployments.md#tls-in-front) |
+| choose a QUIC congestion controller | [Experimental: congestion](guide/experimental.md#choosing-a-congestion-controller) |
+
+## I operate it in production
+
+- [Deployments](guide/deployments.md) — behind nginx or Envoy, TLS in
+  front, QUIC behind a NAT, 0-RTT: what is supported and what to set.
+- [Limits](guide/limits.md) — what is not done, module by module, and the
+  [conditions experimental packages leave under](guide/limits.md#experimental-the-exit-conditions).
+- [Measurements](benchmarks.md) — what each operator costs, and how it is
+  measured.
+- [Troubleshooting](guide/troubleshooting.md) — every exported error: when,
+  why, what to do.
+- [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+
+## What changed
+
+- [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
+  breaks.
+- [Migrating from v0.2.2](migration.md) — what to change in code written
+  against the last release.
 
 ## Something is wrong
 
