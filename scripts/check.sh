@@ -63,6 +63,9 @@ nested() {
     # of a command whose name comes from a variable, which is a shape a shell
     # wrapper may well refuse to run.
     comparison/loadgen) (cd "$1" && GOWORK=off go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...) ;;
+    # The audit tool reads build records and hosts: its tests build their own
+    # binaries in a temporary directory and want nothing else.
+    audit) (cd "$1" && GOWORK=off go test ./...) ;;
   esac
 }
 
@@ -70,7 +73,7 @@ step vet go vet ./...
 step format format
 step lint golangci-lint run ./...
 step test go test -race -shuffle=on ./...
-for m in interop benchmarks comparison/sluice comparison/loadgen; do
+for m in interop benchmarks comparison/sluice comparison/loadgen audit; do
   step "nested $m" nested "$m"
 done
 step hygiene scripts/check-hygiene.sh

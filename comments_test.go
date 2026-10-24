@@ -126,6 +126,13 @@ func TestDocComments(t *testing.T) {
 // RFC"; a queue is a queue.
 var processMarker = regexp.MustCompile(`(?i)\b(the brief|brief's|backlog|the audit|audit pass|audit's|the spec|field report|field-report)\b`)
 
+// processMarkerInAudit is the same list for the module under audit/, minus
+// the three phrases that name, there, the program that module is: a reader
+// of those comments can open the code they point at. The word's other
+// sense — a review whose notes live outside the tree — stays out, under the
+// name that spells it.
+var processMarkerInAudit = regexp.MustCompile(`(?i)\b(the brief|brief's|backlog|audit pass|the spec|field report|field-report)\b`)
+
 // historyMarker is a production comment telling what the code used to do.
 // The rule it carries is stated in the present; what it replaced is in the
 // history and in the regression test. "Is used to", "never used to" and
@@ -142,7 +149,11 @@ func TestCommentMarkers(t *testing.T) {
 		for _, group := range src.file.Comments {
 			for _, c := range group.List {
 				pos := src.fset.Position(c.Pos())
-				if m := processMarker.FindString(c.Text); m != "" {
+				marker := processMarker
+				if strings.HasPrefix(filepath.ToSlash(src.path), "audit/") {
+					marker = processMarkerInAudit
+				}
+				if m := marker.FindString(c.Text); m != "" {
 					t.Errorf("%s: the comment cites %q, which is not in the repository", pos, m)
 				}
 				if src.test || src.nested {

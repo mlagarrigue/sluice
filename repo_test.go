@@ -28,7 +28,7 @@ import (
 var scopes = []string{
 	"core", "join", "window", "parallel", "distinct", "postgres", "quic",
 	"httpstream", "web", "gateway", "diagnostics", "bench", "docs", "ci",
-	"devcontainer",
+	"devcontainer", "audit",
 }
 
 func TestScopeListIsRepeatedVerbatim(t *testing.T) {

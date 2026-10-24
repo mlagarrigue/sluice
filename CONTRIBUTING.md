@@ -337,8 +337,8 @@ Three places, depending on what the peer or the benchmark needs:
   `ci`, `chore`. A `!` after the scope marks an API break.
 - **Scopes**, a closed list checked by a test: `core`, `join`, `window`,
   `parallel`, `distinct`, `postgres`, `quic`, `httpstream`, `web`,
-  `gateway`, `diagnostics`, `bench`, `docs`, `ci`, `devcontainer`. The scope
-  is omitted when the change crosses all of them.
+  `gateway`, `diagnostics`, `bench`, `docs`, `ci`, `devcontainer`, `audit`.
+  The scope is omitted when the change crosses all of them.
 - **Subject**: one line, imperative, no capital after the colon unless the
   word is a name (`README`, `PostgreSQL`), no trailing period, 50 characters
   aimed for, 72 at most. A test checks the whole history. A body only when the why is

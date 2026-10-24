@@ -220,6 +220,29 @@ jobs:
           go vet ./... && go mod tidy -diff
           go test -skip '^TestCalibration$|^TestTrivialServesEveryScenario$' ./...
 
+  # The audit tool, a module of its own on the standard library alone: it
+  # reads what a build, a host and their dependencies were set to and
+  # changes nothing. Its tests build their own binaries in a temporary
+  # directory, so this job needs no server and no database — and `go mod
+  # tidy -diff` is what keeps a dependency from arriving there unnoticed,
+  # the graph of ADR 0002 being the root module's and this module's promise
+  # being narrower still.
+  audit-module:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_LATEST }}
+          cache-dependency-path: audit/go.mod
+      - name: Vet, tidy and test (audit)
+        working-directory: audit
+        run: go vet ./... && go mod tidy -diff && go test ./...
+
   # The connector against a real server. Everything else in database/postgres/ talks
   # to a scripted server, which cannot disagree with the implementation about
   # what the protocol means. The integration tests skip when SLUICE_PG is
@@ -605,9 +628,9 @@ jobs:
             exit 1
           fi
 
-  # The nested modules (interop/, benchmarks/, comparison/*) are linted with
-  # the root's configuration, which golangci-lint finds by walking up from
-  # each working directory; scripts/check.sh runs the same five.
+  # The nested modules (interop/, benchmarks/, comparison/*, audit/) are
+  # linted with the root's configuration, which golangci-lint finds by
+  # walking up from each working directory; scripts/check.sh runs the same six.
   lint:
     runs-on: ubuntu-latest
     env:
@@ -643,6 +666,11 @@ jobs:
         with:
           version: v2.12.2
           working-directory: comparison/loadgen
+      - name: Lint (audit)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.12.2
+          working-directory: audit
 
   bench:
     runs-on: ubuntu-latest
