@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -307,6 +308,46 @@ func TestMalformedRequestIsAnsweredAndClosed(t *testing.T) {
 				t.Errorf("status = %q, want %s", status, tt.want)
 			}
 		})
+	}
+}
+
+// RFC 9931 §8 (updating RFC 9112): a server rejecting a CONNECT MUST close
+// the connection without processing any further request on it. A client
+// that forwards a tunnel's bytes before the 2xx sends them as what follows
+// the CONNECT; read as HTTP/1.1, they would be a request the client never
+// made, carrying its connection's authentication. The request pipelined
+// behind the CONNECT here stands for those bytes: it never reaches the
+// handler, and the 501 is the connection's last answer.
+func TestARejectedCONNECTEndsTheConnection(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	addr, _ := serveTest(t, Config{}, func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		mu.Lock()
+		for i := range b.Items {
+			seen = append(seen, string(b.Items[i].Target))
+		}
+		mu.Unlock()
+		return echoTarget(ctx, b)
+	})
+	c := dial(t, addr)
+	fmt.Fprint(c, "GET /before HTTP/1.1\r\nHost: h\r\n\r\n"+
+		"CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"+
+		"POST /smuggled HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n")
+	br := bufio.NewReader(c)
+	if status, body := readResponse(t, br); !strings.HasPrefix(status, "HTTP/1.1 200") || body != "/before" {
+		t.Fatalf("first answer = %q %q, want 200 /before", status, body)
+	}
+	status, headers, _ := readResponseWithHeaders(t, br)
+	if !strings.HasPrefix(status, "HTTP/1.1 501") || !strings.EqualFold(headers["connection"], "close") {
+		t.Errorf("the CONNECT got %q with Connection %q, want 501 and close", status, headers["connection"])
+	}
+	if rest, err := io.ReadAll(br); err != nil || len(rest) > 0 {
+		t.Errorf("after the 501 the connection gave %q, %v; want EOF", rest, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []string{"/before"}) {
+		t.Errorf("the handler saw %q, want /before alone", seen)
 	}
 }
 
