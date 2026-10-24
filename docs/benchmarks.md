@@ -1412,9 +1412,9 @@ benchmark's comment tells why.
 <!-- consolidate: statement-cache -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGPrepareHit` | 786 ns | ±0% |  B |  |
-| `BenchmarkPGPrepareMissUnbounded` | 1669 ns | ±25% ** |  B |  |
-| `BenchmarkPGPrepareOff` | 783 ns | ±1% |  B |  |
+| `BenchmarkPGPrepareHit` | 786 ns | ±0% | — | — |
+| `BenchmarkPGPrepareMissUnbounded` | 1669 ns | ±25% ** | — | — |
+| `BenchmarkPGPrepareOff` | 783 ns | ±1% | — | — |
 | `BenchmarkStmtCacheChurn` | 136 ns | ±2% | 55 B | 3 |
 | `BenchmarkStmtCacheHit` | 16 ns | ±0% | 0 B | 0 |
 <!-- /consolidate -->

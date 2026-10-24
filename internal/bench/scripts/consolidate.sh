@@ -126,7 +126,10 @@ summarise() {
         lo = v[nm SUBSEP 1] + 0; hi = v[nm SUBSEP c] + 0
         spread = (med > 0) ? 100 * (hi - lo) / med : 0
         flag = (spread > 15) ? " **" : ""
-        printf "| `%s` | %.0f ns | ±%.0f%%%s | %s B | %s |\n", nm, med, spread, flag, b[nm], a[nm]
+        # A run without -benchmem has no B/op or allocs/op: a dash, not an
+        # empty cell that reads like a lost value.
+        printf "| `%s` | %.0f ns | ±%.0f%%%s | %s | %s |\n", nm, med, spread, flag, \
+          ((nm in b) ? b[nm] " B" : "—"), ((nm in a) ? a[nm] : "—")
       }
     }' | sort
 }
