@@ -423,16 +423,24 @@ func TestPMTUSearchNeedsDontFragment(t *testing.T) {
 // RFC 9000 §14.3: the size is per path. A rebind forgets the proof — the
 // datagram size is 1200 again at once — and probes the new path once it is
 // validated.
+//
+// The new path starts shut: a loopback path validates and carries its
+// first probe in microseconds, so reading the size right after Rebind
+// raced the probe's acknowledgement and turned the test red on a loaded
+// runner. An MTU that drops everything holds the path unproven for as long
+// as the read needs, whatever the machine is doing; opening it then lets
+// the retransmitted challenge through and the search resume.
 func TestPMTUProbeRestartsOnRebind(t *testing.T) {
 	client, _, _ := pmtuPair(t, 1500)
 	waitFor(t, "the client's probe acknowledged", func() bool { return client.datagramSize() == 1452 })
-	fresh := newMTUPC(t, 1500)
+	fresh := newMTUPC(t, 0)
 	if err := client.Rebind(fresh); err != nil {
 		t.Fatal(err)
 	}
 	if got := client.datagramSize(); got != 1200 {
 		t.Errorf("maxDatagram = %d right after Rebind, want 1200: the new path is unproven", got)
 	}
+	fresh.setMTU(1500)
 	waitFor(t, "the new path probed", func() bool { return client.datagramSize() == 1452 })
 	if largest, _ := fresh.stats(); largest != 1452 {
 		t.Errorf("largest datagram on the new socket = %d, want the 1452-byte probe", largest)
