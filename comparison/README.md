@@ -234,6 +234,7 @@ answers and the rest decoded.
 
 ```
 comparison/loadgen/selftest.sh                                   # 4 scenarios × h1 h2 h3
+ENCODINGS="identity gzip deflate" SCENARIOS=list comparison/loadgen/selftest.sh   # per coding
 go run -C comparison/loadgen . -trivial 127.0.0.1:8444 -keyspace 300000   # the server alone
 ```
 
@@ -248,11 +249,19 @@ generator's validation at 100 % on. It is the same binary under `-trivial`,
 run as a process of its own so that its goroutines never share the
 generator's scheduler, serving HTTP/1.1 and HTTP/2 on TCP and HTTP/3 on UDP
 at the same port, under a certificate generated at startup (`-ca` empty
-trusts it). `selftest.sh` builds it, starts it, runs one ramp per scenario
-and protocol on a coarse `×1.25` grid from 4 000 req/s (`RATES`, `DURATION`,
-`SCENARIOS`, `PROTOS` override it) and prints, per cell, the last stage
-held, its p99, the stage that broke and its cause, with a CPU profile of
-the generator per cell (`-cpuprofile`) for when a ceiling needs explaining.
+trusts it). Asked for gzip or deflate, it compresses every 200 on the fly
+at level 1, the level the study compares at (§2.3 bis), with encoders
+reused from a pool: ~90 µs for a list page, a third of what the generator
+spends decoding and checking it. A page cannot be compressed once at
+startup, since every list starts at another key. `selftest.sh` builds it,
+starts it, runs one ramp per scenario, protocol and coding on a coarse
+`×1.25` grid from 4 000 req/s (`RATES`, `DURATION`, `SCENARIOS`, `PROTOS`,
+`ENCODINGS` override it; the coding is `identity` by default) and prints,
+per cell, the last stage held, its p99, the stage that broke and its
+cause, with a CPU profile of the generator per cell (`-cpuprofile`) for
+when a ceiling needs explaining, and the trivial server's own in
+`trivial.prof`, written when the script stops it: the generator, not the
+server, must be what limits.
 The study asks for a ceiling of at least twice the fastest contender's
 capacity in that scenario; otherwise the tester gets more cores before
 anything else is measured.

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # The "not the bottleneck" control of §4: the generator against its own
-# trivial server, one ramp per scenario and protocol, validation at 100 %
-# on. The last stage held is the generator's ceiling for that scenario on
+# trivial server, one ramp per scenario, protocol and content coding,
+# validation at 100 % on (§2.3 bis: the generator decodes every answer, so
+# its ceiling is measured per coding). The last stage held is the generator's ceiling for that scenario on
 # this tester; a contender's capacity is interpretable only when it sits
 # under half of it. Nothing printed here is a result of the study.
 #
 #   comparison/loadgen/selftest.sh                 # 4 scenarios × h1 h2 h3
 #   SCENARIOS="list" PROTOS="h1" ./selftest.sh     # one cell
+#   ENCODINGS="identity gzip deflate" SCENARIOS=list ./selftest.sh
 #   RATES=4000,5000 DURATION=2s ./selftest.sh      # a shorter grid
 #
 # RATES is a coarse ×1.25 grid by default, since the control wants an order
@@ -18,6 +20,7 @@ cd "$(dirname "$0")"
 ADDR=${ADDR:-127.0.0.1:8444}
 SCENARIOS=${SCENARIOS:-static unit list mixed}
 PROTOS=${PROTOS:-h1 h2 h3}
+ENCODINGS=${ENCODINGS:-identity}
 RATES=${RATES:-4000,5000,6300,8000,10000,12500,16000,20000,25000,32000,40000,50000,64000}
 DURATION=${DURATION:-3s}
 WARMUP=${WARMUP:-1s}
@@ -29,28 +32,33 @@ OUT=${OUT:-$(mktemp -d)}
 bin=$OUT/loadgen
 go build -o "$bin" .
 
-"$bin" -trivial "$ADDR" -keyspace "$KEYSPACE" > "$OUT/trivial.log" 2>&1 &
+# The trivial server writes its own CPU profile when it is stopped: it must
+# show the generator, not the server, as the limit.
+"$bin" -trivial "$ADDR" -keyspace "$KEYSPACE" -cpuprofile "$OUT/trivial.prof" > "$OUT/trivial.log" 2>&1 &
 trivial=$!
-trap 'kill $trivial 2>/dev/null || true' EXIT
+trap 'kill $trivial 2>/dev/null || true; wait $trivial 2>/dev/null || true' EXIT
 for _ in $(seq 50); do
   grep -q '"trivial"' "$OUT/trivial.log" 2>/dev/null && break
   sleep 0.1
 done
 grep -q '"trivial"' "$OUT/trivial.log" || { cat "$OUT/trivial.log"; exit 1; }
 
-printf '%-8s %-5s %10s %10s %10s %8s  %s\n' scenario proto last_held p99_ms broke_at cause out
+printf '%-8s %-5s %-8s %10s %10s %10s %8s  %s\n' scenario proto encoding last_held p99_ms broke_at cause out
 for sc in $SCENARIOS; do
   for p in $PROTOS; do
-    log=$OUT/$sc-$p.jsonl
-    "$bin" -url "https://$ADDR" -proto "$p" -scenario "$sc" -rates "$RATES" \
-      -duration "$DURATION" -warmup "$WARMUP" -drain "$DRAIN" -keyspace "$KEYSPACE" \
-      -max-conns "$MAX_CONNS" -cpuprofile "$OUT/$sc-$p.prof" > "$log" 2> "$OUT/$sc-$p.err" || true
-    held=$(jq -r 'select(.held) | .rate' "$log" | tail -1)
-    p99=$(jq -r 'select(.held) | .ttlb_ms.p99' "$log" | tail -1)
-    broke=$(jq -r 'select(.held | not) | .rate' "$log" | tail -1)
-    cause=$(jq -r 'select(.held | not) | .cause' "$log" | tail -1)
-    printf '%-8s %-5s %10s %10s %10s %8s  %s\n' "$sc" "$p" "${held:--}" "${p99:--}" "${broke:-none}" "${cause:--}" "$log"
-    [ -s "$OUT/$sc-$p.err" ] && sed 's/^/  stderr: /' "$OUT/$sc-$p.err"
+    for enc in $ENCODINGS; do
+      cell=$sc-$p-$enc
+      log=$OUT/$cell.jsonl
+      "$bin" -url "https://$ADDR" -proto "$p" -scenario "$sc" -encoding "$enc" -rates "$RATES" \
+        -duration "$DURATION" -warmup "$WARMUP" -drain "$DRAIN" -keyspace "$KEYSPACE" \
+        -max-conns "$MAX_CONNS" -cpuprofile "$OUT/$cell.prof" > "$log" 2> "$OUT/$cell.err" || true
+      held=$(jq -r 'select(.held) | .rate' "$log" | tail -1)
+      p99=$(jq -r 'select(.held) | .ttlb_ms.p99' "$log" | tail -1)
+      broke=$(jq -r 'select(.held | not) | .rate' "$log" | tail -1)
+      cause=$(jq -r 'select(.held | not) | .cause' "$log" | tail -1)
+      printf '%-8s %-5s %-8s %10s %10s %10s %8s  %s\n' "$sc" "$p" "$enc" "${held:--}" "${p99:--}" "${broke:-none}" "${cause:--}" "$log"
+      [ -s "$OUT/$cell.err" ] && sed 's/^/  stderr: /' "$OUT/$cell.err"
+    done
   done
 done
-echo "profiles and stage lines in $OUT (go tool pprof -top $bin $OUT/<scenario>-<proto>.prof)"
+echo "profiles and stage lines in $OUT (go tool pprof -top $bin $OUT/<scenario>-<proto>-<encoding>.prof, $OUT/trivial.prof once this script exits)"

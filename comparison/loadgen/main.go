@@ -23,6 +23,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,15 +38,8 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if c.trivial != "" {
-		if err := runTrivial(ctx, c.trivial, c.keyspace, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		return 0
-	}
 	if c.cpuprofile != "" {
 		f, err := os.Create(c.cpuprofile)
 		if err != nil {
@@ -57,6 +51,13 @@ func run() int {
 			return 2
 		}
 		defer func() { pprof.StopCPUProfile(); _ = f.Close() }()
+	}
+	if c.trivial != "" {
+		if err := runTrivial(ctx, c.trivial, c.keyspace, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
 	}
 	ok, err := c.run(ctx, os.Stdout)
 	if err != nil {
@@ -136,7 +137,7 @@ func parse(args []string) (campaign, error) {
 	fs.DurationVar(&c.drain, "drain", 5*time.Second, "pause between two stages, once every request of the first has been answered")
 	fs.IntVar(&c.maxConns, "max-conns", 0, "the tester's ceiling on the budget C of a ramp; 0 for none")
 	fs.StringVar(&c.trivial, "trivial", "", "serve the trivial server of §4 on this address instead (h1, h2 and h3 at once, -keyspace rows), to prove the generator is not the bottleneck")
-	fs.StringVar(&c.cpuprofile, "cpuprofile", "", "write the generator's CPU profile to this file")
+	fs.StringVar(&c.cpuprofile, "cpuprofile", "", "write the generator's CPU profile to this file, or the trivial server's under -trivial (written when it is stopped)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}

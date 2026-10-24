@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -30,34 +31,51 @@ func startTrivial(tb testing.TB, keyspace int) *trivialServer {
 }
 
 // TestTrivialServesEveryScenario is the trivial server under the
-// generator's own checks: the five scenarios, the three protocols, every
-// answer passing the cheap control and the sampled ones the full
-// validation, so that a ramp against it fails on the generator's capacity
-// and nothing else.
+// generator's own checks: the five scenarios, the three protocols, the
+// three codings, every answer passing the cheap control and the sampled
+// ones the full validation, so that a ramp against it fails on the
+// generator's capacity and nothing else. Under gzip and deflate, every
+// answer comes compressed.
 func TestTrivialServesEveryScenario(t *testing.T) {
 	s := startTrivial(t, 10000)
 	protos(t, func(t *testing.T, proto string) { //nolint:thelper // a sub-test body
-		for _, name := range []string{"static", "unit", "list", "write", "mixed"} {
-			t.Run(name, func(t *testing.T) {
-				c := testCampaign(t, proto, s.URL, "-scenario", name, "-rate", "400", "-duration", "1s", "-conns", "32")
-				draw := c.scenario.draw(c.seed, c.keyspace)
-				full := 0
-				for i := range c.requests() {
-					if draw(i).full {
-						full++
-					}
-				}
-				if full == 0 {
-					t.Fatal("no request of the stage is fully validated: pick another seed or a longer stage")
-				}
-				rep := runStage(t, c)
-				t.Logf("%s/%s: sent %d ok %d (%d fully validated) ttlb p50 %.3f p99 %.3f ms", proto, name, rep.Sent, rep.OK, full, rep.TTLB.P50, rep.TTLB.P99)
-				if rep.Failed() || rep.OK != rep.Sent || !rep.Held {
-					t.Fatalf("errors %d bad_key %d tester %d held %v cause %q", rep.Errors, rep.BadKey, rep.Tester, rep.Held, rep.Cause)
-				}
-			})
+		for _, encoding := range []string{"identity", codingGzip, codingDeflate} {
+			for _, name := range []string{"static", "unit", "list", "write", "mixed"} {
+				t.Run(encoding+"/"+name, func(t *testing.T) {
+					testTrivialServes(t, s, proto, encoding, name)
+				})
+			}
 		}
 	})
+}
+
+func testTrivialServes(t *testing.T, s *trivialServer, proto, encoding, name string) { //nolint:thelper // a sub-test body
+	// Under -race, compress/gzip and compress/zlib run far slower on both
+	// ends, and 400 lists a second saturate them: the same 400 requests go
+	// out at a quarter of the rate.
+	rate, duration := "400", "1s"
+	if raceSlack > 0 && encoding != "identity" {
+		rate, duration = "100", "4s"
+	}
+	c := testCampaign(t, proto, s.URL, "-scenario", name, "-rate", rate, "-duration", duration, "-conns", "32", "-encoding", encoding)
+	draw := c.scenario.draw(c.seed, c.keyspace)
+	full := 0
+	for i := range c.requests() {
+		if draw(i).full {
+			full++
+		}
+	}
+	if full == 0 {
+		t.Fatal("no request of the stage is fully validated: pick another seed or a longer stage")
+	}
+	rep := runStage(t, c)
+	t.Logf("%s/%s: sent %d ok %d (%d fully validated) ttlb p50 %.3f p99 %.3f ms", proto, name, rep.Sent, rep.OK, full, rep.TTLB.P50, rep.TTLB.P99)
+	if rep.Failed() || rep.OK != rep.Sent || !rep.Held {
+		t.Fatalf("errors %d bad_key %d tester %d held %v cause %q", rep.Errors, rep.BadKey, rep.Tester, rep.Held, rep.Cause)
+	}
+	if want := 100.0; encoding == "identity" && rep.Compressed != 0 || encoding != "identity" && rep.Compressed != want {
+		t.Fatalf("compressed %.1f %% under %s", rep.Compressed, encoding)
+	}
 }
 
 // TestTrivialEdges is the handler alone: the table's bounds and the
@@ -129,5 +147,42 @@ func TestTrivialEdges(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/orders/1", nil))
 	if rec.Code != 404 {
 		t.Errorf("DELETE: status %d, want 404", rec.Code)
+	}
+
+	// Compressed in the coding asked for, an error in clear.
+	for _, tc := range []struct{ accept, coding string }{
+		{"", ""},
+		{"gzip", "gzip"},
+		{"deflate", "deflate"},
+		{"deflate, gzip", "gzip"},
+		{"gzip;q=0, deflate", "deflate"},
+		{"gzip;q=0", ""},
+		{"br", ""},
+	} {
+		for _, path := range []string{"/orders?from=1999&limit=1000", "/nowhere"} {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Accept-Encoding", tc.accept)
+			h.ServeHTTP(rec, req)
+			want := tc.coding
+			if rec.Code != 200 {
+				want = ""
+			}
+			got := rec.Header().Get("Content-Encoding")
+			if got != want || rec.Header().Get("Content-Length") != strconv.Itoa(rec.Body.Len()) {
+				t.Errorf("GET %s, Accept-Encoding %q: Content-Encoding %q, want %q", path, tc.accept, got, want)
+				continue
+			}
+			if rec.Code != 200 {
+				continue
+			}
+			d, err := decode(cmp.Or(want, tc.accept), got, rec.Body.Bytes())
+			if err == nil {
+				err = check(listRequest(0, 1999, true), d.doc)
+			}
+			if err != nil {
+				t.Errorf("GET %s, Accept-Encoding %q: %v", path, tc.accept, err)
+			}
+		}
 	}
 }

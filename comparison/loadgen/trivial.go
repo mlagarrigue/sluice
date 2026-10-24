@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -42,6 +44,15 @@ import (
 // write: the rows of the table, 1..keyspace+1000, are serialised once, and a
 // list is a slice of that array between two offsets. Nothing is parsed
 // beyond the key the path or the body carries.
+//
+// When the request asks for gzip or deflate, a 200 is compressed on the fly
+// at level 1, the level the study compares at (§2.3 bis), by an encoder
+// reused from a pool: 89 µs for a list page of 53 KB on a developer's
+// machine (×6 smaller), against ~250 µs the generator spends decoding and
+// checking it, in a process of its own. A page cannot be compressed once
+// at startup: every list starts at another key. Fragments compressed once
+// and spliced together would cost a quarter of that, and checksums to
+// recompute; the profile decides if the trivial ever needs them.
 type trivial struct {
 	rows   []byte // every row, `{"id":i,"total":7i,"label":"order-i"},`, back to back
 	off    []int  // off[i] is where row i starts, 1 ≤ i ≤ n; off[n+1] = len(rows)
@@ -137,10 +148,78 @@ func (t *trivial) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h["Content-Type"] = jsonType
+	*bp = b // the buffer as it grew, kept for the next answer
+	if coding := acceptedCoding(r.Header.Get("Accept-Encoding")); coding != "" && status == http.StatusOK {
+		zp := bufPool.Get().(*[]byte) //nolint:errcheck // the pool holds nothing else
+		defer bufPool.Put(zp)
+		z := compress(coding, (*zp)[:0], b)
+		h["Content-Encoding"] = []string{coding}
+		*zp, b = z, z
+	}
 	h["Content-Length"] = []string{strconv.Itoa(len(b))}
 	w.WriteHeader(status)
 	_, _ = w.Write(b) //nolint:gosec // G705: the body is JSON the server built, never a request's bytes
-	*bp = b
+}
+
+// acceptedCoding is the coding the trivial answers in: gzip or deflate
+// when the request's Accept-Encoding names it with a weight above 0, gzip
+// first (the generator sends one token; this is enough for it and for
+// curl).
+func acceptedCoding(accept string) string {
+	var deflate bool
+	for part := range strings.SplitSeq(accept, ",") {
+		token, params, _ := strings.Cut(part, ";")
+		if q, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
+			if w, err := strconv.ParseFloat(q, 64); err != nil || w <= 0 {
+				continue
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(token)) {
+		case codingGzip:
+			return codingGzip
+		case codingDeflate:
+			deflate = true
+		}
+	}
+	if deflate {
+		return codingDeflate
+	}
+	return ""
+}
+
+// The encoders, at level 1, reused: a gzip.Writer and a zlib.Writer
+// rebuild their tables on Reset only.
+var gzipWriters, zlibWriters sync.Pool
+
+// compress appends doc encoded in coding to dst. HTTP's deflate is the
+// zlib format (RFC 9110 §8.4.1.2).
+func compress(coding string, dst, doc []byte) []byte {
+	buf := bytes.NewBuffer(dst)
+	var zw interface {
+		io.WriteCloser
+		Reset(io.Writer)
+	}
+	switch coding {
+	case codingGzip:
+		if w, ok := gzipWriters.Get().(*gzip.Writer); ok {
+			w.Reset(buf)
+			zw = w
+		} else {
+			zw, _ = gzip.NewWriterLevel(buf, gzip.BestSpeed)
+		}
+		defer gzipWriters.Put(zw)
+	default:
+		if w, ok := zlibWriters.Get().(*zlib.Writer); ok {
+			w.Reset(buf)
+			zw = w
+		} else {
+			zw, _ = zlib.NewWriterLevel(buf, zlib.BestSpeed)
+		}
+		defer zlibWriters.Put(zw)
+	}
+	_, _ = zw.Write(doc) // a bytes.Buffer never fails
+	_ = zw.Close()
+	return buf.Bytes()
 }
 
 var jsonType = []string{"application/json"}
