@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -380,6 +381,27 @@ func TestVerifyChecksIssuerAndAudience(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A configuration printed in a log — by %v, %+v, %#v or %s — must not
+// carry its keys: struct printing shows every field, and a key in a log is
+// a key anyone reading the log can sign with.
+func TestHMACSecretsDoNotPrint(t *testing.T) {
+	previous := []byte("a-retired-secret-of-thirty-two-bytes!!!")
+	cfg := web.HMACConfig{Secret: testSecret, Previous: [][]byte{previous}, Audience: "orders"}
+	v := verifier(t, cfg)
+	for _, format := range []string{"%v", "%+v", "%#v", "%s"} {
+		for name, x := range map[string]any{"HMACConfig": cfg, "*HMACVerifier": v} {
+			out := fmt.Sprintf(format, x)
+			if strings.Contains(out, string(testSecret)) || strings.Contains(out, string(previous)) ||
+				strings.Contains(out, strings.Trim(fmt.Sprintf("%d", testSecret[:4]), "[]")) {
+				t.Errorf("%s printed with %s shows a key: %s", name, format, out)
+			}
+			if !strings.Contains(out, `"orders"`) {
+				t.Errorf("%s printed with %s lost the fields that are not secret: %s", name, format, out)
+			}
+		}
+	}
 }
 
 // signRaw signs header and payload exactly as given, for the cases json.Marshal

@@ -196,6 +196,25 @@ type HMACVerifier struct {
 	macs []*sync.Pool
 }
 
+// String prints the configuration with its keys hidden: %v and %+v on a
+// struct print every field, and a secret that reaches a log is a key anyone
+// reading the log can sign with. The lengths stay, which is what a
+// misconfiguration report needs.
+func (c HMACConfig) String() string {
+	return fmt.Sprintf("web.HMACConfig{Secret: <redacted, %d bytes>, Previous: <redacted, %d keys>, Audience: %q, Issuer: %q, TenantClaim: %q, Leeway: %v, MaxTokenBytes: %d}",
+		len(c.Secret), len(c.Previous), c.Audience, c.Issuer, c.TenantClaim, c.Leeway, c.MaxTokenBytes)
+}
+
+// GoString hides the keys from %#v too.
+func (c HMACConfig) GoString() string { return c.String() }
+
+// String prints the verifier's configuration, keys hidden (see
+// [HMACConfig.String]).
+func (v *HMACVerifier) String() string { return "web.HMACVerifier{" + v.cfg.String() + "}" }
+
+// GoString hides the keys from %#v too.
+func (v *HMACVerifier) GoString() string { return v.String() }
+
 // NewHMACVerifier builds a verifier, refusing a configuration that cannot be
 // safe rather than accepting it and being unsafe quietly.
 func NewHMACVerifier(cfg HMACConfig) (*HMACVerifier, error) {
