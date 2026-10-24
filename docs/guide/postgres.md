@@ -344,7 +344,7 @@ defer tx.Rollback() // a no-op if Commit succeeded: the safety net
 
 if err := tx.SetLocal(ctx, "app.tenant_id", tenant); err != nil { return err } // visible to row-level security
 tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-	[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, customer)}})
+    []postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, customer)}})
 if err != nil { return err }
 n, _ := tag.RowsAffected() // how many rows changed, by the server's count
 return tx.Commit(ctx)

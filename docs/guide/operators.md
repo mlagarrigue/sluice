@@ -122,9 +122,10 @@ inner := sluice.Filter(pairs, func(e join.EitherOrBoth[Customer, Order]) bool {
 ```
 
 The output is an `EitherOrBoth`: a left element, a right one, or both.
-Filtering on `Both()` gives an inner join; keeping `HasLeft` gives a left
-join; keeping everything, a full outer join. Six SQL semantics, one
-operator and one filter.
+Filtering on `Both()` gives an inner join; keeping `HasLeft`, a left join;
+`HasRight`, a right join; everything, a full outer join; `HasLeft` without
+`HasRight`, the left rows with no match (an anti-join), and the reverse for
+the right. Six SQL semantics, one operator and one filter.
 
 > **In plain terms.** If a key repeats on both sides (ten orders from the
 > same customer, and ten addresses for that customer), the operator must

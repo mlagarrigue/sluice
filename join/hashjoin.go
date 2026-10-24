@@ -36,16 +36,16 @@ type BuildLimit struct {
 	// [sluice.DropOldest] is rejected rather than accepted. A hash table has no oldest
 	// entry — a map has no order, and imposing one would mean a second index
 	// whose only purpose is eviction. Accepting the policy and quietly
-	// behaving as sluice.DropNewest would offer a choice that does nothing, which is
+	// behaving as [sluice.DropNewest] would offer a choice that does nothing, which is
 	// worse than refusing it.
 	OnOverflow sluice.Overflow
 
 	// Report, when set, is called once when the table reaches MaxEntries,
 	// with the limit and the number of entries it was asked to hold.
 	//
-	// sluice.Overflow must be loud: a dropping policy without a report is a table
+	// An overflow must be loud: a dropping policy without a report is a table
 	// silently truncated, and a short result that looks like a legitimate
-	// one. sluice.Fail is loud on its own; under sluice.DropNewest this callback is the only
+	// one. [sluice.Fail] is loud on its own; under [sluice.DropNewest] this callback is the only
 	// way to learn the table was truncated, so a caller choosing to drop
 	// should set it — typically to raise a Critical diagnostic.
 	Report func(limit, held int)

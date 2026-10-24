@@ -45,9 +45,9 @@ against the design, not work around it.
    of the module beyond `internal/`, and a test checks it.
 6. **A batch is valid for the call that receives it.** An operator that
    retains a batch beyond that copies it first: upstream operators reuse
-   their output buffers. Test the property with `Convert |> X`, never with
-   `Of |> X`: `Of` hands out slices of the caller's own array, which are
-   stable, and that is precisely the source that hides the defect.
+   their output buffers. Test the property with `X(Convert(...))`, never
+   with `X(Of(...))`: `Of` hands out slices of the caller's own array, which
+   are stable, and that is precisely the source that hides the defect.
 
 ## Where things go
 
@@ -76,8 +76,10 @@ golangci-lint run ./...
 go generate ./...        # generated files are committed; drift fails a test
 ```
 
-`scripts/check.sh` runs the first four in that order and stops at the first
-failure, then `scripts/check-hygiene.sh`, which refuses personal tool
+`scripts/check.sh` runs the first four — vet, format, lint, then the tests —
+and stops at the first failure, then vets and lints the nested modules
+(`interop`, `benchmarks`, `comparison/*`), then `scripts/check-hygiene.sh`,
+which refuses personal tool
 configuration and attributions in tracked files and commits. CI runs the
 same scripts, plus `scripts/check-api.sh`, which compares the exported API
 of each commit with its parent's and refuses a break whose commit subject
@@ -385,8 +387,9 @@ In review, comments follow
 ## What is genuinely useful right now
 
 - **Arguments against a decision**, with the reasoning or a benchmark.
-- **Measurements of what is not yet measured**: the open list is at the end
-  of the [measurements](docs/benchmarks.md).
+- **Measurements of what is not yet measured**: the open list is
+  [Not yet measured](docs/benchmarks.md#not-yet-measured), in the
+  measurements.
 - **Running the connector against a real PostgreSQL**, with types and
   versions the suite does not cover: everything else is tested against a
   scripted server, which cannot disagree with the implementation about what

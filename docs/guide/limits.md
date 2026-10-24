@@ -83,17 +83,14 @@ Three reasons come up, and the difference matters:
   `Config.MinSCRAMIterations`, `MaxSCRAMIterations` and `MinSCRAMSaltLen`.
   Where this departs from RFC 5802 and RFC 4013, and why:
   [Authentication, in detail](#authentication-in-detail).
-- **Types**: present, the common ones (`bool`, `bytea`, `date`,
-  `float4/8`, `inet`/`cidr`, `int2/4/8`, `interval`, `json`, `jsonb`,
-  `numeric`, `text`, `timestamp`, `timestamptz`, `uuid`, `time`, `timetz`,
-  `macaddr`, `bit`). Thirteen of them also have a one-dimensional array,
-  the same array with NULL elements, and a column scanner; the table in the
-  [PostgreSQL guide](postgres.md#the-codecs-in-one-table) says which has what. **Missing** — not yet: `money` (its scale depends on
-  a server setting, a trap more than a type), `tsvector`, ranges, composite
-  types, multi-dimensional arrays, and arrays and scanners of the other
-  types (`json`, `jsonb`, `inet`, `cidr`, `interval`, `time`, `timetz`,
-  `macaddr`, `bit`) — on demand, as no use has asked for them yet. Each
-  addition needs vectors taken from a real server.
+- **Types**: the common ones, each with its Go type, and for thirteen of
+  them a one-dimensional array (NULL elements included) and a column
+  scanner — the [PostgreSQL guide's table](postgres.md#the-codecs-in-one-table)
+  says which has what. **Missing** — not yet: `money` (its scale depends
+  on a server setting, a trap more than a type), `tsvector`, ranges,
+  composite types, multi-dimensional arrays, and arrays and scanners of
+  the types the table leaves without — on demand, as no use has asked for
+  them yet. Each addition needs vectors taken from a real server.
 - **Certificates are yours.** The connector opens the connection with
   the recipe you give it: `DialTCP`, `DialTLS` (which performs the
   SSLRequest peculiar to PostgreSQL), `DialTLSDirect` (direct TLS, since

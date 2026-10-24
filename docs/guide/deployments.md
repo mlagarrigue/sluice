@@ -114,7 +114,7 @@ Where it is decided: `net/httpstream/h2write.go`, `ackSettings`.
 
 Supported, with a window to set. HTTP/2 lets a sender have only a *window*
 of unacknowledged bytes in flight; the default stream window of 65535 bytes
-is one round trip's worth, about 0.5 MB/s at 100 ms of RTT (round-trip time,
+is one round trip's worth, at most 0.65 MB/s at 100 ms of RTT (round-trip time,
 the delay for a packet to go and its answer to come back).
 `Config.InitialWindowSize` raises it, for `Serve`, `Server` and
 `ServeH2Conn` alike, and 1 MiB measured eleven times the default on a 4 MiB
