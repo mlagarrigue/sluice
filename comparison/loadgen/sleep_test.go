@@ -68,7 +68,7 @@ func testCalibration(t *testing.T, proto string) { //nolint:thelper // a sub-tes
 		t.Logf("  ttfb p50 %.3f p99 %.3f p999 %.3f max %.3f ms", rep.TTFB.P50, rep.TTFB.P99, rep.TTFB.P999, rep.TTFB.Max)
 		t.Logf("  ttlb p50 %.3f p99 %.3f p999 %.3f max %.3f ms", rep.TTLB.P50, rep.TTLB.P99, rep.TTLB.P999, rep.TTLB.Max)
 		if rep.Failed() || rep.OK != rep.Sent {
-			t.Fatalf("errors %d bad_key %d connect %d", rep.Errors, rep.BadKey, rep.Connect)
+			t.Fatalf("errors %d bad_key %d tester %d", rep.Errors, rep.BadKey, rep.Tester)
 		}
 		if want := st.requests(); rep.Sent != want {
 			t.Fatalf("sent %d, want %d", rep.Sent, want)
@@ -111,15 +111,17 @@ func testCalibration(t *testing.T, proto string) { //nolint:thelper // a sub-tes
 // 5 ms carry 800 req/s, and the stage asks for 2 000. Measured from the due
 // instant, the delays must climb with the queue (coordinated omission
 // corrected); measured from the send instant, as a closed loop would, they
-// would read 5 ms throughout and hide the stall.
+// would read 5 ms throughout and hide the stall. X is 500 ms, so that the
+// deadline 10 X outlasts the 3 s the last request waits: nothing times out
+// and every delay is read.
 func TestOverloadedStageQueues(t *testing.T) {
 	srv := sleepServer(t, protoH1, 5*time.Millisecond, nil)
-	c := testCampaign(t, protoH1, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4")
+	c := testCampaign(t, protoH1, srv.URL, "-scenario", "unit", "-rate", "2000", "-duration", "2s", "-conns", "4", "-slo", "500ms")
 	rep := runStage(t, c)
 	t.Logf("sent %d ok %d queue_max %d queued %d achieved %.0f req/s", rep.Sent, rep.OK, rep.QueueMax, rep.Queued, rep.Achieved)
 	t.Logf("wait p50 %.1f ttlb p50 %.1f p99 %.1f max %.1f ms", rep.Wait.P50, rep.TTLB.P50, rep.TTLB.P99, rep.TTLB.Max)
 	if rep.Failed() {
-		t.Fatalf("errors %d bad_key %d connect %d", rep.Errors, rep.BadKey, rep.Connect)
+		t.Fatalf("errors %d bad_key %d tester %d", rep.Errors, rep.BadKey, rep.Tester)
 	}
 	// 2 s at 2 000 req/s with 800 served: ~2 400 due and waiting at the end.
 	if rep.QueueMax < 1000 || rep.Queued < rep.Sent/2 {
@@ -132,7 +134,7 @@ func TestOverloadedStageQueues(t *testing.T) {
 	if rep.Achieved > 900 {
 		t.Fatalf("achieved %.0f req/s with 4 connections at 5 ms", rep.Achieved)
 	}
-	// p99 is far over X = 25 ms: the stage is broken by the SLO, and the
+	// p99 is far over X: the stage is broken by the SLO, and the
 	// queue, however deep, is not the cause published (over X the wait in
 	// the queue is latency, §3.1).
 	if rep.Held || rep.Cause != causeSLO {
@@ -145,11 +147,11 @@ func TestOverloadedStageQueues(t *testing.T) {
 func TestWrongKeyFailsTheStage(t *testing.T) {
 	c := testCampaign(t, protoH1, "https://unused", "-scenario", "unit", "-rate", "100", "-duration", "1s", "-conns", "4")
 	draw := c.scenario.draw(c.seed, c.keyspace)
-	wrong := map[int64]bool{draw(7).key: true, draw(42).key: true}
+	wrong := map[int64]fault{draw(7).key: wrongKey, draw(42).key: wrongKey}
 	srv := sleepServer(t, protoH1, 0, wrong)
 	c.url = srv.URL
 	rep := runStage(t, c)
-	if !rep.Failed() || rep.BadKey != 2 || rep.Errors != 2 || rep.OK != rep.Sent-2 {
+	if !rep.Failed() || rep.BadKey != 2 || rep.Errors != 0 || rep.OK != rep.Sent-2 {
 		t.Fatalf("bad_key %d errors %d ok %d sent %d, want 2 bad keys failing the stage", rep.BadKey, rep.Errors, rep.OK, rep.Sent)
 	}
 	if rep.Held || rep.Cause != causeKey {
@@ -231,7 +233,7 @@ func TestStreamsPerConn(t *testing.T) {
 		rep := runStage(t, c)
 		t.Logf("at 1600 req/s: conns %d max in flight %d queued %d", srv.conns.Load(), srv.maxInFlight.Load(), rep.Queued)
 		if rep.Failed() || !rep.Held {
-			t.Fatalf("errors %d connect %d held %v cause %q", rep.Errors, rep.Connect, rep.Held, rep.Cause)
+			t.Fatalf("errors %d tester %d held %v cause %q", rep.Errors, rep.Tester, rep.Held, rep.Cause)
 		}
 		if n, m := srv.conns.Load(), srv.maxInFlight.Load(); n != 4 || m > streamsPerConn || m < 2 {
 			t.Fatalf("%d connections, %d in flight at most on one, want 4 and 2..8", n, m)
@@ -239,11 +241,13 @@ func TestStreamsPerConn(t *testing.T) {
 
 		srv = sleepServer(t, proto, 5*time.Millisecond, nil)
 		// 2 connections carry 3 200 req/s and the stage asks for 6 000.
-		c = testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "6000", "-duration", "500ms", "-conns", "2")
+		// Under a deadline of 2 s, no request is given up on: one would
+		// leave its handler running on the server past the 8 streams.
+		c = testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "6000", "-duration", "500ms", "-conns", "2", "-slo", "200ms")
 		rep = runStage(t, c)
 		t.Logf("at 6000 req/s: conns %d max in flight %d queue_max %d achieved %.0f", srv.conns.Load(), srv.maxInFlight.Load(), rep.QueueMax, rep.Achieved)
 		if rep.Failed() {
-			t.Fatalf("errors %d connect %d", rep.Errors, rep.Connect)
+			t.Fatalf("errors %d tester %d", rep.Errors, rep.Tester)
 		}
 		if n, m := srv.conns.Load(), srv.maxInFlight.Load(); n != 2 || m != streamsPerConn {
 			t.Fatalf("%d connections, %d in flight at most on one, want 2 and exactly %d", n, m, streamsPerConn)
@@ -298,9 +302,9 @@ func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a su
 	srv := sleepServer(t, proto, 0, nil)
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
 	rep := runStage(t, c)
-	t.Logf("sent %d handshakes %d connect %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Connect, rep.TTLB.P50, rep.TTLB.P99)
+	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99)
 	if rep.Failed() || !rep.Held {
-		t.Fatalf("errors %d connect %d held %v cause %q", rep.Errors, rep.Connect, rep.Held, rep.Cause)
+		t.Fatalf("errors %d tester %d held %v cause %q", rep.Errors, rep.Tester, rep.Held, rep.Cause)
 	}
 	if rep.Handshakes < rep.Sent*7/100 || rep.Handshakes > rep.Sent*13/100 {
 		t.Fatalf("%d handshakes in %d requests, want about 10 %%", rep.Handshakes, rep.Sent)

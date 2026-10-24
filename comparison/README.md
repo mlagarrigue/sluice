@@ -115,24 +115,44 @@ What one stage does, over TLS under `-proto h1` (HTTP/1.1, the default),
   list's ids strictly increasing above its bound; and on 1 % of them,
   drawn by `(seed, index)`, the whole document against what the fixtures
   predict (`total = 7·id`, `label = "order-<id>"`, a write answers its key);
+- gives every request `deadline_ms` from its due instant to be answered to
+  the end, `10 × X + 4 × RTT` (§1.2: four round trips cover a fresh
+  connection's TCP and TLS 1.3 handshakes, the request and a margin);
 - publishes TTFB and TTLB apart (p50, p90, p99, p99.9, max, in ms, over the
-  answers that passed every check), the errors by class — `bad_key`
-  (the contract broken: one fails the stage), `connect` (one invalidates
-  it) — and the internal queue: `queue_max`, the most requests due at once
-  with no connection free, `queued`, how many were due while another still
-  waited, and `wait_ms`, the queue seen from one request. `late_ms` is the
+  answers that passed every check) and what became of every other
+  request, one class each, `sent = ok + bad_key + timed_out + errors +
+  tester`: `bad_key`, a wrong answer (the contract broken: one fails the
+  stage), never counted as an error; `timed_out`, no complete answer by
+  the deadline; `errors`, the contender's, by nature — `status_4xx`,
+  `status_5xx`, `refused` (`ECONNREFUSED`), `reset` (the connection ended
+  under a request already sent: `ECONNRESET`, EOF, a stream reset),
+  `connect_timeout` (the deadline passed while the connection was
+  opening), `other` (a failed handshake, any other status); `tester`, a
+  connection the tester could not open for want of a local port or a
+  descriptor (`EADDRNOTAVAIL`, `EMFILE`, §4: one invalidates the stage).
+  Beside them, what the server did to the budget's connections: `closed`,
+  the ones it ended (`Connection: close` under HTTP/1.1, `GOAWAY` under
+  HTTP/2, a FIN or a reset on an idle one, the end of the QUIC connection
+  under HTTP/3), and `reconnects`, the ones the generator opened again,
+  after a closure or after giving up on a request under HTTP/1.1, which
+  closes its connection; past zero, the stage no longer holds "0 % fresh
+  connections" (§3.6). Then the internal queue: `queue_max`, the most
+  requests due at once with no connection free, `queued`, how many were
+  due while another still waited, and `wait_ms`, the queue seen from one request. `late_ms` is the
   dispatcher's own lateness after its due instant, the generator's noise
   floor on the median: it sleeps until 2 ms before, then spins;
 - gives its verdict under the scenario's SLO (§3.2: `p99 ≤ X` and errors
-  under 0.1 %; X is `-slo`, by default static 10 ms, unit and write 25 ms,
-  list 100 ms, mixed 50 ms): `held`, or `cause` by precedence — `key` (the
-  contract broken, a bug of the server), `connect` (a failed connect,
-  the tester's fault, §3.6), `queue` (the generator's queue was not empty
-  while p99 sat under X: the generator limits, §3.5), `slo`;
+  and timeouts under 0.1 %; X is `-slo`, by default static 10 ms, unit and
+  write 25 ms, list 100 ms, mixed 50 ms): `held`, or `cause` by precedence
+  — `key` (the contract broken, a bug of the server), `tester` (a
+  connection the tester could not open, §4; a refusal or a silence of the
+  server is the contender's, and counts against the SLO), `queue` (the
+  generator's queue was not empty while p99 sat under X: the generator
+  limits, §3.5), `slo`;
 - with `-new-conns 10`, a tenth of the requests, drawn by `(seed, index)`,
   open a fresh connection whose handshake falls inside their own delays and
   close it, so that `TIME_WAIT` lands on the tester (§3.6); `handshakes`
-  counts them.
+  counts them, with the reconnections' own.
 
 ```
 go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario list -rate 200 -duration 5s
@@ -140,8 +160,8 @@ go run -C comparison/loadgen . -url https://127.0.0.1:8443 -scenario unit -proto
 go run -C comparison/loadgen . -h       # every flag; -ca verifies the server, empty trusts it
 ```
 
-The exit status is 1 when the stage is not a measurement: any error, or a
-failed connect. The mixed scenario is 80 % unit, 15 % list, 5 % write by
+The exit status is 1 when the stage is not a measurement: any request
+that is not ok. The mixed scenario is 80 % unit, 15 % list, 5 % write by
 position in the sequence, exact whatever the seed. HTTP/1.1 and HTTP/2 are
 `net/http`'s client; HTTP/3 is `quic-go`'s, required in `loadgen/go.mod`
 only, the version `interop/` and `sluice/` pin: the root module's graph
@@ -184,7 +204,13 @@ achieved rate says what the budget carried. A third answers two requests
 with another key and the stage fails with `bad_key` 2. A ramp of three
 stages under a ceiling of 4 connections holds the first two and stops at
 the third with the cause `queue`; a stage with a tenth of fresh
-connections counts their handshakes apart and fails no connect.
+connections counts their handshakes apart and fails no connect. A 404, a
+503 and a key never answered land in `status_4xx`, `status_5xx` and
+`timed_out`, under each protocol; a server that ends every connection
+after 10 requests, by `Connection: close` under HTTP/1.1 and the `GOAWAY`
+it becomes under HTTP/2, shows 10 `closed` and 10 `reconnects` and loses
+no request; a port nothing listens on is `refused` over TCP and a
+`connect_timeout` over QUIC.
 
 ### Not the bottleneck
 

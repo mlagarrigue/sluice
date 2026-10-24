@@ -82,7 +82,6 @@ type stage struct {
 	scenario scenario
 	keyspace int
 	seed     uint64
-	timeout  time.Duration
 	ca       string
 	slo      time.Duration // X: the p99 the scenario must hold (§3.2)
 	rtt      time.Duration // the RTT injected on the wire, for C only (§3.5)
@@ -126,10 +125,9 @@ func parse(args []string) (campaign, error) {
 	fs.StringVar(&name, "scenario", "unit", "static, unit, list, write or mixed (80 % unit, 15 % list, 5 % write)")
 	fs.IntVar(&st.keyspace, "keyspace", 100000, "ids the table holds, 1..keyspace; every request draws a different one")
 	fs.Uint64Var(&st.seed, "seed", 1, "seed of the draw, the same for every contender of a round (§2.1)")
-	fs.DurationVar(&st.timeout, "timeout", 30*time.Second, "give up on a request after this long")
 	fs.StringVar(&st.ca, "ca", "", "PEM file of the CA that signed the server's certificate; empty trusts any certificate")
-	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms)")
-	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp")
+	fs.DurationVar(&st.slo, "slo", 0, "X: the p99 to hold; 0 takes the scenario's (static 10ms, unit and write 25ms, list 100ms, mixed 50ms). A request unanswered 10 X + 4 RTT after it was due timed out")
+	fs.DurationVar(&st.rtt, "rtt", 0, "the round trip injected on the wire, for the budget C = 2 R (RTT + X) of a ramp and the deadline 10 X + 4 RTT of a request")
 	fs.IntVar(&st.newConns, "new-conns", 0, "percent of requests that open a fresh connection and close it, 0 or 10 (§3.6)")
 	fs.BoolVar(&c.ramp, "ramp", false, "run the stages of the grid 100 × 1.05^k from -rate up, until one breaks")
 	fs.StringVar(&rates, "rates", "", "run these stages instead of the grid, comma-separated req/s, until one breaks")
@@ -212,6 +210,14 @@ func (st stage) requests() int {
 // warmRequests is how many of them fall before the clock starts.
 func (st stage) warmRequests() int {
 	return int(st.warmup / st.interval())
+}
+
+// deadline is how long a request has, from its due instant, to be answered
+// to the end before it counts as timed out (§1.2): ten times X, and four
+// round trips for a fresh connection's TCP and TLS 1.3 handshakes, the
+// request and a margin.
+func (st stage) deadline() time.Duration {
+	return 10*st.slo + 4*st.rtt
 }
 
 func (st stage) interval() time.Duration {

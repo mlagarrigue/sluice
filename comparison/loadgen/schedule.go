@@ -61,6 +61,8 @@ func (st stage) run(ctx context.Context, cl *client) (report, error) {
 	interval := st.interval()
 	late := make([]time.Duration, 0, n-warm)
 	var clock time.Time
+	// What the server did to the budget, counted from the clock start.
+	var dials, closes int64
 	for i := range n {
 		due := start.Add(time.Duration(i) * interval)
 		if !sleepUntil(ctx, due) {
@@ -73,6 +75,7 @@ func (st stage) run(ctx context.Context, cl *client) (report, error) {
 			clock = due
 			queueMax.Store(0)
 			queued.Store(0)
+			dials, closes = cl.dials.Load(), cl.closes.Load()
 		}
 		if i >= warm {
 			late = append(late, time.Since(due))
@@ -98,6 +101,8 @@ func (st stage) run(ctx context.Context, cl *client) (report, error) {
 	}
 	rep := st.report(all, elapsed, queueMax.Load(), queued.Load())
 	rep.Late = summarise(late)
+	rep.Reconnects = int(cl.dials.Load() - dials)
+	rep.Closed = int(cl.closes.Load() - closes)
 	return rep, nil
 }
 

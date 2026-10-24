@@ -53,7 +53,7 @@ func TestTrivialServesEveryScenario(t *testing.T) {
 				rep := runStage(t, c)
 				t.Logf("%s/%s: sent %d ok %d (%d fully validated) ttlb p50 %.3f p99 %.3f ms", proto, name, rep.Sent, rep.OK, full, rep.TTLB.P50, rep.TTLB.P99)
 				if rep.Failed() || rep.OK != rep.Sent || !rep.Held {
-					t.Fatalf("errors %d bad_key %d connect %d held %v cause %q", rep.Errors, rep.BadKey, rep.Connect, rep.Held, rep.Cause)
+					t.Fatalf("errors %d bad_key %d tester %d held %v cause %q", rep.Errors, rep.BadKey, rep.Tester, rep.Held, rep.Cause)
 				}
 			})
 		}

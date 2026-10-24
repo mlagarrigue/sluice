@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -56,10 +58,18 @@ func (st stage) inFlightPerConn() int {
 // a transport that lives for one request, opened inside its delays and
 // closed by the client, so that TIME_WAIT lands on the tester.
 type client struct {
-	url     string
-	proto   string
-	timeout time.Duration
-	tls     *tls.Config
+	url      string
+	proto    string
+	deadline time.Duration // a request's whole life from its due instant (§1.2)
+	tls      *tls.Config
+
+	// What the server did to the budget's connections: every dial after
+	// `warm` is a reconnection, and every connection that ends while the
+	// generator holds it was ended by the server, since the generator
+	// closes none before the end, except an HTTP/1.1 connection under a
+	// request it gave up on (see `abandon`). A fresh connection is the
+	// generator's own and counts in neither.
+	dials, closes atomic.Int64
 
 	mu    sync.Mutex
 	conns []conn
@@ -99,27 +109,37 @@ func (c campaign) newClient() (*client, error) {
 		}
 		cfg.RootCAs = pool
 	}
-	return &client{url: st.url, proto: st.proto, timeout: st.timeout, tls: cfg}, nil
+	return &client{url: st.url, proto: st.proto, deadline: st.deadline(), tls: cfg}, nil
 }
 
 // dial makes one connection's transport; the connection itself opens on
 // the first request. Each transport gets its own copy of the TLS config:
 // net/http's HTTP/2 setup writes NextProtos into the one it is given.
-func (c *client) dial() conn {
+// The connections of the budget are counted when they open and when they
+// end; a fresh one is not.
+func (c *client) dial(budget bool) conn {
 	cfg := c.tls.Clone()
 	if c.proto == protoH3 {
-		// No Dial of our own: quic-go's default one is the only path that
-		// fires the httptrace hooks (ConnectDone, TLSHandshakeDone). It
-		// dials early, which is a plain 1-RTT handshake with no session
-		// cache in the config.
 		tr := &http3.Transport{
 			TLSClientConfig:    cfg,
 			QUICConfig:         &quic.Config{MaxIdleTimeout: 24 * time.Hour}, // a connection of the budget never ages out
 			DisableCompression: true,
+			Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
+				return c.dialQUIC(ctx, addr, tlsCfg, qcfg, budget)
+			},
 		}
-		return conn{hc: &http.Client{Transport: tr, Timeout: c.timeout}, close: func() { _ = tr.Close() }}
+		return conn{hc: &http.Client{Transport: tr}, close: func() { _ = tr.Close() }}
 	}
+	var d net.Dialer
 	tr := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			nc, err := d.DialContext(ctx, network, addr)
+			if err != nil || !budget {
+				return nc, err
+			}
+			c.dials.Add(1)
+			return &watched{Conn: nc, closes: &c.closes}, nil
+		},
 		TLSClientConfig:    cfg,
 		MaxConnsPerHost:    1, // the virtual client, one connection
 		IdleConnTimeout:    0, // a connection of the budget never ages out
@@ -129,7 +149,115 @@ func (c *client) dial() conn {
 	if c.proto == protoH1 {
 		tr.MaxIdleConnsPerHost = 1
 	}
-	return conn{hc: &http.Client{Transport: tr, Timeout: c.timeout}, close: tr.CloseIdleConnections}
+	return conn{hc: &http.Client{Transport: tr}, close: tr.CloseIdleConnections}
+}
+
+// dialQUIC is quic-go's own dial, which an http3.Transport with no Dial
+// uses, with the same httptrace hooks (ConnectStart, TLSHandshakeDone,
+// ConnectDone), on a UDP socket of the connection's own, closed with it;
+// a connection of the budget is counted when it opens and when it ends.
+// It dials early, which is a plain 1-RTT handshake with no session cache
+// in the config.
+func (c *client) dialQUIC(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config, budget bool) (*quic.Conn, error) {
+	ua, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	trace := httptrace.ContextClientTrace(ctx)
+	if trace != nil && trace.ConnectStart != nil {
+		trace.ConnectStart("udp", ua.String())
+	}
+	var qc *quic.Conn
+	pc, err := net.ListenUDP("udp", nil)
+	if err == nil {
+		tr := &quic.Transport{Conn: pc}
+		qc, err = tr.DialEarly(ctx, ua, tlsCfg, cfg)
+		if err != nil {
+			_ = tr.Close()
+			_ = pc.Close()
+		} else {
+			if budget {
+				c.dials.Add(1)
+			}
+			context.AfterFunc(qc.Context(), func() {
+				if budget {
+					c.closes.Add(1)
+				}
+				_ = tr.Close()
+				_ = pc.Close()
+			})
+		}
+	}
+	if trace != nil && trace.TLSHandshakeDone != nil {
+		var state tls.ConnectionState
+		if qc != nil {
+			state = qc.ConnectionState().TLS
+		}
+		trace.TLSHandshakeDone(state, err)
+	}
+	if trace != nil && trace.ConnectDone != nil {
+		trace.ConnectDone("udp", ua.String(), err)
+	}
+	return qc, err
+}
+
+// watched is one TCP connection of the budget. It ends once: on its first
+// failed read (the server's FIN or RST) or on its close (net/http closes a
+// connection after a `Connection: close` answer under HTTP/1.1, and an
+// idle one after a GOAWAY under HTTP/2). An end is counted as the
+// server's unless the generator abandoned a request on it, which under
+// HTTP/1.1 closes the connection: whichever of the two comes first, the
+// count is right once both have happened.
+type watched struct {
+	net.Conn
+	closes *atomic.Int64
+	state  atomic.Int32 // live, ended (counted), abandoned
+}
+
+const (
+	live int32 = iota
+	ended
+	abandoned
+)
+
+func (w *watched) Read(p []byte) (int, error) {
+	n, err := w.Conn.Read(p)
+	if err != nil {
+		w.end()
+	}
+	return n, err
+}
+
+func (w *watched) Close() error {
+	w.end()
+	return w.Conn.Close()
+}
+
+func (w *watched) end() {
+	if w.state.CompareAndSwap(live, ended) {
+		w.closes.Add(1)
+	}
+}
+
+func (w *watched) abandon() {
+	if w.state.CompareAndSwap(live, abandoned) {
+		return
+	}
+	if w.state.CompareAndSwap(ended, abandoned) {
+		w.closes.Add(-1)
+	}
+}
+
+// watchedOf is the watched connection under what httptrace's GotConn
+// hands out: net/http's TLS connection over it, under HTTP/1.1 and
+// HTTP/2. quic-go hands out a stand-in, and abandoning a request under
+// HTTP/3 resets its stream, never the connection.
+func watchedOf(nc net.Conn) *watched {
+	if tc, ok := nc.(*tls.Conn); ok {
+		w, _ := tc.NetConn().(*watched)
+		return w
+	}
+	return nil
 }
 
 func (c *client) close() {
@@ -160,19 +288,21 @@ const freshSalt = 0x66726573685f636f
 // warm opens the budget before the stage: one request on each connection
 // the budget lacks, all at once, so every TLS handshake happens now, never
 // inside the measurement (§3.5). The connections an earlier stage opened
-// are kept. The answers are discarded.
+// are kept. The answers are discarded; the opening is bounded by
+// warmDeadline, not by a request's deadline, since a few thousand
+// handshakes at once is no measurement.
 func (c *client) warm(ctx context.Context, conns int) error {
 	c.mu.Lock()
 	from := len(c.conns)
 	for len(c.conns) < conns {
-		c.conns = append(c.conns, c.dial())
+		c.conns = append(c.conns, c.dial(true))
 	}
 	c.mu.Unlock()
 	errs := make([]error, conns-from)
 	var wg sync.WaitGroup
 	for i := from; i < conns; i++ {
 		wg.Go(func() {
-			r := c.do(ctx, c.conns[i].hc, job{req: request{kind: static, method: "GET", path: "/static"}, due: time.Now()})
+			r := c.do(ctx, c.conns[i].hc, job{req: request{kind: static, method: "GET", path: "/static"}, due: time.Now()}, warmDeadline)
 			errs[i-from] = r.err
 		})
 	}
@@ -180,33 +310,57 @@ func (c *client) warm(ctx context.Context, conns int) error {
 	return errors.Join(errs...)
 }
 
+// warmDeadline bounds the opening of the budget.
+const warmDeadline = 30 * time.Second
+
 // result is one request's outcome: the two delays from the due instant,
-// and what went wrong if anything.
+// and what went wrong if anything, by nature.
 type result struct {
 	ttfb, ttlb time.Duration
 	wait       time.Duration // due → taken by a worker
 	status     int
 	err        error
-	connect    bool // err is a failed connect or handshake (§3.6)
-	badKey     bool // err is the response contract broken (§4)
+	nature     nature
 	handshake  bool // a TLS handshake happened inside this request's delays
 }
+
+// nature is what became of a request (§1.2): answered right, answered
+// wrong, not answered in time, an error of the contender by kind, or a
+// failure of the tester. Each request has exactly one.
+type nature uint8
+
+const (
+	natureOK             nature = iota
+	natureBadKey                // a 200 whose document breaks the contract (§4): a wrong answer, never an error
+	natureTimedOut              // no complete answer by the deadline 10 X + 4 RTT from the due instant
+	natureTester                // the tester could not open a connection: no local port or descriptor (§4)
+	nature4xx                   // a 4xx status
+	nature5xx                   // a 5xx status
+	natureRefused               // ECONNREFUSED: nothing listens
+	natureReset                 // the connection ended under a request already sent: ECONNRESET, EOF, a stream reset
+	natureConnectTimeout        // the deadline passed while the connection was still opening
+	natureOther                 // any other failure: a failed handshake, a status out of 200, 4xx and 5xx
+)
 
 // send runs one job on connection `cn` of the budget, or on a fresh one.
 func (c *client) send(ctx context.Context, cn int, j job) result {
 	if !j.fresh {
-		return c.do(ctx, c.conns[cn].hc, j)
+		return c.do(ctx, c.conns[cn].hc, j, c.deadline)
 	}
-	f := c.dial()
+	f := c.dial(false)
 	defer f.close()
-	return c.do(ctx, f.hc, j)
+	return c.do(ctx, f.hc, j, c.deadline)
 }
 
-func (c *client) do(ctx context.Context, hc *http.Client, j job) result {
+// do sends one request and reads its answer to the end, all of it within
+// `deadline` of the instant it was due.
+func (c *client) do(ctx context.Context, hc *http.Client, j job, deadline time.Duration) result {
 	res := result{wait: time.Since(j.due)}
+	ctx, cancel := context.WithDeadline(ctx, j.due.Add(deadline))
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, j.req.method, c.url+j.req.path, bytes.NewReader(j.req.body)) //nolint:gosec // G704: the URL is the -url flag, a load generator's whole purpose
 	if err != nil {
-		res.err = err
+		res.err, res.nature = err, natureOther
 		return res
 	}
 	if j.req.body != nil {
@@ -214,29 +368,35 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job) result {
 	}
 	var firstByte time.Time
 	// A dial the transport started for this request can outlive it, when
-	// another connection became free first: these two are written from
-	// that goroutine, hence the atomics.
-	var connectErr, handshake atomic.Bool
+	// another connection became free first: these are written from that
+	// goroutine, hence the atomics.
+	var connecting, gotConn, handshake atomic.Bool
+	var on atomic.Pointer[watched]
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		GotFirstResponseByte: func() { firstByte = time.Now() },
-		ConnectDone: func(_, _ string, err error) {
-			if err != nil {
-				connectErr.Store(true)
+		ConnectStart:         func(_, _ string) { connecting.Store(true) },
+		GotConn: func(info httptrace.GotConnInfo) {
+			if w := watchedOf(info.Conn); w != nil {
+				on.Store(w)
 			}
+			gotConn.Store(true)
 		},
-		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
-			if err != nil {
-				connectErr.Store(true)
-			}
-			handshake.Store(true)
-		},
+		TLSHandshakeDone: func(tls.ConnectionState, error) { handshake.Store(true) },
 	}))
+	failed := func(err error) result {
+		res.err = err
+		res.nature = classify(ctx, err, connecting.Load() && !gotConn.Load())
+		if res.nature == natureTimedOut && c.proto == protoH1 {
+			if w := on.Load(); w != nil {
+				w.abandon()
+			}
+		}
+		return res
+	}
 	resp, err := hc.Do(req) //nolint:gosec // G704: same
 	res.handshake = handshake.Load()
 	if err != nil {
-		res.err = err
-		res.connect = connectErr.Load()
-		return res
+		return failed(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // the body was read to the end or the error is already reported
 	body, err := io.ReadAll(resp.Body)
@@ -244,21 +404,62 @@ func (c *client) do(ctx context.Context, hc *http.Client, j job) result {
 	res.ttfb = firstByte.Sub(j.due)
 	res.status = resp.StatusCode
 	if err != nil {
-		res.err = fmt.Errorf("reading the body: %w", err)
-		return res
+		return failed(fmt.Errorf("reading the body: %w", err))
 	}
 	if resp.ContentLength >= 0 && int64(len(body)) != resp.ContentLength {
 		res.err = fmt.Errorf("body of %d bytes, Content-Length %d", len(body), resp.ContentLength)
-		res.badKey = true
+		res.nature = natureBadKey
 		return res
 	}
 	if resp.StatusCode != http.StatusOK {
 		res.err = fmt.Errorf("status %d", resp.StatusCode)
+		switch resp.StatusCode / 100 {
+		case 4:
+			res.nature = nature4xx
+		case 5:
+			res.nature = nature5xx
+		default:
+			res.nature = natureOther
+		}
 		return res
 	}
 	if err := check(j.req, body); err != nil {
-		res.err = err
-		res.badKey = true
+		res.err, res.nature = err, natureBadKey
 	}
 	return res
+}
+
+// classify says what a failed request is. The tester's own failures come
+// first, then a refusal, then the deadline, whatever error the transport
+// made of it: a request whose deadline passed while its connection was
+// still opening timed out at the opening (§1.2), any other timed out. A
+// connection that ended under the request comes next; the rest is other.
+// `ctx` is the request's: its deadline passed if it reports
+// DeadlineExceeded (an interruption reports Canceled).
+func classify(ctx context.Context, err error, opening bool) nature {
+	switch {
+	case errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.EMFILE), errors.Is(err, syscall.ENFILE):
+		return natureTester
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return natureRefused
+	case errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded):
+		if opening {
+			return natureConnectTimeout
+		}
+		return natureTimedOut
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE),
+		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), isStreamReset(err):
+		return natureReset
+	}
+	return natureOther
+}
+
+// isStreamReset says whether the peer reset an HTTP/3 stream or closed its
+// QUIC connection under the request. HTTP/2's stream errors are net/http's
+// own unexported types; it retries a request a GOAWAY refused by itself.
+func isStreamReset(err error) bool {
+	var se *quic.StreamError
+	var ae *quic.ApplicationError
+	var he *http3.Error
+	return errors.As(err, &se) || errors.As(err, &ae) || errors.As(err, &he)
 }

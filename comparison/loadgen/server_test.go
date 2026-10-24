@@ -25,6 +25,29 @@ type testServer struct {
 	URL         string
 	conns       atomic.Int64
 	maxInFlight atomic.Int64
+
+	// closeEvery, past zero, ends every connection after that many
+	// requests: the answer carries `Connection: close`, which net/http's
+	// server honours under HTTP/1.1 by closing and turns into a GOAWAY
+	// under HTTP/2. closes counts the connections so ended.
+	closeEvery atomic.Int64
+	closes     atomic.Int64
+}
+
+// A fault is what the test server does to one key instead of answering it.
+type fault uint8
+
+const (
+	wrongKey    fault = iota + 1 // answer another key: the contract broken
+	silent                       // never answer, until the request is given up on
+	notFound                     // 404
+	unavailable                  // 503
+)
+
+// connState is one connection's view in the test server: the requests in
+// flight on it and how many it has carried.
+type connState struct {
+	inFlight, served atomic.Int64
 }
 
 // sleepServer answers every path after exactly `d` — a sleep that wakes
@@ -32,17 +55,22 @@ type testServer struct {
 // ~0.2 ms here and the calibration wants the reference exact — with a
 // document that honours the response contract for the key the path
 // carries, so that the generator's checks all pass and only the delay is
-// under test. A key listed in `wrong` is answered with another key: the
-// contract broken on purpose. Under h1 and h2 it is net/http's server;
-// under h3, quic-go's, on a UDP socket, with the same certificate.
-func sleepServer(tb testing.TB, proto string, d time.Duration, wrong map[int64]bool) *testServer {
+// under test. A key listed in `faults` gets the fault instead: another
+// key, a 404, a 503 or no answer. Under h1 and h2 it is net/http's
+// server; under h3, quic-go's, on a UDP socket, with the same certificate.
+func sleepServer(tb testing.TB, proto string, d time.Duration, faults map[int64]fault) *testServer {
 	tb.Helper()
 	ts := &testServer{}
+	release := make(chan struct{})
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inFlight, _ := r.Context().Value(connKey{}).(*atomic.Int64)
-		if inFlight != nil {
-			n := inFlight.Add(1)
-			defer inFlight.Add(-1)
+		cs, _ := r.Context().Value(connKey{}).(*connState)
+		if cs != nil {
+			if every := ts.closeEvery.Load(); every > 0 && cs.served.Add(1)%every == 0 {
+				w.Header().Set("Connection", "close")
+				ts.closes.Add(1)
+			}
+			n := cs.inFlight.Add(1)
+			defer cs.inFlight.Add(-1)
 			for {
 				m := ts.maxInFlight.Load()
 				if n <= m || ts.maxInFlight.CompareAndSwap(m, n) {
@@ -58,8 +86,21 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, wrong map[int64]b
 		case strings.HasPrefix(r.URL.Path, "/orders/"):
 			var id int64
 			id, _ = strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/orders/"), 10, 64)
-			if wrong[id] {
+			switch faults[id] {
+			case wrongKey:
 				id++
+			case silent:
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+				return
+			case notFound:
+				http.Error(w, "no such order", http.StatusNotFound)
+				return
+			case unavailable:
+				http.Error(w, "try again", http.StatusServiceUnavailable)
+				return
 			}
 			fmt.Fprintf(w, `{"id":%d,"total":%d,"label":"order-%d"}`, id, id*7, id)
 		default:
@@ -68,7 +109,7 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, wrong map[int64]b
 	})
 	newConn := func(ctx context.Context) context.Context {
 		ts.conns.Add(1)
-		return context.WithValue(ctx, connKey{}, new(atomic.Int64))
+		return context.WithValue(ctx, connKey{}, new(connState))
 	}
 
 	srv := httptest.NewUnstartedServer(handler)
@@ -82,6 +123,7 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, wrong map[int64]b
 	tb.Cleanup(srv.Close)
 	ts.URL = srv.URL
 	if proto != protoH3 {
+		tb.Cleanup(func() { close(release) })
 		return ts
 	}
 
@@ -98,10 +140,13 @@ func sleepServer(tb testing.TB, proto string, d time.Duration, wrong map[int64]b
 	go func() { _ = h3.Serve(pc) }()
 	tb.Cleanup(func() { _ = h3.Close() })
 	ts.URL = "https://" + pc.LocalAddr().String()
+	// Registered last, so run first: a silent handler returns before
+	// the servers wait for it.
+	tb.Cleanup(func() { close(release) })
 	return ts
 }
 
-// connKey carries one connection's in-flight counter in its requests'
+// connKey carries one connection's connState in its requests'
 // context: net/http's and quic-go's servers both derive a request's
 // context from the one ConnContext returned.
 type connKey struct{}

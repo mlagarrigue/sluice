@@ -27,12 +27,29 @@ type report struct {
 	OK       int     `json:"ok"`
 	Achieved float64 `json:"achieved_rps"` // sent over the time the stage took, drain included
 
-	Errors     int `json:"errors"`     // every request that is not ok
-	BadKey     int `json:"bad_key"`    // the response contract broken (§4): one is a failed stage
-	Connect    int `json:"connect"`    // failed connects and handshakes (§3.6): one is an invalid stage
+	// What became of the requests not ok (§1.2), one nature each:
+	// sent = ok + bad_key + timed_out + errors + tester.
+	BadKey         int     `json:"bad_key"`     // the response contract broken (§4): one is a failed stage
+	TimedOut       int     `json:"timed_out"`   // no complete answer by deadline_ms after the due instant
+	Deadline       float64 `json:"deadline_ms"` // 10 X + 4 RTT (§1.2)
+	Errors         int     `json:"errors"`      // the contender's errors, the sum of the six below
+	Status4xx      int     `json:"status_4xx"`
+	Status5xx      int     `json:"status_5xx"`
+	Refused        int     `json:"refused"`         // ECONNREFUSED
+	Reset          int     `json:"reset"`           // the connection ended under a request sent: ECONNRESET, EOF, a stream reset
+	ConnectTimeout int     `json:"connect_timeout"` // the deadline passed while the connection was opening
+	Other          int     `json:"other"`           // a failed handshake, a status out of 200, 4xx and 5xx, anything else
+	Tester         int     `json:"tester"`          // the tester could not open a connection, no port or descriptor (§4): one is an invalid stage
+
+	// What the server did to the budget's connections (§1.2): a closure
+	// past zero means the stage no longer holds "0 % fresh connections"
+	// (§3.6).
+	Closed     int `json:"closed"`     // connections of the budget the server ended: Connection: close, GOAWAY, FIN or RST
+	Reconnects int `json:"reconnects"` // connections of the budget opened again: after a closure, or a request given up on under HTTP/1.1
+
 	QueueMax   int `json:"queue_max"`  // most requests due at once with no connection free (§3.5)
 	Queued     int `json:"queued"`     // requests that were due with no connection free
-	Handshakes int `json:"handshakes"` // TLS handshakes inside the measurement: the fresh connections (§3.6)
+	Handshakes int `json:"handshakes"` // TLS handshakes inside the measurement: the fresh connections (§3.6), the reconnections
 
 	Late quantiles `json:"late_ms"` // due → dispatched: the generator's own lateness, its noise floor
 	Wait quantiles `json:"wait_ms"` // due → taken by a worker: the queue seen from one request
@@ -48,36 +65,38 @@ type quantiles struct {
 	Max  float64 `json:"max"`
 }
 
-// Failed says whether the stage is not a measurement: an error of any
-// kind, or a connect that failed.
-func (r report) Failed() bool { return r.Errors > 0 || r.Connect > 0 }
+// Failed says whether the stage is not a measurement: a request that is
+// not ok, whatever became of it.
+func (r report) Failed() bool { return r.OK < r.Sent }
 
 // The causes of a stage not held, by precedence. A wrong key is a bug of
-// the server, which fails the stage with no extrapolation (§4); a failed
-// connect or a queue under X is the apparatus limiting, which invalidates
-// it (§3.5, §3.6); only then is the SLO the verdict. The queue counts
+// the server, which fails the stage with no extrapolation (§4); a
+// connection the tester could not open or a queue under X is the
+// apparatus limiting, which invalidates it (§3.5, §4); only then is the
+// SLO the verdict. A refusal, a reset or a timeout is the contender's,
+// and counts against the SLO (§4). The queue counts
 // only under X: over X, the wait in the queue is the server's latency
 // seen from the due instant, and C = 2 R (RTT + X) makes a queue form
 // only once the server is past 2X anyway.
 const (
-	causeKey     = "key"
-	causeConnect = "connect"
-	causeQueue   = "queue"
-	causeSLO     = "slo"
+	causeKey    = "key"
+	causeTester = "tester"
+	causeQueue  = "queue"
+	causeSLO    = "slo"
 )
 
-// verdict applies the SLO of §3.2: p99 ≤ X and errors under 0.1 % of what
-// was sent, with the guards above.
+// verdict applies the SLO of §3.2: p99 ≤ X and errors and timeouts under
+// 0.1 % of what was sent, with the guards above.
 func (r *report) verdict() {
 	underX := r.TTLB.P99 <= r.SLO
 	switch {
 	case r.BadKey > 0:
 		r.Cause = causeKey
-	case r.Connect > 0:
-		r.Cause = causeConnect
+	case r.Tester > 0:
+		r.Cause = causeTester
 	case r.Queued > 0 && underX:
 		r.Cause = causeQueue
-	case !underX || r.Sent == 0 || float64(r.Errors)*1000 >= float64(r.Sent):
+	case !underX || r.Sent == 0 || float64(r.Errors+r.TimedOut)*1000 >= float64(r.Sent):
 		r.Cause = causeSLO
 	default:
 		r.Held = true
@@ -88,7 +107,7 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 	rep := report{
 		URL: st.url, Proto: st.proto, Scenario: st.name, Rate: st.rate, Duration: st.duration.Seconds(),
 		Conns: st.conns, Seed: st.seed, Sent: len(all),
-		SLO: ms(st.slo), RTT: ms(st.rtt), NewConns: st.newConns,
+		SLO: ms(st.slo), RTT: ms(st.rtt), Deadline: ms(st.deadline()), NewConns: st.newConns,
 		QueueMax: int(queueMax), Queued: int(queued),
 	}
 	if elapsed > 0 {
@@ -100,20 +119,32 @@ func (st stage) report(all []result, elapsed time.Duration, queueMax, queued int
 		if r.handshake {
 			rep.Handshakes++
 		}
-		if r.err == nil {
+		switch r.nature {
+		case natureOK:
 			rep.OK++
 			ttfb = append(ttfb, r.ttfb)
 			ttlb = append(ttlb, r.ttlb)
-			continue
-		}
-		rep.Errors++
-		if r.badKey {
+		case natureBadKey:
 			rep.BadKey++
-		}
-		if r.connect {
-			rep.Connect++
+		case natureTimedOut:
+			rep.TimedOut++
+		case natureTester:
+			rep.Tester++
+		case nature4xx:
+			rep.Status4xx++
+		case nature5xx:
+			rep.Status5xx++
+		case natureRefused:
+			rep.Refused++
+		case natureReset:
+			rep.Reset++
+		case natureConnectTimeout:
+			rep.ConnectTimeout++
+		case natureOther:
+			rep.Other++
 		}
 	}
+	rep.Errors = rep.Status4xx + rep.Status5xx + rep.Refused + rep.Reset + rep.ConnectTimeout + rep.Other
 	rep.Wait = summarise(wait)
 	rep.TTFB = summarise(ttfb)
 	rep.TTLB = summarise(ttlb)
