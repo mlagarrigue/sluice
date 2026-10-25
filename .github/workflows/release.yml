@@ -55,6 +55,17 @@ jobs:
           # own (measured on `release-dry-run`, 2026-10-25). On main the
           # line resolves to main and changes nothing.
           target-branch: ${{ github.ref_name }}
+      # What the next job branches on, written where a reader can see it.
+      # The rehearsal of 2026-10-25 ended on a question its logs could not
+      # answer — the image job was skipped, and nothing said by which of the
+      # two conditions — so the decision is now part of the run's summary
+      # rather than inferred from what did not happen.
+      - name: Say what the release step decided
+        run: |
+          {
+            echo "release_created: \`${{ steps.release.outputs.release_created }}\`"
+            echo "tag_name: \`${{ steps.release.outputs.tag_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   interop-image:
     needs: release-please
