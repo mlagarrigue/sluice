@@ -28,16 +28,19 @@ const pathDelay = 15 * time.Millisecond
 type countingPC struct {
 	net.PacketConn
 
-	delay time.Duration
-	bps   int // the path's rate, zero for no bottleneck
-	free  time.Time
-	queue chan func()
-	once  sync.Once
+	delay    time.Duration
+	bps      int // the path's rate, zero for no bottleneck
+	queueLen int // datagrams the bottleneck queues before it drops
+	queued   int
+	free     time.Time
+	queue    chan func()
+	once     sync.Once
 
 	mu                         sync.Mutex
 	zeroRTT, oneRTT, longOther int
 	oneRTTPkts                 int
 	inPkts, inBytes            int
+	dropped                    int
 }
 
 func (p *countingPC) WriteTo(b []byte, to net.Addr) (int, error) {
@@ -58,36 +61,54 @@ func (p *countingPC) WriteTo(b []byte, to net.Addr) (int, error) {
 		return p.PacketConn.WriteTo(b, to)
 	}
 	p.once.Do(func() {
-		// The runner's queue, 25 datagrams; past it the path drops.
-		p.queue = make(chan func(), 25)
+		p.queue = make(chan func(), 1024)
 		go func() {
 			for f := range p.queue {
-				f()
+				go f() // each datagram propagates on its own; order is set below
 			}
 		}()
 	})
 	// A copy: the caller owns b once WriteTo returns.
 	cp := append([]byte(nil), b...)
-	at := time.Now().Add(p.delay)
+	// The bottleneck and the wire are two different things, and a first
+	// model that conflated them dropped a quarter of the traffic: a
+	// datagram waits its turn to be serialised, and only then spends the
+	// path's delay in flight. The queue is what waits for serialisation,
+	// never what is already on the wire — hold the second against the
+	// first and a 15 ms path looks fifteen datagrams deeper than it is.
+	// The queue holds datagrams, not time: bounding it by the wait in
+	// milliseconds gave a burst of small acknowledgements a twentieth of
+	// the room a burst of full ones got, and dropped a fifth of the
+	// traffic for it. Counted, a queue of 25 is 25 whatever their size.
+	now := time.Now()
+	p.mu.Lock()
+	if p.queued >= p.queueLen {
+		p.dropped++
+		p.mu.Unlock()
+		return len(b), nil // the queue is full: the path drops, as a queue does
+	}
+	serialise := time.Duration(float64(len(cp)+48) * 8 / float64(p.bps) * float64(time.Second))
+	if p.free.Before(now) {
+		p.free = now
+	}
+	p.free = p.free.Add(serialise)
+	served, at := p.free, p.free.Add(p.delay)
+	p.queued++
+	p.mu.Unlock()
+	time.AfterFunc(time.Until(served), func() {
+		p.mu.Lock()
+		p.queued--
+		p.mu.Unlock()
+	})
 	select {
 	case p.queue <- func() {
-		// The bottleneck, served in order: a datagram leaves no earlier
-		// than its serialisation at the path's rate, and no earlier than
-		// the delay it was queued with.
-		p.mu.Lock()
-		if p.bps > 0 {
-			serialise := time.Duration(float64(len(cp)+48) * 8 / float64(p.bps) * float64(time.Second))
-			if p.free.Before(at) {
-				p.free = at
-			}
-			p.free = p.free.Add(serialise)
-			at = p.free
-		}
-		p.mu.Unlock()
 		time.Sleep(time.Until(at))
 		_, _ = p.PacketConn.WriteTo(cp, to)
 	}:
-	default: // the queue is full: the path drops, as a queue does
+	default:
+		p.mu.Lock()
+		p.dropped++
+		p.mu.Unlock()
 	}
 	return len(b), nil
 }
@@ -115,7 +136,11 @@ func (p *countingPC) counts() (zero, one, other int) {
 // would close under forty.
 func earlyEchoServer(t *testing.T) net.Addr {
 	t.Helper()
-	ln, err := quic.NewListener(listenUDP(t), serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{EarlyData: true})
+	// The path is bounded in both directions, as the simulator bounds it:
+	// a server answering at line rate makes the client acknowledge in
+	// bursts that no real path would let through.
+	pc := &countingPC{PacketConn: listenUDP(t), delay: pathDelay, bps: 10_000_000, queueLen: 25}
+	ln, err := quic.NewListener(pc, serverTLS(t), quic.DefaultParameters(), quic.ListenerConfig{EarlyData: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +182,7 @@ func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
 	sluicePrime(t, ctx, addr, cfg)
 
-	pc := &countingPC{PacketConn: listenUDP(t), delay: pathDelay, bps: 10_000_000}
+	pc := &countingPC{PacketConn: listenUDP(t), delay: pathDelay, bps: 10_000_000, queueLen: 25}
 	c, err := quic.DialEarly(ctx, pc, addr, cfg, quic.DefaultParameters())
 	if err != nil {
 		t.Fatalf("DialEarly: %v", err)
@@ -207,16 +232,25 @@ func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 	const request = requests * nameLen
 	t.Logf("client out: 0-RTT %d, 1-RTT %d in %d datagrams (%d bytes each on average); client in: %d datagrams, %d bytes",
 		zero, one, pc.oneRTTPkts, one/max(pc.oneRTTPkts, 1), pc.inPkts, pc.inBytes)
+	st := c.Stats()
+	t.Logf("client stats: lost %d packets, %d bytes retransmitted, %d probe timeouts, %d non-productive, srtt %v",
+		st.LostPackets, st.BytesRetransmitted, st.ProbeTimeouts, st.NonProductivePackets, st.SmoothedRTT)
+	t.Logf("path dropped %d datagrams (queue of 25 at 10 Mbit/s)", pc.dropped)
 	// What is asserted is the half this measurement settled: every byte of
 	// the request leaves before the handshake ends. The runner's case also
-	// refuses more than request/2 in 1-RTT and this shape crosses it — 9151
-	// bytes in 65 datagrams against 4875 — but those are the download's
-	// acknowledgements, not a request left behind: at the same payload in
-	// one stream instead of thirty-nine, the client receives 19 datagrams
-	// instead of 102 and sends 8 instead of 65. Asserting that bound here
-	// would be asserting the peer's datagram count. RP-20261025-zerortt-client
-	// holds what is left to explain, starting with why an acknowledgement
-	// of ours averages 140 bytes.
+	// refuses more than request/2 in 1-RTT (4875 here) and this shape
+	// crosses it — 8368 bytes in 87 datagrams, of which 2808 are
+	// retransmission — but that is the download's acknowledgement traffic,
+	// not a request left behind. Two measurements say so: at the same
+	// payload carried by one stream instead of thirty-nine, the client
+	// receives 19 datagrams instead of 115 and sends 8 instead of 87; and
+	// the count tracks what arrives, at 0.76 acknowledgements per datagram
+	// received, which is what §13.2.1 asks for on a path that reorders —
+	// immediately, rather than every second packet. Asserting that bound
+	// here would be asserting the peer's datagram count.
+	//
+	// What is left open is whether that is out of line with other clients,
+	// which only a peer measured on the same path can say.
 	if zero < request {
 		t.Errorf("0-RTT carried %d bytes of a %d-byte request, 1-RTT %d: the client no longer sends it all early", zero, request, one)
 	}
