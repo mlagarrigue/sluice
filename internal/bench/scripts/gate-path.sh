@@ -107,9 +107,21 @@ PATHEFFECT="${PATHEFFECT:-0.06}"
 # window halved leaves TwoFlows at 1.018 and turns the job red four times
 # over on the rows that keep 6% — Clean 1.094, RTT80 1.109, BurstLoss 1.080,
 # Loss1pct 1.076 — while the restored tree passes.
+# Reno reads Bottleneck the same way, and it took a commit that cannot have
+# regressed anything to show it: 3f05f83, whose whole diff is two workflow
+# files, read 1.093 and then — rerun, same binaries, same base — 1.064,
+# while the seven other names sat within 0.994-1.004 in both passes
+# (2026-10-25). Two concordant reds on an identical tree is the same
+# bimodality CUBIC's campaign traced to where HyStart++ exits, on the same
+# benchmark; the band is widened on that evidence and on that campaign's 160
+# transfers, without a new one under Reno, which is what this comment says
+# so the next reader does not take it for measured here. Nothing is lost:
+# the seven other names keep 6% under Reno, and the injection above reddens
+# them, not this one.
 case "$CC" in
   cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
   bbr) WIDE='BenchmarkTransferTwoFlows$' ;;
+  reno) WIDE='BenchmarkTransferBottleneck$' ;;
   *) WIDE='' ;;
 esac
 WIDEEFFECT="${WIDEEFFECT:-0.10}"
