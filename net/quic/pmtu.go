@@ -91,6 +91,10 @@ type pmtuState struct {
 	lost int
 	// probes counts every probe sent on this path.
 	probes int
+	// acked is what this path has carried, in bytes released from flight
+	// by an acknowledgement. It is what earns a probe: see
+	// maybeProbePMTULocked.
+	acked int
 	// largeLost counts the packets above pmtuBaseSize declared lost since
 	// one of that size was last acknowledged: the black-hole indicator.
 	largeLost int
@@ -133,6 +137,14 @@ func (c *Conn) pmtuTargetLocked() int {
 	return (confirmed + top) / 2
 }
 
+// pmtuEarnedAfter is what a path must have carried, acknowledged, before
+// the search starts. Two initial windows: one is what the probe's own
+// padding costs to recoup — 1452 bytes of it, against the 252 a later
+// datagram saves — and a path that has carried twice that is one more
+// is likely to follow on. Measured at one window, the runner's zerortt
+// case still paid for a probe at the very moment it ended.
+func pmtuEarnedAfter() int { return 2 * initialWindow(pmtuBaseSize) }
+
 // resetPMTULocked restarts the search: datagrams fall back to the 1200
 // bytes every path carries, and the next probe leaves once the path is
 // validated. Callers hold mu.
@@ -153,6 +165,28 @@ func (c *Conn) resetPMTULocked() {
 // window allows. Callers hold mu.
 func (c *Conn) maybeProbePMTULocked() {
 	if c.pmtu.done || c.pmtu.inFlight || c.fragmentable || !c.handshakeConfirmed || c.amplActive || c.pathProbe.pending || c.closeSent || c.draining {
+		return
+	}
+	// Nor before the connection has sent enough to earn the probe. A probe
+	// is a datagram of padding — 1452 bytes at the first step — and it
+	// pays for itself only over the datagrams that follow it at the larger
+	// size. A short exchange never has them: measured against quic-go's
+	// client on the same emulated path (15 ms, 10 Mbit/s, a queue of 25),
+	// a forty-request download left 1805 bytes behind it in 1-RTT, of
+	// which 1452 were this probe, where quic-go sent 330 and no probe at
+	// all. The QUIC Interop Runner's zerortt case refuses a client that
+	// sends more than 5000 bytes outside 0-RTT, so the padding alone was
+	// three tenths of its budget, bought for nothing.
+	//
+	// One initial window carried on this path is the bar: a bulk sender
+	// passes it in its second round trip, so the search is not delayed in
+	// the one case it serves, and a short exchange never does. The count
+	// is the path's own, reset with the rest of its state on a migration,
+	// and it is acknowledged bytes rather than the congestion window,
+	// which a single loss halves. RFC 8899 leaves the moment to probe to
+	// the implementation (§5.2 arms the search, it does not time it);
+	// nothing here changes what the search then finds.
+	if c.pmtu.acked < pmtuEarnedAfter() {
 		return
 	}
 	target := c.pmtuTargetLocked()

@@ -1268,10 +1268,16 @@ type newReno struct {
 
 var _ congestionController = (*newReno)(nil)
 
+// initialWindow is §7.2's initial congestion window for a datagram size,
+// floored the way the RFC floors it. pmtu.go reads it too: a window that
+// has grown past twice it is a connection that had a window's worth of
+// data acknowledged.
+func initialWindow(maxDatagram int) int {
+	return max(min(10*maxDatagram, 14720), 2*maxDatagram)
+}
+
 func newNewReno(maxDatagram int) *newReno {
-	// §7.2: ten datagrams, floored the way the RFC floors it.
-	w := max(min(10*maxDatagram, 14720), 2*maxDatagram)
-	return &newReno{cwnd: w, ssthresh: 1 << 30, maxDatagram: maxDatagram}
+	return &newReno{cwnd: initialWindow(maxDatagram), ssthresh: 1 << 30, maxDatagram: maxDatagram}
 }
 
 func (c *newReno) window() int              { return c.cwnd }

@@ -104,6 +104,13 @@ func pmtuPairWith(t *testing.T, mtu int, params TransportParameters) (client, se
 	waitFor(t, "both handshakes confirmed", func() bool {
 		return client.datagramSize() > 0 && server.datagramSize() > 0 && confirmed(client) && confirmed(server)
 	})
+	// A probe is earned, not owed: the search starts once the path has
+	// carried an initial window (pmtu.go), so a connection that will
+	// never send that much is not charged a datagram of padding for
+	// nothing. Every test below measures the search itself, so the pair
+	// is handed over having paid that entrance — a bulk sender's second
+	// round trip, which is where the search belongs.
+	warm(t, client, server)
 	return client, server, clientPC
 }
 
@@ -431,7 +438,7 @@ func TestPMTUSearchNeedsDontFragment(t *testing.T) {
 // as the read needs, whatever the machine is doing; opening it then lets
 // the retransmitted challenge through and the search resume.
 func TestPMTUProbeRestartsOnRebind(t *testing.T) {
-	client, _, _ := pmtuPair(t, 1500)
+	client, server, _ := pmtuPair(t, 1500)
 	waitFor(t, "the client's probe acknowledged", func() bool { return client.datagramSize() == 1452 })
 	fresh := newMTUPC(t, 0)
 	if err := client.Rebind(fresh); err != nil {
@@ -441,8 +448,62 @@ func TestPMTUProbeRestartsOnRebind(t *testing.T) {
 		t.Errorf("maxDatagram = %d right after Rebind, want 1200: the new path is unproven", got)
 	}
 	fresh.setMTU(1500)
+	// The new path earns its own probe: what the old one carried proves
+	// nothing here, and resetPMTULocked zeroes the count with the rest of
+	// the path's state.
+	warm(t, client, server)
 	waitFor(t, "the new path probed", func() bool { return client.datagramSize() == 1452 })
 	if largest, _ := fresh.stats(); largest != 1452 {
 		t.Errorf("largest datagram on the new socket = %d, want the 1452-byte probe", largest)
 	}
+}
+
+// warm sends what the path must carry before a DPLPMTUD probe is due, in
+// both directions, and waits until each end has seen its own share
+// acknowledged: the probe leaves on the next packet after that. An end
+// that only receives never earns one, which is the point — it has nothing
+// a larger datagram would carry — so a test of the search has to give
+// both ends something to send.
+func warm(t *testing.T, client, server *Conn) {
+	t.Helper()
+	warmOneWay(t, client, server)
+	warmOneWay(t, server, client)
+}
+
+func warmOneWay(t *testing.T, client, server *Conn) {
+	t.Helper()
+	size := pmtuEarnedAfter()
+	done := make(chan error, 1)
+	go func() {
+		s, err := server.AcceptStream(t.Context())
+		if err != nil {
+			done <- err
+			return
+		}
+		_, err = io.ReadAll(s)
+		done <- err
+	}()
+	s, err := client.OpenStream(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write(make([]byte, size)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the server did not read the warm-up: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the warm-up stalled")
+	}
+	waitFor(t, "the warm-up acknowledged", func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return client.pmtu.acked >= size
+	})
 }

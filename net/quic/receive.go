@@ -1610,6 +1610,11 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// The controller heard each acknowledged packet; the window may
 		// have grown and a writer parked on it must look again.
 		c.cond.Broadcast()
+		// What this path has carried, which is what earns a DPLPMTUD
+		// probe (pmtu.go). Reset with the rest of the path's state on a
+		// migration, since what the old path carried proves nothing
+		// about the new one.
+		c.pmtu.acked += out.newlyAcked
 	}
 	c.settleProbeLocked(out)
 	return nil
