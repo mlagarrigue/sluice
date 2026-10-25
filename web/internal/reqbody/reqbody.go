@@ -186,6 +186,17 @@ func TooLarge(code string, limit int64) diagnostics.Diagnostic {
 		WithOrigin(diagnostics.OriginProtocol)
 }
 
+// Truncated is the refusal of a body that stopped arriving under code: the
+// client left, its framing broke, or a read waited past the timeout. It is
+// kept apart from a malformed document because the fix is not the client's
+// JSON but its connection, and the server never saw enough bytes to say
+// anything about the document itself.
+func Truncated(code string) diagnostics.Diagnostic {
+	return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
+		WithMessage("RequestBodyTruncated", nil).
+		WithOrigin(diagnostics.OriginProtocol)
+}
+
 // firstByteReader remembers the first non-whitespace byte read through it,
 // which is enough to tell a null document from any other: no other JSON
 // value begins with 'n'.

@@ -2,6 +2,8 @@ package stream
 
 import (
 	"bytes"
+	"errors"
+	"math"
 
 	"github.com/mlagarrigue/sluice/net/httpstream"
 	"github.com/mlagarrigue/sluice/web"
@@ -11,12 +13,20 @@ import (
 // DecodeJSON reads an open exchange's body into dst, bounded to limit bytes,
 // refusing the exchange when it cannot.
 //
-// It is [web.DecodeJSON] over a body that is already whole: the transport
-// buffered and bounded it ([httpstream.Config.MaxBodyBytes]), so the limit
-// here is the route's own, tighter, ceiling — a PATCH of one field has no
-// business carrying a megabyte, whatever the connection allows. The bound is
-// still a required argument with no usable zero, for the same reason web's
+// It is [web.DecodeJSON] over an exchange's body, whichever form it arrived
+// in. The transport bounded it ([httpstream.Config.MaxBodyBytes]), so the
+// limit here is the route's own, tighter, ceiling — a PATCH of one field has
+// no business carrying a megabyte, whatever the connection allows. The bound
+// is still a required argument with no usable zero, for the same reason web's
 // is.
+//
+// A body that arrives through [httpstream.Request.Stream] — the default since
+// [httpstream.BodyStreamed] became the zero [httpstream.Config.BodyDelivery]
+// — is assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
+// decoding one JSON value needs the value whole, and this is the step that
+// turns the streamed form back into it. Nothing about the refusals changes
+// with the form, which is the point: a body that rode along with the request's
+// headers and one that arrived in a read of its own decode the same way.
 //
 // The rules are web's exactly: one Content-Type naming JSON, unknown fields
 // refused, a null body refused
@@ -37,6 +47,17 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 		return false
 	}
 	body := e.Request.Body
+	if body == nil {
+		var err error
+		if body, err = e.Request.ReadAll(nil, bound(limit)); err != nil {
+			if errors.Is(err, httpstream.ErrTooLarge) {
+				e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, limit))
+			} else {
+				e.Refuse(400, reqbody.Truncated(web.CodeMalformedBody))
+			}
+			return false
+		}
+	}
 	if int64(len(body)) > limit {
 		e.Refuse(413, reqbody.TooLarge(web.CodeBodyTooLarge, limit))
 		return false
@@ -46,6 +67,16 @@ func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 		return false
 	}
 	return true
+}
+
+// bound turns the stage's limit into the int [httpstream.Request.ReadAll]
+// takes. A limit past the largest int cannot bound anything on this platform,
+// so it becomes that int: the transport's own MaxBodyBytes still holds.
+func bound(limit int64) int {
+	if limit > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(limit)
 }
 
 // jsonBody reports whether the request carries exactly one Content-Type and
