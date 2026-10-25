@@ -48,6 +48,10 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # The dry run is the reason this line exists: without it the
+          # action targets the default branch, reads its config and updates
+          # main's release pull request, whatever branch the push was on.
+          target-branch: ${{ github.ref_name }}
 
   interop-image:
     needs: release-please
