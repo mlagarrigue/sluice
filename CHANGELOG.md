@@ -26,6 +26,32 @@
 * **core:** panic on a Split route index out of range
 * **postgres:** budget the remembered parameters together
 * **postgres:** choose or disable SCRAM channel binding
+* **quic:** tune the Listener, keep its keys
+* **postgres:** name the protocol version, floor and ceiling
+* **quic:** count MaxConnsPerIP by address prefix
+* **quic:** drop PeerClosed, read the keepalive back
+* **quic:** Stream refuses an identifier past the limit
+* **quic:** take the first datagram's ECN in Accept
+* **httpstream:** drain ServeH2 on cancellation
+* **httpstream:** merge H2Config into Config
+* **httpstream:** add Server with normal and forced stop
+* **httpstream:** WriteBatch announces Keep-Alive
+* **postgres:** refuse a negative statement cache bound
+* **distinct:** panic on a negative window
+* **parallel:** panic on a negative depth or worker count
+* **core:** panic on a negative size or count
+* **web:** refuse a negative MaxTokenBytes
+* **quic:** refuse a negative listener bound
+* **httpstream:** refuse an out-of-range config value
+* **postgres:** refuse an out-of-range batch bound
+* **postgres:** a byte-bounded batch closes, not fails
+* **postgres:** Connect replaces Startup
+* **postgres:** protocol 3.2 and variable-length cancel keys
+* **web:** Shutdown drains every server, then the closers
+* **quic:** Err names why a connection ended
+* **quic:** OpenStream takes a context and waits for credit
+* **quic:** AcceptStream takes a context
+* **postgres:** one round trip for a known small read
 
 ### Features
 

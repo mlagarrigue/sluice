@@ -359,8 +359,14 @@ In review, comments follow
   API may change at every minor; v1.0.0 commits.
 - [release-please](https://github.com/googleapis/release-please) reads the
   conventional commits, opens the release pull request and writes the
-  CHANGELOG. The CHANGELOG is never edited by hand. In v0 a `feat!` bumps the
-  minor, not the major.
+  CHANGELOG. The CHANGELOG is never edited by hand, with one exception: what
+  the tool left out is put back, and the omission is fixed so it cannot
+  recur. It read only its last 500 commits by default and silently dropped
+  26 of the 47 breaking changes of 0.3.0, a release 762 commits wide;
+  `commit-search-depth` in `release-please-config.json` now covers a lot
+  that size, and `TestEveryBreakingCommitIsInTheChangelog` counts the
+  release's breaking lines against the `!` commits of its range. In v0 a
+  `feat!` bumps the minor, not the major.
 - `scripts/check-api.sh` compares, with
   [apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff), the exported
   API of each commit with its parent's, on every pull request and every push
