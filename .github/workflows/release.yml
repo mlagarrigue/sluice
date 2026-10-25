@@ -24,7 +24,7 @@ name: Release
 # collapsed rather than building the same image twice.
 on:
   push:
-    branches: [main]
+    branches: [main, release-dry-run]
 
 permissions:
   contents: write
