@@ -101,7 +101,7 @@ func TestWindow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := panes(Tumbling(sluice.Of(tt.src, tt.batch), wAt, tt.size, 100, sluice.Fail))
+			got := panes(Tumbling(sluice.Of(tt.src, tt.batch), wAt, tt.size, 100, sluice.Fail, LateFail))
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
@@ -114,7 +114,7 @@ func TestWindow(t *testing.T) {
 func TestWindowBounds(t *testing.T) {
 	src := rows(wRow{5, "a"}, wRow{25, "b"})
 	var got []Pane[wRow]
-	Tumbling(sluice.Of(src, 4), wAt, 10*time.Second, 100, sluice.Fail)(func(b sluice.Batch[Pane[wRow]]) bool {
+	Tumbling(sluice.Of(src, 4), wAt, 10*time.Second, 100, sluice.Fail, LateFail)(func(b sluice.Batch[Pane[wRow]]) bool {
 		got = append(got, b.Items...)
 		return true
 	})
@@ -143,7 +143,7 @@ func TestWindowPanesOwnTheirItems(t *testing.T) {
 	}
 
 	var kept []Pane[wRow]
-	Tumbling(sluice.Of(src, 7), wAt, 10*time.Second, 100, sluice.Fail)(func(b sluice.Batch[Pane[wRow]]) bool {
+	Tumbling(sluice.Of(src, 7), wAt, 10*time.Second, 100, sluice.Fail, LateFail)(func(b sluice.Batch[Pane[wRow]]) bool {
 		kept = append(kept, b.Items...)
 		return true
 	})
@@ -170,31 +170,65 @@ func TestWindowPanesOwnTheirItems(t *testing.T) {
 func TestWindowSkipsEmptyBatches(t *testing.T) {
 	src := rows(wRow{0, "a"}, wRow{1, "keep"}, wRow{10, "b"}, wRow{11, "keep2"})
 	kept := sluice.Filter(sluice.Of(src, 1), func(r wRow) bool { return r.name != "a" && r.name != "b" })
-	got := panes(Tumbling(kept, wAt, 10*time.Second, 100, sluice.Fail))
+	got := panes(Tumbling(kept, wAt, 10*time.Second, 100, sluice.Fail, LateFail))
 	if want := []string{"0:keep", "10:keep2"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
-// Time going backwards would belong to a window already emitted, so it panics
-// rather than being dropped or reopening one.
-func TestWindowUnsorted(t *testing.T) {
-	tests := []struct {
-		name string
-		src  []wRow
-	}{
-		{"backwards inside one window", rows(wRow{5, "a"}, wRow{3, "b"})},
-		{"backwards into a closed window", rows(wRow{5, "a"}, wRow{15, "b"}, wRow{7, "c"})},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); !streamtest.IsErr(r, sluice.ErrUnsorted) {
-					t.Errorf("panicked with %v, want ErrUnsorted", r)
-				}
-			}()
-			panes(Tumbling(sluice.Of(tt.src, 4), wAt, 10*time.Second, 100, sluice.Fail))
+// An element whose time falls inside the open window is placeable whatever
+// order it arrived in, under either late policy: the pane is the same pane,
+// since its Items are in arrival order and never claimed to be sorted. This
+// is the ordering requirement being what the mechanism needs and not more —
+// a client's clock a few milliseconds behind another's does not stop a
+// pipeline.
+func TestWindowAcceptsReorderingInsideTheOpenWindow(t *testing.T) {
+	for _, late := range []Late{LateFail, LateDrop} {
+		t.Run(late.String(), func(t *testing.T) {
+			src := rows(wRow{5, "a"}, wRow{3, "b"}, wRow{9, "c"}, wRow{15, "d"})
+			got := panes(Tumbling(sluice.Of(src, 4), wAt, 10*time.Second, 100, sluice.Fail, late))
+			if want := []string{"0:a,b,c", "10:d"}; !slices.Equal(got, want) {
+				t.Errorf("got %v, want %v", got, want)
+			}
 		})
+	}
+}
+
+// Past the open window's start there is no window left to place the element
+// in, and the late policy answers.
+func TestWindowLateElement(t *testing.T) {
+	// "c" at 7 s belongs to [0, 10), emitted when "b" at 15 s arrived.
+	src := rows(wRow{5, "a"}, wRow{15, "b"}, wRow{7, "c"}, wRow{16, "d"})
+
+	t.Run("LateFail panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); !streamtest.IsErr(r, sluice.ErrUnsorted) {
+				t.Errorf("panicked with %v, want ErrUnsorted", r)
+			}
+		}()
+		panes(Tumbling(sluice.Of(src, 4), wAt, 10*time.Second, 100, sluice.Fail, LateFail))
+	})
+
+	t.Run("LateDrop steps over it", func(t *testing.T) {
+		got := panes(Tumbling(sluice.Of(src, 4), wAt, 10*time.Second, 100, sluice.Fail, LateDrop))
+		// The pane whose window had closed is short by "c"; the open window
+		// keeps everything that was still placeable.
+		if want := []string{"0:a", "10:b,d"}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+}
+
+// A late element must not reopen, restart or displace the open window: what
+// follows it lands exactly where it would have without it.
+func TestWindowLateDropLeavesTheOpenWindowAlone(t *testing.T) {
+	with := rows(wRow{0, "a"}, wRow{30, "b"}, wRow{1, "late"}, wRow{35, "c"}, wRow{60, "d"})
+	without := rows(wRow{0, "a"}, wRow{30, "b"}, wRow{35, "c"}, wRow{60, "d"})
+	drop := func(src []wRow) []string {
+		return panes(Tumbling(sluice.Of(src, 2), wAt, 30*time.Second, 100, sluice.Fail, LateDrop))
+	}
+	if got, want := drop(with), drop(without); !slices.Equal(got, want) {
+		t.Errorf("with a late element: %v, without: %v", got, want)
 	}
 }
 
@@ -205,14 +239,14 @@ func TestWindowOverflowFail(t *testing.T) {
 		}
 	}()
 	src := rows(wRow{0, "a"}, wRow{1, "b"}, wRow{2, "c"})
-	panes(Tumbling(sluice.Of(src, 4), wAt, time.Minute, 2, sluice.Fail))
+	panes(Tumbling(sluice.Of(src, 4), wAt, time.Minute, 2, sluice.Fail, LateFail))
 }
 
 // sluice.DropNewest keeps what the window holds: the pane is short, never wrong, and
 // the next window starts clean.
 func TestWindowOverflowDropNewest(t *testing.T) {
 	src := rows(wRow{0, "a"}, wRow{1, "b"}, wRow{2, "dropped"}, wRow{60, "c"})
-	got := panes(Tumbling(sluice.Of(src, 1), wAt, time.Minute, 2, sluice.DropNewest))
+	got := panes(Tumbling(sluice.Of(src, 1), wAt, time.Minute, 2, sluice.DropNewest, LateFail))
 	if want := []string{"0:a,b", "60:c"}; !slices.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
@@ -232,7 +266,7 @@ func TestWindowEarlyStopDiscardsOpenWindow(t *testing.T) {
 	})
 
 	n := 0
-	Tumbling(src, wAt, 10*time.Second, 100, sluice.Fail)(func(sluice.Batch[Pane[wRow]]) bool {
+	Tumbling(src, wAt, 10*time.Second, 100, sluice.Fail, LateFail)(func(sluice.Batch[Pane[wRow]]) bool {
 		n++
 		return n < 2
 	})
@@ -250,13 +284,15 @@ func TestWindowArgumentValidation(t *testing.T) {
 		name string
 		f    func()
 	}{
-		{"nil ts", func() { Tumbling[wRow](sluice.Empty[wRow](), nil, time.Second, 1, sluice.Fail) }},
-		{"zero size", func() { Tumbling(sluice.Empty[wRow](), wAt, 0, 1, sluice.Fail) }},
-		{"negative size", func() { Tumbling(sluice.Empty[wRow](), wAt, -time.Second, 1, sluice.Fail) }},
-		{"zero n", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 0, sluice.Fail) }},
-		{"DropOldest rejected", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.DropOldest) }},
-		{"undeclared policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(9)) }},
-		{"unset policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(0)) }},
+		{"nil ts", func() { Tumbling[wRow](sluice.Empty[wRow](), nil, time.Second, 1, sluice.Fail, LateFail) }},
+		{"zero size", func() { Tumbling(sluice.Empty[wRow](), wAt, 0, 1, sluice.Fail, LateFail) }},
+		{"negative size", func() { Tumbling(sluice.Empty[wRow](), wAt, -time.Second, 1, sluice.Fail, LateFail) }},
+		{"zero n", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 0, sluice.Fail, LateFail) }},
+		{"DropOldest rejected", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.DropOldest, LateFail) }},
+		{"undeclared policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(9), LateFail) }},
+		{"unset policy", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Overflow(0), LateFail) }},
+		{"unset late", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Fail, Late(0)) }},
+		{"undeclared late", func() { Tumbling(sluice.Empty[wRow](), wAt, time.Second, 1, sluice.Fail, Late(9)) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

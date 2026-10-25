@@ -659,7 +659,9 @@ is one long many-to-many run materializes its right input
 retains a bounded window of both sides; `join.StreamTable` materializes its
 build side entirely, under a required bound.
 
-**Retains time — `window`.** `window.Tumbling` holds one open window;
+**Retains time — `window`.** `window.Tumbling` holds one open window, and
+nothing older than its start (its `Late` policy answers for an element that
+arrives after its own window closed);
 `window.CoalesceWithin` holds a partial batch and a clock, which costs a
 goroutine.
 
@@ -1515,7 +1517,14 @@ lying to the user.
 > instant that could match it. This also settles **what a timestamp is in
 > this library** — an event time extracted per element as `time.Time`, with
 > ordering as the operator's requirement — and `window.Tumbling` inherits
-> that convention. Two additions: the S1 bound is a required
+> the convention, though not the whole requirement: a window is closed by an
+> element beyond it, so what it needs is an input that never reaches back
+> into a window already emitted, which is weaker than non-decreasing.
+> Reordering inside the open window is accepted, and only an element older
+> than that window's start meets a policy (`window.LateFail`,
+> `window.LateDrop`) — measured on the first consumer built on the library,
+> where one client's clock a second behind panicked up through a `gateway`
+> and left every later call failing. Two additions: the S1 bound is a required
 > `join.BuildLimit` counting both sides' retained rows (`Fail` | `DropNewest`,
 > the first drop reported once through `Report`), because
 > O(throughput × interval) is a class, not a bound; and the measured class is

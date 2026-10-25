@@ -32,7 +32,7 @@ func benchWindow(b *testing.B, size time.Duration) {
 	b.ReportAllocs()
 	for b.Loop() {
 		var acc int64
-		window.Tumbling(sluice.Of(src, 1024), ts, size, 1<<20, sluice.Fail)(
+		window.Tumbling(sluice.Of(src, 1024), ts, size, 1<<20, sluice.Fail, window.LateFail)(
 			func(bt sluice.Batch[window.Pane[int64]]) bool {
 				for _, p := range bt.Items {
 					acc += int64(p.Len())

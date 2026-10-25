@@ -28,7 +28,7 @@ func ExampleTumbling() {
 
 	panes := window.Tumbling(sluice.Of(events, 2),
 		func(c click) time.Time { return c.at },
-		10*time.Second, 1000, sluice.Fail)
+		10*time.Second, 1000, sluice.Fail, window.LateFail)
 
 	for b := range panes {
 		for _, p := range b.Items {

@@ -61,7 +61,7 @@ func FuzzWindowPartitionsByTime(f *testing.F) {
 
 		check := func(policy sluice.Overflow, bound int) {
 			mb := int(maxBatch%8) + 1
-			panes := sluice.Collect(Tumbling(streamtest.Chunks(events, mb, rng), wpTime, size, bound, policy))
+			panes := sluice.Collect(Tumbling(streamtest.Chunks(events, mb, rng), wpTime, size, bound, policy, LateFail))
 			if len(panes) != len(groups) {
 				t.Fatalf("%v/%d: %d panes, want %d", policy, bound, len(panes), len(groups))
 			}
@@ -96,5 +96,49 @@ func FuzzWindowPartitionsByTime(f *testing.F) {
 		}
 		check(sluice.Fail, len(events)+1)
 		check(sluice.DropNewest, int(maxStep%4)+1)
+		checkShuffled(t, events, size, rng, int(maxBatch%8)+1)
 	})
+}
+
+// checkShuffled holds Tumbling's invariants over the same events with their
+// order disturbed, which is what event time from several producers looks
+// like. Under LateDrop nothing may be misplaced and nothing may be invented:
+// every element delivered still belongs to the pane that carries it, panes
+// still leave in increasing order, and no element is delivered twice or
+// delivered when it was never in the input.
+func checkShuffled(t *testing.T, events []wpEvent, size time.Duration, rng *streamtest.Rand, mb int) {
+	t.Helper()
+	shuffled := slices.Clone(events)
+	// A local disturbance, not a reshuffle: neighbours swap, which is the
+	// jitter two unsynchronised clocks produce.
+	for i := 1; i < len(shuffled); i++ {
+		if rng.Intn(4) == 0 {
+			shuffled[i-1], shuffled[i] = shuffled[i], shuffled[i-1]
+		}
+	}
+
+	panes := sluice.Collect(Tumbling(streamtest.Chunks(shuffled, mb, rng), wpTime, size, len(shuffled)+1, sluice.Fail, LateDrop))
+	seen := make(map[int]bool, len(shuffled))
+	for i, p := range panes {
+		if len(p.Items) == 0 {
+			t.Fatalf("shuffled: pane %d is empty", i)
+		}
+		if i > 0 && !panes[i-1].Start.Before(p.Start) {
+			t.Fatalf("shuffled: pane %d starts at %v, not after %v", i, p.Start, panes[i-1].Start)
+		}
+		for _, e := range p.Items {
+			if !e.at.Truncate(size).Equal(p.Start) {
+				t.Fatalf("shuffled: element %d at %v in pane starting %v", e.id, e.at, p.Start)
+			}
+			if seen[e.id] {
+				t.Fatalf("shuffled: element %d delivered twice", e.id)
+			}
+			seen[e.id] = true
+		}
+	}
+	for id := range seen {
+		if !slices.ContainsFunc(shuffled, func(e wpEvent) bool { return e.id == id }) {
+			t.Fatalf("shuffled: element %d was never in the input", id)
+		}
+	}
 }

@@ -66,7 +66,7 @@ func TestOperatorsPropagateEarlyStop(t *testing.T) {
 		// refusal reaches the source within the two-batch allowance.
 		{"Window", func(s sluice.Stream[int]) sluice.Stream[int] {
 			panes := window.Tumbling(s, func(v int) time.Time { return time.Unix(int64(v), 0) },
-				time.Second, 16, sluice.Fail)
+				time.Second, 16, sluice.Fail, window.LateFail)
 			return sluice.Convert(panes, func(p window.Pane[int]) int { return p.Start.Second() })
 		}},
 		{"Distinct", func(s sluice.Stream[int]) sluice.Stream[int] {

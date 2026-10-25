@@ -31,7 +31,7 @@ one failed, see the `probe` package.
 | `sluice.ErrOverflow` | A bounded operator reached its bound under the `Fail` policy. Panicked; `Try` returns it. | Raise the bound, or choose a policy that drops (`DropOldest`, `DropNewest`) knowingly. |
 | `sluice.ErrSplitStalled` | A `Split` branch cannot advance because a sibling holds a batch it has not drained. A wiring mistake. | Read the branches together (one goroutine each, or in lock-step); see the operators guide, "Split". |
 | `sluice.ErrSplitDrained` | A `Split` branch was read after a sibling had drained the source, which is read once. | Attach every branch before reading any. |
-| `sluice.ErrUnsorted` | An operator that needs ordered input saw its key go backwards (`join.Merge`, the time windows). | Sort the input, or use an operator that does not need order (`join.StreamTable`). |
+| `sluice.ErrUnsorted` | An operator that needs ordered input saw its key go backwards (`join.Merge`, `join.Interval`), or `window.Tumbling` under `LateFail` saw an element older than its open window. | Sort the input, or use an operator that does not need order (`join.StreamTable`); for a window, pass `window.LateDrop` to step over a late element instead. |
 | `parallel.ErrState` | The state factory of `OrderedWithState` failed. Panicked, like `ErrOverflow`. | Fix what the factory needs (a connection, a file); `Try` gives you its error. |
 
 ## PostgreSQL: `database/postgres`, `pgtype`

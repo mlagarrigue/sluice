@@ -190,14 +190,14 @@ passed.
 
 | Operator | What it retains | When to pick it |
 |---|---|---|
-| `window.Tumbling(s, ts, size, n, policy)` | the current window, at most `n` elements | grouping a time-ordered stream by slice of time |
+| `window.Tumbling(s, ts, size, n, policy, late)` | the current window, at most `n` elements | grouping a stream by slice of event time |
 | `window.CoalesceWithin(s, size, within)` | a batch being filled, and a clock | rebuilding full batches without making anyone wait more than `within` |
 
 ```go
 // One window per minute, at most 100,000 elements per window.
 perMinute := window.Tumbling(clicks,
     func(c Click) time.Time { return c.At },
-    time.Minute, 100_000, sluice.DropNewest)
+    time.Minute, 100_000, sluice.DropNewest, window.LateDrop)
 stats := sluice.Convert(perMinute, func(p window.Pane[Click]) Stat {
     return Stat{At: p.Start, N: len(p.Items)} // a Pane owns its elements
 })
@@ -219,6 +219,18 @@ rather than on the first element — the same data gives the same windows
 whatever the batch cuts. A `Pane` is a closed window, with its start, its
 end and its elements; unlike an ordinary batch, it **owns** its elements:
 you may keep it.
+
+> **In plain terms: what `late` is for.** A window closes when an element
+> beyond it arrives, so an element that arrives *after* its own window
+> closed has nowhere to go. `late` says what then: `window.LateFail` stops
+> the stream (`sluice.ErrUnsorted`), `window.LateDrop` steps over the
+> element. Inside the open window, order does not matter at all — two
+> producers whose clocks differ by a few milliseconds, or a batch the
+> network reordered, change nothing, because a `Pane` holds its elements in
+> arrival order and never claimed they were sorted. Pick `LateFail` when a
+> missing element makes the result wrong (billing), `LateDrop` when one
+> client's clock must not be able to stop everyone's aggregation
+> (ingest).
 
 ## `parallel` retains goroutines
 

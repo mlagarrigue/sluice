@@ -51,6 +51,24 @@ that never passed a negative value has nothing to change there.
   finds it; a direct assertion `r.(runtime.Error)` on the recovered value
   no longer does. Any other value comes back as raised.
 
+## Time windows: `window`
+
+- **`Tumbling` takes a late-element policy** (`feat(window)!: a late element
+  meets a policy, not a panic`): `Tumbling(s, ts, size, maxPerWindow,
+  policy, late)`. Pass `window.LateFail` to keep what the operator did
+  before — a panic with `sluice.ErrUnsorted` — or `window.LateDrop` to step
+  over an element whose window had already closed. There is no zero value,
+  like `sluice.Overflow`: say which.
+
+  The ordering requirement is also narrower than it was. Only an element
+  older than the **open window's start** is late now; reordering inside the
+  open window is accepted and changes nothing, since a `Pane` holds its
+  elements in arrival order and never claimed they were sorted. A pipeline
+  that relied on `ErrUnsorted` firing on any decrease — two elements of the
+  same window swapped — no longer sees it. Nothing else changes: the panes,
+  their bounds and their contents are what they were for an input that was
+  already non-decreasing.
+
 ## Deduplication: `distinct`
 
 - **A negative window panics** (`3cf7f66`).

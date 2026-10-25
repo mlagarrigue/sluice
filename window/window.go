@@ -1,6 +1,7 @@
 package window
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -44,11 +45,51 @@ type Pane[T any] struct {
 // Len reports how many elements the pane holds.
 func (p Pane[T]) Len() int { return len(p.Items) }
 
+// Late says what [Tumbling] does with an element that arrives after its own
+// window was emitted.
+//
+// It is a policy and not a default because the two answers are both right and
+// the caller is the only one who knows which: a billing rollup cannot drop an
+// event, and an ingest fed by clients whose clocks disagree cannot stop. The
+// zero value is not one of them, for the reason [sluice.Overflow]'s is not —
+// it is the argument nobody passed.
+type Late uint8
+
+const (
+	// LateFail stops the stream with a panic carrying [sluice.ErrUnsorted].
+	// The choice when a missing element would make the result wrong rather
+	// than short: the pipeline stops where the data went backwards instead
+	// of producing an aggregate nobody can audit.
+	LateFail Late = iota + 1
+
+	// LateDrop steps over the element and keeps going. The choice for event
+	// time that comes from elsewhere — several producers, unsynchronised
+	// clocks, a retry — where one client's clock must not be able to stop
+	// everyone's aggregation. The panes stay right; the one whose window had
+	// already closed is short by that element, and nothing says so, which is
+	// the price of the choice.
+	LateDrop
+)
+
+// String renders the policy for logs, with the same rule as
+// [sluice.Overflow.String]: a value outside the constants shows its number
+// rather than a label that would misrepresent it.
+func (l Late) String() string {
+	switch l {
+	case LateFail:
+		return "LateFail"
+	case LateDrop:
+		return "LateDrop"
+	default:
+		return "Late(" + strconv.Itoa(int(l)) + ")"
+	}
+}
+
 // Tumbling groups a time-ordered stream into consecutive windows of size, and
 // emits each one as a [Pane] once it can no longer receive elements.
 //
 //	perMinute := Tumbling(clicks, func(c Click) time.Time { return c.At },
-//	    time.Minute, 100_000, sluice.DropNewest)
+//	    time.Minute, 100_000, sluice.DropNewest, LateDrop)
 //	stats := sluice.Convert(perMinute, func(p Pane[Click]) Stat {
 //	    return Stat{At: p.Start, N: len(p.Items)}
 //	})
@@ -62,19 +103,32 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 // still tumbles regularly, just from an epoch nobody chose; give those windows
 // a size that divides the period they belong to.
 //
-// # Ordering closes the windows
+// # Arrival closes the windows, and late is late only past the open one
 //
-// The input must be non-decreasing on ts, checked as each element is seen and
-// panicking with [sluice.ErrUnsorted] otherwise — the same requirement, check and
-// sentinel as [github.com/mlagarrigue/sluice/join.Interval], for the same reason: a window is closed by the
-// arrival of an element beyond it, so an element that goes backwards would
-// belong to a window already emitted and would be silently dropped or, worse,
-// silently reopen it.
+// A window is closed by the arrival of an element beyond it, so what the
+// operator needs of its input is not that it be sorted but that it never
+// reach back into a window already emitted. Those are different
+// requirements, and only the second one is checked: an element whose time
+// falls inside the open window joins it whatever order it arrived in —
+// unsynchronised clocks a few milliseconds apart, a batch the network
+// reordered, a retry — and the pane is the same pane either way, since
+// [Pane.Items] is in arrival order and never claimed to be sorted.
 //
-// That ordering is also what keeps the state at one window: element times
-// never decrease, so window indices never decrease either, and a new index
-// means every earlier window is complete. Memory is O(elements in one window),
-// which is why maxPerWindow bounds that count.
+// An element older than the open window's start is late: its window is gone,
+// and nothing can place it. There the caller's late policy answers —
+// [LateFail] panics with [sluice.ErrUnsorted], [LateDrop] steps over the
+// element — because both answers are right for some pipeline and neither is
+// right for all. Requiring a non-decreasing input instead, the way
+// [github.com/mlagarrigue/sluice/join.Interval] does for its cursor, would
+// mean one element from one misconfigured clock can stop an ingest for good:
+// measured on the first consumer built on this library, where the panic
+// travelled up through a [github.com/mlagarrigue/sluice/gateway] and left
+// every later call failing.
+//
+// What keeps the state at one window is unchanged: nothing before the open
+// window's start is ever buffered, so window indices never decrease and a new
+// index means every earlier window is complete. Memory is O(elements in one
+// window), which is why maxPerWindow bounds that count.
 //
 // # Empty windows are not emitted
 //
@@ -114,8 +168,9 @@ func (p Pane[T]) Len() int { return len(p.Items) }
 // ownership and shows only when windows are small enough to be numerous.
 //
 // Tumbling panics if ts is nil, if size is zero or negative, if maxPerWindow is zero or
-// negative, or if policy is not [sluice.Fail] or [sluice.DropNewest].
-func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duration, maxPerWindow int, policy sluice.Overflow) sluice.Stream[Pane[T]] {
+// negative, if policy is not [sluice.Fail] or [sluice.DropNewest], or if late
+// is not [LateFail] or [LateDrop].
+func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duration, maxPerWindow int, policy sluice.Overflow, late Late) sluice.Stream[Pane[T]] {
 	if ts == nil {
 		panic("sluice: Tumbling requires a non-nil ts function")
 	}
@@ -128,6 +183,9 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 	if policy != sluice.Fail && policy != sluice.DropNewest {
 		panic("sluice: Tumbling requires an Overflow of Fail or DropNewest")
 	}
+	if late != LateFail && late != LateDrop {
+		panic("sluice: Tumbling requires a Late of LateFail or LateDrop")
+	}
 
 	return func(yield func(sluice.Batch[Pane[T]]) bool) {
 		var (
@@ -135,8 +193,6 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 			start time.Time // its lower bound
 			end   time.Time // its exclusive upper bound, kept to avoid a divide
 			open  bool
-			last  time.Time // the previous element's time, for the order check
-			seen  bool
 		)
 		// One reused slot for the single-pane batch: the batch's Items is a
 		// normal reusable buffer, while the Pane's own Items is copied out and
@@ -155,14 +211,18 @@ func Tumbling[T any](s sluice.Stream[T], ts func(T) time.Time, size time.Duratio
 		s(func(b sluice.Batch[T]) bool {
 			for _, v := range b.Items {
 				at := ts(v)
-				if seen && at.Compare(last) < 0 {
-					panic(sluice.ErrUnsorted)
+				// Late only means older than the open window: anything from
+				// its start onwards is placeable, whatever order it came in.
+				if open && at.Before(start) {
+					if late == LateFail {
+						panic(sluice.ErrUnsorted)
+					}
+					continue // LateDrop: the window it belonged to is gone
 				}
-				last, seen = at, true
 
 				// Truncate is a 64-bit division, and the common element does
-				// not need it: times never decrease, so an element below the
-				// open window's end is necessarily inside it. One comparison
+				// not need it: nothing below the open window's start reaches
+				// here, so an element below its end is inside it. One comparison
 				// answers for every element but the first of each window,
 				// measured at 10.50 -> 4.52 ns/element on 1024-element
 				// windows and 13.38 -> 7.36 on 8-element ones.
