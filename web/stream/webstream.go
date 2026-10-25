@@ -131,6 +131,16 @@ type Exchange struct {
 // Refuse records a refusal: the first status offered wins — the earliest
 // stage saw the request in its most raw form and later stages never ran —
 // and every diagnostic is kept.
+//
+// A stage of your own builds its diagnostic with
+// [diagnostics.NewDiagnostic], a code of its own vocabulary and
+// [diagnostics.Diagnostic.WithMessage] for the i18n key: the codes this
+// package and [web] refuse under ([web.CodeMalformedBody] and the others)
+// are exported, their constructors are not. That is deliberate for now —
+// one consumer is not enough to say whether the right export is a
+// constructor per code or a refusal type — and it costs a caller the three
+// lines that build the diagnostic. [web.Problems] renders whatever a stage
+// recorded, so nothing is lost by building it by hand.
 func (e *Exchange) Refuse(status int, d diagnostics.Diagnostic) {
 	if e.Status == 0 {
 		e.Status = status

@@ -43,6 +43,15 @@ var ErrRowRetained = errors.New("postgres: Row read after its query — a batch 
 
 // Value returns the bytes of one column, and whether it is NULL. The slice
 // borrows the batch's storage.
+//
+// The bytes are PostgreSQL's binary encoding, not a Go value: turn one into
+// a value with its decoder in
+// [github.com/mlagarrigue/sluice/database/postgres/pgtype] — DecodeInt8,
+// DecodeText, DecodeTimestampTZ, one per type — and never by reading the
+// bytes by hand, which is how an endianness or an epoch ends up wrong in a
+// caller. A whole column of the batch at once is [ScanInt8] and its
+// siblings, reached through [Row.Rows]; that is the faster shape and the one
+// to prefer when every row is wanted.
 func (r Row) Value(col int) (b []byte, isNull bool) {
 	if r.gen != r.rows.gen {
 		panic(ErrRowRetained)

@@ -53,9 +53,8 @@ that never passed a negative value has nothing to change there.
 
 ## Time windows: `window`
 
-- **`Tumbling` takes a late-element policy** (`feat(window)!: a late element
-  meets a policy, not a panic`): `Tumbling(s, ts, size, maxPerWindow,
-  policy, late)`. Pass `window.LateFail` to keep what the operator did
+- **`Tumbling` takes a late-element policy** (`86a1325`):
+  `Tumbling(s, ts, size, maxPerWindow, policy, late)`. Pass `window.LateFail` to keep what the operator did
   before — a panic with `sluice.ErrUnsorted` — or `window.LateDrop` to step
   over an element whose window had already closed. There is no zero value,
   like `sluice.Overflow`: say which.
