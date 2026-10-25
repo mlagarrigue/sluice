@@ -45,6 +45,15 @@ jobs:
         run: |
           echo "::error::the interop image is built from a tag, not from ${{ github.ref }}"
           exit 1
+      # The call form trusted whatever tag it was handed, and `:latest` moves
+      # with every build: a caller asking for a tag that is not a release
+      # would take `:latest` off the newest one. A caller that asks for it is
+      # a bug, so this fails rather than skips.
+      - name: Require the tag to name a release
+        if: inputs.tag != '' && !startsWith(inputs.tag, 'v')
+        run: |
+          echo "::error::the interop image is built from a release tag; '${{ inputs.tag }}' is not one"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
