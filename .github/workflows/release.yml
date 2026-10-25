@@ -48,14 +48,22 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          # The dry run is the reason this line exists: without it the
-          # action targets the default branch, reads its config and updates
-          # main's release pull request, whatever branch the push was on.
+          # Without this the action targets the repository's default branch
+          # whatever branch the push was on, and reads its configuration
+          # from there: a rehearsal of this procedure on a throwaway branch
+          # would silently update main's release pull request instead of its
+          # own (measured on `release-dry-run`, 2026-10-25). On main the
+          # line resolves to main and changes nothing.
           target-branch: ${{ github.ref_name }}
 
   interop-image:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    # A release tag, and only one: the dry run of this procedure cuts a
+    # release under a component prefix (`dryrun-v0.4.0`), and an image built
+    # from it would move `:latest` off the newest release — which is what
+    # the interop runner pulls. The shape of the tag is what says "release",
+    # here and in the called workflow's own guard.
+    if: needs.release-please.outputs.release_created == 'true' && startsWith(needs.release-please.outputs.tag_name, 'v')
     permissions:
       contents: read
       packages: write
