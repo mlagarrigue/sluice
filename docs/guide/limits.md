@@ -476,7 +476,9 @@ in continuous integration (job `interop-quic`).
 The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
 every implementation in its list every Sunday, on each side its role
 allows — 31 peer-directions — with the image the `Interop image` workflow
-builds from each release tag (`ghcr.io/mlagarrigue/sluice-interop`). The
+builds from each release tag from v0.3.0 on
+(`ghcr.io/mlagarrigue/sluice-interop`; the three tags before it were
+published by hand, and `latest` is not moved backwards to them). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case is run once more. `interop/expected-results.json` records

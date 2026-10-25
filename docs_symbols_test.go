@@ -218,9 +218,19 @@ func TestGuidesNameTheReleaseTheyOutrun(t *testing.T) {
 // exportsAt returns what the package in dir exported at tag: its exported
 // top-level names, and "Type.Member" for the exported methods and struct
 // fields of its exported types. Read from git, so no checkout is needed.
+//
+// The root package is "<tag>:" and not "<tag>:.", which git refuses as an
+// object name. Read the wrong way it returned nothing and every symbol of
+// the root package counted as missing — harmless while the guides said
+// they followed main, since the caller only asks whether anything is
+// missing, and wrong the moment they stopped (v0.3.0).
 func exportsAt(t *testing.T, tag, dir string) map[string]bool {
 	t.Helper()
-	ls, err := exec.Command("git", "ls-tree", "--name-only", tag+":"+dir).Output() //nolint:gosec // G204: a tag and a directory of this repository
+	tree := tag + ":"
+	if dir != "." {
+		tree += dir
+	}
+	ls, err := exec.Command("git", "ls-tree", "--name-only", tree).Output() //nolint:gosec // G204: a tag and a directory of this repository
 	if err != nil {
 		return map[string]bool{} // the package did not exist
 	}
