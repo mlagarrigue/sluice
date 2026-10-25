@@ -6,8 +6,22 @@ name: Release
 # minor and a `feat` the patch (release-please-config.json); v1.0.0 is
 # tagged by hand, once.
 #
-# A tag pushed with the workflow's own token starts no other workflow, so
-# the interop image is built from here, by call, when a release was cut.
+# release-please runs under a GitHub App's token (RELEASE_APP_ID and
+# RELEASE_APP_PRIVATE_KEY, an App installed on this repository alone, with
+# Contents and Pull requests), minted for the run and gone with it. The
+# workflow's own GITHUB_TOKEN would do the work just as well, but a push
+# made with it starts no other workflow — a rule against loops — so the
+# release pull request carried no check at all, and the tag it pushes
+# built no interop image. Both were manual gestures until here: reopening
+# the pull request to get its checks, and dispatching interop-image.yml on
+# the tag by hand, as v0.2.0 needed.
+#
+# The image is still built from here by call rather than left to the tag's
+# own `push: tags` trigger: the call is explicit and conditioned on a
+# release having been cut, where the trigger rests on a tag created through
+# the API raising a push event, which nothing here has ever exercised. Both
+# may now fire; interop-image.yml holds one run per tag, so the second is
+# collapsed rather than building the same image twice.
 on:
   push:
     branches: [main]
@@ -23,9 +37,15 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
+          token: ${{ steps.token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

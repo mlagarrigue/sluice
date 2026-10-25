@@ -24,6 +24,15 @@ permissions:
   contents: read
   packages: write
 
+# One run per tag. A release now reaches this file twice — release.yml calls
+# it when release-please cuts the release, and the tag that push leaves may
+# raise the trigger above on its own — and two runs would build and push the
+# same image. The later one wins, since it is no further along than the one
+# it replaces: the build is the same bytes either way.
+concurrency:
+  group: interop-image-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   interop-image:
     runs-on: ubuntu-latest
