@@ -191,7 +191,14 @@ func runServer(testcase string) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("accepted a connection")
+		// DidResume is the one thing the runner's verdict does not tell
+		// apart: it reads a Certificate in the second handshake and calls
+		// the resumption case failed, whether the client offered no
+		// session at all or this end refused the one it offered. Against
+		// xquic's client, on 2026-10-25, resumption failed while twelve
+		// other peers resumed with the same ticket, and the logs could not
+		// say which of the two it was.
+		log.Printf("accepted a connection, resumed %t", c.ConnectionState().DidResume)
 		if alpn == alpnH3 {
 			go serveH3(c)
 		} else {
