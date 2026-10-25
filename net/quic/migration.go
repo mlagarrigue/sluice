@@ -339,17 +339,23 @@ func (c *Conn) activeLocalCIDsLocked() uint64 {
 // the identifier the frame's own packet arrived under (retiring the thing
 // you are using to say so proves the sender confused, and §5.1.2 forbids
 // honouring it).
-func (c *Conn) handleRetireConnectionID(seq uint64) error {
+// It reports whether it moved anything, which the frame loop turns into
+// rxProgress: that field belongs to the receive goroutine and is written
+// without the lock (conn.go), so a handler that also takes the lock must
+// not touch it — the CONNECTION_CLOSE arm of the loop already sets it at
+// the call site for the same reason. A duplicate retirement moves nothing
+// and is counted non-productive (RFC 9000 §21.9).
+func (c *Conn) handleRetireConnectionID(seq uint64) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if seq >= c.nextLocalSeq {
-		return &transportError{
+		return false, &transportError{
 			code: transportProtocolViolation,
 			err:  fmt.Errorf("%w: the peer retired connection identifier %d, which was never issued", ErrQUIC, seq),
 		}
 	}
 	if seq == c.rxLocalCIDSeq {
-		return &transportError{
+		return false, &transportError{
 			code: transportProtocolViolation,
 			err:  fmt.Errorf("%w: the peer retired the connection identifier its own packet arrived on", ErrQUIC),
 		}
@@ -362,12 +368,11 @@ func (c *Conn) handleRetireConnectionID(seq uint64) error {
 		if c.registrar != nil {
 			c.registrar.removeLocalCID(e.cid)
 		}
-		c.rxProgress = true
 		c.issueLocalCIDsLocked()
-		return nil
+		return true, nil
 	}
 	// Already retired: a retransmitted frame, tolerated like any duplicate.
-	return nil
+	return false, nil
 }
 
 // handleNewConnectionID pools an identifier the peer issued for itself

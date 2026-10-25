@@ -1260,8 +1260,12 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 			return nil
 
 		case f.Type == frameRetireConnectionID:
-			if err := c.handleRetireConnectionID(f.value); err != nil {
+			moved, err := c.handleRetireConnectionID(f.value)
+			if err != nil {
 				return err
+			}
+			if moved {
+				c.rxProgress = true
 			}
 
 		case f.Type == frameNewConnectionID:

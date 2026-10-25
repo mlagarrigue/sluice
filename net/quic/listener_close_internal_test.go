@@ -283,7 +283,7 @@ func TestListenerRetiredIdentifierLeavesTheTable(t *testing.T) {
 	issued := len(server.localCIDs)
 	server.mu.Unlock()
 
-	if err := server.handleRetireConnectionID(victim.seq); err != nil {
+	if _, err := server.handleRetireConnectionID(victim.seq); err != nil {
 		t.Fatalf("retire: %v", err)
 	}
 	if routes(victim.cid) {
