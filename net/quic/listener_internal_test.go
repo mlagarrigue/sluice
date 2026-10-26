@@ -1635,3 +1635,58 @@ func TestListenerRecognisesAPeersStatelessReset(t *testing.T) {
 		t.Errorf("the listener answered the peer's reset with %d datagrams of its own, want none", len(got))
 	}
 }
+
+// RFC 9000 §10.3.1: an endpoint "identifies a received datagram as a
+// Stateless Reset by comparing the last 16 bytes of the datagram with all
+// stateless reset tokens associated with the remote address on which the
+// datagram was received."
+//
+// Until 2026-10-26 an unroutable short-header datagram was compared against
+// every live connection whatever address it came from. Two costs: a token
+// matched a connection the datagram had nothing to do with, and a flood from
+// one source paid a lock and a comparison per connection on the single
+// socket-reading goroutine — with ListenerConfig.MaxConns zero, so unbounded
+// by default, and with the per-second reset budget that resetFor's comment
+// claimed as its bound never closing, since one source spends four of the
+// sixteen at most.
+func TestAStatelessResetIsOnlyLookedForOnItsOwnAddress(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "reset10:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}},
+		DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	var token [16]byte
+	for i := range token {
+		token[i] = byte(0xa0 + i)
+	}
+	// One live connection, holding that token for an identifier it has
+	// used, with a peer at its own address.
+	peer := fakeFuzzAddr("reset10:peer")
+	c := newConn(pc, peer, []byte("cli-cid0"), []byte("srv-cid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.mu.Lock()
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("cli-cid1"), token: token, used: true})
+	c.mu.Unlock()
+	l.mu.Lock()
+	l.routeLocked("srv-cid0", c)
+	l.mu.Unlock()
+
+	// A datagram carrying that very token, from an address the connection
+	// knows nothing about. §10.3.1 does not have it compared there.
+	reset := make([]byte, 40)
+	reset[0] = 0x40
+	copy(reset[1:], "made-up0")
+	copy(reset[len(reset)-16:], token[:])
+
+	if got := l.resetFor(reset, fakeFuzzAddr("reset10:elsewhere")); got != nil {
+		t.Errorf("a datagram from another address was taken as this connection's stateless reset: its tokens are not associated with that address (§10.3.1)")
+	}
+	// From the connection's own address it is one, which is what keeps the
+	// check above from passing for the wrong reason.
+	if got := l.resetFor(reset, peer); got != c {
+		t.Errorf("resetFor returned %v for a datagram from the connection's own address carrying its token, want the connection", got)
+	}
+}

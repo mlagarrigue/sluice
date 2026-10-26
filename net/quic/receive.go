@@ -770,6 +770,22 @@ func (c *Conn) expectedDCID(dcid []byte, space int) bool {
 // stateless_reset_token parameter or a NEW_CONNECTION_ID frame. Token
 // comparison is constant-time; an unannounced (all-zero) slot never
 // matches, so noise cannot probe for it.
+// isStatelessResetFrom is isStatelessReset for a datagram that reached the
+// listener rather than this connection: §10.3.1 compares the tail against
+// "all stateless reset tokens associated with the remote address on which
+// the datagram was received", so a connection whose peer is somewhere else
+// is not compared at all. The listener's unroutable path is the only caller,
+// and it walks every live connection.
+func (c *Conn) isStatelessResetFrom(datagram []byte, from net.Addr) bool {
+	c.mu.Lock()
+	elsewhere := !sameAddr(from, c.peer)
+	c.mu.Unlock()
+	if elsewhere {
+		return false
+	}
+	return c.isStatelessReset(datagram)
+}
+
 func (c *Conn) isStatelessReset(datagram []byte) bool {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return false

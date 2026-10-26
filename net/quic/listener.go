@@ -818,7 +818,7 @@ func (l *Listener) dispatch(datagram []byte, from net.Addr, via net.PacketConn, 
 		// Or the other way round: the peer of one of this listener's
 		// connections lost its state and is saying so (§10.3.1). Compared
 		// before the reset this end would send, within the same budget.
-		if c := l.resetFor(datagram); c != nil {
+		if c := l.resetFor(datagram, from); c != nil {
 			_ = c.handleStatelessReset()
 			return
 		}
@@ -1449,39 +1449,64 @@ const maxResetsPerSourcePerSecond = 4
 // made "when a packet cannot be associated with a connection", and on a
 // server that is here, not in any connection — the datagram named an
 // identifier the peer made up. The 16-byte tail is compared against the
-// tokens each connection holds from its peer (isStatelessReset, used
-// identifiers only), in constant time per connection but once per
-// connection, so only within the per-second budget of the resets this end
-// sends: a flood of unroutable datagrams costs a comparison per connection
-// each until the budget is spent, and a real reset is one datagram. Long
-// headers are not compared: §10.3 says "any packet", but a reset has the
-// short-header shape by construction (§10.3), a conforming peer never sends
-// a long-header one, and every Initial from a new client would otherwise
-// pay a comparison per live connection on the accept path.
+// tokens held by the connections *on the datagram's own remote address*,
+// which is the comparison §10.3.1 describes: "all stateless reset tokens
+// associated with the remote address on which the datagram was received"
+// (isStatelessResetFrom; used identifiers only, constant time).
+//
+// That address is also what bounds the cost. Until 2026-10-26 the tail was
+// compared against every live connection, and this comment claimed the
+// per-second reset budget as its bound — "a flood of unroutable datagrams
+// costs a comparison per connection each until the budget is spent". It is
+// not one: that budget is l.resetsSent, which only a reset actually sent
+// raises, and maxResetsPerSourcePerSecond caps one source at four of the
+// sixteen. Measured: 200 datagrams from a single source left it at 4, so
+// the gate never closed and every datagram paid the whole table — on the
+// one goroutine that reads the socket, with MaxConns zero by default.
+// Scoped to the address, a flood from a source holding no connection
+// compares nothing, and the budget is left to do what it is for: bounding
+// the resets this end *sends*.
+//
+// The table is still walked to find those connections, which is a lock and
+// an address comparison each. An index by remote address would make it a
+// lookup; it would also have to follow every migration, and the walk is
+// not what the scan cost.
+//
+// Long headers are not compared: §10.3 says "any packet", but a reset has
+// the short-header shape by construction (§10.3), a conforming peer never
+// sends a long-header one, and every Initial from a new client would
+// otherwise pay a comparison per live connection on the accept path.
 //
 // The connections are listed under l.mu and compared outside it: the
-// established order is Conn.mu then Listener.mu, and isStatelessReset takes
-// the connection's.
-func (l *Listener) resetFor(datagram []byte) *Conn {
+// established order is Conn.mu then Listener.mu, and isStatelessResetFrom
+// takes the connection's.
+func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return nil
 	}
 	l.mu.Lock()
-	if l.resetsSent >= maxResetsPerSecond && time.Since(l.resetWindow) < time.Second {
-		l.mu.Unlock()
-		return nil
-	}
 	conns := make([]*Conn, 0, len(l.keysOf))
 	for c := range l.keysOf {
 		conns = append(conns, c)
 	}
 	l.mu.Unlock()
 	for _, c := range conns {
-		if c.isStatelessReset(datagram) {
+		if c.isStatelessResetFrom(datagram, from) {
 			return c
 		}
 	}
 	return nil
+}
+
+// resetBudgetLocked reports whether this end may still spend a reset on src
+// in the current window, rolling the window when it has run out. Callers
+// hold l.mu.
+func (l *Listener) resetBudgetLocked(now time.Time, src string) bool {
+	if now.Sub(l.resetWindow) >= time.Second {
+		l.resetWindow, l.resetsSent = now, 0
+		clear(l.resetsTo)
+	}
+	return l.resetsSent < maxResetsPerSecond && l.resetsTo[src] < maxResetsPerSourcePerSecond
 }
 
 // maybeSendStatelessReset answers one unroutable short-header datagram with
@@ -1501,12 +1526,8 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	}
 	l.mu.Lock()
 	now := time.Now()
-	if now.Sub(l.resetWindow) >= time.Second {
-		l.resetWindow, l.resetsSent = now, 0
-		clear(l.resetsTo)
-	}
 	src := sourceIP(from)
-	if l.resetsSent >= maxResetsPerSecond || l.resetsTo[src] >= maxResetsPerSourcePerSecond {
+	if !l.resetBudgetLocked(now, src) {
 		l.mu.Unlock()
 		l.noteDiscard()
 		return
