@@ -37,6 +37,18 @@ type ReplicationConfig struct {
 	// change is never held back waiting for the one after it.
 	BatchChanges int
 
+	// BatchBytes bounds the message payloads one batch keeps, in bytes.
+	// Zero means the same default as [QueryConfig.BatchBytes]; a negative
+	// value, or one above the same ceiling, is refused.
+	//
+	// It is the bound that makes a batch end: the values a change carries
+	// borrow the payload they were decoded from, so the batch holds every
+	// payload it has read. Without it a server could grow that store
+	// without ever producing a change — three pgoutput messages carry none
+	// (Type, Origin, and a Relation redescribing a relation already known)
+	// — and the batch, holding nothing, would never close.
+	BatchBytes int
+
 	// StatusInterval is how often, at most, the position acknowledged
 	// through [Replication.Ack] is reported to the server. Zero means ten
 	// seconds, the server's own wal_receiver_status_interval; a negative
@@ -52,9 +64,10 @@ const defaultStatusInterval = 10 * time.Second
 // changes. [Replicate] opens it, [Replication.Changes] reads it, and
 // [Replication.Ack] tells the server what has been processed.
 type Replication struct {
-	c        *Conn
-	batch    int
-	interval time.Duration
+	c          *Conn
+	batch      int
+	batchBytes int
+	interval   time.Duration
 
 	// acked is the highest position the consumer acknowledged; sent is the
 	// one last reported to the server, and sentAt when.
@@ -76,6 +89,11 @@ type Replication struct {
 	spans   []tupleSpans
 	vals    []Value
 	scratch []byte
+	// kept is the payload bytes this batch has copied into the arena, the
+	// figure BatchBytes bounds; small counts the batches in a row that
+	// fitted the retained size, for giving an oversized arena back.
+	kept  int
+	small int
 }
 
 // Replicate opens a logical replication connection and starts streaming the
@@ -99,6 +117,10 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationCon
 	if batch == 0 {
 		batch = sluice.DefaultBatchSize
 	}
+	batchBytes := rc.BatchBytes
+	if batchBytes == 0 {
+		batchBytes = defaultBatchBytes
+	}
 	interval := rc.StatusInterval
 	if interval == 0 {
 		interval = defaultStatusInterval
@@ -117,7 +139,7 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationCon
 		_ = c.Close()
 		return nil, err
 	}
-	r := &Replication{c: c, batch: batch, interval: interval, sent: rc.Start, sentAt: time.Now()}
+	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rc.Start, sentAt: time.Now()}
 	r.acked.Store(uint64(rc.Start))
 	return r, nil
 }
@@ -133,6 +155,9 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 	}
 	if rc.BatchChanges < 0 {
 		return "", fmt.Errorf("postgres: ReplicationConfig.BatchChanges %d is negative — zero means %d", rc.BatchChanges, sluice.DefaultBatchSize)
+	}
+	if rc.BatchBytes < 0 || rc.BatchBytes > maxBatchBytes {
+		return "", fmt.Errorf("postgres: ReplicationConfig.BatchBytes %d is outside 1..%d bytes — zero means the default, %d", rc.BatchBytes, maxBatchBytes, defaultBatchBytes)
 	}
 	if rc.StatusInterval < 0 {
 		return "", fmt.Errorf("postgres: ReplicationConfig.StatusInterval %v is negative — zero means %v", rc.StatusInterval, defaultStatusInterval)
@@ -267,11 +292,9 @@ func (r *Replication) Close() error { return r.c.Close() }
 // message is not already received.
 func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 	r.changes, r.spans, r.vals = r.changes[:0], r.spans[:0], r.vals[:0]
-	r.chunk = 0
-	if len(r.arena) > 0 {
-		r.arena[0] = r.arena[0][:0]
-	}
-	for len(r.changes) < r.batch && (len(r.changes) == 0 || r.c.r.Buffered()) {
+	r.resetArena()
+	for len(r.changes) < r.batch && r.kept < r.batchBytes &&
+		(len(r.changes) == 0 || r.c.r.Buffered()) {
 		m, err := r.c.r.Next()
 		if err != nil {
 			return sluice.Batch[Change]{}, r.c.breakConn(err)
@@ -305,7 +328,51 @@ func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 			return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf("%w: message %q during replication", ErrProtocol, m.Type))
 		}
 	}
+	if r.kept > 0 && r.kept >= r.batchBytes && len(r.changes) == 0 {
+		// A whole batch's worth of payload read and not one change in it.
+		// The loop's other exit — "the next message is not already
+		// received" — is short-circuited while the batch holds nothing, so
+		// before this bound existed the read had no stopping condition at
+		// all: a server sending an uninterrupted run of messages that carry
+		// no change (Type, Origin, or a Relation redescribing a relation
+		// already known, none of which the decoder counts) grew the arena at
+		// whatever rate it chose, and the batch could never close. A server
+		// that fills a batch without producing a change is not serving data.
+		return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf(
+			"%w: %d bytes of replication messages carrying no change, the batch bound (ReplicationConfig.BatchBytes)",
+			ErrProtocol, r.kept))
+	}
 	return r.materialize(), nil
+}
+
+// resetArena empties the batch's payload store, keeping its chunks for the
+// next batch — unless they outgrew what an ordinary batch needs and
+// rowsShrinkAfter batches in a row have fitted the retained size, in which
+// case they are given back and the next batch starts small. It is the rule
+// [Rows.reset] keeps, for the same reason: a connection that once met a
+// large batch kept its peak for good, and a pool of them held that peak
+// times the pool. Only a connection that met a large batch pays the check's
+// body.
+func (r *Replication) resetArena() {
+	held := 0
+	for _, c := range r.arena {
+		held += cap(c)
+	}
+	switch {
+	case held <= rowsRetainBytes:
+		r.small = 0
+	case r.kept <= rowsRetainBytes:
+		r.small++
+		if r.small >= rowsShrinkAfter {
+			r.arena, r.small = nil, 0
+		}
+	default:
+		r.small = 0
+	}
+	r.chunk, r.kept = 0, 0
+	if len(r.arena) > 0 {
+		r.arena[0] = r.arena[0][:0]
+	}
 }
 
 // copyData handles one CopyData of the replication stream: WAL data, which
@@ -342,6 +409,7 @@ const arenaChunk = 64 << 10
 // keep copies a payload into the batch's arena, where it stays put until the
 // next batch: the values decoded from it borrow it.
 func (r *Replication) keep(p []byte) []byte {
+	r.kept += len(p)
 	for r.chunk < len(r.arena) {
 		c := r.arena[r.chunk]
 		if cap(c)-len(c) >= len(p) {

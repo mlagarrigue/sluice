@@ -356,7 +356,7 @@ func TestReplicationStreamScripted(t *testing.T) {
 	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
 	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	r := &Replication{c: NewConn(rw), batch: 100, interval: time.Hour}
+	r := &Replication{c: NewConn(rw), batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.Ack(0x08)
 
 	var batches [][]ChangeKind
@@ -400,9 +400,152 @@ func TestReplicationStreamScripted(t *testing.T) {
 
 // A second call to Changes is refused: one connection streams a slot once.
 func TestReplicationChangesOnce(t *testing.T) {
-	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}), batch: 1, interval: time.Hour}
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.started.Store(true)
 	if _, err := r.Changes(t.Context()).Collect(); err == nil {
 		t.Error("a second Changes was accepted")
+	}
+}
+
+// noChangeLimit is how much payload the scripted server below hands out
+// before it gives up: more than the byte bound a batch carries, so a batch
+// that honours the bound closes long before the server runs out, and one
+// that does not is caught rather than left running.
+const noChangeLimit = defaultBatchBytes + 16<<20
+
+var errNoChangeExhausted = errors.New("test: the server gave up after the limit")
+
+// noChangeServer feeds an endless stream of CopyData/XLogData messages whose
+// pgoutput payload carries no change at all, and counts the payload bytes it
+// handed out.
+type noChangeServer struct {
+	payload []byte // the pgoutput message, repeated
+	buf     []byte
+	given   int
+}
+
+func (s *noChangeServer) Read(p []byte) (int, error) {
+	if len(s.buf) == 0 {
+		if s.given >= noChangeLimit {
+			return 0, errNoChangeExhausted
+		}
+		body := make([]byte, 0, 25+len(s.payload))
+		body = append(body, 'w')
+		body = binary.BigEndian.AppendUint64(body, uint64(s.given)+1) // WAL start
+		body = binary.BigEndian.AppendUint64(body, uint64(s.given)+1) // WAL end
+		body = binary.BigEndian.AppendUint64(body, 0)                 // server clock
+		body = append(body, s.payload...)
+		s.buf = append(s.buf, pgwire.BackendCopyData, 0, 0, 0, 0)
+		binary.BigEndian.PutUint32(s.buf[1:5], uint32(len(body)+4)) //nolint:gosec // G115: a message this test builds
+		s.buf = append(s.buf, body...)
+		s.given += len(s.payload)
+	}
+	n := copy(p, s.buf)
+	s.buf = s.buf[n:]
+	return n, nil
+}
+
+func (s *noChangeServer) Write(p []byte) (int, error) { return len(p), nil }
+func (s *noChangeServer) Close() error                { return nil }
+
+// typeMessagePayload is a pgoutput Type message ('Y'), which the decoder
+// drops without counting anything, padded to n bytes.
+func typeMessagePayload(n int) []byte {
+	p := make([]byte, n)
+	p[0] = 'Y'
+	return p
+}
+
+// sameRelationPayload is a valid Relation message ('R') for one fixed OID,
+// made wide by a long relation name. Sent more than once, every message
+// after the first describes an OID the decoder already knows, so the
+// relation bound never counts it.
+func sameRelationPayload(n int) []byte {
+	name := bytes.Repeat([]byte{'a'}, n)
+	p := []byte{'R', 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(p[1:5], 42) // the same OID every time
+	p = append(p, 's', 0)                  // namespace
+	p = append(p, name...)                 // relation name
+	p = append(p, 0)
+	p = append(p, 'd')    // replica identity
+	p = append(p, 0, 1)   // one column
+	p = append(p, 0)      // flags: not a key
+	p = append(p, 'c', 0) // column name
+	p = binary.BigEndian.AppendUint32(p, 23)
+	p = binary.BigEndian.AppendUint32(p, 0xffffffff)
+	return p
+}
+
+// A batch that holds no change short-circuits the loop's other exit — "the
+// next message is not already received" — so before ReplicationConfig.
+// BatchBytes existed the read had no stopping condition at all. copyData
+// copies every payload into the batch's arena before asking the decoder what
+// it carries, and three pgoutput messages carry no change: Type, Origin, and
+// a Relation redescribing a relation already known. A server sending an
+// uninterrupted run of them grew the arena at whatever rate it chose, and
+// the batch could never close.
+func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"type messages", typeMessagePayload(64 << 10)},
+		{"the same relation redescribed", sameRelationPayload(64 << 10)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := &noChangeServer{payload: c.payload}
+			r := &Replication{
+				c: NewConn(srv), batch: sluice.DefaultBatchSize,
+				batchBytes: defaultBatchBytes, interval: time.Minute,
+			}
+			b, err := r.readBatch()
+			arena := 0
+			for _, chunk := range r.arena {
+				arena += cap(chunk)
+			}
+			if errors.Is(err, errNoChangeExhausted) {
+				t.Fatalf("readBatch held %d bytes of payload in a batch of %d changes without closing it (arena %d bytes): no bound stops a batch that carries no change",
+					srv.given, len(b.Items), arena)
+			}
+			if !errors.Is(err, ErrProtocol) {
+				t.Fatalf("readBatch returned %v after %d bytes without a change; want ErrProtocol", err, srv.given)
+			}
+			if srv.given > defaultBatchBytes+len(c.payload) {
+				t.Errorf("readBatch read %d bytes before giving up, more than the bound of %d plus one message", srv.given, defaultBatchBytes)
+			}
+		})
+	}
+}
+
+// A connection that once met a large batch kept its peak for good: readBatch
+// truncated arena[0] and left every other chunk allocated. It is the rule
+// Rows.reset keeps, and for the same reason — a pool of a hundred
+// connections that each met one large batch held that peak a hundred times.
+func TestReplicationGivesBackAnOversizedArena(t *testing.T) {
+	r := &Replication{batchBytes: defaultBatchBytes}
+	// A batch that held well over the retained size.
+	r.arena = [][]byte{make([]byte, 0, 2*rowsRetainBytes)}
+	r.arena[0] = r.arena[0][:2*rowsRetainBytes]
+	r.kept = 2 * rowsRetainBytes
+	held := func() (n int) {
+		for _, c := range r.arena {
+			n += cap(c)
+		}
+		return n
+	}
+	if held() <= rowsRetainBytes {
+		t.Fatalf("the arena starts at %d bytes, not over the retained %d; the sequence under test cannot be reached", held(), rowsRetainBytes)
+	}
+	// Narrow batches from here on: the first of them is the one that held
+	// the large payload, and the count starts after it.
+	for i := range rowsShrinkAfter + 1 {
+		r.resetArena()
+		r.kept = 1 << 10
+		if i < rowsShrinkAfter-1 && held() <= rowsRetainBytes {
+			t.Fatalf("the arena was given back after %d narrow batches, before the %d the rule asks for", i+1, rowsShrinkAfter)
+		}
+	}
+	if n := held(); n > rowsRetainBytes {
+		t.Errorf("the arena still holds %d bytes after %d narrow batches, over the retained %d", n, rowsShrinkAfter+1, rowsRetainBytes)
 	}
 }
