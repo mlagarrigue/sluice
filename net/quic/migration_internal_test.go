@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2926,5 +2927,189 @@ func TestRepeatedMigrationsDoNotRearmTheLeftPathBudget(t *testing.T) {
 	if total := toB(); total > 3*credited {
 		t.Errorf("%d bytes toward B for %d credited: §8.1's factor of three is exceeded, and the excess grows with the number of migrations",
 			total, credited)
+	}
+}
+
+// newConnectionIDFrame encodes one NEW_CONNECTION_ID frame as a peer sends it
+// (RFC 9000 §19.15): sequence, Retire Prior To, length, identifier, then
+// the sixteen-byte stateless reset token.
+func newConnectionIDFrame(seq, retire uint64, cid string, tok byte) []byte {
+	b := varint.Append(nil, frameNewConnectionID)
+	b = varint.Append(b, seq)
+	b = varint.Append(b, retire)
+	b = append(b, byte(len(cid)))
+	b = append(b, cid...)
+	for range 16 {
+		b = append(b, tok)
+	}
+	return b
+}
+
+// RFC 9000 §19.15: "Receipt of the same frame multiple times MUST NOT be
+// treated as a connection error", and §13.3 retransmits a lost
+// NEW_CONNECTION_ID under the same sequence number with no exemption for a
+// sequence the receiver has since retired of its own accord. Two validated
+// Rebind calls retire sequences 0 and 1 and the peer replaces them, so the
+// pool sits at the advertised active_connection_id_limit; the
+// retransmission of sequence 1 was then pooled as if new and the pool
+// crossed the limit — CONNECTION_ID_LIMIT_ERROR, connection closed, on a
+// peer doing exactly what §13.3 asks. retirePeerCIDLocked now records what
+// this end retired of its own accord (peerRetiredSelf), so the frame is
+// answered with RETIRE_CONNECTION_ID again instead of pooled.
+func TestRetransmittedNewConnectionIDOfARetiredSequence(t *testing.T) {
+	params := DefaultParameters()
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("rp07:first")}, fakeFuzzAddr("rp07:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), true, params)
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	limit := c.params.ActiveConnIDLimit
+	c.mu.Unlock()
+	if limit < 3 {
+		t.Fatalf("active_connection_id_limit %d is too small for this probe", limit)
+	}
+
+	now := time.Now()
+	// Fill the pool to the limit: the handshake identifier (sequence 0) plus
+	// one NEW_CONNECTION_ID per remaining slot.
+	seqOne := newConnectionIDFrame(1, 0, "peercid1", 0x11)
+	if err := c.frames(spaceApplication, seqOne, now); err != nil {
+		t.Fatalf("NEW_CONNECTION_ID sequence 1: %v", err)
+	}
+	for seq := uint64(2); seq < limit; seq++ {
+		f := newConnectionIDFrame(seq, 0, "peercid"+string(rune('0'+seq)), byte(0x10+seq))
+		if err := c.frames(spaceApplication, f, now); err != nil {
+			t.Fatalf("NEW_CONNECTION_ID sequence %d: %v", seq, err)
+		}
+	}
+
+	// Two Rebind calls, each validated, each retiring the identifier its
+	// path sent under: sequence 0, then sequence 1. The peer replaces both.
+	next := limit
+	for i, addr := range []string{"rp07:second", "rp07:third"} {
+		if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr(addr)}); err != nil {
+			t.Fatalf("Rebind %d: %v", i+1, err)
+		}
+		c.mu.Lock()
+		data := c.pathProbe.data
+		c.mu.Unlock()
+		c.handlePathResponse(Frame{Type: framePathResponse, Data: data[:]}, now)
+		f := newConnectionIDFrame(next, 0, "peercid"+string(rune('0'+next)), byte(0x10+next))
+		if err := c.frames(spaceApplication, f, now); err != nil {
+			t.Fatalf("the peer's replacement, sequence %d: %v", next, err)
+		}
+		next++
+	}
+
+	c.mu.Lock()
+	pooled := make([]uint64, 0, len(c.peerCIDs))
+	for _, e := range c.peerCIDs {
+		pooled = append(pooled, e.seq)
+	}
+	c.mu.Unlock()
+	for _, seq := range pooled {
+		if seq == 1 {
+			t.Fatalf("sequence 1 is still pooled after its Rebind was validated: pool %v", pooled)
+		}
+	}
+
+	// The retransmission §13.3 describes: same sequence, same identifier,
+	// same token.
+	err := c.frames(spaceApplication, seqOne, now)
+	c.mu.Lock()
+	after := make([]uint64, 0, len(c.peerCIDs))
+	for _, e := range c.peerCIDs {
+		after = append(after, e.seq)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		var te *transportError
+		code := uint64(0)
+		if errors.As(err, &te) {
+			code = te.code
+		}
+		t.Fatalf("the retransmitted NEW_CONNECTION_ID of a self-retired sequence is a connection error: %v (code %#x); pool before %v, after %v",
+			err, code, pooled, after)
+	}
+	for _, seq := range after {
+		if seq == 1 {
+			t.Fatalf("the retransmission re-pooled the retired sequence 1: pool %v", after)
+		}
+	}
+}
+
+// A Rebind queues the retirement of the identifier the path it left was
+// sending under, and holds it until the new path validates — the old path is
+// §9.3.2's fallback until then. A second Rebind before that validation
+// overwrote the pending sequence, so the first one was never retired and
+// never used again: it sat in the pool marked used, where no Rebind picks
+// it, and the peer was never told. It is retired now instead, its path being
+// two Rebinds behind.
+func TestASecondRebindDoesNotLoseThePendingRetirement(t *testing.T) {
+	params := DefaultParameters()
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("rb07:first")}, fakeFuzzAddr("rb07:peer"),
+		[]byte("peercid0"), []byte("selfcid0"), true, params)
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	limit := c.params.ActiveConnIDLimit
+	c.mu.Unlock()
+	if limit < 4 {
+		t.Fatalf("active_connection_id_limit %d is too small for this test", limit)
+	}
+	for seq := uint64(1); seq < limit; seq++ {
+		f := newConnectionIDFrame(seq, 0, "peercid"+string(rune('0'+seq)), byte(0x10+seq))
+		if err := c.frames(spaceApplication, f, time.Now()); err != nil {
+			t.Fatalf("NEW_CONNECTION_ID sequence %d: %v", seq, err)
+		}
+	}
+
+	// A first Rebind, validated, so the identifier in use from here on is a
+	// pooled one — sequence 0 is the handshake's and was never pooled, so a
+	// retirement naming it has nothing to remove.
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rb07:second")}); err != nil {
+		t.Fatalf("first Rebind: %v", err)
+	}
+	c.mu.Lock()
+	data := c.pathProbe.data
+	c.mu.Unlock()
+	c.handlePathResponse(Frame{Type: framePathResponse, Data: data[:]}, time.Now())
+
+	c.mu.Lock()
+	pending := c.currentPeerSeq
+	pooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == pending })
+	c.mu.Unlock()
+	if !pooled {
+		t.Fatalf("the identifier in use (sequence %d) is not pooled; the sequence under test was not reached", pending)
+	}
+
+	// Two more Rebinds, neither validated: the second used to overwrite the
+	// first one's pending retirement.
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rb07:third")}); err != nil {
+		t.Fatalf("second Rebind: %v", err)
+	}
+	c.mu.Lock()
+	armed, armedSeq := c.pathProbe.retireOld, c.pathProbe.retireSeq
+	c.mu.Unlock()
+	if !armed || armedSeq != pending {
+		t.Fatalf("after the second Rebind retireOld=%v retireSeq=%d, want true and %d; the sequence under test was not reached",
+			armed, armedSeq, pending)
+	}
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("rb07:fourth")}); err != nil {
+		t.Fatalf("third Rebind: %v", err)
+	}
+
+	c.mu.Lock()
+	stillPooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == pending })
+	armedSeq = c.pathProbe.retireSeq
+	c.mu.Unlock()
+	if armedSeq == pending {
+		t.Fatalf("the third Rebind left sequence %d pending; the sequence under test was not reached", pending)
+	}
+	if stillPooled {
+		t.Errorf("sequence %d is still pooled after a later Rebind overwrote its pending retirement: this end never uses it again and the peer is never told",
+			pending)
 	}
 }

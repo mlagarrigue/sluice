@@ -487,6 +487,18 @@ type Conn struct {
 	peerCIDs        []peerCID
 	peerRetirePrior uint64
 	currentPeerSeq  uint64
+	// peerRetiredSelf remembers the sequences this end retired of its own
+	// accord (retirePeerCIDLocked), newest last and bounded: a NEW_
+	// CONNECTION_ID retransmitted for one of them is a duplicate, not a
+	// new identifier, and pooling it again pushed the pool past the
+	// active_connection_id_limit this end advertised — CONNECTION_ID_LIMIT_
+	// ERROR, connection closed. The peer's own Retire Prior To needs no
+	// record (peerRetirePrior covers it); this is the half this end chose.
+	// A ring rather than a set: §13.3 makes the peer retransmit the frame
+	// within a probe timeout or two of the original, and remembering the
+	// last few retirements covers that window. Past it the frame is pooled
+	// again, as it was before 2026-10-26.
+	peerRetiredSelf []uint64
 	pathProbe       pathProbe
 	migrations      uint64
 	// lastValidated* is the path a server last proved — address, socket,

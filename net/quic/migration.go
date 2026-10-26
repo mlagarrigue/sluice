@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
@@ -434,9 +435,16 @@ func (c *Conn) handleNewConnectionID(f Frame) error {
 		// idempotent.
 		return c.retirePeerCIDsBeforeLocked(retire)
 	}
-	if seq < c.peerRetirePrior {
+	if seq < c.peerRetirePrior || c.retiredSelfLocked(seq) {
 		// §5.1.2: an identifier that arrives already ordered retired is
-		// retired at once, never pooled.
+		// retired at once, never pooled. The same for one this end retired
+		// itself: the frame is a retransmission (§13.3 makes the peer
+		// resend it with no exemption for an identifier retired since), and
+		// pooling it as new pushed the pool past the limit this end
+		// advertised, which closes the connection on a conformant peer.
+		// Answering with RETIRE_CONNECTION_ID again is what §19.16 asks of
+		// an identifier this end will not use, and queueRetireLocked drops
+		// a duplicate.
 		return c.queueRetireLocked(seq)
 	}
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: append([]byte(nil), cid...), token: token})
@@ -582,6 +590,32 @@ func (c *Conn) retirePeerCIDLocked(seq uint64) {
 		}
 	}
 	c.peerCIDs = kept
+	c.noteRetiredSelfLocked(seq)
+}
+
+// maxRetiredSelf bounds peerRetiredSelf. Every entry is one identifier this
+// end retired and whose NEW_CONNECTION_ID the peer may still retransmit;
+// §13.3 has that retransmission follow the original by a probe timeout or
+// two, so a handful is the window and the ring never grows with the
+// connection's age.
+const maxRetiredSelf = 32
+
+// noteRetiredSelfLocked records a sequence this end retired, dropping the
+// oldest once the ring is full. Callers hold mu.
+func (c *Conn) noteRetiredSelfLocked(seq uint64) {
+	if c.retiredSelfLocked(seq) {
+		return
+	}
+	if len(c.peerRetiredSelf) == maxRetiredSelf {
+		c.peerRetiredSelf = append(c.peerRetiredSelf[:0], c.peerRetiredSelf[1:]...)
+	}
+	c.peerRetiredSelf = append(c.peerRetiredSelf, seq)
+}
+
+// retiredSelfLocked reports whether this end retired seq of its own accord.
+// Callers hold mu.
+func (c *Conn) retiredSelfLocked(seq uint64) bool {
+	return slices.Contains(c.peerRetiredSelf, seq)
 }
 
 // probingOnly reports whether a packet carried nothing but the frames §9.1
@@ -967,6 +1001,14 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	c.adoptPeerCIDAtLocked(fresh)
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
+	if c.pathProbe.retireOld && c.pathProbe.retireSeq != previous {
+		// A Rebind before the previous one validated: its retirement was
+		// still pending, and overwriting it here lost that identifier for
+		// good — this end never used it again and never told the peer. The
+		// path it belonged to is two Rebinds behind, so it is retired now
+		// rather than waiting for a validation that will not name it.
+		c.retirePeerCIDLocked(c.pathProbe.retireSeq)
+	}
 	c.pathProbe.retireOld, c.pathProbe.retireSeq = true, previous
 	// One challenge, toward the address in use. RFC 9000 §9.6.3 says a
 	// client that migrates before it has moved to the server's preferred
