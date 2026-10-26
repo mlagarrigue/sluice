@@ -521,6 +521,14 @@ type Conn struct {
 	// and a packet that ends without it is counted (RFC 9000 §21.9,
 	// nonProductive). The receive goroutine's alone.
 	rxProgress bool
+	// writersIn counts the goroutines inside [Stream.Write] and the ones
+	// waiting for mu to get there. It is taken before the lock, which is
+	// the whole point: a writer already holding mu can only see that
+	// another one is coming if that other one counted itself before
+	// blocking. 0-RTT packets coalesce while it is above one, and the
+	// writer that brings it back to zero flushes the datagram they
+	// gathered (writePacketLocked).
+	writersIn atomic.Int64
 	// rxStaleCrypto says the packet being processed repeated Initial
 	// CRYPTO bytes already taken: a client resending its ClientHello has
 	// not seen this end's answer (RFC 9002 §6.2.3). earlyResends counts

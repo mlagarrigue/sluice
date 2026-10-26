@@ -405,6 +405,12 @@ func (s *Stream) WriteFinal(p []byte) (int, error) {
 
 func (s *Stream) write(p []byte, fin bool) (int, error) {
 	c := s.conn
+	// Counted before the lock: this is what tells a writer already holding
+	// mu that another one is on its way, so the 0-RTT packets of a burst of
+	// writes coalesce into full datagrams instead of one each
+	// (writePacketLocked). The writer that brings the count back to zero
+	// flushes what they gathered.
+	c.writersIn.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.writeBeginLocked()
@@ -414,6 +420,9 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	written, err := s.writeLocked(p, fin)
 	c.batching = false
 	c.flushBatchLocked()
+	if c.writersIn.Add(-1) == 0 {
+		c.flushDatagramLocked()
+	}
 	c.writeEndLocked()
 	if err == nil {
 		err = c.batchErr

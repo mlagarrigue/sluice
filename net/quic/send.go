@@ -510,10 +510,43 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return errClosed
 	}
 	const pnLen = 4
+	// A DialEarly client before its 1-RTT keys sends application data in
+	// 0-RTT packets: a long header of type 1, sealed with the early keys
+	// (RFC 9001 §4.6, RFC 9000 §17.2.3). Known here because the coalescing
+	// decision below turns on it.
+	early := space == spaceApplication && sp.sealer == nil && c.earlySealer != nil
 	// Only Initial and Handshake packets coalesce, and never a
 	// CONNECTION_CLOSE, which must leave now. Anything else first flushes
 	// what gathered, so order on the wire is the order of sending.
-	gathering := c.gather && space != spaceApplication && !opts.close
+	//
+	// 0-RTT packets coalesce too, and for a reason of their own: they carry
+	// a long header, so they have a Length field and may precede another
+	// packet in the same datagram, which a short-header 1-RTT packet never
+	// can (§12.2 — it has no Length field, so it is always the last packet
+	// of its datagram). They coalesce only while another writer is inside
+	// [Stream.Write] or waiting for mu to get there (writersIn), because
+	// only then does the gathered datagram have a known closer: the last
+	// writer out flushes it. One writer on its own sends at once.
+	//
+	// What that is worth, and what it cost not to do it. A client that
+	// opens many streams at once and writes a small request on each — 40
+	// requests the moment the connection opens, which is the QUIC Interop
+	// Runner's zerortt case and the shape of any multiplexed request
+	// burst — sent one datagram per write, and a second for the end of the
+	// stream: 138 datagrams of 214 bytes on average for a 10 KB request
+	// (measured on the runner, 2026-10-25, pass 40187114552). The path of
+	// that case queues 25 datagrams before it drops; a burst of eighty
+	// overran it, 23 datagrams were lost, and RFC 9001 §4.6.1 has their
+	// 0-RTT data resent in 1-RTT packets once the keys are there. The case
+	// counts what the client sends in 1-RTT and refuses more than
+	// 0.5 x FILENAMELEN x NUM_FILES of it: 7795 bytes against a bound of
+	// 5000, and the case failed against every peer that runs it — not for
+	// anything the peer did, but because the burst was shaped wrong. A
+	// conformant peer sees the same thing on any path with a queue: a
+	// sender that pays a datagram per frame loses the ones the queue has
+	// no room for, and pays for them twice.
+	gathering := !opts.close && ((c.gather && space != spaceApplication) ||
+		(early && c.writersIn.Load() > 1))
 	if !gathering {
 		c.flushDatagramLocked()
 	}
@@ -525,10 +558,6 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	header := c.hdrScratch[:0]
 	defer func() { c.hdrScratch = header[:0] }()
 	needPad := false
-	// A DialEarly client before its 1-RTT keys sends application data in
-	// 0-RTT packets: a long header of type 1, sealed with the early keys
-	// (RFC 9001 §4.6, RFC 9000 §17.2.3).
-	early := space == spaceApplication && sp.sealer == nil && c.earlySealer != nil
 	if space == spaceApplication && !early {
 		header = append(header, 0x40|c.spin|c.ku.phase|byte(pnLen-1)) // short header, fixed bit set, §17.4 spin, RFC 9001 §6 key phase
 		if opts.dcid != nil {
@@ -710,7 +739,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 		pn := c.takePNLocked(sp, space)
 		c.dgramPend = &pendingPacket{
-			sp: sp, space: space, prefix: append([]byte(nil), header...), payload: payload,
+			sp: sp, space: space, early: early, prefix: append([]byte(nil), header...), payload: payload,
 			retransPart: retransPart, pn: pn, opts: opts, now: now, dest: dest, onPath: onPath, ecn: c.dgramECN,
 		}
 		if needPad {
@@ -1361,6 +1390,10 @@ func (c *Conn) waitForCreditLocked(deadline time.Time) error {
 	// acknowledgements — writes at once, as outside Stream.write.
 	batching := c.batching
 	c.flushBatchLocked()
+	// Nor does a gathered datagram: a writer that sleeps on the window
+	// while holding the 0-RTT packets of other writers would keep the peer
+	// waiting for the very data that opens it.
+	c.flushDatagramLocked()
 	c.batching = false
 	c.cond.Wait()
 	c.batching = batching

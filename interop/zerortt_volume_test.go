@@ -15,6 +15,11 @@ import (
 // pathDelay is the one-way delay of the runner's simple-p2p scenario.
 const pathDelay = 15 * time.Millisecond
 
+// fileSize is the size of each file the runner's zerortt case generates
+// (testcases_quic.py, TestCaseZeroRTT.FILESIZE): the download is small, and
+// the long file *names* are what the case wants to see leave in 0-RTT.
+const fileSize = 32
+
 // countingPC classifies every datagram the client sends by the packet type
 // of its first packet: a long header whose type bits are 0b01 is 0-RTT (RFC
 // 9000 §17.2), anything with a short header is 1-RTT. A datagram that
@@ -39,6 +44,7 @@ type countingPC struct {
 	mu                         sync.Mutex
 	zeroRTT, oneRTT, longOther int
 	oneRTTPkts                 int
+	outPkts                    int // every datagram offered to the path, whatever its packet type
 	inPkts, inBytes            int
 	dropped                    int
 }
@@ -46,6 +52,7 @@ type countingPC struct {
 func (p *countingPC) WriteTo(b []byte, to net.Addr) (int, error) {
 	if len(b) > 0 {
 		p.mu.Lock()
+		p.outPkts++
 		switch {
 		case b[0]&0x80 == 0:
 			p.oneRTT += len(b)
@@ -63,8 +70,20 @@ func (p *countingPC) WriteTo(b []byte, to net.Addr) (int, error) {
 	p.once.Do(func() {
 		p.queue = make(chan func(), 1024)
 		go func() {
+			// One goroutine, in order: the runner's simple-p2p scenario is
+			// a point-to-point link with a droptail queue, and a link
+			// delivers what it accepted in the order it accepted it. A
+			// goroutine per datagram was the fourth error of this model —
+			// with arrival times microseconds apart, the scheduler ran
+			// them in whatever order it liked, and the reordering it
+			// invented was answered with an immediate ACK each time
+			// (§13.2.1), inflating this end's acknowledgement count by two
+			// thirds (measured 2026-10-25: 44 reordered arrivals against
+			// 24 real gaps). Serialisation already made the arrival times
+			// non-decreasing, so sleeping to each in turn is both the
+			// right order and the right instant.
 			for f := range p.queue {
-				go f() // each datagram propagates on its own; order is set below
+				f()
 			}
 		}()
 	})
@@ -130,11 +149,19 @@ func (p *countingPC) counts() (zero, one, other int) {
 	return p.zeroRTT, p.oneRTT, p.longOther
 }
 
-// earlyEchoServer is a listener that admits 0-RTT and echoes every stream
-// of every connection, which is what the runner's server does with the
-// files it is asked for: earlyServer accepts one stream per connection and
-// would close under forty.
-func earlyEchoServer(t *testing.T) net.Addr {
+// earlyFileServer is a listener that admits 0-RTT and answers every stream
+// of every connection with a file of the size the runner's zerortt case
+// generates, which is what its server does with the files it is asked for:
+// earlyServer accepts one stream per connection and would close under
+// forty.
+//
+// The size matters and an echo got it wrong: the case's files are
+// FILESIZE = 32 bytes (testcases_quic.py, TestCaseZeroRTT), so the
+// download is 40 x 32 bytes and not 40 x the 250-byte name. Echoing the
+// name back made the client receive eight times the datagrams it receives
+// on the runner, and the acknowledgement traffic that followed was read as
+// the cause of the case's verdict. It is not; see the comment on the test.
+func earlyFileServer(t *testing.T) net.Addr {
 	t.Helper()
 	// The path is bounded in both directions, as the simulator bounds it:
 	// a server answering at line rate makes the client acknowledge in
@@ -158,8 +185,8 @@ func earlyEchoServer(t *testing.T) net.Addr {
 						return
 					}
 					go func() {
-						_, _ = io.Copy(st, st)
-						_, _ = st.WriteFinal(nil)
+						_, _ = io.Copy(io.Discard, st)
+						_, _ = st.WriteFinal(make([]byte, fileSize))
 					}()
 				}
 			}()
@@ -177,7 +204,7 @@ func earlyEchoServer(t *testing.T) net.Addr {
 func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	addr := earlyEchoServer(t)
+	addr := earlyFileServer(t)
 	cfg := clientTLS()
 	cfg.ClientSessionCache = tls.NewLRUClientSessionCache(1)
 	sluicePrime(t, ctx, addr, cfg)
@@ -208,8 +235,17 @@ func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := st.WriteFinal(make([]byte, nameLen)); err != nil {
+			// Two calls, as an HTTP/3 client makes them: the request's
+			// HEADERS frame, then the end of the stream. The endpoint's
+			// client does exactly this, and it is half of what this
+			// measurement is about — each call leaves in a datagram of its
+			// own.
+			if _, err := st.Write(make([]byte, nameLen)); err != nil {
 				t.Errorf("writing in 0-RTT: %v", err)
+				return
+			}
+			if _, err := st.WriteFinal(nil); err != nil {
+				t.Errorf("closing in 0-RTT: %v", err)
 				return
 			}
 			// The answer is read as the runner's client reads its files:
@@ -230,28 +266,36 @@ func TestZeroRTTCarriesTheWholeRequest(t *testing.T) {
 	<-c.HandshakeComplete()
 	zero, one, _ := pc.counts()
 	const request = requests * nameLen
-	t.Logf("client out: 0-RTT %d, 1-RTT %d in %d datagrams (%d bytes each on average); client in: %d datagrams, %d bytes",
-		zero, one, pc.oneRTTPkts, one/max(pc.oneRTTPkts, 1), pc.inPkts, pc.inBytes)
+	t.Logf("client out: %d datagrams in all, 0-RTT %d, 1-RTT %d in %d datagrams (%d bytes each on average); client in: %d datagrams, %d bytes",
+		pc.outPkts, zero, one, pc.oneRTTPkts, one/max(pc.oneRTTPkts, 1), pc.inPkts, pc.inBytes)
 	st := c.Stats()
 	t.Logf("client stats: lost %d packets, %d bytes retransmitted, %d probe timeouts, %d non-productive, srtt %v",
 		st.LostPackets, st.BytesRetransmitted, st.ProbeTimeouts, st.NonProductivePackets, st.SmoothedRTT)
 	t.Logf("path dropped %d datagrams (queue of 25 at 10 Mbit/s)", pc.dropped)
-	// What is asserted is the half this measurement settled: every byte of
-	// the request leaves before the handshake ends. The runner's case also
-	// refuses more than request/2 in 1-RTT (4875 here) and this shape
-	// crosses it — 8368 bytes in 87 datagrams, of which 2808 are
-	// retransmission — but that is the download's acknowledgement traffic,
-	// not a request left behind. Two measurements say so: at the same
-	// payload carried by one stream instead of thirty-nine, the client
-	// receives 19 datagrams instead of 115 and sends 8 instead of 87; and
-	// the count tracks what arrives, at 0.76 acknowledgements per datagram
-	// received, which is what §13.2.1 asks for on a path that reorders —
-	// immediately, rather than every second packet. Asserting that bound
-	// here would be asserting the peer's datagram count.
+	// Three bounds, which are the runner's case and its cause.
 	//
-	// What is left open is whether that is out of line with other clients,
-	// which only a peer measured on the same path can say.
+	// The case's own rule first: every byte of the request leaves in 0-RTT,
+	// and the client sends no more than half the request's size in 1-RTT
+	// (0.5 x FILENAMELEN x NUM_FILES there, request/2 here). Then the
+	// cause, because the bound alone would not say what broke it: the
+	// number of datagrams the request costs. Writing each request in a
+	// datagram of its own, and the end of each stream in another, cost 138
+	// datagrams of 214 bytes for this 9750-byte request — against a path
+	// that queues 25 before it drops. Thirty-three were lost, their 0-RTT
+	// data went again in 1-RTT (RFC 9001 §4.6.1), and 6004 bytes of it
+	// crossed a bound of 4875. Coalescing them (writePacketLocked) brings
+	// the request to 42 datagrams, nothing is dropped, nothing is resent,
+	// and 1-RTT holds 889 bytes. The bound of 60 is that figure with room
+	// for the acknowledgement traffic to vary; above it the burst is
+	// shaped wrong again, whatever the byte counts say.
 	if zero < request {
 		t.Errorf("0-RTT carried %d bytes of a %d-byte request, 1-RTT %d: the client no longer sends it all early", zero, request, one)
+	}
+	if one > request/2 {
+		t.Errorf("1-RTT carried %d bytes, more than half the %d-byte request: the runner's zerortt case refuses the client at this bound", one, request)
+	}
+	if pc.outPkts > 60 {
+		t.Errorf("the request cost %d datagrams (%d dropped by the path, %d bytes retransmitted): a burst of small writes is no longer coalesced",
+			pc.outPkts, pc.dropped, st.BytesRetransmitted)
 	}
 }
