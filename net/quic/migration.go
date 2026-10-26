@@ -1163,6 +1163,21 @@ func (c *Conn) startPathChallengeData(data []byte, now time.Time) {
 	c.pathProbe.pending = true
 	c.pathProbe.fatal = false
 	c.pathProbe.target, c.pathProbe.targetCID, c.pathProbe.via = nil, nil, nil
+	// The two §9.6.2 conditions describe a probe from pathProbe.via, so they
+	// go with it: viaValidated without a socket is a validation that belongs
+	// to no path. Until 2026-10-26 they stayed standing here, and a
+	// conformant client reached a panic with them — it validated the
+	// preferred address, then migrated (§9.3), which comes through here; the
+	// next non-probing packet from its new address arriving on the preferred
+	// socket (§9.6.3's own "a different NAT binding for the server's
+	// preferred address") met the stale flag, and movePreferredLocked moved
+	// c.pc to the nil via. The next send dereferenced it. The guard that
+	// would have caught it in maybeMigrate is skipped for a peer that chose
+	// a zero-length connection identifier, which §5.1 allows, so nothing
+	// hostile was needed. The invariant the two call sites of
+	// movePreferredLocked rely on is the one restored here: viaValidated
+	// implies via != nil.
+	c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
 	c.pathProbe.retransmits = 0
 	c.pathProbe.sentAt = now
 	c.pathProbe.sent, c.pathProbe.full = false, false

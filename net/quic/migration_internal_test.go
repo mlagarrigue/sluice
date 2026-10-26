@@ -2682,3 +2682,108 @@ func TestThePathLeftIsChallengedUnderAFreshIDWhenItsOwnIsRetired(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §9.6.2 lets a server move its sends to its preferred-address
+// socket once two conditions hold: a non-probing packet with a new largest
+// packet number arrived there, and this end's own probe from it was
+// answered. The second is remembered in pathProbe.viaValidated, beside the
+// socket itself in pathProbe.via — and until 2026-10-26
+// startPathChallengeData cleared via on every new probe while leaving both
+// flags standing. A client that validated the preferred address and then
+// migrated (§9.3) left a validation behind that belonged to no socket; its
+// next non-probing packet arriving on the preferred socket — §9.6.3's own
+// example, "a different NAT binding for the server's preferred address" —
+// met the stale flag, and the server moved its sends to a nil socket. The
+// next send dereferenced it and the server process panicked, through
+// Conn.Close and sendCloseLocked.
+//
+// Nothing hostile is needed: a conformant client reaches it. The guard that
+// would have caught the mismatch (maybeMigrate, "no probe went out from
+// this socket") is skipped for a peer that chose a zero-length connection
+// identifier, which §5.1 allows.
+func TestPreferredMoveRefusesAStaleValidation(t *testing.T) {
+	main := &recordingPC{addr: fakeFuzzAddr("pref0:self")}
+	pref := &recordingPC{addr: fakeFuzzAddr("pref0:preferred")}
+	peerA := fakeFuzzAddr("pref0:peerA")
+	peerB := fakeFuzzAddr("pref0:peerB")
+
+	// A server whose client chose a zero-length connection identifier.
+	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultParameters())
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.mu.Unlock()
+	t.Cleanup(func() {
+		c.mu.Lock()
+		if c.pc == nil { // so Close reports the failure instead of panicking on it
+			c.pc = main
+		}
+		c.mu.Unlock()
+		_ = c.Close()
+	})
+
+	rx := func(from net.Addr, via net.PacketConn) {
+		c.mu.Lock()
+		c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = from, via, 1200, true
+		c.mu.Unlock()
+	}
+
+	// The client validates the offered preferred address: its PATH_CHALLENGE
+	// reaches the preferred socket and the server probes back from it.
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	rx(peerA, pref)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	armed, data := c.pathProbe.via == net.PacketConn(pref), c.pathProbe.data
+	c.mu.Unlock()
+	if !armed {
+		t.Fatalf("the server did not probe from its preferred socket; the sequence under test cannot be reached")
+	}
+
+	// The client answers that probe: §9.6.2's second condition holds.
+	rx(peerA, pref)
+	if err := c.frames(spaceApplication, append(varint.Append(nil, framePathResponse), data[:]...), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	validated := c.pathProbe.viaValidated
+	c.mu.Unlock()
+	if !validated {
+		t.Fatalf("the answered probe did not set viaValidated; the sequence under test cannot be reached")
+	}
+
+	// The client moves to a new address, on the main socket: an ordinary
+	// migration, which arms a fresh probe and so clears pathProbe.via.
+	rx(peerB, main)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	via, stale := c.pathProbe.via, c.pathProbe.viaValidated
+	c.mu.Unlock()
+	if via != nil {
+		t.Fatalf("the migration left pathProbe.via at %v; the sequence under test cannot be reached", via)
+	}
+	if stale {
+		t.Errorf("the migration cleared pathProbe.via and kept viaValidated: a validation that belongs to no socket")
+	}
+
+	// A non-probing packet from that same address on the preferred socket.
+	// §9.6.2's first condition is recorded; the second must not be believed.
+	rx(peerB, pref)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	pc, migrations := c.pc, c.migrations
+	c.mu.Unlock()
+	if pc == nil {
+		t.Fatalf("the connection moved to a nil socket: the next send dereferences it")
+	}
+	if pc != net.PacketConn(main) {
+		t.Errorf("the connection sends from %v, want the socket it migrated to", pc)
+	}
+	// One move, the client's migration to peerB. The preferred socket was
+	// never moved to: its probe belongs to the path left behind.
+	if migrations != 1 {
+		t.Errorf("migrations = %d, want 1: only the client's migration happened", migrations)
+	}
+}
