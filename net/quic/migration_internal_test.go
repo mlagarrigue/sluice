@@ -2787,3 +2787,144 @@ func TestPreferredMoveRefusesAStaleValidation(t *testing.T) {
 		t.Errorf("migrations = %d, want 1: only the client's migration happened", migrations)
 	}
 }
+
+// RFC 9000 §8.1: "Prior to validating the client address, servers MUST NOT
+// send more than three times as many bytes as the number of bytes they have
+// received." §9.3.3 has the path a connection migrated away from challenged
+// even when it was never validated, and "any subsequent migration to another
+// path restarts this entire process".
+//
+// The first challenge leaves before c.peer moves, so the path in use pays
+// for it. The resends leave afterwards, toward an address that is by then
+// neither c.peer nor c.offPath.addr — the only off-path address
+// writePacketLocked kept books for — so until 2026-10-26 both of its checks
+// were skipped and nothing counted those bytes: 3780 bytes toward an address
+// credited with 60, four datagrams expanded to 1200 each, and a fresh
+// unaccounted series for every forged migration. Two authenticated packets
+// copied from two successive addresses were enough, and the address in the
+// middle is a victim whose source may have been forged. The three resends
+// also repeated the first challenge's payload, where §8.2.1 wants
+// unpredictable data in every PATH_CHALLENGE frame.
+func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "left04")
+	b := fakeFuzzAddr("left04:peerB")
+	d := fakeFuzzAddr("left04:peerC")
+	const fromB = 48 // what B is credited with, one small datagram
+
+	toB := func() (total int, sizes []int, payloads [][]byte) {
+		for _, w := range pc.recorded() {
+			if sameAddr(w.to, b) {
+				total += len(w.data)
+				sizes = append(sizes, len(w.data))
+				payloads = append(payloads, w.data)
+			}
+		}
+		return total, sizes, payloads
+	}
+
+	// A -> B on one small authenticated datagram: B is the path now, and
+	// unvalidated.
+	rxFromNewAddress(c, b, fromB, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	c.mu.Lock()
+	onB, amplB, recvB := sameAddr(c.peer, b), c.amplActive, c.amplRecv
+	c.mu.Unlock()
+	if !onB || !amplB || recvB != fromB {
+		t.Fatalf("no move to B under its own books (onB=%v amplActive=%v amplRecv=%d); the sequence under test was not reached",
+			onB, amplB, recvB)
+	}
+
+	// B -> C before B ever answered: B is the unproven path left behind.
+	rxFromNewAddress(c, d, fromB, true)
+	now := time.Now()
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+	c.mu.Lock()
+	onC := sameAddr(c.peer, d)
+	oldIsB := c.pathProbe.oldPeer != nil && sameAddr(c.pathProbe.oldPeer, b)
+	oldVal, oldPending := c.pathProbe.oldValidated, c.pathProbe.oldPending
+	offIsC := c.offPath.addr != nil && sameAddr(c.offPath.addr, d)
+	c.mu.Unlock()
+	if !onC || !oldIsB || oldVal || !oldPending {
+		t.Fatalf("after B -> C: onC=%v oldPeer==B=%v oldValidated=%v oldPending=%v; want true true false true",
+			onC, oldIsB, oldVal, oldPending)
+	}
+	if !offIsC {
+		t.Fatalf("offPath.addr is not C, so the off-path books might still cover B; the sequence under test was not reached")
+	}
+
+	// Every resend §9.4 allows. The challenge data is read between them:
+	// the recorded datagrams are sealed, so what §8.2.1 asks about — the
+	// payload of each PATH_CHALLENGE — is only visible here.
+	// Counted only for a fire that actually put a datagram on the wire: a
+	// challenge given up sends nothing, and its unchanged data is not a
+	// repeated challenge.
+	seen := map[[8]byte]int{}
+	_, sent, _ := toB()
+	c.mu.Lock()
+	seen[c.pathProbe.oldData]++
+	c.mu.Unlock()
+	for range pathProbeMaxRetransmits + 2 {
+		c.mu.Lock()
+		now = now.Add(time.Hour)
+		c.pathProbeDeadlineLocked(now)
+		data := c.pathProbe.oldData
+		c.mu.Unlock()
+		if _, after, _ := toB(); len(after) > len(sent) {
+			sent = after
+			seen[data]++
+		}
+	}
+
+	total, sizes, _ := toB()
+	if total > 3*fromB {
+		t.Errorf("%d bytes left toward B, credited with %d: past the three times §8.1 allows toward an address this end never validated (datagrams %v)",
+			total, fromB, sizes)
+	}
+	for data, n := range seen {
+		if n > 1 {
+			t.Errorf("the challenge data %x was used for %d of the challenges toward B: §8.2.1 wants unpredictable data in every PATH_CHALLENGE frame", data, n)
+		}
+	}
+}
+
+// §9.3.3's "any subsequent migration to another path restarts this entire
+// process": what one victim address receives must not grow with the number
+// of forged migrations away from it, since nothing it sent grows alongside.
+func TestRepeatedMigrationsDoNotRearmTheLeftPathBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "left04r")
+	b := fakeFuzzAddr("left04r:peerB")
+	d := fakeFuzzAddr("left04r:peerC")
+	const small = 48
+
+	toB := func() (n int) {
+		for _, w := range pc.recorded() {
+			if sameAddr(w.to, b) {
+				n += len(w.data)
+			}
+		}
+		return n
+	}
+
+	now := time.Now()
+	credited := 0
+	for range 3 {
+		rxFromNewAddress(c, b, small, true)
+		credited += small
+		now = now.Add(time.Second)
+		c.maybeMigrate([]Frame{{Type: framePing}}, now)
+		rxFromNewAddress(c, d, small, true)
+		now = now.Add(time.Second)
+		c.maybeMigrate([]Frame{{Type: framePing}}, now)
+		for range pathProbeMaxRetransmits + 2 {
+			c.mu.Lock()
+			now = now.Add(time.Hour)
+			c.pathProbeDeadlineLocked(now)
+			c.mu.Unlock()
+		}
+	}
+
+	if total := toB(); total > 3*credited {
+		t.Errorf("%d bytes toward B for %d credited: §8.1's factor of three is exceeded, and the excess grows with the number of migrations",
+			total, credited)
+	}
+}

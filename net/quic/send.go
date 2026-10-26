@@ -635,6 +635,12 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// server's preferred address is off the path too, but that address
 	// sent nothing yet and is not being answered — it is not bounded.
 	budgeted := !onPath && c.offPath.addr != nil && sameAddr(dest, c.offPath.addr)
+	// The path left behind unproven keeps books of its own, because it is
+	// neither of the two addresses above: §9.3.3's challenge is resent
+	// there by the probe timer, after the move gave amplRecv and amplSent
+	// to the new path (pathProbe.oldRecv).
+	oldBudgeted := !onPath && !c.pathProbe.oldValidated &&
+		c.pathProbe.oldPeer != nil && sameAddr(dest, c.pathProbe.oldPeer)
 	if opts.padTo > 0 && space == spaceApplication {
 		target := opts.padTo
 		if c.amplActive && onPath {
@@ -642,6 +648,14 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 		if budgeted {
 			target = min(target, int(3*c.offPath.recv-c.offPath.sent))
+		}
+		if oldBudgeted {
+			// §8.2.1: the datagram is expanded to 1200 "unless the
+			// anti-amplification limit for the path does not permit
+			// sending a datagram of this size". It then validates the
+			// address and not the path MTU, which is what the section
+			// expects and what a later full-size validation settles.
+			target = min(target, int(3*c.pathProbe.oldRecv-c.pathProbe.oldSent))
 		}
 		if pad := target - (len(header) + pnLen + len(payload) + 16); pad > 0 {
 			payload = append(payload, make([]byte, pad)...)
@@ -688,6 +702,13 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		// Past what the off-path address has earned: nothing leaves. The
 		// only thing sent there is a PATH_RESPONSE, which regenerates — the
 		// peer sends another challenge if it still needs one (§8.2.2).
+		return nil
+	}
+	if oldBudgeted && c.pathProbe.oldSent+int64(size) > 3*c.pathProbe.oldRecv {
+		// Same for the unproven path left behind: the challenge is given
+		// up rather than sent past the budget. A legitimate peer still
+		// there answers the one that did go, or sends from that address
+		// again, which raises the budget.
 		return nil
 	}
 
@@ -845,10 +866,14 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 		return dst, err
 	}
 	size := len(out) - before
-	if c.amplActive && p.onPath {
+	switch {
+	case c.amplActive && p.onPath:
 		c.amplSent += int64(size)
-	} else if !p.onPath && c.offPath.addr != nil && sameAddr(p.dest, c.offPath.addr) {
+	case !p.onPath && c.offPath.addr != nil && sameAddr(p.dest, c.offPath.addr):
 		c.offPath.sent += int64(size)
+	case !p.onPath && !c.pathProbe.oldValidated && c.pathProbe.oldPeer != nil &&
+		sameAddr(p.dest, c.pathProbe.oldPeer):
+		c.pathProbe.oldSent += int64(size)
 	}
 	// RFC 9001 §6.2: an acknowledgement sent under the keys that answered
 	// the peer's rotation, covering the packet that carried it, is what

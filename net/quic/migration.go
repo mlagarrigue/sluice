@@ -176,12 +176,29 @@ type pathProbe struct {
 	// path", and a chained migration leaves an unproven one), and
 	// oldValidated says which: an answer from an unproven one makes it the
 	// last validated path, §9.3.2's fallback.
+	//
+	// oldRecv and oldSent are that path's own §8.1 books, carried over when
+	// it is left unproven: the first challenge goes before c.peer moves, so
+	// the path in use pays for it, but the resends go afterwards, toward an
+	// address that is then neither c.peer nor c.offPath.addr — the only
+	// off-path address writePacketLocked keeps books for. Without these two
+	// both of its checks were skipped and nothing counted those bytes: four
+	// 1200-byte datagrams toward an address credited with a few dozen, and
+	// §9.3.3's "any subsequent migration to another path restarts this
+	// entire process" armed a fresh series each time. Two authenticated
+	// packets copied from two successive addresses were enough, and the
+	// address in the middle is a victim whose source may have been forged.
+	// oldSentOnce says a challenge already went, so the next carries fresh
+	// data (§8.2.1, as sendPathChallengeLocked does for the path in use).
 	oldPending   bool
 	oldData      [8]byte
 	oldPeer      net.Addr
 	oldPC        net.PacketConn
 	oldSeq       uint64
 	oldValidated bool
+	oldSentOnce  bool
+	oldRecv      int64
+	oldSent      int64
 	// viaValidated and viaNonProbing are §9.6.2's two conditions for a
 	// server to send from its preferred address: the probe it sent from
 	// via was answered, and a non-probing packet with a new largest number
@@ -767,10 +784,16 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	// and its answer makes it the path to fall back to.
 	if data, err := randomID(8); err == nil {
 		copy(c.pathProbe.oldData[:], data)
-		c.pathProbe.oldPending = true
+		c.pathProbe.oldPending, c.pathProbe.oldSentOnce = true, false
 		c.pathProbe.oldPeer, c.pathProbe.oldPC, c.pathProbe.oldSeq = c.peer, c.pc, c.currentPeerSeq
 		c.pathProbe.oldValidated = !unvalidated
 		c.sendOldPathChallengeLocked()
+		// The books of the path being left, taken after its own challenge
+		// has been paid for out of them: from here they are the only thing
+		// bounding what goes to that address, since the move below gives
+		// amplRecv and amplSent to the new path. A proven path needs none
+		// — §8.1 bounds what goes to an address this end has not validated.
+		c.pathProbe.oldRecv, c.pathProbe.oldSent = c.amplRecv, c.amplSent
 	}
 	c.peer = to
 	c.pc = newPC
@@ -1251,6 +1274,16 @@ func (c *Conn) sendOldPathChallengeLocked() {
 			return
 		}
 	}
+	if c.pathProbe.oldSentOnce {
+		// A resend carries fresh data: §8.2.1 has the endpoint "use
+		// unpredictable data in every PATH_CHALLENGE frame". The response
+		// is matched against the latest only (handlePathResponse), as on
+		// the path in use.
+		if data, err := randomID(8); err == nil {
+			copy(c.pathProbe.oldData[:], data)
+		}
+	}
+	c.pathProbe.oldSentOnce = true
 	payload := varint.Append(nil, framePathChallenge)
 	payload = append(payload, c.pathProbe.oldData[:]...)
 	c.flushControlLocked()
