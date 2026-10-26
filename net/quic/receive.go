@@ -339,20 +339,32 @@ func (c *Conn) admitSource(datagram []byte, from net.Addr) bool {
 			return false
 		}
 	}
-	if c.amplActive && fromPeer {
-		// RFC 9000 §8.1 counts raw bytes received from the peer's address,
-		// authenticated or not — a datagram that fails to parse still
-		// proves nothing about whether *this* end was tricked into
-		// answering it, which is the only thing the limit defends against.
-		// Bytes from any other address count only if their packet migrates
-		// the path, where they seed the new path's own accounting.
-		c.amplRecv += int64(len(datagram))
-	}
-	if !fromPeer {
-		if c.offPath.addr == nil || !sameAddr(c.offPath.addr, from) {
-			c.offPath.addr, c.offPath.recv, c.offPath.sent = from, 0, 0
+	// A datagram is counted once, when it arrives. A packet held for keys
+	// that were not in yet — 0-RTT before the early secret, Handshake or
+	// 1-RTT before theirs — comes back through here when the keys land
+	// (releaseEarly, install), and counting it again grew the §8.1
+	// allowance by three times the replayed bytes while the client's
+	// address was still unvalidated. Measured before 2026-10-26: 36 bytes
+	// received counted as 72. A client that coalesces its 0-RTT with its
+	// Initial, which is the ordinary way to send it, reached it on every
+	// connection.
+	if !c.rxReplay {
+		if c.amplActive && fromPeer {
+			// RFC 9000 §8.1 counts raw bytes received from the peer's
+			// address, authenticated or not — a datagram that fails to
+			// parse still proves nothing about whether *this* end was
+			// tricked into answering it, which is the only thing the limit
+			// defends against. Bytes from any other address count only if
+			// their packet migrates the path, where they seed the new
+			// path's own accounting.
+			c.amplRecv += int64(len(datagram))
 		}
-		c.offPath.recv += int64(len(datagram))
+		if !fromPeer {
+			if c.offPath.addr == nil || !sameAddr(c.offPath.addr, from) {
+				c.offPath.addr, c.offPath.recv, c.offPath.sent = from, 0, 0
+			}
+			c.offPath.recv += int64(len(datagram))
+		}
 	}
 	c.rxFrom = from
 	c.rxDatagramLen = len(datagram)

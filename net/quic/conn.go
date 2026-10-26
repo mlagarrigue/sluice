@@ -551,6 +551,12 @@ type Conn struct {
 	// the flights resent early for it. The receive goroutine's alone.
 	rxStaleCrypto bool
 	earlyResends  int
+	// rxReplay says the packet being processed was held for keys that were
+	// not in yet and is coming back through the receive path now that they
+	// are: its datagram was already counted against §8.1's allowance when
+	// it first arrived (admitSource), and counting it a second time raised
+	// that allowance for free. The receive goroutine's alone.
+	rxReplay bool
 	// rxVia is the socket the datagram being processed arrived on, nil
 	// meaning pc. Only a Listener-fed server connection ever sees another
 	// one: the listener's preferred-address socket (§9.6).
@@ -1586,9 +1592,13 @@ func (c *Conn) releaseEarly() error {
 	close(c.earlyAccepted)
 	for _, pkt := range held {
 		c.mu.Lock()
-		c.rxECN = pkt.ecn
+		c.rxECN, c.rxReplay = pkt.ecn, true
 		c.mu.Unlock()
-		if err := c.receiveAt(pkt.raw, peer, pkt.at); err != nil {
+		err := c.receiveAt(pkt.raw, peer, pkt.at)
+		c.mu.Lock()
+		c.rxReplay = false
+		c.mu.Unlock()
+		if err != nil {
 			return err
 		}
 	}
@@ -2025,9 +2035,13 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 	// Unlocked first: opening a packet takes the lock again.
 	for _, pkt := range held {
 		c.mu.Lock()
-		c.rxECN = pkt.ecn
+		c.rxECN, c.rxReplay = pkt.ecn, true
 		c.mu.Unlock()
-		if err := c.receiveAt(pkt.raw, peer, pkt.at); err != nil {
+		err := c.receiveAt(pkt.raw, peer, pkt.at)
+		c.mu.Lock()
+		c.rxReplay = false
+		c.mu.Unlock()
+		if err != nil {
 			c.mu.Lock()
 			return err
 		}

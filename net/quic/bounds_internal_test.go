@@ -2,6 +2,7 @@ package quic
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -221,5 +222,70 @@ func TestMissingInitialSourceCIDIsRefusedEvenForAnEmptyPeerCID(t *testing.T) {
 	var p TransportParameters
 	if got := appendParameters(nil, p); !bytes.Contains(got, []byte{byte(paramInitialSourceCID), 0}) {
 		t.Errorf("an empty initial_source_connection_id was not announced: %x", got)
+	}
+}
+
+// RFC 9000 §8.1: prior to validating the client address, a server MUST NOT
+// send more than three times the bytes it has received. A 0-RTT packet held
+// for its keys and replayed by releaseEarly must not raise that budget a
+// second time: its bytes arrived once. Until 2026-10-26 the replay went back
+// through admitSource, which counted them again — 36 bytes received counted
+// as 72, so the allowance grew by three times the replayed bytes while the
+// client's address was still unvalidated. A client that coalesces its 0-RTT
+// with its Initial, the ordinary way to send it, reached it on every
+// connection.
+func TestDeferredEarlyReplayIsNotCountedTwice(t *testing.T) {
+	zeroRTT := func(dcid []byte) []byte {
+		b := []byte{0xc0 | packetZeroRTT<<4, 0, 0, 0, 1, byte(len(dcid))}
+		b = append(b, dcid...)
+		b = append(b, 0)
+		b = varint.Append(b, 24)
+		return append(b, make([]byte, 24)...)
+	}
+
+	server := boundsConn(t, false)
+	server.mu.Lock()
+	server.amplActive, server.amplRecv, server.amplSent = true, 0, 0
+	server.mu.Unlock()
+
+	datagram := zeroRTT(server.scid)
+	if err := server.receiveAt(datagram, fakeFuzzAddr("bounds:peer"), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	held, afterArrival := len(server.deferredEarly), server.amplRecv
+	server.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("the 0-RTT packet was not held: %d deferred", held)
+	}
+	if afterArrival != int64(len(datagram)) {
+		t.Fatalf("amplRecv = %d after arrival, want %d (the datagram, counted once)", afterArrival, len(datagram))
+	}
+
+	// The early secret arrives; the held packet is replayed.
+	s, err := suiteFor(tls.TLS_AES_128_GCM_SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newOpenerSuite(make([]byte, 32), s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	server.earlyOpener = opener
+	server.mu.Unlock()
+	if err := server.releaseEarly(); err != nil {
+		t.Fatal(err)
+	}
+
+	server.mu.Lock()
+	afterReplay, active := server.amplRecv, server.amplActive
+	server.mu.Unlock()
+	if !active {
+		t.Fatal("the amplification limit was lifted; the client address is not validated yet")
+	}
+	if afterReplay != int64(len(datagram)) {
+		t.Errorf("amplRecv = %d after the replay, want %d: the replayed bytes were counted a second time, raising the 3x budget by %d",
+			afterReplay, len(datagram), 3*(afterReplay-int64(len(datagram))))
 	}
 }
