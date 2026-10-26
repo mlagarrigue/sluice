@@ -104,6 +104,20 @@ func TestAckUrgencyPolicy(t *testing.T) {
 	if !app.owes(now.Add(localMaxAckDelay + time.Millisecond)) {
 		t.Error("the delayed ACK never matured")
 	}
+	// The margin itself, read off the tracker and weighed in absolute time
+	// against max_ack_delay. Expressed as offsets from ackTimerDelay — which
+	// is how the three assertions above are written, and all this test had
+	// until 2026-10-26 — they hold for any margin, zero included, which is
+	// the value 44a70e0 replaced: nothing guarded the choice it made. What
+	// the margin buys is room for the alarm's own lateness, so that is what
+	// is asserted. A few milliseconds is what a time.Timer adds under load
+	// or on a coarse clock, and RFC 9000 §18.2 has max_ack_delay "include
+	// the receiver's expected delays in alarms firing".
+	const lateAlarm = 2 * time.Millisecond
+	if armed := app.due.Sub(now); armed+lateAlarm > localMaxAckDelay {
+		t.Errorf("the delayed ACK is armed at %v, %v under the max_ack_delay of %v: an alarm firing %v late carries the acknowledgement past what the peer assumes",
+			armed, localMaxAckDelay-armed, localMaxAckDelay, lateAlarm)
+	}
 	app.record(1, now)
 	app.onAckEliciting(spaceApplication, now, false)
 	if !app.owes(now) {
