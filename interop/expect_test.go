@@ -174,3 +174,127 @@ func addResult(m map[string]any, name, result string) {
 	r := m["results"].([]any)
 	r[0] = append(cases(m), map[string]any{"name": name, "result": result})
 }
+
+// The gate walked the cases the runner had written and never asked whether
+// one it was told to run was missing, so a pass that ran none of them
+// answered "every case as expected" with a nul status. The runner at ab039a4
+// skips a whole pair when its compliance check fails and exports its results
+// anyway, so that pass is not hypothetical. CASES_SERVER and CASES_CLIENT are
+// the floor: the cases the pass was asked for.
+func TestPartialPassIsRefused(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed")
+	}
+	asServer := readResults(t, "testdata/results_sluice_quic-go.json")
+	asClient := readResults(t, "testdata/results_quic-go_sluice.json")
+	full := strings.Join(caseNames(t, asServer), ",")
+
+	for _, tc := range []struct {
+		name           string
+		server, client map[string]any
+		askedServer    string
+		askedClient    string
+		refuse         string
+	}{
+		{
+			name:   "the recorded pass, every case asked for",
+			server: asServer, client: asClient,
+			askedServer: full, askedClient: full,
+		},
+		{
+			name:   "a pass with no case at all",
+			server: emptyResults(), client: emptyResults(),
+			askedServer: full, askedClient: full,
+			refuse: "sluice server, handshake: asked for and not in the pass",
+		},
+		{
+			name:   "a pass stopped after the first case",
+			server: firstCaseOnly(t, asServer), client: asClient,
+			askedServer: full, askedClient: full,
+			refuse: "asked for and not in the pass",
+		},
+		{
+			name:   "a side that was not run is not judged",
+			server: asServer, client: emptyResults(),
+			askedServer: full, askedClient: "",
+		},
+		{
+			name:   "no floor given at all keeps the old behaviour",
+			server: emptyResults(), client: emptyResults(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			sf := writeResults(t, dir, "server.json", tc.server)
+			cf := writeResults(t, dir, "client.json", tc.client)
+			cmd := exec.Command("sh", "../scripts/interop-expect.sh", "quic-go", sf, cf) //nolint:gosec // G204: the script is the repository's, the arguments this test's
+			cmd.Env = append(os.Environ(),
+				"CASES_SERVER="+tc.askedServer, "CASES_CLIENT="+tc.askedClient)
+			out, err := cmd.CombinedOutput()
+			if tc.refuse == "" {
+				if err != nil {
+					t.Fatalf("refused a pass it should accept: %v\n%s", err, out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("accepted a pass it should refuse:\n%s", out)
+			}
+			if !strings.Contains(string(out), tc.refuse) {
+				t.Fatalf("refused, but without %q:\n%s", tc.refuse, out)
+			}
+		})
+	}
+}
+
+// caseNames lists the case names a recorded pass holds, in its own order.
+func caseNames(t *testing.T, results map[string]any) []string {
+	t.Helper()
+	var names []string
+	for _, c := range resultList(t, results) {
+		m, ok := c.(map[string]any)
+		if !ok {
+			t.Fatalf("a case of the recorded pass is %T, not an object", c)
+		}
+		name, ok := m["name"].(string)
+		if !ok {
+			t.Fatalf("a case of the recorded pass has no name: %v", m)
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		t.Fatal("the recorded pass holds no case; this test has nothing to narrow")
+	}
+	return names
+}
+
+// resultList is the single server/client pair's list of cases.
+func resultList(t *testing.T, results map[string]any) []any {
+	t.Helper()
+	outer, ok := results["results"].([]any)
+	if !ok || len(outer) == 0 {
+		t.Fatalf("the pass has no results array: %v", results["results"])
+	}
+	inner, ok := outer[0].([]any)
+	if !ok {
+		t.Fatalf("results[0] is %T, not a list", outer[0])
+	}
+	return inner
+}
+
+// emptyResults is a pass that ran nothing, which is what the runner exports
+// when it skips a pair.
+func emptyResults() map[string]any {
+	return map[string]any{"results": []any{[]any{}}}
+}
+
+// firstCaseOnly is a pass stopped after its first case.
+func firstCaseOnly(t *testing.T, results map[string]any) map[string]any {
+	t.Helper()
+	cut := map[string]any{}
+	for k, v := range results {
+		cut[k] = v
+	}
+	cut["results"] = []any{[]any{resultList(t, results)[0]}}
+	return cut
+}

@@ -160,6 +160,15 @@ jq -r --arg peer "$peer" -n '
 
 echo "## expected"
 if jq -e --arg peer "$peer" 'has($peer)' interop/expected-results.json >/dev/null; then
+  # The coverage floor: what each side was asked for. A side not run has an
+  # empty list and is not judged, which is what $none stands for above; a
+  # side that was run and wrote nothing — the runner skips a whole pair when
+  # its compliance check fails — is refused instead of passing silently.
+  CASES_SERVER=''
+  CASES_CLIENT=''
+  if [ "$SIDE" != client ]; then CASES_SERVER=$TESTS; fi
+  if [ "$SIDE" != server ]; then CASES_CLIENT=$TESTS; fi
+  export CASES_SERVER CASES_CLIENT
   scripts/interop-expect.sh "$peer" "$asServer" "$asClient"
 else
   echo "interop-runner: no expected results for $peer: reported, not judged"
