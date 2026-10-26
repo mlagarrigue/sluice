@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"strings"
@@ -209,5 +210,118 @@ func TestAnAckOfRefusedZeroRTTIsAViolation(t *testing.T) {
 		if isViolation != refused {
 			t.Errorf("refused %v: handleAck = %v", refused, err)
 		}
+	}
+}
+
+// RFC 9000 §7.4.1: "Remembered transport parameters apply to the new
+// connection until the handshake completes and the client starts sending
+// 1-RTT packets. Once the handshake completes, the client uses the transport
+// parameters established in the handshake."
+//
+// The server's parameters arrive in EncryptedExtensions, long before this
+// client's 1-RTT write keys — those come after the rest of the server's
+// flight and this client's own Finished — and until then every application
+// packet is still a 0-RTT packet. Until 2026-10-26 the raise happened the
+// moment the parameters parsed, and 300 bytes of stream data left in real
+// 0-RTT packets against a remembered limit of 100. The window is open
+// whenever the server's flight takes more than one packet, which a
+// certificate chain and §8.1's amplification limit make ordinary.
+func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
+	tap := newTap(&fuzzSink{addr: "held08:self"})
+	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+	c := assembleConn(tap, fakeFuzzAddr("held08:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+
+	const remembered = 100
+	c.remembered = TransportParameters{
+		InitialMaxData:          remembered,
+		InitialMaxStreamDataUni: remembered,
+		InitialMaxStreamsUni:    4,
+		ActiveConnIDLimit:       4,
+	}
+	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+		t.Fatalf("early sealer: %v", err)
+	}
+
+	// The server's own parameters, far wider than the ticket's. §7.4.1 has
+	// them no smaller than the remembered ones when 0-RTT is accepted, so
+	// holding the raise back can only ever withhold room, never credit
+	// already spent.
+	srv := DefaultParameters()
+	srv.initialSourceCID = dcid
+	srv.originalDCID = dcid
+	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+		t.Fatalf("server parameters: %v", err)
+	}
+
+	c.mu.Lock()
+	hasOneRTT, early := c.spaces[spaceApplication].sealer != nil, c.earlySealer != nil
+	c.mu.Unlock()
+	if hasOneRTT || !early {
+		t.Fatalf("precondition lost: 1-RTT sealer %v, early sealer %v", hasOneRTT, early)
+	}
+
+	s, err := c.OpenUniStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenUniStream: %v", err)
+	}
+	// In a goroutine, because the write is meant to run out of credit and
+	// park: there is no timer loop here to fire a write deadline, and the
+	// whole point is that the remembered limit stops it.
+	wrote := make(chan int, 1)
+	go func() {
+		n, _ := s.Write(make([]byte, 3*remembered))
+		wrote <- n
+	}()
+	settled := 0
+	for range 2000 {
+		c.mu.Lock()
+		off := int(s.writeOff)
+		c.mu.Unlock()
+		if off == settled && off > 0 {
+			break
+		}
+		settled = off
+		time.Sleep(time.Millisecond)
+	}
+	early0RTT := tap.recorded()
+	for _, w := range early0RTT {
+		for _, typ := range packetTypes(t, w.data) {
+			if typ != packetZeroRTT {
+				t.Fatalf("a packet of type %#x left; this test only reasons about 0-RTT packets", typ)
+			}
+		}
+	}
+	if settled > remembered {
+		c.mu.Lock()
+		connMax := c.connSend.max
+		c.mu.Unlock()
+		t.Errorf("the client put %d bytes of stream data in 0-RTT packets against a remembered limit of %d (connSend.max is %d, the server's value)",
+			settled, remembered, connMax)
+	}
+
+	// The first 1-RTT write keys take over: the server's value applies from
+	// there on, which is the other half of §7.4.1, and the parked writer
+	// finishes under it.
+	if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, make([]byte, 32), true); err != nil {
+		t.Fatalf("1-RTT write keys: %v", err)
+	}
+	select {
+	case n := <-wrote:
+		if n != 3*remembered {
+			t.Errorf("the write finished at %d bytes, want the whole %d once the server's limit applied", n, 3*remembered)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write never finished after the server's limits took over")
+	}
+	c.mu.Lock()
+	connMax, held := c.connSend.max, c.limitsHeld
+	c.mu.Unlock()
+	if held {
+		t.Error("the server's limits are still held after the 1-RTT write keys landed")
+	}
+	if connMax != DefaultParameters().InitialMaxData {
+		t.Errorf("connSend.max is %d after the 1-RTT keys, want the server's %d", connMax, DefaultParameters().InitialMaxData)
 	}
 }

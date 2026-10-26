@@ -462,8 +462,12 @@ type Conn struct {
 	remembered       TransportParameters
 	earlySealer      *packetSealer
 	paramsRemembered bool
-	earlyRejected    bool
-	peerParamsRaw    []byte
+	// limitsHeld says the server's flow-control and stream limits arrived
+	// while this end was still writing 0-RTT packets, so they wait for the
+	// first 1-RTT one (§7.4.1, applyPeerLimitsLocked).
+	limitsHeld    bool
+	earlyRejected bool
+	peerParamsRaw []byte
 	// hsComplete is closed when the handshake completes
 	// (Conn.HandshakeComplete).
 	hsComplete chan struct{}
@@ -1806,6 +1810,27 @@ func idleDuration(ms uint64) time.Duration {
 	return time.Duration(ms) * time.Millisecond //nolint:gosec // G115: bounded by most just above
 }
 
+// earlyWriteStillLocked reports that this end would put application data in
+// a 0-RTT packet: the early write keys are in and the application space has
+// none yet, which is exactly writePacketLocked's own test. Callers hold mu.
+func (c *Conn) earlyWriteStillLocked() bool {
+	return c.earlySealer != nil && c.spaces[spaceApplication].sealer == nil
+}
+
+// applyPeerLimitsLocked takes the peer's flow-control and stream limits as
+// this end's bounds on what it may send. Held back while 0-RTT packets are
+// still being written, where the remembered ones apply (§7.4.1). Callers
+// hold mu.
+func (c *Conn) applyPeerLimitsLocked(p TransportParameters) {
+	c.connSend.grant(p.InitialMaxData)
+	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
+	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
+	// Whoever raises the limits wakes what the old ones stopped: a writer
+	// parked on the remembered credit has room now. Held back, the raise no
+	// longer rides handlePeerParameters' own broadcast.
+	c.cond.Broadcast()
+}
+
 func (c *Conn) handlePeerParameters(raw []byte) error {
 	p, err := parseParameters(raw)
 	if err != nil {
@@ -1892,9 +1917,27 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: append([]byte(nil), pa.cid...), token: pa.statelessResetToken})
 		c.preferred = pa.addrFor(c.peer)
 	}
-	c.connSend.grant(p.InitialMaxData)
-	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
-	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
+	// RFC 9000 §7.4.1: "Remembered transport parameters apply to the new
+	// connection until the handshake completes and the client starts
+	// sending 1-RTT packets. Once the handshake completes, the client uses
+	// the transport parameters established in the handshake." A client that
+	// offered 0-RTT is still writing 0-RTT packets here — the server's
+	// parameters arrive in EncryptedExtensions, while this end's 1-RTT
+	// write keys come only after the rest of the server's flight and this
+	// client's own Finished, and writePacketLocked picks a 0-RTT packet for
+	// as long as the application space has no sealer. Until 2026-10-26 the
+	// raise happened at once, and 300 bytes of stream data left in a real
+	// 0-RTT packet against a remembered limit of 100 (measured). The
+	// window is open whenever the server's flight takes more than one
+	// packet, which a certificate chain and §8.1's amplification limit
+	// make ordinary. The raise is therefore held for the first 1-RTT
+	// packet, which install does; §7.4.1 has the server's values no
+	// smaller than the remembered ones, so nothing is lost by waiting.
+	if c.earlyWriteStillLocked() {
+		c.limitsHeld = true
+	} else {
+		c.applyPeerLimitsLocked(p)
+	}
 	// c.maxDatagram does not follow p.MaxUDPPayloadSize: the peer announces
 	// what it reads, not what the *path* carries, and a datagram the path
 	// swallows would be retransmitted at the same size into the same black
@@ -1937,6 +1980,13 @@ func (c *Conn) install(l tls.QUICEncryptionLevel, suiteID uint16, secret []byte,
 			return err
 		}
 		c.spaces[space].sealer = sealer
+		if space == spaceApplication && c.limitsHeld {
+			// The first 1-RTT packet can leave from here on, so the
+			// server's own limits take over from the remembered ones
+			// (§7.4.1, handlePeerParameters).
+			c.limitsHeld = false
+			c.applyPeerLimitsLocked(c.peerParams)
+		}
 		return nil
 	}
 	var opener *packetOpener
