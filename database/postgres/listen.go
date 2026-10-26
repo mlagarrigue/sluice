@@ -129,6 +129,20 @@ func (l *Listener) subscribe(sql string) error {
 			if err != nil {
 				return c.breakConn(err)
 			}
+			if len(l.pending) >= l.batch {
+				// Nothing bounded this list, and it is the only unbounded
+				// one in the package: the steady-state loop stops at
+				// l.batch, and a server that holds its ReadyForQuery back
+				// while pouring NotificationResponse grew pending by one
+				// Notification — two strings copied, up to MaxMessage each
+				// — per message, for the life of the subscription. A batch
+				// is as much as a caller asked to hold at once, so a
+				// server that sends more than that before answering the
+				// query at all is not answering it.
+				return c.breakConn(fmt.Errorf(
+					"%w: more than %d notifications before the server answered LISTEN (ListenConfig.BatchNotifications)",
+					ErrProtocol, l.batch))
+			}
 			l.pending = append(l.pending, n)
 		case pgwire.BackendErrorResponse:
 			e, perr := parseError(m.Body)
@@ -201,8 +215,17 @@ func (l *Listener) Close() error { return l.c.Close() }
 // full, or holds something and the next message is not already received.
 func (l *Listener) readBatch() (sluice.Batch[Notification], error) {
 	if len(l.pending) > 0 {
-		b := sluice.Batch[Notification]{Items: l.pending}
-		l.pending = nil
+		// At most one batch of it: ListenConfig.BatchNotifications says it
+		// is "the most notifications one batch holds", and handing the
+		// whole list over broke that for everything that arrived while the
+		// subscription was still being answered. The capacity is cut with
+		// the length so the batch's own slice cannot be appended into.
+		n := min(len(l.pending), l.batch)
+		b := sluice.Batch[Notification]{Items: l.pending[:n:n]}
+		l.pending = l.pending[n:]
+		if len(l.pending) == 0 {
+			l.pending = nil
+		}
 		return b, nil
 	}
 	l.buf = l.buf[:0]
