@@ -2,6 +2,8 @@ package quic
 
 import (
 	"crypto/tls"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -116,4 +118,64 @@ func handshakePacket(t *testing.T, s *packetSealer, dcid, scid []byte, pn uint64
 		t.Fatal(err)
 	}
 	return pkt
+}
+
+// A packet that carries STREAM bytes and a CONNECTION_CLOSE: the bytes the
+// peer sent before closing reach Read, exactly as they do when the same two
+// frames arrive in two packets.
+//
+// Until 2026-10-26 the CONNECTION_CLOSE case returned from framesIn, which
+// skipped the packet's fourth pass — the one that moves its STREAM bytes to
+// the read buffers or the batch callback (dispatchDeltas). The reassembly had
+// already advanced and the packet was acknowledged, so the peer counted the
+// bytes received while the application never saw them; the same two frames
+// in two packets were delivered normally, so readability depended on how the
+// peer had filled its packets. The control case below is what makes that
+// comparison the test rather than a claim.
+func TestStreamBytesSurviveACloseInTheSamePacket(t *testing.T) {
+	read := func(t *testing.T, c *Conn) (string, error) {
+		t.Helper()
+		s := c.streamIfOpen(0)
+		if s == nil {
+			t.Fatal("stream 0 was never opened by the peer's STREAM frame")
+		}
+		p := make([]byte, 32)
+		n, err := s.Read(p)
+		return string(p[:n]), err
+	}
+
+	// The control: the same two frames in two packets, which always worked.
+	t.Run("two packets", func(t *testing.T) {
+		c := boundsConn(t, false)
+		now := time.Now()
+		if err := c.frames(spaceApplication, streamFrame(nil, 0, 0, "hello", true), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.frames(spaceApplication, closeFrameBytes(), now); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := read(t, c); got != "hello" {
+			t.Fatalf("Read returned %q, %v; want %q", got, err, "hello")
+		}
+	})
+
+	t.Run("one packet", func(t *testing.T) {
+		c := boundsConn(t, false)
+		payload := streamFrame(nil, 0, 0, "hello", true)
+		payload = append(payload, closeFrameBytes()...)
+		if err := c.frames(spaceApplication, payload, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := read(t, c); got != "hello" {
+			t.Fatalf("Read returned %q, %v; want %q then the close", got, err, "hello")
+		}
+		// The end follows, on the next Read: the bytes first, then the
+		// close, which is the order Read's contract promises.
+		if s := c.streamIfOpen(0); s != nil {
+			if _, err := s.Read(make([]byte, 1)); err != nil &&
+				!errors.Is(err, io.EOF) && !errors.Is(err, errClosed) {
+				t.Errorf("the read after the bytes returned %v", err)
+			}
+		}
+	})
 }

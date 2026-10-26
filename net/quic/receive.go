@@ -1060,6 +1060,12 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	var pathResponses []byte
 	scratch := c.takeScratch()
 
+	// peerClosed says the packet carried the peer's CONNECTION_CLOSE: the
+	// frames after it are not acted on, but the packet's own last pass
+	// still runs. See the frame's case below.
+	peerClosed := false
+
+frames:
 	for _, f := range frames {
 		// RFC 9000 §12.4: Initial and Handshake packets may carry only
 		// PADDING, PING, ACK, CRYPTO and the transport CONNECTION_CLOSE.
@@ -1257,7 +1263,25 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 		case f.Type == frameConnectionClose || f.Type == frameConnectionClose|1:
 			c.rxProgress = true
 			c.handlePeerClose(f)
-			return nil
+			// Out of the loop, not out of the function: the packet's
+			// fourth pass still has to run. Until 2026-10-26 this
+			// returned, and the STREAM bytes of the same packet were
+			// reassembled, acknowledged — so the peer counted them
+			// received — and then dropped, because the pass that moves
+			// them to the read buffers or to the batch callback
+			// (dispatchDeltas) was skipped. The same two frames in two
+			// packets were delivered normally, so whether the application
+			// ever saw the bytes depended on how the peer had filled its
+			// packets. No text requires the delivery — §10.2 lets an
+			// endpoint treat streams as implicitly reset — but this
+			// package's own contract announces it: Read serves s.buf
+			// first, and dispatchDeltas is written around "the bytes the
+			// peer did send are read first".
+			//
+			// Nothing leaves for the frames that follow: the connection is
+			// draining (§10.2.2) and writePacketLocked refuses them.
+			peerClosed = true
+			break frames
 
 		case f.Type == frameRetireConnectionID:
 			moved, err := c.handleRetireConnectionID(f.value)
@@ -1316,7 +1340,7 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 		c.mu.Unlock()
 	}
 
-	if len(pathResponses) > 0 {
+	if len(pathResponses) > 0 && !peerClosed {
 		// Before the batch is dispatched: §8.2.2 says not to delay the
 		// response, and the batch callback is the caller's time.
 		c.mu.Lock()
