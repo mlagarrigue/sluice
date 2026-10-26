@@ -3113,3 +3113,67 @@ func TestASecondRebindDoesNotLoseThePendingRetirement(t *testing.T) {
 			pending)
 	}
 }
+
+// RFC 9000 §8.2.2: "On receiving a PATH_CHALLENGE frame, an endpoint MUST
+// respond by echoing the data contained in the PATH_CHALLENGE frame in a
+// PATH_RESPONSE frame."
+//
+// A challenge that reached a server's preferred-address socket from an
+// address other than the client's current one got no identifier from
+// preferredPathChallengeLocked, and answerPathChallengesLocked then gave up
+// before ever asking newPathCIDLocked — the function written for exactly
+// that case. Nothing left, by either socket, although the pool held unused
+// identifiers, and the client's validation of the offered path failed in
+// silence: the move to the preferred address never happened for any client
+// whose access network gives a distinct binding toward it, which is the case
+// §9.6.3 names.
+//
+// The per-datagram state is stamped the way rxFromNewAddress does it, so the
+// off-path §8.1 books are seeded by the challenge's own datagram and cannot
+// be what withholds the answer.
+func TestAChallengeOnThePreferredSocketIsAnswered(t *testing.T) {
+	c, main := newMigratableServer(t, "xr11")
+	pref := &recordingPC{addr: fakeFuzzAddr("xr11:preferred")}
+	tok := make([]byte, 16)
+
+	// Two spare peer identifiers: §9.5 can be honoured on a new path.
+	for _, s := range []struct {
+		seq uint64
+		cid string
+	}{{1, "cli-cid1"}, {2, "cli-cid2"}} {
+		if err := c.frames(spaceApplication, ncidFrame(s.seq, 0, []byte(s.cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newAddr := fakeFuzzAddr("xr11:peerB")
+	rxFromNewAddress(c, newAddr, 1200, true)
+	c.mu.Lock()
+	c.rxVia = net.PacketConn(pref)
+	c.rxLocalCIDSeq = 1 // a local identifier other than the path's
+	spareBefore := 0
+	for _, e := range c.peerCIDs {
+		if !e.used {
+			spareBefore++
+		}
+	}
+	c.mu.Unlock()
+	if spareBefore < 2 {
+		t.Fatalf("%d unused peer identifiers in the pool, want 2: the premise is not set up", spareBefore)
+	}
+
+	data := []byte{9, 8, 7, 6, 5, 4, 3, 2}
+	challenge := append(varint.Append(nil, framePathChallenge), data...)
+	if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	writes := append(append([]recordedWrite{}, main.recorded()...), pref.recorded()...)
+	bytesOut := 0
+	for _, w := range writes {
+		bytesOut += len(w.data)
+	}
+	if bytesOut == 0 {
+		t.Errorf("no datagram left either socket after a PATH_CHALLENGE that reached the preferred-address socket from an address other than the path's, with %d unused peer identifiers in the pool (§8.2.2 MUST respond)", spareBefore)
+	}
+}

@@ -1115,18 +1115,33 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// answered with this end's own probe of that path in the same packet
 	// (§9.6.2), under the identifier that path gets.
 	probe, dcid := c.preferredPathChallengeLocked(now)
-	if c.rxVia != nil && c.rxVia != c.pc && dcid == nil && len(c.dcid) > 0 {
-		// §9.5: "An endpoint MUST NOT reuse a connection ID when sending
-		// from more than one local address". The challenge arrived on a
-		// socket the connection does not send from, and the client has
-		// given no identifier that path could take: nothing leaves that
-		// socket. The client's validation of the path fails, and §9.6.1
-		// keeps it on the original address — a stay, not a fault. Recorded
-		// in ADR 0015, against §19.17's MUST.
-		return
-	}
-	if dcid == nil && !onPath && len(c.dcid) > 0 {
+	// §9.5: "An endpoint MUST NOT reuse a connection ID when sending from
+	// more than one local address", and the identifier in use belongs to
+	// the path in use. A challenge from another peer address, or one that
+	// reached another local socket, therefore answers under an identifier
+	// of its own — newPathCIDLocked's whole purpose, which takes one the
+	// pool has never used on any path.
+	//
+	// Until 2026-10-26 the socket case gave up before ever asking it: a
+	// challenge that reached a server's preferred-address socket *from an
+	// address other than the client's current one* got no identifier from
+	// preferredPathChallengeLocked, and the refusal below fired although
+	// the pool held unused identifiers. Nothing left, by either socket,
+	// and the client's validation of the offered path failed in silence —
+	// so the move to the preferred address never happened for any client
+	// whose access network gives a distinct binding toward that address,
+	// which is the case §9.6.3 names. ADR 0015 records the refusal for
+	// having *no* spare identifier; this was not that.
+	offSocket := c.rxVia != nil && c.rxVia != c.pc
+	if dcid == nil && len(c.dcid) > 0 && (!onPath || offSocket) {
 		dcid = c.newPathCIDLocked()
+	}
+	if offSocket && dcid == nil && len(c.dcid) > 0 {
+		// No identifier that path could take: nothing leaves that socket.
+		// The client's validation fails, and §9.6.1 keeps it on the
+		// original address — a stay, not a fault. Recorded in ADR 0015,
+		// against §19.17's MUST.
+		return
 	}
 	const responseLen = 1 + 8 // type, data
 	per := c.maxStreamChunk() / responseLen * responseLen
