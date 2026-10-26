@@ -431,6 +431,24 @@ func (s *Stream) write(p []byte, fin bool) (int, error) {
 	return written, err
 }
 
+// sendableLocked reports why this end's sending direction takes no more
+// bytes, or nil while it does: the early data was refused, the direction was
+// abandoned by a reset, or it was closed. Checked before each frame is built
+// and again after every wake from the congestion window, which releases mu
+// (sendOpts.recheck). Callers hold conn.mu.
+func (s *Stream) sendableLocked() error {
+	switch {
+	case s.rejected.Load():
+		return ErrEarlyDataRejected
+	case s.writeReset:
+		return fmt.Errorf("%w: stream %d is reset (code %#x) and takes no more writes",
+			ErrQUIC, s.id, s.writeCode)
+	case s.sendClosed:
+		return fmt.Errorf("%w: stream %d is closed for writing", ErrQUIC, s.id)
+	}
+	return nil
+}
+
 // writeLocked is write's loop, run under mu with batching on.
 func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 	written := 0
@@ -442,15 +460,8 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		return 0, os.ErrDeadlineExceeded
 	}
 	for {
-		if s.rejected.Load() {
-			return written, ErrEarlyDataRejected
-		}
-		if s.writeReset {
-			return written, fmt.Errorf("%w: stream %d is reset (code %#x) and takes no more writes",
-				ErrQUIC, s.id, s.writeCode)
-		}
-		if s.sendClosed {
-			return written, fmt.Errorf("%w: stream %d is closed for writing", ErrQUIC, s.id)
+		if err := s.sendableLocked(); err != nil {
+			return written, err
 		}
 		rest := len(p) - written
 		if rest == 0 && !fin {
@@ -483,7 +494,11 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		// go gives its credit back.
 		s.sendQ.sent += uint64(n)
 		c.connSend.sent += uint64(n)
-		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline}
+		// sendableLocked again after every wake from the window: the wait
+		// releases mu, and a STOP_SENDING read meanwhile would have ended
+		// this direction and declared this very offset final
+		// (sendOpts.recheck).
+		opts := sendOpts{waitCwnd: true, own: true, deadline: s.writeDeadline, recheck: s.sendableLocked}
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			s.sendQ.sent -= uint64(n)
 			c.connSend.sent -= uint64(n)

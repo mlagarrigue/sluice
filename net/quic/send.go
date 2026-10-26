@@ -39,6 +39,26 @@ type sendOpts struct {
 	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
 	// without bound.
 	deadline time.Time
+	// recheck is asked, after every wake from that wait, whether the
+	// payload is still owed; a non-nil answer abandons the send and is
+	// what the caller returns. The wait releases mu, so the state the
+	// caller checked before building the frame may be gone by the time the
+	// window reopens — and for a STREAM frame that state is the stream's.
+	// Callers hold mu when it runs.
+	//
+	// What it is for. A writer parked here had already built its frame at
+	// s.writeOff and charged its credit. A STOP_SENDING arriving meanwhile
+	// is read on the receive goroutine, which abandons this end's sending
+	// direction and answers RESET_STREAM with a final size of exactly that
+	// s.writeOff (§3.5, onStopSendingLocked) — then broadcasts, and the
+	// writer woke up and sent its frame at the offset just declared final.
+	// RFC 9000 §3.3 forbids a STREAM frame after RESET_STREAM, and §4.5
+	// has the receiver answer bytes past the final size with
+	// FINAL_SIZE_ERROR: two sluice ends closed the connection on it, and
+	// so do the peers that apply §4.5 — quic-go, ngtcp2. The whole
+	// connection dies, with every other request in flight on it, because
+	// one request was cancelled.
+	recheck func() error
 	// ackOnly marks a packet that elicits no acknowledgement and is not
 	// counted in flight (RFC 9002 §2).
 	ackOnly bool
@@ -148,6 +168,11 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 			}
 			if err := c.awaitSealLocked(sp, space); err != nil {
 				return err
+			}
+			if opts.recheck != nil {
+				if err := opts.recheck(); err != nil {
+					return err
+				}
 			}
 		}
 	}
