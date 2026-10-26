@@ -289,3 +289,63 @@ func TestDeferredEarlyReplayIsNotCountedTwice(t *testing.T) {
 			afterReplay, len(datagram), 3*(afterReplay-int64(len(datagram))))
 	}
 }
+
+// RFC 9000 §10.1 floors the idle timeout at three probe timeouts, and says
+// so as a MUST with no bound on the result. The PTO adds the peer's
+// max_ack_delay whole, which §18.2 lets it announce up to 2^14-1 ms, plus a
+// smoothed RTT its delayed acknowledgements inflate with no ceiling: the
+// floor therefore passed DefaultParameters' MaxIdleTimeout by a factor the
+// peer chose with one transport parameter, and a Listener's connection keeps
+// its routing entry and its MaxConns and MaxConnsPerIP slots for the whole
+// of it. maxIdleFloor caps it, the same deviation maxClosingPeriod takes
+// against §10.2.
+func TestTheIdleFloorIsCapped(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	c.idleTimeout = 100 * time.Millisecond
+	c.peerParams.MaxAckDelay = (1<<14 - 1) * time.Millisecond // §18.2's ceiling
+	c.peerParams.sawMaxAckDelay = true
+	c.hasPeerParams = true
+	// Last activity long enough ago that the capped floor has passed and the
+	// uncapped one has not: the cap is the only thing that decides.
+	c.idleDeadline = time.Now().Add(-maxIdleFloor - time.Second)
+	uncapped := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	c.mu.Unlock()
+	if uncapped <= maxIdleFloor {
+		t.Fatalf("three PTOs come to %v, not over the cap of %v; the case under test is not reached", uncapped, maxIdleFloor)
+	}
+
+	c.actOnDeadlines(time.Now())
+	select {
+	case <-c.closed:
+	default:
+		t.Errorf("the connection is still live %v after its last activity, with an idle timeout of %v: three uncapped PTOs come to %v, which a peer chooses with one transport parameter, and a Listener holds its MaxConns slot for all of it",
+			maxIdleFloor+time.Second, c.idleTimeout, uncapped)
+	}
+}
+
+// The floor itself stays: a connection whose peer is slow enough that three
+// PTOs exceed the idle timeout is not torn down at the timeout, which is
+// what §10.1's MUST is for — room for several probes to be sent and lost.
+func TestTheIdleFloorStillDefersTheTimeout(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	// An idle timeout far under three PTOs, and a deadline already past it.
+	c.idleTimeout = 10 * time.Millisecond
+	c.peerParams.MaxAckDelay = 500 * time.Millisecond
+	c.peerParams.sawMaxAckDelay = true
+	c.hasPeerParams = true
+	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)
+	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	c.mu.Unlock()
+	if floor <= c.idleTimeout || floor > maxIdleFloor {
+		t.Fatalf("three PTOs come to %v, want between the idle timeout %v and the cap %v; the case under test is not reached",
+			floor, c.idleTimeout, maxIdleFloor)
+	}
+	c.actOnDeadlines(time.Now())
+	select {
+	case <-c.closed:
+		t.Error("the connection was given up at its idle timeout although three PTOs had not passed: §10.1's floor is gone")
+	default:
+	}
+}
