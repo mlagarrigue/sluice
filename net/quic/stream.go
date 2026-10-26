@@ -581,6 +581,21 @@ func (s *Stream) StopSending(code uint64) error {
 		c.maybeRemoveLocked(s)
 		return nil
 	}
+	// The application has said it will not read the rest, so the bytes
+	// already in the read buffer are forfeit — and the connection window
+	// gets them back. Nothing else ever would: bytes delivered into the
+	// buffer are credited by whoever reads them, and from here nobody
+	// does. §4.1 has the connection-level debt survive the stream, so a
+	// stream that ends with unread bytes and settles nothing takes that
+	// much off the window for the life of the connection. Measured before
+	// the fix: sixteen streams of 64 KiB with sixteen bytes read from each
+	// exhausted a 1 MiB window — 1 MiB received, 256 bytes given back —
+	// and the peer was left with no credit on a connection that was still
+	// answering. Batch mode (CreditOnDelivery) credits on delivery and was
+	// never affected.
+	if n := s.dropUnreadLocked(); n > 0 && c.connRecv.consume(n) {
+		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
+	}
 	frame := appendFrame(nil, FrameStopSending, s.id, code)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
 	c.maybeRemoveLocked(s)
@@ -1019,6 +1034,23 @@ func (c *Conn) maybeRemoveLocked(s *Stream) {
 	if peerInitiated { // grant the slot back
 		c.returnStreamSlotLocked(s.id&0x02 != 0)
 	}
+}
+
+// dropUnreadLocked gives up the bytes still in this stream's read buffer and
+// reports how many there were, for the connection window. The stream's own
+// window earns no grant for them: the application has just said it wants
+// nothing more from this stream, and §3.3 has MAX_STREAM_DATA leave in the
+// "Recv" state only. Callers hold conn.mu.
+func (s *Stream) dropUnreadLocked() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := uint64(len(s.buf)) //nolint:gosec // G115: a byte count, positive
+	if n == 0 {
+		return 0
+	}
+	s.buf = nil
+	s.recvQ.consumed += n
+	return n
 }
 
 // retireTaken retires a stream whose end the application has just taken,

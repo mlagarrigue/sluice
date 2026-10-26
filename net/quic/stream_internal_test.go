@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -129,5 +130,73 @@ func TestParkedWriterDropsItsFrameWhenTheStreamIsReset(t *testing.T) {
 	c.mu.Unlock()
 	if off != finalSize {
 		t.Errorf("s.writeOff moved to %d past the final size %d the reset declared", off, finalSize)
+	}
+}
+
+// A stream whose bytes reached the read buffer, were partly read, then
+// refused with StopSending and settled by the peer's RESET_STREAM.
+//
+// The connection window is given back as bytes are consumed, and abandon
+// credits only what was never delivered to the application (finalSize minus
+// what the reassembly handed over). Bytes already in the read buffer are
+// credited by whoever reads them — and after StopSending nobody does: the
+// application has said it will not read the rest. Until 2026-10-26 every
+// stream refused that way took its unread bytes off the connection window
+// for good: sixteen streams of 64 KiB with sixteen bytes read from each
+// exhausted a 1 MiB window, and the peer's next byte on a live connection
+// answered FLOW_CONTROL_ERROR.
+func TestStopSendingGivesBackTheConnectionWindow(t *testing.T) {
+	const (
+		streams  = 16
+		perBytes = 1 << 16 // 64 KiB, under the 256 KiB stream window
+		readN    = 16
+	)
+	params := DefaultParameters()
+	c := newConn(&fuzzSink{addr: "quict06:self"}, fakeFuzzAddr("quict06:peer"),
+		[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, params)
+	defer c.Close()
+
+	data := bytes.Repeat([]byte("x"), perBytes)
+	for i := range streams {
+		id := uint64(i) * 4 // the peer is the client: bidi ids 0, 4, 8, …
+		if err := c.frames(spaceApplication, streamFrameBytes(id, 0, data), time.Now()); err != nil {
+			t.Fatalf("stream %d: delivering %d bytes: %v", id, perBytes, err)
+		}
+		s, err := c.AcceptStream(t.Context())
+		if err != nil {
+			t.Fatalf("stream %d: accept: %v", id, err)
+		}
+		buf := make([]byte, readN)
+		if n, err := s.Read(buf); err != nil || n != readN {
+			t.Fatalf("stream %d: read %d bytes, %v", id, n, err)
+		}
+		// The application says it will not read the rest.
+		if err := s.StopSending(0); err != nil {
+			t.Logf("stream %d: StopSending: %v (no keys on this bare conn)", id, err)
+		}
+		// The peer answers, as §3.5 requires, with the final size it sent.
+		if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
+			t.Fatalf("stream %d: RESET_STREAM: %v", id, err)
+		}
+	}
+
+	c.mu.Lock()
+	maxData, highest, consumed := c.connRecv.max, c.connRecv.highest, c.connRecv.consumed
+	c.mu.Unlock()
+
+	var left uint64
+	if maxData > highest {
+		left = maxData - highest
+	}
+	t.Logf("connection window: granted %d, received %d, credited back %d, left for the peer %d",
+		maxData, highest, consumed, left)
+	// What the shut window costs the peer: one more byte on a fresh stream,
+	// on a connection that is otherwise live, is a FLOW_CONTROL_ERROR.
+	err := c.frames(spaceApplication, streamFrameBytes(streams*4, 0, []byte("y")), time.Now())
+	t.Logf("one more byte from the peer: %v", err)
+
+	if left < params.InitialMaxStreamDataBidiRemote {
+		t.Fatalf("after %d streams refused with StopSending the peer has %d bytes of connection credit left, less than one stream window (%d); the next byte it sends answers %v",
+			streams, left, params.InitialMaxStreamDataBidiRemote, err)
 	}
 }
