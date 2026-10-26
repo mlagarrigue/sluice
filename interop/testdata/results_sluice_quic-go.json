@@ -1,6 +1,6 @@
 {
-  "start_time": 1792926151.611096,
-  "end_time": 1792926607.834857,
+  "start_time": 1792996317.640657,
+  "end_time": 1792996809.305102,
   "log_dir": "logs/sluice_quic-go",
   "servers": [
     "sluice"
@@ -141,7 +141,6 @@
         "result": "succeeded"
       },
       {
-        "first": "failed",
         "abbr": "Z",
         "name": "zerortt",
         "result": "succeeded"

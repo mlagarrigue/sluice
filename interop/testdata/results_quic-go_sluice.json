@@ -1,6 +1,6 @@
 {
-  "start_time": 1792926144.149821,
-  "end_time": 1792926777.681858,
+  "start_time": 1792996320.209866,
+  "end_time": 1792997019.589301,
   "log_dir": "logs/quic-go_sluice",
   "servers": [
     "quic-go"
@@ -141,10 +141,9 @@
         "result": "succeeded"
       },
       {
-        "first": "failed",
         "abbr": "Z",
         "name": "zerortt",
-        "result": "failed"
+        "result": "succeeded"
       },
       {
         "abbr": "3",
@@ -172,7 +171,6 @@
         "result": "succeeded"
       },
       {
-        "first": "failed",
         "abbr": "L1",
         "name": "handshakeloss",
         "result": "succeeded"
@@ -183,7 +181,6 @@
         "result": "succeeded"
       },
       {
-        "first": "failed",
         "abbr": "C1",
         "name": "handshakecorruption",
         "result": "succeeded"
