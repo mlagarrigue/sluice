@@ -9,7 +9,7 @@
 # on a distroless image, run as a user with no rights; netem and ifb are
 # set on the tester's interfaces by the chain, never from in here. Both
 # bases are pinned by digest, like interop/Dockerfile's.
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+FROM golang:1.26-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
 WORKDIR /src
 COPY comparison/loadgen/go.mod comparison/loadgen/go.sum ./
 RUN go mod download
