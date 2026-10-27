@@ -462,10 +462,20 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 		if err := c.ShutdownWithError(t.Context(), 1<<62); err == nil {
 			t.Fatal("ShutdownWithError(ctx, 1<<62) returned nil, want a refusal")
 		}
-		if !c.mu.TryLock() {
+		// The timer loop takes c.mu on its own schedule, so a TryLock
+		// would fail by chance: a Lock that returns within a second is
+		// the proof the refusal left the mutex free.
+		locked := make(chan struct{})
+		go func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			close(locked)
+		}()
+		select {
+		case <-locked:
+		case <-time.After(time.Second):
 			t.Fatal("c.mu is held after the refusals: the connection can no longer be locked")
 		}
-		c.mu.Unlock()
 		select {
 		case <-c.closed:
 			t.Fatal("the connection closed on a refused code")
