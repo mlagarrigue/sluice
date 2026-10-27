@@ -508,7 +508,9 @@ type Config struct {
 	// socket, which ends the connection. Over HTTP/3 it is each write of a
 	// response — its head, then each batch of a streamed body — on the
 	// stream's flow control, and the stream is reset with
-	// H3_REQUEST_CANCELLED. A peer that drips one byte of credit per timeout
+	// H3_REQUEST_CANCELLED; it is also each write on the control stream
+	// (SETTINGS, the GOAWAYs of a drain), and giving up there ends the
+	// connection. A peer that drips one byte of credit per timeout
 	// is therefore cut at the second timeout rather than kept (data dribble,
 	// CVE-2019-9511). Zero means 10s. Every protocol.
 	//

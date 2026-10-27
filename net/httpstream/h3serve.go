@@ -218,18 +218,43 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		_ = c.CloseWithError(h3GeneralProtocolError)
 		return fmt.Errorf("httpstream: the client grants no unidirectional stream for the control stream: %w", err)
 	}
-	if _, err := control.Write(appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
+	// The forced stop closes the connection whatever this end is doing when
+	// it comes — writing SETTINGS, draining, serving — and the close ends
+	// every write still waiting. A write on the control stream waits for
+	// the client's credit like any other, and a client that withholds it
+	// must not keep the connection, nor ServeH3Conn, past the grace.
+	stopForced := context.AfterFunc(forced, func() { _ = c.CloseWithError(h3GracefulCode()) })
+	defer stopForced()
+	// The three writes on the control stream — SETTINGS, the two GOAWAYs —
+	// are bounded as a response's are (Config.WriteTimeout, read as a time
+	// without progress): §6.2 only asks the client for 1,024 bytes of
+	// credit there by a SHOULD, and a client that grants less than SETTINGS
+	// needs would otherwise park this write for the life of the connection.
+	wb := writeBoundOf(cfg)
+	if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
 		// Closed on the way out, like the two refusals above. The one
 		// failure a live connection produces here is the client's
 		// STOP_SENDING on the control stream landing between Stream(3)
 		// and this write: the §6.2.1 error the callback below names,
 		// which, unanswered, would leave the connection open with nobody
 		// serving it.
+		//
+		// A client that withheld the credit until the write timeout passed
+		// is closed the same way, with H3_INTERNAL_ERROR: a connection whose
+		// control stream cannot open is one nobody can serve. Under the
+		// forced stop, the close above ended the write, and the stop is
+		// what ServeH3Conn reports.
 		if code, reset := control.WasReset(); reset {
 			_ = c.CloseWithError(h3ClosedCriticalStream)
 			return controlStopped(code)
 		}
 		_ = c.CloseWithError(h3InternalError)
+		if forced.Err() != nil {
+			return ErrShutdownForced
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return fmt.Errorf("httpstream: the client's credit on the control stream took no SETTINGS within the write timeout: %w", err)
+		}
 		return err
 	}
 
@@ -250,14 +275,16 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// stream opened from the named identifier on is rejected on arrival
 	// (REQUEST_REJECTED, see the assembler's admit). The forced stop bounds
 	// the whole: when it comes, what is still open is closed under its
-	// handler and serveH3 returns, as Serve does. The goroutine this runs on
+	// handler (stopForced, above) and serveH3 returns, as Serve does. A
+	// GOAWAY the client's credit holds past the write timeout closes the
+	// connection, as a failed one does. The goroutine this runs on
 	// lives for the drain only — nothing is parked for the life of the
 	// connection.
 	drained := make(chan struct{})
 	var finishOnce sync.Once
 	a.Finish = func() { finishOnce.Do(func() { close(drained) }) }
 	stop := context.AfterFunc(drain, func() {
-		if _, err := control.Write(appendH3Frame(nil, h3GoAway, varint.Append(nil, h3MaxServerGoAway))); err != nil {
+		if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, h3MaxServerGoAway))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
@@ -268,7 +295,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			return
 		}
 		from, idle := a.beginDrain()
-		if _, err := control.Write(appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
+		if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Frame(nil, h3GoAway, varint.Append(nil, from))); err != nil {
 			_ = c.CloseWithError(h3GracefulCode())
 			return
 		}
@@ -278,13 +305,13 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			// into a connection that is closing.
 			a.Finish()
 		}
+		// The forced stop needs no case here: it closes the connection,
+		// which ends this wait.
 		select {
 		case <-drained:
 			// The forced stop bounds the acknowledgement too; at it the
 			// connection closes anyway, as Shutdown promises.
 			_ = c.ShutdownWithError(forced, h3GracefulCode())
-		case <-forced.Done():
-			_ = c.CloseWithError(h3GracefulCode())
 		case <-c.Done():
 		}
 	})

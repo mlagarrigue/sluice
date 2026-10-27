@@ -537,6 +537,111 @@ func TestServeH3ReturnsAtTheGraceUnderAStuckHandler(t *testing.T) {
 	}
 }
 
+// h3OKHandler answers every request 200, for tests about the connection
+// rather than the requests.
+func h3OKHandler(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+	res := make([]Response, b.Len())
+	for i := range res {
+		res[i] = Response{Status: 200}
+	}
+	return sluice.Batch[Response]{Items: res}
+}
+
+// waitServedUnder waits for ServeH3Conn to return within limit after its
+// context was cancelled, and checks it reports the forced stop or nothing.
+// The client's close unblocks a server that does not return, so the
+// helper's cleanup can reap it.
+func waitServedUnder(t *testing.T, conn *quic.Conn, served <-chan error, limit time.Duration, why string) {
+	t.Helper()
+	select {
+	case err := <-served:
+		if err != nil && !errors.Is(err, ErrShutdownForced) {
+			t.Errorf("ServeH3Conn returned %v, wanted nil or ErrShutdownForced", err)
+		}
+	case <-time.After(limit):
+		_ = conn.Close()
+		t.Fatalf("ServeH3Conn had not returned %v after its context was cancelled: %s", limit, why)
+	}
+}
+
+// RFC 9114 §6.2 asks the client for 1,024 bytes of credit on the control
+// stream, a SHOULD. A client that grants less than the SETTINGS frame used
+// to park ServeH3Conn inside that write, before the drain was armed, and
+// the forced stop that closes the connection at the grace was read by
+// nothing: ServeH3Conn never returned. It returns at the grace now.
+func TestH3AControlStreamWithoutCreditDoesNotOutliveTheGrace(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	cfg := Config{ShutdownGrace: grace}
+	clientParams := quic.DefaultParameters()
+	// Under the SETTINGS frame: the client never reads stream 3, so it
+	// never grants more.
+	clientParams.InitialMaxStreamDataUni = 8
+	conn, cancel, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+
+	// Let the server reach the write, then stop it: the grace runs from here.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	waitServedUnder(t, conn, served, 10*grace,
+		"the SETTINGS write waits for credit the client withholds, and nothing closes the connection at the forced stop")
+}
+
+// The same client without a cancellation: the SETTINGS write is a write
+// like a response's, bounded by Config.WriteTimeout, and a connection whose
+// control stream cannot open is not served — it is closed with
+// H3_INTERNAL_ERROR, as the other failures of that write are.
+func TestH3AControlStreamWithoutCreditIsClosedAtTheWriteTimeout(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	cfg := Config{WriteTimeout: timeout}
+	clientParams := quic.DefaultParameters()
+	clientParams.InitialMaxStreamDataUni = 8
+	conn, _, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+
+	select {
+	case err := <-served:
+		if err == nil {
+			t.Error("ServeH3Conn returned nil for a connection whose SETTINGS never went out")
+		}
+	case <-time.After(10 * timeout):
+		_ = conn.Close()
+		t.Fatalf("ServeH3Conn had not returned %v in: the SETTINGS write is not bounded by the %v write timeout", 10*timeout, timeout)
+	}
+	select {
+	case <-conn.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client's connection stayed open after the server gave up on its SETTINGS")
+	}
+	ce, ok := errors.AsType[*quic.ConnectionError](conn.Err())
+	if !ok || !ce.Application || ce.Code != h3InternalError {
+		t.Fatalf("the connection ended with %v, want H3_INTERNAL_ERROR (%#x)", conn.Err(), h3InternalError)
+	}
+}
+
+// A client that grants the SETTINGS frame and nothing more: the first
+// GOAWAY of the drain waits for credit that never comes. The drain used to
+// be parked inside that write, ahead of the select that closes the
+// connection at the forced stop, and ServeH3Conn never returned.
+func TestH3ADrainWithoutControlCreditDoesNotOutliveTheGrace(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	cfg := Config{ShutdownGrace: grace}
+	clientParams := quic.DefaultParameters()
+	// The longest SETTINGS this end writes: stream type, frame type and
+	// length (3), the two QPACK settings (4), the field-section setting
+	// (1 + its varint), the grease pair (4 + 4). The shortest is six bytes
+	// under it, short of the ten a GOAWAY at 2^62−4 needs.
+	clientParams.InitialMaxStreamDataUni = uint64(3 + 4 + 1 + len(varint.Append(nil, defaultMaxHeaderBytes)) + 4 + 4)
+	conn, cancel, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
+
+	// The SETTINGS frame arriving is the sign the server is past its write.
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	if _, err := conn.AcceptStream(ctx); err != nil {
+		t.Fatalf("waiting for the server's control stream: %v", err)
+	}
+	cancel()
+	waitServedUnder(t, conn, served, 10*grace,
+		"the first GOAWAY waits for credit the client withholds, and the drain never reaches the forced stop")
+}
+
 // RFC 9114 §4.2.2 and §4.1: a request over one of the configured bounds is
 // answered on its own stream — 431 for its headers, 413 for its body — with a
 // clean FIN after STOP_SENDING H3_NO_ERROR, and the connection survives with
