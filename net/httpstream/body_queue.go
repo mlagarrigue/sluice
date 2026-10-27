@@ -163,8 +163,19 @@ func (b *bodyQueue) add(data []byte) {
 // that take it past its bound, which fails it with ErrTooLarge — the handler
 // reads that and answers, and the stream is stopped after the answer, as any
 // body left unread is.
+//
+// Bytes dropped because the handler returned are still counted in total:
+// the count serves end's framing check (RFC 9113 §8.1.1, RFC 9114 §4.1.2),
+// not retention, and a client that has not yet seen the RST_STREAM(NO_ERROR)
+// sent after the response finishes its body as §8.1 expects it to. Counted
+// short, a well-formed request was found malformed at its END_STREAM and
+// reset PROTOCOL_ERROR, its response lost if it was waiting for credit.
+// Bytes dropped by a failure are not counted: end compares nothing then.
 func (b *bodyQueue) addLocked(data []byte) (dropped int) {
 	if b.overLocked() {
+		if b.err == nil {
+			b.total += len(data)
+		}
 		return len(data)
 	}
 	if b.total+len(data) > b.limit {

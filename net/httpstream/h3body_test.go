@@ -172,6 +172,35 @@ func TestH3UnreadStreamedBodyIsStoppedAfterTheResponse(t *testing.T) {
 	}
 }
 
+// The HTTP/3 twin of TestAnUnreadStreamedBodyIsCountedToItsEnd: the same
+// bodyQueue, so the same count. The client finishes its body, FIN included,
+// after the response: the request is well formed (RFC 9114 §4.1.2), and the
+// only thing it is told is to stop sending (STOP_SENDING, H3_NO_ERROR).
+func TestH3AnUnreadStreamedBodyIsCountedToItsEnd(t *testing.T) {
+	conn, _ := h3StreamServer(t, Config{MaxBodyBytes: 1024, MaxStreamedBodyBytes: 1 << 20},
+		func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			return sluice.Batch[Response]{Items: []Response{{Status: 200, Body: []byte("not read")}}}
+		})
+	s := askH3Open(t, conn, appendH3Frame(h3Request("POST", "/", [2]string{"content-length", "200"}), h3Data, pattern(100)))
+	if body, _ := readH3Body(t, s); body != "not read" {
+		t.Fatalf("answer %q", body)
+	}
+	// The rest of the body and its end, as a client that has not seen the
+	// STOP_SENDING yet sends them. A write refused is the stop having
+	// arrived first: fine either way.
+	_, _ = s.WriteFinal(appendH3Frame(nil, h3Data, pattern(100)))
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, reset := s.WasReset(); reset {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code, reset := s.WasReset(); reset && code != h3NoError {
+		t.Errorf("the request side was reset with %#x for a body of exactly its content-length, want STOP_SENDING H3_NO_ERROR or nothing", code)
+	}
+}
+
 // A client that resets its stream midway: the handler reading the body
 // learns it from Err.
 func TestH3StreamedBodyResetByTheClient(t *testing.T) {
