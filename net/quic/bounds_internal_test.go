@@ -349,3 +349,44 @@ func TestTheIdleFloorStillDefersTheTimeout(t *testing.T) {
 	default:
 	}
 }
+
+// The floored deadline is also what the loops wait for. While the floor
+// holds a connection past its raw idle deadline, actOnDeadlines returns the
+// floored deadline as the next one pending — never the raw one, which is in
+// the past: timerLoop would then compute wait = 0, re-arm at once and spin,
+// taking c.mu at each turn, until the floor let go. readLoop and readLoopFed
+// read the same deadline (idleDeadlineLocked) for the same reason.
+func TestIdleFloorDoesNotSpinTheLoops(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	c.idleTimeout = 10 * time.Millisecond
+	c.peerParams.MaxAckDelay = 500 * time.Millisecond
+	c.peerParams.sawMaxAckDelay = true
+	c.hasPeerParams = true
+	c.idleDeadline = time.Now().Add(-5 * time.Millisecond)
+	floor := 3 * c.rtt.pto(c.peerMaxAckDelayLocked())
+	floored := c.idleDeadline.Add(floor - c.idleTimeout)
+	c.mu.Unlock()
+	if floor <= c.idleTimeout || floor > maxIdleFloor {
+		t.Fatalf("three PTOs come to %v, want between the idle timeout %v and the cap %v; the case under test is not reached",
+			floor, c.idleTimeout, maxIdleFloor)
+	}
+
+	now := time.Now()
+	next := c.actOnDeadlines(now)
+	select {
+	case <-c.closed:
+		t.Fatal("the connection was given up at its idle timeout although three PTOs had not passed: §10.1's floor is gone")
+	default:
+	}
+	if next.IsZero() {
+		t.Fatal("actOnDeadlines returned no deadline while the idle floor still runs")
+	}
+	if !next.After(now) {
+		t.Fatalf("actOnDeadlines returned a deadline %v before now: timerLoop waits 0 and spins until the floor lets go, %v later",
+			now.Sub(next), floored.Sub(now))
+	}
+	if !next.Equal(floored) {
+		t.Errorf("actOnDeadlines returned %v as the next deadline, want the floored idle deadline %v", next, floored)
+	}
+}

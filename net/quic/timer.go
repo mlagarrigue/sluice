@@ -61,28 +61,41 @@ func (c *Conn) timerLoop() {
 // would be a second deviation where the cap already closes the exposure.
 const maxIdleFloor = 10 * time.Second
 
+// idleDeadlineLocked is the idle deadline the connection acts on: the last
+// activity plus the effective timeout, floored at three probe timeouts
+// (RFC 9000 §10.1) and capped at maxIdleFloor. Zero when no idle timeout
+// runs. Every loop that waits for the idle timeout reads it from here, never
+// c.idleDeadline: the raw deadline is past while the floor still holds the
+// connection, and a loop that waited on it would wake at once and spin,
+// holding c.mu at each turn, until the floored one.
+//
+// On a lossy or high-RTT path the recovery probes still legitimately
+// outstanding are the opposite of idleness, and tearing down under them
+// abandons a connection that was busy repairing itself: that is what the
+// floor is for. Its cap is what §10.1's MUST does not allow for — see
+// maxIdleFloor.
+func (c *Conn) idleDeadlineLocked() time.Time {
+	if c.idleTimeout == 0 || c.idleDeadline.IsZero() {
+		return time.Time{}
+	}
+	deadline := c.idleDeadline
+	if floor := min(3*c.rtt.pto(c.peerMaxAckDelayLocked()), maxIdleFloor); c.idleTimeout < floor {
+		deadline = deadline.Add(floor - c.idleTimeout)
+	}
+	return deadline
+}
+
 func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// The idle timeout, first: if the connection is dead there is nothing
-	// else worth doing. The effective deadline is floored at three probe
-	// timeouts past the last activity (RFC 9000 §10.1): on a lossy or
-	// high-RTT path the recovery probes still legitimately outstanding are
-	// the opposite of idleness, and tearing down under them abandons a
-	// connection that was busy repairing itself. The floor is capped at
-	// maxIdleFloor, which §10.1's MUST does not allow for — see there.
-	idleDeadline := c.idleDeadline
-	if c.idleTimeout != 0 && !idleDeadline.IsZero() {
-		if floor := min(3*c.rtt.pto(c.peerMaxAckDelayLocked()), maxIdleFloor); c.idleTimeout < floor {
-			idleDeadline = idleDeadline.Add(floor - c.idleTimeout)
-		}
-		if !now.Before(idleDeadline) {
-			c.mu.Unlock()
-			c.idleExpired()
-			c.mu.Lock()
-			return time.Time{}
-		}
+	// else worth doing.
+	if idleDeadline := c.idleDeadlineLocked(); !idleDeadline.IsZero() && !now.Before(idleDeadline) {
+		c.mu.Unlock()
+		c.idleExpired()
+		c.mu.Lock()
+		return time.Time{}
 	}
 
 	var next time.Time
@@ -242,9 +255,7 @@ func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 		}
 	}
 	earlier(c.paceDeadline)
-	if c.idleTimeout != 0 {
-		earlier(c.idleDeadline)
-	}
+	earlier(c.idleDeadlineLocked())
 	return next
 }
 

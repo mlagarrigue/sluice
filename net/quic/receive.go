@@ -56,7 +56,7 @@ func (c *Conn) readLoop() {
 		// one iteration reads one socket, and learns at the top of the
 		// next that it has moved.
 		c.mu.Lock()
-		deadline := c.idleDeadline
+		deadline := c.idleDeadlineLocked()
 		pc, ecnOK := c.pc, c.ecnRecv
 		c.mu.Unlock()
 		if deadline.IsZero() {
@@ -193,7 +193,7 @@ func (c *Conn) readLoopFed() {
 		default:
 		}
 		c.mu.Lock()
-		deadline := c.idleDeadline
+		deadline := c.idleDeadlineLocked()
 		c.mu.Unlock()
 		if deadline.IsZero() {
 			deadline = time.Now().Add(30 * time.Second)
