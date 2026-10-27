@@ -147,33 +147,70 @@ func TestEarlyAcceptanceWaitsForTheWriteKeys(t *testing.T) {
 	event(tls.QUICSetReadSecret, tls.QUICEncryptionLevelApplication) // a second release would close twice
 }
 
-// admitOnce is what the server does for a client that offers 0-RTT: check
-// the ticket at resumption, spend it when the 0-RTT is accepted.
+// admitOnce is what the server does for a client that resumes: check the
+// ticket when crypto/tls asks, which reserves it.
 func admitOnce(g *earlyGate, extra [][]byte, now time.Time) bool {
-	id, ok := g.eligible(extra, now)
-	return ok && g.take(id, now)
+	_, ok := g.eligible(extra, now)
+	return ok
 }
 
-// Checking a ticket spends nothing — crypto/tls reports every resumption,
-// 0-RTT offered or not, and one without it must leave the ticket's 0-RTT
-// intact — and of two connections that found it eligible, one takes it.
-func TestEarlyGateChecksWithoutSpending(t *testing.T) {
+// Checking a ticket reserves it: of two connections that present the same
+// one — a replay racing the original — the first is the only one eligible,
+// and crypto/tls answers the second without early_data. A reservation the
+// connection does not use is given back by release, and the ticket's 0-RTT
+// is intact; one the 0-RTT confirmed stays spent whatever release says.
+// Until 2026-10-27 the check spent nothing and the race was settled later,
+// with early_data already announced to the loser.
+func TestEarlyGateReservesAtTheCheck(t *testing.T) {
 	now := time.Now()
 	g := newEarlyGate(time.Minute, 4)
 	ticket := [][]byte{g.ticketExtra(now)}
 	id1, ok1 := g.eligible(ticket, now)
-	id2, ok2 := g.eligible(ticket, now)
-	if !ok1 || !ok2 {
-		t.Fatal("a check spent the ticket")
-	}
-	if !g.take(id1, now) {
-		t.Fatal("the first take was refused")
-	}
-	if g.take(id2, now) {
-		t.Error("the second of two racing connections took the ticket too")
+	if !ok1 {
+		t.Fatal("a fresh ticket is not eligible")
 	}
 	if _, ok := g.eligible(ticket, now); ok {
-		t.Error("a spent ticket is still eligible")
+		t.Fatal("the second of two racing connections found the ticket eligible too")
+	}
+	// The first connection served a resumption without 0-RTT: the ticket
+	// is released, and a later 0-RTT with it is accepted — once.
+	g.release(id1)
+	id3, ok := g.eligible(ticket, now)
+	if !ok {
+		t.Fatal("a released ticket is not eligible again")
+	}
+	g.release(id3) // released twice: harmless
+	g.release(id3)
+	if _, ok := g.eligible(ticket, now); !ok {
+		t.Fatal("a ticket released twice is not eligible again")
+	}
+	if _, ok := g.eligible(ticket, now); ok {
+		t.Error("a reserved ticket is still eligible")
+	}
+}
+
+// A full register refuses the next ticket when crypto/tls asks, not after
+// it has announced early_data: the ticket is reserved by the check. Until
+// 2026-10-27 the check ignored the register's capacity, and the ticket was
+// spent only once the 0-RTT was accepted; full, the register then refused
+// it with early_data already in the EncryptedExtensions, the connection
+// kept no early key, and the client's 0-RTT packets were dropped — a loss
+// to it, resent in 1-RTT after a probe timeout — instead of the TLS refusal
+// ADR 0019 promises. A release gives the slot back.
+func TestAFullTicketRegisterRefusesEarlyDataInTLS(t *testing.T) {
+	g := newEarlyGate(10*time.Minute, 1) // room for one admitted ticket
+	now := time.Now()
+	first, second := g.ticketExtra(now), g.ticketExtra(now)
+	if _, ok := g.eligible([][]byte{first}, now); !ok {
+		t.Fatal("the first ticket is not eligible; the case under test is not reached")
+	}
+	id2, ok := g.eligible([][]byte{second}, now)
+	if ok {
+		t.Fatal("eligible said yes to a second ticket in a register of one: crypto/tls announces early_data for a 0-RTT the register cannot admit")
+	}
+	g.release(id2) // nothing was reserved: nothing to give back, and no slot freed
+	if _, ok := g.eligible([][]byte{second}, now); ok {
+		t.Fatal("a refused ticket's release freed a slot it never held")
 	}
 }
 

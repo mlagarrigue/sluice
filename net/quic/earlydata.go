@@ -64,9 +64,22 @@ func (g *earlyGate) ticketExtra(now time.Time) []byte {
 
 // eligible reports whether a resumption whose ticket carries extra may have
 // its 0-RTT accepted at now — a ticket of this instance, young enough, not
-// spent — and returns the ticket's identifier for take. It spends nothing:
-// crypto/tls reports the resumption whether or not the client offers 0-RTT,
-// and a resumption without it must not cost the ticket its 0-RTT.
+// spent, and room in the register — and reserves it: the ticket is spent
+// here, when crypto/tls asks (QUICResumeSession), so that its answer is the
+// right one. A ticket another connection reserved first (a replay racing
+// the original) and a full register (spentTokens.failClosed) both come back
+// as not eligible, and crypto/tls answers without early_data: every refusal
+// is a TLS refusal, after which no 0-RTT packet is read (RFC 9001 §4.6.2).
+// Until 2026-10-27 the ticket was spent later, in installEarly, once the
+// 0-RTT was accepted; a full register or a lost race was then found with
+// early_data already announced, and the connection kept no key: its 0-RTT
+// packets were dropped, which the client saw as loss and resent in 1-RTT
+// after a probe timeout instead of the refusal ADR 0019 promises.
+//
+// crypto/tls asks before it checks the PSK binder and before it knows
+// whether the client offered 0-RTT at all, so a reservation may go unused:
+// release gives it back when the handshake ends without the early keys, or
+// the connection does. The identifier returned is what release takes.
 func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 	for _, e := range extra {
 		if len(e) != earlyTicketLen || !bytes.HasPrefix(e, earlyTicketMagic) {
@@ -82,19 +95,21 @@ func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 		}
 		id := e[16:32]
 		g.mu.Lock()
-		spent := g.spent.has(id, now)
+		ok := g.spent.consume(id, now)
 		g.mu.Unlock()
-		return id, !spent
+		return id, ok
 	}
 	return nil, false
 }
 
-// take records the ticket id as spent and reports whether it was not yet:
-// RFC 8446 §8's "at most once" on the instance that issued it. Called when
-// the 0-RTT is actually accepted; of two connections that found the same
-// ticket eligible — a replay racing the original — only one takes it.
-func (g *earlyGate) take(id []byte, now time.Time) bool {
+// release gives back a reservation eligible made that the connection did
+// not use — no 0-RTT offered, or a handshake that failed before the early
+// keys — so that the ticket's 0-RTT, and the register's slot, are intact.
+// RFC 9846 §8's "at most once" holds: a 0-RTT handshake with this ticket
+// was never accepted here. Nothing happens for a ticket whose 0-RTT was
+// accepted (installEarly), or for one released already.
+func (g *earlyGate) release(id []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.spent.consume(id, now)
+	g.spent.forget(id)
 }

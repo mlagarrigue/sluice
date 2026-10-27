@@ -263,7 +263,11 @@ type ListenerConfig struct {
 	// MaxEarlyDataTickets bounds the record of tickets whose 0-RTT was
 	// accepted, each kept one EarlyDataWindow so that it is accepted once.
 	// Full, the record refuses 0-RTT rather than forget an entry: the
-	// connection resumes in 1-RTT, and the guarantee holds under any load.
+	// refusal is made in the TLS handshake, before any 0-RTT packet is
+	// read, the connection resumes in 1-RTT, and the guarantee holds
+	// under any load. A ticket is entered when the resumption is checked
+	// and given back if its 0-RTT is not accepted, so a resumption without
+	// 0-RTT and a failed handshake hold no entry past their own end.
 	// Size it as the rate of 0-RTT connections times the window; an entry
 	// is a 16-byte identifier and a time, in a map and a slice. Zero means
 	// 16,384; a negative value is refused by [NewListener].

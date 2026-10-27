@@ -571,6 +571,7 @@ func (c *Conn) keepClosingDatagramLocked(pc net.PacketConn, b []byte, to net.Add
 // connection leaves on a timer; one that owns its socket leaves when its
 // read loop, which keeps answering until end, returns (holdClosing).
 func (c *Conn) enterClosingLocked() {
+	c.releaseEarlyTicketLocked() // a handshake that ends here used no 0-RTT
 	if len(c.closing.datagrams) == 0 && (!c.draining || !c.holdsClosingLocked()) {
 		c.closing.left = true
 		if !c.closing.loop {

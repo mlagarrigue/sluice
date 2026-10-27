@@ -450,8 +450,11 @@ type Conn struct {
 	earlyAccepted chan struct{}
 	earlyReleased bool
 	// earlyTicket is the identifier of the ticket a resuming client
-	// presented, found eligible for 0-RTT and spent by installEarly.
+	// presented, reserved in the listener's register by eligible;
+	// earlyTaken says installEarly confirmed the reservation (the 0-RTT
+	// was accepted), after which it is never given back.
 	earlyTicket []byte
+	earlyTaken  bool
 	// On a client: wantsEarly is DialEarly asking for 0-RTT; remembered is
 	// the ticket's parameters it is sent under, adopted as the peer's
 	// (paramsRemembered) once earlySealer, the 0-RTT write keys, is in;
@@ -1559,17 +1562,28 @@ func (c *Conn) installEarly(suiteID uint16, secret []byte) error {
 	if err != nil {
 		return err
 	}
-	if c.early == nil || !c.early.take(c.earlyTicket, time.Now()) {
-		// Another connection took the ticket since it was found eligible
-		// — a replay racing the original. crypto/tls has accepted the
-		// 0-RTT already; its packets are never read, which the client
-		// sees as loss and resends in 1-RTT, after the handshake.
-		return nil
-	}
+	// The ticket was reserved when crypto/tls asked about the resumption
+	// (eligible): the 0-RTT it has just accepted is the one the reservation
+	// is for, and the reservation is now spent for good.
 	c.mu.Lock()
 	c.earlyOpener = opener
+	c.earlyTaken = true
 	c.mu.Unlock()
 	return nil
+}
+
+// releaseEarlyTicketLocked gives the listener's register back a ticket this
+// connection reserved (eligible) and never used: the handshake ended
+// without the early keys, or the connection ends before it did. Idempotent;
+// a reservation installEarly confirmed stays spent. Callers hold mu.
+func (c *Conn) releaseEarlyTicketLocked() {
+	if c.earlyTicket == nil {
+		return
+	}
+	if !c.earlyTaken && c.early != nil {
+		c.early.release(c.earlyTicket)
+	}
+	c.earlyTicket = nil
 }
 
 // releaseEarly runs on a server whose 0-RTT was accepted, once its 1-RTT
@@ -1734,9 +1748,9 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			// A client resumes. Its 0-RTT stands only if this listener
 			// admits the ticket (ADR 0019); otherwise crypto/tls answers
 			// without early_data, and no 0-RTT packet is read (RFC 9001
-			// §4.6.2).
-			// The ticket is only checked here, and spent in installEarly,
-			// once the client has offered 0-RTT and crypto/tls accepted it.
+			// §4.6.2). The ticket is reserved here; installEarly confirms
+			// the reservation when the 0-RTT is accepted, and
+			// releaseEarlyTicketLocked gives it back otherwise.
 			if e.SessionState.EarlyData {
 				var id []byte
 				ok := false
@@ -1796,6 +1810,11 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 		}
 		return false, c.handlePeerParameters(e.Data)
 	case tls.QUICHandshakeDone:
+		// A server that reserved a ticket and installed no early keys
+		// served a resumption without 0-RTT: the ticket keeps its 0-RTT.
+		c.mu.Lock()
+		c.releaseEarlyTicketLocked()
+		c.mu.Unlock()
 		return true, nil
 	case tls.QUICErrorEvent:
 		// crypto/tls reports a failed handshake here (Go ≥1.25) as

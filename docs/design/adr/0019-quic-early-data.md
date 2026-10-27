@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused)
 - **Theme:** quic
 
 ## Problem
@@ -30,15 +30,33 @@ complete before processing it.
 that allow 0-RTT, as `SessionTickets` issues tickets that do not. The ticket
 carries, in `SessionState.Extra` (encrypted and authenticated with the
 ticket), an instance identifier drawn at random when the `Listener` is
-created, a random ticket identifier and the time of issue. On resumption the
+created, a random ticket identifier and the time of issue.
+
+On resumption the
 `Listener` accepts 0-RTT only if the instance identifier is its own, the
-ticket is younger than `EarlyDataWindow` (zero: 10 minutes), and the ticket
-identifier has never been used: it then records it in a register bounded by
-`MaxEarlyDataTickets` (zero: 16,384), where the entry lives until the window
-ends. With the register full, 0-RTT is refused and the connection resumes in
-1-RTT. The register is sized as the rate of 0-RTT connections times the
-window. Every refusal is a TLS refusal (`SessionState.EarlyData` set to
-false): no 0-RTT packet is then processed (RFC 9001 §4.6.2).
+ticket is younger than `EarlyDataWindow` (zero: 10 minutes), the ticket
+identifier has never been used, and the register bounded by
+`MaxEarlyDataTickets` (zero: 16,384) has room: the ticket is then entered in
+the register at once, when `crypto/tls` asks about the resumption, and the
+entry lives until the window ends. With the register full, or the ticket
+entered by another connection first (a replay racing the original), 0-RTT is
+refused and the connection resumes in 1-RTT. The register is sized as the
+rate of 0-RTT connections times the window. Every refusal is a TLS refusal
+(`SessionState.EarlyData` set to false): no 0-RTT packet is then processed
+(RFC 9001 §4.6.2).
+
+`crypto/tls` asks before it verifies the PSK binder and before it knows
+whether the client offered 0-RTT at all, so an entry may go unused — a
+resumption without 0-RTT, a handshake that fails — and is then given back,
+when the handshake completes without the early keys or the connection ends:
+the ticket's 0-RTT, and the slot, are intact, and "at most once" still
+holds, since no 0-RTT handshake with that ticket was accepted.
+
+Until 2026-10-27 the ticket was entered later, once the 0-RTT was accepted;
+a full register or a lost race was then found with `early_data` already
+announced, and the connection kept no early key: its 0-RTT packets were
+dropped, which the client saw as loss and resent in 1-RTT after a probe
+timeout.
 
 A `Listener` with `EarlyData` hands the connection to `Accept` as soon as
 its 0-RTT is accepted, before the handshake ends; `Conn.HandshakeComplete`

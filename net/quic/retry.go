@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
@@ -91,6 +92,22 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 	s.byID[id] = now.Add(s.ttl)
 	s.order = append(s.order, id)
 	return true
+}
+
+// forget drops an entry consume recorded, freeing its identifier and its
+// slot: an admission that was reserved and not used (earlyGate.release).
+// Linear in the register, which is bounded by max and walked once per
+// release — a resumption that offered no 0-RTT, a handshake that failed —
+// never per packet.
+func (s *spentTokens) forget(id []byte) {
+	k := string(id)
+	if _, ok := s.byID[k]; !ok {
+		return
+	}
+	delete(s.byID, k)
+	if i := slices.Index(s.order, k); i >= 0 {
+		s.order = slices.Delete(s.order, i, i+1)
+	}
 }
 
 // AppendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
@@ -224,11 +241,4 @@ func tokenField(b []byte) (val, rest []byte, err error) {
 	}
 	n := int(b[0])
 	return bytesN(b[1:], n)
-}
-
-// has reports whether id is recorded as spent and not yet expired at now,
-// recording nothing.
-func (s *spentTokens) has(id []byte, now time.Time) bool {
-	exp, ok := s.byID[string(id)]
-	return ok && now.Before(exp)
 }
