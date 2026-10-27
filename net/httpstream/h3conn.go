@@ -70,6 +70,13 @@ type h3Assembler struct {
 	served    atomic.Int64
 	cancelled int
 	excess    error
+	// charged remembers the request streams already counted in cancelled,
+	// so a stream is charged once however many of its frames say it ended:
+	// the RESET_STREAM and STOP_SENDING of one cancellation (§4.1.1), in
+	// either order, and a refusal of this end's that crosses them. Bounded
+	// like the tombstones.
+	charged      map[uint64]struct{}
+	chargedOrder []uint64
 	// Finish, when set, is called by retire when the last in-flight stream
 	// of a draining connection retires: nothing more is owed, the
 	// connection may close. It must not block — it runs on the read
@@ -180,9 +187,11 @@ type h3Assembler struct {
 	frames []h3Frame
 }
 
-// maxRefusedRemembered bounds the tombstones. A peer still sending on a
-// stream refused this long ago is not confused but hostile, and re-refusing
-// it costs one map hit.
+// maxRefusedRemembered bounds the tombstones, and the streams remembered as
+// charged. A peer still sending on a stream refused this long ago is not
+// confused but hostile, and re-refusing it costs one map hit; one that
+// sends the second frame of a cancellation this late is charged twice for
+// it, which only shortens a hostile peer's allowance.
 const maxRefusedRemembered = 256
 
 type h3Stream struct {
@@ -274,6 +283,7 @@ func newH3Assembler(cfg Config) *h3Assembler {
 		qpack:   newQPACKDecoder(cfg.QPACKStatic, cfg.MaxHeaderBytes),
 		streams: make(map[uint64]*h3Stream),
 		refused: make(map[uint64]struct{}),
+		charged: make(map[uint64]struct{}),
 		unis:    make(map[uint64]*h3Uni),
 		// §5.2: a client's GOAWAY carries a push ID, at most 2^62-1.
 		peerGoAway:       1 << 62,
@@ -457,13 +467,12 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		if f.Type == quic.FrameStopSending {
 			// The peer stopped reading a response: a request this end
 			// still holds — assembling, in the handler's hands or being
-			// written — is cancelled (§4.1.1), and charged as one. The
-			// transport hands the frame up only for a stream whose sending
-			// side it had not already abandoned, so a refusal and a
-			// cancellation that cross are one charge, not two. Stream 3 is
-			// ServeH3Conn's own: it ended the connection before this ran.
+			// written — is cancelled (§4.1.1), and charged as one, the
+			// RESET_STREAM that usually comes with it included (countCancel
+			// charges a stream once). Stream 3 is ServeH3Conn's own: it
+			// ended the connection before this ran.
 			if f.StreamID&0x03 == 0 {
-				a.countCancel()
+				a.countCancel(f.StreamID)
 			}
 			continue
 		}
@@ -856,7 +865,7 @@ func (a *h3Assembler) reset(id uint64) error {
 		// is gone on both sides — §4.1.1 makes the answer a MAY, and it
 		// would tell a client that stopped listening what it already knows.
 		a.Forget(id)
-		a.countCancel()
+		a.countCancel(id)
 	case 2:
 		if u := a.unis[id]; u != nil {
 			a.release(id, len(u.buf))
@@ -898,7 +907,7 @@ func (a *h3Assembler) uniRetained(id uint64) int {
 // rapid-reset shape with the roles swapped.
 func (a *h3Assembler) fail(id, code uint64, err error) {
 	a.dropFailing(id, err)
-	a.countCancel()
+	a.countCancel(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: code, Err: err})
 }
 
@@ -917,14 +926,17 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 			after = st.interim // the status follows the 100 the head was owed
 		}
 	}
-	a.countCancel()
+	a.countCancel(id)
 	a.failed = append(a.failed, h3StreamError{StreamID: id, Code: h3NoError, Err: err, Status: status, Method: method, After: after})
 }
 
-// countCancel charges one request stream ended short of its answer — by the
+// countCancel charges request stream id, ended short of its answer — by the
 // peer's STOP_SENDING or RESET_STREAM, or by a refusal of this end's —
 // against the rapid-reset allowance: four times MaxConcurrentStreams flat,
-// plus two for every request this connection has answered in full. Past it
+// plus two for every request this connection has answered in full. A
+// stream is charged once: a client that cancels as §4.1.1 asks sends both
+// frames, and charged per frame its allowance would be half the one stated
+// here, where HTTP/2 charges its one RST_STREAM once. Past it
 // the connection is closed with H3_EXCESSIVE_LOAD (RFC 9114 §10.5), at the
 // end of the delivery that crossed the line.
 //
@@ -939,7 +951,10 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 // nothing else. The flat part is in this layer's own unit where HTTP/2's is
 // four batches of frames: a peer may fill the limit and cancel it all four
 // times over before it has let one answer through.
-func (a *h3Assembler) countCancel() {
+func (a *h3Assembler) countCancel(id uint64) {
+	if !remember(a.charged, &a.chargedOrder, id) {
+		return
+	}
 	a.cancelled++
 	if a.excess != nil || int64(a.cancelled) <= int64(4*a.cfg.MaxConcurrentStreams)+2*a.served.Load() {
 		return
@@ -971,15 +986,22 @@ func (a *h3Assembler) drop(id uint64) *h3Stream {
 // tombstone remembers a stream as dead so later frames on it are dropped
 // rather than re-opening assembly, FIFO-bounded like every memory here.
 func (a *h3Assembler) tombstone(id uint64) {
-	if _, ok := a.refused[id]; ok {
-		return
+	remember(a.refused, &a.refusedOrder, id)
+}
+
+// remember adds id to set, whose insertion order is order, forgetting the
+// oldest past maxRefusedRemembered, and reports whether id was new.
+func remember(set map[uint64]struct{}, order *[]uint64, id uint64) bool {
+	if _, ok := set[id]; ok {
+		return false
 	}
-	a.refused[id] = struct{}{}
-	a.refusedOrder = append(a.refusedOrder, id)
-	for len(a.refusedOrder) > maxRefusedRemembered {
-		delete(a.refused, a.refusedOrder[0])
-		a.refusedOrder = a.refusedOrder[1:]
+	set[id] = struct{}{}
+	*order = append(*order, id)
+	for len(*order) > maxRefusedRemembered {
+		delete(set, (*order)[0])
+		*order = (*order)[1:]
 	}
+	return true
 }
 
 // Forget drops a stream's assembly state, which is what a RESET_STREAM from

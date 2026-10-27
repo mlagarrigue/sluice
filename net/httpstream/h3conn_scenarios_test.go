@@ -1077,3 +1077,43 @@ func TestH3AnnouncedFieldSectionLimitOfZeroIsALimit(t *testing.T) {
 		t.Error("a response was encoded for a peer that announced a field-section limit of zero")
 	}
 }
+
+// RFC 9114 §4.1.1: a client that cancels a request sends RESET_STREAM for
+// its direction and STOP_SENDING for the server's, often in one packet, and
+// the transport hands both up. A cancellation is charged once per stream
+// against the rapid-reset allowance, whatever the order of its two frames:
+// charged once per frame, the allowance countCancel documents (four times
+// MaxConcurrentStreams) was half that for every cancelled request.
+func TestH3ATwoFrameCancellationIsOneCharge(t *testing.T) {
+	reset := quic.Frame{Type: quic.FrameResetStream, StreamID: 0}
+	stop := quic.Frame{Type: quic.FrameStopSending, StreamID: 0}
+	for _, tc := range []struct {
+		name   string
+		head   []byte
+		fin    bool
+		frames [][]quic.Frame
+	}{
+		{"reset then stop, one packet", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{reset, stop}}},
+		{"stop then reset, one packet", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{stop, reset}}},
+		{"stop then reset, two packets", h3Request("POST", "/u", [2]string{"content-length", "16"}), false, [][]quic.Frame{{stop}, {reset}}},
+		// Complete, so in the handler's hands and out of assembly: the
+		// charge is remembered past the stream's assembly state.
+		{"a complete request, stop then reset", h3Request("GET", "/g"), true, [][]quic.Frame{{stop}, {reset}}},
+		{"a complete request, reset then stop", h3Request("GET", "/g"), true, [][]quic.Frame{{reset}, {stop}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAssembler(Config{BodyDelivery: BodyWhole})
+			if _, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, tc.head, tc.fin)}); err != nil || len(failed) != 0 {
+				t.Fatalf("the request's head: %v, failed %v", err, failed)
+			}
+			for _, frames := range tc.frames {
+				if _, _, _, err := a.Frames(frames); err != nil {
+					t.Fatalf("the cancellation: %v", err)
+				}
+			}
+			if a.cancelled != 1 {
+				t.Fatalf("one cancelled request charged %d times, want once", a.cancelled)
+			}
+		})
+	}
+}
