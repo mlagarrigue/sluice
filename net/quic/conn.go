@@ -1690,16 +1690,27 @@ func (c *Conn) discardSpaceLocked(space int) {
 }
 
 // pump drains the events crypto/tls has ready, sending what it asks to send
-// and installing what it hands back.
+// and installing what it hands back. done reports that the handshake
+// completed somewhere in the drain; the drain runs to the end of the queue
+// regardless, because crypto/tls queues the 1-RTT read secret right behind
+// QUICHandshakeDone (RFC 9001 §5.7: no 1-RTT packet is decrypted before the
+// handshake completes), and a pump that stopped at the first left the key
+// in the queue: every client, and every server without tickets, ended its
+// handshake with no 1-RTT opener, and the 1-RTT packets already deferred —
+// the request a client coalesces with its Finished, a server's 0.5-RTT data
+// — waited for the peer's next datagram, a round trip plus its
+// max_ack_delay later. Until 2026-10-27.
 func (c *Conn) pump() (done bool, err error) {
 	for {
 		e := c.tls.NextEvent()
 		if e.Kind == tls.QUICNoEvent {
-			return false, nil
+			return done, nil
 		}
-		if done, err := c.handleTLSEvent(e); done || err != nil {
+		d, err := c.handleTLSEvent(e)
+		if err != nil {
 			return done, err
 		}
+		done = done || d
 	}
 }
 
