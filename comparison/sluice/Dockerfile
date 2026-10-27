@@ -12,7 +12,7 @@
 # (STUDY_*, PG*, comparison/README.md) and listens on STUDY_LISTEN, by
 # default 0.0.0.0:8443 here, TCP and UDP. Both bases are pinned by digest,
 # like interop/Dockerfile's: a campaign rebuilds the image it measured.
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS doc
+FROM golang:1.26-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS doc
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY comparison/sluice/go.mod comparison/sluice/go.sum ./comparison/sluice/
