@@ -236,7 +236,7 @@ func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 	const remembered = 100
 	c.remembered = TransportParameters{
 		InitialMaxData:          remembered,
-		InitialMaxStreamDataUni: remembered,
+		InitialMaxStreamDataUni: 10 * remembered, // wide: only the connection credit can stop the write
 		InitialMaxStreamsUni:    4,
 		ActiveConnIDLimit:       4,
 	}
@@ -323,5 +323,110 @@ func TestZeroRTTWritesStayUnderRememberedLimits(t *testing.T) {
 	}
 	if connMax != DefaultParameters().InitialMaxData {
 		t.Errorf("connSend.max is %d after the 1-RTT keys, want the server's %d", connMax, DefaultParameters().InitialMaxData)
+	}
+}
+
+// The per-stream limit is held back with the connection credit and the
+// stream counts: RFC 9000 §7.4.1, "A server might provide larger initial
+// stream flow control limits for streams than the remembered values that a
+// client applies when sending 0-RTT", under the same MUST. Until 2026-10-27
+// handlePeerParameters raised every open stream's credit to the server's
+// value the moment its parameters parsed, and a stream born in the window
+// took its credit from c.peerParams, already the server's: 300 bytes of
+// stream data left in 0-RTT packets against a remembered 100 (measured),
+// which a strict server may close as PROTOCOL_VIOLATION. The connection
+// credit in TestZeroRTTWritesStayUnderRememberedLimits does not see it —
+// here it is wide, so only the per-stream limit can stop the write.
+func TestZeroRTTStreamWritesStayUnderTheRememberedStreamLimit(t *testing.T) {
+	tap := newTap(&fuzzSink{addr: "held04:self"})
+	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+	c := assembleConn(tap, fakeFuzzAddr("held04:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+
+	const perStream = 100
+	c.remembered = TransportParameters{
+		InitialMaxData:          10 * perStream, // wide: only the per-stream limit can stop the write
+		InitialMaxStreamDataUni: perStream,
+		InitialMaxStreamsUni:    4,
+		ActiveConnIDLimit:       4,
+	}
+	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+		t.Fatalf("early sealer: %v", err)
+	}
+	// One stream open before the server's parameters, one born after them:
+	// the first is raised by the loop over open streams, the second takes
+	// its credit at birth. Both must wait.
+	before, err := c.OpenUniStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenUniStream before the server's parameters: %v", err)
+	}
+	srv := DefaultParameters() // InitialMaxStreamDataUni 1<<16, far past the ticket's
+	srv.initialSourceCID = dcid
+	srv.originalDCID = dcid
+	if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+		t.Fatalf("server parameters: %v", err)
+	}
+	after, err := c.OpenUniStream(context.Background())
+	if err != nil {
+		t.Fatalf("OpenUniStream after the server's parameters: %v", err)
+	}
+	c.mu.Lock()
+	hasOneRTT, early := c.spaces[spaceApplication].sealer != nil, c.earlySealer != nil
+	beforeMax, afterMax := before.sendQ.max, after.sendQ.max
+	c.mu.Unlock()
+	if hasOneRTT || !early {
+		t.Fatalf("precondition lost: 1-RTT sealer %v, early sealer %v", hasOneRTT, early)
+	}
+	if beforeMax != perStream || afterMax != perStream {
+		t.Errorf("per-stream credit while 0-RTT packets are still written: %d on the stream opened before the server's parameters, %d on the one opened after, want the remembered %d on both",
+			beforeMax, afterMax, perStream)
+	}
+
+	wrote := make(chan int, 1)
+	go func() {
+		n, _ := after.Write(make([]byte, 3*perStream))
+		wrote <- n
+	}()
+	settled := 0
+	for range 2000 {
+		c.mu.Lock()
+		off := int(after.writeOff)
+		c.mu.Unlock()
+		if off == settled && off > 0 {
+			break
+		}
+		settled = off
+		time.Sleep(time.Millisecond)
+	}
+	for _, w := range tap.recorded() {
+		for _, typ := range packetTypes(t, w.data) {
+			if typ != packetZeroRTT {
+				t.Fatalf("a packet of type %#x left; this test only reasons about 0-RTT packets", typ)
+			}
+		}
+	}
+	if settled > perStream {
+		t.Errorf("the client put %d bytes of stream data in 0-RTT packets against a remembered per-stream limit of %d", settled, perStream)
+	}
+
+	// The first 1-RTT write keys take over: the server's per-stream value
+	// applies to both streams, and the parked writer finishes under it.
+	if err := c.install(tls.QUICEncryptionLevelApplication, tls.TLS_AES_128_GCM_SHA256, make([]byte, 32), true); err != nil {
+		t.Fatalf("1-RTT write keys: %v", err)
+	}
+	select {
+	case n := <-wrote:
+		if n != 3*perStream {
+			t.Errorf("the write finished at %d bytes, want the whole %d once the server's limit applied", n, 3*perStream)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the write never finished after the server's limits took over")
+	}
+	c.mu.Lock()
+	beforeMax, afterMax = before.sendQ.max, after.sendQ.max
+	c.mu.Unlock()
+	if want := srv.InitialMaxStreamDataUni; beforeMax != want || afterMax != want {
+		t.Errorf("per-stream credit after the 1-RTT keys: %d and %d, want the server's %d on both", beforeMax, afterMax, want)
 	}
 }

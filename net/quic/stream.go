@@ -102,7 +102,7 @@ func (s *Stream) sendOnly() bool {
 func newStream(c *Conn, id uint64) *Stream {
 	s := &Stream{id: id, conn: c, ready: make(chan struct{}, 1)}
 	if c.hasPeerParams {
-		s.sendQ.max = initialStreamSendLimit(c.peerParams, id, c.isClient)
+		s.sendQ.max = initialStreamSendLimit(c.sendLimitsLocked(), id, c.isClient)
 	}
 	s.recvQ = newRecvQuota(initialStreamRecvLimit(c.params, id, c.isClient))
 	// A unidirectional stream only ever carries bytes one way: the direction

@@ -1840,17 +1840,39 @@ func (c *Conn) earlyWriteStillLocked() bool {
 }
 
 // applyPeerLimitsLocked takes the peer's flow-control and stream limits as
-// this end's bounds on what it may send. Held back while 0-RTT packets are
-// still being written, where the remembered ones apply (§7.4.1). Callers
-// hold mu.
+// this end's bounds on what it may send: the connection credit, the stream
+// counts, and the per-stream credit of every stream already open. Held back
+// while 0-RTT packets are still being written, where the remembered ones
+// apply (§7.4.1). Callers hold mu.
 func (c *Conn) applyPeerLimitsLocked(p TransportParameters) {
 	c.connSend.grant(p.InitialMaxData)
 	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
 	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
+	// Streams opened before the grants arrived: the 0-RTT ones, which wrote
+	// under the ticket's per-stream limit, and otherwise none in the
+	// ordinary order of things, but harmless to repair. §7.4.1 names this
+	// limit with the others — "A server might provide larger initial stream
+	// flow control limits for streams than the remembered values that a
+	// client applies when sending 0-RTT" — so it waits with them.
+	for _, s := range c.streams {
+		s.sendQ.grant(initialStreamSendLimit(p, s.id, c.isClient))
+	}
 	// Whoever raises the limits wakes what the old ones stopped: a writer
 	// parked on the remembered credit has room now. Held back, the raise no
 	// longer rides handlePeerParameters' own broadcast.
 	c.cond.Broadcast()
+}
+
+// sendLimitsLocked is the parameter set this end's sending is bounded by:
+// the peer's, or the ticket's remembered ones for as long as the peer's
+// are held back behind 0-RTT packets still being written (§7.4.1,
+// limitsHeld). A stream born in that window takes its credit from here, not
+// from c.peerParams, which already holds the peer's values. Callers hold mu.
+func (c *Conn) sendLimitsLocked() TransportParameters {
+	if c.limitsHeld {
+		return c.remembered
+	}
+	return c.peerParams
 }
 
 func (c *Conn) handlePeerParameters(raw []byte) error {
@@ -1967,11 +1989,6 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	// once the handshake is confirmed the path is probed up to
 	// min(MaxDatagramSize, p.MaxUDPPayloadSize) (pmtu.go), and maxDatagram
 	// rises only on a probe's acknowledgement.
-	// Streams opened before the grants arrived — none in the ordinary order
-	// of things, but harmless to repair.
-	for _, s := range c.streams {
-		s.sendQ.grant(initialStreamSendLimit(p, s.id, c.isClient))
-	}
 	// The effective idle timeout is the smaller of the two announcements,
 	// zero meaning "none" on either side (§10.1).
 	peerIdle := p.MaxIdleTimeout
