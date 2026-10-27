@@ -156,6 +156,40 @@ const (
 // than followed into memory.
 const maxReplicationRelations = 1 << 14
 
+// maxReplicationRelationBytes bounds the relation table together: the
+// namespace, name and column names of every relation kept, plus
+// relationColumnCost per column for the [RelationColumn] itself.
+//
+// Capping the count alone is not enough. A Relation message is bounded only
+// by [Config.MaxMessage], 64 MiB by default and up to 1 GiB, so the count
+// alone bounds the table at 16,384 times that — a figure, not a bound — and
+// a server can describe relations with names as long as a message for free,
+// kept for the life of the stream (measured: 64 relations with 4 MiB names
+// kept, 256 MiB). What PostgreSQL sends is small by construction: a name is
+// at most 63 bytes (NAMEDATALEN) and a table has at most 1,600 columns
+// (MaxHeapAttributeNumber), so a relation of ordinary shape costs a few
+// hundred bytes and the whole of a large publication a few megabytes: a
+// thousand tables of a hundred columns cost under 6 MiB (measured). The
+// budget is 64 MiB, four times maxServerParameterBytes, so that the count
+// bound is reachable by a conformant server before this one is: 16,384
+// tables of thirty columns, FOR ALL TABLES on a very large schema, cost
+// about 28 MiB.
+const maxReplicationRelationBytes = 64 << 20
+
+// relationColumnCost is what a [RelationColumn] costs the table beyond its
+// name: the struct itself, the name's header included.
+const relationColumnCost = 32
+
+// cost is what the table keeps for rel: its names, and relationColumnCost
+// per column.
+func (rel *Relation) cost() int {
+	n := len(rel.Namespace) + len(rel.Name)
+	for i := range rel.Columns {
+		n += len(rel.Columns[i].Name) + relationColumnCost
+	}
+	return n
+}
+
 // pgEpochMicros is 2000-01-01 in Unix microseconds, the origin the protocol
 // counts its timestamps from.
 const pgEpochMicros = 946_684_800_000_000
@@ -164,6 +198,9 @@ const pgEpochMicros = 946_684_800_000_000
 // keeps the relation table the row changes refer to.
 type replDecoder struct {
 	relations map[uint32]*Relation
+	// relationBytes is the cost of every relation in the table, bounded by
+	// maxReplicationRelationBytes.
+	relationBytes int
 }
 
 // replReader walks one message body; every read checks what remains.
@@ -371,13 +408,25 @@ func (d *replDecoder) relation(r *replReader) {
 	if d.relations == nil {
 		d.relations = make(map[uint32]*Relation)
 	}
-	if _, known := d.relations[rel.OID]; !known && len(d.relations) >= maxReplicationRelations {
+	old, known := d.relations[rel.OID]
+	if !known && len(d.relations) >= maxReplicationRelations {
 		r.err = fmt.Errorf("%w: the server described more than %d relations", ErrProtocol, maxReplicationRelations)
+		return
+	}
+	// A redescription replaces its predecessor in the table, so it is
+	// charged the difference, not the whole.
+	total := d.relationBytes + rel.cost()
+	if known {
+		total -= old.cost()
+	}
+	if total > maxReplicationRelationBytes {
+		r.err = fmt.Errorf("%w: a Relation of %d bytes takes the relation table past its %d-byte budget", ErrProtocol, rel.cost(), maxReplicationRelationBytes)
 		return
 	}
 	// A new value rather than an update in place: changes already delivered
 	// keep the description they were decoded under.
 	d.relations[rel.OID] = rel
+	d.relationBytes = total
 }
 
 func (d *replDecoder) relationOf(r *replReader) *Relation {

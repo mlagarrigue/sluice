@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -548,4 +550,66 @@ func TestReplicationGivesBackAnOversizedArena(t *testing.T) {
 	if n := held(); n > rowsRetainBytes {
 		t.Errorf("the arena still holds %d bytes after %d narrow batches, over the retained %d", n, rowsShrinkAfter+1, rowsRetainBytes)
 	}
+}
+
+// The relation table is bounded in bytes as well as in count: a Relation
+// message is bounded only by Config.MaxMessage, so the count alone let a
+// server keep gigabytes of names in the table for the life of the stream
+// (64 relations with 4 MiB names kept: 256 MiB, measured). A relation past
+// the budget is ErrProtocol; a redescription of a known OID is charged the
+// difference, so a publication whose tables change shape is not charged
+// twice; and a table of ordinary shape decodes as before.
+func TestReplicationBoundsTheRelationTableInBytes(t *testing.T) {
+	t.Run("names past the budget", func(t *testing.T) {
+		var d replDecoder
+		name := strings.Repeat("n", 4<<20)
+		var err error
+		kept := 0
+		for oid := uint32(1); oid <= 64 && err == nil; oid++ {
+			_, _, _, err = d.decode(relMsg(oid, "public", name, "id"), 100, nil, nil, nil)
+			if err == nil {
+				kept++
+			}
+		}
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("64 relations of 4 MiB names: err = %v, %d kept, want ErrProtocol once the budget is passed", err, kept)
+		}
+		if kept > maxReplicationRelationBytes/(4<<20) {
+			t.Errorf("%d relations of 4 MiB kept before the refusal, past the %d-byte budget", kept, maxReplicationRelationBytes)
+		}
+	})
+	t.Run("a redescription is charged the difference", func(t *testing.T) {
+		var d replDecoder
+		name := strings.Repeat("n", maxReplicationRelationBytes*3/4)
+		if _, _, _, err := d.decode(relMsg(1, "public", name, "id"), 100, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		// Described again under the same OID, a column added: the table
+		// holds one relation, not two, and stays under the budget.
+		if _, _, _, err := d.decode(relMsg(1, "public", name, "id", "name"), 101, nil, nil, nil); err != nil {
+			t.Fatalf("redescribing the relation: %v (charged as a second relation?)", err)
+		}
+		if len(d.relations) != 1 || d.relationBytes > len(name)+len("public")+2*(len("id")+relationColumnCost)+len("name") {
+			t.Errorf("table holds %d relations, %d bytes; want one relation at its own cost", len(d.relations), d.relationBytes)
+		}
+		// A second OID of the same size is the one past the budget.
+		if _, _, _, err := d.decode(relMsg(2, "public", name, "id"), 102, nil, nil, nil); !errors.Is(err, ErrProtocol) {
+			t.Errorf("a second relation of three quarters of the budget: err = %v, want ErrProtocol", err)
+		}
+	})
+	t.Run("an ordinary publication fits", func(t *testing.T) {
+		var d replDecoder
+		cols := make([]string, 100)
+		for i := range cols {
+			cols[i] = fmt.Sprintf("column_%d_of_a_wide_table", i)
+		}
+		for oid := uint32(1); oid <= 1000; oid++ {
+			if _, _, _, err := d.decode(relMsg(oid, "public", fmt.Sprintf("table_%d", oid), cols...), 100, nil, nil, nil); err != nil {
+				t.Fatalf("table %d of a thousand hundred-column tables: %v", oid, err)
+			}
+		}
+		if d.relationBytes > maxReplicationRelationBytes/8 {
+			t.Errorf("a thousand tables of a hundred columns cost %d bytes, more than an eighth of the %d-byte budget", d.relationBytes, maxReplicationRelationBytes)
+		}
+	})
 }

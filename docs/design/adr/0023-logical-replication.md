@@ -1,7 +1,7 @@
 # ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record)
+- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record), 2026-10-27 (the relation table is bounded in bytes)
 - **Theme:** postgres
 
 ## Problem
@@ -31,7 +31,9 @@ types) and its tuples in binary, which `pgtype` decodes. `Relation` messages
 update the relation table and are not delivered; `Type` and `Origin` are read
 and ignored; any other message (logical decoding messages, the
 streamed-transaction messages of protocol 2 and later) is refused with
-`ErrProtocol`, since it was not asked for. The relation table is bounded.
+`ErrProtocol`, since it was not asked for. The relation table is bounded in
+count and in bytes: a server describing more relations, or longer names,
+than a budget allows is refused rather than followed into memory.
 
 **A batch is what the server has already delivered**, capped by
 `ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`): a batch
