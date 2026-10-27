@@ -1122,6 +1122,31 @@ func plainPair(t *testing.T) (client, server *Conn) {
 	return plainPairOver(t, loopbackSocket(t))
 }
 
+// peerSends has peer send payload's frames to its other end in one 1-RTT
+// packet, and waits for the packet's acknowledgement. It is how a test
+// hands frames to a live connection: the packet is read and acted on by the
+// receiving connection's own read loop, where calling its frames method
+// from the test's goroutine would race that loop over the state it alone
+// touches (parseScratch, batchScratch, rxProgress). The acknowledgement
+// says the frames were read, so a test that then watches for nothing
+// happening watches after they arrived.
+func peerSends(t *testing.T, peer *Conn, payload []byte) {
+	t.Helper()
+	peer.mu.Lock()
+	err := peer.sendPacketLocked(spaceApplication, payload, sendOpts{})
+	peer.mu.Unlock()
+	if err != nil {
+		t.Fatalf("the peer's packet: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for peer.Stats().BytesInFlight > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the peer's packet was never acknowledged")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // plainPairOver is plainPair with the client's socket supplied, for a test
 // that drops or holds its datagrams.
 func plainPairOver(t *testing.T, clientPC net.PacketConn) (client, server *Conn) {

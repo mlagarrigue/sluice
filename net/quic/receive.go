@@ -954,7 +954,9 @@ func (c *Conn) handleRetry(h longHeader) {
 // frames acts on one authenticated packet's frames, and owes the packet's
 // acknowledgement when any of them elicits one. A non-nil error is a
 // protocol violation for the caller to abort with. now is the packet's
-// arrival time.
+// arrival time. Once the read loop runs, only that loop calls it: the
+// per-packet state it uses (parseScratch, batchScratch, rxProgress) is the
+// loop's alone, under no lock.
 func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	return c.framesIn(space, false, payload, now)
 }
