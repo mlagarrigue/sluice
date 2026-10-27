@@ -167,9 +167,27 @@ func (c *Conn) Close() error {
 // is how HTTP/3 says H3_NO_ERROR (§10.2's application close). The reason
 // phrase is deliberately not sent; codes travel, prose stays home.
 //
-// Like [Conn.Close], the error return always comes back nil.
+// Like [Conn.Close], it returns nil — except for a code past 2^62-1, the
+// most an error code can carry (RFC 9000 §20), which it refuses with an
+// error and leaves the connection as it was, open.
 func (c *Conn) CloseWithError(code uint64) error {
+	if err := checkCode("CloseWithError", code); err != nil {
+		return err
+	}
 	c.closeOnce(code, true)
+	return nil
+}
+
+// checkCode refuses an error code no variable-length integer can carry
+// (RFC 9000 §20: application error codes are 62-bit). The frame that would
+// carry it — CONNECTION_CLOSE, RESET_STREAM, STOP_SENDING — cannot be
+// built, and the methods that take a code check it before changing
+// anything, so a refused call leaves no trace: no mutex held, no sync.Once
+// consumed, no stream direction closed.
+func checkCode(method string, code uint64) error {
+	if code > varint.Max {
+		return fmt.Errorf("quic: %s: code %d is past 2^62-1, the most an error code can carry", method, code)
+	}
 	return nil
 }
 
@@ -203,8 +221,13 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 // which is how HTTP/3 ends a graceful shutdown with H3_NO_ERROR (RFC 9114
 // §5.2) once its last response has been acknowledged. It waits as Shutdown
 // does and closes in every case, like it; only the frame the peer reads
-// differs, as between [Conn.Close] and [Conn.CloseWithError].
+// differs, as between [Conn.Close] and [Conn.CloseWithError] — and like the
+// latter it refuses a code past 2^62-1 before waiting, leaving the
+// connection open.
 func (c *Conn) ShutdownWithError(ctx context.Context, code uint64) error {
+	if err := checkCode("ShutdownWithError", code); err != nil {
+		return err
+	}
 	err := c.drain(ctx)
 	c.closeOnce(code, true)
 	return err

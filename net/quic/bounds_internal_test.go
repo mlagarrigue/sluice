@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -389,4 +390,124 @@ func TestIdleFloorDoesNotSpinTheLoops(t *testing.T) {
 	if !next.Equal(floored) {
 		t.Errorf("actOnDeadlines returned %v as the next deadline, want the floored idle deadline %v", next, floored)
 	}
+}
+
+// Every number this package puts on the wire travels as a variable-length
+// integer, bounded at 2^62-1 (RFC 9000 §16), and internal/varint.Append
+// panics past it. A value the caller passes — a transport parameter, an
+// error code — is refused at the API with an error naming it, before
+// anything changes: TransportParameters.check used to let 2^62 through and
+// appendParameters panicked on the first handshake, on a Listener's read
+// goroutine; CloseWithError used to panic inside closeOnce with c.mu held
+// and the sync.Once consumed, leaving a connection nothing could lock or
+// close; Reset and StopSending used to panic after marking the stream.
+func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
+	t.Run("transport parameters", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			set  func(p *TransportParameters, v uint64)
+		}{
+			{"InitialMaxData", func(p *TransportParameters, v uint64) { p.InitialMaxData = v }},
+			{"InitialMaxStreamDataUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataUni = v }},
+			{"InitialMaxStreamDataBidiLocal", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiLocal = v }},
+			{"InitialMaxStreamDataBidiRemote", func(p *TransportParameters, v uint64) { p.InitialMaxStreamDataBidiRemote = v }},
+			{"ActiveConnIDLimit", func(p *TransportParameters, v uint64) { p.ActiveConnIDLimit = v }},
+		} {
+			for _, v := range []uint64{1 << 62, ^uint64(0)} {
+				p := DefaultParameters()
+				tc.set(&p, v)
+				err := p.check()
+				if err == nil || !strings.Contains(err.Error(), tc.name) {
+					t.Errorf("%s = %d: check returned %v, want an error naming the field", tc.name, v, err)
+				}
+			}
+			p := DefaultParameters()
+			tc.set(&p, varint.Max)
+			if err := p.check(); err != nil {
+				t.Errorf("%s = 2^62-1: check returned %v, want nil — the ceiling itself is encodable", tc.name, err)
+			}
+		}
+		for _, tc := range []struct {
+			name string
+			set  func(p *TransportParameters, v uint64)
+		}{
+			{"InitialMaxStreamsBidi", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsBidi = v }},
+			{"InitialMaxStreamsUni", func(p *TransportParameters, v uint64) { p.InitialMaxStreamsUni = v }},
+		} {
+			p := DefaultParameters()
+			tc.set(&p, maxStreamsLimit+1)
+			if err := p.check(); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Errorf("%s = 2^60+1: check returned %v, want an error naming the field (§4.6)", tc.name, err)
+			}
+			tc.set(&p, maxStreamsLimit)
+			if err := p.check(); err != nil {
+				t.Errorf("%s = 2^60: check returned %v, want nil", tc.name, err)
+			}
+		}
+		// What check accepts, appendParameters encodes without a panic.
+		p := DefaultParameters()
+		p.InitialMaxData, p.InitialMaxStreamsBidi = varint.Max, maxStreamsLimit
+		if err := p.check(); err != nil {
+			t.Fatal(err)
+		}
+		_ = appendParameters(nil, p)
+	})
+
+	t.Run("close codes", func(t *testing.T) {
+		c := boundsConn(t, false)
+		installAppSealer(t, c)
+		if err := c.CloseWithError(1 << 62); err == nil {
+			t.Fatal("CloseWithError(1<<62) returned nil, want a refusal")
+		}
+		if err := c.ShutdownWithError(t.Context(), 1<<62); err == nil {
+			t.Fatal("ShutdownWithError(ctx, 1<<62) returned nil, want a refusal")
+		}
+		if !c.mu.TryLock() {
+			t.Fatal("c.mu is held after the refusals: the connection can no longer be locked")
+		}
+		c.mu.Unlock()
+		select {
+		case <-c.closed:
+			t.Fatal("the connection closed on a refused code")
+		default:
+		}
+		// The sync.Once was not consumed: a close with a legal code still
+		// closes.
+		if err := c.CloseWithError(1); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-c.closed:
+		default:
+			t.Fatal("CloseWithError(1) after a refused code did not close the connection: closeOnce was consumed by the refusal")
+		}
+	})
+
+	t.Run("stream codes", func(t *testing.T) {
+		c := boundsConn(t, false)
+		installAppSealer(t, c)
+		c.mu.Lock()
+		c.peerMaxStreamsBidi = 1
+		c.hasPeerParams = true
+		c.mu.Unlock()
+		s, err := c.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Reset(1 << 62); err == nil {
+			t.Error("Reset(1<<62) returned nil, want a refusal")
+		}
+		if err := s.StopSending(1 << 62); err == nil {
+			t.Error("StopSending(1<<62) returned nil, want a refusal")
+		}
+		c.mu.Lock()
+		reset, sendClosed := s.writeReset, s.sendClosed
+		c.mu.Unlock()
+		s.mu.Lock()
+		taken := s.endTaken
+		s.mu.Unlock()
+		if reset || sendClosed || taken {
+			t.Errorf("after the refusals writeReset=%v sendClosed=%v endTaken=%v, want all false: a refused code changes nothing", reset, sendClosed, taken)
+		}
+	})
 }

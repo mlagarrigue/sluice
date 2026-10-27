@@ -42,7 +42,10 @@ const (
 // endpoint that announces no data credit has announced none, and a peer that
 // honours it can send nothing at all. The zero value is therefore not usable
 // and [Dial], accept and [NewListener] refuse it with [ErrZeroParameters]:
-// start from [DefaultParameters] and change what you need.
+// start from [DefaultParameters] and change what you need. They refuse too,
+// with an error naming the field, a count past 2^62-1 — the most a
+// transport parameter can carry (RFC 9000 §16, §18.2) — and a stream count
+// past 2^60 (§4.6).
 type TransportParameters struct {
 	// MaxIdleTimeout ends a connection nobody is using. Zero means no
 	// timeout, which is the one default the RFC allows and this package does
@@ -378,6 +381,32 @@ func (p TransportParameters) check() error {
 		p.InitialMaxStreamDataUni == 0 && p.InitialMaxStreamDataBidiLocal == 0 && p.InitialMaxStreamDataBidiRemote == 0 &&
 		p.InitialMaxStreamsBidi == 0 && p.InitialMaxStreamsUni == 0 && p.ActiveConnIDLimit == 0 {
 		return ErrZeroParameters
+	}
+	// Every count here travels as a variable-length integer (§18.2), which
+	// carries up to varint.Max; the stream counts stop lower, at
+	// maxStreamsLimit (§4.6). Past those, appendParameters would panic on
+	// the first handshake — on a Listener, on the socket's read goroutine,
+	// at the first valid Initial of any client — so the refusal is here,
+	// where the caller is.
+	for _, f := range [...]struct {
+		name string
+		v    uint64
+	}{
+		{"InitialMaxData", p.InitialMaxData},
+		{"InitialMaxStreamDataUni", p.InitialMaxStreamDataUni},
+		{"InitialMaxStreamDataBidiLocal", p.InitialMaxStreamDataBidiLocal},
+		{"InitialMaxStreamDataBidiRemote", p.InitialMaxStreamDataBidiRemote},
+		{"ActiveConnIDLimit", p.ActiveConnIDLimit},
+	} {
+		if f.v > varint.Max {
+			return fmt.Errorf("quic: %s %d is past 2^62-1, the most a transport parameter can carry", f.name, f.v)
+		}
+	}
+	if n := p.InitialMaxStreamsBidi; n > maxStreamsLimit {
+		return fmt.Errorf("quic: InitialMaxStreamsBidi %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
+	}
+	if n := p.InitialMaxStreamsUni; n > maxStreamsLimit {
+		return fmt.Errorf("quic: InitialMaxStreamsUni %d is past 2^60, the most streams RFC 9000 §4.6 allows", n)
 	}
 	if n := p.MaxDatagramSize; n != 0 && (n < pmtuBaseSize || n > pmtuMaxSize) {
 		return fmt.Errorf("quic: MaxDatagramSize %d is outside %d..%d", n, pmtuBaseSize, pmtuMaxSize)

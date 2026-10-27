@@ -530,7 +530,13 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 // peer needs to close its own flow-control accounting for the stream. A
 // direction already finished — FIN sent and every byte acknowledged — has
 // nothing left to abandon, and nothing is sent (RFC 9000 §3.3).
+//
+// A code past 2^62-1, the most an error code can carry (RFC 9000 §20), is
+// refused with an error before anything changes.
 func (s *Stream) Reset(code uint64) error {
+	if err := checkCode("Reset", code); err != nil {
+		return err
+	}
 	c := s.conn
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -562,8 +568,12 @@ func (s *Stream) Reset(code uint64) error {
 // either may well have happened; the application's intent is kept all the
 // same. On a unidirectional stream this end opened the peer has no sending
 // part to stop and would answer STREAM_STATE_ERROR (§19.5): an error, no
-// frame.
+// frame. A code past 2^62-1, the most an error code can carry (§20), is
+// refused the same way.
 func (s *Stream) StopSending(code uint64) error {
+	if err := checkCode("StopSending", code); err != nil {
+		return err
+	}
 	c := s.conn
 	if s.sendOnly() {
 		return fmt.Errorf("%w: STOP_SENDING on stream %d, which this end opened send-only", ErrQUIC, s.id)
