@@ -353,33 +353,41 @@ func cutFrames(q []byte, room int) (n, retires, newCIDs int) {
 // the full datagram reaches 1200 bytes (RFC 9000 §14.1), given the header
 // already written, the packet number's width, and the payload's length
 // before padding — all excluding the length field and the 16-byte AEAD tag,
-// which this adds itself.
+// which this adds itself. Alone in its datagram, a packet's header is far
+// too short for the padding to leave its Length field without a consistent
+// width (initialPaddingAfter), so the width is the minimal one and dropped.
 func initialPadding(headerLen, pnLen, payloadLen int) int {
-	return initialPaddingAfter(0, headerLen, pnLen, payloadLen)
+	pad, _ := initialPaddingAfter(0, headerLen, pnLen, payloadLen)
+	return pad
 }
 
 // initialPaddingAfter is initialPadding for a packet that closes a datagram
 // already holding before bytes of other packets (§12.2 coalescing): the
-// padding tops the whole datagram up to 1200, not this packet alone.
+// padding tops the whole datagram up to 1200, not this packet alone. It also
+// returns the width the Length field is to be encoded on, which sealLocked
+// honours.
 //
 // The length field's own width depends on what it is about to describe,
 // which depends on how much padding closes the gap to 1200 — a circularity
-// solved by a fixed point: guess a width, size the padding against it, and
-// re-check the width the padded total would actually need. There is at most
-// one varint threshold (64, 16384, ...) between "no padding" and 1200
-// bytes, so this settles in at most two passes; the loop bounds it anyway
-// rather than trust that argument blindly.
-func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) int {
-	width := varintBytes(uint64(pnLen + payloadLen + 16)) //nolint:gosec // G115: a sum of packet lengths, positive
-	for range 4 {
-		pad := max(1200-(before+headerLen+width+pnLen+payloadLen+16), 0)
-		if got := varintBytes(uint64(pnLen + payloadLen + pad + 16)); got != width { //nolint:gosec // G115: a sum of packet lengths, positive
-			width = got
-			continue
-		}
-		return pad
+// solved in two steps: size the padding against the width the unpadded
+// length needs, and if the padded length crossed a varint threshold (64,
+// 16384, ...), widen the field and shrink the padding by as much. There is
+// at most one threshold between "no padding" and 1200 bytes, so one step
+// back is all it takes — and the shrunk padding may land the length right
+// under the threshold again, where no width is consistent with its own
+// padding (before + headerLen = 1135 with a closing packet of 43 payload
+// bytes or fewer: width 1 pads the length to 64, width 2 to 63). The wider
+// field then stays, encoded on more bytes than its value needs: RFC 9000 §16
+// allows every field but the frame type to be, and the datagram still
+// lands on 1200 exactly. A fixed-point loop here panicked on that input.
+func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) (pad, lengthWidth int) {
+	lengthWidth = varintBytes(uint64(pnLen + payloadLen + 16)) //nolint:gosec // G115: a sum of packet lengths, positive
+	pad = max(1200-(before+headerLen+lengthWidth+pnLen+payloadLen+16), 0)
+	if got := varintBytes(uint64(pnLen + payloadLen + pad + 16)); got > lengthWidth { //nolint:gosec // G115: a sum of packet lengths, positive
+		lengthWidth = got
+		pad = max(1200-(before+headerLen+lengthWidth+pnLen+payloadLen+16), 0)
 	}
-	panic("quic: initialPadding did not converge")
+	return pad, lengthWidth
 }
 
 // pendingPacket is a packet built but not yet sealed: everything
@@ -487,14 +495,14 @@ func (c *Conn) flushDatagramLocked() {
 	c.flushBatchLocked() // what was sent before leaves before
 	if p := c.dgramPend; p != nil {
 		c.dgramPend = nil
-		pad := 0
+		pad, lengthWidth := 0, 0
 		if c.dgramPad {
-			pad = initialPaddingAfter(len(c.dgram), len(p.prefix), 4, len(p.payload))
+			pad, lengthWidth = initialPaddingAfter(len(c.dgram), len(p.prefix), 4, len(p.payload))
 		}
 		// sealLocked fails only on Seal's invariant guards (a header
 		// sample too short), which the constant 4-byte packet number makes
 		// unreachable: there is no error here to handle.
-		c.dgram, _ = c.sealLocked(c.dgram, p, pad)
+		c.dgram, _ = c.sealLocked(c.dgram, p, pad, lengthWidth)
 	}
 	if len(c.dgram) > 0 {
 		_ = c.writeLocked(c.pc, c.dgram, c.peer, c.dgramECN)
@@ -776,7 +784,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		}
 		if p := c.dgramPend; p != nil {
 			c.dgramPend = nil
-			c.dgram, _ = c.sealLocked(c.dgram, p, 0) // unreachable error, as in flushDatagramLocked
+			c.dgram, _ = c.sealLocked(c.dgram, p, 0, 0) // unreachable error, as in flushDatagramLocked
 		}
 		if c.dgramPend == nil && len(c.dgram) == 0 {
 			// The datagram's mark is decided when it opens; every packet
@@ -803,7 +811,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		return c.batchLocked(&p, size)
 	}
 	c.flushBatchLocked()
-	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0)
+	pkt, err := c.sealLocked(c.pktScratch[:0], &p, 0, 0)
 	if err != nil {
 		return err
 	}
@@ -833,7 +841,11 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // that needs no special case either — the probe is never acknowledged, and
 // the search reads its loss and caps the path where the interface does
 // (pmtu.go).
-func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error) {
+//
+// pad is the §14.1 padding to append to the payload, and lengthWidth the
+// width to encode the long header's Length field on when it is wider than
+// the value needs (initialPaddingAfter); zero means the minimal encoding.
+func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad, lengthWidth int) ([]byte, error) {
 	const pnLen = 4
 	sp := p.sp
 	sealer := sp.sealer
@@ -854,7 +866,12 @@ func (c *Conn) sealLocked(dst []byte, p *pendingPacket, pad int) ([]byte, error)
 	if p.space != spaceApplication || p.early {
 		// The length covers the packet number and the sealed payload, tag
 		// included.
-		header = varint.Append(header, uint64(pnLen+len(payload)+16))
+		length := uint64(pnLen + len(payload) + 16)
+		if lengthWidth > varintBytes(length) {
+			header = appendVarintOn(header, length, lengthWidth)
+		} else {
+			header = varint.Append(header, length)
+		}
 	}
 	pnOffset := len(header)
 	for i := pnLen - 1; i >= 0; i-- {
@@ -1613,7 +1630,7 @@ func (c *Conn) batchLocked(p *pendingPacket, size int) error {
 		c.batchN == maxBatchSegments || len(c.batch)+size > maxBatchBytes) {
 		c.flushBatchLocked() // one segmented write carries one ECN mark
 	}
-	out, err := c.sealLocked(c.batch, p, 0)
+	out, err := c.sealLocked(c.batch, p, 0, 0)
 	if err != nil {
 		return err
 	}

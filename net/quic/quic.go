@@ -274,6 +274,22 @@ func varintBytes(v uint64) int {
 	}
 }
 
+// appendVarintOn encodes v on exactly width bytes (1, 2, 4 or 8), which may
+// be more than varintBytes(v): RFC 9000 §16 lets every field but the frame
+// type use a longer encoding than its value needs. v must fit the width.
+func appendVarintOn(dst []byte, v uint64, width int) []byte {
+	switch width {
+	case 1:
+		return append(dst, byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	case 2:
+		return append(dst, 0x40|byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	case 4:
+		return append(dst, 0x80|byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	default:
+		return append(dst, 0xc0|byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32), byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: keeps the low octet of each shift
+	}
+}
+
 // bytesN takes n bytes off the front, refusing rather than reslicing past the
 // end — the one mistake a packet parser makes that turns a short datagram
 // into a read of somebody else's memory.
