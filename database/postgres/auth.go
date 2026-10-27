@@ -935,7 +935,9 @@ const maxServerParameterBytes = 16 << 20
 // a SET of a reportable parameter produces one, and so does a function that
 // changes one mid-statement. Every read loop in this package therefore records
 // them, because the alternative is [Conn.Parameter] quietly reporting what was
-// true when the connection opened.
+// true when the connection opened. The copy-in reader, which cannot touch the
+// Conn from its goroutine, queues them under the same two bounds
+// (copyReader.queueParameter) and records them when the COPY ends.
 func (c *Conn) recordParameter(body []byte) error {
 	name, val, err := parseParameterStatus(body)
 	if err != nil {

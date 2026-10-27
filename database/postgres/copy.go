@@ -525,10 +525,19 @@ type copyReader struct {
 	done chan struct{}
 
 	// Written by the goroutine before done is closed, read only after.
-	serverErr error    // the first ErrorResponse, or why its payload could not be read
-	broken    error    // a transport or protocol failure: the position is lost
-	status    []byte   // the ReadyForQuery body
-	params    [][]byte // ParameterStatus bodies, for recordParameter
+	serverErr error  // the first ErrorResponse, or why its payload could not be read
+	broken    error  // a transport or protocol failure: the position is lost
+	status    []byte // the ReadyForQuery body
+	// params is the ParameterStatus bodies seen, by name, the last one of
+	// a name winning as recordParameter has it; paramBytes is their names
+	// and values together. Both are bounded here (queueParameter), by the
+	// numbers recordParameter enforces, because recordParameter runs only
+	// in endCopy, once the COPY is over, and a load runs for hours: a
+	// server announcing parameters while the client writes its rows is
+	// otherwise one body per message, up to MaxMessage each, with nothing
+	// reading the queue before the end.
+	params     map[string][]byte
+	paramBytes int
 }
 
 func startCopyReader(r *pgwire.Reader) *copyReader {
@@ -561,7 +570,9 @@ func (rd *copyReader) run(r *pgwire.Reader) {
 				}
 			}
 		case pgwire.BackendParameterStatus:
-			rd.params = append(rd.params, bytes.Clone(m.Body))
+			if rd.broken = rd.queueParameter(m.Body); rd.broken != nil {
+				return
+			}
 		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse, pgwire.BackendNotificationResponse:
 			// The COPY's tag, and two kinds of out-of-band messages discarded
 			// here as everywhere else in the package: there is no API to hand
@@ -571,6 +582,37 @@ func (rd *copyReader) run(r *pgwire.Reader) {
 			return
 		}
 	}
+}
+
+// queueParameter keeps a ParameterStatus body for endCopy, under the two
+// bounds recordParameter applies — maxServerParameters distinct names,
+// maxServerParameterBytes of names and values — so that what waits for the
+// end of the COPY is never more than what the connection would keep.
+// Beyond either, the server is not a PostgreSQL, and the reader stops as it
+// does on any protocol failure: the next WriteTuples or Close breaks the
+// connection with ErrProtocol.
+func (rd *copyReader) queueParameter(body []byte) error {
+	name, val, err := parseParameterStatus(body)
+	if err != nil {
+		return err
+	}
+	total := rd.paramBytes + len(name) + len(val)
+	old, known := rd.params[name]
+	if known {
+		total -= len(old) - 2 // replaced, not added: a body is its name and value plus two NULs
+	}
+	if total > maxServerParameterBytes {
+		return fmt.Errorf("%w: a ParameterStatus of %d bytes takes the parameters queued during copy-in past their %d-byte budget", ErrProtocol, len(name)+len(val), maxServerParameterBytes)
+	}
+	if !known && len(rd.params) >= maxServerParameters {
+		return fmt.Errorf("%w: the server announced more than %d distinct runtime parameters during copy-in", ErrProtocol, maxServerParameters)
+	}
+	if rd.params == nil {
+		rd.params = make(map[string][]byte)
+	}
+	rd.params[name] = bytes.Clone(body)
+	rd.paramBytes = total
+	return nil
 }
 
 // endCopy waits for the copy's reader to reach ReadyForQuery and folds what
