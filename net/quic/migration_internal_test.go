@@ -2803,9 +2803,9 @@ func TestPreferredMoveRefusesAStaleValidation(t *testing.T) {
 // credited with 60, four datagrams expanded to 1200 each, and a fresh
 // unaccounted series for every forged migration. Two authenticated packets
 // copied from two successive addresses were enough, and the address in the
-// middle is a victim whose source may have been forged. The three resends
-// also repeated the first challenge's payload, where §8.2.1 wants
-// unpredictable data in every PATH_CHALLENGE frame.
+// middle is a victim whose source may have been forged. Whether each
+// challenge carries fresh data is TestLeftPathResendsCarryFreshData's: on
+// this budget only the first challenge leaves.
 func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 	c, pc := newMigratableServer(t, "left04")
 	b := fakeFuzzAddr("left04:peerB")
@@ -2853,27 +2853,12 @@ func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 		t.Fatalf("offPath.addr is not C, so the off-path books might still cover B; the sequence under test was not reached")
 	}
 
-	// Every resend §9.4 allows. The challenge data is read between them:
-	// the recorded datagrams are sealed, so what §8.2.1 asks about — the
-	// payload of each PATH_CHALLENGE — is only visible here.
-	// Counted only for a fire that actually put a datagram on the wire: a
-	// challenge given up sends nothing, and its unchanged data is not a
-	// repeated challenge.
-	seen := map[[8]byte]int{}
-	_, sent, _ := toB()
-	c.mu.Lock()
-	seen[c.pathProbe.oldData]++
-	c.mu.Unlock()
+	// Every resend §9.4 allows.
 	for range pathProbeMaxRetransmits + 2 {
 		c.mu.Lock()
 		now = now.Add(time.Hour)
 		c.pathProbeDeadlineLocked(now)
-		data := c.pathProbe.oldData
 		c.mu.Unlock()
-		if _, after, _ := toB(); len(after) > len(sent) {
-			sent = after
-			seen[data]++
-		}
 	}
 
 	total, sizes, _ := toB()
@@ -2881,9 +2866,65 @@ func TestLeftPathChallengeStaysUnderItsBudget(t *testing.T) {
 		t.Errorf("%d bytes left toward B, credited with %d: past the three times §8.1 allows toward an address this end never validated (datagrams %v)",
 			total, fromB, sizes)
 	}
+}
+
+// RFC 9000 §8.2.1: "The endpoint MUST use unpredictable data in every
+// PATH_CHALLENGE frame". The path a connection migrated away from is
+// challenged again on every resend §9.4 allows, and each resend carries
+// data of its own, never the first challenge's again. The address left
+// behind is credited with a full datagram, so the budget of §8.1 lets the
+// resends leave and the data of each can be compared; under a smaller
+// credit only the first leaves and nothing is compared at all.
+func TestLeftPathResendsCarryFreshData(t *testing.T) {
+	c, pc := newMigratableServer(t, "left05")
+	b := fakeFuzzAddr("left05:peerB")
+	d := fakeFuzzAddr("left05:peerC")
+	const fromB = 1200
+	toB := func() (n int) {
+		for _, w := range pc.recorded() {
+			if sameAddr(w.to, b) {
+				n++
+			}
+		}
+		return n
+	}
+
+	// A -> B, then B -> C before B answered: B is the path left behind.
+	rxFromNewAddress(c, b, fromB, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+	rxFromNewAddress(c, d, fromB, true)
+	now := time.Now()
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+
+	// The challenge data is read between the resends: the recorded
+	// datagrams are sealed, so the payload of each PATH_CHALLENGE is only
+	// visible here. Counted only for a fire that put a datagram on the
+	// wire: a challenge given up sends nothing, and its unchanged data is
+	// not a repeated challenge.
+	seen := map[[8]byte]int{}
+	sent := toB()
+	c.mu.Lock()
+	seen[c.pathProbe.oldData]++
+	c.mu.Unlock()
+	challenges := 1
+	for range pathProbeMaxRetransmits + 2 {
+		c.mu.Lock()
+		now = now.Add(time.Hour)
+		c.pathProbeDeadlineLocked(now)
+		data := c.pathProbe.oldData
+		c.mu.Unlock()
+		if n := toB(); n > sent {
+			sent = n
+			seen[data]++
+			challenges++
+		}
+	}
+	if challenges < 2 {
+		t.Fatalf("%d challenge toward B under a credit of %d bytes: no resend left, and nothing is compared", challenges, fromB)
+	}
 	for data, n := range seen {
 		if n > 1 {
-			t.Errorf("the challenge data %x was used for %d of the challenges toward B: §8.2.1 wants unpredictable data in every PATH_CHALLENGE frame", data, n)
+			t.Errorf("the challenge data %x was used for %d of the %d challenges toward B: §8.2.1 wants unpredictable data in every PATH_CHALLENGE frame", data, n, challenges)
 		}
 	}
 }
