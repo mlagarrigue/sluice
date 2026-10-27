@@ -200,3 +200,65 @@ func TestStopSendingGivesBackTheConnectionWindow(t *testing.T) {
 			streams, left, params.InitialMaxStreamDataBidiRemote, err)
 	}
 }
+
+// RFC 9000 §3.5: "STREAM frames received after sending a STOP_SENDING frame
+// are still counted toward connection and stream flow control, even though
+// these frames can be discarded upon receipt." A conformant peer has at
+// least a round trip of data in flight when the STOP_SENDING reaches it.
+// Until 2026-10-27 those bytes were counted, delivered into a read buffer
+// nobody would drain (the application had said so), and never credited; the
+// peer's RESET_STREAM settles only what was never delivered. Twenty-four
+// streams of 32 KiB, half of it in flight at the STOP_SENDING, left 256 KiB
+// of a 1 MiB window (measured). Now they are dropped on delivery and the
+// window gets them back at once, with the read buffer staying empty.
+func TestBytesAfterStopSendingAreGivenBack(t *testing.T) {
+	c := boundsConn(t, false) // a server: client-initiated bidi streams are 0, 4, 8...
+	installAppSealer(t, c)
+
+	const half = 1 << 14 // bytes the peer delivers before, and again after, the STOP_SENDING
+	const read = 16
+	const streams = 24
+	for i := range streams {
+		id := uint64(i) * 4
+		if err := c.frames(spaceApplication, streamFrame(nil, id, 0, string(make([]byte, half)), false), time.Now()); err != nil {
+			t.Fatalf("stream %d first half: %v", id, err)
+		}
+		s, err := c.Stream(id)
+		if err != nil {
+			t.Fatalf("stream %d: %v", id, err)
+		}
+		if _, err := s.Read(make([]byte, read)); err != nil {
+			t.Fatalf("stream %d read: %v", id, err)
+		}
+		if err := s.StopSending(0x10c); err != nil {
+			t.Fatalf("stream %d StopSending: %v", id, err)
+		}
+		// In flight when the STOP_SENDING left: the second half arrives.
+		if err := c.frames(spaceApplication, streamFrame(nil, id, half, string(make([]byte, half)), false), time.Now()); err != nil {
+			t.Fatalf("stream %d second half: %v", id, err)
+		}
+		s.mu.Lock()
+		buffered := len(s.buf)
+		s.mu.Unlock()
+		if buffered != 0 {
+			t.Errorf("stream %d holds %d bytes in its read buffer after StopSending: nobody will read them", id, buffered)
+		}
+		// Then the peer's RESET_STREAM at the final size, §3.5's answer.
+		if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0x10c, 2*half), time.Now()); err != nil {
+			t.Fatalf("stream %d reset: %v", id, err)
+		}
+	}
+	c.mu.Lock()
+	highest, consumed, maxData := c.connRecv.highest, c.connRecv.consumed, c.connRecv.max
+	c.mu.Unlock()
+	if highest != streams*2*half {
+		t.Errorf("received %d bytes on the connection, want %d: every byte counts, §3.5", highest, streams*2*half)
+	}
+	if consumed != highest {
+		t.Errorf("credited %d bytes of the %d received: %d bytes are counted and never given back", consumed, highest, highest-consumed)
+	}
+	if left := maxData - highest; left < 1<<19 {
+		t.Errorf("after %d streams abandoned with %d bytes in flight each, the peer has %d bytes of connection credit left (granted %d), under half the window",
+			streams, half, left, maxData)
+	}
+}

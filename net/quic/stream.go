@@ -186,16 +186,33 @@ func (s *Stream) deliver(f Frame, dst []byte) (delta []byte, finished bool, high
 // keepForRead stores a delivered delta for [Stream.Read] and wakes it. Batch
 // mode skips this: the callback is the consumer, and buffering a second copy
 // for a Read nobody calls is memory spent on nothing.
-func (s *Stream) keepForRead(delta []byte, finished bool) {
+//
+// A stream the application has stopped reading ([Stream.StopSending] set
+// endTaken) keeps nothing: RFC 9000 §3.5 has the bytes that arrive before
+// the peer sees the STOP_SENDING "still counted toward connection and
+// stream flow control, even though these frames can be discarded upon
+// receipt" — counted they were, by receive; discarded they are here, and
+// the count is reported back so the caller gives the connection window
+// their credit at once, as a Read would have. Until 2026-10-27 they sat in
+// the read buffer nobody would drain, uncredited for the life of the
+// connection: 24 streams abandoned with 16 KiB each in flight took 384 KiB
+// off a 1 MiB window for good (measured).
+func (s *Stream) keepForRead(delta []byte, finished bool) (dropped uint64) {
 	s.mu.Lock()
-	s.buf = append(s.buf, delta...)
+	if s.endTaken {
+		dropped = uint64(len(delta)) //nolint:gosec // G115: a byte count, positive
+		s.recvQ.consumed += dropped  // the stream's own window earns no grant: §3.3, "Recv" only
+	} else {
+		s.buf = append(s.buf, delta...)
+	}
 	if finished {
 		s.readEnded = true
 	}
 	s.mu.Unlock()
-	if len(delta) > 0 || finished {
+	if dropped == 0 && (len(delta) > 0 || finished) {
 		s.signal()
 	}
+	return dropped
 }
 
 // endForRead marks the stream's end as handed over — a reset dispatched to
@@ -653,7 +670,8 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// already delivered but not yet credited — this packet's own STREAM delta
 	// when STREAM and RESET_STREAM share a packet, or bytes parked in the read
 	// buffer — are credited by whoever consumes them (settleBatchConsumption,
-	// or Read draining to the reset error). Counting them here too would
+	// Read draining to the reset error, or keepForRead dropping them on a
+	// stream the application stopped). Counting them here too would
 	// over-grant the connection window by exactly that delta.
 	neverConsumed = finalSize - s.rasm.consumed
 	s.recvQ.consumed += neverConsumed

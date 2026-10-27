@@ -1422,7 +1422,12 @@ func (c *Conn) dispatchDeltas(batch []Frame) error {
 		}
 		switch f.Type {
 		case FrameStream:
-			s.keepForRead(f.Data, f.Fin)
+			if n := s.keepForRead(f.Data, f.Fin); n > 0 {
+				// Dropped on a stream the application stopped reading:
+				// the connection window gets the bytes back now, with no
+				// stream grant, as Read would credit them.
+				c.creditConsumed(f.StreamID, n, false, 0)
+			}
 		case FrameResetStream:
 			// abandon already marked the reset under the stream's lock; the
 			// reader learns of it only now, behind every delta that preceded
