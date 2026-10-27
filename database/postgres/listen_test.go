@@ -3,6 +3,7 @@ package postgres
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
@@ -75,31 +76,28 @@ func TestListenRefuses(t *testing.T) {
 // A server that holds back the ReadyForQuery of the LISTEN query and pours
 // NotificationResponse used to grow the listener's kept list by one
 // Notification — two strings copied, up to MaxMessage each — per message,
-// for the life of the subscription. It was the only unbounded list in the
-// package: the steady-state loop stops at the batch bound.
+// for the life of the subscription. What is kept before ReadyForQuery is
+// bounded in bytes, by the package and not by the caller's batch size.
 func TestListenBoundsWhatArrivesBeforeReadyForQuery(t *testing.T) {
-	const batch = 64
-	const flood = 20_000
+	payload := strings.Repeat("x", 4000)
+	cost := len("orders") + len(payload) + notificationOverhead
+	flood := maxPendingNotificationBytes/cost + 10
 
 	var script []byte
 	script = append(script, frame(pgwire.BackendCommandComplete, "LISTEN\x00")...)
 	for range flood {
-		script = append(script, beNotification("orders", "x")...)
+		script = append(script, beNotification("orders", payload)...)
 	}
-	// No ReadyForQuery: the stream simply ends.
+	// No ReadyForQuery: the stream simply ends, past the bound.
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	l := &Listener{c: NewConn(rw), batch: batch}
-	sql, err := listenSQL(ListenConfig{Channels: []string{"orders"}, BatchNotifications: batch})
-	if err != nil {
-		t.Fatal(err)
+	l := &Listener{c: NewConn(rw), batch: 64}
+	err := l.subscribe("LISTEN orders;")
+	if kept := len(l.pending) * cost; kept > maxPendingNotificationBytes {
+		t.Errorf("subscribe kept %d notifications, %d bytes, before ReadyForQuery (err = %v): past the %d-byte bound",
+			len(l.pending), kept, err, maxPendingNotificationBytes)
 	}
-	err = l.subscribe(sql)
-	if len(l.pending) > batch {
-		t.Errorf("subscribe kept %d notifications before ReadyForQuery with BatchNotifications = %d (err = %v); nothing bounds it",
-			len(l.pending), batch, err)
-	}
-	if err == nil {
-		t.Error("subscribe returned nil although the stream ended before ReadyForQuery")
+	if !errors.Is(err, ErrProtocol) {
+		t.Errorf("subscribe returned %v after %d notifications before ReadyForQuery, want ErrProtocol at the bound", err, flood)
 	}
 }
 
@@ -133,5 +131,32 @@ func TestListenBatchHoldsNoMoreThanItsBound(t *testing.T) {
 	}
 	if l.pending != nil {
 		t.Errorf("%d notifications are still kept after both batches", len(l.pending))
+	}
+}
+
+// PostgreSQL 18 §54.2.7: a notification may arrive "just before
+// ReadyForQuery", and the text bounds neither when nor how many. A server
+// that commits notifications between the LISTEN and its answer is
+// conformant, and a caller that takes them one at a time
+// (BatchNotifications: 1) gets them one at a time — BatchNotifications is
+// the size of a batch, not a count past which the server is refused.
+func TestListenDeliversWhatArrivesBeforeReadyForQueryInBatches(t *testing.T) {
+	var script []byte
+	script = append(script, frame(pgwire.BackendCommandComplete, "LISTEN\x00")...)
+	script = append(script, beNotification("c", "a")...)
+	script = append(script, beNotification("c", "b")...)
+	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: 1}
+	if err := l.subscribe("LISTEN c;"); err != nil {
+		t.Fatalf("subscribe refused two notifications before ReadyForQuery under BatchNotifications = 1: %v", err)
+	}
+	for _, want := range []string{"a", "b"} {
+		b, err := l.readBatch()
+		if err != nil {
+			t.Fatalf("readBatch: %v", err)
+		}
+		if len(b.Items) != 1 || b.Items[0].Payload != want {
+			t.Fatalf("a batch of %v, want the one notification %q", b.Items, want)
+		}
 	}
 }

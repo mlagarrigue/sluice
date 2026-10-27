@@ -106,6 +106,27 @@ func listenSQL(lc ListenConfig) (string, error) {
 	return sql, nil
 }
 
+// maxPendingNotificationBytes bounds what the subscription keeps before the
+// server answers LISTEN, each notification counted as its two strings plus
+// notificationOverhead. PostgreSQL 18 §54.2.7 lets a notification arrive
+// "just before ReadyForQuery" without bounding how many, and a busy server
+// commits some between the LISTEN and its answer; they are kept, and handed
+// over in batches of BatchNotifications by readBatch. The bound is the
+// package's own, not BatchNotifications: that is the size of a batch, and a
+// caller that takes one notification at a time is not saying a server that
+// sends two is hostile. A server that holds its ReadyForQuery back while
+// pouring NotificationResponse is: without a bound the list grew by two
+// strings, up to MaxMessage each, per message. A NOTIFY payload is under
+// 8,000 bytes in a standard installation, so 4 MiB keeps five hundred of
+// the largest, far more than the window between a commit and its answer
+// lets through.
+const maxPendingNotificationBytes = 4 << 20
+
+// notificationOverhead is what one kept Notification costs beyond its two
+// strings — their headers and the PID — so a flood of empty ones is
+// counted too.
+const notificationOverhead = 40
+
 // subscribe runs the LISTEN query and reads its answer itself: Exec discards
 // a notification that lands before ReadyForQuery, and here that would be the
 // first one the caller subscribed for.
@@ -116,6 +137,7 @@ func (l *Listener) subscribe(sql string) error {
 		return c.breakConn(err)
 	}
 	var failed error
+	kept := 0 // what pending costs, against maxPendingNotificationBytes
 	for {
 		m, err := c.r.Next()
 		if err != nil {
@@ -129,19 +151,11 @@ func (l *Listener) subscribe(sql string) error {
 			if err != nil {
 				return c.breakConn(err)
 			}
-			if len(l.pending) >= l.batch {
-				// Nothing bounded this list, and it is the only unbounded
-				// one in the package: the steady-state loop stops at
-				// l.batch, and a server that holds its ReadyForQuery back
-				// while pouring NotificationResponse grew pending by one
-				// Notification — two strings copied, up to MaxMessage each
-				// — per message, for the life of the subscription. A batch
-				// is as much as a caller asked to hold at once, so a
-				// server that sends more than that before answering the
-				// query at all is not answering it.
+			kept += len(n.Channel) + len(n.Payload) + notificationOverhead
+			if kept > maxPendingNotificationBytes {
 				return c.breakConn(fmt.Errorf(
-					"%w: more than %d notifications before the server answered LISTEN (ListenConfig.BatchNotifications)",
-					ErrProtocol, l.batch))
+					"%w: more than %d bytes of notifications before the server answered LISTEN",
+					ErrProtocol, maxPendingNotificationBytes))
 			}
 			l.pending = append(l.pending, n)
 		case pgwire.BackendErrorResponse:

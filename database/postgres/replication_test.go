@@ -485,7 +485,7 @@ func sameRelationPayload(n int) []byte {
 // it carries, and three pgoutput messages carry no change: Type, Origin, and
 // a Relation redescribing a relation already known. A server sending an
 // uninterrupted run of them grew the arena at whatever rate it chose, and
-// the batch could never close.
+// the batch could never close. It closes at the bound, empty.
 func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -509,11 +509,11 @@ func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 				t.Fatalf("readBatch held %d bytes of payload in a batch of %d changes without closing it (arena %d bytes): no bound stops a batch that carries no change",
 					srv.given, len(b.Items), arena)
 			}
-			if !errors.Is(err, ErrProtocol) {
-				t.Fatalf("readBatch returned %v after %d bytes without a change; want ErrProtocol", err, srv.given)
+			if err != nil || len(b.Items) != 0 {
+				t.Fatalf("readBatch returned %d changes and %v after %d bytes without a change; want an empty batch, closed at the bound", len(b.Items), err, srv.given)
 			}
 			if srv.given > defaultBatchBytes+len(c.payload) {
-				t.Errorf("readBatch read %d bytes before giving up, more than the bound of %d plus one message", srv.given, defaultBatchBytes)
+				t.Errorf("readBatch read %d bytes before closing the batch, more than the bound of %d plus one message", srv.given, defaultBatchBytes)
 			}
 		})
 	}
@@ -612,4 +612,26 @@ func TestReplicationBoundsTheRelationTableInBytes(t *testing.T) {
 			t.Errorf("a thousand tables of a hundred columns cost %d bytes, more than an eighth of the %d-byte budget", d.relationBytes, maxReplicationRelationBytes)
 		}
 	})
+}
+
+// pgoutput sends a table's Relation inside the transaction, before its first
+// change, and a batch may open on it. A Relation wider than
+// ReplicationConfig.BatchBytes is a conformant message under a small bound:
+// the batch keeps the message that crosses its bound and closes after it,
+// as QueryConfig.BatchBytes keeps the row that crosses its own. It closes
+// empty, and the relation is known for the changes that follow.
+func TestReplicationOpensABatchOnARelationWiderThanBatchBytes(t *testing.T) {
+	rel := relMsg(42, "public", "t", "a", "b")
+	rw := &scriptedRW{Reader: bytes.NewReader(xlog(0x100, rel))}
+	r := &Replication{c: NewConn(rw), batch: 100, batchBytes: 8, interval: time.Hour}
+	b, err := r.readBatch()
+	if err != nil {
+		t.Fatalf("a %d-byte Relation under BatchBytes = 8: %v", len(rel), err)
+	}
+	if len(b.Items) != 0 {
+		t.Fatalf("a batch of %d changes from a lone Relation, want none", len(b.Items))
+	}
+	if r.dec.relations[42] == nil {
+		t.Fatal("the Relation that opened the batch is not known afterwards")
+	}
 }

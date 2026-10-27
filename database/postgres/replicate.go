@@ -43,10 +43,14 @@ type ReplicationConfig struct {
 	//
 	// It is the bound that makes a batch end: the values a change carries
 	// borrow the payload they were decoded from, so the batch holds every
-	// payload it has read. Without it a server could grow that store
-	// without ever producing a change — three pgoutput messages carry none
-	// (Type, Origin, and a Relation redescribing a relation already known)
-	// — and the batch, holding nothing, would never close.
+	// payload it has read. The message that crosses it is kept and the
+	// batch closes after it, as with QueryConfig.BatchBytes, so a batch
+	// holds at most BatchBytes plus one message. Without it a server could
+	// grow that store without ever producing a change — three pgoutput
+	// messages carry none (Type, Origin, and a Relation redescribing a
+	// relation already known) — and the batch, holding nothing, would never
+	// close; a batch that reaches the bound without a change closes empty,
+	// and the stream goes on.
 	BatchBytes int
 
 	// StatusInterval is how often, at most, the position acknowledged
@@ -328,20 +332,15 @@ func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 			return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf("%w: message %q during replication", ErrProtocol, m.Type))
 		}
 	}
-	if r.kept > 0 && r.kept >= r.batchBytes && len(r.changes) == 0 {
-		// A whole batch's worth of payload read and not one change in it.
-		// The loop's other exit — "the next message is not already
-		// received" — is short-circuited while the batch holds nothing, so
-		// before this bound existed the read had no stopping condition at
-		// all: a server sending an uninterrupted run of messages that carry
-		// no change (Type, Origin, or a Relation redescribing a relation
-		// already known, none of which the decoder counts) grew the arena at
-		// whatever rate it chose, and the batch could never close. A server
-		// that fills a batch without producing a change is not serving data.
-		return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf(
-			"%w: %d bytes of replication messages carrying no change, the batch bound (ReplicationConfig.BatchBytes)",
-			ErrProtocol, r.kept))
-	}
+	// A batch that reached BatchBytes without a change closes empty, the
+	// message that crossed the bound kept, as QueryConfig.BatchBytes keeps
+	// the row that crosses its own. pgoutput sends a table's Relation
+	// before its first change, and a Relation wider than a small bound is
+	// conformant: refusing the changeless batch broke such a stream. The
+	// empty batch is not yielded (Changes), the position is reported, and
+	// the next batch starts with a fresh arena, so a server that only ever
+	// sends changeless messages costs one batch's bound at a time, as
+	// keepalives would.
 	return r.materialize(), nil
 }
 

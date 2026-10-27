@@ -1,7 +1,7 @@
 # ADR 0024 — `LISTEN/NOTIFY` is a `Source` on a connection of its own
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-27
 - **Theme:** postgres
 
 ## Problem
@@ -22,8 +22,11 @@ nothing else: it stays outside any transaction, so it receives as early as
 the server sends.
 
 **Nothing is lost while subscribing.** A notification can arrive before the
-`ReadyForQuery` that closes the `LISTEN` query; it is kept and delivered at
-the head of the first batch, where `Exec` would discard it.
+`ReadyForQuery` that closes the `LISTEN` query; it is kept and delivered
+first, in batches of `BatchNotifications`, where `Exec` would discard it.
+The protocol does not bound how many arrive: what is kept is bounded at
+4 MiB, a bound of the package and not the caller's batch size; past it the
+server is holding its answer back to flood, and the connection is closed.
 
 **A batch is what has already been received**, capped by
 `ListenConfig.BatchNotifications` (zero: `sluice.DefaultBatchSize`), as for
