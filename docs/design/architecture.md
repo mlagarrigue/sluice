@@ -128,8 +128,8 @@ an element can be valid, carry three warnings, and keep moving forward.
 > Three of its decisions come from measurements rather than from taste. **The
 > pipeline is built once**, because building six operators per request is half
 > the 280 ns and thirteen allocations a request costs. **The store
-> is asked once per batch**, which is the whole thesis and measured at ×6.9
-> against a bounded backend. And **a rejected request is answered,
+> is asked once per batch**, which is the whole thesis and measured at ×11.9
+> the throughput of one query per call against a bounded backend. And **a rejected request is answered,
 > never filtered out**: the gateway routes replies through the element itself,
 > so an element removed from the stream is a caller left waiting for its
 > context to expire.
@@ -1580,11 +1580,11 @@ answer would then arrive as a second one. What is guaranteed instead is that
 no caller waits on a pipeline that is gone.
 
 **The value is I/O amortization, and it only exists against a bounded
-backend.** Measured: **×6.9** against one query per request, **×8.2** with
-`parallel.Unordered` inside the pipeline. The same benchmark against an
-unbounded backend reports the gateway ×65 *slower* — correctly, and that
-figure is recorded beside the other, because it is the one that says when not
-to use this.
+backend.** Measured: **×11.9** the throughput of one query per request,
+**×15.4** with `parallel.Unordered` inside the pipeline. With nothing behind
+it the gateway only costs — one call every 3.7 µs at best, where a direct
+call is free — and that figure is recorded beside the other, because it is
+the one that says when not to use this.
 
 **Batch = 1 is measured, not assumed.** A pipeline built per request costs
 280 ns and 13 allocations against 1.98 ns and none for the same six steps

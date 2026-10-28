@@ -945,6 +945,9 @@ by `iter.Pull`, one value or one batch of 1024 at a time.
 | `BenchmarkMergeOperatorEight` | 0.349 | 0.319–0.392 | 2,305 | 57 |
 | `BenchmarkWindowWide` | 5.43 | 5.32–5.67 | 8,413,960 | 1,038 |
 
+Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
+element); pulling a batch of 1024, ×1.4.
+
 The joins, 65,536 rows a side. The interval join and the two joins it is
 compared with are measured in the same runs here; the hash join's spread is
 wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
@@ -969,6 +972,10 @@ batch of 1,024 rows or of one.
 | `BenchmarkHydrateRowMajorBatchOne` | 26.1 | 25.9–26.4 | 8 | 1 |
 | `BenchmarkHydrateColumnarBatchOne` | 40.5 | 39.8–42.0 | 8 | 1 |
 
+Reflection costs ×1.9 the hydration written by hand (56.7 against 29.6 ns per
+row), and ×6.3 when every field is boxed through `reflect.Value.Interface`
+(187.5).
+
 Per call: one request through the six steps of the
 [request path](design/architecture.md#the-request-path), written by hand,
 through a pipeline built per request, or through one built once
@@ -982,6 +989,9 @@ past its ceiling.
 | `BenchmarkWebBatchOneReused` | 142 | 140–147 | 128 | 6 |
 | `BenchmarkDiagnosticsFirstAdd` | 553 | 512–584 | 2,048 | 1 |
 | `BenchmarkDiagnosticsOverCeiling` | 1.24 | 1.24–1.25 | 0 | 0 |
+
+A pipeline built per request costs ×141 the same six steps written by hand
+(280 against 1.98 ns per call).
 
 Per run of a whole pipeline. The four `Scan` rows read a simulated table
 through [`pushdown`](design/architecture.md#enriched-stop-signal--pushdown) with no demand, with one
@@ -1001,6 +1011,14 @@ about 34 µs of work per batch or only passes its batch through
 | `BenchmarkParallelHeavyWork` | 2,051 | 2,003–2,172 | 558,552 | 92 |
 | `BenchmarkParallelTrivialSerial` | 16.0 | 15.9–16.1 | 136 | 5 |
 | `BenchmarkParallelTrivialWork` | 56.6 | 55.4–58.0 | 34,247 | 28 |
+
+A consumer that skips ahead runs the scan ×6.9 faster than the same consumer
+decoding what it discards (64.4 against 445 µs).
+
+`parallel.Async` between a producer and a consumer doing equal work overlaps
+them: 3,673 µs per run against 6,766 for the serial chain, ×1.84 of an ideal
+×2 (`BenchmarkAsyncOverlap` against `BenchmarkAsyncOverlapSerial`,
+`internal/bench`, six runs of one second, medians, 2026-10-28).
 
 Where four workers start to pay: `BenchmarkParallelWorkSize` runs the same
 65,536 elements with the work per element doubled from one row to the next,

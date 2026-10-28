@@ -30,7 +30,7 @@
 // server owns the read loop, parses one request, and calls a handler — so the
 // pipeline begins at Request, one element at a time, and the all-batch model
 // meets its worst case at the boundary it was supposed to own. Measured, that
-// costs ×133 against the same six steps written by hand
+// costs ×141 against the same six steps written by hand
 // (BenchmarkWebBatchOne), which is 0.14% of what the transport itself costs
 // and therefore affordable — but the model does not apply there.
 //

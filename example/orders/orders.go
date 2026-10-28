@@ -17,8 +17,8 @@
 //
 // **The store is asked once per batch, not once per request.** That is the
 // whole thesis, and the only part of it that matters: against a bounded
-// backend the same handlers measured ×6.9 batched (docs/benchmarks.md). Sixty-four
-// requests, one lookup.
+// backend, batching measured ×11.9 the throughput of one query per call
+// (docs/benchmarks.md). Sixty-four requests, one lookup.
 //
 // **A rejected request is answered, never filtered out.** The gateway routes a
 // reply through the element itself, so an element removed from the stream is a

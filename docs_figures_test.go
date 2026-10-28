@@ -248,6 +248,117 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 	}
 }
 
+// ratio is a multiple as the documents write it: "×6.9", "×11.9". A space
+// after the sign ("× 1200") is arithmetic in a comment, not a measurement.
+var ratio = regexp.MustCompile(`×(\d+(?:\.\d+)?)\b`)
+
+// unsourcedRatios are the multiples the documents quote that are not in
+// docs/benchmarks.md, keyed by file and figure, each with where it comes
+// from instead. Anything else written "×N" needs its row there.
+var unsourcedRatios = map[string]string{
+	"docs/design/architecture.md ×22":                              "DataFusion's published gain, the reference pushdown is compared with",
+	"pushdown/demand.go ×22":                                       "DataFusion's published gain, the reference pushdown is compared with",
+	"docs/design/adr/0018-zero-values-and-mandatory-bounds.md ×11": "a test's measurement, not a benchmark: h2rtt_test.go, 0.48 against 5.5 MB/s, quoted beside Config.InitialWindowSize",
+}
+
+// Every multiple a design document, a decision record, a guide, the README or
+// a godoc of the root module quotes as "×N" is in docs/benchmarks.md —
+// written there as a multiple, or in a column whose header says ratio —
+// within the figures' tolerance. TestGuideFiguresHaveASource holds the
+// durations; a ratio escaped it, and the gateway's gain stayed quoted as ×6.9
+// in five places after the table that re-measured it said 11.9.
+func TestRatiosHaveASource(t *testing.T) {
+	page, err := os.ReadFile("docs/benchmarks.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var measured []float64
+	add := func(s string) {
+		if v, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64); err == nil {
+			measured = append(measured, v)
+		}
+	}
+	for _, m := range regexp.MustCompile(`× ?(\d[\d,]*(?:\.\d+)?)`).FindAllStringSubmatch(string(page), -1) {
+		add(m[1])
+	}
+	var header []string
+	lines := strings.Split(string(page), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "|") {
+			header = nil
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "|---") {
+			header = cells
+			continue
+		}
+		for c, cell := range cells {
+			if c < len(header) && strings.Contains(strings.ToLower(header[c]), "ratio") {
+				add(strings.TrimSpace(cell))
+			}
+		}
+	}
+
+	files := []string{"README.md"}
+	for _, root := range []string{"docs/design", "docs/guide"} {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+				files = append(files, p)
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == "." {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir // a nested module, outside the promise of the docs
+			}
+			return nil
+		}
+		if strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, "_test.go") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			for _, m := range ratio.FindAllStringSubmatch(line, -1) {
+				if _, ok := unsourcedRatios[f+" "+m[0]]; ok {
+					continue
+				}
+				v, err := strconv.ParseFloat(m[1], 64)
+				if err != nil {
+					continue
+				}
+				if !slices.ContainsFunc(measured, func(w float64) bool { return relative(v, w) <= figureTolerance }) {
+					t.Errorf("%s:%d: %s is in no multiple or ratio column of docs/benchmarks.md", f, i+1, m[0])
+				}
+			}
+		}
+	}
+}
+
 // consolidate.sh rewrites only what lies between the markers of a block, and
 // the page is edited where it is read. A block the page lost would make the
 // next run fail after an hour of measuring, and a block written twice, or

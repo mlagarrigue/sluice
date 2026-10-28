@@ -6,7 +6,7 @@
 // its interface hands back one row at a time, which is the shape this library
 // was built to escape. Reimplementing the wire protocol is what buys
 // `= ANY($1)` over a thousand keys in one round trip, and binary COPY over a
-// batch — the difference the gateway's measured ×6.9 is made of.
+// batch — the difference the gateway's measured ×11.9 is made of.
 //
 // # The user path
 //
