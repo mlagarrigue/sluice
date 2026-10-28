@@ -1358,11 +1358,16 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 				return nil, streamError{id: st.id, code: errProtocolError, err: err}
 			}
 		}
+		if st.stream != nil {
+			// A streamed body: the trailers go with it, read through
+			// Request.StreamTrailers once it has ended.
+			st.stream.setTrailers(fields)
+		}
 		if st.handed {
 			s.discard = fields
 			return s.finish(st)
 		}
-		if len(fields) > 0 {
+		if len(fields) > 0 && st.stream == nil {
 			st.req.Trailers = fields
 		}
 		return s.finish(st)

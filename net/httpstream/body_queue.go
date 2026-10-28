@@ -81,6 +81,9 @@ type bodyQueue struct {
 	ended   bool  // the body's end arrived: what is held is all there is
 	closed  bool  // the handler returned
 	err     error // the body failed: what the handler reads next
+
+	// trailers is the trailer section, a copy, set before the end.
+	trailers []Header
 }
 
 // bodyMinRing is the ring a streamed body starts with when nothing is
@@ -279,6 +282,29 @@ func (b *bodyQueue) end() error {
 	b.mu.Unlock()
 	b.signal()
 	return nil
+}
+
+// setTrailers keeps a copy of the trailer section, which arrives before the
+// end that makes it readable. Called by the reader.
+func (b *bodyQueue) setTrailers(fields []Header) {
+	if len(fields) == 0 {
+		return
+	}
+	kept := appendHeaderCopies(nil, fields...)
+	b.mu.Lock()
+	b.trailers = kept
+	b.mu.Unlock()
+}
+
+// trailerSection is the trailer section once the body has ended without
+// error, nil before. Called by the handler.
+func (b *bodyQueue) trailerSection() []Header {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.ended || b.err != nil {
+		return nil
+	}
+	return b.trailers
 }
 
 // fail ends the body with err, unless it has ended or failed already.

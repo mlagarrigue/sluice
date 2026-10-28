@@ -197,7 +197,10 @@ Three reasons come up, and the difference matters:
 - **Request trailers arrive apart from the headers** — identically over
   HTTP/1.1, 2 and 3: parsed, held to the same bounds as the headers
   (`MaxHeaders`, `MaxHeaderBytes`), refused when malformed, then handed to
-  the handler in `Request.Trailers`, never merged into `Request.Headers`.
+  the handler in `Request.Trailers` — or, for a streamed body, which ends
+  after the handler was given the request, through
+  `Request.StreamTrailers` once the body has been read to its end — never
+  merged into `Request.Headers`.
   A trailer is a field that arrived after the body (a checksum, a
   signature); RFC 9110 §6.5 keeps it apart because the request was
   already framed and routed by then, so nothing in the package reads it.

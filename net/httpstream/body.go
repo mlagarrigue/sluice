@@ -56,6 +56,9 @@ type bodyStream struct {
 	chunkLeft     int
 	trailerBytes  int
 	trailerFields int
+	// trailers is the trailer section, copied out of r.buf as each field
+	// is read: the request pipelined behind the body moves over it.
+	trailers []Header
 
 	item [1][]byte
 }
@@ -228,9 +231,11 @@ func (b *bodyStream) step() (data []byte, more bool, err error) {
 			return nil, false, fmt.Errorf("%w: over %d trailer fields", errHeadersTooLarge, b.r.cfg.MaxHeaders)
 		}
 		b.trailerFields++
-		if _, err := parseHeaderLine(line); err != nil {
+		h, err := parseHeaderLine(line)
+		if err != nil {
 			return nil, false, err
 		}
+		b.trailers = appendHeaderCopies(b.trailers, h)
 		return nil, true, nil
 	}
 }
@@ -349,14 +354,57 @@ func streamedBody(batch []Request) *bodyStream {
 // after the response, since nothing can be read past it, resets the HTTP/2
 // stream with NO_ERROR after it, and asks the HTTP/3 client to stop sending
 // (STOP_SENDING, H3_NO_ERROR) after it. Each element borrows the connection's
-// buffer until the next is pulled. The trailers of a streamed body are
-// checked against the header bounds and not kept: Trailers was handed over
-// before they arrived.
+// buffer until the next is pulled. The trailers of a streamed body arrive
+// after it: [Request.StreamTrailers] reads them once it has ended.
 func (r Request) Stream() sluice.Source[[]byte] {
 	if r.body == nil {
 		return sluice.Source[[]byte]{}
 	}
 	return r.body.source()
+}
+
+// StreamTrailers is the trailer section of a streamed body, in the order
+// the client sent it: the fields after the last chunk of an HTTP/1.1 body,
+// or the trailing HEADERS on HTTP/2 and HTTP/3. They arrive after the body,
+// so they are nil until [Request.Stream] has ended without error, and nil
+// when the client sent none or the body is not streamed — a whole body's
+// trailers are in [Request.Trailers]. Like the stream, they are valid while
+// the handler runs.
+//
+// They are held to the bounds the headers are held to, separately, and
+// copied out of the connection's buffer, so they cost at most
+// [Config.MaxHeaderBytes]. Nothing in them is interpreted (Trailers says
+// why).
+func (r Request) StreamTrailers() []Header {
+	if r.body == nil {
+		return nil
+	}
+	if r.body.q != nil {
+		return r.body.q.trailerSection()
+	}
+	if !r.body.done || r.body.err != nil {
+		return nil
+	}
+	return r.body.trailers
+}
+
+// appendHeaderCopies appends copies of hs to dst, their names and values in
+// one allocation of their own, apart from the buffer they were read from.
+func appendHeaderCopies(dst []Header, hs ...Header) []Header {
+	n := 0
+	for _, h := range hs {
+		n += len(h.Name) + len(h.Value)
+	}
+	arena := make([]byte, 0, n)
+	for _, h := range hs {
+		at := len(arena)
+		arena = append(arena, h.Name...)
+		name := arena[at:len(arena):len(arena)]
+		at = len(arena)
+		arena = append(arena, h.Value...)
+		dst = append(dst, Header{Name: name, Value: arena[at:len(arena):len(arena)]})
+	}
+	return dst
 }
 
 // streamBody is parseRequest's answer for a request whose head is whole and

@@ -58,8 +58,8 @@ type Request struct {
 	// HTTP/3. Under [BodyWhole] the whole request is read before the
 	// handler is called, so they are here as soon as the body is; a
 	// streamed body's trailers arrive after the handler was given the
-	// request and are checked against the header bounds without being
-	// kept, so this is nil for it ([Request.Stream]). They are held to the bounds the
+	// request, so this is nil for it and [Request.StreamTrailers] reads
+	// them once the body has ended. They are held to the bounds the
 	// headers are held to, separately: a trailer section of its own up to
 	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
 	//

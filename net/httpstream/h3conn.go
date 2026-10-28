@@ -1522,7 +1522,8 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				dst := st.headers[len(st.headers):]
 				if st.handed {
 					// The handler is reading the head's storage: the
-					// trailers of a streamed body are checked and not kept.
+					// trailers of a streamed body are decoded apart and
+					// copied into it (setTrailers below).
 					dst = nil
 				}
 				trailers, err := a.qpack.Decode(dst, f.Payload)
@@ -1541,7 +1542,12 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 						return err
 					}
 				}
-				if len(trailers) > 0 {
+				switch {
+				case st.body != nil:
+					// A streamed body: the trailers go with it, read
+					// through Request.StreamTrailers once it has ended.
+					st.body.setTrailers(trailers)
+				case len(trailers) > 0:
 					st.req.Trailers = trailers
 				}
 				st.gotTrailers = true

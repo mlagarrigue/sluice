@@ -70,7 +70,7 @@ func TestStreamedBodyPastMaxBodyBytes(t *testing.T) {
 }
 
 // A chunked body whose chunks exceed MaxBodyBytes streams, its trailer
-// section is checked and dropped, and the connection carries on.
+// section is checked, and the connection carries on.
 func TestStreamedChunkedBody(t *testing.T) {
 	addr, _ := serveTest(t, streamCfg(), readAllHandler)
 	c := dial(t, addr)
