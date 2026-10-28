@@ -322,7 +322,7 @@ values. `HydrateOrder` then fills a slice from each batch.
 > test regenerates it and compares: if someone changes the struct without
 > rerunning the generator, the build fails instead of leaving a silent
 > difference. Measured: 54 ns per row for six columns
-> ([the row](../benchmarks.md#joins-and-hydration-in-isolation)). A `*T` field costs
+> ([the row](../benchmarks.md#joins-and-hydration-in-isolation), 2026-10-23, one laptop under WSL2). A `*T` field costs
 > one allocation per row (the pointer); a `pgtype.Null[T]` field costs
 > none, which is why it is the form to prefer when rows are many.
 

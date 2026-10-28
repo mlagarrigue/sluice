@@ -186,7 +186,7 @@ Three reasons come up, and the difference matters:
 - **The gateway only amortises round trips.** Without a database or a
   remote service behind it, it costs more than it saves
   ([measured](../benchmarks.md#the-gateway-against-a-bounded-backend): one
-  call every 3.7 µs at best, for nothing). And under WSL2, a `Within` of
+  call every 3.7 µs at best, for nothing; 2026-10-22, one laptop). And under WSL2, a `Within` of
   500 µs is worth 1.11 ms.
 - **`gateway.Partitions` is experimental**: the mechanism (grouping a batch
   by key) works and is tested, and its own cost is measured

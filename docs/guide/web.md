@@ -169,7 +169,8 @@ and what never leaves the log, is
 > best, where a direct call is free. Without a database or a remote service,
 > no gateway. And under WSL2, a `Within` below one millisecond is rounded up
 > by the system clock: 500 µs cost a lone call 1.11 ms. The benchmarks are in
-> [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend).
+> [the measurements](../benchmarks.md#the-gateway-against-a-bounded-backend),
+> taken 2026-10-22 on one laptop under WSL2.
 > If your traffic is often low, `Eager` removes the wait: a lone call leaves
 > at once, and batches form only when the database slows down. The price is
 > more queries while the database has room to spare

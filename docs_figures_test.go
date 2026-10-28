@@ -325,6 +325,10 @@ var settings = map[string]string{
 // figure quoted from memory, or from a session whose table has since been
 // regenerated, has no source; and one that matches some number elsewhere on
 // the page is no better, which is why the paragraph names where it was read.
+// transferable is what lets a reader use a duration measured on another
+// machine: a ratio, or the date the measurement was taken.
+var transferable = regexp.MustCompile(`×\d|\b20\d\d-\d\d-\d\d\b`)
+
 func TestGuideFiguresHaveASource(t *testing.T) {
 	page, err := os.ReadFile("docs/benchmarks.md")
 	if err != nil {
@@ -361,6 +365,12 @@ func TestGuideFiguresHaveASource(t *testing.T) {
 			if len(links) == 0 {
 				t.Errorf("%s:%d: quotes %s and links to no section of docs/benchmarks.md", f, starts[p], figures[0][0])
 				continue
+			}
+			// A duration is this machine's: in the README and a guide it
+			// comes with what transfers — a ratio against the ceiling or the
+			// same bench's reference — or with the day it was measured.
+			if f != "docs/design/architecture.md" && !transferable.MatchString(text) {
+				t.Errorf("%s:%d: quotes %s with no ratio (×N) and no date of measurement beside it", f, starts[p], figures[0][0])
 			}
 			for _, m := range figures {
 				v := nanos(m)

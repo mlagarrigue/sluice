@@ -156,7 +156,7 @@ is a program that will die once the reference list has grown.
 
 **Why prefer the merge join** when you have the choice: on 65,536 rows a
 side, the merge costs 19 ns per element and 25 KB; the table, 93 ns and
-8.4 MB ([measured](../benchmarks.md#joins-and-hydration-in-isolation)). That is not a small difference, it is a difference in kind: the
+8.4 MB ([measured](../benchmarks.md#joins-and-hydration-in-isolation) 2026-10-28, one laptop under WSL2). That is not a small difference, it is a difference in kind: the
 merge advances a cursor, the table does a lookup per element. Loading a
 side into memory is what you do when you *cannot* sort.
 
