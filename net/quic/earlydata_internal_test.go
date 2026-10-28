@@ -467,3 +467,49 @@ func TestZeroRTTStreamWritesStayUnderTheRememberedStreamLimit(t *testing.T) {
 		t.Errorf("per-stream credit after the 1-RTT keys: %d and %d, want the server's %d on both", beforeMax, afterMax, want)
 	}
 }
+
+// RFC 9001 §4.9.3: a server "MAY discard 0-RTT keys as soon as it receives
+// a 1-RTT packet", and this one does — its first authenticated 1-RTT
+// packet drops the 0-RTT opener and whatever 0-RTT packets still wait for
+// it; a 0-RTT packet reordered behind is resent by the client in 1-RTT.
+func TestTheFirst1RTTPacketDropsThe0RTTKeys(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("drop0rtt:self")}, fakeFuzzAddr("drop0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	installAppSealer(t, c)
+	opener, err := newPacketOpener(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.earlyOpener = opener
+	c.deferredEarly = append(c.deferredEarly, deferredPacket{raw: []byte{0xd0}, at: time.Now()})
+	c.mu.Unlock()
+
+	if err := c.processPacket(spaceApplication, false, 0, []byte{framePing}, time.Now()); err != nil {
+		t.Fatalf("a 1-RTT PING: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.earlyOpener != nil || c.deferredEarly != nil {
+		t.Fatalf("after the first 1-RTT packet: 0-RTT opener kept %v, %d 0-RTT packets still waiting; want both dropped", c.earlyOpener != nil, len(c.deferredEarly))
+	}
+}
+
+// The 0-RTT packets that arrive before the early secret wait for it, at
+// most sixteen: the one memory bound of that path. A peer sending more
+// before its ClientHello is read loses the rest, which its 1-RTT resends.
+func TestDeferred0RTTPacketsAreBounded(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("defer0rtt:self")}, fakeFuzzAddr("defer0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	for i := range 40 {
+		pkt := &rxPacket{space: spaceApplication, early: true, raw: []byte{0xd0, byte(i)}}
+		if v, err := c.openPacket(pkt, time.Now()); err != nil || v != rxSkip {
+			t.Fatalf("0-RTT packet %d before the early secret: (%v, %v), want held and skipped", i, v, err)
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n := len(c.deferredEarly); n != 16 {
+		t.Fatalf("%d 0-RTT packets held before the early secret, want the bound of 16", n)
+	}
+}
