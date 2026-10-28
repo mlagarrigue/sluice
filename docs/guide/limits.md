@@ -413,6 +413,11 @@ whichever way the conditions go:
   not before.
 - **The figures are a laptop's under WSL2**, not a dedicated rig: read
   ratios, never absolutes ([Benchmarks](../benchmarks.md)).
+- **The interop runner's two measurements, goodput and crosstraffic, are
+  not run**: the weekly pass plays the cases, whose verdict gates the
+  job, on a shared CI runner, whose throughput would be what those two
+  measured rather than the server's. They wait for the dedicated machine
+  the end-to-end measurement above waits for.
 
 ## What comes next
 
