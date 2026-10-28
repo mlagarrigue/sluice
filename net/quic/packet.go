@@ -193,9 +193,9 @@ func appendVersionNegotiation(dst, dcid, scid []byte, versions ...uint32) []byte
 	// Version Negotiation is no cost worth a second generator.
 	var unused [1]byte
 	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
-	dst = append(dst, 0xc0|unused[0]&0x3f, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version 0 is what marks the packet
+	dst = append(dst, 0xc0|unused[0]&0x3f, 0, 0, 0, 0, byte(len(dcid))) //nolint:gosec // G115: an echoed connection ID is at most 255 bytes (RFC 8999 §5.1, foreignVersionCIDs); version 0 is what marks the packet
 	dst = append(dst, dcid...)
-	dst = append(dst, byte(len(scid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
+	dst = append(dst, byte(len(scid))) //nolint:gosec // G115: an echoed connection ID is at most 255 bytes (RFC 8999 §5.1)
 	dst = append(dst, scid...)
 	for _, v := range versions {
 		dst = append(dst, byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) //nolint:gosec // G115: big-endian serialisation keeps the low octet of each shift
