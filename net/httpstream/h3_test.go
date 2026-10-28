@@ -443,10 +443,7 @@ func TestH3OverARealConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/orders/7")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/orders/7")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -997,10 +994,7 @@ func TestH3ResetsOneStreamAndServesTheRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := good.Write(h3Request("GET", "/good")); err != nil {
-		t.Fatal(err)
-	}
-	if err := good.CloseWrite(); err != nil {
+	if _, err := good.WriteFinal(h3Request("GET", "/good")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1231,10 +1225,11 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := large.Write(h3Request("GET", "/large")); err != nil {
-		t.Fatal(err)
-	}
-	if err := large.CloseWrite(); err != nil {
+	// Request and FIN in one call: a server may answer a complete request
+	// and stop reading its stream with H3_NO_ERROR before the FIN (RFC 9114
+	// §4.1.1), and a FIN sent after that is refused — a race the test is not
+	// about, which failed it once in CI.
+	if _, err := large.WriteFinal(h3Request("GET", "/large")); err != nil {
 		t.Fatal(err)
 	}
 	// The large request is handled — its batch is the responder's — before
@@ -1250,10 +1245,7 @@ func TestH3StarvedStreamDoesNotBlockOtherResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := small.Write(h3Request("GET", "/small")); err != nil {
-		t.Fatal(err)
-	}
-	if err := small.CloseWrite(); err != nil {
+	if _, err := small.WriteFinal(h3Request("GET", "/small")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1813,10 +1805,7 @@ func TestServeH3ShutdownDrainsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/slow")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/slow")); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1995,10 +1984,7 @@ func TestServeH3ServesARequestSentBeforeTheGoAway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Write(h3Request("GET", "/early")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CloseWrite(); err != nil {
+	if _, err := s.WriteFinal(h3Request("GET", "/early")); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
