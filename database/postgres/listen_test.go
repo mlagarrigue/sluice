@@ -160,3 +160,31 @@ func TestListenDeliversWhatArrivesBeforeReadyForQueryInBatches(t *testing.T) {
 		}
 	}
 }
+
+// A ParameterStatus may arrive at any point of a session, and every read loop
+// of this package records it — which is also where the one guard that
+// depends on it lives: a client_encoding nobody asked for ends the
+// connection, since channel names and payloads would otherwise be read as
+// UTF-8 without error. A listening connection used to ignore the message,
+// guard and all.
+func TestListenEndsAtAnEncodingNobodyAskedFor(t *testing.T) {
+	var script []byte
+	script = append(script, beNotification("orders", "first")...)
+	script = append(script, frame(pgwire.BackendParameterStatus, "client_encoding\x00LATIN1\x00")...)
+	script = append(script, beNotification("orders", "caf\xe9")...)
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: 1}
+	var got []string
+	src := l.Notifications(t.Context())
+	err := src.Consume(func(b sluice.Batch[Notification]) bool {
+		for _, n := range b.Items {
+			got = append(got, n.Payload)
+		}
+		return true
+	})
+	if err == nil || !strings.Contains(err.Error(), "client_encoding") {
+		t.Fatalf("listening past a client_encoding of LATIN1 ended with %v, want the encoding named", err)
+	}
+	if len(got) != 1 || got[0] != "first" {
+		t.Fatalf("delivered %q, want only the notification before the announcement", got)
+	}
+}

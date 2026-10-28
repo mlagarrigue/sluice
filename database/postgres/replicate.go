@@ -214,7 +214,14 @@ func (c *Conn) startReplication(sql string) error {
 			// The server follows its refusal with ReadyForQuery; the
 			// connection is closed by the caller either way.
 			return e
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// Recorded as every read loop here records it: a client_encoding
+			// nobody asked for ends the connection (recordParameter) rather
+			// than have text values read as UTF-8.
+			if err := c.recordParameter(m.Body); err != nil {
+				return c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return c.breakConn(fmt.Errorf("%w: message %q while starting replication", ErrProtocol, m.Type))
 		}
@@ -327,7 +334,13 @@ func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 				return sluice.Batch[Change]{}, r.c.breakConn(perr)
 			}
 			return sluice.Batch[Change]{}, r.c.breakConn(e)
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// See startReplication: the text values of a TupleData ('t') are read as
+			// UTF-8, so an encoding change mid-stream ends it.
+			if err := r.c.recordParameter(m.Body); err != nil {
+				return sluice.Batch[Change]{}, r.c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return sluice.Batch[Change]{}, r.c.breakConn(fmt.Errorf("%w: message %q during replication", ErrProtocol, m.Type))
 		}
@@ -494,8 +507,12 @@ func (r *Replication) drain() error {
 				return r.c.breakConn(perr)
 			}
 			return e
+		case pgwire.BackendParameterStatus:
+			if err := r.c.recordParameter(m.Body); err != nil {
+				return r.c.breakConn(err)
+			}
 		case pgwire.BackendCopyData, pgwire.BackendCopyDone, pgwire.BackendCommandComplete,
-			pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus, pgwire.BackendRowDescription, pgwire.BackendDataRow:
+			pgwire.BackendNoticeResponse, pgwire.BackendRowDescription, pgwire.BackendDataRow:
 		default:
 			return r.c.breakConn(fmt.Errorf("%w: message %q while leaving replication", ErrProtocol, m.Type))
 		}

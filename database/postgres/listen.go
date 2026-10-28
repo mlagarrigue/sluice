@@ -164,7 +164,14 @@ func (l *Listener) subscribe(sql string) error {
 				return c.breakConn(perr)
 			}
 			failed = e
-		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// Recorded as every read loop here records it: a client_encoding
+			// nobody asked for ends the connection (recordParameter) rather
+			// than have channel names and payloads read as UTF-8.
+			if err := c.recordParameter(m.Body); err != nil {
+				return c.breakConn(err)
+			}
+		case pgwire.BackendCommandComplete, pgwire.BackendNoticeResponse:
 		default:
 			return c.breakConn(fmt.Errorf("%w: message %q answering LISTEN", ErrProtocol, m.Type))
 		}
@@ -263,7 +270,13 @@ func (l *Listener) readBatch() (sluice.Batch[Notification], error) {
 				return sluice.Batch[Notification]{}, l.c.breakConn(perr)
 			}
 			return sluice.Batch[Notification]{}, l.c.breakConn(e)
-		case pgwire.BackendNoticeResponse, pgwire.BackendParameterStatus:
+		case pgwire.BackendParameterStatus:
+			// See subscribe: a SET or a pooler may change client_encoding at
+			// any point of a listening session.
+			if err := l.c.recordParameter(m.Body); err != nil {
+				return sluice.Batch[Notification]{}, l.c.breakConn(err)
+			}
+		case pgwire.BackendNoticeResponse:
 		default:
 			return sluice.Batch[Notification]{}, l.c.breakConn(fmt.Errorf("%w: message %q while listening", ErrProtocol, m.Type))
 		}
