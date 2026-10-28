@@ -1,6 +1,7 @@
 # net/httpstream behind nginx, HAProxy and Envoy (scripts/interop-proxy.sh):
 # streamed and chunked bodies, Expect: 100-continue, pooled connections the
-# server closes when idle, trailers, HAProxy's OPTIONS * health check.
+# server closes when idle, trailers, HAProxy's OPTIONS * health check, and
+# the server's graceful stop with a response in flight through each proxy.
 # Weekly and by hand, not on every push: three images to pull and a few
 # seconds of deliberate idling per proxy, for a path that changes rarely,
 # and a proxy's new release is the other thing that can break it.

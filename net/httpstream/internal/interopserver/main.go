@@ -164,9 +164,9 @@ func tlsConfig() *tls.Config {
 }
 
 // handle answers each request with its target, /stream with a streamed
-// body, /trailers with the same body and a trailer field after it, and
-// /echo with the request's own body: one response per request, in order, as
-// every httpstream handler.
+// body, /trailers with the same body and a trailer field after it, /echo
+// with the request's own body, and /slow with a body that takes two
+// seconds: one response per request, in order, as every httpstream handler.
 func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
 	out := make([]httpstream.Response, 0, b.Len())
 	for i := range b.Items {
@@ -188,6 +188,9 @@ func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[
 			// only as a copy.
 			out = append(out, httpstream.Response{Status: 200, Body: append([]byte(nil), r.Body...)})
 			continue
+		case "/slow":
+			out = append(out, httpstream.Response{Status: 200, Stream: slow})
+			continue
 		}
 		out = append(out, httpstream.Response{
 			Status: 200,
@@ -199,6 +202,17 @@ func handle(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[
 
 // checksum is the trailer /trailers sends after its body.
 var checksum = []httpstream.Header{{Name: []byte("x-checksum"), Value: []byte("three batches")}}
+
+// slow yields a line, waits two seconds and yields another: a response
+// still in flight when scripts/interop-proxy.sh stops the server, which a
+// graceful stop finishes.
+func slow(yield func(sluice.Batch[[]byte]) bool) {
+	if !yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("slow 1\n")}}) {
+		return
+	}
+	time.Sleep(2 * time.Second)
+	yield(sluice.Batch[[]byte]{Items: [][]byte{[]byte("slow 2\n")}})
+}
 
 // streamed yields three batches of one line each. The client sees the
 // concatenation; what the transport sees is three pulls, each framed when
