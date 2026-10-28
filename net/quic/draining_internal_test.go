@@ -179,3 +179,45 @@ func TestStreamBytesSurviveACloseInTheSamePacket(t *testing.T) {
 		}
 	})
 }
+
+// RFC 9000 §10.2.2: "While otherwise identical to the closing state, an
+// endpoint in the draining state MUST NOT send any packets." A peer may
+// coalesce its handshake-time close behind an ack-eliciting packet: the
+// first packet's immediate acknowledgement is gathered into the datagram
+// this end is building, the second packet's CONNECTION_CLOSE puts the
+// connection in draining, and what was gathered is dropped, not written
+// when the gathering ends.
+func TestDrainingDropsWhatTheSameDatagramGathered(t *testing.T) {
+	c, _, pc, _ := drainingConn(t, "drain-gathered")
+	sec, err := initialSecrets([]byte("handshake-secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.install(tls.QUICEncryptionLevelHandshake, tls.TLS_AES_128_GCM_SHA256, sec.Server, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.install(tls.QUICEncryptionLevelHandshake, tls.TLS_AES_128_GCM_SHA256, sec.Client, false); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := newSealerSuite(sec.Client, aes128Suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One datagram: a Handshake PING, then a Handshake CONNECTION_CLOSE.
+	d := append(handshakePacket(t, peer, []byte("scid0000"), []byte("dcid0000"), 0, []byte{framePing}),
+		handshakePacket(t, peer, []byte("scid0000"), []byte("dcid0000"), 1, closeFrameBytes())...)
+	before := len(pc.recorded())
+	// processDatagram's gather window around receive, without its pump:
+	// the test connection has no TLS state to drive.
+	c.mu.Lock()
+	c.gatherLocked(true)
+	c.mu.Unlock()
+	_ = c.receive(d, c.peer)
+	c.mu.Lock()
+	c.gatherLocked(false)
+	c.mu.Unlock()
+	assertDraining(t, c)
+	if n := len(pc.recorded()) - before; n > 0 {
+		t.Errorf("%d datagram(s) written after the datagram that put the connection in draining: the acknowledgement gathered before the close left anyway", n)
+	}
+}

@@ -486,10 +486,19 @@ func (c *Conn) cryptoRoomLocked() int {
 }
 
 // flushDatagramLocked seals the pending packet — with the §14.1 padding when
-// an Initial in the datagram requires it — and writes the datagram. Callers
-// hold mu.
+// an Initial in the datagram requires it — and writes the datagram. A
+// connection that entered draining since the packets were gathered drops
+// them instead: §10.2.2, "an endpoint in the draining state MUST NOT send
+// any packets", and a peer's CONNECTION_CLOSE coalesced behind an
+// ack-eliciting packet arrives after that packet's acknowledgement was
+// gathered. The guards of writePacketLocked and sendPacketLocked cannot
+// see a packet already built. Callers hold mu.
 func (c *Conn) flushDatagramLocked() {
 	if c.dgramPend == nil && len(c.dgram) == 0 {
+		return
+	}
+	if c.draining {
+		c.dgramPend, c.dgram, c.dgramPad = nil, c.dgram[:0], false
 		return
 	}
 	c.flushBatchLocked() // what was sent before leaves before
