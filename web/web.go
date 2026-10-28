@@ -3,16 +3,22 @@
 //
 // # What is deliberately not here
 //
-// There is no handler and no adapter: nothing here wraps a handler.
-// ([Serve] runs and drains an [http.Server]; it never sees a request.)
-// The architecture refuses the wrapper, and the refusal holds: the **status
-// code** and the **encoding**
-// are the two decisions that matter in an HTTP handler, and anything that
-// wraps them makes both invisible at the call site. The example's handler is
-// short and it should stay short enough for a reader to see it whole.
+// There is no handler and no adapter. ([Serve] runs and drains an
+// [http.Server]; it never sees a request.) The architecture refuses the
+// wrapper that decides for a handler: the **status code** and the
+// **encoding** are the two decisions that matter in an HTTP handler, and
+// anything that wraps them makes both invisible at the call site. The
+// example's handler is short and it should stay short enough for a reader to
+// see it whole.
 //
-// So this package is functions a handler calls, never a thing that calls the
-// handler:
+// Three wrappers are here, and each acts only where the handler cannot
+// answer for itself: [Recover] once it has panicked, [TryHandler] once a
+// sentinel has unwound it, and [EarlyData] before it runs, refusing with 425
+// a request an intermediary forwarded in early data. None of them touches
+// the response of a handler that returns.
+//
+// Everything else in this package is a function a handler calls, never a
+// thing that calls the handler:
 //
 //	func handle(w http.ResponseWriter, r *http.Request) {
 //	    var a Amendment
