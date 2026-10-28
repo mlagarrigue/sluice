@@ -212,7 +212,7 @@ gateway and the HTTP timeouts. The tables:
 [gateway](web.md#gateway-settings),
 [token verifier](web.md#verifier-settings),
 [`net/quic`](experimental.md#netquic-settings) and
-[`net/httpstream`](experimental.md#nethttpstream-settings).
+[`net/httpstream`](httpstream.md#nethttpstream-settings).
 
 > **In plain words:** your settings come from wherever you like; check
 > them with `Validate`, and only then open the port.

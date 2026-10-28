@@ -412,7 +412,7 @@ from `plain` on) are nearly twice those of HTTP/2. A pass of `paced` counts
 only about 160 requests: its p99.9 is the slowest of them.
 
 **Verdict.** The cost per batch is explained and what remains is owned:
-`docs/guide/experimental.md` says it in one sentence for whoever sizes their
+`docs/guide/httpstream.md` says it in one sentence for whoever sizes their
 batches. A bigger batch still divides the cost by as much.
 
 ## Web pipeline, from a real client

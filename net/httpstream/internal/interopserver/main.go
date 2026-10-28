@@ -11,7 +11,7 @@
 // streamed HTTP/2 response — the one path whose flow control is pulled a
 // batch at a time — crosses a wire a real client reads.
 //
-// With -tls it serves behind the TLS configuration docs/guide/experimental.md
+// With -tls it serves behind the TLS configuration docs/guide/deployments.md
 // recommends — TLS 1.2 floor, AEAD suites, ALPN h2 then http/1.1 — on a
 // certificate it signs for itself at start-up, so that the clients above
 // also exercise ALPN, the way a browser reaches HTTP/2.
@@ -128,7 +128,7 @@ func serveH3(listen string) {
 	}
 }
 
-// tlsConfig is the configuration docs/guide/experimental.md recommends,
+// tlsConfig is the configuration docs/guide/deployments.md recommends,
 // verbatim, on a throwaway certificate: the script's clients skip
 // verification, and what is under test is the handshake's outcome — version,
 // suite, ALPN — not the trust chain.

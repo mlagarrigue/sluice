@@ -998,7 +998,7 @@ func TestHTTPStreamStatusIsSaidOnce(t *testing.T) {
 		s = strings.NewReplacer("//", " ", "**", "", "\n", " ").Replace(s)
 		return strings.Join(strings.Fields(s), " ")
 	}
-	for _, f := range []string{"README.md", "docs/guide/experimental.md", "docs/design/architecture.md", "net/httpstream/httpstream.go"} {
+	for _, f := range []string{"README.md", "docs/guide/httpstream.md", "docs/design/architecture.md", "net/httpstream/httpstream.go"} {
 		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
 		if err != nil {
 			t.Fatal(err)
