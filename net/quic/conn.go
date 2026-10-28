@@ -1995,7 +1995,13 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		// (confirmLocked), as §9.6 requires.
 		pa := p.preferredAddress
 		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: append([]byte(nil), pa.cid...), token: pa.statelessResetToken})
-		c.preferred = pa.addrFor(c.peer)
+		// The address is probed at 1200 bytes with no amplification
+		// limit, so one nothing could answer from is not taken: loopback
+		// offered by a server reached elsewhere (§21.5.6), the unspecified
+		// address, a multicast group, port 0. The client stays where it is.
+		if addr := pa.addrFor(c.peer); usablePreferredAddr(c.peer, addr) {
+			c.preferred = addr
+		}
 	}
 	// RFC 9000 §7.4.1: "Remembered transport parameters apply to the new
 	// connection until the handshake completes and the client starts

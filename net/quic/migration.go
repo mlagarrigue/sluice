@@ -642,6 +642,19 @@ func loopbackMigration(from, to net.Addr) bool {
 	return isLoopback(to) && !isLoopback(from)
 }
 
+// usablePreferredAddr reports whether to, an address a server offered in
+// preferred_address, is one a client reached at from may move to: a UDP
+// address, a port, not the unspecified address nor a multicast group, and
+// not loopback unless from already is (RFC 9000 §21.5.6).
+func usablePreferredAddr(from, to net.Addr) bool {
+	ua, ok := to.(*net.UDPAddr)
+	if !ok || ua == nil || ua.Port == 0 {
+		return false
+	}
+	ip := ua.AddrPort().Addr().Unmap()
+	return !ip.IsUnspecified() && !ip.IsMulticast() && !loopbackMigration(from, to)
+}
+
 func isLoopback(a net.Addr) bool {
 	ua, ok := a.(*net.UDPAddr)
 	return ok && ua.AddrPort().Addr().Unmap().IsLoopback()

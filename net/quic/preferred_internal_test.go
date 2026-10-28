@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -861,5 +862,52 @@ func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) 
 	}
 	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("pref13:second")}); !errors.Is(err, ErrNoFreshConnectionID) {
 		t.Fatalf("Rebind during the probe returned %v, want ErrNoFreshConnectionID: sequence 1 already left toward the preferred address", err)
+	}
+}
+
+// RFC 9000 §21.5.6: "Endpoints SHOULD NOT allow connections or migration to
+// a loopback address if the same service was provided by a service at a
+// non-loopback address." A server's preferred_address is probed by the
+// client with a 1200-byte PATH_CHALLENGE, so an offer of loopback reached
+// from elsewhere, of the unspecified address, of a multicast group or of
+// port 0 — nothing a server can be reached at — is not taken: the client
+// stays where it is. The offered identifier stays in the pool (§5.1.1).
+func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		offer *net.UDPAddr
+		taken bool
+	}{
+		{"loopback from a non-loopback server", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4433}, false},
+		{"the unspecified address", &net.UDPAddr{IP: net.IPv4zero, Port: 4433}, false},
+		{"a multicast group", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 1), Port: 4433}, false},
+		{"port 0", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 0}, false},
+		{"an ordinary address", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 4433}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+			peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 443}
+			c := assembleConn(&fuzzSink{addr: "pa:self"}, peer, dcid, scid, true, DefaultParameters())
+			t.Cleanup(func() { _ = c.Close() })
+			c.initialDCID = dcid
+			c.peerSCID = dcid // the server's own identifier, not zero-length
+			srv := DefaultParameters()
+			srv.initialSourceCID = dcid
+			srv.originalDCID = dcid
+			srv.preferredAddress = &preferredAddress{ipv4: tc.offer, cid: []byte{9, 9, 9, 9}}
+			if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+				t.Fatalf("server parameters: %v", err)
+			}
+			c.mu.Lock()
+			taken := c.preferred != nil
+			pooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == 1 })
+			c.mu.Unlock()
+			if taken != tc.taken {
+				t.Errorf("the offer of %v was taken = %v, want %v", tc.offer, taken, tc.taken)
+			}
+			if !pooled {
+				t.Error("the identifier offered with the address is not pooled as sequence 1")
+			}
+		})
 	}
 }
