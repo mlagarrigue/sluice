@@ -33,3 +33,46 @@ func TestH2NoResetOnAStreamThePeerClosed(t *testing.T) {
 		t.Errorf("control, no peer reset: %d RST_STREAM (GOAWAY %v), want exactly one for the zero WINDOW_UPDATE", n, ga)
 	}
 }
+
+// §5.1 again: a stream enters "closed" once an endpoint "both sends and
+// receives a frame with an END_STREAM flag set". A request ended by its
+// HEADERS and answered to its END_STREAM is closed on both sides, and a
+// late HEADERS or DATA on it — the peer's fault — is answered with nothing,
+// where a stream still being answered ("half-closed (remote)") gets the
+// STREAM_CLOSED reset the same paragraph asks for.
+func TestH2NoResetOnAStreamClosedByBothEndStreams(t *testing.T) {
+	for _, late := range []struct {
+		name  string
+		frame func() h2Frame
+	}{
+		{"HEADERS", func() h2Frame {
+			return h2Frame{Type: frameHeaders, Flags: flagEndHeaders | flagEndStream, StreamID: 1, Payload: headBlock("GET", "/y")}
+		}},
+		{"DATA", func() h2Frame {
+			return h2Frame{Type: frameData, Flags: flagEndStream, StreamID: 1, Payload: []byte("late")}
+		}},
+	} {
+		t.Run(late.name, func(t *testing.T) {
+			addr, _ := serveTest(t, Config{}, echoTarget)
+			c := dialH2(t, addr)
+			c.request(1, "GET", "/x")
+			c.flush()
+			c.bodies(1)
+			if !c.ended[1] {
+				t.Fatal("the answer on stream 1 did not end; the case under test is not reached")
+			}
+			c.frame(late.frame())
+			// A second request after it: its answer is the sign the late
+			// frame was read, and a RST_STREAM for it would have come first.
+			c.request(3, "GET", "/z")
+			c.flush()
+			c.bodies(3)
+			if code, seen := c.resets[1]; seen {
+				t.Fatalf("the server sent RST_STREAM(%#x) on stream 1, closed by both END_STREAM flags: §5.1 forbids any frame but PRIORITY there", code)
+			}
+			if c.sawGoAway {
+				t.Fatal("the late frame on a closed stream ended the connection")
+			}
+		})
+	}
+}

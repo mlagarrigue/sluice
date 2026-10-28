@@ -179,6 +179,7 @@ type h2Writer struct {
 	connWind int32
 	windows  map[uint32]int32
 	gone     []uint32 // streams forgotten lately, newest last (see forget)
+	ended    []uint32 // streams whose answer reached END_STREAM lately (see responded)
 	initial  int32
 	// maxFrame is the largest payload a frame leaves with: the peer's
 	// SETTINGS_MAX_FRAME_SIZE, capped by setMaxFrame.
@@ -392,6 +393,10 @@ func (w *h2Writer) fill() []*h2Job {
 				// The stream is over on this side; its window is nobody's to
 				// spend now.
 				delete(w.windows, j.id)
+				w.ended = append(w.ended, j.id)
+				if len(w.ended) > maxEndedRemembered {
+					w.ended = w.ended[1:]
+				}
 			}
 			if j.closes && j.resetAfter {
 				// Behind the response's END_STREAM, in the same write. A
@@ -956,6 +961,23 @@ func (w *h2Writer) open(id uint32) {
 	if _, known := w.windows[id]; !known {
 		w.windows[id] = w.initial
 	}
+}
+
+// maxEndedRemembered bounds the streams responded remembers. A late frame
+// on a stream answered longer ago than that many answers is reset as a
+// stream still being answered would be — which §5.1 forbids on a closed
+// stream, and which only a peer sending on a stream it read to its end can
+// cause.
+const maxEndedRemembered = 256
+
+// responded reports whether id's answer has been written to its END_STREAM.
+// For a stream whose request ended too, that is RFC 9113 §5.1's "closed": the
+// reader asks before it resets a late frame on a half-closed stream. Safe
+// from the read goroutine.
+func (w *h2Writer) responded(id uint32) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Contains(w.ended, id)
 }
 
 // forget drops a stream: whatever was queued for it is answered errStreamGone,

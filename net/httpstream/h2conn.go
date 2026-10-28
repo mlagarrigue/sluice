@@ -919,6 +919,14 @@ func (s *h2Server) expireAssembly() error {
 // open indefinitely for the cost of one refusal each, which is the rapid-reset
 // shape with the roles swapped.
 func (s *h2Server) reset(se streamError) error {
+	if s.streams[se.id] == nil && s.closed[se.id] == stateHalfClosed && s.w.responded(se.id) {
+		// Its request ended and its answer reached END_STREAM: "closed" in
+		// §5.1's state machine, where this server's books still say
+		// half-closed. A late frame on it is the peer's fault and answered
+		// with nothing, as below; the books catch up so the next one is
+		// tolerated without asking.
+		s.closed[se.id] = stateClosed
+	}
 	if s.streams[se.id] == nil && s.closed[se.id] == stateClosed {
 		// The stream is closed already — the peer reset it, or it finished —
 		// and RFC 9113 §5.1 forbids any frame but PRIORITY on a closed

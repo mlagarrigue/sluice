@@ -29,10 +29,10 @@ http2/5.1/8
 http2/5.1/9
 
 # RFC 9113 §5.1, "closed": same MAY. The case closes a stream by
-# END_STREAM both ways and sends HEADERS again; this server answers with a
-# stream error STREAM_CLOSED (RST_STREAM) rather than the connection error
-# RFC 7540 required. One misbehaving stream costs that stream, and it is
-# charged against the rapid-reset allowance like any other reset.
+# END_STREAM both ways and sends HEADERS again; this server decodes the
+# block for the HPACK table and drops it, sending nothing — §5.1 forbids any
+# frame but PRIORITY on a closed stream — rather than the connection error
+# RFC 7540 required (h2conn.go, reset; h2write.go, responded).
 http2/5.1/12
 
 # RFC 9113 §5.3.2 deprecates the priority scheme and §6.2/§6.3 no longer
