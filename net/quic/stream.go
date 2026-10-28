@@ -519,6 +519,9 @@ func (s *Stream) writeLocked(p []byte, fin bool) (int, error) {
 		if err := c.sendPacketLocked(spaceApplication, frame, opts); err != nil {
 			s.sendQ.sent -= uint64(n)
 			c.connSend.sent -= uint64(n)
+			if errors.Is(err, errRefit) {
+				continue // cut again for the datagram size now in force
+			}
 			return written, err
 		}
 		s.writeOff += uint64(n)

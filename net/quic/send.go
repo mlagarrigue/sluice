@@ -2,6 +2,7 @@ package quic
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -174,6 +175,13 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 					return err
 				}
 			}
+			// The datagram size may have fallen while this waited — a
+			// black hole detected, a migration, a Rebind — and a payload
+			// cut for the old size would leave larger than the path was
+			// just found to carry (§14.2). The caller cuts it again.
+			if c.packetOverhead(space)+len(payload) > c.maxDatagram {
+				return errRefit
+			}
 		}
 	}
 
@@ -247,7 +255,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 	retransPart := payload
 	if space == spaceApplication && !opts.noRetrans && (len(c.grants) > 0 || len(c.control) > 0) {
-		room := c.maxDatagram - c.shortPacketOverhead() - len(ack) - len(payload)
+		room := c.maxDatagram - c.packetOverhead(space) - len(ack) - len(payload)
 		if queued := c.takeQueuedLocked(room, len(payload)); len(queued) > 0 {
 			retransPart = append(queued, payload...)
 			// Control frames are cheap to lose only if someone resends
@@ -275,12 +283,26 @@ func (c *Conn) shortPacketOverhead() int {
 	return 1 + len(c.dcid) + pnLen + 16
 }
 
+// sendsEarlyLocked reports whether an application packet sent now leaves in
+// 0-RTT: a DialEarly client before its 1-RTT keys (writePacketLocked).
+// Callers hold mu.
+func (c *Conn) sendsEarlyLocked() bool {
+	return c.spaces[spaceApplication].sealer == nil && c.earlySealer != nil
+}
+
+// errRefit is sendPacketLocked's answer to a waiting writer whose payload no
+// longer fits the datagram size it woke to: nothing was sent, and the
+// writer builds its frame again for the size now in force.
+var errRefit = errors.New("quic: the datagram size fell while the packet waited")
+
 // packetOverhead is what a packet of space costs on the wire beyond its
 // payload: its header, the packet number and the AEAD tag. A long header's
 // Length field is counted at two bytes, which covers any packet under
-// maxDatagram.
+// maxDatagram. An application packet sent in 0-RTT carries a long header,
+// sixteen bytes or so more than the short one it is counted at otherwise.
+// Callers hold mu.
 func (c *Conn) packetOverhead(space int) int {
-	if space == spaceApplication {
+	if space == spaceApplication && !c.sendsEarlyLocked() {
 		return c.shortPacketOverhead()
 	}
 	const pnLen = 4
@@ -844,7 +866,8 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // fails is a packet the network lost — recovery declares it so and resends
 // its payload, releasing the window it held, exactly as for a loss on the
 // wire. Nothing here is sized past maxDatagram (sendPacketLocked cuts the
-// queues to it), but maxDatagram is what the path search believes, not what
+// queues to it, under the packet's real header, and sends a waiting writer
+// back to cut its frame again when the size fell meanwhile), but maxDatagram is what the path search believes, not what
 // the outgoing interface will carry: a probe above the interface MTU comes
 // back EMSGSIZE, since the socket forbids fragmenting (udp.Configure), and
 // that needs no special case either — the probe is never acknowledged, and
@@ -966,6 +989,11 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 	defer c.mu.Unlock()
 	for len(data) > 0 {
 		n := min(len(data), c.maxStreamChunk())
+		if space == spaceInitial && len(c.retryToken) > 0 {
+			// After a Retry the client's Initial carries the token, which
+			// maxStreamChunk's slack does not cover (§14.2).
+			n = min(n, c.maxStreamChunk()-varintBytes(uint64(len(c.retryToken)))-len(c.retryToken))
+		}
 		// Beside a gathered Initial, a chunk cut to the room left fills the
 		// datagram the Initial would otherwise pad with zeros (§14.1): the
 		// ServerHello's Initial and the first of the certificate chain

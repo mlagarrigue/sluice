@@ -1,6 +1,8 @@
 package quic
 
 import (
+	"context"
+	"crypto/tls"
 	"testing"
 	"time"
 )
@@ -98,4 +100,137 @@ func sealedAppConn(t *testing.T) (*Conn, *tapPC) {
 	c.connSend.max = 1 << 20
 	c.mu.Unlock()
 	return c, tap
+}
+
+// RFC 9000 §14.2: no datagram leaves larger than the path's maximum. A
+// writer builds its frame for the datagram size of the moment and may wait
+// for the congestion window with mu released; meanwhile the size can fall —
+// a black hole detected, a migration, a Rebind — and the frame built for
+// 1452 bytes would leave whole on a path just found not to carry it. The
+// writer wakes to the size it finds, and its frame is cut again.
+func TestAParkedWriterIsRefitToTheDatagramSizeItWakesTo(t *testing.T) {
+	c, tap := sealedAppConn(t)
+	c.mu.Lock()
+	nr := newNewReno(1452)
+	c.cc = nr
+	c.maxDatagram = 1452
+	c.peerMaxStreamsBidi = 1
+	nr.inFlight = nr.cwnd // the window full
+	c.mu.Unlock()
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	s.sendQ.max = 1 << 20
+	chunk := c.maxStreamChunk()
+	c.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { _, err := s.Write(make([]byte, chunk)); done <- err }()
+	waitFor(t, "the writer to park on the window", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.connSend.sent > 0
+	})
+	time.Sleep(50 * time.Millisecond) // past the charge, into the wait
+	c.mu.Lock()
+	c.blackHoleLocked()
+	md := c.maxDatagram
+	c.cc.(*newReno).inFlight = 0
+	c.cond.Broadcast()
+	c.mu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the writer never woke")
+	}
+	if md != 1200 {
+		t.Fatalf("maxDatagram is %d after the black hole, want 1200; the case under test is not reached", md)
+	}
+	sent := tap.recorded()
+	if len(sent) == 0 {
+		t.Fatal("nothing was written")
+	}
+	for i, w := range sent {
+		if len(w.data) > md {
+			t.Errorf("datagram %d of %d is %d bytes, over the %d the path was just found to carry", i+1, len(sent), len(w.data), md)
+		}
+	}
+}
+
+// §14.2 again, for the two packets whose header is longer than the room
+// their payload was cut for: a 0-RTT packet carries a long header where
+// the queue joined to it was sized for a short one, and after a Retry a
+// client's Initial carries the token, which a CRYPTO chunk cut to
+// maxStreamChunk does not leave room for.
+func TestPacketsFitTheDatagramWhateverTheirHeader(t *testing.T) {
+	t.Run("0-RTT with the control queue", func(t *testing.T) {
+		tap := newTap(&fuzzSink{addr: "fit:self"})
+		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
+		c := assembleConn(tap, fakeFuzzAddr("fit:peer"), dcid, scid, true, DefaultParameters())
+		t.Cleanup(func() { _ = c.Close() })
+		c.initialDCID = dcid
+		c.remembered = TransportParameters{
+			InitialMaxData:          1 << 20,
+			InitialMaxStreamDataUni: 1 << 16,
+			InitialMaxStreamsUni:    4,
+			ActiveConnIDLimit:       4,
+		}
+		if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+			t.Fatalf("early sealer: %v", err)
+		}
+		srv := DefaultParameters()
+		srv.initialSourceCID = dcid
+		srv.originalDCID = dcid
+		if err := c.handlePeerParameters(appendParameters(nil, srv)); err != nil {
+			t.Fatalf("server parameters: %v", err)
+		}
+		s, err := c.OpenUniStream(context.Background())
+		if err != nil {
+			t.Fatalf("OpenUniStream: %v", err)
+		}
+		c.mu.Lock()
+		for i := range 40 {
+			c.control = appendFrame(c.control, frameMaxStreams|0x01, uint64(100+i))
+		}
+		chunk := c.maxStreamChunk()
+		md := c.maxDatagram
+		c.mu.Unlock()
+		if _, err := s.Write(make([]byte, chunk)); err != nil {
+			t.Fatalf("writing in 0-RTT: %v", err)
+		}
+		for i, w := range tap.recorded() {
+			if len(w.data) > md {
+				t.Errorf("datagram %d is %d bytes, over maxDatagram %d", i+1, len(w.data), md)
+			}
+		}
+	})
+	t.Run("an Initial with a Retry token", func(t *testing.T) {
+		tap := newTap(&fuzzSink{addr: "fit2:self"})
+		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
+		c := assembleConn(tap, fakeFuzzAddr("fit2:peer"), dcid, scid, true, DefaultParameters())
+		t.Cleanup(func() { _ = c.Close() })
+		if err := c.installInitial(dcid); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.retryToken = make([]byte, 100)
+		md := c.maxDatagram
+		c.mu.Unlock()
+		if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 3000)); err != nil {
+			t.Fatalf("sendCrypto: %v", err)
+		}
+		sent := tap.recorded()
+		if len(sent) == 0 {
+			t.Fatal("nothing was written")
+		}
+		for i, w := range sent {
+			if len(w.data) > md {
+				t.Errorf("datagram %d is %d bytes, over maxDatagram %d", i+1, len(w.data), md)
+			}
+		}
+	})
 }
