@@ -673,12 +673,9 @@ func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 // needed — the count still bounds what the backend tracks even when
 // establishing them is cheap.
 //
-// Every SAVEPOINT is written before any answer is read, and each answer is
-// about twenty bytes: the exchange leans on the socket buffers for
-// len(names) × 20 bytes, which both sides hold until the names run into the
-// hundreds of thousands. A batch that large is not what savepoints are for;
-// keep it to the hundreds the backend's subtransaction cache suits, and the
-// write-then-read is safe by a wide margin.
+// The answers are read while the SAVEPOINTs are still being written, as
+// [Tx.Pipeline] does, so the number of names is bounded by nothing but the
+// backend; keep it to the hundreds its subtransaction cache suits.
 func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
@@ -702,12 +699,23 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	for _, name := range names {
 		c.w.Query("SAVEPOINT " + name)
 	}
-	if err := c.w.Flush(); err != nil {
-		return c.breakConn(fmt.Errorf("establishing %d savepoints: %w", len(names), err))
-	}
+	// Sent and read at once, for Tx.Pipeline's reason: the server answers
+	// each SAVEPOINT as it reads it, about twenty bytes, and a server whose
+	// send buffer is full stops reading. Written whole before any answer was
+	// read, the exchange leaned on both socket buffers for len(names) × 20
+	// bytes — a bound argued, never measured, and on an unbuffered transport
+	// (net.Pipe) two names were enough to hang it. A failed write closes the
+	// socket under the reader, and its error is the one reported.
+	sent := make(chan error, 1)
+	go func() {
+		err := c.w.Flush()
+		if err != nil {
+			_ = c.rw.Close()
+		}
+		sent <- err
+	}()
 	// A simple Query message is its own transaction boundary, so each one
-	// answers with its own ReadyForQuery. They were all sent before any was
-	// read, which is where the round trips went.
+	// answers with its own ReadyForQuery.
 	var first error
 	for range names {
 		if err := c.drainToReady(); err != nil && first == nil {
@@ -716,8 +724,17 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 		// A broken connection has no further ReadyForQuery to read: the next
 		// read would block on, or misframe, whatever the socket holds.
 		if c.broken != nil {
-			return c.broken
+			break
 		}
+	}
+	// Joined before returning: the next statement reuses the Writer's
+	// buffer, which is the sender's until it has returned.
+	if err := <-sent; err != nil {
+		c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
+		return c.broken
+	}
+	if c.broken != nil {
+		return c.broken
 	}
 	return first
 }

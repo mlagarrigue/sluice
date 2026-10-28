@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -964,25 +965,34 @@ func TestAsksToCommit(t *testing.T) {
 // one of them failed: once the connection broke, the socket is off limits.
 type tripwire struct {
 	*fakeServer
-	tripped bool
-	after   int
+	mu         sync.Mutex // a client may read and write on two goroutines, as Tx.Savepoints does
+	tripped    bool
+	after      int // socket calls after the first failed read
+	readsAfter int // the reads among them
 }
 
 func (w *tripwire) Read(p []byte) (int, error) {
+	w.mu.Lock()
 	if w.tripped {
 		w.after++
+		w.readsAfter++
 	}
+	w.mu.Unlock()
 	n, err := w.fakeServer.Read(p)
 	if err != nil {
+		w.mu.Lock()
 		w.tripped = true
+		w.mu.Unlock()
 	}
 	return n, err
 }
 
 func (w *tripwire) Write(p []byte) (int, error) {
+	w.mu.Lock()
 	if w.tripped {
 		w.after++
 	}
+	w.mu.Unlock()
 	return w.fakeServer.Write(p)
 }
 
@@ -1055,8 +1065,12 @@ func TestSavepointsStopsReadingOnceBroken(t *testing.T) {
 	if err := tx.Savepoints(t.Context(), "a", "b", "c"); !errors.Is(err, ErrConnBroken) {
 		t.Fatalf("Savepoints returned %v, want ErrConnBroken", err)
 	}
-	if w.after != 0 {
-		t.Errorf("Savepoints touched the socket %d more times after it failed", w.after)
+	// Reads only: the SAVEPOINTs are sent while the answers are read, so
+	// the write may still be finishing when the first read fails.
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.readsAfter != 0 {
+		t.Errorf("Savepoints read the socket %d more times after a read failed", w.readsAfter)
 	}
 }
 
