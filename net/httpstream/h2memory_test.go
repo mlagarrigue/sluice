@@ -227,3 +227,45 @@ func TestH2ConnectionHeapNearH1(t *testing.T) {
 		}
 	}
 }
+
+// What the writer remembers of ended answers is bounded by what the reader
+// remembers of retired streams: an answer ended, then its stream forgotten,
+// leaves nothing; a stream forgotten while its answer is still being written
+// leaves a mark that the END_STREAM clears instead of recording; a stream
+// forgotten after a reset leaves nothing either. A thousand streams through
+// a reader that remembers four leave at most four.
+func TestH2EndedAnswersAreBoundedByTheReader(t *testing.T) {
+	s := newBenchH2Server(Config{MaxConcurrentStreams: 4})
+	end := func(id uint32) {
+		s.w.mu.Lock()
+		delete(s.w.windows, id)
+		s.w.noteEndedLocked(id)
+		s.w.mu.Unlock()
+	}
+	for i := range 1000 {
+		id := uint32(2*i + 1) //nolint:gosec // G115: a small loop index
+		s.w.open(id)
+		switch i % 3 {
+		case 0: // answered, then retired
+			end(id)
+			s.remember(id, stateHalfClosed)
+		case 1: // retired, answered once it has been forgotten
+			s.remember(id, stateHalfClosed)
+		case 2: // reset: its answer never ends
+			s.w.forget(id)
+			s.remember(id, stateClosed)
+		}
+		if i%3 == 1 && i >= 12 {
+			end(uint32(2*(i-9) + 1)) //nolint:gosec // G115: a small loop index
+		}
+	}
+	s.w.mu.Lock()
+	ended, evicted := len(s.w.ended), len(s.w.evicted)
+	s.w.mu.Unlock()
+	if ended > 4 {
+		t.Errorf("the writer remembers %d ended answers; the reader remembers 4 streams", ended)
+	}
+	if evicted > 4 {
+		t.Errorf("%d marks of streams forgotten mid-answer are left; their answers ended", evicted)
+	}
+}

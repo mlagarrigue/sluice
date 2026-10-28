@@ -76,3 +76,41 @@ func TestH2NoResetOnAStreamClosedByBothEndStreams(t *testing.T) {
 		})
 	}
 }
+
+// A stream closed by both END_STREAM flags stays closed however many answers
+// follow it: whether its answer ended is known for as long as this end
+// remembers the stream at all. It used to be read from a ring of the last 256
+// answers, and a late frame on a stream answered 300 requests earlier drew
+// the RST_STREAM that §5.1 forbids on a closed stream. MaxConcurrentStreams
+// is raised so the reader still remembers stream 1 after 300 retirements.
+func TestH2NoResetOnAClosedStreamAnsweredLongAgo(t *testing.T) {
+	addr, _ := serveH2(t, Config{MaxConcurrentStreams: 512}, echoTarget)
+	c := dialH2(t, addr)
+	c.request(1, "GET", "/first")
+	c.flush()
+	c.bodies(1)
+	if !c.ended[1] {
+		t.Fatal("the answer on stream 1 did not end; the case under test is not reached")
+	}
+	const between = 300
+	for i := range between {
+		id := uint32(3 + 2*i) //nolint:gosec // G115: a small loop index
+		c.request(id, "GET", "/next")
+		c.flush()
+		c.bodies(2 + i)
+	}
+	c.frame(h2Frame{Type: frameData, Flags: flagEndStream, StreamID: 1, Payload: []byte("late")})
+	last := uint32(3 + 2*between)
+	c.request(last, "GET", "/last")
+	c.flush()
+	c.bodies(2 + between)
+	if !c.ended[last] {
+		t.Fatal("the last request was not answered; the late frame's effect is unread")
+	}
+	if code, seen := c.resets[1]; seen {
+		t.Fatalf("the server sent RST_STREAM(%#x) on stream 1, closed by both END_STREAM flags %d answers earlier", code, between)
+	}
+	if c.sawGoAway {
+		t.Fatal("the late frame on a closed stream ended the connection")
+	}
+}

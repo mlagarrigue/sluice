@@ -1033,6 +1033,7 @@ func (s *h2Server) remember(id uint32, state h2State) {
 	s.closedRing = append(s.closedRing, id)
 	for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
 		delete(s.closed, s.closedRing[0])
+		s.w.evict(s.closedRing[0])
 		s.closedRing = s.closedRing[1:]
 	}
 }

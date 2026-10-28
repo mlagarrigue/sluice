@@ -179,8 +179,12 @@ type h2Writer struct {
 	connWind int32
 	windows  map[uint32]int32
 	gone     []uint32 // streams forgotten lately, newest last (see forget)
-	ended    []uint32 // streams whose answer reached END_STREAM lately (see responded)
-	initial  int32
+	// ended is the streams whose answer reached END_STREAM and that the
+	// reader still remembers; evicted is the streams the reader forgot
+	// while their answer was still being written. See responded and evict.
+	ended   map[uint32]struct{}
+	evicted map[uint32]struct{}
+	initial int32
 	// maxFrame is the largest payload a frame leaves with: the peer's
 	// SETTINGS_MAX_FRAME_SIZE, capped by setMaxFrame.
 	maxFrame int
@@ -216,6 +220,8 @@ func newH2Writer(c net.Conn, cfg Config) *h2Writer {
 		cfg:       cfg,
 		done:      make(chan struct{}),
 		windows:   make(map[uint32]int32),
+		ended:     make(map[uint32]struct{}),
+		evicted:   make(map[uint32]struct{}),
 		connWind:  defaultInitialWindow,
 		initial:   defaultInitialWindow,
 		maxFrame:  defaultMaxFrameSize,
@@ -326,6 +332,7 @@ func (w *h2Writer) expire() {
 		}
 		w.settle(j, fmt.Errorf("%w: stream %d", errWriteStalled, j.id))
 		delete(w.windows, j.id)
+		delete(w.evicted, j.id)
 		// CANCEL rather than a code that blames the peer: it granted less
 		// than we wanted, which it is entitled to do, and we are the side
 		// that stopped waiting. A frame this end built cannot fail to frame,
@@ -393,10 +400,7 @@ func (w *h2Writer) fill() []*h2Job {
 				// The stream is over on this side; its window is nobody's to
 				// spend now.
 				delete(w.windows, j.id)
-				w.ended = append(w.ended, j.id)
-				if len(w.ended) > maxEndedRemembered {
-					w.ended = w.ended[1:]
-				}
+				w.noteEndedLocked(j.id)
 			}
 			if j.closes && j.resetAfter {
 				// Behind the response's END_STREAM, in the same write. A
@@ -963,13 +967,6 @@ func (w *h2Writer) open(id uint32) {
 	}
 }
 
-// maxEndedRemembered bounds the streams responded remembers. A late frame
-// on a stream answered longer ago than that many answers is reset as a
-// stream still being answered would be — which §5.1 forbids on a closed
-// stream, and which only a peer sending on a stream it read to its end can
-// cause.
-const maxEndedRemembered = 256
-
 // responded reports whether id's answer has been written to its END_STREAM.
 // For a stream whose request ended too, that is RFC 9113 §5.1's "closed": the
 // reader asks before it resets a late frame on a half-closed stream. Safe
@@ -977,7 +974,40 @@ const maxEndedRemembered = 256
 func (w *h2Writer) responded(id uint32) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return slices.Contains(w.ended, id)
+	_, ok := w.ended[id]
+	return ok
+}
+
+// noteEndedLocked records that id's answer reached END_STREAM, unless the
+// reader has already forgotten the stream (evict). Callers hold w.mu.
+func (w *h2Writer) noteEndedLocked(id uint32) {
+	if _, gone := w.evicted[id]; gone {
+		delete(w.evicted, id)
+		return
+	}
+	w.ended[id] = struct{}{}
+}
+
+// evict is the reader forgetting a retired stream (h2Server.remember): its
+// END_STREAM, written or to come, is no longer anyone's question. An
+// answer already ended is dropped from ended; one still being written is
+// marked, so that its END_STREAM is not recorded for nobody to clear. A
+// stream with neither — reset, or stalled — leaves nothing behind. So
+// ended holds only streams the reader still knows, open or remembered, and
+// responded is exact for every one of them: a set bounded by the reader's
+// own memory, where a ring of the last 256 answers made a stream answered
+// longer ago than that look half-closed and drew the RST_STREAM §5.1
+// forbids on a closed stream. Safe from the read goroutine.
+func (w *h2Writer) evict(id uint32) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.ended[id]; ok {
+		delete(w.ended, id)
+		return
+	}
+	if _, pending := w.windows[id]; pending {
+		w.evicted[id] = struct{}{}
+	}
 }
 
 // forget drops a stream: whatever was queued for it is answered errStreamGone,
@@ -986,6 +1016,7 @@ func (w *h2Writer) forget(id uint32) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.windows, id)
+	delete(w.evicted, id)
 	// Remembered so that a late failure on this stream — a head that cannot
 	// be framed, a producer that panicked — does not send a RST_STREAM to a
 	// stream the peer already closed (RFC 9113 §5.1). A short ring: the
