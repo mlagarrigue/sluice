@@ -40,7 +40,8 @@ type sendOpts struct {
 	// deadline bounds that wait (Stream.SetWriteDeadline); zero waits
 	// without bound.
 	deadline time.Time
-	// recheck is asked, after every wake from that wait, whether the
+	// recheck is asked, after every wake from that wait — and from the
+	// wait for keys (awaitSealLocked), which releases mu too — whether the
 	// payload is still owed; a non-nil answer abandons the send and is
 	// what the caller returns. The wait releases mu, so the state the
 	// caller checked before building the frame may be gone by the time the
@@ -120,8 +121,19 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		return errClosed
 	}
 	sp := &c.spaces[space]
+	waited := !c.canSealLocked(sp, space)
 	if err := c.awaitSealLocked(sp, space); err != nil {
 		return err
+	}
+	if waited && opts.recheck != nil {
+		// The wait for keys releases mu as the wait for the window below
+		// does, and the caller's frame was built before it: a Reset in
+		// between declared the final size at the bytes written so far, and
+		// this frame would go past it (RFC 9000 §19.4, FINAL_SIZE_ERROR at
+		// the peer).
+		if err := opts.recheck(); err != nil {
+			return err
+		}
 	}
 
 	if opts.waitCwnd {

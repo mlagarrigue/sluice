@@ -345,3 +345,75 @@ func TestSmallestPacketReachesTheStatelessResetFloor(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §19.4 and §3.3: once RESET_STREAM declares the final size, no
+// STREAM frame of the stream goes beyond it. A DialEarly client whose 0-RTT
+// was refused waits for its 1-RTT keys with mu released (awaitSealLocked),
+// and a write opened in that window had built and charged its STREAM frame
+// before the wait; a Reset meanwhile declared the final size at the bytes
+// written so far, and the frame built went once the keys came — bytes past
+// the final size, FINAL_SIZE_ERROR at the peer. The wait for keys now
+// rechecks the stream as the wait for the window does.
+func TestResetDuringAwaitSealSendsNoStreamFrame(t *testing.T) {
+	c, tap := sealedAppConn(t)
+	c.mu.Lock()
+	sp := &c.spaces[spaceApplication]
+	sealer := sp.sealer
+	sp.sealer = nil // the 1-RTT keys are still to come
+	c.earlyRejected = true
+	c.peerMaxStreamsBidi = 1
+	c.mu.Unlock()
+	s, err := c.Stream(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	s.sendQ.max = 1 << 20
+	c.mu.Unlock()
+
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := s.Write([]byte("early bytes"))
+		wrote <- err
+	}()
+	parked := func(cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			c.mu.Lock()
+			ok := cond()
+			c.mu.Unlock()
+			if ok {
+				return
+			}
+		}
+		t.Fatal("timed out")
+	}
+	parked(func() bool { return s.sendQ.sent > 0 }) // the frame is built and charged
+	reset := make(chan error, 1)
+	go func() { reset <- s.Reset(7) }()
+	parked(func() bool { return s.writeReset })
+
+	c.mu.Lock()
+	sp.sealer = sealer
+	c.cond.Broadcast()
+	c.mu.Unlock()
+	if err := <-reset; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-wrote; err == nil {
+		t.Error("the write waiting for keys succeeded on a reset stream")
+	}
+	for _, w := range tap.recorded() {
+		for _, f := range openShort(t, w.data, len("dcid0000")) {
+			if f.IsStream() && f.StreamID == 0 {
+				t.Errorf("a STREAM frame of the reset stream left (offset %d, %d bytes)", f.offset, len(f.Data))
+			}
+		}
+	}
+	c.mu.Lock()
+	sent := s.sendQ.sent
+	c.mu.Unlock()
+	if sent != 0 {
+		t.Errorf("%d bytes still charged to the stream", sent)
+	}
+}
