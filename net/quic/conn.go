@@ -716,19 +716,21 @@ func checkTLSConfig(cfg *tls.Config) error {
 	return requireTLS13(cfg)
 }
 
-// checkServerCertificates refuses a cfg whose configured chains TLS 1.3
-// forbids a server to send, before any packet is answered with them: a leaf
-// whose Key Usage extension lacks digitalSignature (RFC 9846 §4.5.1.2) and
-// a chain member signed with SHA-1 (§4.3.3), the self-signed anchor
-// excepted since no client verifies its signature. crypto/tls reads
-// neither, and a conformant client refuses the chain mid-handshake, where a
-// Listener can only close and the operator learns nothing of the cause.
-// What GetCertificate or GetConfigForClient return is not seen here, nor is
-// the client's signature_algorithms_cert, which only crypto/tls sees. A
+// checkOwnCertificates refuses a cfg whose configured chains TLS 1.3
+// forbids this end to send, before any packet goes out or is answered with
+// them: a leaf whose Key Usage extension lacks digitalSignature (RFC 9846
+// §4.5.1.2) and a chain member signed with SHA-1 (§4.3.3), the self-signed
+// anchor excepted since no peer verifies its signature. The rules hold for
+// a client's chain under mutual authentication as for a server's. crypto/tls
+// reads neither, and a conformant peer refuses the chain mid-handshake,
+// where this end can only close and the operator learns nothing of the
+// cause. What GetCertificate, GetClientCertificate or GetConfigForClient
+// return is not seen here, nor is the peer's signature_algorithms_cert,
+// which only crypto/tls sees. A
 // certificate that does not parse is left to crypto/tls: this is the
 // operator's configuration, not bytes from the network, so one parser
 // reporting it is enough.
-func checkServerCertificates(cfg *tls.Config) error {
+func checkOwnCertificates(cfg *tls.Config) error {
 	for i := range cfg.Certificates {
 		cert := &cfg.Certificates[i]
 		for j, der := range cert.Certificate {
@@ -747,7 +749,7 @@ func checkServerCertificates(cfg *tls.Config) error {
 	return nil
 }
 
-// checkServedCertificate is checkServerCertificates's rule for one
+// checkServedCertificate is checkOwnCertificates's rule for one
 // certificate of a chain, leaf saying whether it is the first.
 func checkServedCertificate(c *x509.Certificate, leaf bool) error {
 	if leaf && c.KeyUsage != 0 && c.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
@@ -912,6 +914,9 @@ func newClientConn(ctx context.Context, pc net.PacketConn, addr net.Addr, cfg *t
 	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := checkOwnCertificates(cfg); err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, abandonedErr(ctx)
 	}
@@ -1017,7 +1022,7 @@ func accept(pc net.PacketConn, first datagram, cfg *tls.Config, params Transport
 	if err := checkTLSConfig(cfg); err != nil {
 		return nil, err
 	}
-	if err := checkServerCertificates(cfg); err != nil {
+	if err := checkOwnCertificates(cfg); err != nil {
 		return nil, err
 	}
 	h, _, err := parseLongHeader(first.Payload)

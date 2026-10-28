@@ -1,12 +1,14 @@
 package quic
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
@@ -111,5 +113,47 @@ func TestSHA1SelfSignedAnchorIsNotRefused(t *testing.T) {
 	}
 	if err := checkServedCertificate(c, false); err != nil {
 		t.Errorf("a self-signed SHA-1 anchor was refused: %v", err)
+	}
+}
+
+// RFC 9846 §4.5.1.2 and §4.3.3 hold for the certificates a client sends as
+// for a server's. Dial checked neither: a client set up for mutual
+// authentication with a leaf whose Key Usage lacks digitalSignature, or a
+// SHA-1 signed one, sent its chain and the server refused it mid-handshake
+// — where the client's operator learns nothing of the cause — while the
+// same chain on a server was refused at NewListener. Dial and DialEarly now
+// refuse it before any packet leaves.
+func TestDialRefusesAClientChainTLS13Forbids(t *testing.T) {
+	caTmpl := serverTemplate("ca", x509.KeyUsageCertSign|x509.KeyUsageDigitalSignature)
+	caTmpl.IsCA, caTmpl.BasicConstraintsValid = true, true
+	caDER, caKey := mintCert(t, caTmpl, nil, nil)
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noDS, noDSKey := mintCert(t, serverTemplate("no-ds", x509.KeyUsageKeyEncipherment), nil, nil)
+	sha1Tmpl := serverTemplate("sha1-leaf", x509.KeyUsageDigitalSignature)
+	sha1Tmpl.SignatureAlgorithm = x509.ECDSAWithSHA1
+	sha1DER, sha1Key := mintCert(t, sha1Tmpl, ca, caKey)
+
+	for want, cfg := range map[string]*tls.Config{
+		"§4.5.1.2": serverConfig(noDS, noDSKey),
+		"§4.3.3":   serverConfig(sha1DER, sha1Key, caDER),
+	} {
+		pc := &recordingPC{addr: fakeFuzzAddr("dialcert:self")}
+		cfg.InsecureSkipVerify = true //nolint:gosec // G402: nothing is dialled; the chain is refused first
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		c, err := Dial(ctx, pc, fakeFuzzAddr("dialcert:peer"), cfg, DefaultParameters())
+		cancel()
+		if err == nil {
+			_ = c.Close()
+			t.Fatalf("Dial accepted a client chain TLS 1.3 forbids; want a refusal naming %s", want)
+		}
+		if !errors.Is(err, ErrQUIC) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Dial: %v, want ErrQUIC naming %s", err, want)
+		}
+		if n := len(pc.recorded()); n != 0 {
+			t.Errorf("%s: %d datagrams left before the refusal", want, n)
+		}
 	}
 }
