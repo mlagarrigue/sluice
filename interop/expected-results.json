@@ -710,7 +710,7 @@
       "multiplexing": "succeeded",
       "retry": "succeeded",
       "resumption": "succeeded",
-      "zerortt": "failed: 9007 bytes of 1-RTT data against the bound of 5000 (pass of 2026-10-26, run 40280006452). The coalescing that fixed the other thirteen peers works here too - the request leaves in packed datagrams - but a tail of the request still goes one datagram per write after the 1-RTT keys land, where a short-header packet cannot be coalesced (RFC 9000 section 12.2). Peer-specific: 0-RTT carries 12397 bytes here against 10379 elsewhere. Cause open: RP-20261026-zerortt-lsquic",
+      "zerortt": "succeeded: lsquic's server can answer a ClientHello spread over two Initial packets with a Retry, and the server that sends one keeps none of the 0-RTT that came before it. The client put back only its Initial packets: the dropped 0-RTT stayed counted in flight and went again in 1-RTT after the handshake, 9868 bytes of it against the bound of 5000 (run 40655823065). A Retry now sends the whole 0-RTT flight again in 0-RTT (handleRetry): 620 bytes of 1-RTT (run 40666727972)",
       "http3": "unsupported: the endpoint's client does not implement the case",
       "blackhole": "succeeded",
       "keyupdate": "unsupported: the endpoint's client does not implement the case",
