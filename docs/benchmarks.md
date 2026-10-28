@@ -25,6 +25,7 @@ its row.
   - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
   - [Authentication, in a request](#authentication-in-a-request)
   - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
+  - [HTTP/3 without a socket](#http3-without-a-socket)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -583,6 +584,34 @@ Medians of the rounds. Neither change costs what its first reading said.
 wider than the 44% that was read into it: the benchmark hands each frame to
 the writer's goroutine, and the scheduler's timing is most of what it
 measures. It does not run the loop `bd2c9fd` changed at all.
+
+## HTTP/3 without a socket
+
+`BenchmarkServeH3` runs `ServeH3Conn`'s whole path over an in-memory
+datagram pair: a QUIC client opens one request stream, or eight at once,
+and reads every response to its end (`net/httpstream`). Client and server
+share the machine's cores, so a figure here is the two ends together.
+Medians of the 19 paired rounds below, `-benchtime 300ms`, unpinned,
+2026-10-28, go1.26.9.
+
+| benchmark | ns per op | ns per request | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkServeH3/depth=1` | 35,235 | 35,235 | 4,902 | 61 |
+| `BenchmarkServeH3/depth=8` | 214,825 | 26,853 | 43,019 | 555 |
+
+The assembler belongs to one lock, taken on each delivery of a packet's
+stream frames, because the timer that expires slow requests reaches it too.
+A CPU profile of `depth=8` never samples that lock, and the paired A/B
+against a build without it (`ab.sh`, twenty rounds, unpinned, the first
+dropped) reads noise: 11 rounds of 19 won by the build without it at both
+depths, 35.2 against 34.3 µs and 215 against 227 µs.
+
+In the same profile the server's whole HTTP/3 delivery, assembly included,
+is about a tenth of its CPU, and the part paid once per delivery whatever
+it carries — starting the batch's goroutine, registering it for
+cancellation, copying its slices — about 4.5%. That is the most that
+grouping several datagrams into one delivery could save at eight requests
+in flight.
 
 ## QUIC, on an emulated path
 

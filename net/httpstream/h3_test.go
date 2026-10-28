@@ -30,13 +30,13 @@ import (
 // acceptOne serves the first connection that reaches pc, through a
 // [quic.Listener] closed with the test. It gives up after ten seconds, so a
 // client that never dials fails the test rather than hanging it.
-func acceptOne(t *testing.T, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
-	t.Helper()
+func acceptOne(tb testing.TB, pc net.PacketConn, cfg *tls.Config, params quic.TransportParameters) (*quic.Conn, error) {
+	tb.Helper()
 	l, err := quic.NewListener(pc, cfg, params, quic.ListenerConfig{})
 	if err != nil {
 		return nil, err
 	}
-	t.Cleanup(func() { _ = l.Close() })
+	tb.Cleanup(func() { _ = l.Close() })
 	timer := time.AfterFunc(10*time.Second, func() { _ = l.Close() })
 	defer timer.Stop()
 	return l.Accept()
@@ -477,11 +477,11 @@ func TestH3OverARealConnection(t *testing.T) {
 	}
 }
 
-func h3ServerTLS(t *testing.T) *tls.Config {
-	t.Helper()
+func h3ServerTLS(tb testing.TB) *tls.Config {
+	tb.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -493,7 +493,7 @@ func h3ServerTLS(t *testing.T) *tls.Config {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
