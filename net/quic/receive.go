@@ -1105,11 +1105,13 @@ frames:
 		// discard its Handshake keys mid-handshake, for good.
 		if early {
 			// RFC 9000 §12.4, Table 3: of the application frames, ACK,
-			// CRYPTO, NEW_TOKEN, PATH_RESPONSE and HANDSHAKE_DONE never
-			// appear in 0-RTT — the client has nothing of this
-			// connection's to acknowledge or answer yet.
+			// CRYPTO, NEW_TOKEN, PATH_RESPONSE, RETIRE_CONNECTION_ID and
+			// HANDSHAKE_DONE never appear in 0-RTT — the client has nothing
+			// of this connection's to acknowledge, answer or retire yet.
+			// RETIRE_CONNECTION_ID by the verified erratum EID 7365, which
+			// corrects its row to ___1, as §12.5's text always had it.
 			switch f.Type {
-			case frameACK, frameACK | 1, frameCrypto, frameNewToken, framePathResponse, frameHandshakeDone:
+			case frameACK, frameACK | 1, frameCrypto, frameNewToken, framePathResponse, frameRetireConnectionID, frameHandshakeDone:
 				return &transportError{
 					code: transportProtocolViolation,
 					err:  fmt.Errorf("%w: frame type %#x in a 0-RTT packet", ErrQUIC, f.Type),

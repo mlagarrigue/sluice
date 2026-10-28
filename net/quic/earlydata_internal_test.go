@@ -51,16 +51,19 @@ func TestEarlyGateAdmitsATicketOnce(t *testing.T) {
 	}
 }
 
-// RFC 9000 §12.4, Table 3: ACK, CRYPTO, NEW_TOKEN, PATH_RESPONSE and
-// HANDSHAKE_DONE in a 0-RTT packet are a PROTOCOL_VIOLATION; a STREAM frame
-// is what 0-RTT is for.
+// RFC 9000 §12.4, Table 3: ACK, CRYPTO, NEW_TOKEN, PATH_RESPONSE,
+// RETIRE_CONNECTION_ID and HANDSHAKE_DONE in a 0-RTT packet are a
+// PROTOCOL_VIOLATION — RETIRE_CONNECTION_ID by the verified erratum EID 7365,
+// which corrects its row to ___1 as §12.5 has it; a STREAM frame is what
+// 0-RTT is for.
 func TestZeroRTTRefusesTheFramesTable3Forbids(t *testing.T) {
 	forbidden := map[string][]byte{
-		"ACK":            appendFrame(nil, frameACK, 0, 0, 0, 0),
-		"CRYPTO":         cryptoFrame(0, "x"),
-		"NEW_TOKEN":      append(appendFrame(nil, frameNewToken, 1), 'x'),
-		"PATH_RESPONSE":  append([]byte{framePathResponse}, make([]byte, 8)...),
-		"HANDSHAKE_DONE": {frameHandshakeDone},
+		"ACK":                  appendFrame(nil, frameACK, 0, 0, 0, 0),
+		"CRYPTO":               cryptoFrame(0, "x"),
+		"NEW_TOKEN":            append(appendFrame(nil, frameNewToken, 1), 'x'),
+		"PATH_RESPONSE":        append([]byte{framePathResponse}, make([]byte, 8)...),
+		"RETIRE_CONNECTION_ID": appendFrame(nil, frameRetireConnectionID, 0),
+		"HANDSHAKE_DONE":       {frameHandshakeDone},
 	}
 	for name, payload := range forbidden {
 		c := boundsConn(t, false)
