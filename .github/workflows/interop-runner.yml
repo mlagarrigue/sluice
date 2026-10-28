@@ -73,14 +73,12 @@ jobs:
       # The runner's compose file names its interfaces, which needs a Docker
       # Engine 28.1 or later; the hosted runner ships an older one.
       #
-      # Held at v5.5.0: v5.6.0 (#19, merged 2026-10-24) left the simulator's
-      # two networks without a route, and the first scheduled pass after it
-      # lost 29 of the 31 peer-directions to "network is unreachable",
-      # nroutes=0 — every pair that crosses the simulator, while the three
-      # that do not passed. The pass of 2026-10-22 ran the same matrix on
-      # v5.5.0 and was green. A bump is accepted again when a dispatched
-      # pass on one peer is green on it.
-      - uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70 # v5.5.0
+      # The daemon log this action prints after the job holds "Waiting for
+      # route to send NA ... network is unreachable" lines in green and red
+      # jobs alike: they are not a failure. Run 40174427329 (2026-10-25, on
+      # v5.6.0) played every case in every direction; its red jobs were the
+      # expected-results gaps, not the network.
+      - uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5.6.0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
