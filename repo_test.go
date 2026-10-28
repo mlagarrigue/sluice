@@ -1039,7 +1039,7 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution|parser.ParseComments)
 		if err != nil {
 			return err
 		}
@@ -1049,13 +1049,20 @@ func TestEveryErrorIsDocumented(t *testing.T) {
 				continue
 			}
 			for _, spec := range gen.Specs {
-				for _, name := range spec.(*ast.ValueSpec).Names {
+				vs := spec.(*ast.ValueSpec)
+				for _, name := range vs.Names {
 					n := name.Name
 					if !strings.HasPrefix(n, "Err") || !name.IsExported() {
 						continue
 					}
 					if !regexp.MustCompile(`\b` + n + `\b`).MatchString(text) {
 						t.Errorf("%s: %s.%s is named in no document; add it to docs/guide/troubleshooting.md", p, f.Name.Name, n)
+					}
+					// go doc shows a grouped variable under the group's
+					// comment: each error says its own action, on its own
+					// declaration or its own spec.
+					if vs.Doc == nil && (gen.Lparen.IsValid() || gen.Doc == nil) {
+						t.Errorf("%s: %s.%s has no doc comment of its own", p, f.Name.Name, n)
 					}
 				}
 			}

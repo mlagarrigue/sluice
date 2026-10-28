@@ -15,18 +15,23 @@ import (
 // no way to resynchronise a protocol whose framing has been misread.
 var ErrProtocol = errors.New("postgres: malformed backend message")
 
-// ErrMessageTooLarge reports a backend message longer than the reader's
-// limit, and ErrMalformedMessage a length field that cannot be right. Both
-// are raised by the wire layer and surface through a connection's error.
-//
-// ErrOutgoingTooLarge reports a message this end would send past what a
-// server accepts — 1 GiB less one byte, its MaxAllocSize — typically a
-// query parameter that large. It is refused before a byte leaves, the
-// connection stays usable, and no setting moves the bound: split the
-// value, which PostgreSQL could not store whole anyway.
+// The wire layer's errors, which surface through a connection's error.
 var (
-	ErrMessageTooLarge  = pgwire.ErrMessageTooLarge
+	// ErrMessageTooLarge reports a backend message longer than
+	// [Config.MaxMessage]. The connection is finished; raise MaxMessage if
+	// the value is legitimate — a large bytea, a long text.
+	ErrMessageTooLarge = pgwire.ErrMessageTooLarge
+
+	// ErrMalformedMessage reports a length field that cannot be right. The
+	// stream position is no longer known, so the connection is finished:
+	// reconnect, and check what sits between this end and the server.
 	ErrMalformedMessage = pgwire.ErrMalformedMessage
+
+	// ErrOutgoingTooLarge reports a message this end would send past what a
+	// server accepts — 1 GiB less one byte, its MaxAllocSize — typically a
+	// query parameter that large. It is refused before a byte leaves, the
+	// connection stays usable, and no setting moves the bound: split the
+	// value, which PostgreSQL could not store whole anyway.
 	ErrOutgoingTooLarge = pgwire.ErrOutgoingTooLarge
 )
 
