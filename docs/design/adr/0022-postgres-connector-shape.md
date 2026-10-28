@@ -1,7 +1,7 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (written in the present tense)
+- **Revised:** 2026-10-28 (written in the present tense; the statement cache sized once)
 - **Theme:** postgres
 
 ## Problem
@@ -35,6 +35,10 @@ caller's. `NewConn` serves a transport already authenticated.
 one reaches the consumer, as many as cover one round trip, between two and
 64. `FetchAuto` reads in one round trip a statement the cache knows fits in
 one batch.
+
+**The statement cache is sized once**, when the connection is built:
+`Config.StatementCacheSize` for `Connect` (zero: 512, negative: none), the
+default for `NewConn`. An open connection's cache is not resized.
 
 **COPY is at-least-once**: one transaction every `CopyConfig.RowsPerTx`
 rows, and the idempotence is the caller's.
@@ -72,9 +76,20 @@ split costs one update of `sluicegen` today and could not be made after v1.
 The `Scan*` functions stay: moving them would make `pgtype` import
 `postgres`, and the cycle is forbidden.
 
-What is lost: one import for the whole connector, and one more break in the
-breaking release.
+The cache bounds statements prepared *on the server*, so shrinking it on an
+open connection would have to close statements the server holds, mid-session
+and between two queries the caller believes independent; growing it would be
+the one case that costs nothing, and it is not worth a method of its own. A
+caller who wants another size lets `Connect` run the startup on its own
+transport — a `DialFunc` may return any `io.ReadWriteCloser`, a scripted
+server included; `NewConn`, for a transport someone else authenticated,
+keeps the default.
+
+What is lost: one import for the whole connector, one more break in the
+breaking release, resizing an open connection's cache, and another size for
+a transport authenticated outside this package.
 
 Reversal condition: a caller who cannot write their code without importing
-both packages for an operation that needs one, or a need for a pool that
-`gateway` does not cover.
+both packages for an operation that needs one, a need for a pool that
+`gateway` does not cover, or a caller of `NewConn` who needs another cache
+size.
