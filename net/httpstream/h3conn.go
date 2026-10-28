@@ -1572,7 +1572,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			st.headers, st.declared, st.req = req.Headers, declared, req
 			st.req.Headers = req.Headers[:len(req.Headers):len(req.Headers)]
 			st.gotHead = true
-			if bound := max(a.cfg.MaxBodyBytes, a.cfg.MaxStreamedBodyBytes); declared > bound {
+			// The streamed bound only where a body may stream: on windows too
+			// small for manual credit bodies arrive whole, under MaxBodyBytes
+			// alone, whatever BodyDelivery asks.
+			bound := a.cfg.MaxBodyBytes
+			if a.streaming() {
+				bound = max(bound, a.cfg.MaxStreamedBodyBytes)
+			}
+			if declared > bound {
 				// A content-length past every bound a body is held to:
 				// refused before any of it is read, and before the 100 the
 				// client may be waiting for, as on HTTP/1.1 and HTTP/2.

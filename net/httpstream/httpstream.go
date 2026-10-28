@@ -836,7 +836,12 @@ func (c Config) resolve() (Config, error) {
 	}
 	// After MaxBodyBytes has its own default: the two are read together,
 	// and a streamed body's bound is the whole one unless it is raised.
-	if c.MaxStreamedBodyBytes == 0 {
+	// Under BodyWhole nothing streams and the field is not read: every
+	// protocol holds a declared length to the larger of the two, so left
+	// raised it would let a request declaring between them pass its head
+	// and get the 100 Continue it asked for, only to be refused 413 once its
+	// body crossed MaxBodyBytes.
+	if c.MaxStreamedBodyBytes == 0 || c.BodyDelivery == BodyWhole {
 		c.MaxStreamedBodyBytes = c.MaxBodyBytes
 	}
 	return c, nil
