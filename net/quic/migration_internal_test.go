@@ -2368,6 +2368,80 @@ func TestNewPathChallengeWithAnEmptyPoolGoesUnanswered(t *testing.T) {
 	}
 }
 
+// framesSentTo decrypts the datagrams challengeFromNewAddress's server
+// wrote to addr and returns their frames, in order.
+func framesSentTo(t *testing.T, pc *recordingPC, addr net.Addr) []Frame {
+	t.Helper()
+	secrets, err := initialSecrets([]byte("np secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(secrets.Server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frames []Frame
+	for _, w := range pc.recorded() {
+		if !sameAddr(w.to, addr) {
+			continue
+		}
+		h, err := parseShortHeader(append([]byte(nil), w.data...), 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fs, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, fs...)
+	}
+	return frames
+}
+
+// RFC 9000 §9.6.3: "Servers SHOULD initiate path validation to the
+// client's new address upon receiving a probe packet from a different
+// address." The answer to a probe from a new address carries the server's
+// own PATH_CHALLENGE toward it; once the client echoes it, the client's
+// move there needs no validation of its own — no amplification limit, no
+// challenge in flight. A probe used to draw the answer alone, the address
+// challenged only at the client's first non-probing packet, a round trip
+// later.
+func TestAServerChallengesTheNewAddressAClientProbesFrom(t *testing.T) {
+	c, pc, newAddr, seal := challengeFromNewAddress(t, []byte("selfcid1"), 2)
+	var challenge []byte
+	for _, f := range framesSentTo(t, pc, newAddr) {
+		if f.Type == framePathChallenge {
+			challenge = f.Data
+		}
+	}
+	if len(challenge) != 8 {
+		t.Fatalf("the answer to a probe from %v carries no PATH_CHALLENGE of the server's: %+v", newAddr, framesSentTo(t, pc, newAddr))
+	}
+
+	// The client echoes it from there, then moves there.
+	padded := func(payload []byte) []byte {
+		return append(payload, make([]byte, 1200-len(payload)-1-8-4-16)...)
+	}
+	if err := c.receive(seal(2, padded(append(varint.Append(nil, framePathResponse), challenge...))), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.receive(seal(3, padded([]byte{framePing})), newAddr); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.migrations != 1 || !sameAddr(c.peer, newAddr) {
+		t.Fatalf("the client's move was not followed: %d migrations, peer %v", c.migrations, c.peer)
+	}
+	if c.amplActive || c.pathProbe.pending {
+		t.Errorf("a move to an address that answered the server's challenge: amplification limit %v, challenge in flight %v; want neither", c.amplActive, c.pathProbe.pending)
+	}
+}
+
 // RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending
 // to more than one destination address", and §9.3: a recipient with no
 // unused identifier from the peer "will not be able to send anything on

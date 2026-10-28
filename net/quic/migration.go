@@ -737,16 +737,13 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 		return
 	}
 	if !c.rxHighest || probingOnly(frames) {
-		// A probing packet from a new address moves nothing and is not
-		// challenged either. RFC 9000 §9.6.3 says a server SHOULD validate
-		// a client's new address on a probe from it; not taken: a client
-		// that probes before it moves (§9.3.1) is answered and challenged
-		// at its first non-probing packet, one round trip later, and a
-		// probe on the preferred socket already draws this end's own
-		// challenge (preferredPathChallengeLocked, §9.6.2) — where a
-		// challenge per probing datagram would let a peer that probes from
-		// everywhere make this end probe everywhere, one pathProbe at a
-		// time. To revisit with a pathProbe per candidate path.
+		// A probing packet from a new address moves nothing. Its
+		// challenge's answer carries this end's own toward the address
+		// (candidateChallengeLocked: RFC 9000 §9.6.3, a server SHOULD
+		// validate a client's new address on a probe from it), and a move
+		// there once that is echoed needs no validation of its own; a
+		// probe on the preferred socket draws preferredPathChallengeLocked
+		// instead (§9.6.2).
 		return
 	}
 	if addrChanged && loopbackMigration(c.peer, c.rxFrom) {
@@ -874,6 +871,13 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// NEW_CONNECTION_ID moves it.
 		return
 	}
+	// A candidate this end already validated from the socket in use, at
+	// full size, needs no new validation: §9.3 asks for one only "if
+	// validation is not already underway", and the address answered this
+	// end's own challenge (candidateChallengeLocked).
+	prevalidated := newPC == c.pc && slices.ContainsFunc(c.answered, func(a answeredPath) bool {
+		return a.validated && a.full && sameAddr(a.from, to)
+	})
 	if !unvalidated {
 		// The path being left is proven: it is what §9.3.2 falls back to
 		// if the new one never validates.
@@ -915,8 +919,14 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 			c.adoptPeerCIDAtLocked(i)
 		}
 	}
-	c.retireLeftCIDLocked(previous, false)
 	c.answered = c.answered[:0]
+	if prevalidated {
+		c.amplActive = false
+		c.retireLeftCIDLocked(previous, true)
+		c.kickTimer()
+		return
+	}
+	c.retireLeftCIDLocked(previous, false)
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
 }
@@ -1252,6 +1262,9 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 		// against §19.17's MUST.
 		return
 	}
+	if !onPath && !offSocket && probe == nil {
+		probe = c.candidateChallengeLocked()
+	}
 	const responseLen = 1 + 8 // type, data
 	per := c.maxStreamChunk() / responseLen * responseLen
 	for len(responses) > 0 {
@@ -1343,18 +1356,75 @@ func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 		return nil, false
 	}
 	c.answered = slices.DeleteFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
-	if len(c.answered) == maxAnsweredPaths {
-		c.answered = c.answered[1:]
-	}
-	c.answered = append(c.answered, answeredPath{from: c.rxFrom, cid: cid})
+	c.rememberAnsweredLocked(answeredPath{from: c.rxFrom, cid: cid})
 	return cid, true
 }
 
+// rememberAnsweredLocked records a new address answered, past
+// maxAnsweredPaths dropping the oldest. Callers hold mu.
+func (c *Conn) rememberAnsweredLocked(a answeredPath) {
+	if len(c.answered) == maxAnsweredPaths {
+		c.answered = c.answered[1:]
+	}
+	c.answered = append(c.answered, a)
+}
+
+// candidateChallengeLocked is a server's own PATH_CHALLENGE toward the new
+// address a probe came from, to ride in the datagram that answers it: RFC
+// 9000 §9.6.3, "Servers SHOULD initiate path validation to the client's
+// new address upon receiving a probe packet from a different address".
+// The probe's own pathProbe stays the path in use's: each candidate keeps
+// its challenge in its answeredPath, sent only beside an answer — no
+// timer, no datagram of its own, nothing a peer probing from everywhere
+// can multiply past the answers it already draws, and bounded with them
+// by maxAnsweredPaths. The client's next challenge from there carries it
+// again, and the client's echo validates the address before it moves. Nil
+// for a client, before confirmation, and once the address is validated.
+// Callers hold mu.
+func (c *Conn) candidateChallengeLocked() []byte {
+	if c.isClient || !c.handshakeConfirmed || c.rxFrom == nil {
+		return nil
+	}
+	i := slices.IndexFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
+	if i < 0 {
+		// A NAT rebinding, answered under the identifier in use: no entry
+		// yet.
+		c.rememberAnsweredLocked(answeredPath{from: c.rxFrom})
+		i = len(c.answered) - 1
+	}
+	a := &c.answered[i]
+	if a.validated {
+		return nil
+	}
+	if !a.challenged {
+		data, err := randomID(8)
+		if err != nil {
+			return nil
+		}
+		copy(a.challenge[:], data)
+		a.challenged = true
+	}
+	// The answer is expanded to 1200 bytes when the address's §8.1 budget
+	// allows (writePacketLocked), and the challenge rides in it.
+	if p := &c.offPath; p.addr != nil && sameAddr(p.addr, c.rxFrom) && 3*p.recv-p.sent >= 1200 {
+		a.full = true
+	}
+	return append(varint.Append(nil, framePathChallenge), a.challenge[:]...)
+}
+
 // answeredPath is one new address answered under a fresh peer identifier,
-// and that identifier (Conn.answered).
+// and that identifier (Conn.answered) — nil for a NAT rebinding, answered
+// under the one in use. It is also a server's candidate path: its own
+// challenge toward the address (candidateChallengeLocked), validated once
+// echoed, and full when it left in a datagram expanded to 1200 bytes —
+// what a move to the address then skips (migrateLocked).
 type answeredPath struct {
-	from net.Addr
-	cid  []byte
+	from      net.Addr
+	cid       []byte
+	challenge [8]byte
+	// challenged, validated and full are the candidate's probe: sent,
+	// answered, and sent at full size (§8.2.1).
+	challenged, validated, full bool
 }
 
 // maxAnsweredPaths bounds the addresses remembered as answered. A peer
@@ -1554,6 +1624,14 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 // fatal: it may be the answer to a probe already given up on.
 func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 	c.mu.Lock()
+	for i := range c.answered {
+		if a := &c.answered[i]; a.challenged && bytes.Equal(f.Data, a.challenge[:]) {
+			// A candidate path's own challenge, echoed: the address is
+			// validated before the peer moves there (§9.6.3).
+			a.validated = true
+			c.rxProgress = true
+		}
+	}
 	if c.pathProbe.oldPending && bytes.Equal(f.Data, c.pathProbe.oldData[:]) {
 		// The old path is alive. Nothing moves on that alone: the peer's
 		// non-probing packets there are what move the connection back. A
