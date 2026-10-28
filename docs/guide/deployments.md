@@ -5,7 +5,7 @@ place in the code that decides it. This page gathers them: what is supported
 as it is, what is only supported behind something else, what is not
 supported yet.
 
-> **In plain terms.** "Supported" means here: the code makes this choice
+> **In plain words.** "Supported" means here: the code makes this choice
 > explicitly, a test covers it, and the section says where to read the
 > reason. It takes nothing away from the *experimental* label of `net/quic`
 > ([What "experimental" means](experimental.md#what-experimental-means)):

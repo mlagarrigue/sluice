@@ -101,9 +101,11 @@ func TestGuidesEndOnWhatYouCanDo(t *testing.T) {
 }
 
 // Every guide explains at least one term for a beginner: in a box of its
-// own, "> **In plain terms…", the form the guides share, or inline, "In
-// plain words:", the form the limits page uses in each of its entries.
-func TestEveryGuideHasAPlainTermsBox(t *testing.T) {
+// own, "> **In plain words…", or inline, "In plain words:", the form the
+// limits page uses in each of its entries. One name for the box, in every
+// document: a second name is a reader wondering whether it means something
+// else.
+func TestEveryGuideHasAPlainWordsBox(t *testing.T) {
 	guides, err := filepath.Glob("docs/guide/*.md")
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +115,17 @@ func TestEveryGuideHasAPlainTermsBox(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), "\n> **In plain terms") && !strings.Contains(string(b), "In plain words:") {
-			t.Errorf("%s: no \"> **In plain terms\" box and no \"In plain words:\"", g)
+		if !strings.Contains(string(b), "\n> **In plain words") && !strings.Contains(string(b), "In plain words:") {
+			t.Errorf("%s: no \"> **In plain words\" box and no \"In plain words:\"", g)
+		}
+	}
+	for _, f := range markdownFiles(t) {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(b), "In plain terms"); n > 0 {
+			t.Errorf("%s: %d boxes named \"In plain terms\"; the name is \"In plain words\"", f, n)
 		}
 	}
 }

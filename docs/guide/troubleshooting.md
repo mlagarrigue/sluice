@@ -15,7 +15,7 @@ Three habits first:
   protocol position is lost (PostgreSQL, HTTP), the only safe move is to
   close that connection and open another.
 
-> **In plain terms: a sentinel.** A sentinel is an exported error value,
+> **In plain words: a sentinel.** A sentinel is an exported error value,
 > always the same one (`ErrOverflow`), that code compares against rather
 > than reading its message. `errors.Is(err, sluice.ErrOverflow)` finds it
 > even wrapped inside another error that adds context; comparing the text

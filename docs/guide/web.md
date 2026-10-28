@@ -41,7 +41,7 @@ mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter,
 })
 ```
 
-> **In plain terms: why no wrapper around the handler?** Many frameworks
+> **In plain words: why no wrapper around the handler?** Many frameworks
 > have you write a function that returns an object, and choose the status
 > code and the format for you. That is comfortable, and it is precisely
 > what disappears from the code: the two decisions that matter in a handler
@@ -92,7 +92,7 @@ remedy is at the same place as the problem. What travels is the message
 **key** (`QtyMustBeOverZero`) and its arguments, never a sentence already
 written: the client picks the language.
 
-> **In plain terms: three nuances that matter.**
+> **In plain words: three nuances that matter.**
 > A diagnostic is not a Go `error` — it does not implement the interface,
 > on purpose: a mere warning must not trip any `if err != nil`, and the
 > value keeps moving. The internal **cause** (the SQL error, the trace) is
@@ -149,14 +149,14 @@ panicked stays dead: build a new one. What the gateway and the server log,
 and what never leaves the log, is
 [ADR 0025](../design/adr/0025-observability.md).
 
-> **In plain terms: the gateway's rule.** Every call gets **exactly one**
+> **In plain words: the gateway's rule.** Every call gets **exactly one**
 > answer, through `Reply` or `Fail`. Never zero: the pipeline's element *is*
 > the call, with the channel its answer returns through, and a call removed
 > from the stream is a client waiting until its context expires. A business
 > refusal is answered with its diagnostics. Cancelling a `Do`'s context ends
 > the client's wait, not the batch's work.
 
-> **In plain terms: when it pays.** The gateway only saves round trips.
+> **In plain words: when it pays.** The gateway only saves round trips.
 > Measured in front of a resource that serves 16 queries at once: 11.9 times
 > the throughput of one query per call, 15.4 with parallelism inside the
 > pipeline. With nothing behind it, it only costs: one call every 3.7 µs at
@@ -205,7 +205,7 @@ if err != nil {
 grant, d, err := web.Authorize(principal, policy) // policy: your Authorizer, or ClaimAuthorizer
 ```
 
-> **In plain terms: two recipients, two messages.** The error says *why*
+> **In plain words: two recipients, two messages.** The error says *why*
 > (bad signature, expired token) and goes to your log. The diagnostic
 > rendered to the client says only "refused": explaining to an attacker
 > which half of their forgery was right is telling them how to fix the
@@ -299,7 +299,7 @@ for the one before; that is what makes a `gateway` worth having behind a
 single client. The two file names may be empty when `srv.TLSConfig` already
 carries the certificates.
 
-> **In plain terms.** ALPN is the TLS extension by which client and server
+> **In plain words.** ALPN is the TLS extension by which client and server
 > agree on the protocol spoken inside.
 
 Behind a CDN or a TLS-terminating proxy, a request may arrive with the
@@ -310,7 +310,7 @@ unless `allow` accepts it; the client sends it again once its handshake is
 through. Accept only what a duplicate does not hurt — a catalogue read, not
 an order.
 
-> **In plain terms.** With no such proxy in front of you, the header never
+> **In plain words.** With no such proxy in front of you, the header never
 > arrives and the wrapper costs one table lookup per request.
 
 ## The complete example

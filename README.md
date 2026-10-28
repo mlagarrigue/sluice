@@ -108,7 +108,7 @@ stop it with `break`, and the stop reaches the source, which releases its
 resources immediately. The `[T any]` means `T` is the type of your
 elements, whichever you like.
 
-> **In plain terms: why batches?** Handling elements one by one costs a
+> **In plain words: why batches?** Handling elements one by one costs a
 > small fixed price per element at every stage. Handling them a thousand at
 > a time amortises that price: it is paid once per thousand elements. And a
 > function that can handle a thousand elements can handle one; the converse
@@ -163,7 +163,7 @@ group's, which are experimental.
 | `sluice/web/stream` | the request path for the native transport |
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket |
 
-> **In plain terms: "experimental".** The code exists, is tested and
+> **In plain words: "experimental".** The code exists, is tested and
 > measured, but nothing promises it will keep this shape, and it has not
 > been confronted with other implementations. The
 > [Experimental](docs/guide/experimental.md) guide says exactly what is

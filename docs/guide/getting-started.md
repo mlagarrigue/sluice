@@ -101,7 +101,7 @@ loop iteration the stream gives you a batch; to produce it, it asks `Map`,
 which asks `Filter`, which asks `Of`. Then you receive the next batch, and
 so on.
 
-> **In plain terms.** If you write `s := sluice.Filter(...)` and never walk
+> **In plain words.** If you write `s := sluice.Filter(...)` and never walk
 > `s`, none of your functions is ever called. That is not a bug, it is the
 > principle: a stream only works when it is read.
 
@@ -117,7 +117,7 @@ total := sluice.Reduce(s, 0.0, func(acc float64, o Order) float64 { return acc +
 first, ok := sluice.First(s)                              // the first one, and whether there is one
 ```
 
-> **In plain terms.** `Collect` loads everything into memory — that is its
+> **In plain words.** `Collect` loads everything into memory — that is its
 > job. On an endless river it never returns. The other operators keep one
 > bucket at a time.
 
@@ -149,7 +149,7 @@ for b := range s {
 }
 ```
 
-> **In plain terms.** Process the batch during the loop iteration, or copy
+> **In plain words.** Process the batch during the loop iteration, or copy
 > it. It is the one rule that surprises, and it is the reason Sluice.go
 > costs almost nothing per element.
 
@@ -183,7 +183,7 @@ for b := range sluice.Of(bigSlice, 1024) {
 }
 ```
 
-> **In plain terms.** In many stream libraries, stopping reading leaves
+> **In plain words.** In many stream libraries, stopping reading leaves
 > resources open behind you; it is the number one bug of the genre. Here it
 > is a property tested for every operator.
 
@@ -199,7 +199,7 @@ s = sluice.Filter(s, rare)
 s = sluice.Coalesce(s, sluice.DefaultBatchSize) // full batches again
 ```
 
-> **In plain terms.** Think of it after a very selective `Filter` or a
+> **In plain words.** Think of it after a very selective `Filter` or a
 > join. When in doubt, it is not urgent: a sparse batch is still faster than
 > element-by-element processing.
 
@@ -235,7 +235,7 @@ travels with it — in a field of your struct, or in an attached
 looks inside your elements: an element "in error" keeps moving, unless you
 decide to stop (`TakeWhile`, or a terminal returning `false`).
 
-> **In plain terms.** `error` for "the stream cannot continue", a
+> **In plain words.** `error` for "the stream cannot continue", a
 > diagnostic for "this element has a problem". A warning on one order must
 > not crash the processing of the thousand others.
 
@@ -263,7 +263,7 @@ if errors.Is(err, sluice.ErrOverflow) {
 }
 ```
 
-> **In plain terms.** `Try` does not hide your own bugs: a nil pointer in
+> **In plain words.** `Try` does not hide your own bugs: a nil pointer in
 > your `Map` function keeps crashing the program, loudly, with its trace.
 > That is deliberate.
 

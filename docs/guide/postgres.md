@@ -46,7 +46,7 @@ encrypted. The context bounds the dial and the handshake, nothing else:
 once `Connect` has returned, nothing of it stays on the connection, and a
 query run an hour later is bounded by its own context alone.
 
-> **In plain terms: the recipe.** `Connect` does not take a socket but a
+> **In plain words: the recipe.** `Connect` does not take a socket but a
 > function that knows how to open one. That is because it needs one more
 > than once: cancelling a running query goes through a second connection to
 > the same server, opened the same way.
@@ -65,7 +65,7 @@ Demanding more of the server — that it ask for a password, that the proof
 be bound to its certificate — is set further down, in
 [Demanding more of authentication](#demanding-more-of-authentication).
 
-> **In plain terms: no pool.** A *pool* is a reserve of open connections
+> **In plain words: no pool.** A *pool* is a reserve of open connections
 > shared by everyone. There is none here, because batching calls
 > (`gateway`, see [Web](web.md)) does with **one** connection what a pool
 > does with sixty-four, and how many connections to open is a decision for
@@ -149,7 +149,7 @@ program's memory is bounded by the size of the batch, not of the result:
 that is what makes a ten-million-row result readable. The price: one round
 trip per batch.
 
-> **In plain terms: one round trip for a small read.** A read that fits in
+> **In plain words: one round trip for a small read.** A read that fits in
 > one batch (a row by its identifier) costs a single round trip from its
 > second execution on, with nothing to set. The connection keeps the
 > queries it has seen (up to 512, prepared on the server;
@@ -234,7 +234,7 @@ zero; `ScanNulls` gives the mask of a column that may hold one. In your own
 structs, `*T` is accepted too, because the struct is yours; it costs the
 allocation `Null[T]` does not.
 
-> **In plain terms: `numeric`.** A `numeric(12,2)` column is chosen
+> **In plain words: `numeric`.** A `numeric(12,2)` column is chosen
 > precisely when a floating-point number would lose something (cents).
 > Sluice.go keeps those values **exact**, and every lossy conversion is
 > named: `n.Float64()` says what it does; `n.String()` renders `10.00`, not
@@ -288,7 +288,7 @@ position, and checks the **types**: if a migration changed a column from
 when the result opens, not in the middle of a batch as plausible, wrong
 values. `HydrateOrder` then fills a slice from each batch.
 
-> **In plain terms.** The generated file is committed with your code, and a
+> **In plain words.** The generated file is committed with your code, and a
 > test regenerates it and compares: if someone changes the struct without
 > rerunning the generator, the build fails instead of leaving a silent
 > difference. Measured: 54 ns per row for six columns
@@ -329,7 +329,7 @@ from cleaning up in the **whole** database while it lasts — your other
 applications slow down without knowing why. By writing `RowsPerTx:
 100_000`, you say every how many rows the database commits.
 
-> **In plain terms: at-least-once.** If the load is interrupted after its
+> **In plain words: at-least-once.** If the load is interrupted after its
 > third transaction, the first three are in the database and nothing says
 > where it stopped. It is up to you to make reloading harmless (with a
 > unique key, for instance). And index the table **after** the COPY, not
@@ -392,7 +392,7 @@ whose certificate is signed by an algorithm with no hash, Ed25519, for
 which the binding is undefined (RFC 5929 §4.1). The default refuses that
 server rather than fall back without saying so.
 
-> **In plain terms: channel binding.** With SCRAM alone, the server proves
+> **In plain words: channel binding.** With SCRAM alone, the server proves
 > it knows your password and you prove you know it too, but neither side
 > proves *which* connection the proof was made on. An attacker who
 > terminates TLS between you and the server can relay the exchange. Channel
@@ -452,7 +452,7 @@ PostgreSQL. A server at 16 or older does not understand this form and fails
 the handshake: it only fits when you know which server is on the other
 side; otherwise, `DialTLS`.
 
-> **In plain terms: ALPN.** A label the client slips into the TLS handshake
+> **In plain words: ALPN.** A label the client slips into the TLS handshake
 > to say which protocol it will speak next (`h2` for HTTP/2, `postgresql`
 > here). Without it, a server that accepts TLS directly could be fooled by a
 > client that believes it is talking to something else; the label closes
@@ -615,7 +615,7 @@ A `Conn` built by `NewConn` has no recipe, so no automatic cancellation:
 it is up to you to open the second connection and call `CancelRequest` with
 `conn.CancelKey()`.
 
-> **In plain terms: an advisory cancellation.** The CancelRequest is a
+> **In plain words: an advisory cancellation.** The CancelRequest is a
 > request, not an order. The server looks at it at moments of its choosing
 > (checkpoints scattered through its code, between two rows read for
 > instance) and a statement that was finishing finishes: the answer may then
@@ -659,7 +659,7 @@ for b := range src.Stream() {
 return src.Err()
 ```
 
-> **In plain terms: acknowledging.** The server keeps every change until you
+> **In plain words: acknowledging.** The server keeps every change until you
 > call `Ack` with a position past it. Acknowledge after the work is done, not
 > before: a reader that stops in between gets the unacknowledged changes again
 > when it starts over, which is safe; a reader that acknowledged first would
@@ -696,7 +696,7 @@ for b := range src.Stream() {
 return src.Err()
 ```
 
-> **In plain terms: a signal, not a log.** A notification sent while nobody
+> **In plain words: a signal, not a log.** A notification sent while nobody
 > listens is gone, and nothing is replayed after a restart: use it to say
 > "look at the table", and read what changed from the table (or from
 > logical replication, above). And keep reading: the server queues what

@@ -26,7 +26,7 @@ but a test bench is not a real network, nor its peers every peer. A
 review by security specialists. Fuzzing
 (sending masses of random inputs to find flaws) against a public corpus.
 
-> **In plain terms: then why do these packages exist?** A **parser** (the
+> **In plain words: then why do these packages exist?** A **parser** (the
 > code that reads bytes from the network and makes a request of them) is
 > the most dangerous place in a server: it is where hostile input can do
 > damage. Sluice.go's architecture refuses to write one, and `web` over
@@ -67,7 +67,7 @@ must do beyond the handshake — route datagrams by connection ID, validate
 addresses against amplification, follow a client whose NAT rebinds — is
 [ADR 0015](../design/adr/0015-quic-server.md).
 
-> **In plain terms: the dependency QUIC needs.** QUIC's encryption needs an
+> **In plain words: the dependency QUIC needs.** QUIC's encryption needs an
 > algorithm (ChaCha20-Poly1305) that `crypto/tls` uses but does not expose.
 > It is for this that the project depends on `golang.org/x/crypto`, the only
 > module outside the standard library that QUIC uses.
@@ -113,7 +113,7 @@ An advanced setting: it asks you to know your network path — round trip,
 loss, how deep the routers' buffers are — and to measure with your own
 traffic. Without that, leave it at zero.
 
-> **In plain terms.** **Congestion control** decides how fast this end
+> **In plain words.** **Congestion control** decides how fast this end
 > sends: too slow and the line stays half empty; too fast and the routers'
 > buffers fill, latency climbs and packets are lost. The choice is local:
 > it is never announced to the peer, which sends with its own (RFC 9002
@@ -236,7 +236,7 @@ httpstream.ServeH2Conn(ctx, conn, httpstream.Config{}, handle)                  
 httpstream.ServeH3Conn(ctx, quicConn, httpstream.Config{}, handle)                  // HTTP/3 on a *quic.Conn
 ```
 
-> **In plain terms.** On an HTTP/1.1 connection where several requests
+> **In plain words.** On an HTTP/1.1 connection where several requests
 > follow each other, nothing carries a number: the i-th response answers
 > the i-th request, and that is all. Hence "one response per request, in
 > order". HTTP/2 and HTTP/3 number their streams, and the handler does not
@@ -357,7 +357,7 @@ if err := srv.Shutdown(ctx); err != nil { // nothing new accepted, requests in f
 }
 ```
 
-> **In plain terms.** `Shutdown` does not wait for idle connections: it
+> **In plain words.** `Shutdown` does not wait for idle connections: it
 > closes them at once. It waits for those with a request in flight, and
 > each closes once its response is out. The context given to `Shutdown`
 > is the only bound on that wait; `ShutdownGrace` is for `Serve`,
@@ -391,7 +391,7 @@ rows := pushdown.AdvanceBy(src.Stream(), &d, keyOf) // publishes the key reached
 Measured on the case it exists for — a reader advancing in key order, a
 source skipping whole pages — ×6.9.
 
-> **In plain terms.** What is pushed down is the limit and the key bound;
+> **In plain words.** What is pushed down is the limit and the key bound;
 > the column set is published but not acted on, because the SQL is yours
 > and the connector does not rewrite it.
 
