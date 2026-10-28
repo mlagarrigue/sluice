@@ -29,6 +29,12 @@
 #
 # Requires a server. `eval "$(internal/bench/scripts/pgdev.sh start)"` first,
 # then `go run ./internal/bench/cmd/pgfixtures`.
+#
+#   consolidate.sh --check            the page's markers only, nothing measured
+#   consolidate.sh --section <name>   one block re-measured by the same method,
+#                                     dated inside its markers; the rest of
+#                                     the page as it was, and no server unless
+#                                     the block reads one (NEEDS_SERVER)
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 BENCHTIME="${BENCHTIME:-1s}"
@@ -36,6 +42,28 @@ COUNT="${COUNT:-3}"
 CORE="${CORE:-$(($(nproc) - 1))}"
 PAGE="$ROOT/docs/benchmarks.md"
 BLOCKS="conditions connector codec web socket gateway-db partitioning statement-cache verdicts"
+# The blocks whose benchmarks read a PostgreSQL server.
+NEEDS_SERVER="connector gateway-db"
+
+CHECK="" SECTION=""
+case "${1:-}" in
+  --check) CHECK=1 ;;
+  --section)
+    SECTION="${2:-}"
+    case " $BLOCKS " in
+      *" $SECTION "*) ;;
+      *) echo "consolidate: --section needs one of: $BLOCKS" >&2; exit 2 ;;
+    esac
+    case "$SECTION" in
+      conditions | verdicts)
+        echo "consolidate: '$SECTION' belongs to a whole session; --section re-measures a table" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  "") ;;
+  *) echo "consolidate: unknown argument $1" >&2; exit 2 ;;
+esac
 
 # The page must hold each block once, closed before the next one opens, and
 # no block this script does not produce. Checked here before anything is
@@ -67,6 +95,7 @@ markers() {
   return $status
 }
 markers
+[ -z "$CHECK" ] || exit 0
 
 # A loaded machine produces a table that is uniformly wrong rather than
 # obviously wrong. One run of this script at load 3.3 came out 7-28% above the
@@ -88,7 +117,7 @@ case "$BENCHTIME" in
     ;;
 esac
 
-if [ -z "${SLUICE_PG:-}" ]; then
+if [ -z "${SLUICE_PG:-}" ] && { [ -z "$SECTION" ] || [[ " $NEEDS_SERVER " == *" $SECTION "* ]]; }; then
   echo "SLUICE_PG is not set; run: eval \"\$(internal/bench/scripts/pgdev.sh start)\"" >&2
   exit 1
 fi
@@ -176,13 +205,23 @@ OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
 table() { # table <name> <module> <packages> <regex> [pinned]
+  if [ -n "$SECTION" ] && [ "$1" != "$SECTION" ]; then
+    return
+  fi
   {
+    # A block measured apart from its session says so, and when, inside
+    # its own markers: the next whole run replaces the line with the table.
+    if [ -n "$SECTION" ]; then
+      echo "Measured apart from the session above, by the same method: $(date -u '+%Y-%m-%d %H:%M UTC'), $(go version | awk '{print $3}'), load $(awk '{print $1}' /proc/loadavg 2>/dev/null || echo n/a)."
+      echo
+    fi
     echo '| benchmark | median | spread | B/op | allocs/op |'
     echo '|---|---|---|---|---|'
     section "$@"
   } >"$OUT/$1"
 }
 
+if [ -z "$SECTION" ]; then
 cat >"$OUT/conditions" <<CONDITIONS
 | | |
 |---|---|
@@ -196,6 +235,7 @@ cat >"$OUT/conditions" <<CONDITIONS
 | benchtime | $BENCHTIME × $COUNT, median reported, spread = (max-min)/median |
 | Pinned | core $CORE, GOMAXPROCS=1, except where concurrency is the point |
 CONDITIONS
+fi
 
 table connector benchmarks . 'BenchmarkPGPoint|BenchmarkPGAny|BenchmarkPGWide|BenchmarkPGCopy'
 table codec benchmarks . 'BenchmarkPGEncodeInt8Array|BenchmarkPGDecodeInt8Array'
@@ -205,6 +245,9 @@ table gateway-db benchmarks . 'BenchmarkWebDB' free
 table partitioning . ./gateway/ 'BenchmarkPartition'
 table statement-cache . './database/postgres/ ./internal/bench/' 'BenchmarkStmtCache|BenchmarkPGPrepare'
 
+# Whole sessions only: a pair measured beside one re-measured block compares
+# two sessions.
+if [ -z "$SECTION" ]; then
 # versus.sh ends on "A vs B  x -> y  <verdict>  wins=w/n (need k)"; the page
 # reads it as a table, one pair per row.
 {
@@ -222,16 +265,18 @@ table statement-cache . './database/postgres/ ./internal/bench/' 'BenchmarkStmtC
     printf "| `%s` vs `%s` | %.0f ns | %.0f ns | %s | %s wins, %s needed |\n", $1, $3, $4, $6, v, w, k
   }'
 } >"$OUT/verdicts"
+fi
 
 # The fill: the page with what lies between each pair of markers replaced by
-# the block of that name, and every other line as it was.
+# the block of that name, and every other line as it was — a block this run
+# did not produce (--section) included.
 awk -v dir="$OUT" '
   /^<!-- consolidate: [a-z-]+ -->$/ {
     print
     file = dir "/" $3
-    while ((getline line < file) > 0) print line
+    skip = 0
+    while ((getline line < file) > 0) { print line; skip = 1 }
     close(file)
-    skip = 1
     next
   }
   /^<!-- \/consolidate -->$/ { skip = 0 }
