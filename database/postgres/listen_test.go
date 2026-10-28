@@ -192,7 +192,7 @@ func TestListenEndsAtAnEncodingNobodyAskedFor(t *testing.T) {
 // A channel, slot or publication name past 63 bytes is refused, with its
 // field and the reason: PostgreSQL truncates a name there, and two channels
 // that differ only past it became one subscription in silence — the server's
-// NOTICE says so, and the Listener drops notices (RP-20261025-secapp-03).
+// NOTICE says so, and the Listener drops notices.
 // At 63 bytes a name is taken.
 func TestNamesPastTheServersTruncationAreRefused(t *testing.T) {
 	long, fits := strings.Repeat("c", 64), strings.Repeat("c", 63)

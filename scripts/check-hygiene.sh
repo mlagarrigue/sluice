@@ -29,6 +29,15 @@ if git log --format='%H%x09%an%x09%s' \
   status=1
 fi
 
+# Identifiers of the maintainers' private notes (RP-<date>-<topic>) name
+# nothing a reader of this repository can open: the commit and the test
+# carry the story, the comment states the rule.
+if git ls-files -z -- . ':!scripts/check-hygiene.sh' \
+    | xargs -0 grep -InE 'RP-20[0-9]{6}-[a-z]' -- 2>/dev/null; then
+  echo "check-hygiene: the lines above cite private notes no reader can open" >&2
+  status=1
+fi
+
 # Hidden directories: only the project's own three are tracked. Anything
 # else at the root that starts with a dot is somebody's tool configuration.
 for d in $(git ls-files | grep -E '^\.[^/]+/' | cut -d/ -f1 | sort -u); do

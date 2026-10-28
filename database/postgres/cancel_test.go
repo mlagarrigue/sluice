@@ -1198,8 +1198,7 @@ func TestReadsOnly(t *testing.T) {
 // is closed under it, and the call returns the context's error with
 // ErrConnBroken. Until 2026-10-28 the confirmation ended the watch's part,
 // and a server that confirmed and then said nothing held the statement, the
-// connection and its caller for as long as the socket lived
-// (RP-20261027-secapp-03).
+// connection and its caller for as long as the socket lived.
 func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, conn := newPipeServer(t)

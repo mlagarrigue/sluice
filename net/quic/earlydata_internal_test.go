@@ -84,7 +84,7 @@ func TestZeroRTTRefusesTheFramesTable3Forbids(t *testing.T) {
 // A client never receives 0-RTT, and a server without the early secret reads
 // none: the packet is dropped before any key is tried, and a server keeps it
 // only while the secret may still come — which on a server that does not
-// admit 0-RTT it never does, so that one keeps nothing (RP-20261025-quict-13).
+// admit 0-RTT it never does, so that one keeps nothing.
 func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 	zeroRTT := func(dcid []byte) []byte {
 		// A long header of type 0-RTT (§17.2.3): form and fixed bits, type
@@ -511,7 +511,7 @@ func TestTheFirst1RTTPacketDropsThe0RTTKeys(t *testing.T) {
 // before the ClientHello was read, and its first 1-RTT packet frees them:
 // they wait for a secret that will never come. Until 2026-10-28 both ways
 // out of the queue required the 0-RTT opener, and they stayed until the
-// connection ended (RP-20261025-quict-13).
+// connection ended.
 func TestTheFirst1RTTPacketDropsRefused0RTTPackets(t *testing.T) {
 	c := newConn(&recordingPC{addr: fakeFuzzAddr("refuse0rtt:self")}, fakeFuzzAddr("refuse0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })

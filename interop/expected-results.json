@@ -385,7 +385,7 @@
       "chacha20": "succeeded",
       "multiplexing": "succeeded",
       "retry": "succeeded",
-      "resumption": "failed: the runner reports a Certificate message in the second handshake, so the session xquic's client offered was not resumed and a full handshake ran instead; cause open, RP-20261025-zerortt-client holds the resumption work",
+      "resumption": "failed: the runner reports a Certificate message in the second handshake, so the session xquic's client offered was not resumed and a full handshake ran instead; cause open",
       "zerortt": "succeeded",
       "http3": "succeeded",
       "blackhole": "succeeded",

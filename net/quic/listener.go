@@ -1540,7 +1540,7 @@ const defaultResetsPerAddress = 4
 // table: the walk took every live connection's lock to read its address,
 // one lock per connection per datagram on the goroutine that reads the
 // socket, which a flow of unroutable datagrams kept busy serialising the
-// peer with every receive loop (RP-20261025-secnet-07). The index follows
+// peer with every receive loop. The index follows
 // each migration (setPeerLocked), and isStatelessResetFrom still compares
 // the address under the connection's lock, since a move may land between
 // the lookup and the comparison.

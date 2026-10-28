@@ -1175,7 +1175,7 @@ func noteShortHead(buf []byte, cfg *Config, progress *chunkProgress, scan *headS
 // it looked, so a head delivered a byte per read is looked at once in all.
 // Without it, every read parsed the request line and every field line
 // received so far again: work in the square of the head's length, for one
-// byte of the peer's (RP-20261025-secnet-02). Only CRLF ends a line
+// byte of the peer's. Only CRLF ends a line
 // (cutCRLF), so the scan looks for CRLF CRLF.
 //
 // What the parse would refuse is refused at the same byte: false hands buf

@@ -21,7 +21,7 @@ import (
 // WriteTimeout. Each read used to re-arm the whole ReadTimeout, so a
 // client that sent one byte per fraction of it held the request — its
 // connection, its goroutine, its buffer and the handler — for as long as it
-// kept dripping (RP-20261025-h1h2-01). The tests assert an outcome, not a
+// kept dripping. The tests assert an outcome, not a
 // duration: the drip runs until the test ends.
 func TestAStreamedBodyThatDripsIsCut(t *testing.T) {
 	addr, _ := serveTest(t, Config{

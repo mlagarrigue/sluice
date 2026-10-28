@@ -14,8 +14,7 @@ import (
 // layer refused it at Flush with the read side's sentinel, after the
 // statement cache and the query's state had moved for a batch that never
 // left; the connector then broke a connection whose stream was intact, and
-// advised Config.MaxMessage, which does not move this bound
-// (RP-20261025-pg-02).
+// advised Config.MaxMessage, which does not move this bound.
 func TestAnOversizedBindLeavesTheConnectionUsable(t *testing.T) {
 	saved := maxOutgoing
 	maxOutgoing = 256 // stand-in for 1 GiB, so the test allocates nothing

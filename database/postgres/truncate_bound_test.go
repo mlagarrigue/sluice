@@ -25,8 +25,8 @@ func truncMsg(oids ...uint32) []byte {
 // logicalrep_write_truncate writes one OID per relation truncated). One
 // relation named five thousand times made five thousand changes out of
 // twenty kilobytes, in one batch past BatchChanges: a Change per four bytes
-// of a message the default MaxMessage lets reach 64 MiB
-// (RP-20261025-secapp-02). A repeated relation is now malformed, so what a
+// of a message the default MaxMessage lets reach 64 MiB.
+// A repeated relation is now malformed, so what a
 // Truncate yields is bounded by the relation table, each entry of which
 // cost the server a Relation message of its own.
 func TestATruncateNamingARelationTwiceIsRefused(t *testing.T) {

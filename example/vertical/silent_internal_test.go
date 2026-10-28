@@ -16,8 +16,7 @@ import (
 // answered too — the gateway is not left behind the silent server. Until
 // 2026-10-28 the batch ran under context.Background(): nothing on this side
 // was armed, the transaction's Timeout bounds the server's work only, and
-// every batch behind waited for as long as the socket lived
-// (RP-20261027-secapp-04).
+// every batch behind waited for as long as the socket lived.
 func TestASilentServerHoldsABatchForTheServiceTimeoutOnly(t *testing.T) {
 	release := make(chan struct{})
 	backend := &pgfake.Backend{Exec: func(sql string, _ [][]byte, _ map[string]string) pgfake.Result {

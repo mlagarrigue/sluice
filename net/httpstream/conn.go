@@ -194,8 +194,8 @@ func (r *reader) next() ([]Request, bool) {
 		// An empty buffer has nothing to parse, and a head an earlier read
 		// left short of its blank line is scanned for it, not parsed again
 		// (headPending): parsing it on every read cost the square of its
-		// length for a peer that sends it a byte at a time
-		// (RP-20261025-secnet-02). The scan sits here, beside the read, and
+		// length for a peer that sends it a byte at a time.
+		// The scan sits here, beside the read, and
 		// not in parseBuffered or parseRequest, which a head whole in its
 		// first read — the common case — reaches with nothing in front: a
 		// check there measured +3% to +29% on BenchmarkReadPipelined.

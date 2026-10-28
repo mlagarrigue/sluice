@@ -30,7 +30,7 @@ func (b *releasingBackend) Close() error {
 // close the back end, which releases the pipeline. Until 2026-10-28 the
 // gateway was closed with Close, which waited for the pipeline without a
 // bound, so the back end's Close — the one that would have released it —
-// never ran and Shutdown never returned (RP-20261027-api-01).
+// never ran and Shutdown never returned.
 func TestShutdownIsNotHeldByAGatewayBlockedOnItsBackEnd(t *testing.T) {
 	backend := &releasingBackend{release: make(chan struct{})}
 	entered := make(chan struct{})

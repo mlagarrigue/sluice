@@ -1789,7 +1789,7 @@ func resetForWithin(t *testing.T, l *Listener, reset []byte, from net.Addr) *Con
 // walked every live connection and took each one's lock to read its
 // address: a flow of unroutable datagrams from an address without a
 // connection serialised the socket-reading goroutine with every receive
-// loop, a lock per connection per datagram (RP-20261025-secnet-07). Every
+// loop, a lock per connection per datagram. Every
 // connection's lock is held here, so a walk would wait forever.
 func TestAnUnroutableDatagramTakesNoOtherConnectionsLock(t *testing.T) {
 	l, conns, reset := resetConns(t, 8)

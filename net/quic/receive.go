@@ -519,7 +519,7 @@ func (c *Conn) openPacket(pkt *rxPacket, now time.Time) (rxVerdict, error) {
 			// crypto/tls reads it only once the datagram is through.
 			// Only on a server that admits 0-RTT (c.early): on any other
 			// the secret never comes, and a packet kept would wait for
-			// nothing until the connection ended (RP-20261025-quict-13).
+			// nothing until the connection ended.
 			if len(c.deferredEarly) < 16 {
 				c.deferredEarly = append(c.deferredEarly, deferredPacket{
 					raw: append([]byte(nil), pkt.raw...),

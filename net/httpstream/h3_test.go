@@ -1415,7 +1415,7 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	// askH3, not a copy of it: the server answers a GET from its HEADERS and
 	// may stop reading with H3_NO_ERROR before the FIN leaves (RFC 9114
 	// §4.1.1), which a copy that failed on the refused FIN read as an error
-	// (red on 2026-10-25 and 2026-10-28, RP-20261028-h3-01).
+	// (red on 2026-10-25 and 2026-10-28).
 	ask := func(path string) *quic.Stream {
 		t.Helper()
 		return askH3(t, conn, h3Request("GET", path))

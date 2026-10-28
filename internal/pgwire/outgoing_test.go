@@ -11,7 +11,7 @@ import (
 // failures: the first leaves the stream where it was and no setting moves
 // its bound, the second is the end of the connection and Config.MaxMessage
 // moves it. One sentinel for both made the connector break a connection
-// that had sent nothing and advise the read limit (RP-20261025-pg-02).
+// that had sent nothing and advise the read limit.
 func TestOutgoingAndIncomingBoundsAreToldApart(t *testing.T) {
 	var out bytes.Buffer
 	wr := NewWriter(&out)

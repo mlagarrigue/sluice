@@ -14,7 +14,7 @@ import (
 // arrives, and gives the request one read of it would. Every read used to
 // parse the request line and every field line received so far again: 51,423
 // field lines for a head of 60 fields, work in the square of the head's
-// length for one byte of the peer's (RP-20261025-secnet-02).
+// length for one byte of the peer's.
 func TestAHeadDrippedByteByByteIsParsedOnce(t *testing.T) {
 	cfg := Config{BodyDelivery: BodyWhole, MaxHeaders: 1024}.mustResolve()
 	var b strings.Builder
