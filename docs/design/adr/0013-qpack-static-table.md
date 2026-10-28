@@ -1,7 +1,7 @@
 # ADR 0013 — QPACK's static table ships, checked
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered)
+- **Revised:** 2026-10-07 (renumbered), 2026-10-28 (the foreign interop run named)
 - **Theme:** httpstream
 
 ## Problem
@@ -33,4 +33,6 @@ project's usage-simple rule, and prices the experimental path's headline
 (three protocols, one handler) out of reach of any real client. The
 residual risk is stated: a transcription error shared by this copy and its
 checks would survive, and only an interop run against a foreign peer
-retires it — the same missing proof ADR 0015 names for the transport.
+retires it. The QUIC Interop Runner's `http3` case is that run, against
+every implementation that plays it (`interop/expected-results.json`); it
+retires the entries a request and its response use, not all ninety-nine.
