@@ -97,9 +97,10 @@ func (c *Conn) readLoop() {
 				_ = c.Close()
 				return
 			}
-			// Anything else is the socket's, not the connection's: on
-			// Windows an ICMP port-unreachable surfaces here as
-			// WSAECONNRESET, and an ICMP is unauthenticated — anyone can
+			// Anything else is the socket's, not the connection's: an
+			// ICMP port-unreachable can surface here (ECONNREFUSED, or
+			// WSAECONNRESET on a Windows socket that reports it), and an
+			// ICMP is unauthenticated — anyone can
 			// forge one, and one must not end an established connection
 			// (the Listener reads past the same errors). Counted, and read
 			// past; a socket that keeps failing is backed off rather than

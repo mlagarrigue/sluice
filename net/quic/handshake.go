@@ -234,7 +234,10 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 			!errors.Is(err, net.ErrClosed) && !errors.Is(err, errClosed) {
 			// A socket read error under the handshake is, on UDP, an ICMP
 			// surfacing: ECONNREFUSED on a connected Linux socket,
-			// WSAECONNRESET on Windows. Unauthenticated, so read past like
+			// WSAECONNRESET on a Windows socket that reports it — not one
+			// net or udp.Configure opened, which turn the report off, so
+			// on those a Dial to a closed port waits out the deadline
+			// (isRefusal). Unauthenticated, so read past like
 			// readLoop does — one forged ICMP must not kill a handshake —
 			// but a port that is really closed answers every flight with
 			// one, and Dial should say so, not wait out the deadline.

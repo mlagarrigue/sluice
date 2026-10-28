@@ -325,6 +325,13 @@ whichever way the conditions go:
   path that cannot carry 1200 bytes is never detected: the connection ends
   at its idle timeout. How the search probes, and the RFC positions:
   [Datagram size, in detail](#datagram-size-in-detail).
+- **`net/quic`, a Dial to a closed port on Windows**: on Linux and macOS,
+  the ICMP refusal that answers each flight fails the Dial after a few of
+  them. On Windows, `net` and `udp.Configure` turn `SIO_UDP_CONNRESET` off
+  on every UDP socket, so the refusal never surfaces: the Dial waits out
+  the whole handshake deadline (`DefaultHandshakeTimeout`, 10 s, or the
+  context's). A `PacketConn` that keeps the option on gets the early
+  failure.
 - **`net/quic` reassembly**: the bytes of a stream that arrive out of
   order are kept until the gap before them fills, up to the flow-control
   limit this end granted — and in at most `max(held / 1024, 256)` disjoint
