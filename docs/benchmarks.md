@@ -1490,14 +1490,21 @@ benchmark's comment tells why.
 
 ### Statement cache
 
+This table was measured apart from the rest of the page, by the same
+method on the same machine (core 14 pinned, `GOMAXPROCS=1`, 1 s × 3,
+median), on 2026-10-28 with go1.26.9 at a load of 1.6. `PGPrepareOff` runs
+with the cache off since `aa67ba7`; the 783 ns published before measured it
+on, level with `PGPrepareHit`. Off, it pays the parse on every query: 10%
+over the hit (685 against 621 ns over five further passes).
+
 <!-- consolidate: statement-cache -->
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGPrepareHit` | 786 ns | ±0% | — | — |
-| `BenchmarkPGPrepareMissUnbounded` | 1669 ns | ±25% ** | — | — |
-| `BenchmarkPGPrepareOff` | 783 ns | ±1% | — | — |
-| `BenchmarkStmtCacheChurn` | 136 ns | ±2% | 55 B | 3 |
-| `BenchmarkStmtCacheHit` | 16 ns | ±0% | 0 B | 0 |
+| `BenchmarkPGPrepareHit` | 614 ns | ±4% | 80 B | 5 |
+| `BenchmarkPGPrepareMissUnbounded` | 1894 ns | ±19% ** | 1017 B | 9 |
+| `BenchmarkPGPrepareOff` | 702 ns | ±11% | 80 B | 5 |
+| `BenchmarkStmtCacheChurn` | 145 ns | ±2% | 55 B | 3 |
+| `BenchmarkStmtCacheHit` | 16 ns | ±4% | 0 B | 0 |
 <!-- /consolidate -->
 
 ### Paired verdicts
