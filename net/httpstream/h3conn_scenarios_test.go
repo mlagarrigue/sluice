@@ -407,6 +407,20 @@ func TestH3AStreamIsCountedWhenItIsAdmitted(t *testing.T) {
 	}
 }
 
+// A client that has opened the last request stream QUIC allows, 2^62−4,
+// leaves no next identifier: the GOAWAY names that one, a varint, rather
+// than 2^62, which none carries.
+func TestH3DrainAfterTheLastStreamIdentifierStaysAVarint(t *testing.T) {
+	a := testAssembler(Config{})
+	if got := a.admit(h3MaxServerGoAway); got != admitted {
+		t.Fatalf("admit(2^62-4) = %v, want admitted", got)
+	}
+	from, _ := a.beginDrain()
+	if from > 1<<62-1 {
+		t.Errorf("the GOAWAY would carry %d, past the largest varint", from)
+	}
+}
+
 // Once a drain has found nothing in flight and finished the connection, a
 // request stream below the GOAWAY's identifier that arrives late — streams
 // arrive in any order, 8 before 4 here — is rejected REQUEST_REJECTED, as
@@ -558,6 +572,9 @@ func TestH3FramingFaultsAreConnectionErrors(t *testing.T) {
 		{"a dynamic-table reference", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0x80}), qpackDecompressionFailed},
 		{"a static index past the table", appendH3Frame(nil, h3Headers, []byte{0x00, 0x00, 0xff, 0x7f}), qpackDecompressionFailed},
 		{"a required insert count of one", appendH3Frame(nil, h3Headers, []byte{0x01, 0x00}), qpackDecompressionFailed},
+		// §7.1: a payload that ends before the field §7.2.2 identifies.
+		{"HEADERS with an empty payload", appendH3Frame(nil, h3Headers, nil), h3FrameError},
+		{"trailers with an empty payload", append(append([]byte(nil), head...), appendH3Frame(nil, h3Headers, nil)...), h3FrameError},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			a := testAssembler(Config{})

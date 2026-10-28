@@ -1111,7 +1111,11 @@ func (a *h3Assembler) beginDrain() (from uint64, idle bool) {
 	defer a.mu.Unlock()
 	a.draining = true
 	if a.accepted {
-		a.rejectFrom = a.last + 4
+		// The last identifier a client can open is h3MaxServerGoAway itself:
+		// past it there is no "next" stream, and a.last+4 would be 2^62, which
+		// no varint carries. The client can open nothing more either, so the
+		// bound names the same set of streams (§5.2).
+		a.rejectFrom = min(a.last+4, h3MaxServerGoAway)
 	}
 	if a.inFlight.Load() == 0 {
 		a.finished = true
@@ -1212,6 +1216,13 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 			if len(f.Payload) > a.cfg.MaxHeaderBytes {
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, len(f.Payload), a.cfg.MaxHeaderBytes)
+			}
+			// An empty payload ends before the field section's prefix, the
+			// field §7.2.2 identifies: §7.1 makes that a frame error, not a
+			// decompression failure.
+			if len(f.Payload) == 0 {
+				return h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
+					"%w: a HEADERS frame with no field section", ErrH3Protocol)}
 			}
 			if st.gotTrailers {
 				return fmt.Errorf("%w: a HEADERS frame after the trailers", errH3FrameUnexpected)
