@@ -179,26 +179,27 @@ func TestWrongKeyFailsTheStage(t *testing.T) {
 // 1 600 req/s, under h2 and h3). Under a long X the wait in the queue
 // stays under the SLO, and the cause published is the queue: the
 // generator limits, the stage is invalid, not a verdict on the server.
-// The stages before it are held, each with its own budget: at 50 and
-// 100 req/s, an eighth of what the ceiling carries at most. At 300, under
-// a loaded host, a few replies slow enough to keep all four connections
-// busy at once queued two or three requests (measured on 2026-10-28, load
-// 20 on 15 cores): the generator then rightly calls the stage its own
-// limit, and the test was asserting the machine's headroom, not the ramp.
+// The stages before it are held, each with its own budget.
+//
+// At 300 req/s a loaded host can queue the stage before the ceiling: a few
+// replies slow enough to keep every slot busy at once (measured on
+// 2026-10-28, load 20 on 15 cores). That stage, when it queues, is held to
+// hostQueues, which says from a measurement whether the host was the
+// cause; only then is it skipped.
 func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
 	protos(t, testRampStopsWhereTheBudgetEnds)
 }
 
 func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thelper // a sub-test body
-	ceiling, last := 4, 1200
+	ceiling, slots, last := 4, 4, 1200
 	if proto != protoH1 {
-		ceiling, last = 1, 3200
+		ceiling, slots, last = 1, streamsPerConn, 3200
 	}
 	srv := sleepServer(t, proto, 5*time.Millisecond, nil)
-	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "50,100,"+strconv.Itoa(last), "-duration", "1s",
+	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "100,300,"+strconv.Itoa(last), "-duration", "1s",
 		"-slo", "5s", "-max-conns", strconv.Itoa(ceiling), "-warmup", "500ms", "-drain", "100ms")
-	if c.budget(50) != ceiling || c.budget(100) != ceiling {
-		t.Fatalf("budgets %d %d, want the ceiling", c.budget(50), c.budget(100))
+	if c.budget(100) != ceiling || c.budget(300) != ceiling {
+		t.Fatalf("budgets %d %d, want the ceiling", c.budget(100), c.budget(300))
 	}
 	var out strings.Builder
 	ok, err := c.run(context.Background(), &out)
@@ -207,6 +208,14 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	t.Log(out.String())
+	if len(lines) == 2 {
+		var rep report
+		if json.Unmarshal([]byte(lines[1]), &rep) == nil && rep.Rate == 300 && rep.Cause == causeQueue {
+			if why, host := hostQueues(t, proto, srv.URL, 300, slots); host {
+				t.Skip(why)
+			}
+		}
+	}
 	if ok || len(lines) != 3 {
 		t.Fatalf("ok %v, %d stages, want 3 with the last invalid", ok, len(lines))
 	}
@@ -214,7 +223,7 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 		rate  int
 		held  bool
 		cause string
-	}{{50, true, ""}, {100, true, ""}, {last, false, causeQueue}} {
+	}{{100, true, ""}, {300, true, ""}, {last, false, causeQueue}} {
 		var rep report
 		if err := json.Unmarshal([]byte(lines[i]), &rep); err != nil {
 			t.Fatal(err)
@@ -232,6 +241,44 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 	if n := srv.conns.Load(); n != int64(ceiling) {
 		t.Fatalf("the server accepted %d connections, the ceiling is %d", n, ceiling)
 	}
+}
+
+// hostQueues is the calibration a stage that queued under its budget is
+// held to. On a schedule at a constant interval, no more requests are in
+// flight than the slowest reply spans intervals, so slots slots queue
+// nothing unless a reply takes slots intervals or more. The same server at
+// the same rate, with slots to spare so that nothing queues, measures the
+// slowest reply this host gives now: at or past slots intervals, the host
+// queued the stage, and why says so with the measurement; under, the
+// budget did.
+func hostQueues(t *testing.T, proto, url string, rate, slots int) (why string, host bool) {
+	t.Helper()
+	spare := 16
+	if proto != protoH1 {
+		spare = 4
+	}
+	rep := runStage(t, testCampaign(t, proto, url, "-scenario", "unit", "-rate", strconv.Itoa(rate), "-duration", "1s",
+		"-conns", strconv.Itoa(spare), "-slo", "5s"))
+	span := float64(slots) * 1000 / float64(rate)
+	why = fmt.Sprintf("the host, not the budget: at %d req/s with connections to spare, its slowest reply took %.1f ms (queued %d), and %d slots cover %.1f ms",
+		rate, rep.TTLB.Max, rep.Queued, slots, span)
+	return why, rep.Queued > 0 || rep.TTLB.Max >= span
+}
+
+// hostHandshakes is the calibration TestFreshConnections' verdict is held
+// to. A tenth of that stage's requests open a connection, so its p99 falls
+// among them, near their own p90. A stage where every request opens one,
+// at the same rate of handshakes — a tenth of rate — measures that p90 on
+// this host now: past X, the host could not give the SLO with a handshake
+// in the delay, and why says so with the measurement; under, it could.
+func hostHandshakes(t *testing.T, proto, url string, rate int) (why string, host bool) {
+	t.Helper()
+	rep := runStage(t, testCampaign(t, proto, url, "-scenario", "unit", "-rate", strconv.Itoa(rate/10), "-duration", "2s",
+		"-conns", "8", "-new-conns", "100"))
+	x := rep.SLO + rep.RTT
+	why = fmt.Sprintf("the host, not the generator: with a handshake in every request at %d req/s, p90 is %.1f ms, past X = %.0f ms",
+		rate/10, rep.TTLB.P90, x)
+	return why, rep.TTLB.P90 > x
 }
 
 // TestStreamsPerConn is the ceiling of §3.5 seen from the server: under h2
@@ -327,9 +374,16 @@ func TestBudget(t *testing.T) {
 // TestFreshConnections: with -new-conns 10, about a tenth of the requests
 // open their own connection, whose handshake falls inside their delays
 // and is counted apart; the budget's connections are untouched, and no
-// connect fails on a loopback with a few hundred of them. The SLO verdict
-// is not asserted: a p99 under the unit scenario's 25 ms with a handshake
-// in it is the host's to give, and a loaded one does not (2026-10-28).
+// connect fails on a loopback with a few hundred of them. The stage is
+// held: its p99 under the unit scenario's 25 ms, with the handshakes
+// inside.
+//
+// A loaded host may not give that (2026-10-28): under a load of 20 on 15
+// cores and the race detector, the stage misses the SLO, then deadlines —
+// requests timed out, connections still opening at theirs. A stage that
+// fails only so is held to hostHandshakes, which says from a measurement
+// whether the host was the cause; only then is it skipped. Any other
+// failure — a refusal, a reset, the tester's own — fails the test.
 func TestFreshConnections(t *testing.T) {
 	protos(t, testFreshConnections)
 }
@@ -339,8 +393,15 @@ func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a su
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
 	rep := runStage(t, c)
 	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99)
-	if rep.Failed() || rep.Tester > 0 {
-		t.Fatalf("errors %d tester %d cause %q", rep.Errors, rep.Tester, rep.Cause)
+	if rep.Tester > 0 || rep.BadKey > 0 || rep.Errors != rep.ConnectTimeout {
+		t.Fatalf("errors %d (connect timeouts %d) bad_key %d tester %d", rep.Errors, rep.ConnectTimeout, rep.BadKey, rep.Tester)
+	}
+	if rep.Failed() || !rep.Held {
+		if why, host := hostHandshakes(t, proto, srv.URL, 500); host {
+			t.Skip(why)
+		}
+		t.Fatalf("timed out %d, connect timeouts %d, held %v cause %q ttlb p99 %.3f ms: want every request answered and the SLO held",
+			rep.TimedOut, rep.ConnectTimeout, rep.Held, rep.Cause, rep.TTLB.P99)
 	}
 	if rep.Handshakes < rep.Sent*7/100 || rep.Handshakes > rep.Sent*13/100 {
 		t.Fatalf("%d handshakes in %d requests, want about 10 %%", rep.Handshakes, rep.Sent)
