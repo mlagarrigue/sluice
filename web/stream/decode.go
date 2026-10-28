@@ -34,7 +34,10 @@ import (
 // smuggling it is, and "too large" kept
 // distinct from "malformed" because they need different fixes. Here the
 // stage also picks the refusal's status — 413 past the limit, 400 otherwise
-// — where web leaves that to its net/http caller.
+// — where web leaves that to its net/http caller. So are the three readings
+// web.DecodeJSON names as encoding/json's: a repeated name's last value
+// wins and names match fields without regard to case, invalid UTF-8 and a
+// lone surrogate become U+FFFD, a byte order mark is refused.
 func DecodeJSON(e *Exchange, limit int64, dst any) bool {
 	if limit <= 0 {
 		panic("stream: DecodeJSON needs a positive byte limit; an unbounded body is not a default")

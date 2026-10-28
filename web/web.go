@@ -97,6 +97,16 @@ const (
 // byte is read — a browser posts text/plain and form bodies across origins
 // without a preflight, and a JSON document hidden in one would otherwise be
 // decoded as if the client had asked to send it.
+//
+// Three readings are encoding/json's, kept as they are, and a hop in front
+// that reads the document differently must know them: a name repeated in an
+// object is accepted and the last one wins, and names match struct fields
+// without regard to case, so "ID" and "id" are one field; invalid UTF-8 and
+// a lone surrogate escape are accepted and replaced with U+FFFD, so the
+// value decoded is not the bytes sent; a byte order mark ahead of the
+// document is refused as malformed (RFC 8259 §8.1 lets a parser ignore it).
+// Refusing the first two would take a second pass over the body, a second
+// reading of hostile input this package does not add.
 func DecodeJSON(r *http.Request, limit int64, dst any) (diagnostics.Diagnostic, bool) {
 	if limit <= 0 {
 		panic("web: DecodeJSON needs a positive byte limit; an unbounded read from a socket is not a default")
