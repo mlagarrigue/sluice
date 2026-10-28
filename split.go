@@ -70,8 +70,10 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 //     source's coroutine stays parked for the life of the process (S9 in
 //     docs/design/architecture.md): read any leftover branch to release it.
 //
-// Like a Stream, a Split never consumed runs nothing. Split panics if route is
-// nil or n is negative; an n of zero returns nil.
+// Like a Stream, a Split never consumed runs nothing: the source's traversal
+// starts at the first read of a branch, so a Split built and abandoned
+// holds no coroutine. Split panics if route is nil or n is negative; an n of
+// zero returns nil.
 func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 	if n < 0 {
 		panic(negativeArg{"Split n", n, "no branches"})
@@ -82,11 +84,11 @@ func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 	if route == nil {
 		panic("sluice: Split requires a non-nil route function")
 	}
-	// One shared traversal, driven on demand. Pull turns the push-based source
-	// into something a branch can advance one batch at a time, which is what
-	// lets every branch read the same single traversal.
-	next, stop := pull(s)
-	sp := &splitter[T]{branches: make([]branch[T], n), next: next, stop: stop, route: route}
+	// One shared traversal, driven on demand and started by the first read
+	// (advance): pulling here would start the source's coroutine at
+	// construction, and a Split never read would leave it parked with no
+	// handle to stop it.
+	sp := &splitter[T]{branches: make([]branch[T], n), src: s, route: route}
 	out := make([]Stream[T], n)
 	for i := range out {
 		out[i] = func(yield func(Batch[T]) bool) { sp.serve(i, yield) }
@@ -129,9 +131,14 @@ type branch[T any] struct {
 // relies on.
 type splitter[T any] struct {
 	branches []branch[T]
-	next     func() (Batch[T], bool)
-	stop     func()
-	route    func(Batch[T]) []int
+	// src is the source until the first read pulls it: Pull turns the
+	// push-based source into something a branch can advance one batch at
+	// a time, which is what lets every branch read the same single
+	// traversal. next and stop are nil before that.
+	src   Stream[T]
+	next  func() (Batch[T], bool)
+	stop  func()
+	route func(Batch[T]) []int
 
 	held    Batch[T] // batch pulled but not yet placed everywhere
 	dests   []int    // held's destinations, routed once when pulled
@@ -214,7 +221,9 @@ func (sp *splitter[T]) release() {
 			return // still a branch that could consume
 		}
 	}
-	sp.stop()
+	if sp.stop != nil { // nil: no branch ever pulled, nothing started
+		sp.stop()
+	}
 }
 
 // live reports whether dst can receive a batch. A branch that has finished is
@@ -282,6 +291,10 @@ func (sp *splitter[T]) detach() bool {
 func (sp *splitter[T]) advance() bool {
 	if sp.holding {
 		return sp.place()
+	}
+	if sp.next == nil {
+		sp.next, sp.stop = pull(sp.src)
+		sp.src = nil
 	}
 	b, ok := sp.next()
 	if !ok {
