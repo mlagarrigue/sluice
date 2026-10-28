@@ -1127,6 +1127,112 @@ type chunkProgress struct {
 	expect bool
 }
 
+// headScan is how far a head short of its blank line has been looked at
+// (headPending). The reader keeps one for the request at the front of its
+// buffer, out of chunkProgress, which every request clears and parseRequest
+// reads; consume ends it by setting n to zero.
+type headScan struct {
+	// n is how many bytes from the front are known to hold no blank line
+	// ending the head; zero when no scan is under way.
+	n int
+	// start is where the field lines begin, zero until the parse has
+	// checked the request line; next is the first field line not checked
+	// yet, and fields how many have been.
+	start, next, fields int
+	// scratch is what checking the field lines appends to, kept from one
+	// read to the next.
+	scratch []Header
+}
+
+// headStillShort reports whether the head at the front of buf, which an
+// earlier read left short of its blank line (noteShortHead), still is: then
+// the reader waits for more without parsing it again.
+func headStillShort(buf []byte, cfg *Config, scan *headScan) bool {
+	return scan.n > 0 && headPending(buf, cfg, scan, false)
+}
+
+// noteShortHead records, for buf holding one request that a parse has just
+// left short of its end, how far its head is known to hold no blank line,
+// for headStillShort. A request whose head was parsed whole and whose body
+// is short (need or headersEnd set) has no head to scan: chunkProgress
+// resumes its body.
+func noteShortHead(buf []byte, cfg *Config, progress *chunkProgress, scan *headScan) {
+	if progress.need > 0 || progress.headersEnd > 0 {
+		scan.n = 0
+		return
+	}
+	if scan.n == 0 {
+		scan.start, scan.next, scan.fields = 0, 0, 0
+	}
+	if !headPending(buf, cfg, scan, true) {
+		scan.n = 0 // the next read parses
+	}
+}
+
+// headPending reports whether buf, the front of a request whose head has
+// not been parsed whole, is still short of the blank line that ends the
+// head, with nothing in it the parse would refuse yet. scan records how far
+// it looked, so a head delivered a byte per read is looked at once in all.
+// Without it, every read parsed the request line and every field line
+// received so far again: work in the square of the head's length, for one
+// byte of the peer's (RP-20261025-secnet-02). Only CRLF ends a line
+// (cutCRLF), so the scan looks for CRLF CRLF.
+//
+// What the parse would refuse is refused at the same byte: false hands buf
+// to it. The request line goes to it as soon as its CRLF is in (parsed is
+// whether the parse has just run on buf), and each field line, once whole,
+// goes through parseHeaders itself with what the lines before it took from
+// MaxHeaderBytes and MaxHeaders: there is no second parser of field lines.
+// Near the bounds the parse decides on every read; past them it refuses.
+func headPending(buf []byte, cfg *Config, scan *headScan, parsed bool) bool {
+	lead := 0
+	if len(buf) >= 2 && buf[0] == '\r' && buf[1] == '\n' {
+		lead = 2 // RFC 9112 §2.2's empty line before the request line
+	}
+	from := max(scan.n-3, lead)
+	if from < len(buf) && bytes.Contains(buf[from:], []byte("\r\n\r\n")) {
+		return false
+	}
+	// Only what arrived since the last look can end a line: one CR may
+	// have waited for its LF.
+	seen := max(scan.n-1, scan.next)
+	if scan.start == 0 {
+		at := max(scan.n-1, lead)
+		i := bytes.Index(buf[at:], []byte("\r\n"))
+		if i < 0 {
+			if len(buf)-lead > cfg.MaxRequestLineBytes+1 {
+				return false // the parse refuses the request line now
+			}
+			scan.n = len(buf)
+			return true
+		}
+		if !parsed {
+			return false // the request line is whole: the parse checks it
+		}
+		scan.start = at + i + 2
+		scan.next, seen = scan.start, scan.start
+	}
+	if len(buf)-scan.start > cfg.MaxHeaderBytes-2 {
+		return false
+	}
+	if k := bytes.LastIndex(buf[seen:], []byte("\r\n")); k >= 0 {
+		end := seen + k + 2
+		left := *cfg
+		left.MaxHeaderBytes -= scan.next - scan.start
+		left.MaxHeaders -= scan.fields
+		lines, _, err := parseHeaders(scan.scratch[:0], buf[scan.next:end], left)
+		clear(lines) // they point into buf, which a later read may replace
+		scan.scratch = lines[:0]
+		if !errors.Is(err, errIncomplete) {
+			return false // a line the parse refuses, or the bound: it says which
+		}
+		scan.fields += len(lines)
+		scan.next = end
+	}
+	scan.n = len(buf)
+	return true
+}
+
 // decodeChunked decodes a chunked request body (RFC 9112 §7.1) in place at
 // the front of buf, returning the decoded bytes and how much of buf the
 // encoded form consumed.

@@ -112,6 +112,9 @@ type reader struct {
 	// restarting it — see chunkProgress. It indexes buf, and consume keeps
 	// it pointed at the same request as the buffer shifts under it.
 	progress chunkProgress
+	// head is how far the head at the front of buf, short of its blank
+	// line, has been scanned (headScan); consume ends the scan.
+	head headScan
 
 	// body is the streamed body of the batch just handed over, if it has
 	// one: the next request cannot be read before it has ended.
@@ -188,15 +191,29 @@ func (r *reader) next() ([]Request, bool) {
 		}
 		// Parse first: the previous read may have left whole requests behind
 		// the one it completed, which is what pipelining looks like from here.
-		batch, used, err := r.parseBuffered()
-		if err != nil {
-			r.err = err
-			return nil, false
-		}
-		if len(batch) > 0 {
-			r.pending = used
-			r.served += len(batch)
-			return batch, true
+		// An empty buffer has nothing to parse, and a head an earlier read
+		// left short of its blank line is scanned for it, not parsed again
+		// (headPending): parsing it on every read cost the square of its
+		// length for a peer that sends it a byte at a time
+		// (RP-20261025-secnet-02). The scan sits here, beside the read, and
+		// not in parseBuffered or parseRequest, which a head whole in its
+		// first read — the common case — reaches with nothing in front: a
+		// check there measured +3% to +29% on BenchmarkReadPipelined.
+		if r.n > 0 && !headStillShort(r.buf[:r.n], &r.cfg, &r.head) {
+			batch, used, err := r.parseBuffered()
+			if err != nil {
+				r.err = err
+				return nil, false
+			}
+			if len(batch) > 0 {
+				r.pending = used
+				r.served += len(batch)
+				return batch, true
+			}
+			// Nothing taken: the front of the buffer is a request short of
+			// its end, and if that is its head, how far it holds no blank
+			// line.
+			noteShortHead(r.buf[:r.n], &r.cfg, &r.progress, &r.head)
 		}
 		if err := r.fill(); err != nil {
 			r.err = err
@@ -421,6 +438,7 @@ func (r *reader) write100Continue() error {
 func (r *reader) consume(used int) {
 	copy(r.buf, r.buf[used:r.n])
 	r.n -= used
+	r.head.n = 0
 	// The pending request's saved walk indexes the buffer; it shifted down
 	// with everything else. It cannot sit inside what was consumed — that
 	// was whole requests, and a whole request clears its progress.
