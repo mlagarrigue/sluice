@@ -767,6 +767,85 @@ func plainLinks(blocks []comment.Block) []string {
 	return out
 }
 
+// A code block in a doc comment is what a reader copies, and nothing
+// compiles it the way an Example is compiled or resolves it the way a doc
+// link is (plainLinks leaves code blocks out). So every pkg.Name in one,
+// where pkg is the name of a package of this module, names an exported
+// symbol of that package. Four names the doc of postgres.Param and
+// Tx.ExecParams kept after 1608e0c moved them to pgtype were dead for a week
+// under a green CI. A variable that shares a package's name would read as
+// that package here; none does today.
+func TestDocCodeBlocksNameRealSymbols(t *testing.T) {
+	type pkgDoc struct {
+		dir string
+		p   *godoc.Package
+	}
+	var pkgs []pkgDoc
+	exported := map[string]map[string]bool{}
+	for _, dir := range packageDirs(t) {
+		fset := token.NewFileSet()
+		files := parseDir(t, fset, dir, false)
+		if len(files) == 0 {
+			continue
+		}
+		p, err := godoc.NewFromFiles(fset, files, "example.com/p", godoc.PreserveAST)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkgs = append(pkgs, pkgDoc{dir, p})
+		names := exported[p.Name]
+		if names == nil {
+			names = map[string]bool{}
+			exported[p.Name] = names
+		}
+		for _, v := range append(p.Consts, p.Vars...) {
+			for _, n := range v.Names {
+				names[n] = true
+			}
+		}
+		for _, f := range p.Funcs {
+			names[f.Name] = true
+		}
+		for _, ty := range p.Types {
+			names[ty.Name] = true
+			for _, v := range append(ty.Consts, ty.Vars...) {
+				for _, n := range v.Names {
+					names[n] = true
+				}
+			}
+			for _, f := range ty.Funcs {
+				names[f.Name] = true
+			}
+		}
+	}
+	checked := 0
+	for _, pd := range pkgs {
+		parse := pd.p.Parser()
+		for _, d := range exportedDocs(pd.p) {
+			for _, b := range parse.Parse(d.text).Content {
+				code, ok := b.(*comment.Code)
+				if !ok {
+					continue
+				}
+				for _, m := range qualified.FindAllStringSubmatch(code.Text, -1) {
+					names, ok := exported[m[1]]
+					if !ok {
+						continue // the standard library, or a variable
+					}
+					checked++
+					if !names[m[2]] {
+						t.Errorf("%s, doc of %s: the code block names %s.%s, which package %s does not export",
+							filepath.Base(pd.dir), d.name, m[1], m[2], m[1])
+					}
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no code block of a doc comment names a symbol of this module: the parser or the regexp changed")
+	}
+}
+
 // A section number means something only beside the document it numbers.
 // The protocol packages cite their RFCs and protocol pages by section, and
 // name them in their package documentation; elsewhere a section sign and a number

@@ -599,8 +599,8 @@ func batchBounds(cfg QueryConfig) (rows, size int, err error) {
 // their siblings), with its type beside it.
 //
 //	params := []postgres.Param{
-//		{OID: postgres.OIDInt8, Value: postgres.AppendInt8(nil, id)},
-//		{Value: postgres.AppendText(nil, name)}, // the server infers the type
+//		{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, id)},
+//		{Value: pgtype.AppendText(nil, name)}, // the server infers the type
 //	}
 //
 // A nil Value is NULL: the protocol tells a missing value from an empty one,

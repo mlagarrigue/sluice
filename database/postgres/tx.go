@@ -263,7 +263,7 @@ func resultTag(body []byte, suspended int) CommandTag {
 // rows it touched:
 //
 //	tag, err := conn.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
-//		[]postgres.Param{{OID: postgres.OIDText, Value: postgres.AppendText(nil, customer)}})
+//		[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, customer)}})
 //	n, _ := tag.RowsAffected()
 //
 // The values travel in binary on the extended-query path, as they do for
