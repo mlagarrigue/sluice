@@ -472,3 +472,47 @@ func TestNewPanicsAsDocumented(t *testing.T) {
 		t.Errorf("a usable configuration: Close = %v", err)
 	}
 }
+
+// Shutdown stops waiting when its ctx ends, and only that: the gateway is
+// closed to new calls at once, the pipeline it left runs on, and the call it
+// holds is answered once the pipeline gets to it. Close, which is Shutdown
+// without a deadline, then returns the ordinary end.
+func TestShutdownStopsWaitingWhenItsContextEnds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		var once sync.Once
+		gw := New(Config{Size: 4, Within: time.Millisecond}, func(calls sluice.Stream[*Call[int, int]]) {
+			calls(func(b sluice.Batch[*Call[int, int]]) bool {
+				once.Do(func() { close(entered) })
+				<-release
+				for _, c := range b.Items {
+					c.Reply(c.In * 2)
+				}
+				return true
+			})
+		})
+		held := make(chan error, 1)
+		go func() {
+			_, err := gw.Do(context.Background(), 1)
+			held <- err
+		}()
+		<-entered
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := gw.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown with the pipeline blocked returned %v, want context.DeadlineExceeded", err)
+		}
+		if _, err := gw.Do(context.Background(), 2); !errors.Is(err, ErrClosed) {
+			t.Errorf("Do after Shutdown returned %v, want ErrClosed", err)
+		}
+		close(release)
+		if err := <-held; err != nil {
+			t.Errorf("the call the pipeline held ended with %v, want its answer", err)
+		}
+		if err := gw.Close(); err != nil {
+			t.Errorf("Close once the pipeline returned: %v", err)
+		}
+	})
+}

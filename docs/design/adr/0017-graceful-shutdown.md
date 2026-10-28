@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2Conn` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed)
+- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2Conn` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed), 2026-10-28 (a closer with a `Shutdown(ctx)` method, as `gateway.Gateway` has, is stopped under `ctx` rather than closed)
 - **Theme:** httpstream
 
 ## Problem
@@ -154,6 +154,15 @@ sequenceDiagram
      `web.Shutdown` then returns `context.DeadlineExceeded`, and the closers
      still run.
 
+     A closer that also stops by draining — a `Shutdown(ctx)`
+     method, which `gateway.Gateway` has — is stopped under the same `ctx`
+     rather than closed. A gateway's `Close` waits for its pipeline without
+     a bound, and a pipeline blocked in a call to a back end that does not
+     answer would keep `web.Shutdown` from reaching the connection whose
+     close releases it. Stopped under `ctx`, the gateway stops waiting at
+     the deadline, the connection is closed, and the pipeline returns. A
+     closer with `Close` alone runs to its return.
+
 ## Rationale
 
 The handler's contract says a request handed over is whole; the symmetric
@@ -169,6 +178,13 @@ to drain, the next to cut — takes `Server`, whose `Shutdown` and `Close`
 are those two gestures; `Serve` is only their sequence at a fixed duration.
 `web.Shutdown` composes these signals across several servers; it does not
 add one.
+
+The order of §1 makes the gateway the layer that waits on the next one:
+its pipeline calls the back end that the closers after it close. An
+unbounded wait there turns a silent back end into a stop that never ends,
+which is what §2's grace refuses for a handler. The shape `Shutdown(ctx)`
+is `http.Server`'s and `web.Server`'s, so no interface is added, and
+`Close` stays what it was, `Shutdown` without a deadline.
 
 A forced stop that returns `nil` cannot be told from a clean one: the
 operator does not learn that responses were lost. Hence a sentinel,

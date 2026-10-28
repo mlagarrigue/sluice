@@ -69,6 +69,15 @@ type Server interface {
 // of the process, which is worse than closing under a request that was not
 // going to finish anyway.
 //
+// ctx also bounds every closer that stops the same way, by a
+// Shutdown(context.Context) error method, as
+// [github.com/mlagarrigue/sluice/gateway.Gateway] has: such a closer is shut
+// down under ctx rather than closed. A gateway whose pipeline sits in a call
+// to a back end that never answers would otherwise keep its Close waiting,
+// and the closer after it — the connection whose close is what releases
+// that pipeline — would never run. A closer with Close alone is run to its
+// return; ctx does not bound it.
+//
 // The closers are **always** run, and their failures are joined with the
 // server's. A shutdown that abandons half its cleanup because the first step
 // timed out is the shape of bug this function exists to remove.
@@ -92,7 +101,11 @@ func Shutdown(ctx context.Context, srv Server, closers ...io.Closer) error {
 		if c == nil {
 			continue
 		}
-		if err := c.Close(); err != nil {
+		stop := c.Close
+		if s, ok := c.(Server); ok {
+			stop = func() error { return s.Shutdown(ctx) }
+		}
+		if err := stop(); err != nil {
 			errs = append(errs, fmt.Errorf("closing %d: %w", i, err))
 		}
 	}

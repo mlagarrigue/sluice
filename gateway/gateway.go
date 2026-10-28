@@ -564,18 +564,29 @@ func (g *Gateway[In, Out]) Do(ctx context.Context, in In) (Out, error) {
 	}
 }
 
-// Close stops the gateway and waits for the pipeline to finish.
+// Shutdown stops the gateway and waits for the pipeline to finish, or for
+// ctx to end, whichever comes first: the contract of
+// [net/http.Server.Shutdown].
 //
 // Calls already accepted are answered — with their result if the pipeline
-// gets to them, with [ErrNoReply] if it does not. Calls submitted after Close
-// fail with [ErrClosed]. Close is idempotent and safe to call from any
-// goroutine.
-func (g *Gateway[In, Out]) Close() error {
+// gets to them, with [ErrNoReply] if it does not. Calls submitted once
+// Shutdown has begun fail with [ErrClosed]. When ctx ends first, Shutdown
+// returns ctx's error and stops waiting, nothing more: the pipeline runs on
+// until it returns, and each call still waiting is released then or when
+// its own ctx ends. That is what lets the caller go on to close the
+// connection a blocked pipeline waits on — the close that unblocks it —
+// which web.Shutdown does with the closers after the gateway. Shutdown is
+// idempotent and safe to call from any goroutine.
+func (g *Gateway[In, Out]) Shutdown(ctx context.Context) error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
 		close(g.closing)
 	})
-	<-g.drained
+	select {
+	case <-g.drained:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	g.sweepIn()
 
 	g.mu.Lock()
@@ -584,4 +595,13 @@ func (g *Gateway[In, Out]) Close() error {
 		return nil // the ordinary end: the pipeline stopped because it was asked to
 	}
 	return g.fatal
+}
+
+// Close is [Gateway.Shutdown] without a deadline: it waits for the pipeline
+// however long that takes. A pipeline inside a call to a back end that never
+// answers keeps Close waiting with it, and the connection whose close would
+// release it is never reached; where that can happen, stop the gateway with
+// Shutdown and a deadline instead, as web.Shutdown does.
+func (g *Gateway[In, Out]) Close() error {
+	return g.Shutdown(context.Background())
 }
