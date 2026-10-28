@@ -294,8 +294,6 @@ func columnName(fieldName string, tag *ast.BasicLit) (name string, skip bool) {
 	return snakeCase(fieldName), false
 }
 
-// typeExpr renders a field's type and reports whether it is a pointer, which
-// is how the generated code expresses a nullable column.
 // typeExpr resolves a field's type to the Go type the mapping is keyed by,
 // whether NULL is expressible, and how a present value is wrapped.
 //

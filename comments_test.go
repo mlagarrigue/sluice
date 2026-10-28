@@ -82,7 +82,7 @@ func TestDocComments(t *testing.T) {
 			continue
 		}
 		check := func(name string, doc *ast.CommentGroup, pos token.Pos) {
-			if doc == nil || !ast.IsExported(name) {
+			if doc == nil {
 				return
 			}
 			words := strings.Fields(doc.Text())
@@ -94,6 +94,16 @@ func TestDocComments(t *testing.T) {
 				first = words[1]
 			}
 			first = strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(first, "'s"), "()"), ".,:;")
+			if !ast.IsExported(name) {
+				// An unexported declaration's doc is free in its form, but
+				// not in the name it opens on: one that spells the name
+				// exported is the doc of a symbol unexported since, and
+				// sends a reader to look for an API that is not there.
+				if first != name && strings.EqualFold(first, name) {
+					t.Errorf("%s: the doc of %s begins with the exported %q", src.fset.Position(pos), name, first)
+				}
+				return
+			}
 			if first != name && first != "Deprecated" {
 				t.Errorf("%s: the doc of %s begins with %q", src.fset.Position(pos), name, words[0])
 			}
@@ -112,6 +122,60 @@ func TestDocComments(t *testing.T) {
 				case *ast.ValueSpec:
 					if len(s.Names) == 1 {
 						check(s.Names[0].Name, d.Doc, d.Pos())
+					}
+				}
+			}
+		}
+	}
+}
+
+// A declaration's doc comment is its own: when a declaration is inserted
+// between a comment and the function it documents, go doc gives the new
+// declaration both texts glued together — maxIdleFloor carried
+// actOnDeadlines' first sentence, and actOnDeadlines lost it. The shape is
+// a comment that does not open on the declaration's name and, further down,
+// starts a line with it right after a full stop: the lines above that one
+// speak of something else. Every declaration is read, exported or not,
+// outside tests.
+func TestDocCommentsAreNotGlued(t *testing.T) {
+	for _, src := range goSources(t) {
+		if src.test || src.generated {
+			continue
+		}
+		check := func(name string, doc *ast.CommentGroup) {
+			if doc == nil || len(doc.List) < 2 {
+				return
+			}
+			if first, _, _ := strings.Cut(strings.TrimPrefix(doc.List[0].Text, "// "), " "); first == name {
+				return
+			}
+			for i := 1; i < len(doc.List); i++ {
+				line := strings.TrimPrefix(doc.List[i].Text, "// ")
+				above := strings.TrimSpace(strings.TrimPrefix(doc.List[i-1].Text, "//"))
+				if above == "" || !strings.HasSuffix(above, ".") {
+					continue // a new paragraph, or the sentence above goes on
+				}
+				if first, _, _ := strings.Cut(line, " "); first == name {
+					t.Errorf("%s: the doc of %s opens on line %d; the %d lines above it belong to another declaration",
+						src.fset.Position(doc.Pos()), name, i+1, i)
+					return
+				}
+			}
+		}
+		for _, decl := range src.file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				check(d.Name.Name, d.Doc)
+			case *ast.GenDecl:
+				if len(d.Specs) != 1 {
+					continue
+				}
+				switch s := d.Specs[0].(type) {
+				case *ast.TypeSpec:
+					check(s.Name.Name, d.Doc)
+				case *ast.ValueSpec:
+					if len(s.Names) == 1 {
+						check(s.Names[0].Name, d.Doc)
 					}
 				}
 			}

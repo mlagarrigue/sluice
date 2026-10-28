@@ -917,10 +917,6 @@ func (w *h2Writer) waitCtrlLocked() error {
 	return w.err
 }
 
-// control32 and appendCtrl32 queue a control frame whose payload is one
-// 32-bit word — RST_STREAM's code, WINDOW_UPDATE's increment — from a stack
-// array: AppendFrame copies the payload into ctrl, so nothing needs the heap
-// slice a per-frame make would cost.
 // reset sends RST_STREAM with code on id, unless the stream was forgotten
 // already — reset by the peer or finished — in which case RFC 9113 §5.1
 // forbids the frame and nothing goes out.
@@ -935,6 +931,10 @@ func (w *h2Writer) reset(id, code uint32) error {
 	return w.controlLocked(h2Frame{Type: frameRSTStream, StreamID: id, Payload: p[:]})
 }
 
+// control32 and appendCtrl32 queue a control frame whose payload is one
+// 32-bit word — RST_STREAM's code, WINDOW_UPDATE's increment — from a stack
+// array: AppendFrame copies the payload into ctrl, so nothing needs the heap
+// slice a per-frame make would cost.
 func (w *h2Writer) control32(typ byte, id, v uint32) error {
 	var p [4]byte
 	be32put(p[:], v)

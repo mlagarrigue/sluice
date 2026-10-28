@@ -207,17 +207,6 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 	return append(regular, Header{Name: hostFieldName, Value: authority}), nil
 }
 
-// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
-// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
-// — one function for both, because the two sections are the same rules and
-// the two protocols once held their own copies, which had drifted: a request
-// one refused and the other delivered to the handler. The rules exist because
-// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
-// is written.
-//
-// Errors wrap protocolErr; the caller maps them to its own stream error. The
-// regular fields are returned in fields' own storage, the pseudo-headers
-// dropped; declared is the content-length the head stated, or -1.
 // connectionSpecific reports whether name — lowercase, as HTTP/2 and HTTP/3
 // put it on the wire — is one of the fields RFC 9113 §8.2.2 and RFC 9114 §4.2
 // forbid in any message of theirs: Connection, and the fields RFC 9110
@@ -264,6 +253,17 @@ func checkRequestTrailer(h Header, protocolErr error) error {
 	return nil
 }
 
+// buildRequest turns the decoded field section of an HTTP/2 or HTTP/3 request
+// into a [Request], applying the rules RFC 9113 §8.3 and RFC 9114 §4.3 state
+// — one function for both, because the two sections are the same rules and
+// the two protocols once held their own copies, which had drifted: a request
+// one refused and the other delivered to the handler. The rules exist because
+// a request that reaches an HTTP/1.1 hop unchecked is how a smuggled request
+// is written.
+//
+// Errors wrap protocolErr; the caller maps them to its own stream error. The
+// regular fields are returned in fields' own storage, the pseudo-headers
+// dropped; declared is the content-length the head stated, or -1.
 func buildRequest(fields []Header, protocolErr error) (req Request, declared int, err error) {
 	var method, path, scheme, authority []byte
 	regular := fields[:0]

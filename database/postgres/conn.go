@@ -638,9 +638,6 @@ func (c *Conn) declaredOIDs(params []Param) []uint32 {
 	return oids
 }
 
-// writeBind queues a Bind of the unnamed portal to stmt with the values of
-// params. The scratch is cleared once the values are buffered, so the
-// connection does not keep the caller's bytes alive until its next query.
 // maxStmtName is the longest name prepare.go gives a statement.
 const maxStmtName = "sluice_18446744073709551615"
 
@@ -665,6 +662,9 @@ func checkBindLen(params []Param) error {
 	return nil
 }
 
+// writeBind queues a Bind of the unnamed portal to stmt with the values of
+// params. The scratch is cleared once the values are buffered, so the
+// connection does not keep the caller's bytes alive until its next query.
 func (c *Conn) writeBind(stmt string, params []Param) {
 	values := c.valuesScratch[:0]
 	for _, p := range params {
