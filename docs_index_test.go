@@ -154,3 +154,22 @@ func TestEveryBreakingCommitIsInTheChangelog(t *testing.T) {
 	}
 	t.Logf("%d breaking commits in %s..%s, %d missing", n, from, to, missing)
 }
+
+// The CHANGELOG lists breaking changes by their subject; what to write
+// instead is in docs/migration.md, and the note that says so sits above the
+// first release, where release-please inserts each new one and leaves the
+// header as it is. A release that drops the note fails here, on its pull
+// request.
+func TestChangelogPointsToTheMigrationGuide(t *testing.T) {
+	page, err := os.ReadFile("CHANGELOG.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := regexp.MustCompile(`(?m)^## \[`).FindIndex(page)
+	if first == nil {
+		t.Fatal("CHANGELOG.md has no release section")
+	}
+	if !bytes.Contains(page[:first[0]], []byte("(docs/migration.md)")) {
+		t.Error("CHANGELOG.md does not link docs/migration.md above its first release")
+	}
+}
