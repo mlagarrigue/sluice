@@ -1202,12 +1202,18 @@ func carriesStream(payload []byte, id uint64) bool {
 // noteResetLocked records that this end reset stream id, for the replay
 // filter: the mark is the next application packet number, so that every
 // packet that may carry a STREAM frame of the stream is older than it — the
-// RESET_STREAM itself leaves at the mark and carries none. Callers hold mu.
+// RESET_STREAM itself leaves at the mark and carries none.
+//
+// The control queue is filtered at the same moment: a STREAM_DATA_BLOCKED a
+// parked writer queued waits there for the congestion window, which the
+// RESET_STREAM does not wait for, and would leave after it — §3.3 forbids
+// the frame in "Reset Sent". Callers hold mu.
 func (c *Conn) noteResetLocked(id uint64) {
 	if c.resetIDs == nil {
 		c.resetIDs = make(map[uint64]uint64)
 	}
 	c.resetIDs[id] = c.spaces[spaceApplication].nextPN
+	c.control = c.pruneResetLocked(c.control)
 }
 
 // pruneResetLocked drops from payload — a lost packet's frames, about to go
@@ -1538,9 +1544,11 @@ func (c *Conn) resendBlockedFramesLocked(now time.Time) {
 		blocked = true
 	}
 	for _, s := range c.streams {
-		// Not for a stream reset since: nothing waits for its credit any
-		// more, and §3.3 forbids the frame after RESET_STREAM.
-		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.writeReset {
+		// Not for a stream whose sending part is closed — reset since, or
+		// its FIN sent: nothing waits for its credit any more, §3.3 forbids
+		// the frame after RESET_STREAM and from "Data Recvd", and "Data
+		// Sent" has no need of it.
+		if s.sendQ.avail() == 0 && s.sendQ.blockedSent && !s.sendClosed {
 			c.control = appendFrame(c.control, frameStreamDataBlocked, s.id, s.sendQ.max)
 			blocked = true
 		}
