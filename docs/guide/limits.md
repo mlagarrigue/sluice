@@ -572,7 +572,15 @@ client nor policed by this server: `crypto/tls` sends no
 change_cipher_spec RFC 9846 Appendix E.4 would want — RFC 9001 §8.4
 removes that record from QUIC — and the ClientHello field is not
 exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
-waits on `crypto/tls`. Rewriting the TLS stack is out of the question (ADR 0002:
+waits on `crypto/tls`. A server issues one ticket per connection:
+`crypto/tls` refuses a second `SendSessionTicket` on a QUIC connection. A
+client presents a ticket once — RFC 9846 Appendix C.4 asks it not to reuse
+one, and the cache `Dial` wraps drops it at its first resumption. Of six
+connections opened at once from one ticket, the first resumes and the other
+five run a full handshake — one round trip more, the certificate checked
+again, and no 0-RTT — until each resumed connection has handed back a ticket
+of its own; the same appendix recommends that a server offer as many
+tickets as a client might open connections. Rewriting the TLS stack is out of the question (ADR 0002:
 the standard library owns the sensitive ground); these follow the Go
 release, and a peer refused over one of them is the signal to revisit.
 In plain words: the lock on the door is the one Go ships, quirks
