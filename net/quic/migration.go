@@ -1650,29 +1650,34 @@ func (c *Conn) takeFreshPeerCIDLocked() (cid []byte, seq uint64, ok bool) {
 	return e.cid, e.seq, true
 }
 
+// endSilentlyLocked ends the connection as §9.3.2 has a failed migration
+// end: the state is discarded and nothing is said. §8.2.4's NO_VIABLE_PATH
+// (a MAY) is not sent: it would leave on the path that just failed to carry
+// anything. Callers hold mu.
+func (c *Conn) endSilentlyLocked(err error) {
+	if c.closeErr == nil {
+		c.closeErr = err
+	}
+	c.closeSent = true            // silently: §9.3.2 discards the state, it says nothing
+	go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+}
+
 // revertToValidatedLocked is §9.3.2's fallback: sending returns to the last
-// validated peer address and socket, under the identifier used there (or a
-// fresh one if the peer has retired it since — never the one the abandoned
-// path saw, §9.5), with no amplification limit and the abandoned path's
-// probe dropped. Path state resets once more (§9.4): the abandoned path's
-// short history polluted it. Not counted as a migration — it undoes one.
+// validated peer address and socket, under the identifier used there (or
+// one never used, if the peer has retired it since, and with none the
+// connection ends silently: §9.5), with no amplification limit and the
+// abandoned path's probe dropped. Path state resets once more (§9.4): the
+// abandoned path's short history polluted it. Not counted as a migration —
+// it undoes one.
 // With no validated path to return to, §9.3.2 says to close silently.
 // Callers hold mu.
 func (c *Conn) revertToValidatedLocked(now time.Time) {
 	c.pathProbe.pending, c.pathProbe.oldPending = false, false
 	c.amplActive, c.amplRecv, c.amplSent = false, 0, 0
 	if c.lastValidatedPeer == nil {
-		if c.closeErr == nil {
-			c.closeErr = fmt.Errorf("%w: the migrated path never validated and no validated path remains", ErrQUIC)
-		}
-		// §8.2.4's NO_VIABLE_PATH (a MAY) is not sent: it would leave on
-		// the path that just failed to carry anything.
-		c.closeSent = true            // silently: §9.3.2 discards the state, it says nothing
-		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		c.endSilentlyLocked(fmt.Errorf("%w: the migrated path never validated and no validated path remains", ErrQUIC))
 		return
 	}
-	c.setPeerLocked(c.lastValidatedPeer)
-	c.pc = c.lastValidatedPC
 	failed := c.currentPeerSeq
 	restored := false
 	for i := range c.peerCIDs {
@@ -1682,9 +1687,20 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 			restored = true
 		}
 	}
-	if !restored {
-		c.switchToFreshPeerCIDLocked()
+	if !restored && len(c.dcid) != 0 {
+		// Only a never-used identifier may go to the validated address
+		// (§9.5): every used one has been sent to another. With none left
+		// the path cannot be reached without breaking that rule, which
+		// makes it no path to return to.
+		pick := c.pickPeerCIDLocked(true)
+		if pick < 0 {
+			c.endSilentlyLocked(fmt.Errorf("%w: the validated path's identifier was retired and no unused one remains to return under (RFC 9000 §9.5)", ErrQUIC))
+			return
+		}
+		c.adoptPeerCIDAtLocked(pick)
 	}
+	c.setPeerLocked(c.lastValidatedPeer)
+	c.pc = c.lastValidatedPC
 	// The path given up is not coming back: its identifier is retired now.
 	c.retireLeftCIDLocked(failed, true)
 	c.resetPathStateLocked(now)

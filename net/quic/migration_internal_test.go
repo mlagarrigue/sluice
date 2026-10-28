@@ -3585,3 +3585,54 @@ func TestOffPathResponseIsExpandedWithinTheBudget(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending to
+// more than one destination address." The fallback to the last validated
+// path (§9.3.2) goes back under the identifier used there; when the peer has
+// retired that one since, it takes one never used, and with none left it
+// sends nothing — the connection ends silently, as the fallback does with no
+// validated path at all — rather than reuse one another address has seen.
+func TestFallbackNeverReusesAnIdentifierSentToAnotherAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pool    []peerCID
+		wantSeq uint64
+		closes  bool
+	}{
+		{name: "a never-used identifier is taken", pool: []peerCID{
+			{seq: 1, cid: []byte("peercid1"), used: true},
+			{seq: 2, cid: []byte("peercid2"), used: true},
+			{seq: 3, cid: []byte("peercid3")},
+		}, wantSeq: 3},
+		{name: "with none left, nothing is sent", pool: []peerCID{
+			{seq: 1, cid: []byte("peercid1"), used: true},
+			{seq: 2, cid: []byte("peercid2"), used: true},
+		}, closes: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &recordingPC{addr: fakeFuzzAddr("fb:self")}
+			validated := fakeFuzzAddr("fb:validated")
+			c := newConn(pc, fakeFuzzAddr("fb:failed"), []byte("peercid1"), []byte("selfcid0"), true, DefaultParameters())
+			defer c.Close()
+			c.mu.Lock()
+			c.handshakeConfirmed = true
+			// Sequence 0, the validated path's, was retired by the peer
+			// during the probe: it is no longer in the pool.
+			c.peerCIDs = tc.pool
+			c.currentPeerSeq, c.dcid = 1, []byte("peercid1")
+			c.lastValidatedPeer, c.lastValidatedPC, c.lastValidatedSeq = validated, pc, 0
+			c.revertToValidatedLocked(time.Now())
+			seq, closing := c.currentPeerSeq, c.closeErr != nil
+			c.mu.Unlock()
+			if closing != tc.closes {
+				t.Fatalf("closing = %v, want %v", closing, tc.closes)
+			}
+			if !tc.closes && seq != tc.wantSeq {
+				t.Fatalf("the fallback sends under sequence %d, want %d", seq, tc.wantSeq)
+			}
+			if tc.closes && seq == 2 {
+				t.Fatal("the fallback reuses sequence 2, already sent to another address")
+			}
+		})
+	}
+}
