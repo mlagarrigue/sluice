@@ -1314,17 +1314,21 @@ func (c *Conn) adoptPeerCIDLocked(cid []byte) bool {
 // which links nothing (§9.5 forbids reusing an identifier across paths, not
 // taking a fresh one) and becomes the old path's for the resends; with no
 // fresh one in the pool the challenge is given up, since any other
-// identifier would tie the two paths. Expanded to 1200: a validated address
-// is under no budget, and an unproven one left behind got its 1200-byte
-// probe already. Callers hold mu.
+// identifier would tie the two paths. A peer that chose a zero-length
+// identifier (§5.1) has one empty entry in the pool: found, and the
+// challenge leaves under it, as §9.3.3 requires of every apparent
+// migration. Expanded to 1200: a validated address is under no budget, and
+// an unproven one left behind got its 1200-byte probe already. Callers
+// hold mu.
 func (c *Conn) sendOldPathChallengeLocked() {
 	var dcid []byte
+	found := false
 	for i := range c.peerCIDs {
 		if c.peerCIDs[i].seq == c.pathProbe.oldSeq {
-			dcid = c.peerCIDs[i].cid
+			dcid, found = c.peerCIDs[i].cid, true
 		}
 	}
-	if dcid == nil {
+	if !found {
 		var ok bool
 		if dcid, c.pathProbe.oldSeq, ok = c.takeFreshPeerCIDLocked(); !ok {
 			c.pathProbe.oldPending = false

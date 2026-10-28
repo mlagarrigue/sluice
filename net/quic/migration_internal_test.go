@@ -3218,3 +3218,48 @@ func TestAChallengeOnThePreferredSocketIsAnswered(t *testing.T) {
 		t.Errorf("no datagram left either socket after a PATH_CHALLENGE that reached the preferred-address socket from an address other than the path's, with %d unused peer identifiers in the pool (§8.2.2 MUST respond)", spareBefore)
 	}
 }
+
+// RFC 9000 §9.3.3: "In response to an apparent migration, endpoints MUST
+// validate the previously active path using a PATH_CHALLENGE frame." A
+// client may choose a zero-length connection ID (§5.1), and then the one
+// identifier its server holds for it is empty: it is the old path's all the
+// same, and the challenge leaves under it. It used to be taken for an
+// identifier retired since, and with no fresh one in a pool of one the
+// challenge was given up — the client's previous address never challenged.
+func TestAZeroLengthCIDPeersOldPathIsChallenged(t *testing.T) {
+	main := &recordingPC{addr: fakeFuzzAddr("zcid:self")}
+	peerA := fakeFuzzAddr("zcid:peerA")
+	peerB := fakeFuzzAddr("zcid:peerB")
+
+	// A server whose client chose a zero-length connection ID.
+	c := newConn(main, peerA, nil, []byte("selfcid0"), false, DefaultParameters())
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.mu.Unlock()
+	t.Cleanup(func() { _ = c.Close() })
+
+	// A non-probing packet from a new address: an apparent migration (§9.3).
+	c.mu.Lock()
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = net.Addr(peerB), main, 1200, true
+	c.mu.Unlock()
+	c.maybeMigrate([]Frame{{Type: framePing}}, time.Now())
+
+	c.mu.Lock()
+	moved := sameAddr(c.peer, peerB)
+	oldPending := c.pathProbe.oldPending
+	c.mu.Unlock()
+	if !moved {
+		t.Fatal("the connection did not follow the client's new address; the case under test is not reached")
+	}
+	toOld := 0
+	for _, w := range main.recorded() {
+		if sameAddr(w.to, peerA) {
+			toOld++
+		}
+	}
+	if toOld == 0 || !oldPending {
+		t.Errorf("after the migration %d datagrams went to the address left behind, and the old-path challenge is pending=%v: a zero-length-CID client's previous path is not challenged",
+			toOld, oldPending)
+	}
+}
