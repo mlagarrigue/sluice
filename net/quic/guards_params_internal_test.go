@@ -251,14 +251,20 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 				// binders of a second ClientHello before it drops
 				// early_data from it, so a resuming client that offered 0-RTT
 				// sends binders the server cannot verify and is closed with
-				// decrypt_error (CRYPTO_ERROR 0x133). That is the standard
-				// library failing, not this package's refusal of 0-RTT; the
-				// subtest runs for real on a toolchain that has the order
-				// fixed.
-				if tt.wantRejected && strings.Contains(c.Err().Error(), "0x133") {
-					t.Skipf("crypto/tls sends a second ClientHello whose PSK binders still cover early_data: %v", c.Err())
+				// decrypt_error (CRYPTO_ERROR 0x133). The connection cannot
+				// survive that, and its error says why: the refused 0-RTT,
+				// the HelloRetryRequest, and the server's code beneath. On a
+				// toolchain with the order fixed the handshake completes and
+				// the rest of the subtest runs.
+				err := c.Err()
+				if !tt.wantRejected {
+					t.Fatalf("the connection ended before the handshake completed: %v", err)
 				}
-				t.Fatalf("the connection ended before the handshake completed: %v", c.Err())
+				var ce *ConnectionError
+				if !errors.Is(err, ErrEarlyDataRejected) || !errors.Is(err, errEarlyHelloRetry) || !errors.As(err, &ce) {
+					t.Fatalf("the connection ended with %v; want ErrEarlyDataRejected naming the HelloRetryRequest, over the server's ConnectionError", err)
+				}
+				return
 			case <-ctx.Done():
 				t.Fatal("the handshake did not complete")
 			}

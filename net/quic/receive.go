@@ -1507,7 +1507,11 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 			err:  fmt.Errorf("%w: handshake data over %d bytes past what was delivered", ErrQUIC, maxCryptoBuffer),
 		}
 	}
+	atStart := sp.crypto.consumed == 0
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
+	if space == spaceInitial && atStart && c.isClient && c.earlyOffered && isHelloRetryRequest(delta) {
+		c.earlyHRR = true
+	}
 	c.mu.Unlock()
 	if err != nil {
 		// Too many fragments parked is the buffer exceeded too, by count
@@ -2073,7 +2077,14 @@ func (c *Conn) handlePeerClose(f Frame) {
 	c.mu.Lock()
 	c.draining = true
 	if c.closeErr == nil {
-		c.closeErr = &ConnectionError{Code: f.value, Application: f.Type == frameConnectionClose|1, Reason: string(f.Data)}
+		var err error = &ConnectionError{Code: f.value, Application: f.Type == frameConnectionClose|1, Reason: string(f.Data)}
+		if c.earlyHRR {
+			// The server's close answers the second ClientHello whose
+			// binders crypto/tls got wrong (errEarlyHelloRetry): the
+			// refused 0-RTT is the cause, the peer's code the symptom.
+			err = fmt.Errorf("%w: %w: %w", ErrEarlyDataRejected, errEarlyHelloRetry, err)
+		}
+		c.closeErr = err
 	}
 	c.mu.Unlock()
 	_ = c.Close()

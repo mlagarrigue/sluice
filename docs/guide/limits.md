@@ -580,7 +580,14 @@ connections opened at once from one ticket, the first resumes and the other
 five run a full handshake — one round trip more, the certificate checked
 again, and no 0-RTT — until each resumed connection has handed back a ticket
 of its own; the same appendix recommends that a server offer as many
-tickets as a client might open connections. Rewriting the TLS stack is out of the question (ADR 0002:
+tickets as a client might open connections. A `DialEarly` client that
+offers 0-RTT does not survive a HelloRetryRequest — the answer of a server
+that wants a key share the ClientHello did not carry: `crypto/tls` computes
+the PSK binders of its second ClientHello before it drops `early_data` from
+it, and the server closes with decrypt_error. The connection is lost, not
+only its 0-RTT; its error wraps `ErrEarlyDataRejected` and names the
+HelloRetryRequest, and `Dial`, which offers no 0-RTT, resumes through a
+HelloRetryRequest unharmed. Rewriting the TLS stack is out of the question (ADR 0002:
 the standard library owns the sensitive ground); these follow the Go
 release, and a peer refused over one of them is the signal to revisit.
 In plain words: the lock on the door is the one Go ships, quirks

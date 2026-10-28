@@ -469,6 +469,11 @@ type Conn struct {
 	remembered       TransportParameters
 	earlySealer      *packetSealer
 	paramsRemembered bool
+	// earlyOffered says this client's ClientHello offers 0-RTT; earlyHRR
+	// that the server answered it with a HelloRetryRequest, which the
+	// connection does not survive (errEarlyHelloRetry, handlePeerClose).
+	earlyOffered bool
+	earlyHRR     bool
 	// limitsHeld says the server's flow-control and stream limits arrived
 	// while this end was still writing 0-RTT packets, so they wait for the
 	// first 1-RTT one (§7.4.1, applyPeerLimitsLocked).
@@ -1804,6 +1809,7 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 			} else {
 				c.mu.Lock()
 				c.remembered = p
+				c.earlyOffered = true
 				c.mu.Unlock()
 			}
 		}

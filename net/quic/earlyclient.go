@@ -12,8 +12,41 @@ import (
 // server refused 0-RTT ([DialEarly]): nothing written on it reached the
 // application at the other end, and the stream is gone. The connection
 // continues in 1-RTT; whoever opened the stream decides whether to send the
-// same again on a new one (RFC 9001 §4.6.2, ADR 0019).
+// same again on a new one (RFC 9001 §4.6.2, ADR 0019). It also opens the
+// error of a connection that a HelloRetryRequest ended after its 0-RTT
+// offer (see DialEarly).
 var ErrEarlyDataRejected = errors.New("quic: the server refused 0-RTT; the stream's data was not delivered")
+
+// helloRetryRequestRandom is the Random of a ServerHello that is a
+// HelloRetryRequest: the SHA-256 of "HelloRetryRequest" (RFC 9846 §4.2.3).
+var helloRetryRequestRandom = []byte{
+	0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+	0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+	0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+	0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+}
+
+// isHelloRetryRequest reports whether b, the start of the server's Initial
+// CRYPTO stream, is a HelloRetryRequest: a server_hello (type 2) whose
+// Random, after the four-byte message header and the two-byte
+// legacy_version, is helloRetryRequestRandom. A first delivery shorter
+// than that reads as no HelloRetryRequest; a server's first Initial
+// carries the whole message in practice.
+func isHelloRetryRequest(b []byte) bool {
+	return len(b) >= 6+len(helloRetryRequestRandom) && b[0] == 2 &&
+		bytes.Equal(b[6:6+len(helloRetryRequestRandom)], helloRetryRequestRandom)
+}
+
+// errEarlyHelloRetry is what a DialEarly connection ends with when the
+// server answered its 0-RTT offer with a HelloRetryRequest. crypto/tls
+// (Go 1.26 and 1.27) computes the PSK binders of its second ClientHello
+// before it drops early_data from it, so the server cannot verify them and
+// closes with decrypt_error: the connection is lost, not only its 0-RTT.
+// Nothing outside crypto/tls can mend the binders, and DialEarly has
+// returned by then, so the error says what happened and what to do — dial
+// again with Dial, which offers no 0-RTT and resumes through a
+// HelloRetryRequest unharmed.
+var errEarlyHelloRetry = errors.New("the server sent a HelloRetryRequest, which crypto/tls cannot complete after a 0-RTT offer; dial again with Dial")
 
 // rememberedMagic opens the SessionState.Extra entry a client keeps with a
 // ticket: the server's transport parameters as they arrived on the
@@ -77,6 +110,15 @@ func rememberedParams(extra [][]byte) (TransportParameters, bool) {
 // client resets the state of every stream). Sending the same again is the
 // caller's decision, because what the transport cannot know is what else in
 // the application depended on those streams.
+//
+// One refusal the connection does not survive: a server that answers the
+// 0-RTT offer with a HelloRetryRequest — one that wants a key share the
+// ClientHello did not carry. crypto/tls (Go 1.26 and 1.27) then sends a
+// second ClientHello whose PSK binders the server cannot verify, and the
+// server closes with decrypt_error. [Conn.Err] wraps [ErrEarlyDataRejected]
+// and names the HelloRetryRequest, over the server's [ConnectionError];
+// dial again with Dial, which offers no 0-RTT and resumes through a
+// HelloRetryRequest unharmed.
 //
 // ctx bounds DialEarly's own wait, as it bounds Dial's handshake. Once
 // DialEarly has returned early, the rest of the handshake runs under
