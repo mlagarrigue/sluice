@@ -404,6 +404,29 @@ whichever way the conditions go:
   measurement where the label alone tells two connections apart. In
   plain words: the tag on the envelope is the postal service's, and the
   address links the envelopes anyway.
+- **`net/quic` slowloris**: RFC 9000 §21.6 asks for mitigations against a
+  peer that keeps many connections open on the least activity. Here a
+  connection has no maximum lifetime and no minimum transfer rate, and
+  `ListenerConfig.MaxConns` and `MaxConnsPerIP` are zero — no bound — by
+  default, because they are the deployer's memory budget (ADR 0018): a
+  server facing the internet sets both. A lifetime or a rate floor is
+  added when a deployment shows slots held this way. In plain words: a
+  slow client is not thrown out; the number of clients is what you cap.
+- **`net/quic` 0-RTT before its Initial**: a 0-RTT packet that reaches a
+  `Listener` before the Initial of its connection is dropped; RFC 9000
+  §5.2.2 lets a server buffer a few. The client sends that data again, in
+  1-RTT once the handshake completes, so the cost is a round trip on a
+  reordered first flight. Buffering is added when a measured path
+  reorders first flights often enough to show that round trip.
+- **`net/quic` loopback**: `Dial` does not refuse a loopback destination,
+  which RFC 9000 §21.5.6 allows a client to refuse against request
+  forgery. A program that dials addresses someone else chose — a proxy, a
+  crawler — filters them before `Dial`, the way it would before
+  `net.Dial`. In plain words: the package dials what you tell it to.
+- **`net/quic` `grease_quic_bit`** (RFC 9287): neither announced nor read;
+  every packet carries the QUIC Bit set, as RFC 9000 has it. Clearing it
+  guards a protocol against middleboxes that come to rely on the bit, and
+  no peer of this package has shown one; it is added when one does.
 
 ## Measurements: what is missing
 

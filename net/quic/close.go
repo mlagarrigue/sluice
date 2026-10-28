@@ -381,6 +381,12 @@ func (c *Conn) wakeOwnedReadLoop() {
 // the peer is least certain to have — a server closing during the handshake
 // may hold Handshake keys the client has not derived yet — and a close the
 // peer cannot read is a client that eats its whole handshake timeout instead.
+//
+// The transport form's Frame Type is always 0, which §19.19 reserves for "the
+// frame type is unknown": a transportError carries its code and its cause,
+// not the frame that raised it, and threading the type through every refusal
+// would buy the peer's log one number. Revisited when a peer's diagnosis
+// needs it.
 func (c *Conn) sendCloseLocked(code uint64, app bool) {
 	if c.closeSent || c.draining {
 		return

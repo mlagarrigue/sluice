@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why; the intermediary role is not this package's)
+- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why; the intermediary role is not this package's; three transport positions written)
 - **Theme:** quic
 
 ## Problem
@@ -102,6 +102,24 @@ with the ticket (RFC 9000 §7.4.1) and applies them to what it sends in
 `ErrEarlyDataRejected` and the connection continues in 1-RTT: the caller
 replays, because RFC 9001 §4.6.2 requires resetting the application state
 bound to those streams, which the transport does not know.
+
+**Three positions around it.** A burst of writes in 0-RTT leaves as several
+0-RTT packets in one datagram, one packet per writer, where RFC 9000 §12.2
+would have frames of the same encryption level share one packet: a
+datagram per write lost most of a 40-request burst to a 25-datagram queue
+(the Interop Runner's zerortt case), and merging writers into one packet
+would hold each behind the others.
+
+The server bounds a ticket's age from
+its own issue time (`EarlyDataWindow`) and never compares it with the
+client's `obfuscated_ticket_age` (RFC 9846 §4.3.10): crypto/tls does not
+expose the client's figure, and the window bounds the same thing, more
+loosely. And a ticket goes to every client, including one that lists only
+`psk_ke` and not `psk_dhe_ke` (RFC 9846 §4.3.9, a SHOULD NOT): crypto/tls
+does not expose the modes either, and such a client's resumption fails
+into a full handshake, the cost the RFC itself names. Each is revisited
+when crypto/tls exposes what it hides, or when a measured burst fits one
+packet without the wait.
 
 ## Rationale
 
