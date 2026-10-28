@@ -534,11 +534,18 @@ func packetInfoSocket(pc net.PacketConn) *net.UDPConn {
 
 // Accept blocks until a new connection's handshake completes, mirroring
 // [net.Listener.Accept]'s shape, with [Dial]'s return contract: what comes
-// back is already past its handshake, not merely dialled.
+// back is already past its handshake, not merely dialled — except under
+// [ListenerConfig.EarlyData], below.
 //
-// No application data leaves before that point: RFC 9846 §4.5.3 lets a
-// server send it after its first flight (0.5-RTT), to a client not yet
-// authenticated, and a server here answers requests, which come after.
+// Without EarlyData no application data leaves before that point: RFC 9846
+// §4.5.3 lets a server send it after its first flight (0.5-RTT), to a
+// client not yet authenticated, and a server here answers requests, which
+// come after. With EarlyData, a connection whose 0-RTT was accepted comes
+// back as soon as its 1-RTT write keys are in, before the client's
+// Finished: the requests sent in 0-RTT are read, and the answers leave in
+// 1-RTT as 0.5-RTT data, to a client whose handshake may never complete —
+// a replay. [Conn.HandshakeComplete] says when it has; EarlyData says what
+// that leaves to the application.
 func (l *Listener) Accept() (*Conn, error) {
 	select {
 	case <-l.stop:
