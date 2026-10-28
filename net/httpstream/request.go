@@ -44,6 +44,8 @@ type Request struct {
 	// fragment), a "%" not followed by two hex digits. Any other byte —
 	// one outside RFC 3986's pchar such as "|", or raw UTF-8 — has one
 	// reading and is passed on as it came; it is the handler's to refuse.
+	// Dot segments ("." and "..") and a leading "//" are delivered as sent,
+	// not normalised (docs/design/adr/0010).
 	Target []byte
 
 	// Headers is the request's field section, in the order the client sent

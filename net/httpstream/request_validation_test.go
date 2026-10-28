@@ -169,7 +169,7 @@ func ptr(s string) *string { return &s }
 // handler as it came; what TestParseRefusals refuses (a fragment, a
 // malformed percent) is the other side.
 func TestH1KeepsTargetsWithOneReading(t *testing.T) {
-	for _, target := range []string{"/a|b", "/é", "/a%2Fb"} {
+	for _, target := range []string{"/a|b", "/é", "/a%2Fb", "/a/../b", "/./a", "//x/y"} {
 		addr, _ := serveTest(t, Config{}, echoTarget)
 		c := dial(t, addr)
 		br := bufio.NewReader(c)

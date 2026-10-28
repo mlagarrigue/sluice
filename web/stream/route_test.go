@@ -35,6 +35,10 @@ func TestRouteMatches(t *testing.T) {
 		{"exact", "GET", "/health", 2, nil},
 		{"the query is not matched on", "GET", "/health?verbose=1", 2, nil},
 		{"a wildcard value stays raw", "GET", "/orders/a%2Fb", 1, []string{"a%2Fb"}},
+		// Dot segments are not removed (ADR 0010): ".." is a segment like
+		// any other, and a wildcard hands it over as sent.
+		{"a dot-dot segment is a wildcard value", "GET", "/orders/..", 1, []string{".."}},
+		{"a dot segment is a wildcard value", "GET", "/orders/.", 1, []string{"."}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
