@@ -635,3 +635,54 @@ func TestReplicationOpensABatchOnARelationWiderThanBatchBytes(t *testing.T) {
 		t.Fatal("the Relation that opened the batch is not known afterwards")
 	}
 }
+
+// PostgreSQL 18 §54.9: a Truncate carries "Option bits for TRUNCATE: 1 for
+// CASCADE, 2 for RESTART IDENTITY", and both change what replaying it
+// elsewhere does. They reach the Change.
+func TestReplDecoderKeepsTheTruncateOptions(t *testing.T) {
+	for _, tc := range []struct {
+		bits             byte
+		cascade, restart bool
+	}{{0, false, false}, {1, true, false}, {2, false, true}, {3, true, true}} {
+		truncate := binary.BigEndian.AppendUint32([]byte{'T'}, 1)
+		truncate = binary.BigEndian.AppendUint32(append(truncate, tc.bits), 42)
+		changes, err := decodeAll(t, relMsg(42, "public", "orders", "id"), truncate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) != 1 || changes[0].Kind != ChangeTruncate {
+			t.Fatalf("bits %d: %d changes, want one Truncate", tc.bits, len(changes))
+		}
+		if c := changes[0]; c.Cascade != tc.cascade || c.RestartIdentity != tc.restart {
+			t.Errorf("bits %d: Cascade=%v RestartIdentity=%v, want %v %v", tc.bits, c.Cascade, c.RestartIdentity, tc.cascade, tc.restart)
+		}
+	}
+}
+
+// §54.4: XLogData and the primary keepalive each carry "the current end of
+// WAL on the server" — the one figure the stream offers for how far behind
+// the consumer is. Replication.ServerWALEnd returns the latest.
+func TestReplicationReportsTheServersEndOfWAL(t *testing.T) {
+	w := binary.BigEndian.AppendUint64([]byte{'w'}, 0x100)
+	w = binary.BigEndian.AppendUint64(w, 0x9000)
+	w = binary.BigEndian.AppendUint64(w, 0)
+	w = append(w, beginMsg(0x10, 7)...)
+	k := binary.BigEndian.AppendUint64([]byte{'k'}, 0x9500)
+	k = append(binary.BigEndian.AppendUint64(k, 0), 0)
+	r := &Replication{batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
+	if got := r.ServerWALEnd(); got != 0 {
+		t.Fatalf("ServerWALEnd before any message = %v, want 0", got)
+	}
+	if err := r.copyData(w); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ServerWALEnd(); got != 0x9000 {
+		t.Fatalf("ServerWALEnd after an XLogData = %v, want %v", got, LSN(0x9000))
+	}
+	if err := r.copyData(k); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ServerWALEnd(); got != 0x9500 {
+		t.Fatalf("ServerWALEnd after a keepalive = %v, want %v", got, LSN(0x9500))
+	}
+}

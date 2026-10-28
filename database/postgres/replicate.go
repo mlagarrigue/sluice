@@ -74,10 +74,12 @@ type Replication struct {
 	interval   time.Duration
 
 	// acked is the highest position the consumer acknowledged; sent is the
-	// one last reported to the server, and sentAt when.
-	acked  atomic.Uint64
-	sent   LSN
-	sentAt time.Time
+	// one last reported to the server, and sentAt when. serverEnd is the end
+	// of WAL the server last announced (ServerWALEnd).
+	acked     atomic.Uint64
+	serverEnd atomic.Uint64
+	sent      LSN
+	sentAt    time.Time
 
 	started atomic.Bool
 	done    bool // the server left copy mode, or the stream stopped
@@ -299,6 +301,13 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 // Close closes the connection. Call it once the stream has ended.
 func (r *Replication) Close() error { return r.c.Close() }
 
+// ServerWALEnd is the end of WAL the server last announced, in a WAL data
+// message or a keepalive; zero before the first. Its distance to the
+// position the consumer acknowledged ([Replication.Ack]) is how far behind
+// the consumer is — the figure an operator of logical replication watches.
+// It may be read from any goroutine while the stream runs.
+func (r *Replication) ServerWALEnd() LSN { return LSN(r.serverEnd.Load()) }
+
 // readBatch reads until a batch is full, or holds something and the next
 // message is not already received.
 func (r *Replication) readBatch() (sluice.Batch[Change], error) {
@@ -399,6 +408,7 @@ func (r *Replication) copyData(p []byte) error {
 			return fmt.Errorf("%w: XLogData of %d bytes", ErrProtocol, len(p))
 		}
 		at := LSN(binary.BigEndian.Uint64(p[1:9]))
+		r.serverEnd.Store(binary.BigEndian.Uint64(p[9:17]))
 		var err error
 		r.changes, r.spans, r.vals, err = r.dec.decode(r.keep(p[25:]), at, r.changes, r.spans, r.vals)
 		return err
@@ -406,6 +416,7 @@ func (r *Replication) copyData(p []byte) error {
 		if len(p) != 18 {
 			return fmt.Errorf("%w: keepalive of %d bytes", ErrProtocol, len(p))
 		}
+		r.serverEnd.Store(binary.BigEndian.Uint64(p[1:9]))
 		if p[17] == 1 {
 			return r.report(true)
 		}

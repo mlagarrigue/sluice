@@ -94,6 +94,11 @@ type Change struct {
 	// an Update left the key alone.
 	New, Old Tuple
 	OldIsKey bool
+
+	// Cascade and RestartIdentity are set on a Truncate run with CASCADE
+	// or with RESTART IDENTITY: both change what replaying it elsewhere
+	// does (the options byte of pgoutput's Truncate message).
+	Cascade, RestartIdentity bool
 }
 
 // Relation is a table as the replication stream describes it: the columns a
@@ -359,14 +364,15 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		}
 	case 'T':
 		n := r.u32("Truncate")
-		r.u8("Truncate")
+		opts := r.u8("Truncate") // §54.9: 1 for CASCADE, 2 for RESTART IDENTITY
 		if r.err == nil && int(n) > len(r.b)/4 {
 			r.err = fmt.Errorf("%w: pgoutput Truncate names %d relations in %d bytes", ErrProtocol, n, len(r.b))
 		}
 		for i := uint32(0); i < n && r.err == nil; i++ {
 			rel := d.relationOf(&r)
 			if r.err == nil {
-				dst, spans = append(dst, Change{Kind: ChangeTruncate, LSN: at, Relation: rel}), append(spans, tupleSpans{})
+				c := Change{Kind: ChangeTruncate, LSN: at, Relation: rel, Cascade: opts&1 != 0, RestartIdentity: opts&2 != 0}
+				dst, spans = append(dst, c), append(spans, tupleSpans{})
 			}
 		}
 	default:
