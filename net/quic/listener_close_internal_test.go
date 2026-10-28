@@ -486,17 +486,27 @@ func TestAFailedHandshakeRepeatsItsCloseToARetransmittedInitial(t *testing.T) {
 	}
 	closeDatagram := sent[len(sent)-1].data
 
-	// The close lost, as far as the client knows: its Initial again.
-	l.dispatch(first, cpc.LocalAddr(), l.pc, 0)
-	l.mu.Lock()
-	pending := len(l.pendingConns)
-	l.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("the retransmitted Initial opened a new handshake (%d pending): the refused connection's closing state was cut short", pending)
+	// The close lost, as far as the client knows: its Initial again, as
+	// often as the closing state needs to answer. It answers the 1st, 2nd,
+	// 4th, 8th datagram it receives (answerClosing), and the client's own
+	// close may have been one of them already, so the count the injected
+	// Initial lands on is not known; eight retransmissions reach a reply
+	// whatever it was. None of them may open a handshake.
+	var after []tapWrite
+	for range 8 {
+		l.dispatch(first, cpc.LocalAddr(), l.pc, 0)
+		l.mu.Lock()
+		pending := len(l.pendingConns)
+		l.mu.Unlock()
+		if pending != 0 {
+			t.Fatalf("the retransmitted Initial opened a new handshake (%d pending): the refused connection's closing state was cut short", pending)
+		}
+		if after = tap.recorded(); len(after) > len(sent) {
+			break
+		}
 	}
-	after := tap.recorded()
 	if len(after) == len(sent) {
-		t.Fatal("nothing answered the retransmitted Initial: the close was not sent again")
+		t.Fatal("nothing answered eight retransmitted Initials: the close was not sent again")
 	}
 	if got := after[len(sent)].data; !bytes.Equal(got, closeDatagram) {
 		t.Fatalf("the retransmitted Initial was answered with a %d-byte datagram that is not the %d-byte close sent before", len(got), len(closeDatagram))
