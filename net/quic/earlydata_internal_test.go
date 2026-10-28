@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/mlagarrigue/sluice/internal/varint"
 )
@@ -560,10 +561,11 @@ func TestDeferred0RTTPacketsAreBounded(t *testing.T) {
 // clock stepped back after an admission left the ticket young after its
 // entry was gone, and the same ticket was admitted again. The entry now
 // lives on the ticket's clock: it carries no monotonic reading and expires
-// with the ticket, at its time of issue plus the window. A test cannot
-// build two instants whose clocks diverge (time.Time.Add moves both
-// readings together), so the entry's clock is what is checked, then the
-// wall-clock recession itself.
+// with the ticket, at its time of issue plus the window. The entry's clock
+// is checked, then the replay itself, at an instant whose monotonic reading
+// is a window ahead of its wall reading (monotonicAhead): the ticket is
+// young on the wall clock, and an entry timed on the monotonic one would
+// be gone.
 func TestASpentTicketLivesOnTheTicketsClock(t *testing.T) {
 	const window = 10 * time.Minute
 	now := time.Now()
@@ -580,15 +582,41 @@ func TestASpentTicketLivesOnTheTicketsClock(t *testing.T) {
 			exp, exp != exp.Round(0), want)
 	}
 
-	// The wall clock steps back five minutes after the admission, and
-	// another ticket's admission sweeps the register at that reading.
-	back := now.Round(0).Add(-5 * time.Minute).Add(window - time.Second)
-	if !admitOnce(g, [][]byte{g.ticketExtra(back)}, back) {
-		t.Fatal("a second, fresh ticket is not eligible")
-	}
-	if admitOnce(g, ticket, back) {
+	// A second later on the wall clock, a window and a second later on the
+	// monotonic one: the wall clock was stepped back a window meanwhile.
+	// The ticket is a minute and a second old, and its entry must still be
+	// there.
+	later := monotonicAhead(t, now.Add(time.Second), window)
+	if admitOnce(g, ticket, later) {
 		t.Error("the ticket was admitted a second time after the wall clock stepped back")
 	}
+}
+
+// monotonicAhead returns at with its monotonic reading moved d further and
+// its wall reading unchanged: what time.Now returns once the wall clock has
+// been stepped back by d. No exported function builds such an instant —
+// Add moves both readings, Round(0) drops the monotonic one — so the
+// reading is written in place, after the layout of src/time/time.go (wall
+// uint64, ext int64 holding the monotonic nanoseconds, loc). A Go release
+// that changes the layout fails the checks here, rather than leaving the
+// test it serves green for nothing.
+func monotonicAhead(t *testing.T, at time.Time, d time.Duration) time.Time {
+	t.Helper()
+	type layout struct {
+		wall uint64
+		ext  int64
+		loc  *time.Location
+	}
+	if !strings.Contains(at.String(), " m=") || unsafe.Sizeof(at) != unsafe.Sizeof(layout{}) {
+		t.Fatal("no monotonic reading to move, or time.Time is no longer {wall, ext, loc}")
+	}
+	ahead := at
+	(*layout)(unsafe.Pointer(&ahead)).ext += int64(d) //nolint:gosec // G103: the layout is checked before and after
+	if ahead.Sub(at) != d || !ahead.Round(0).Equal(at.Round(0)) {
+		t.Fatalf("moving the monotonic reading by %v moved it by %v and the wall reading by %v: time.Time's layout changed",
+			d, ahead.Sub(at), ahead.Round(0).Sub(at.Round(0)))
+	}
+	return ahead
 }
 
 // A Retry restarts the handshake and drops the 0-RTT that came before it:
