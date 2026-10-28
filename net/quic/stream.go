@@ -77,6 +77,7 @@ type Stream struct {
 	writeReset bool // this end sent RESET_STREAM, or the peer sent STOP_SENDING
 	writeCode  uint64
 	sendClosed bool // FIN or RESET_STREAM sent: the peer knows this side's size
+	dataRecvd  bool // "Data Recvd" found once (streamDataRecvdLocked): terminal, kept
 	queued     bool // waiting in the accept queue (Conn.acceptQ), under conn.mu
 	// writeDeadline is when a Write parked on credit or the congestion
 	// window gives up (SetWriteDeadline); zero means never.

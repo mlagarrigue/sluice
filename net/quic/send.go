@@ -1189,10 +1189,16 @@ func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
 // kept per packet or per stream: an acknowledged packet leaves the record,
 // a lost one puts its payload on the queue, and a payload a probe lifted
 // travels in the probe, which is tracked too; so a STREAM frame of s found
-// nowhere is a STREAM frame acknowledged. The walk costs a parse of a few
-// hundred frames on the rare event that asks, and nothing per packet or
-// per ACK. Callers hold mu.
+// nowhere is a STREAM frame acknowledged. The walk costs a parse of what
+// is tracked on the event that asks, and nothing per packet or per ACK; and
+// it is walked once per stream, since "Data Recvd" is terminal and the
+// verdict is kept (s.dataRecvd). A peer that holds its own direction open
+// may ask again with every STOP_SENDING, and each walk would cost the
+// whole flight. Callers hold mu.
 func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
+	if s.dataRecvd {
+		return true
+	}
 	if !s.sendClosed || s.writeReset {
 		return false
 	}
@@ -1207,6 +1213,7 @@ func (c *Conn) streamDataRecvdLocked(s *Stream) bool {
 			return false
 		}
 	}
+	s.dataRecvd = true
 	return true
 }
 
