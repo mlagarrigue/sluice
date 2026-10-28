@@ -850,19 +850,26 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 // while data keeps flowing on the handshake's path. handlePathResponse
 // completes the move; pathProbeDeadlineLocked abandons it. Callers hold mu.
 func (c *Conn) probePreferredAddressLocked(now time.Time) {
-	var cid []byte
+	var e *peerCID
 	for i := range c.peerCIDs {
 		if c.peerCIDs[i].seq == 1 {
-			cid = c.peerCIDs[i].cid
+			e = &c.peerCIDs[i]
 		}
 	}
-	if cid == nil {
+	if e == nil {
 		return // the pool lost sequence 1 to a Retire Prior To; nothing to probe under
 	}
 	data, err := randomID(8)
 	if err != nil {
 		return // no entropy to challenge with; the connection stays where it is
 	}
+	// The identifier is the preferred path's from the challenge on, answered
+	// or not: §9.5, "an endpoint MUST NOT reuse a connection ID when sending
+	// to more than one destination address". Marked used now, a Rebind or a
+	// Retire Prior To while the probe is in flight cannot take it for the
+	// address in use.
+	e.used = true
+	cid := e.cid
 	// The challenge goes to the target only. §8.2.2: a PATH_RESPONSE
 	// "validates the path on which the PATH_CHALLENGE was sent", and the
 	// answer does not say which path that was. The same data sent on the

@@ -835,3 +835,31 @@ func TestClientRefusesAPreferredAddressUnderAnEmptyServerCID(t *testing.T) {
 		}
 	}
 }
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending
+// to more than one destination address". The probe of the server's preferred address leaves under the
+// identifier the server offered with it (sequence 1): from that packet on,
+// the identifier is the preferred path's. A Rebind while the probe is in
+// flight takes a fresh identifier for the address in use, and with only
+// sequence 1 beside the one in use there is none — it is refused, rather
+// than sending from the new socket to the original address under the
+// identifier an observer just saw toward the preferred one.
+func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("pref13:first")}
+	c := newConn(first, fakeFuzzAddr("pref13:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+	c.preferred = fakeFuzzAddr("pref13:preferred")
+	c.probePreferredAddressLocked(time.Now())
+	probing := c.pathProbe.target != nil
+	c.mu.Unlock()
+	if !probing {
+		t.Fatal("no probe of the preferred address in flight; the case under test is not reached")
+	}
+	if err := c.Rebind(&recordingPC{addr: fakeFuzzAddr("pref13:second")}); !errors.Is(err, ErrNoFreshConnectionID) {
+		t.Fatalf("Rebind during the probe returned %v, want ErrNoFreshConnectionID: sequence 1 already left toward the preferred address", err)
+	}
+}
