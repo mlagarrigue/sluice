@@ -580,7 +580,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 		}
 		if st.stream != nil {
 			// A streamed body: the trailers go with it, read through
-			// Request.StreamTrailers once it has ended.
+			// Request.Trailers once it has ended.
 			st.stream.setTrailers(fields)
 		}
 		if st.handed {
@@ -588,7 +588,7 @@ func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 			return s.finish(st)
 		}
 		if len(fields) > 0 && st.stream == nil {
-			st.req.Trailers = fields
+			st.req.trailers = fields
 		}
 		return s.finish(st)
 	}

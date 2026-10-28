@@ -148,8 +148,8 @@
 // consumes DATA, bounds concurrent streams, counts RST_STREAM against the
 // rapid-reset bound (CVE-2023-44487), and tracks a header block across
 // CONTINUATION with the count and total bounded (CVE-2024-27316). Trailers
-// are delivered in [Request.Trailers], or [Request.StreamTrailers] behind a
-// streamed body; on a stream already ended or reset
+// are delivered in [Request.Trailers], whichever way the body is, behind a
+// body that has ended; on a stream already ended or reset
 // they are decoded then discarded rather than refused, because HPACK's
 // shared table means an undecoded block corrupts every one after it.
 //
@@ -190,7 +190,7 @@
 //     Content-Length beside it is decoded — bounded like any body, by
 //     [Config.MaxBodyBytes] or, streamed, [Config.MaxStreamedBodyBytes];
 //     chunk extensions ignored, trailers delivered in [Request.Trailers]
-//     ([Request.StreamTrailers] behind a streamed body). A
+//     once the body has ended. A
 //     coding this server does not implement is answered 501;
 //     Transfer-Encoding beside Content-Length — the request-smuggling pair
 //     in its entirety — or on an HTTP/1.0 request is answered 400.

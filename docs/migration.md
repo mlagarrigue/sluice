@@ -49,6 +49,19 @@ signatures — a value now refused — come last.
   transport authenticated outside the package can turn its statement cache
   off or size it, as `Connect` can.
 
+### HTTP: `net/httpstream`
+
+- **`Request.Trailers` is a method, for both body modes** ("one Trailers
+  for both body modes"): the field `Request.Trailers` and the method
+  `Request.StreamTrailers()` become one method, `Request.Trailers()`. Write
+  `r.Trailers()` where you read `r.Trailers` or `r.StreamTrailers()`. It is
+  nil until the body has ended without error — before the handler runs for
+  a whole body, once `Stream` has ended for a streamed one — so a handler
+  reads the trailers the same way whichever mode its server was given. A
+  test that built a `Request{Trailers: …}` by hand has no field to set any
+  more; it drives the handler through a server, as the package's own tests
+  do.
+
 ## From v0.2.2 to v0.3.0
 
 In v0.3.0, a negative size, count, bound or timeout is refused across

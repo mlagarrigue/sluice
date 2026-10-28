@@ -52,24 +52,9 @@ type Request struct {
 	// it.
 	Headers []Header
 
-	// Trailers is the request's trailer section, in the order the client
-	// sent it, or nil when it sent none: the fields after the body of a
-	// chunked HTTP/1.1 request, or of a trailing HEADERS on HTTP/2 and
-	// HTTP/3. Under [BodyWhole] the whole request is read before the
-	// handler is called, so they are here as soon as the body is; a
-	// streamed body's trailers arrive after the handler was given the
-	// request, so this is nil for it and [Request.StreamTrailers] reads
-	// them once the body has ended. They are held to the bounds the
-	// headers are held to, separately: a trailer section of its own up to
-	// [Config.MaxHeaders] fields and [Config.MaxHeaderBytes] bytes.
-	//
-	// They are kept apart from Headers on purpose and nothing in them is
-	// interpreted. RFC 9110 §6.5 has a trailer stored separately and never
-	// merged into the header section unless the field's own definition
-	// allows it: a Content-Length or Authorization arriving after the body
-	// came too late to frame, route or authorise this request, and a
-	// handler that reads one from here takes that on knowingly.
-	Trailers []Header
+	// trailers is a whole body's trailer section, read through
+	// [Request.Trailers]; a streamed body keeps its own.
+	trailers []Header
 
 	// Body is the request's content, exactly the bytes the client sent once
 	// the transfer coding is undone: a chunked body arrives joined, and
@@ -815,7 +800,7 @@ func parseRequest(buf []byte, cfg Config, arena []Header, progress *chunkProgres
 		// handler appending to Headers cannot write over the trailers.
 		req.Headers = out[start:headersEnd:headersEnd]
 		if len(out) > headersEnd {
-			req.Trailers = out[headersEnd:]
+			req.trailers = out[headersEnd:]
 		}
 		return req, consumed + n, out, nil
 	}

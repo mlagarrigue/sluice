@@ -370,7 +370,7 @@ func streamedBody(batch []Request) *bodyStream {
 // stream with NO_ERROR after it, and asks the HTTP/3 client to stop sending
 // (STOP_SENDING, H3_NO_ERROR) after it. Each element borrows the connection's
 // buffer until the next is pulled. The trailers of a streamed body arrive
-// after it: [Request.StreamTrailers] reads them once it has ended.
+// after it: [Request.Trailers] reads them once it has ended.
 func (r Request) Stream() sluice.Source[[]byte] {
 	if r.body == nil {
 		return sluice.Source[[]byte]{}
@@ -378,21 +378,26 @@ func (r Request) Stream() sluice.Source[[]byte] {
 	return r.body.source()
 }
 
-// StreamTrailers is the trailer section of a streamed body, in the order
-// the client sent it: the fields after the last chunk of an HTTP/1.1 body,
-// or the trailing HEADERS on HTTP/2 and HTTP/3. They arrive after the body,
-// so they are nil until [Request.Stream] has ended without error, and nil
-// when the client sent none or the body is not streamed — a whole body's
-// trailers are in [Request.Trailers]. Like the stream, they are valid while
-// the handler runs.
+// Trailers is the request's trailer section, in the order the client sent
+// it: the fields after the last chunk of an HTTP/1.1 body, or the trailing
+// HEADERS on HTTP/2 and HTTP/3; nil when it sent none. They arrive after the
+// body, so they are nil until the body has ended without error, whichever
+// way it is delivered: under [BodyWhole] that is before the handler is
+// called, for a streamed body once [Request.Stream] has ended. One call
+// reads both, so a handler need not know which mode it was given. They are
+// valid while the handler runs.
 //
-// They are held to the bounds the headers are held to, separately, and
-// copied out of the connection's buffer, so they cost at most
-// [Config.MaxHeaderBytes]. Nothing in them is interpreted (Trailers says
-// why).
-func (r Request) StreamTrailers() []Header {
+// They are held to the bounds the headers are held to, separately: a
+// trailer section of its own up to [Config.MaxHeaders] fields and
+// [Config.MaxHeaderBytes] bytes. They are kept apart from Headers on
+// purpose and nothing in them is interpreted. RFC 9110 §6.5 has a trailer
+// stored separately and never merged into the header section unless the
+// field's own definition allows it: a Content-Length or Authorization
+// arriving after the body came too late to frame, route or authorise this
+// request, and a handler that reads one from here takes that on knowingly.
+func (r Request) Trailers() []Header {
 	if r.body == nil {
-		return nil
+		return r.trailers
 	}
 	if r.body.q != nil {
 		return r.body.q.trailerSection()

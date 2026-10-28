@@ -345,7 +345,7 @@ func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	for i, b := range r.bounds {
 		r.batch[i].Headers = r.headers[b[0]:b[1]:b[1]]
 		if b[2] > b[1] {
-			r.batch[i].Trailers = r.headers[b[1]:b[2]:b[2]]
+			r.batch[i].trailers = r.headers[b[1]:b[2]:b[2]]
 		}
 	}
 	return r.batch, used, nil

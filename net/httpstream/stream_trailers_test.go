@@ -12,7 +12,7 @@ import (
 )
 
 // trailersAfterStream reads the body through Stream to its end, then
-// answers "<bytes>|" and the trailers StreamTrailers returns as name=value.
+// answers "<bytes>|" and the trailers Trailers returns as name=value.
 // A trailer read before the end is an error: there is none to read yet.
 // first, when set, is closed once the first piece has been read, so a test
 // can send the end of the body only then, after the handler has the request.
@@ -21,7 +21,7 @@ func trailersAfterStream(first chan<- struct{}) Handler {
 		out := make([]Response, b.Len())
 		for i := range b.Items {
 			r := &b.Items[i]
-			if r.StreamTrailers() != nil {
+			if r.Trailers() != nil {
 				out[i] = Response{Status: 500, Body: []byte("trailers before the body ended")}
 				continue
 			}
@@ -40,7 +40,7 @@ func trailersAfterStream(first chan<- struct{}) Handler {
 				continue
 			}
 			body := fmt.Appendf(nil, "%d|", n)
-			for _, h := range r.StreamTrailers() {
+			for _, h := range r.Trailers() {
 				body = append(append(append(append(body, ' '), h.Name...), '='), h.Value...)
 			}
 			out[i] = Response{Status: 200, Body: body}
@@ -55,7 +55,7 @@ func trailersAfterStream(first chan<- struct{}) Handler {
 // The end of the body arrives alone, once the handler has read the first
 // piece: what it had read is dropped, the trailers lie at the front of the
 // body's region, and the next request is moved down over them.
-func TestStreamTrailersHTTP1(t *testing.T) {
+func TestTrailersHTTP1(t *testing.T) {
 	first := make(chan struct{})
 	addr, _ := serveTest(t, streamCfg(), trailersAfterStream(first))
 	c := dial(t, addr)
@@ -83,7 +83,7 @@ func TestStreamTrailersHTTP1(t *testing.T) {
 
 // RFC 9113 §8.1: the trailing HEADERS of a streamed body is read once the
 // body has ended.
-func TestStreamTrailersHTTP2(t *testing.T) {
+func TestTrailersHTTP2(t *testing.T) {
 	first := make(chan struct{})
 	addr, _ := serveH2(t, h2StreamCfg(), trailersAfterStream(first))
 	c := dialH2(t, addr)
@@ -107,7 +107,7 @@ func TestStreamTrailersHTTP2(t *testing.T) {
 
 // RFC 9114 §4.1: the trailing HEADERS frame of a streamed body is read once
 // the body has ended.
-func TestStreamTrailersHTTP3(t *testing.T) {
+func TestTrailersHTTP3(t *testing.T) {
 	first := make(chan struct{})
 	conn, _ := h3StreamServer(t, Config{MaxBodyBytes: 1024, MaxStreamedBodyBytes: 1 << 20}, trailersAfterStream(first))
 	s := askH3Open(t, conn, appendH3Frame(h3Request("POST", "/"), h3Data, pattern(100)))
@@ -126,5 +126,46 @@ func TestStreamTrailersHTTP3(t *testing.T) {
 	}
 	if body, _ := readH3Body(t, s); body != "150| x-sum=1 x-sig=a b" {
 		t.Errorf("answered %q, want %q", body, "150| x-sum=1 x-sig=a b")
+	}
+}
+
+// One handler reads the trailers of a whole body and of a streamed one by
+// the same code — ReadAll, then Trailers — because a handler written above
+// this package does not know which mode its server was given.
+func TestTrailersReadTheSameWayInBothModes(t *testing.T) {
+	handler := func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+		out := make([]Response, b.Len())
+		for i := range b.Items {
+			r := &b.Items[i]
+			body, err := r.ReadAll(nil, 1<<16)
+			if err != nil {
+				out[i] = Response{Status: 400, Body: []byte(err.Error())}
+				continue
+			}
+			got := fmt.Appendf(nil, "%d|", len(body))
+			for _, h := range r.Trailers() {
+				got = append(append(append(append(got, ' '), h.Name...), '='), h.Value...)
+			}
+			out[i] = Response{Status: 200, Body: got}
+		}
+		return sluice.Batch[Response]{Items: out}
+	}
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+	}{
+		{"whole", Config{BodyDelivery: BodyWhole}},
+		{"streamed", streamCfg()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, _ := serveTest(t, tc.cfg, handler)
+			c := dial(t, addr)
+			if _, err := fmt.Fprint(c, "POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\nX-Sum: 1\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			if status, got := readResponse(t, bufio.NewReader(c)); !strings.Contains(status, "200") || got != "3| X-Sum=1" {
+				t.Fatalf("%s %q, want 200 \"3| X-Sum=1\"", status, got)
+			}
+		})
 	}
 }

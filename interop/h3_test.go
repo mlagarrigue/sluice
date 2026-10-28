@@ -232,7 +232,7 @@ func h3Fields(_ context.Context, b sluice.Batch[httpstream.Request]) sluice.Batc
 			}
 		}
 		trailer := ""
-		for _, h := range r.Trailers {
+		for _, h := range r.Trailers() {
 			if strings.EqualFold(string(h.Name), "x-checksum") {
 				trailer = string(h.Value)
 			}

@@ -502,10 +502,10 @@ func TestH3RequestTrailersReachTheHandler(t *testing.T) {
 	if got := r.Get("x-sum"); got != nil {
 		t.Errorf("a trailer field reached the headers as %q", got)
 	}
-	if len(r.Trailers) != 2 ||
-		string(r.Trailers[0].Name) != "x-sum" || string(r.Trailers[0].Value) != "ok" ||
-		string(r.Trailers[1].Name) != "x-sig" || string(r.Trailers[1].Value) != "a b" {
-		t.Errorf("Trailers = %q, want x-sum: ok, x-sig: a b", r.Trailers)
+	if len(r.Trailers()) != 2 ||
+		string(r.Trailers()[0].Name) != "x-sum" || string(r.Trailers()[0].Value) != "ok" ||
+		string(r.Trailers()[1].Name) != "x-sig" || string(r.Trailers()[1].Value) != "a b" {
+		t.Errorf("Trailers = %q, want x-sum: ok, x-sig: a b", r.Trailers())
 	}
 	if len(r.Headers) != cap(r.Headers) {
 		t.Errorf("Headers has room for %d more fields: an append would overwrite the trailers", cap(r.Headers)-len(r.Headers))

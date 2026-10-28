@@ -1261,10 +1261,10 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 				switch {
 				case st.body != nil:
 					// A streamed body: the trailers go with it, read
-					// through Request.StreamTrailers once it has ended.
+					// through Request.Trailers once it has ended.
 					st.body.setTrailers(trailers)
 				case len(trailers) > 0:
-					st.req.Trailers = trailers
+					st.req.trailers = trailers
 				}
 				st.gotTrailers = true
 				continue

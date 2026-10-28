@@ -1651,7 +1651,7 @@ func fieldsEcho(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Respons
 			body = append(append(body, h.Name...), ' ')
 		}
 		body = append(body, '|')
-		for _, h := range r.Trailers {
+		for _, h := range r.Trailers() {
 			body = append(append(append(append(body, ' '), h.Name...), '='), h.Value...)
 		}
 		out = append(out, Response{Status: 200, Body: body})
