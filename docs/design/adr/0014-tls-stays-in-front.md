@@ -1,7 +1,7 @@
 # ADR 0014 — TLS stays in front of the experimental transport
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (recommended configuration documented), 2026-10-21 (the TLS requirements of RFC 9113 §9.2 are the host's), 2026-10-21 (the same delegation holds inside `net/quic`)
+- **Revised:** 2026-10-15 (recommended configuration documented), 2026-10-21 (the TLS requirements of RFC 9113 §9.2 are the host's), 2026-10-21 (the same delegation holds inside `net/quic`), 2026-10-23 (the configuration to put in front is in the Deployments guide)
 - **Theme:** quic
 
 ## Problem

@@ -319,6 +319,82 @@ func TestDecisionRecordsShareOneHeader(t *testing.T) {
 	}
 }
 
+// A record revised in place says when: its header's last date — Created or
+// the last Revised — is no older than the last commit that changed its
+// Decision or its Rationale. The header is what a reader dates the decision
+// by, and ADR 0008's stopped a day before two commits changed what it
+// decides. Problem, the header and the title may change without a date.
+// Read from the history, so a shallow clone skips.
+func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
+		t.Skip("needs the full history")
+	}
+	files, err := filepath.Glob("docs/design/adr/[0-9][0-9][0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	date := regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
+	for _, f := range files {
+		b, err := os.ReadFile(f) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dated string
+		for l := range strings.SplitSeq(string(b), "\n") {
+			if strings.HasPrefix(l, "- **Created:** ") || strings.HasPrefix(l, "- **Revised:** ") {
+				for _, d := range date.FindAllString(l, -1) {
+					dated = max(dated, d)
+				}
+			}
+		}
+		// The whole file as context, so every changed line is seen under
+		// its section's heading; one commit per record, newest first.
+		out, err := exec.Command("git", "log", "--no-merges", "--format=\x1e%as", "-p", "-U100000", "--", f).Output() //nolint:gosec // G204: a repository path from a glob, not input
+		if err != nil {
+			t.Skipf("not a git checkout: %v", err)
+		}
+		for rec := range strings.SplitSeq(string(out), "\x1e") {
+			when, diff, ok := strings.Cut(rec, "\n")
+			if !ok {
+				continue
+			}
+			if strings.Contains(diff, "\nnew file mode ") {
+				// The commit that brings the record in — the history was
+				// imported on 2026-10-09 — is not a revision: Created
+				// dates the decision, which may be older than the file.
+				break
+			}
+			section, inHunk, changed := "", false, false
+			for l := range strings.SplitSeq(diff, "\n") {
+				if strings.HasPrefix(l, "@@") {
+					inHunk = true
+					continue
+				}
+				if !inHunk || l == "" {
+					continue
+				}
+				if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
+					section = strings.TrimPrefix(text, "## ")
+				}
+				if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
+					changed = true
+					break
+				}
+			}
+			if !changed {
+				continue
+			}
+			if when > dated {
+				t.Errorf("%s: its Decision or Rationale changed on %s, and its header's last date is %s", f, when, dated)
+			}
+			break
+		}
+	}
+}
+
 // Commit messages are one line in Conventional Commits form with a scope
 // from the closed list. Checked over the whole history, which is what a
 // reader of `git log --oneline` gets. Merge commits are skipped: a pull

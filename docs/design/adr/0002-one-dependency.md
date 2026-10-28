@@ -1,7 +1,7 @@
 # ADR 0002 — The dependency graph is a decision, never a default
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-18 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories, and what `scripts/check.sh` and the `lint` job check in them)
+- **Revised:** 2026-10-10 (the interop module, nested on `main`), 2026-10-18 (`golang.org/x/text`, for SASLprep in `database/postgres`), 2026-10-19 (the comparison module, nested on `main` and run on every push; the study's modules `comparison/sluice` and `comparison/loadgen`, and what watches the nested modules for advisories, and what `scripts/check.sh` and the `lint` job check in them), 2026-10-28 (`audit/` the fifth nested module, `interop/` replaces the root too, the nested tests run by `check.sh`)
 - **Theme:** ci
 
 ## Problem
@@ -49,20 +49,23 @@ import in the root module would still put the library in `go.mod` and in
 every consumer's module graph; a nested module (a `go.mod` in a
 subdirectory) is excluded from the root's `./...`, so nothing it requires
 reaches a user's binary or `go.mod`, and CI's `deps` job keeps it that way.
-Four such modules exist, all on `main`:
+Five such modules exist, all on `main`:
 
 - `benchmarks/`, where `pgx`, `gin` or `echo` are compared — and
   `TestPGContendersAgree` asserts that the connector reads the same rows as
   `pgx`;
 - `interop/`, where `net/quic` is confronted with `quic-go` on every push;
 - `comparison/sluice` and `comparison/loadgen`, the server and the load
-  generator of the comparison study.
+  generator of the comparison study;
+- `audit/`, a program that reads a machine, an image and a binary and says
+  what their settings cost — the standard library alone, and no `replace`
+  of the root, since it must not depend on what it audits.
 
-`benchmarks/` and `comparison/sluice` replace the root with the working
-tree. The root's `go test ./...` does not see them; `scripts/check.sh` runs
-`go vet` and golangci-lint (the root's linters, with its configuration) in
-each of them, without their tests, which want PostgreSQL, a `quic-go` peer
-or a load campaign.
+`benchmarks/`, `comparison/sluice` and `interop/` replace the root with the
+working tree. The root's `go test ./...` does not see any of the five;
+`scripts/check.sh` runs `go vet`, golangci-lint (the root's linters, with
+its configuration) and the tests CI runs in each of them — those that want
+PostgreSQL or a calibrated machine skip there, as they do on CI's runner.
 
 The comparison module lives on `main` for the reason interop does: on a
 branch of its own it falls behind, and a measurement of code that is no

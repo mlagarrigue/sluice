@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense)
+- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense; `audit` among the nested modules)
 - **Theme:** docs
 
 ## Problem
@@ -43,7 +43,7 @@ documentation opens a paragraph with "Experimental:", listed in
 — today the HTTP/3 entry points of `httpstream` (ADR 0021) and
 `gateway.Partitions`, whose cost is measured but not yet when it pays;
 `internal/`; `example/`; the nested modules (`interop`, `benchmarks`,
-`comparison/…`), which are not published; the text of errors and logs;
+`comparison/…`, `audit`), which are not published; the text of errors and logs;
 performance, measured and published but not promised.
 
 **What still moves.** The Go floor rises in a minor version, never in a
