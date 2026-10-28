@@ -42,7 +42,7 @@ signatures — a value now refused — come last.
 
 ### PostgreSQL: `database/postgres`
 
-- **`NewConn` takes a `Config`** ("NewConn takes Config, ADR 0022"):
+- **`NewConn` takes a `Config`** (`ef256c7`):
   `postgres.NewConn(rw)` becomes `postgres.NewConn(rw, postgres.Config{})`,
   which keeps what it did. The `Config` is read for what applies once the
   startup is past — `StatementCacheSize`, `MaxMessage`, `Logger` — so a
@@ -51,8 +51,8 @@ signatures — a value now refused — come last.
 
 ### HTTP: `net/httpstream`
 
-- **`Request.Trailers` is a method, for both body modes** ("one Trailers
-  for both body modes"): the field `Request.Trailers` and the method
+- **`Request.Trailers` is a method, for both body modes** (`d174429`):
+  the field `Request.Trailers` and the method
   `Request.StreamTrailers()` become one method, `Request.Trailers()`. Write
   `r.Trailers()` where you read `r.Trailers` or `r.StreamTrailers()`. It is
   nil until the body has ended without error — before the handler runs for
