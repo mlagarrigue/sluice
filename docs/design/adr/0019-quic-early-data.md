@@ -12,7 +12,7 @@ ticket) before the handshake ends. The gain is one round trip per resumed
 connection; the price is replay: anyone who copies the client's first flight
 can send it again, and the server cannot tell the copy apart, since the
 client only authenticates with its Finished. `crypto/tls` decrypts 0-RTT but
-offers no replay protection, while RFC 8446 §8 requires a server instance to
+offers no replay protection, while RFC 9846 §8 requires a server instance to
 accept the 0-RTT of a given handshake at most once.
 
 Three more constraints. In 0-RTT the client applies the transport parameters
@@ -96,7 +96,7 @@ bound to those streams, which the transport does not know.
 The instance identifier makes replay across instances impossible by
 construction rather than asking the operator for a shared register: another
 instance, or the same one after a restart, refuses 0-RTT and resumes in
-1-RTT. The local register gives RFC 8446 §8's "at most once" on the instance
+1-RTT. The local register gives RFC 9846 §8's "at most once" on the instance
 that issued the ticket, and its bound fails closed: under load 0-RTT is
 lost, never the guarantee. What this costs: behind a balancer that does not
 bring a client back to the same instance, little 0-RTT; and a ticket older

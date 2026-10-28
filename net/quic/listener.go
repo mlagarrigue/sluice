@@ -219,7 +219,7 @@ type ListenerConfig struct {
 	TokenKey [32]byte
 
 	// SessionTickets makes every connection send the client one session
-	// ticket once its handshake completes (RFC 8446 §4.6.1, carried in a
+	// ticket once its handshake completes (RFC 9846 §4.7.1, carried in a
 	// 1-RTT CRYPTO frame as RFC 9001 §4.5 says). A client that presents it
 	// on a later connection resumes the session: the server sends no
 	// certificate chain and the client verifies none, though the handshake
@@ -246,7 +246,7 @@ type ListenerConfig struct {
 	// Early data can be a replay: anyone who copies a client's first
 	// flight can send it again, and the server cannot tell until the
 	// client's Finished arrives. The listener accepts the 0-RTT of a
-	// ticket at most once (RFC 8446 §8), and only for a ticket it issued
+	// ticket at most once (RFC 9846 §8), and only for a ticket it issued
 	// itself — another instance, or this one after a restart, resumes the
 	// connection in 1-RTT — less than EarlyDataWindow ago. What remains is
 	// the application's to judge: a connection with 0-RTT accepted is
@@ -446,7 +446,7 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 // receive goroutine, and a slow one stalls that connection alone ("The TLS
 // callbacks are the caller's", same place). cfg.Certificates is refused
 // when a leaf carries a Key Usage without digitalSignature or a chain
-// member is signed with SHA-1 (RFC 8446 §4.4.2.2, §4.2.3): a conformant
+// member is signed with SHA-1 (RFC 9846 §4.5.1.2, §4.3.3): a conformant
 // client would refuse the chain mid-handshake, where the cause is lost.
 // What GetCertificate or GetConfigForClient return is the caller's to hold
 // to the same rules, as is matching the chain to the client's
@@ -532,7 +532,7 @@ func packetInfoSocket(pc net.PacketConn) *net.UDPConn {
 // [net.Listener.Accept]'s shape, with [Dial]'s return contract: what comes
 // back is already past its handshake, not merely dialled.
 //
-// No application data leaves before that point: RFC 8446 §4.4.4 lets a
+// No application data leaves before that point: RFC 9846 §4.5.3 lets a
 // server send it after its first flight (0.5-RTT), to a client not yet
 // authenticated, and a server here answers requests, which come after.
 func (l *Listener) Accept() (*Conn, error) {

@@ -174,7 +174,7 @@ func TestQuicGoZeroRTTAgainstSluiceServer(t *testing.T) {
 	}
 }
 
-// A ticket's 0-RTT is accepted once (RFC 8446 §8): presented a second time —
+// A ticket's 0-RTT is accepted once (RFC 9846 §8): presented a second time —
 // a replay of the client's first flight, as far as the server can tell —
 // it resumes the session in 1-RTT.
 func TestSluiceAcceptsATicketsZeroRTTOnce(t *testing.T) {

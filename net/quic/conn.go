@@ -708,8 +708,8 @@ func checkTLSConfig(cfg *tls.Config) error {
 
 // checkServerCertificates refuses a cfg whose configured chains TLS 1.3
 // forbids a server to send, before any packet is answered with them: a leaf
-// whose Key Usage extension lacks digitalSignature (RFC 8446 §4.4.2.2) and
-// a chain member signed with SHA-1 (§4.2.3), the self-signed anchor
+// whose Key Usage extension lacks digitalSignature (RFC 9846 §4.5.1.2) and
+// a chain member signed with SHA-1 (§4.3.3), the self-signed anchor
 // excepted since no client verifies its signature. crypto/tls reads
 // neither, and a conformant client refuses the chain mid-handshake, where a
 // Listener can only close and the operator learns nothing of the cause.
@@ -741,7 +741,7 @@ func checkServerCertificates(cfg *tls.Config) error {
 // certificate of a chain, leaf saying whether it is the first.
 func checkServedCertificate(c *x509.Certificate, leaf bool) error {
 	if leaf && c.KeyUsage != 0 && c.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-		return fmt.Errorf("%w: certificate %q has a Key Usage without digitalSignature (RFC 8446 §4.4.2.2)", ErrQUIC, c.Subject)
+		return fmt.Errorf("%w: certificate %q has a Key Usage without digitalSignature (RFC 9846 §4.5.1.2)", ErrQUIC, c.Subject)
 	}
 	switch c.SignatureAlgorithm {
 	case x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1:
@@ -750,7 +750,7 @@ func checkServedCertificate(c *x509.Certificate, leaf bool) error {
 		// refuses SHA-1 outright — so issuer and subject tell, not a
 		// verification).
 		if leaf || !bytes.Equal(c.RawIssuer, c.RawSubject) {
-			return fmt.Errorf("%w: certificate %q is signed with SHA-1 (RFC 8446 §4.2.3)", ErrQUIC, c.Subject)
+			return fmt.Errorf("%w: certificate %q is signed with SHA-1 (RFC 9846 §4.3.3)", ErrQUIC, c.Subject)
 		}
 	}
 	return nil
@@ -863,13 +863,13 @@ func requireTLS13(cfg *tls.Config) error {
 // round trip and Dial does not even offer 0-RTT, which leaves the ticket's
 // 0-RTT unspent at the server; [DialEarly] is the one that sends in it.
 // A ticket is presented once: Dial wraps the cache, on a copy of cfg, so
-// that a ticket taken out of it is removed — RFC 9001 §4.5 and RFC 8446
+// that a ticket taken out of it is removed — RFC 9001 §4.5 and RFC 9846
 // Appendix C.4, since a ticket reused lets anyone on the path tie the
 // connections together — and the ticket the server issues on the resumed
 // connection refills it. A cache that ignores Put(key, nil) reuses its
 // tickets anyway; that is the caller's choice to make, not the default.
 //
-// crypto/tls refuses RSA keys under 1024 bits and no more. RFC 8446
+// crypto/tls refuses RSA keys under 1024 bits and no more. RFC 9846
 // Appendix C.2 asks applications to hold certification paths to at least
 // 2048-bit RSA or 224-bit ECDSA: a cfg that wants that enforces it in
 // VerifyConnection, on the public keys of [tls.ConnectionState.PeerCertificates]
@@ -988,8 +988,8 @@ type datagram struct {
 // Not-ECT and the client sends unmarked from then on.
 //
 // cfg.Certificates is refused here when a leaf carries a Key Usage without
-// digitalSignature or a chain member is signed with SHA-1 (RFC 8446
-// §4.4.2.2, §4.2.3), as [NewListener] refuses it; what GetCertificate or
+// digitalSignature or a chain member is signed with SHA-1 (RFC 9846
+// §4.5.1.2, §4.3.3), as [NewListener] refuses it; what GetCertificate or
 // GetConfigForClient return is the caller's to hold to the same rules, as
 // is matching the chain to the client's signature_algorithms_cert, which
 // crypto/tls does not do.

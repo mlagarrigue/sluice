@@ -361,7 +361,7 @@ condition per package, each one checkable:
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
   `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Four of its
-  positions depart from RFC 8446, one of them visible to a conformant peer
+  positions depart from RFC 9846, one of them visible to a conformant peer
   (the X25519 key share repeated inside the hybrid X25519MLKEM768 share),
   and the compatibility mode is neither asked for nor policed; they are
   inherited as they are, listed in [TLS, in detail](#tls-in-detail).
@@ -370,7 +370,7 @@ condition per package, each one checkable:
   the door is the one Go ships, quirks included, and it is kept rather
   than copied.
 - **`net/quic` secrets**: a secret or key is forgotten by becoming
-  unreachable, never by being overwritten. RFC 8446 §6 has endpoints
+  unreachable, never by being overwritten. RFC 9846 §6 has endpoints
   "forget" the keys of a failed connection and §7 would have each secret
   erased once used; here the sealers and openers of a closed connection
   are released to the garbage collector, a rotated key is replaced, and
@@ -549,19 +549,19 @@ the backoff is the bound. A lost probe is not a congestion event
 The handshake is `crypto/tls`'s, from the Go release
 `go.mod` names as the floor, run through `tls.QUICClient` and
 `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
-documentation says. Four of its positions depart from RFC 8446 and are
+documentation says. Four of its positions depart from RFC 9846 and are
 inherited as they are: the ClientHello's X25519 key share repeats the
-key inside the hybrid X25519MLKEM768 share (§4.2.8, the one departure a
+key inside the hybrid X25519MLKEM768 share (§4.3.8, the one departure a
 conformant peer can see); a `pre_shared_key` extension out of last place
 or a version never offered end the handshake with decode_error or
-protocol_version rather than illegal_parameter (§4.2.11, §4.2.1); an
+protocol_version rather than illegal_parameter (§4.3.11, §4.3.1); an
 extension known but forbidden in the message carrying it is ignored
-rather than refused (§4.2, §4.3.1); a `pre_shared_key` without
+rather than refused (§4.3, §4.4.1); a `pre_shared_key` without
 `psk_key_exchange_modes` continues without the PSK rather than aborting
-(§4.2.9). The TLS 1.3 compatibility mode is neither asked for by this
+(§4.3.9). The TLS 1.3 compatibility mode is neither asked for by this
 client nor policed by this server: `crypto/tls` sends no
 `legacy_session_id` in QUIC and echoes one it receives without the
-change_cipher_spec RFC 8446 Appendix D.4 would want — RFC 9001 §8.4
+change_cipher_spec RFC 9846 Appendix E.4 would want — RFC 9001 §8.4
 removes that record from QUIC — and the ClientHello field is not
 exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
 waits on `crypto/tls`. Rewriting the TLS stack is out of the question (ADR 0002:

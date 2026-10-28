@@ -220,8 +220,8 @@
 // each case; only the code differs. The alert is all this package sees,
 // and the same alert serves other causes — an internal_error is also a
 // real one — so no translation is made. To revisit when crypto/tls states
-// the cause of an alert. The TLS 1.3 compatibility mode (RFC 8446 Appendix
-// D.4, legacy_session_id) is neither requested nor policed here; the
+// the cause of an alert. The TLS 1.3 compatibility mode (RFC 9846 Appendix
+// E.4, legacy_session_id) is neither requested nor policed here; the
 // limits guide says why.
 package quic
 

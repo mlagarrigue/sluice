@@ -49,7 +49,7 @@ const defaultRetryTokenTTL = 10 * time.Second
 // The same register records the 0-RTT tickets an [earlyGate] admitted, with
 // failClosed set: there a full register refuses the next entry instead of
 // forgetting the oldest, since a 0-RTT refused costs the client a round
-// trip and a replay accepted breaks RFC 8446 §8. That one is called with
+// trip and a replay accepted breaks RFC 9846 §8. That one is called with
 // the gate's own mu held.
 type spentTokens struct {
 	byID       map[string]time.Time // identifier → when it may be forgotten

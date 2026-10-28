@@ -50,8 +50,8 @@ func serverConfig(der []byte, key *ecdsa.PrivateKey, chain ...[]byte) *tls.Confi
 	}
 }
 
-// RFC 8446 §4.4.2.2: a leaf with a Key Usage extension must carry
-// digitalSignature; §4.2.3: a TLS 1.3 server does not offer a SHA-1 signed
+// RFC 9846 §4.5.1.2: a leaf with a Key Usage extension must carry
+// digitalSignature; §4.3.3: a TLS 1.3 server does not offer a SHA-1 signed
 // certificate. Both are refused where the operator configured them,
 // NewListener and Accept, with the section named.
 func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
@@ -72,7 +72,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 	}
 
 	der, key := mintCert(t, serverTemplate("no-ds", x509.KeyUsageKeyEncipherment), nil, nil)
-	refused(t, serverConfig(der, key), "§4.4.2.2")
+	refused(t, serverConfig(der, key), "§4.5.1.2")
 
 	caTmpl := serverTemplate("ca", x509.KeyUsageCertSign|x509.KeyUsageDigitalSignature)
 	caTmpl.IsCA, caTmpl.BasicConstraintsValid = true, true
@@ -84,7 +84,7 @@ func TestServerRefusesAChainTLS13Forbids(t *testing.T) {
 	sha1Tmpl := serverTemplate("sha1-leaf", x509.KeyUsageDigitalSignature)
 	sha1Tmpl.SignatureAlgorithm = x509.ECDSAWithSHA1
 	sha1DER, sha1Key := mintCert(t, sha1Tmpl, ca, caKey)
-	refused(t, serverConfig(sha1DER, sha1Key, caDER), "§4.2.3")
+	refused(t, serverConfig(sha1DER, sha1Key, caDER), "§4.3.3")
 
 	// Accepted: digitalSignature set, SHA-256 throughout; and a Key Usage
 	// extension absent altogether.

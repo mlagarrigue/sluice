@@ -9,7 +9,7 @@ import (
 	"github.com/mlagarrigue/sluice/internal/dgram"
 )
 
-// RFC 8446 §4.1.4: a server that takes none of the client's key shares
+// RFC 9846 §4.2.4: a server that takes none of the client's key shares
 // answers with a HelloRetryRequest, and the client sends a second
 // ClientHello — one more round trip at the Initial level, with CRYPTO
 // offsets that run on past the first hello. crypto/tls does the TLS; what

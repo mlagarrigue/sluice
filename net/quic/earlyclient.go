@@ -67,7 +67,7 @@ func rememberedParams(extra [][]byte) (TransportParameters, bool) {
 //
 // Early data can be replayed by anyone who copies the flight that carried
 // it, and the server cannot tell until the handshake ends: send in 0-RTT
-// only what a duplicate does not hurt — RFC 8446 §8 leaves that judgement
+// only what a duplicate does not hurt — RFC 9846 §8 leaves that judgement
 // to the client.
 //
 // The server may refuse 0-RTT. Every stream opened before the refusal then
