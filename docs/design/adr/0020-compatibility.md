@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental)
 - **Theme:** docs
 
 ## Problem
@@ -38,7 +38,10 @@ Part of the contract, like the signatures:
 Not part of the contract: the experimental packages (today `net/quic`,
 `net/quic/udp`, `web/stream`), whose breaks are still announced with `!` and
 listed in the CHANGELOG; the few symbols of a stable package whose
-documentation opens a paragraph with "Experimental:" (ADR 0021);
+documentation opens a paragraph with "Experimental:", listed in
+`scripts/api-experimental.txt` — a listed type with its fields and methods
+— today the HTTP/3 entry points of `httpstream` (ADR 0021) and
+`gateway.Partitions`, whose cost is measured but not yet when it pays;
 `internal/`; `example/`; the nested modules (`interop`, `benchmarks`,
 `comparison/…`), which are not published; the text of errors and logs;
 performance, measured and published but not promised.

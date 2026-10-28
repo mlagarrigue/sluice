@@ -7,11 +7,12 @@ import (
 	"github.com/mlagarrigue/sluice"
 )
 
-// Partitions is experimental: the mechanism works and is tested, but no
-// measurement yet says when it pays, so its shape may change.
-//
 // Partitions splits a batch into groups sharing a key, reusing its buffers
 // across batches.
+//
+// Experimental: the mechanism works and is tested, but no measurement yet
+// says when it pays, so its shape may change; the v1 promise does not cover
+// it or its methods (scripts/api-experimental.txt, ADR 0020).
 //
 // # Why this exists
 //
