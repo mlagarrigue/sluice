@@ -179,7 +179,12 @@ func TestWrongKeyFailsTheStage(t *testing.T) {
 // 1 600 req/s, under h2 and h3). Under a long X the wait in the queue
 // stays under the SLO, and the cause published is the queue: the
 // generator limits, the stage is invalid, not a verdict on the server.
-// The stages before it are held, each with its own budget.
+// The stages before it are held, each with its own budget: at 50 and
+// 100 req/s, an eighth of what the ceiling carries at most. At 300, under
+// a loaded host, a few replies slow enough to keep all four connections
+// busy at once queued two or three requests (measured on 2026-10-28, load
+// 20 on 15 cores): the generator then rightly calls the stage its own
+// limit, and the test was asserting the machine's headroom, not the ramp.
 func TestRampStopsWhereTheBudgetEnds(t *testing.T) {
 	protos(t, testRampStopsWhereTheBudgetEnds)
 }
@@ -190,10 +195,10 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 		ceiling, last = 1, 3200
 	}
 	srv := sleepServer(t, proto, 5*time.Millisecond, nil)
-	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "100,300,"+strconv.Itoa(last), "-duration", "1s",
+	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rates", "50,100,"+strconv.Itoa(last), "-duration", "1s",
 		"-slo", "5s", "-max-conns", strconv.Itoa(ceiling), "-warmup", "500ms", "-drain", "100ms")
-	if c.budget(100) != ceiling || c.budget(300) != ceiling {
-		t.Fatalf("budgets %d %d, want the ceiling", c.budget(100), c.budget(300))
+	if c.budget(50) != ceiling || c.budget(100) != ceiling {
+		t.Fatalf("budgets %d %d, want the ceiling", c.budget(50), c.budget(100))
 	}
 	var out strings.Builder
 	ok, err := c.run(context.Background(), &out)
@@ -209,7 +214,7 @@ func testRampStopsWhereTheBudgetEnds(t *testing.T, proto string) { //nolint:thel
 		rate  int
 		held  bool
 		cause string
-	}{{100, true, ""}, {300, true, ""}, {last, false, causeQueue}} {
+	}{{50, true, ""}, {100, true, ""}, {last, false, causeQueue}} {
 		var rep report
 		if err := json.Unmarshal([]byte(lines[i]), &rep); err != nil {
 			t.Fatal(err)
@@ -322,7 +327,9 @@ func TestBudget(t *testing.T) {
 // TestFreshConnections: with -new-conns 10, about a tenth of the requests
 // open their own connection, whose handshake falls inside their delays
 // and is counted apart; the budget's connections are untouched, and no
-// connect fails on a loopback with a few hundred of them.
+// connect fails on a loopback with a few hundred of them. The SLO verdict
+// is not asserted: a p99 under the unit scenario's 25 ms with a handshake
+// in it is the host's to give, and a loaded one does not (2026-10-28).
 func TestFreshConnections(t *testing.T) {
 	protos(t, testFreshConnections)
 }
@@ -332,8 +339,8 @@ func testFreshConnections(t *testing.T, proto string) { //nolint:thelper // a su
 	c := testCampaign(t, proto, srv.URL, "-scenario", "unit", "-rate", "500", "-duration", "2s", "-conns", "8", "-new-conns", "10")
 	rep := runStage(t, c)
 	t.Logf("sent %d handshakes %d tester %d ttlb p50 %.3f p99 %.3f ms", rep.Sent, rep.Handshakes, rep.Tester, rep.TTLB.P50, rep.TTLB.P99)
-	if rep.Failed() || !rep.Held {
-		t.Fatalf("errors %d tester %d held %v cause %q", rep.Errors, rep.Tester, rep.Held, rep.Cause)
+	if rep.Failed() || rep.Tester > 0 {
+		t.Fatalf("errors %d tester %d cause %q", rep.Errors, rep.Tester, rep.Cause)
 	}
 	if rep.Handshakes < rep.Sent*7/100 || rep.Handshakes > rep.Sent*13/100 {
 		t.Fatalf("%d handshakes in %d requests, want about 10 %%", rep.Handshakes, rep.Sent)
