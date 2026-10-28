@@ -279,7 +279,7 @@ Three reasons come up, and the difference matters:
 
 These packages leave the label only by meeting these conditions; they stay
 in the module ([ADR 0021](../design/adr/0021-net-quic-stays.md)). One
-condition per package, each one checkable:
+bullet per package, each condition in it checkable:
 
 - **`web/stream`**: a first real consumer, an application outside this
   repository, serves its requests through these stages, and what it
@@ -293,32 +293,22 @@ condition per package, each one checkable:
   the `test-udp` job already runs it on Windows, macOS and Linux ARM.
   Checked by: `net/quic`'s conditions met, and `test-udp` green on the
   commit that lifts the label.
-- **`net/quic`, the measurement**: throughput and latency measured against
-  a real third-party client, beside the interop. Interop proves agreement,
-  not cost. Checked by: a table in
-  [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client)
-  measured over a network between two machines, not loopback, with
-  `comparison/loadgen` against HTTP/3 and HTTP/2 on the same host, its
-  date and machines given (today it is missing: see "Measurements: what
-  is missing" below).
-- **`net/quic`, the interop**: checked by the weekly `Interop runner`
-  workflow green with `interop/expected-results.json` unchanged — every
-  case against quic-go and ngtcp2, in each direction, passing or failing
-  for the cause written there — and by an external review of the
-  handshake and key handling, its report linked from `SECURITY.md`. The
-  runner's last complete pass, of 22 October 2026, is green; the review
-  has not been done.
+- **`net/quic`**: three conditions, each checked on its own.
+  - *Interop*: being green in the *QUIC Interop Runner* — its weekly
+    workflow green with `interop/expected-results.json` unchanged, every
+    case against quic-go and ngtcp2 in each direction passing or failing
+    for its written cause. Met:
+    [The interop runner, in detail](#the-interop-runner-in-detail).
+  - *Review*: an external review of the handshake and key handling,
+    linked from `SECURITY.md`. Not done.
+  - *Measurement*: throughput and latency against a real third-party
+    client, over a network between two machines, in
+    [Benchmarks](../benchmarks.md#http2-and-http3-from-a-real-client)
+    with date and machines. Missing: see "Measurements: what is missing".
 
-- **`net/quic`**: being green in the *QUIC Interop Runner* against
-  quic-go and ngtcp2, on each side of the handshake, in our own continuous
-  integration; an external cryptographic review. Already true: key update
-  (RFC 9001 §6) in both directions, quic-go against sluice on each side in
-  continuous integration (job `interop-quic`), and a weekly pass of the
-  runner against every implementation in its list, held to
-  `interop/expected-results.json`. The cases passed at the last complete
-  pass, the ones sluice refuses on purpose and the four failures whose
-  cause lies outside sluice:
-  [The interop runner, in detail](#the-interop-runner-in-detail).
+What `net/quic` does today, and within which bounds — limits it keeps
+whichever way the conditions go:
+
 - **`net/quic` throughput**: a 64 KiB response over HTTP/3 stays below
   the same response over HTTP/2 with every core available, and catches up
   on two; the figures, their date and the machine that measured them are
@@ -351,18 +341,17 @@ condition per package, each one checkable:
   one byte per frame, who would otherwise choose this end's bookkeeping
   cost. In plain words: a stream may be delivered in any order, but not
   as confetti.
-- **`net/quic` closing period**: after a close, a connection stays in the
-  closing or draining state for three probe timeouts (PTO, the delay
-  after which a sender resends for want of an acknowledgement), as RFC
-  9000 §10.2 asks, and ten seconds at most. The peer chooses most of a
-  PTO — its `max_ack_delay`, legal up to 2^14 ms, and a smoothed RTT its
-  delayed acknowledgements inflate: uncapped, legal parameters gave 3 min
-  25 s, during which a listener's connection keeps its `MaxConns` and
-  `MaxConnsPerIP` slots. Ten seconds covers three PTOs of a path with a
-  2.5 s round trip. Past it, a late packet is answered with a Stateless
-  Reset instead of the close repeated: both tell the peer the connection
-  is gone. In plain words: a closed connection does not keep its place
-  for more than ten seconds, whatever the peer says.
+- **`net/quic` closing period and idle floor**: a closed connection stays
+  closing or draining for three probe timeouts (PTO, the delay after which
+  a sender resends what was not acknowledged), as RFC 9000 §10.2 asks, and
+  ten seconds at most; the idle timeout's §10.1 floor of three PTOs stops
+  at ten seconds too. The peer chooses most of a PTO — its
+  `max_ack_delay`, legal up to 2^14 ms — and uncapped, legal parameters
+  gave 3 min 25 s during which a listener keeps the connection's
+  `MaxConns` and `MaxConnsPerIP` slots. Ten seconds covers three PTOs of a
+  2.5 s round trip; a late packet is then answered with a Stateless Reset.
+  In plain words: a closed connection keeps its place ten seconds at most,
+  an idle one its idle timeout or ten seconds, whichever is longer.
 - **`net/quic` versions**: version 1 only. QUIC version 2 (RFC 9369) and
   compatible version negotiation (RFC 9368) are not implemented: a server
   that does not speak version 1 ends the dial, and a peer's
@@ -481,11 +470,6 @@ before anything is sent.
 
 ### The interop runner, in detail
 
-Being green in the *QUIC Interop Runner* against
-quic-go and ngtcp2, on each side of the handshake, in our own continuous
-integration; an external cryptographic review. Already true: key update
-(RFC 9001 §6) in both directions, and quic-go against sluice on each side
-in continuous integration (job `interop-quic`).
 The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
 every implementation in its list every Sunday, on each side its role
 allows — 31 peer-directions — with the image the `Interop image` workflow
@@ -495,25 +479,28 @@ published by hand, and `latest` is not moved backwards to them). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case is run once more. `interop/expected-results.json` records
-every case of quic-go, ngtcp2 and msquic with the cause of every failure,
-and a pass that departs from it fails the job. Green means every case
-passed against at least two peers.
-At the last complete pass, of 22 October 2026, against quic-go and
-ngtcp2: as a server, sluice passes handshake, transfer, longrtt,
-multiplexing, retry, http3, blackhole, keyupdate, amplificationlimit,
-transferloss, transfercorruption, ipv6, rebind-port, rebind-addr,
-handshakeloss, handshakecorruption and chacha20, plus ecn and
-connectionmigration against ngtcp2. As a client it passes handshake,
-transfer, longrtt, multiplexing, retry, blackhole, transferloss,
-transfercorruption, ipv6, handshakeloss, handshakecorruption,
-amplificationlimit, rebind-port and rebind-addr, plus ecn against ngtcp2.
-It refuses, with the exit status 127 the runner asks for, what is
-documented as not there: QUIC v2, and on the client side chacha20 (Go's
-TLS 1.3 offers no way to restrict the cipher suites it offers), a forced
-key update and HTTP/3. Session resumption and 0-RTT are served and
-fetched (`ListenerConfig.SessionTickets`, `ListenerConfig.EarlyData`,
-`DialEarly`) but have not run in a pass yet.
-Four failures have their cause outside sluice. quic-go refuses ecn
+every case of every implementation the workflow crosses, with the cause
+of every failure, and a pass that departs from it fails the job. Green
+means every case passed against at least two peers.
+
+What the record holds against quic-go and ngtcp2. As a server, sluice
+passes handshake, transfer, longrtt, chacha20, multiplexing, retry,
+resumption, zerortt, http3, blackhole, keyupdate, amplificationlimit,
+transferloss, transfercorruption, ipv6, rebind-port and rebind-addr
+against both, plus ecn and connectionmigration against ngtcp2;
+handshakeloss and handshakecorruption pass against quic-go and, against
+ngtcp2, in most passes: under 30 % loss a handshake sometimes outlives
+`ListenerConfig.HandshakeTimeout` (10 s), and under corruption a file
+sometimes never arrives; both are recorded as alternating, with their
+cause. As a client it passes handshake, transfer,
+longrtt, multiplexing, retry, resumption, zerortt, blackhole,
+amplificationlimit, handshakeloss, transferloss, handshakecorruption,
+transfercorruption, ipv6, rebind-port and rebind-addr against both, plus
+ecn against ngtcp2. It refuses, with the exit status 127 the runner asks
+for, what is documented as not there: QUIC v2, and on the client side
+chacha20 (Go's TLS 1.3 offers no way to restrict the cipher suites it
+offers), a forced key update and HTTP/3.
+Failures whose cause lies outside sluice: quic-go's image refuses ecn
 itself. quic-go's client never moves to a server's preferred address, so
 connectionmigration sees one path. msquic's server sometimes answers
 first under the client's own connection ID, then changes it, and RFC
