@@ -425,7 +425,7 @@ func serveConn(ctx context.Context, c *prefixConn, st *connState, cfg Config, ha
 		res, err := apply(call, handle, b, cfg.EarlyData)
 		call.returned()
 		if body != nil {
-			body.closed = true
+			body.closed.Store(true)
 			if !body.done {
 				// The body was left unread, or broke: the next request is
 				// behind it, so this response is the connection's last.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -41,7 +42,12 @@ type bodyStream struct {
 
 	expect bool // the client waits for 100 Continue before it sends the body
 	done   bool // the body ended, and what follows it is the next request's
-	closed bool // the handler returned: the stream is over whatever its state
+	// closed is set by the connection's goroutine once the handler returned:
+	// the stream is over whatever its state. Atomic, and read before any other
+	// field, because the reader it stops is a handler that kept the stream past
+	// its return on a goroutine of its own — the misuse errBodyAfterReturn names
+	// — and that reader must not race the connection on the way to the error.
+	closed atomic.Bool
 	err    error
 
 	// progress is the clock its reads wait under (readProgress).
@@ -101,7 +107,14 @@ func (b *bodyStream) source() sluice.Source[[]byte] {
 			}
 		}
 	}
-	return sluice.NewSource(sluice.Stream[[]byte](stream), func() error { return b.err })
+	return sluice.NewSource(sluice.Stream[[]byte](stream), func() error {
+		// Past the handler's return, err belongs to the connection's
+		// goroutine, which may be reading the next request through it.
+		if b.closed.Load() {
+			return errBodyAfterReturn
+		}
+		return b.err
+	})
 }
 
 // next returns the next piece of the body, nil once it has ended, or the
@@ -118,14 +131,16 @@ func (b *bodyStream) next() ([]byte, error) {
 		return data, nil
 	}
 	for {
+		if b.closed.Load() {
+			// Nothing written: the connection's goroutine owns every other
+			// field once the handler has returned.
+			return nil, errBodyAfterReturn
+		}
 		if b.err != nil {
 			return nil, b.err
 		}
 		if b.done {
 			return nil, nil
-		}
-		if b.closed {
-			return nil, b.fail(errBodyAfterReturn)
 		}
 		data, more, err := b.step()
 		if err != nil {

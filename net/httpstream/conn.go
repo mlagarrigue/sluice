@@ -137,7 +137,7 @@ func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
 		}
 		if body := r.body; body != nil {
 			r.body = nil
-			body.closed = true
+			body.closed.Store(true)
 			if !body.done {
 				// Unread or broken, the body still stands between the
 				// connection and its next request: nothing more is read.
