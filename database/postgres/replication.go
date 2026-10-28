@@ -368,12 +368,26 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		if r.err == nil && int(n) > len(r.b)/4 {
 			r.err = fmt.Errorf("%w: pgoutput Truncate names %d relations in %d bytes", ErrProtocol, n, len(r.b))
 		}
+		// Each relation once: PostgreSQL writes one OID per relation
+		// truncated (logicalrep_write_truncate). One relation named over
+		// and over made a Change per four bytes of the message, in one batch
+		// past BatchChanges; refused, a Truncate yields at most one Change
+		// per relation the table holds, each of which cost a Relation
+		// message of its own. A set, not a look back over the changes: the
+		// table may hold thousands, and a scan per OID would be quadratic.
+		seen := make(map[*Relation]struct{}, min(n, 64))
 		for i := uint32(0); i < n && r.err == nil; i++ {
 			rel := d.relationOf(&r)
-			if r.err == nil {
-				c := Change{Kind: ChangeTruncate, LSN: at, Relation: rel, Cascade: opts&1 != 0, RestartIdentity: opts&2 != 0}
-				dst, spans = append(dst, c), append(spans, tupleSpans{})
+			if r.err != nil {
+				break
 			}
+			if _, dup := seen[rel]; dup {
+				r.err = fmt.Errorf("%w: pgoutput Truncate names %s.%s twice", ErrProtocol, rel.Namespace, rel.Name)
+				break
+			}
+			seen[rel] = struct{}{}
+			c := Change{Kind: ChangeTruncate, LSN: at, Relation: rel, Cascade: opts&1 != 0, RestartIdentity: opts&2 != 0}
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
 		}
 	default:
 		// Logical decoding messages and the streamed-transaction messages
