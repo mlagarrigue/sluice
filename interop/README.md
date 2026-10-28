@@ -28,9 +28,7 @@ delta has reached the read buffer, an echo coming back a frame short
 Two benchmarks, not run in CI, measure the same servers from the same
 clients — `net/http` pinned to HTTP/2 by ALPN, `quic-go/http3` — on a
 plain response, the three-line streamed one and a 64 KiB streamed one.
-They are the measurement `docs/guide/limits.md` names as the exit
-condition of `httpstream`'s experimental label; `docs/benchmarks.md`
-publishes their figures.
+`docs/benchmarks.md` publishes their figures.
 
 ```
 cd interop
@@ -45,7 +43,7 @@ so what is tested is the code being changed.
 
 | | Version |
 |---|---|
-| `github.com/quic-go/quic-go` | v0.63.0 |
+| `github.com/quic-go/quic-go` | v0.64.1 |
 
 Dependabot bumps it like the root's dependencies; a bump that breaks the
 handshake is a finding about one side or the other, not noise.

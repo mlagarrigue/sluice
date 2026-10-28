@@ -24,9 +24,9 @@ A nested module is excluded from the root's `./...`, so such an import would
 have to become a real `require` in the root `go.mod` to compile at all — where
 both the CI `deps` job and `TestGoModRequiresOnlyTheAllowlist` catch it.
 
-**Versions are pinned, recorded, and never bumped by a bot.** A figure without
-the version it was measured against is not a claim. Updates are deliberate and
-they re-run the comparison.
+**Versions are pinned and recorded; a bot bumps one only on a security
+advisory.** A figure without the version it was measured against is not a
+claim. A deliberate update re-runs the comparison.
 
 ## What is pinned
 
@@ -35,9 +35,13 @@ they re-run the comparison.
 | `github.com/jackc/pgx/v5` | v5.10.0 |
 | `github.com/lib/pq` | v1.12.3 |
 | `github.com/gin-gonic/gin` | v1.12.0 |
-| `github.com/labstack/echo/v4` | v4.15.4 |
-| `github.com/go-chi/chi/v5` | v5.3.2 |
+| `github.com/labstack/echo/v4` | v4.16.1 |
+| `github.com/go-chi/chi/v5` | v5.4.0 |
 | `github.com/gofiber/fiber/v2` | v2.52.15 |
+
+The web pipeline's figures name, row by row, the version they were measured
+against: echo v4.15.4 and chi v5.3.2, below what the module requires. They
+are measured again before they are quoted again.
 
 Six direct dependencies pull **51 modules** of transitive graph. That number is
 not an argument against any of them — it is what a comparison costs, and it is

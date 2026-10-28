@@ -173,3 +173,45 @@ func TestChangelogPointsToTheMigrationGuide(t *testing.T) {
 		t.Error("CHANGELOG.md does not link docs/migration.md above its first release")
 	}
 }
+
+// A nested module's README that tables the versions it pins says what its
+// go.mod requires: the table is what a reader checks a result against, and
+// dependabot moves the go.mod alone. Every row "| `module` | vX |" is
+// compared with the module's require line.
+func TestNestedReadmesPinWhatTheirGoModRequires(t *testing.T) {
+	mods, err := filepath.Glob("*/go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	more, err := filepath.Glob("*/*/go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile("(?m)^\\| `([^`]+)` \\| (v[^ |]+) \\|")
+	var rows int
+	for _, mod := range append(mods, more...) {
+		dir := filepath.Dir(mod)
+		readme, err := os.ReadFile(filepath.Join(dir, "README.md")) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			continue
+		}
+		gomod, err := os.ReadFile(mod) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range row.FindAllSubmatch(readme, -1) {
+			rows++
+			path, pinned := string(m[1]), string(m[2])
+			req := regexp.MustCompile(`(?m)^(?:require\s+|\s+)` + regexp.QuoteMeta(path) + `\s+(v\S+)`).FindSubmatch(gomod)
+			switch {
+			case req == nil:
+				t.Errorf("%s/README.md pins %s %s, which %s does not require", dir, path, pinned, mod)
+			case string(req[1]) != pinned:
+				t.Errorf("%s/README.md pins %s %s; %s requires %s", dir, path, pinned, mod, req[1])
+			}
+		}
+	}
+	if rows == 0 {
+		t.Fatal("no pinned version found in a nested module's README; update this test with the table's shape")
+	}
+}
