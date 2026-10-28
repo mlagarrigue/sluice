@@ -568,7 +568,9 @@ the part in progress fails, the following ones do not run, and `Pipeline`
 returns the context's error next to `ErrPipelineAborted`, the transaction
 aborted as after any failure of a part.
 
-**When nothing confirms.** `Config.CancelTimeout` (5 seconds by default)
+#### When nothing confirms
+
+`Config.CancelTimeout` (5 seconds by default)
 bounds the three steps together. If the recipe fails, or if the server does
 not close in time, the package no longer knows where the request is: lost,
 or still on its way to the server, where it would cancel the statement
@@ -578,7 +580,9 @@ the context's error with `ErrConnBroken`: the connection is no longer good,
 open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
 that says why.
 
-**When the confirmation is not enough.** The close of the second
+#### When the confirmation is not enough
+
+The close of the second
 connection says the signal reached the server, not that the statement is
 over: the server interrupts it at its next check, then answers on the main
 connection. If it never answers — a server that goes silent after
@@ -594,7 +598,9 @@ with `statement_completed=true`, is the only trace of the failed
 cancellation. The reason: an `INSERT` reported as failed after being
 committed would be replayed by the caller, and the row would exist twice.
 
-**The recipe does the cancelling.** Since cancellation goes through the
+#### The recipe does the cancelling
+
+Since cancellation goes through the
 recipe, it has the recipe's properties. With `DialTCP`, the cancellation
 secret crosses the network in cleartext; anyone who reads it can cancel
 this session's queries until it closes. That is harmless on a loopback:

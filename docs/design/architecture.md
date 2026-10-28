@@ -883,7 +883,8 @@ joining pairs elements on a key, merging combines sequences.
 | `Coalesce` | recombines batches to a target size | O(k) | preserved |
 | unsorted `Union`/`Intersect`/`Except` (not provided) | HashSet deduplication | **O(distinct)** | — |
 
-The last three **do not exist** as stream operators: an unbounded HashSet
+Unsorted `Union`, `Intersect` and `Except` **do not exist** as stream
+operators: an unbounded HashSet
 violates S1. They are provided only in a sorted variant, derived from
 `join.Merge` ([join.Merge](#joinmerge--the-central-primitive)) — this is the sort-merge strategy of SQL engines.
 
@@ -1015,9 +1016,9 @@ recombine small batches after a selective filter or a join.
 func Coalesce[T any](s Stream[T], targetSize int) Stream[T]
 ```
 
-> **Rule.** Place a `Coalesce` after any selective operator — `Filter`, inner
-> join, `Split`/Partition — on pain of propagating tiny batches that cancel out
-> the benefit of vectorization.
+> **Rule.** Place a `Coalesce` after a selective operator — `Filter`, inner
+> join, `Split`/Partition — when several stages follow it: each of them would
+> otherwise pay its per-batch cost on batches that hold a few elements.
 
 **Target size: measured.** The plateau starts at 8 elements and does not degrade
 up to 1M ([Batch size](#batch-size-1024-by-default)). The gap with DuckDB (2048) and DataFusion (8192) has no effect
@@ -1682,8 +1683,8 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 
 | # | Guarantee | Verification |
 |---|---|---|
-| S1 | No unbounded allocation. A zero is never the absence of a bound: either it stands for a safe default named in the field's comment (`httpstream.Config`, [ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)), or it is refused at construction where no default suits every caller (`join.BuildLimit`, `gateway.Config`, `postgres.CopyConfig.RowsPerTx`). `diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as truncated. Two named exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound at zero, because they are the deployer's memory budget (ADR 0018). | Overflow → error, not OOM; a refused zero → a panic or an error naming the field: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`; ADR 0018's lists held to the fields' documentation: `TestADR0018ListsMatchConfig` |
-| S2 | No `panic` crosses a public boundary while data flows, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). A constructor's panic on a programming error — a nil function, a size that is not positive — is outside it: raised when the pipeline is built, before any data, and documented on the constructor (CONTRIBUTING, "A constructor panics on a programming error"). | Fuzzing of the parsers, where a panic fails the fuzz: `FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`; every sentinel goes through one constructor and `Try` knows them all: `TestTryKnowsEverySentinel` |
+| S1 | No unbounded allocation: a zero is a safe default or a refusal, never the absence of a bound ([ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)); two named exceptions, below. | Overflow → error, not OOM: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`, `TestADR0018ListsMatchConfig` |
+| S2 | No `panic` crosses a public boundary while data flows, other than the sentinels `Try` converts ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). | Fuzzed parsers, where a panic fails the fuzz (`FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`); `TestTryKnowsEverySentinel` |
 | S3 | Restrictive default limits. | The values are fixed in the code, each beside its field; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` fails on any import of `unsafe` outside the audited list |
 | S5 | Mandatory timeouts on all I/O. | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
@@ -1696,6 +1697,21 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 | **S12** | **Diagnostics ceiling per element and per batch.** `web/stream`'s `Exchange.Diagnostics` has no ceiling of its own: it holds what the pipeline's stages report for the element, a number set by the stages the program built, not by the input. | Pathological batch → counted truncation: `TestDiagnosticsCeiling` |
 | **S13** | **No value travels through SQL text.** | `TestSetLocalNeverPutsTheValueIntoSQL`, `TestSavepointRejectsHostileNames` |
 | **S14** | **An operator that retains a batch beyond the call that received it copies it first.** | `-race` composition test with a buffer-reusing upstream (`Convert \|> X`), per goroutine-crossing operator: `TestParallelCopiesInputBatch`, `TestAsyncCopiesInputBatch`, `TestParallelUnorderedCopiesInputBatch`, `TestParallelInitCopiesInputBatch`; the reuse contract itself: `TestBufferReuseContract` |
+
+**S1** — a zero stands for a safe default named in the field's comment
+(`httpstream.Config`), or is refused at construction where no default suits
+every caller (`join.BuildLimit`, `gateway.Config`,
+`postgres.CopyConfig.RowsPerTx`), with a panic or an error naming the field.
+`diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as
+truncated. The two exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound
+at zero because they are the deployer's memory budget (ADR 0018), whose
+lists `TestADR0018ListsMatchConfig` holds to the fields' documentation.
+
+**S2** — a constructor's panic on a programming error — a nil function, a
+size that is not positive — is outside it: raised when the pipeline is
+built, before any data, and documented on the constructor (CONTRIBUTING, "A
+constructor panics on a programming error"). Every sentinel goes through one
+constructor, which is how `Try` knows them all.
 
 **S9** — if the sequence is not exhausted and `stop()` is not called, the
 coroutine **never** terminates.
