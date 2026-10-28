@@ -1047,6 +1047,7 @@ func TestServeH3RefusesTransportParametersItCannotServe(t *testing.T) {
 		{"a stream limit past its cap", func(p *quic.TransportParameters) { p.InitialMaxStreamsBidi = h3MaxServeStreams + 1 }, "InitialMaxStreamsBidi"},
 		{"fewer than three unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = 2 }, "InitialMaxStreamsUni"},
 		{"no credit on unidirectional streams", func(p *quic.TransportParameters) { p.InitialMaxStreamDataUni = 0 }, "InitialMaxStreamDataUni"},
+		{"more unidirectional streams than are read", func(p *quic.TransportParameters) { p.InitialMaxStreamsUni = maxUniStreams + 1 }, "InitialMaxStreamsUni"},
 	} {
 		t.Run(tt.name, func(t *testing.T) { refusesH3Params(t, tt.mutate, tt.want) })
 	}

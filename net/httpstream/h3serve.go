@@ -159,6 +159,15 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 			"httpstream: InitialMaxStreamsUni %d with InitialMaxStreamDataUni %d leaves the peer short of the three unidirectional streams RFC 9114 §6.2 requires",
 			p.InitialMaxStreamsUni, p.InitialMaxStreamDataUni)
 	}
+	// The other bound, as h3MaxServeStreams is for request streams: the
+	// assembler tracks maxUniStreams unidirectional streams, and one opened
+	// past that is never read — a control stream opened late would carry
+	// SETTINGS and a close nobody sees (§6.2.1).
+	if lim := c.LocalParameters().InitialMaxStreamsUni; lim > maxUniStreams {
+		_ = c.CloseWithError(h3InternalError)
+		return fmt.Errorf("httpstream: InitialMaxStreamsUni %d is over the %d unidirectional streams this server reads",
+			lim, maxUniStreams)
+	}
 	// RFC 9114 §3.1: HTTP/3 is the protocol identified by the ALPN token
 	// "h3". A peer that settled on anything else is waiting for that other
 	// protocol and would read this layer's SETTINGS and frames as garbage;
