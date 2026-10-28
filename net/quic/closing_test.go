@@ -35,14 +35,14 @@ func TestClosingRepeatsALostConnectionClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Let the handshake's tail (HANDSHAKE_DONE, the last acknowledgements)
-	// leave before the filter arms, so that the first 1-RTT datagram it
-	// sees is the close.
+	// Every 1-RTT datagram written while CloseWithError runs is lost, so
+	// the close, which it sends before returning, is lost whatever else —
+	// a late acknowledgement — left beside it.
 	time.Sleep(50 * time.Millisecond)
-	dropped := 0
+	dropped, closing := 0, true
 	server.mu.Lock()
 	server.filterWrite = func(b []byte) [][]byte {
-		if dropped == 0 && b[0]&0x80 == 0 {
+		if closing && b[0]&0x80 == 0 {
 			dropped++
 			return nil
 		}
@@ -54,10 +54,11 @@ func TestClosingRepeatsALostConnectionClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.mu.Lock()
+	closing = false
 	lost := dropped
 	server.mu.Unlock()
-	if lost != 1 {
-		t.Fatalf("the close was not the datagram dropped (dropped %d)", lost)
+	if lost == 0 {
+		t.Fatal("no 1-RTT datagram left while the connection closed: the close was not lost")
 	}
 
 	// The client has heard nothing and talks on: this packet is what the
@@ -125,10 +126,12 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond) // the handshake's tail leaves first
-	dropped := 0
+	// As above: whatever 1-RTT datagram leaves while the close is sent is
+	// lost, the close among them.
+	dropped, closing := 0, true
 	hooked.mu.Lock()
 	hooked.filterWrite = func(b []byte) [][]byte {
-		if dropped == 0 && b[0]&0x80 == 0 {
+		if closing && b[0]&0x80 == 0 {
 			dropped++
 			return nil
 		}
@@ -140,10 +143,11 @@ func TestClosingPeriodOnAnOwnedSocketRepeatsALostClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooked.mu.Lock()
+	closing = false
 	lost := dropped
 	hooked.mu.Unlock()
-	if lost != 1 {
-		t.Fatalf("the close was not the datagram dropped (dropped %d)", lost)
+	if lost == 0 {
+		t.Fatal("no 1-RTT datagram left while the connection closed: the close was not lost")
 	}
 
 	s, err := server.OpenStream(context.Background())

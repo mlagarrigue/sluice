@@ -41,7 +41,8 @@ const (
 // such an ICMP from an off-path sender in the first place.
 //
 // The whole thing runs in a throwaway user and network namespace, so no
-// route of the machine is touched. Without one — CI has none — it skips.
+// route of the machine is touched. Without one it skips; the test job of
+// ci.yml gives its runner one and refuses the skip.
 func TestPathMTUCacheDoesNotRefuseMinimumDatagram(t *testing.T) {
 	if os.Getenv(netnsEnvVar) == "" {
 		reExecInNamespace(t)

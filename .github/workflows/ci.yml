@@ -58,6 +58,30 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on ./...
 
+      # Two net/quic/udp tests skip on a host that lacks what they need, and
+      # a skip reads like a pass: the udp6 case of the packet-information
+      # test wants a second IPv6 address, the path MTU cache probe an
+      # unprivileged user namespace, which Ubuntu's AppArmor holds back.
+      # The host is given both, and the step refuses their skip.
+      - name: Packet information and the path MTU cache (Linux)
+        shell: bash
+        run: |
+          sudo ip -6 addr add fd00::2/128 dev lo
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          go test -count=1 -v -run '^(TestPacketInfoAnswersFromDestination|TestPathMTUCacheDoesNotRefuseMinimumDatagram)$' ./net/quic/udp/ | tee udp.log
+          if grep -- '--- SKIP' udp.log; then
+            echo "::error::a net/quic/udp test skipped although the host was given what it needs" >&2
+            exit 1
+          fi
+          for name in TestPacketInfoAnswersFromDestination/udp6 TestPathMTUCacheDoesNotRefuseMinimumDatagram; do
+            if ! grep -- "--- PASS: $name " udp.log; then
+              echo "::error::$name did not pass" >&2
+              exit 1
+            fi
+          done
+
       # The per-stage budget is a timing assertion, so it is skipped under
       # -race: the detector instruments every memory access and the measurement
       # would report the instrumentation rather than the code. It keeps the

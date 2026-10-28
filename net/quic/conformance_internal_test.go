@@ -321,7 +321,7 @@ func TestStreamDirectionIsEnforced(t *testing.T) {
 func TestIdleTimeoutIsFlooredAtThreePTOs(t *testing.T) {
 	pcA, pcB := newLoopbackPair(t)
 	params := DefaultParameters()
-	params.MaxIdleTimeout = 100
+	params.MaxIdleTimeout = 100 * time.Millisecond
 	c := assembleConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, params)
 	defer c.Close()
 

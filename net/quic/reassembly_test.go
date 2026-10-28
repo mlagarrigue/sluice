@@ -340,3 +340,54 @@ func TestReassemblyRandomFramesDeliverTheSource(t *testing.T) {
 		}
 	}
 }
+
+// Held and delivered bytes win over any later frame that disagrees with
+// them, however many runs that frame bridges: frames are cut from two
+// sources at random, and every byte delivered is the one the first frame
+// to cover it carried. TestReassemblyFirstBytesWin shows it for one held
+// run; this is the same rule across merges of several.
+func TestReassemblyFirstBytesWinAcrossRuns(t *testing.T) {
+	for seed := range uint64(200) {
+		rng := rand.New(rand.NewPCG(seed, 0x2b175)) //nolint:gosec // G404: a seeded generator is the point, so a failing seed replays
+		n := 64 + rng.IntN(2048)
+		sources := [2][]byte{make([]byte, n), make([]byte, n)}
+		for i := range n {
+			sources[0][i], sources[1][i] = byte(rng.Uint32()), byte(rng.Uint32())
+		}
+		want := make([]byte, n)
+		covered := make([]bool, n)
+		type frame struct{ off, end, src int }
+		var frames []frame
+		for off := 0; off < n; {
+			k := 1 + rng.IntN(200)
+			frames = append(frames, frame{off, min(off+k, n), rng.IntN(2)})
+			off += k
+		}
+		for range frames {
+			a := rng.IntN(n)
+			frames = append(frames, frame{a, min(a+1+rng.IntN(800), n), rng.IntN(2)})
+		}
+		rng.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
+
+		var r reassembly
+		var out []byte
+		var err error
+		for _, f := range frames {
+			for i := f.off; i < f.end; i++ {
+				if !covered[i] {
+					covered[i], want[i] = true, sources[f.src][i]
+				}
+			}
+			if out, err = r.addThenTake(uint64(f.off), sources[f.src][f.off:f.end], out); err != nil {
+				t.Fatalf("seed %d: %v", seed, err)
+			}
+		}
+		if !bytes.Equal(out, want) {
+			i := 0
+			for i < min(len(out), n) && out[i] == want[i] {
+				i++
+			}
+			t.Fatalf("seed %d: delivered %d/%d bytes, first difference at %d", seed, len(out), n, i)
+		}
+	}
+}
