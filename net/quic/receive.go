@@ -1612,7 +1612,16 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 		// the controller hears it as such (draft-ietf-ccwg-bbr-06 §3.7). Dated
 		// by the latest tracked packet the frame acknowledges, which is
 		// the largest whenever the largest is tracked (ackOutcome.latestSentAt).
-		c.cc.onMarked(markEvent{now: now, latestSent: out.latestSentAt, packets: newCE})
+		// A frame that newly acknowledges only ACK-only packets, whose
+		// sending times are not kept, is dated now: they left no later, and
+		// its counts are stored, so a mark heard late is better than one a
+		// zero date would have the controller file inside an old recovery
+		// period and the next frame would not report again.
+		latest := out.latestSentAt
+		if latest.IsZero() {
+			latest = now
+		}
+		c.cc.onMarked(markEvent{now: now, latestSent: latest, packets: newCE})
 	}
 	sp.sent.detectLost(now, &c.rtt, &c.delivery, &out)
 	if space == spaceApplication && !c.ku.acked && sp.sent.hasLargestAcked && sp.sent.largestAcked >= c.ku.firstPN {

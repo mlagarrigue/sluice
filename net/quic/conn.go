@@ -659,6 +659,12 @@ type space struct {
 	// receiver's.
 	ecnSent uint64
 	ecnLast [3]uint64
+	// ecnLargest is the largest Largest Acknowledged of the ACK frames read
+	// for ECN in this space, once ecnSawAck: the frame field §13.4.2.1's
+	// MUST NOT is about, which counts ACK-only packets this end does not
+	// track.
+	ecnLargest uint64
+	ecnSawAck  bool
 }
 
 // The three packet-number spaces (RFC 9000 §12.3). Early data shares the
