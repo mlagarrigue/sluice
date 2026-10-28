@@ -44,12 +44,15 @@ that never passed a negative value has nothing to change there.
   it in its message.
 - **A negative depth or worker count panics** (`cd7dce7`); zero or one
   means no concurrency, as before.
-- **A runtime error raised on a worker or a producer comes back wrapped**
-  (`94858d0`): `Ordered`, `OrderedWithState`, `Unordered`, `Async`, and
-  `window.CoalesceWithin`, raise it again in an error that carries the
-  stack it was raised on. `errors.As` with a `runtime.Error` target still
-  finds it; a direct assertion `r.(runtime.Error)` on the recovered value
-  no longer does. Any other value comes back as raised.
+- **A panic raised on a worker or a producer comes back wrapped**
+  (`94858d0`, "every relayed panic carries its stack"): `Ordered`, `OrderedWithState`, `Unordered`,
+  `Async`, and `window.CoalesceWithin` raise it again in a
+  `*sluice.PanicError` that carries the stack it was raised on. An error is
+  still found by `errors.Is` and `errors.As`; a direct assertion
+  (`r.(runtime.Error)`, `r == ErrX`) or a comparison of another value
+  (`r == "boom"`) on the recovered value no longer matches: read
+  `r.(*sluice.PanicError).Value`. `sluice.Try` still recognises a sentinel
+  raised on a worker.
 
 ## Time windows: `window`
 

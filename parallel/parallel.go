@@ -6,6 +6,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/batch"
+	"github.com/mlagarrigue/sluice/internal/handoff"
 )
 
 // Ordered applies f to each batch on up to workers goroutines, preserving
@@ -154,7 +155,7 @@ type job[A, B any] struct {
 
 	// panicked holds what f panicked with, if it did, so the emitter can
 	// re-panic on the caller's goroutine rather than crashing a worker.
-	panicked batch.Panic
+	panicked handoff.Panic
 }
 
 // runParallel is the concurrent path, split out so the no-op above stays free
@@ -287,6 +288,6 @@ func runJob[A, B any](j *job[A, B], f func(sluice.Batch[A]) sluice.Batch[B]) {
 	// stops early, whose tokens the shutdown never collects: it waits on the
 	// workers instead.
 	defer func() { j.done <- struct{}{} }()
-	defer func() { j.panicked = batch.Recovered(recover()) }()
+	defer func() { j.panicked = handoff.Recovered(recover()) }()
 	j.out = f(j.in)
 }

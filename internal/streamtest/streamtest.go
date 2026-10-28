@@ -10,6 +10,7 @@ package streamtest
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/mlagarrigue/sluice"
@@ -40,6 +41,27 @@ func SinglePass(t *testing.T, values []int, batchSize int) (s sluice.Stream[int]
 		}
 	}
 	return s, func() int { return pos }
+}
+
+// Relayed is the value an operator's goroutine panicked with, read from the
+// *sluice.PanicError the consumer recovered, which must carry a stack. Nil —
+// no panic — is nil. Any other value did not cross as it should and comes
+// back marked, so that it compares equal to nothing a test expects.
+func Relayed(recovered any) any {
+	if recovered == nil {
+		return nil
+	}
+	if pe, ok := recovered.(*sluice.PanicError); ok && len(pe.Stack) > 0 {
+		return pe.Value
+	}
+	return notRelayed{recovered}
+}
+
+// notRelayed is a recovered value that is not a *sluice.PanicError.
+type notRelayed struct{ value any }
+
+func (n notRelayed) String() string {
+	return fmt.Sprintf("%v (%T, not relayed with its stack)", n.value, n.value)
 }
 
 // IsErr reports whether a recovered panic value is an error matching want.

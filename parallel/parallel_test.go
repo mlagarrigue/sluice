@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 // goid is the calling goroutine's id, read from the header of its own stack
@@ -222,7 +223,7 @@ func TestParallelPropagatesPanicFromF(t *testing.T) {
 		}))
 	}()
 
-	if recovered != "from f" {
+	if recovered := streamtest.Relayed(recovered); recovered != "from f" {
 		t.Errorf("recovered %v, want %q: the panic must cross back to the caller", recovered, "from f")
 	}
 }
@@ -490,7 +491,7 @@ func TestParallelEarlyStopStillRaisesInFlightPanic(t *testing.T) {
 				})
 			}()
 
-			if recovered != "in flight" {
+			if recovered := streamtest.Relayed(recovered); recovered != "in flight" {
 				t.Errorf("recovered %v, want %q: a panic in flight at an early stop was swallowed",
 					recovered, "in flight")
 			}

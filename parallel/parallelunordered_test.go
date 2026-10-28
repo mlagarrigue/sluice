@@ -8,6 +8,7 @@ import (
 	"testing/synctest"
 
 	"github.com/mlagarrigue/sluice"
+	"github.com/mlagarrigue/sluice/internal/streamtest"
 )
 
 func TestParallelUnordered(t *testing.T) {
@@ -199,7 +200,7 @@ func TestParallelUnorderedStopDuringTailDrain(t *testing.T) {
 			if panics {
 				want = "in flight"
 			}
-			if recovered != want {
+			if recovered := streamtest.Relayed(recovered); recovered != want {
 				t.Errorf("recovered %v, want %v", recovered, want)
 			}
 			if n := live.Load(); n != 0 {

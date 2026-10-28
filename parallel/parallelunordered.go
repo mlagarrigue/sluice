@@ -5,6 +5,7 @@ import (
 
 	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/internal/batch"
+	"github.com/mlagarrigue/sluice/internal/handoff"
 )
 
 // Unordered applies f to each batch on up to workers goroutines and
@@ -74,7 +75,7 @@ func Unordered[A, B any](s sluice.Stream[A], workers int, f func(sluice.Batch[A]
 // unorderedResult carries one completed batch, or the panic that stopped it.
 type unorderedResult[B any] struct {
 	out      sluice.Batch[B]
-	panicked batch.Panic
+	panicked handoff.Panic
 }
 
 // runParallelUnordered is the concurrent path.
@@ -195,7 +196,7 @@ func runUnorderedJob[A, B any](j *sluice.Batch[A], f func(sluice.Batch[A]) sluic
 	defer func() {
 		if r := recover(); r != nil {
 			free <- j
-			results <- unorderedResult[B]{panicked: batch.Recovered(r)}
+			results <- unorderedResult[B]{panicked: handoff.Recovered(r)}
 		}
 	}()
 	out := f(*j)
