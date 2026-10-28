@@ -49,11 +49,11 @@ type ReplicationConfig struct {
 	// payload it has read. The message that crosses it is kept and the
 	// batch closes after it, as with QueryConfig.BatchBytes, so a batch
 	// holds at most BatchBytes plus one message. Without it a server could
-	// grow that store without ever producing a change — three pgoutput
-	// messages carry none (Type, Origin, and a Relation redescribing a
-	// relation already known) — and the batch, holding nothing, would never
-	// close; a batch that reaches the bound without a change closes empty,
-	// and the stream goes on.
+	// grow that store without ever producing a change — a Relation carries
+	// none, and one redescribing a relation already known costs the table
+	// nothing new — and the batch, holding nothing, would never close; a
+	// batch that reaches the bound without a change closes empty, and the
+	// stream goes on.
 	BatchBytes int
 
 	// StatusInterval is how often, at most, the position acknowledged
@@ -343,8 +343,9 @@ func (r *Replication) ServerWALEnd() LSN { return LSN(r.serverEnd.Load()) }
 func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 	r.changes, r.spans, r.vals = r.changes[:0], r.spans[:0], r.vals[:0]
 	r.resetArena()
-	for _, c := range r.carry {
-		r.changes, r.spans = append(r.changes, c), append(r.spans, tupleSpans{})
+	r.changes = append(r.changes, r.carry...)
+	for range r.carry {
+		r.spans = append(r.spans, tupleSpans{})
 	}
 	r.carry = r.carry[:0]
 	for !r.done && len(r.changes) < r.batch && r.kept < r.batchBytes &&

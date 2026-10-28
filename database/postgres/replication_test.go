@@ -451,14 +451,6 @@ func (s *noChangeServer) Read(p []byte) (int, error) {
 func (s *noChangeServer) Write(p []byte) (int, error) { return len(p), nil }
 func (s *noChangeServer) Close() error                { return nil }
 
-// typeMessagePayload is a pgoutput Type message ('Y'), which the decoder
-// drops without counting anything, padded to n bytes.
-func typeMessagePayload(n int) []byte {
-	p := make([]byte, n)
-	p[0] = 'Y'
-	return p
-}
-
 // sameRelationPayload is a valid Relation message ('R') for one fixed OID,
 // made wide by a long relation name. Sent more than once, every message
 // after the first describes an OID the decoder already knows, so the
@@ -483,16 +475,15 @@ func sameRelationPayload(n int) []byte {
 // next message is not already received" — so before ReplicationConfig.
 // BatchBytes existed the read had no stopping condition at all. copyData
 // copies every payload into the batch's arena before asking the decoder what
-// it carries, and three pgoutput messages carry no change: Type, Origin, and
-// a Relation redescribing a relation already known. A server sending an
-// uninterrupted run of them grew the arena at whatever rate it chose, and
-// the batch could never close. It closes at the bound, empty.
+// it carries, and a Relation redescribing a relation already known carries
+// no change (Type and Origin did too, before they were delivered). A server
+// sending an uninterrupted run of them grew the arena at whatever rate it
+// chose, and the batch could never close. It closes at the bound, empty.
 func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		payload []byte
 	}{
-		{"type messages", typeMessagePayload(64 << 10)},
 		{"the same relation redescribed", sameRelationPayload(64 << 10)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -736,5 +727,41 @@ func TestReplicationReportsTheServersEndOfWAL(t *testing.T) {
 	}
 	if got := r.ServerWALEnd(); got != 0x9500 {
 		t.Fatalf("ServerWALEnd after a keepalive = %v, want %v", got, LSN(0x9500))
+	}
+}
+
+// PostgreSQL 18 §54.9: a Type message names a type that is not built in
+// (OID, namespace, name) and an Origin message the node a transaction came
+// from (its commit LSN there, its name), "multiple Origin messages inside a
+// single transaction" allowed. Both reach the consumer as a Change, the
+// stream's one rule: what is read is delivered. A replica that applies a row
+// of an enum column needs the type's name, since the OID is the publisher's.
+func TestReplicationDeliversTypeAndOrigin(t *testing.T) {
+	typ := binary.BigEndian.AppendUint32([]byte{'Y'}, 16385)
+	typ = append(typ, "public\x00mood\x00"...)
+	origin := binary.BigEndian.AppendUint64([]byte{'O'}, 0x5000)
+	origin = append(origin, "node_b\x00"...)
+	enumRel := relMsg(42, "public", "people", "name")
+	changes, err := decodeAll(t, beginMsg(0x60, 7), origin, typ, enumRel, commitMsg(0x60, 0x68))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []ChangeKind
+	for _, c := range changes {
+		kinds = append(kinds, c.Kind)
+	}
+	if want := []ChangeKind{ChangeBegin, ChangeOrigin, ChangeType, ChangeCommit}; !slices.Equal(kinds, want) {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	if c := changes[1]; c.Origin != "node_b" || c.LSN != 0x5000 {
+		t.Errorf("Origin = %q at %v, want node_b at 0/5000", c.Origin, c.LSN)
+	}
+	if got, want := changes[2].Type, (DataType{OID: 16385, Namespace: "public", Name: "mood"}); got != want {
+		t.Errorf("Type = %+v, want %+v", got, want)
+	}
+
+	// A truncated message is refused, not delivered half-read.
+	if _, err := decodeAll(t, typ[:7]); !errors.Is(err, ErrProtocol) {
+		t.Errorf("a Type message cut after its OID: err = %v, want ErrProtocol", err)
 	}
 }

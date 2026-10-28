@@ -122,14 +122,6 @@ Three reasons come up, and the difference matters:
   changes ([ADR 0023](../design/adr/0023-logical-replication.md)). Physical
   replication is not spoken, transactions arrive only once committed (no
   `streaming`), and the slot and publication are the caller's to create.
-- **`Type` and `Origin` are read and dropped.** What they carry is lost to
-  the consumer of `Replicate`: `Type` names a user-defined type (an enum, a
-  domain, a composite), so `RelationColumn.TypeOID` is an OID of the
-  publishing database, to be resolved with a catalogue query there
-  (`SELECT format_type(oid, NULL)`) and meaningless elsewhere; `Origin` is
-  a transaction's replication origin, without which a cascaded setup cannot
-  avoid sending a node back what came from it. Built-in types lose
-  nothing: their OIDs are fixed and `pgtype` decodes them.
 - **NegotiateProtocolVersion is read as a whole version word.** The
   PostgreSQL documentation (§54.7) calls its first field the newest minor
   version the server supports; the server writes the whole word, major in

@@ -41,7 +41,9 @@ type ChangeKind uint8
 
 // The kinds of change a logical replication stream delivers. A transaction
 // arrives as a Begin, its row changes, then a Commit; nothing of it arrives
-// before the server has committed it.
+// before the server has committed it. A Type names a type that is not built
+// in before a column of it is described, and an Origin follows the Begin of a
+// transaction that came from another node, possibly more than once.
 const (
 	ChangeBegin ChangeKind = iota + 1
 	ChangeCommit
@@ -49,9 +51,11 @@ const (
 	ChangeUpdate
 	ChangeDelete
 	ChangeTruncate
+	ChangeType
+	ChangeOrigin
 )
 
-var changeKindNames = [...]string{"", "Begin", "Commit", "Insert", "Update", "Delete", "Truncate"}
+var changeKindNames = [...]string{"", "Begin", "Commit", "Insert", "Update", "Delete", "Truncate", "Type", "Origin"}
 
 func (k ChangeKind) String() string {
 	if int(k) < len(changeKindNames) && k != 0 {
@@ -99,6 +103,25 @@ type Change struct {
 	// or with RESTART IDENTITY: both change what replaying it elsewhere
 	// does (the options byte of pgoutput's Truncate message).
 	Cascade, RestartIdentity bool
+
+	// Type is set on a Type: a type that is not built in — an enum, a
+	// domain, a composite — named for the OID a column's TypeOID carries,
+	// which is an OID of the publishing database and means nothing
+	// elsewhere.
+	Type DataType
+
+	// Origin is set on an Origin: the name of the node the transaction
+	// came from, its LSN the commit's position on that node. A cascaded
+	// setup tells by it what it must not send back.
+	Origin string
+}
+
+// DataType names a type as a Type message does: its OID on the publishing
+// server, its namespace (empty for pg_catalog) and its name.
+type DataType struct {
+	OID       uint32
+	Namespace string
+	Name      string
 }
 
 // Relation is a table as the replication stream describes it: the columns a
@@ -289,7 +312,7 @@ func pgTime(micros uint64) time.Time {
 }
 
 // decode reads one pgoutput message. It appends the changes the message
-// carries to dst — none for a Relation, Type or Origin, one per relation for
+// carries to dst — none for a Relation, one per relation for
 // a Truncate — and the tuples' values to vals, which the caller owns; a
 // Change's tuples are left nil and described by the spans returned with it,
 // so that vals may grow without leaving a Change pointing at a stale array.
@@ -316,16 +339,24 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		}
 	case 'R':
 		d.relation(&r)
-	case 'Y', 'O':
-		// Type names a type that is not built in, and Origin the node a
-		// transaction came from; both are read and dropped (ADR 0023). A
-		// built-in type loses nothing: its OID is fixed and pgtype decodes
-		// it. A non-built-in one — an enum, a domain, a composite — leaves
-		// the column's TypeOID an OID of the publishing database, which the
-		// Type message names and nothing here keeps; and without Origin a
-		// cascaded setup cannot tell what came from where. Both losses are
-		// written in docs/guide/limits.md.
-		return dst, spans, vals, nil
+	case 'Y':
+		// Delivered, as everything read is (ADR 0023): the name is what
+		// makes a non-built-in column's TypeOID mean something on the
+		// replica.
+		c := Change{Kind: ChangeType, LSN: at}
+		c.Type.OID = r.u32("Type")
+		c.Type.Namespace = r.cstring("Type")
+		c.Type.Name = r.cstring("Type")
+		if r.err == nil {
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
+		}
+	case 'O':
+		c := Change{Kind: ChangeOrigin}
+		c.LSN = LSN(r.u64("Origin"))
+		c.Origin = r.cstring("Origin")
+		if r.err == nil {
+			dst, spans = append(dst, c), append(spans, tupleSpans{})
+		}
 	case 'I', 'U', 'D':
 		c := Change{Kind: ChangeInsert, LSN: at}
 		switch typ {
