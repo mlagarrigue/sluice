@@ -499,8 +499,24 @@ jobs:
           cache-dependency-path: |
             go.sum
             interop/go.sum
+      # The tests that prove the interop gate refuses a departing pass skip
+      # without jq, and a skip reads like a pass: the job refuses the skip and
+      # wants each of them to pass.
       - name: sluice and quic-go, each side of the handshake
-        run: go test -race -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./... | tee test.log
+          if grep -F 'jq is not installed' test.log; then
+            echo "::error::the interop gate's tests skipped: jq is not installed" >&2
+            exit 1
+          fi
+          for name in TestExpectedResultsGuard TestExpectedResultsGuardTakesRandom TestPartialPassIsRefused; do
+            if ! grep -- "--- PASS: $name " test.log; then
+              echo "::error::$name did not pass" >&2
+              exit 1
+            fi
+          done
         working-directory: interop
 
   # Every production dependency is a recorded decision (ADR 0002): today the
