@@ -406,6 +406,130 @@ func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
 	}
 }
 
+// adrRuleSince is the last day before a commit that changes a decision
+// record had to name it; the history before it is read as it was written.
+const adrRuleSince = "2026-10-28"
+
+// unnamedADRChanges lists, for the git repository at dir, every commit after
+// adrRuleSince that changes a line of a decision record's Decision or
+// Rationale without naming that record — "ADR 0007" or "adr/0007" — in its
+// message. A record's first commit brings it in and is not a change.
+func unnamedADRChanges(dir string) ([]string, error) {
+	out, err := exec.Command("git", "-C", dir, "log", "--no-merges", "--format=%x1e%h%x00%as%x00%B%x00", "-p", "-U100000", "--", "docs/design/adr/").Output() //nolint:gosec // G204: a repository path, not input
+	if err != nil {
+		return nil, err
+	}
+	record := regexp.MustCompile(`^diff --git a/\S*docs/design/adr/(\d{4})-\S+ b/`)
+	var faults []string
+	for rec := range strings.SplitSeq(string(out), "\x1e") {
+		parts := strings.SplitN(rec, "\x00", 4)
+		if len(parts) < 4 || parts[1] <= adrRuleSince {
+			continue
+		}
+		hash, msg, diff := parts[0], parts[2], parts[3]
+		num, fresh, section, inHunk := "", false, "", false
+		changed := map[string]bool{}
+		for l := range strings.SplitSeq(diff, "\n") {
+			if m := record.FindStringSubmatch(l); m != nil {
+				num, fresh, section, inHunk = m[1], false, "", false
+				continue
+			}
+			if num == "" || fresh {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(l, "new file mode "):
+				fresh = true
+				continue
+			case strings.HasPrefix(l, "@@"):
+				inHunk = true
+				continue
+			case !inHunk || l == "":
+				continue
+			}
+			if text := l[1:]; strings.HasPrefix(text, "## ") && l[0] != '-' {
+				section = strings.TrimPrefix(text, "## ")
+			}
+			if (l[0] == '+' || l[0] == '-') && (section == "Decision" || section == "Rationale") {
+				changed[num] = true
+			}
+		}
+		for n := range changed {
+			if !strings.Contains(msg, "ADR "+n) && !strings.Contains(msg, "adr/"+n) {
+				faults = append(faults, fmt.Sprintf("%s changes ADR %s's Decision or Rationale and does not name it", hash, n))
+			}
+		}
+	}
+	slices.Sort(faults)
+	return faults, nil
+}
+
+// A commit that changes what a decision record decides, or why, names the
+// record in its message, so that `git log --grep "ADR 0015"` finds every
+// revision of it. Read from the history, so a shallow clone skips.
+func TestCommitsNameTheDecisionRecordTheyChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	if shallow, err := exec.Command("git", "rev-parse", "--is-shallow-repository").Output(); err != nil || strings.TrimSpace(string(shallow)) != "false" {
+		t.Skip("needs the full history")
+	}
+	faults, err := unnamedADRChanges(".")
+	if err != nil {
+		t.Skipf("not a git checkout: %v", err)
+	}
+	for _, f := range faults {
+		t.Error(f)
+	}
+}
+
+// The reading above, on a repository made for it: a record brought in, a
+// Decision changed without naming it, then changed again naming it, and a
+// Problem changed without naming it, which is no revision of the decision.
+func TestUnnamedADRChangesAreFound(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	git := func(date string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false"}, args...)...) //nolint:gosec // G204: fixed arguments
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+date+"T12:00:00Z", "GIT_COMMITTER_DATE="+date+"T12:00:00Z")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(problem, decision string) {
+		t.Helper()
+		p := filepath.Join(dir, "docs", "design", "adr", "0007-x.md")
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		body := "# ADR 0007\n\n## Problem\n\n" + problem + "\n\n## Decision\n\n" + decision + "\n\n## Rationale\n\nBecause.\n"
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("2026-11-01", "init", "-q")
+	write("A problem.", "First.")
+	git("2026-11-01", "add", "-A")
+	git("2026-11-01", "commit", "-q", "-m", "docs: a record")
+	write("A problem.", "Second.")
+	git("2026-11-02", "commit", "-q", "-a", "-m", "docs: a quiet change")
+	write("A problem.", "Third.")
+	git("2026-11-03", "commit", "-q", "-a", "-m", "docs: ADR 0007 decides the third")
+	write("Another problem.", "Third.")
+	git("2026-11-04", "commit", "-q", "-a", "-m", "docs: the problem reworded")
+
+	faults, err := unnamedADRChanges(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(faults) != 1 || !strings.Contains(faults[0], "ADR 0007") {
+		t.Fatalf("faults = %q, want one, for the quiet change", faults)
+	}
+}
+
 // Commit messages are one line in Conventional Commits form with a scope
 // from the closed list. Checked over the whole history, which is what a
 // reader of `git log --oneline` gets. Merge commits are skipped: a pull
