@@ -28,11 +28,14 @@ http2/3.5/2
 http2/5.1/8
 http2/5.1/9
 
-# RFC 9113 §5.1, "closed": same MAY. The case closes a stream by
-# END_STREAM both ways and sends HEADERS again; this server decodes the
-# block for the HPACK table and drops it, sending nothing — §5.1 forbids any
-# frame but PRIORITY on a closed stream — rather than the connection error
-# RFC 7540 required (h2conn.go, reset; h2write.go, responded).
+# RFC 9113 §5.1, "closed": same MAY. The cases close a stream by
+# END_STREAM both ways and send DATA (5.1/11) or HEADERS (5.1/12) again;
+# this server counts the DATA against the connection window, decodes the
+# HEADERS block for the HPACK table, and drops either, sending nothing —
+# §5.1 forbids any frame but PRIORITY on a closed stream — rather than the
+# connection error RFC 7540 required (h2conn.go, data and reset; h2write.go,
+# responded; TestH2NoResetOnAStreamClosedByBothEndStreams).
+http2/5.1/11
 http2/5.1/12
 
 # RFC 9113 §5.3.2 deprecates the priority scheme and §6.2/§6.3 no longer
