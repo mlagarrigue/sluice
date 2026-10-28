@@ -1,10 +1,13 @@
 package sluice_test
 
 import (
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -256,4 +259,92 @@ func TestProseParagraphsAreShort(t *testing.T) {
 		}
 		flush()
 	}
+}
+
+// The documentation counts the interop matrix in words a reader trusts
+// without checking: "31 peer-directions", "seventeen interop peers". The
+// count is interop/expected-results.json's — one key per implementation, one
+// side under it per direction — and a peer added to or dropped from the
+// record moves it. Every count of peer-directions, interop peers or interop
+// implementations in the README and docs/ is the record's; "at least two
+// interop peers" is a threshold, not a count, and is not read.
+func TestInteropCountsMatchTheRecord(t *testing.T) {
+	b, err := os.ReadFile("interop/expected-results.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(b, &record); err != nil {
+		t.Fatal(err)
+	}
+	peers, directions := len(record), 0
+	for _, sides := range record {
+		directions += len(sides)
+	}
+	if peers == 0 || directions == 0 {
+		t.Fatal("interop/expected-results.json records no implementation")
+	}
+	pages := []string{"README.md"}
+	err = filepath.WalkDir("docs", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".md") {
+			pages = append(pages, p)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := regexp.MustCompile(`(?i)(at (?:least|most) )?\b([0-9]+|[a-z]+(?:-[a-z]+)?)[ \n]+(peer[- \n]directions|interop[ \n]+(?:peers|implementations))\b`)
+	for _, page := range pages {
+		text, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range count.FindAllSubmatchIndex(text, -1) {
+			if m[2] >= 0 {
+				continue
+			}
+			n, ok := countWord(string(text[m[4]:m[5]]))
+			if !ok {
+				continue
+			}
+			noun := strings.ToLower(string(text[m[6]:m[7]]))
+			want := peers
+			if strings.HasSuffix(noun, "directions") {
+				want = directions
+			}
+			if n != want {
+				line := 1 + strings.Count(string(text[:m[0]]), "\n")
+				t.Errorf("%s:%d: %q: interop/expected-results.json records %d", page, line, text[m[0]:m[1]], want)
+			}
+		}
+	}
+}
+
+// countWord reads a count written in digits or in English words up to
+// ninety-nine; ok is false for any other word.
+func countWord(s string) (n int, ok bool) {
+	if v, err := strconv.Atoi(s); err == nil {
+		return v, true
+	}
+	units := []string{
+		"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+		"ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+	}
+	tens := []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+	s = strings.ToLower(s)
+	ten, unit, _ := strings.Cut(s, "-")
+	if i := slices.Index(tens, ten); i >= 2 {
+		if unit == "" {
+			return i * 10, true
+		}
+		if j := slices.Index(units, unit); j >= 1 && j <= 9 {
+			return i*10 + j, true
+		}
+		return 0, false
+	}
+	if i := slices.Index(units, s); i >= 1 {
+		return i, true
+	}
+	return 0, false
 }
