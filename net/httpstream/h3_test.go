@@ -1420,19 +1420,13 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 		t.Fatalf("the server: %v", err)
 	}
 
+	// askH3, not a copy of it: the server answers a GET from its HEADERS and
+	// may stop reading with H3_NO_ERROR before the FIN leaves (RFC 9114
+	// §4.1.1), which a copy that failed on the refused FIN read as an error
+	// (red on 2026-10-25 and 2026-10-28, RP-20261028-h3-01).
 	ask := func(path string) *quic.Stream {
 		t.Helper()
-		s, err := conn.OpenStream(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.Write(h3Request("GET", path)); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.CloseWrite(); err != nil {
-			t.Fatal(err)
-		}
-		return s
+		return askH3(t, conn, h3Request("GET", path))
 	}
 	// readAll reads a stream to its end, under a bound: quic.Stream has no
 	// read deadline of its own.

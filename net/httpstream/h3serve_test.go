@@ -200,8 +200,12 @@ func askH3(t *testing.T, conn *quic.Conn, request []byte) *quic.Stream {
 	}
 	// A server may refuse a request before reading all of it, with
 	// STOP_SENDING H3_NO_ERROR (RFC 9114 §4.1.1): when it lands before the
-	// last byte or the FIN leaves, the write fails and the answer stands.
-	if code, reset := s.WasReset(); err != nil && (!reset || code != h3NoError) {
+	// last byte or the FIN leaves, the write fails and the answer stands. It
+	// may also have reset the response by then, and WasReset reports that
+	// code first: either way the stream was the server's to abandon, and
+	// what the caller reads from it is the verdict, not the refused write.
+	// Only a write that failed on a stream nobody abandoned is this helper's.
+	if _, reset := s.WasReset(); err != nil && !reset {
 		t.Fatal(err)
 	}
 	return s
