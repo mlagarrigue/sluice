@@ -935,15 +935,43 @@ func (c *Conn) handleRetry(h longHeader) {
 	c.retryToken = append([]byte(nil), h.Token...)
 	c.dcid = append([]byte(nil), h.SCID...)
 	c.retrySCID = c.dcid // pinPeerSCID will move dcid on; this must not move with it
-	sp := &c.spaces[spaceInitial]
-	payloads, inFlight := sp.sent.takeAll()
-	sp.retrans = append(sp.retrans, payloads...)
-	c.cc.onLifted(inFlight)
-	// RFC 9002 §6.3: a Retry resets loss recovery state, pending timers
-	// included. The backoff is part of it: a probe timeout that fired before
-	// the Retry must not double the first PTO of the connection that
-	// restarts here, which has no RTT sample yet.
+	// The Initial packets and the 0-RTT ones both go again (§17.2.5.3: the
+	// 0-RTT data "will most likely be retransmitted on receiving a Retry
+	// packet"), under their next packet numbers, never the same ones: a
+	// server that answers with a Retry keeps no state, so whatever 0-RTT
+	// reached it before was dropped with the Initial it came beside. Only
+	// the application space's packets can be 0-RTT here — no 1-RTT key
+	// exists before the server's first authenticated packet, and a Retry
+	// after that is discarded above.
+	//
+	// What leaving the 0-RTT ones out cost. Their bytes stayed in flight
+	// and would never be acknowledged, so the window the restarted
+	// handshake had left was the Initial packets' share of it; and the
+	// payloads waited for a loss that no ACK could declare before the 1-RTT
+	// keys, and then left in 1-RTT. lsquic's server answers with a Retry a
+	// ClientHello it holds only part of when it first looks at the
+	// connection (a post-quantum key share makes one span two Initial
+	// packets), and against it the QUIC Interop Runner's zerortt case saw
+	// 34 requests sent in 0-RTT dropped and sent again in 1-RTT after the
+	// handshake: 9868 bytes of 1-RTT against a bound of 5000 (pass
+	// 40655823065, 2026-10-28).
+	for _, space := range []int{spaceInitial, spaceApplication} {
+		sp := &c.spaces[space]
+		payloads, inFlight := sp.sent.takeAll()
+		sp.retrans = append(sp.retrans, payloads...)
+		c.cc.onLifted(inFlight)
+	}
+	// RFC 9002 §6.3: a Retry resets congestion control and loss recovery
+	// state, pending timers included. The backoff is part of it: a probe
+	// timeout that fired before the Retry must not double the first PTO of
+	// the connection that restarts here, which has no RTT sample yet. So is
+	// the pacer's bucket (§7.7), which the first flight emptied and which
+	// refills at the initial window over the default 333 ms round trip:
+	// left as it was, the flight that goes again here would trickle out
+	// over most of that, and the 0-RTT payloads still queued when the
+	// 1-RTT keys arrive would leave in 1-RTT after all.
 	c.ptoCount = 0
+	c.pacer.last = time.Time{}
 	c.mu.Unlock()
 
 	// New identifier, new Initial secrets (RFC 9001 §5.2).

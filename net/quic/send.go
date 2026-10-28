@@ -621,10 +621,13 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// a long header, so they have a Length field and may precede another
 	// packet in the same datagram, which a short-header 1-RTT packet never
 	// can (§12.2 — it has no Length field, so it is always the last packet
-	// of its datagram). They coalesce only while another writer is inside
-	// [Stream.Write] or waiting for mu to get there (writersIn), because
-	// only then does the gathered datagram have a known closer: the last
-	// writer out flushes it. One writer on its own sends at once.
+	// of its datagram). They coalesce under gathering, as the Initial and
+	// Handshake packets do — gatherLocked(false) closes the datagram, and a
+	// Retry's resend of the 0-RTT flight (handleRetry) runs under it — and
+	// otherwise only while another writer is inside [Stream.Write] or
+	// waiting for mu to get there (writersIn), because only then does the
+	// gathered datagram have a known closer: the last writer out flushes
+	// it. One writer on its own sends at once.
 	//
 	// What that is worth, and what it cost not to do it. A client that
 	// opens many streams at once and writes a small request on each — 40
@@ -643,7 +646,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// conformant peer sees the same thing on any path with a queue: a
 	// sender that pays a datagram per frame loses the ones the queue has
 	// no room for, and pays for them twice.
-	gathering := !opts.close && ((c.gather && space != spaceApplication) ||
+	gathering := !opts.close && ((c.gather && (space != spaceApplication || early)) ||
 		(early && c.writersIn.Load() > 1))
 	if !gathering {
 		c.flushDatagramLocked()
@@ -1182,7 +1185,10 @@ func (c *Conn) retransmitLocked() {
 	c.pacer.refill(time.Now(), rate)
 	for space := range c.spaces {
 		sp := &c.spaces[space]
-		if sp.discarded || sp.sealer == nil {
+		// canSealLocked, not the space's own keys: the 0-RTT payloads a
+		// Retry put back (handleRetry) go again in 0-RTT, before the 1-RTT
+		// keys exist.
+		if !c.canSealLocked(sp, space) {
 			continue
 		}
 		for len(sp.retrans) > 0 {

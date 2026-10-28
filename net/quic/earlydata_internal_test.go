@@ -590,3 +590,84 @@ func TestASpentTicketLivesOnTheTicketsClock(t *testing.T) {
 		t.Error("the ticket was admitted a second time after the wall clock stepped back")
 	}
 }
+
+// A Retry restarts the handshake and drops the 0-RTT that came before it:
+// the server kept no state. RFC 9000 §17.2.5.3 expects that 0-RTT data to go
+// again ("will most likely be retransmitted on receiving a Retry packet"),
+// and RFC 9002 §6.3 resets congestion control. The client used to put back
+// its Initial packets only: the 0-RTT bytes stayed in flight, never to be
+// acknowledged, and their payloads waited for the 1-RTT keys — which made
+// the QUIC Interop Runner's zerortt case fail against lsquic, whose server
+// answered a two-packet ClientHello with a Retry. Here the whole 0-RTT flight
+// goes again in 0-RTT, coalesced, and only it counts in flight.
+func TestARetrySendsThe0RTTFlightAgainIn0RTT(t *testing.T) {
+	tap := newTap(&fuzzSink{addr: "retry0:self"})
+	dcid, scid := []byte("dcid0000"), []byte("scid0000")
+	c := assembleConn(tap, fakeFuzzAddr("retry0:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+	if err := c.installInitial(dcid); err != nil {
+		t.Fatal(err)
+	}
+	c.remembered = TransportParameters{
+		InitialMaxData:          1 << 20,
+		InitialMaxStreamDataUni: 1 << 16,
+		InitialMaxStreamsUni:    64,
+		ActiveConnIDLimit:       4,
+	}
+	if err := c.installEarlySealer(tls.TLS_AES_128_GCM_SHA256, make([]byte, 32)); err != nil {
+		t.Fatalf("early sealer: %v", err)
+	}
+
+	// Thirty requests, three quarters of the initial window: enough that
+	// the pacer's bucket, left as the first flight emptied it, would not
+	// hold the flight a second time.
+	const streams, request = 30, 250
+	for range streams {
+		s, err := c.OpenUniStream(context.Background())
+		if err != nil {
+			t.Fatalf("OpenUniStream: %v", err)
+		}
+		if _, err := s.WriteFinal(make([]byte, request)); err != nil {
+			t.Fatalf("writing in 0-RTT: %v", err)
+		}
+	}
+	before := len(tap.recorded())
+
+	// The Retry arrives as the read path delivers a datagram: under
+	// gathering, closed once it is processed.
+	retry := appendRetryPacket(nil, scid, []byte("srv-cid0"), dcid, []byte("token"))
+	c.mu.Lock()
+	c.gatherLocked(true)
+	c.mu.Unlock()
+	if err := c.receive(retry, c.peer); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.gatherLocked(false)
+	retried, inFlight := c.retried, c.cc.bytesInFlight()
+	c.mu.Unlock()
+	if !retried {
+		t.Fatal("the Retry was not accepted; the test is checking the wrong thing")
+	}
+
+	again := tap.recorded()[before:]
+	zeroRTT := 0
+	for _, w := range again {
+		for _, ty := range packetTypes(t, w.data) {
+			if ty != packetZeroRTT {
+				t.Fatalf("a datagram after the Retry carried packet type %#x, want 0-RTT only", ty)
+			}
+		}
+		zeroRTT += len(w.data)
+	}
+	if zeroRTT < streams*request {
+		t.Fatalf("%d bytes of 0-RTT after the Retry, under the %d bytes of requests it dropped: the 0-RTT flight did not go again", zeroRTT, streams*request)
+	}
+	if inFlight > zeroRTT {
+		t.Errorf("%d bytes in flight after the Retry, %d sent since: the dropped 0-RTT packets still count (RFC 9002 §6.3)", inFlight, zeroRTT)
+	}
+	if len(again) >= streams {
+		t.Errorf("%d requests went again in %d datagrams: one each, nothing coalesced", streams, len(again))
+	}
+}
