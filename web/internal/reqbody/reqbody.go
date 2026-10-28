@@ -191,8 +191,12 @@ func Decode(r io.Reader, limit int64, dst any, code, tooLarge string) (diagnosti
 		return Null(code), false
 	}
 	// A second value in the body is not a stray byte, it is a different
-	// request smuggled behind the first. Refused rather than ignored.
-	if err := dec.Decode(&json.RawMessage{}); !errors.Is(err, io.EOF) {
+	// request smuggled behind the first. Refused rather than ignored. One
+	// token is enough to tell: io.EOF when only whitespace follows, and a
+	// token or a syntax error otherwise — a stray closing bracket included,
+	// which Decoder.More would have read as the end. Decoding the rest into a
+	// RawMessage said the same at one allocation a request.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return diagnostics.NewDiagnostic(diagnostics.Error, code, diagnostics.Path{}).
 			WithMessage("RequestBodyTrailingContent", nil).
 			WithOrigin(diagnostics.OriginProtocol), false

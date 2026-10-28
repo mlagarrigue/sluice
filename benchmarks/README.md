@@ -125,16 +125,23 @@ go1.26.9:
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `net/http` (no framework) | **1 656** | 1 928 | 21 |
-| `gin` v1.12.0 | 1 677 | 1 864 | 19 |
-| `echo` v4.16.1 | 1 875 | 1 896 | 21 |
-| `chi` v5.4.0 | 1 945 | 2 584 | 23 |
-| **sluice** | 1 985 | 2 056 | 26 |
+| `net/http` (no framework) | **1 677** | 1 928 | 21 |
+| `gin` v1.12.0 | 1 743 | 1 864 | 19 |
+| `echo` v4.16.1 | 1 892 | 1 896 | 21 |
+| **sluice** | 1 998 | 2 032 | 25 |
+| `chi` v5.4.0 | 2 073 | 2 584 | 23 |
 
 Nobody wins by much, which is the honest shape of this comparison: all five are
 doing the same JSON decode and encode, and that is most of the time. sluice
-sits 20% above hand-written `net/http`, level with `chi`, and makes the most
-allocations of the five.
+sits 19% above hand-written `net/http`, between `echo` and `chi`. Its four
+allocations more than `net/http` are each something the hand-written handler
+does not do: a body of `null` told apart from an empty one, the document
+encoded whole before the status is committed, a `Content-Length`, and the
+`X-Content-Type-Options: nosniff` every JSON answer carries. A fifth, the
+check that nothing follows the document, now reads one token instead of
+decoding the rest; paired against the allocation it removed (`ab.sh`,
+sixteen rounds), it read +4.5% under one code layout and noise under
+another (9 of 15), which is how the regression gate reads a layout effect.
 
 **The harness was wrong first.** Measured through `httptest.NewRecorder`, all
 five came out within 15% of each other at ~3 400 ns and 8 184 B/op — forty
@@ -158,7 +165,7 @@ keep-alive. This is the row that says how much the table above matters.
 | `fiber` (fasthttp) | 190 µs | **6 720** | **82** |
 
 **Everything is within 8% of everything else.** The in-process table spreads
-those same five frameworks over 20% — 1 656 ns to 1 985 ns — and a loopback
+those same five frameworks over 24% — 1 677 ns to 2 073 ns — and a loopback
 socket costs 175 µs, so the whole spread lands inside the noise of one round
 trip. On a real network it would disappear entirely.
 
@@ -268,9 +275,9 @@ hand-off, and a batch that usually holds one element.
 
 | | per request |
 |---|---|
-| sluice, direct handler | 1 985 ns |
-| sluice through a gateway, **one caller at a time** | 1 105 000 ns |
-| sluice through a gateway, **64 concurrent callers** | ~20 300 ns |
+| sluice, direct handler | 1 998 ns |
+| sluice through a gateway, **one caller at a time** | 1 113 000 ns |
+| sluice through a gateway, **64 concurrent callers** | ~20 500 ns |
 
 **Read the serial figure carefully — it is mostly not the framework.** The
 gateway was configured with `Within: 200µs`, and a lone call waits for that
@@ -290,7 +297,7 @@ nor controls the host clock; it may differ elsewhere, which is why it is a test
 that reruns rather than a number written into a document.
 
 The mechanism's own cost is what is left: **four more allocations per request**
-(30 against 26) and, under the concurrency it is designed for, ~20 µs per
+(29 against 25) and, under the concurrency it is designed for, ~20 µs per
 request against 2.0 µs direct. Whether that pays is arithmetic this table
 cannot finish: it pays when the round trips saved exceed it, and the round trip
 is exactly what has not been measured yet.
