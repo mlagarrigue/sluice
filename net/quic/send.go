@@ -722,6 +722,23 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 			payload = append(payload, make([]byte, pad)...)
 		}
 	}
+	// RFC 9000 §10.3: every packet SHOULD be at least 22 bytes longer than
+	// the identifier this end asks the peer to send under, so that the
+	// peer's stateless reset — 21 bytes at the least — is never the
+	// shortest thing addressed here. A short header is 21 bytes with the
+	// peer's identifier, the packet number and the tag: a PING toward a
+	// peer with short identifiers fell under it. Long headers carry both
+	// identifiers and clear it. An ACK-only packet padded here stays out of
+	// the flight like any ACK-only packet: a few bytes, never acknowledged
+	// for their own sake (RFC 9002 §2 counts PADDING in flight so that a
+	// padded probe is congestion-controlled, which this is not). A copy:
+	// payload may be the head of a retransmission chunk whose tail shares
+	// its array.
+	if space == spaceApplication && !early {
+		if pad := 22 + len(c.scid) - (len(header) + pnLen + len(payload) + 16); pad > 0 {
+			payload = append(payload[:len(payload):len(payload)], make([]byte, pad)...)
+		}
+	}
 	// The datagram's size on the wire, for the amplification check: known
 	// exactly before sealing. While gathering, the padding a closing Initial
 	// will add is still to come — counted as the room it fills.

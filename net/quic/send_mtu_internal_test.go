@@ -312,3 +312,36 @@ func TestAWithheldAckIsOwedAgainWhenTheBudgetLifts(t *testing.T) {
 		t.Error("the ACK is still owed after it left")
 	}
 }
+
+// RFC 9000 §10.3: an endpoint SHOULD send packets at least 22 bytes longer
+// than the connection ID length it asks the peer to use, so that a
+// stateless reset the peer sends is no shorter than a valid packet to this
+// end. A short-header packet is 21 bytes plus the peer's identifier plus
+// the payload: a PING toward a peer with 4-byte identifiers left in 26
+// bytes, under the 30 that this end's 8-byte identifiers call for.
+func TestSmallestPacketReachesTheStatelessResetFloor(t *testing.T) {
+	for _, dcid := range []string{"dc04", ""} {
+		c, tap := sealedAppConn(t)
+		now := time.Now()
+		c.mu.Lock()
+		c.dcid = []byte(dcid)
+		floor := 22 + len(c.scid)
+		if err := c.sendPacketLocked(spaceApplication, []byte{framePing}, sendOpts{}); err != nil {
+			t.Fatal(err)
+		}
+		sp := &c.spaces[spaceApplication]
+		sp.ack.record(1, now)
+		sp.ack.onAckEliciting(spaceApplication, now, false)
+		c.flushAcksLocked(now.Add(time.Second))
+		c.mu.Unlock()
+		writes := tap.recorded()
+		if len(writes) != 2 {
+			t.Fatalf("identifier of %d bytes: %d datagrams, want the PING and the ACK", len(dcid), len(writes))
+		}
+		for i, what := range []string{"PING", "ACK"} {
+			if n := len(writes[i].data); n < floor {
+				t.Errorf("identifier of %d bytes: the %s left in %d bytes, under the %d-byte floor", len(dcid), what, n, floor)
+			}
+		}
+	}
+}
