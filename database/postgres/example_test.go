@@ -160,3 +160,92 @@ func mustConnect() *postgres.Conn {
 	}
 	return conn
 }
+
+// A transaction for a write that must land whole: Begin opens it with its
+// statement timeout, the deferred Rollback is the safety net on every path
+// out, and Commit is the one call that makes the work durable. Compiled but
+// not run: it needs a server.
+func ExampleConn_Begin() {
+	ctx := context.Background()
+	conn := mustConnect()
+	defer func() { _ = conn.Close() }()
+
+	tx, err := conn.Begin(ctx, postgres.TxConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		fmt.Println("begin:", err)
+		return
+	}
+	defer func() { _ = tx.Rollback() }() // a no-op once Commit succeeded
+
+	tag, err := tx.ExecParams(ctx, "UPDATE orders SET shipped = true WHERE customer = $1",
+		[]postgres.Param{{OID: pgtype.OIDText, Value: pgtype.AppendText(nil, "ACME")}})
+	if err != nil {
+		fmt.Println("update:", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		fmt.Println("commit:", err)
+		return
+	}
+	n, _ := tag.RowsAffected()
+	fmt.Println(n, "orders shipped")
+}
+
+// Following a table's changes through logical replication: the stream
+// delivers each committed transaction as a Begin, its row changes and a
+// Commit, and Ack tells the server what may be let go — after the work, so
+// a restart replays what was not done. Compiled but not run: it needs a
+// server with a publication and a pgoutput slot.
+func ExampleReplicate() {
+	ctx := context.Background()
+	repl, err := postgres.Replicate(ctx, postgres.DialTCP("localhost:5432"),
+		postgres.Config{User: "replicator", Password: os.Getenv("PGPASSWORD"), Database: "orders"},
+		postgres.ReplicationConfig{Slot: "orders_slot", Publications: []string{"orders_pub"}})
+	if err != nil {
+		fmt.Println("replicate:", err)
+		return
+	}
+	defer func() { _ = repl.Close() }()
+
+	src := repl.Changes(ctx)
+	for b := range src.Stream() {
+		for i := range b.Items {
+			c := &b.Items[i]
+			switch c.Kind {
+			case postgres.ChangeInsert:
+				fmt.Println("inserted into", c.Relation.Name)
+			case postgres.ChangeCommit:
+				repl.Ack(c.EndLSN) // processed: the server may let it go
+			}
+		}
+	}
+	if err := src.Err(); err != nil {
+		fmt.Println("changes:", err)
+	}
+}
+
+// Waiting for a signal: Listen subscribes a connection of its own to the
+// channels, and each NOTIFY arrives as one element of the stream. A
+// notification says "look", not what changed: read the table after it.
+// Compiled but not run: it needs a server.
+func ExampleListen() {
+	ctx := context.Background()
+	l, err := postgres.Listen(ctx, postgres.DialTCP("localhost:5432"),
+		postgres.Config{User: "orders", Password: os.Getenv("PGPASSWORD"), Database: "orders"},
+		postgres.ListenConfig{Channels: []string{"orders"}})
+	if err != nil {
+		fmt.Println("listen:", err)
+		return
+	}
+	defer func() { _ = l.Close() }()
+
+	src := l.Notifications(ctx)
+	for b := range src.Stream() {
+		for _, n := range b.Items {
+			fmt.Println(n.Channel, n.Payload)
+		}
+	}
+	if err := src.Err(); err != nil {
+		fmt.Println("notifications:", err)
+	}
+}
