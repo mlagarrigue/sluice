@@ -116,6 +116,14 @@ func (c *Conn) maxStreamChunk() int {
 
 // sendPacketLocked seals payload as one packet in space's level and writes it
 // as one datagram. Callers hold mu.
+//
+// sendPacketLocked runs in this order: send nothing once the connection is
+// closing or draining; wait for the space's keys, rechecking what the caller
+// built if it waited; wait for the congestion window and the pacer when the
+// caller asks; read the clock once; put the acknowledgement this space owes in
+// front, unless the packet leaves off the path in use; append the grants and
+// control frames owed in the application space; then seal and write the
+// datagram (writePacketLocked).
 func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error {
 	if c.draining || c.closeSent {
 		return errClosed

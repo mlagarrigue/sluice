@@ -1569,6 +1569,16 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 // round-trip sample, declare losses, reopen the congestion window. now is
 // when the packet carrying the ACK arrived — a deferred packet's ACK must
 // not read its time parked waiting for keys as path latency.
+//
+// handleAck runs in this order, RFC 9002 A.7's: refuse an ACK of a packet
+// never sent; note whether the sender was application-limited (BBR §4.1.2.4);
+// mark what the frame acknowledges, refusing an optimistic ACK; drop what
+// packets declared lost then acknowledged still hold queued; take the round-
+// trip sample when the largest is new and ack-eliciting; validate the ECN
+// counts and react to new CE marks; declare the losses (detectLost); confirm a
+// key update, the handshake, the PTO reset; react to the losses (persistent
+// congestion, BBR's loss events); release the acknowledged packets to the
+// congestion controller; and settle the path probe.
 func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -85,6 +85,12 @@ func (c *Conn) idleDeadlineLocked() time.Time {
 	return deadline
 }
 
+// actOnDeadlines runs in this order: close a connection whose idle timeout
+// passed; send the keepalive PING that is due; retransmit an unanswered
+// PATH_CHALLENGE; wake a writer parked on the pacer; fire the streams' read
+// and write deadlines; re-announce a *_BLOCKED; then, per packet number space,
+// see whether its probe timeout matured and send the probes, counting a black
+// hole after repeated ones; and return the earliest deadline still ahead.
 func (c *Conn) actOnDeadlines(now time.Time) time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -68,6 +68,9 @@ func final(ss []dockerStage) dockerStage {
 	return ss[len(ss)-1]
 }
 
+// init registers the Dockerfile rules, in this order: docker/pinned-base,
+// docker/multi-stage, docker/minimal-runtime, docker/user, docker/no-secret,
+// docker/dockerignore. Each is one Register call, read on its own.
 func init() {
 	needs := func(goal, source string) Selection {
 		return Selection{

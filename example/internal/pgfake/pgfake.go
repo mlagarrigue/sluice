@@ -115,6 +115,12 @@ type portal struct {
 	ran  bool // completed once
 }
 
+// serve speaks the server side of one connection, in this order: start the
+// writer goroutine that stands for a socket's buffers; answer the startup when
+// asked to; define the transaction rules a statement applies (fail, refused,
+// endTx, complete); then read messages, one case per frontend message — Query,
+// Parse, Bind, Describe, Execute, Close, Flush, Sync, Terminate — until the
+// client leaves.
 func (b *Backend) serve(nc net.Conn, startup bool) {
 	defer func() { _ = nc.Close() }()
 	rd := pgwire.NewReader(nc)

@@ -449,6 +449,15 @@ func (e h3ConnectionError) Unwrap() error { return e.Err }
 // offset in sight to detect an overlap from even if it wanted to.
 // Retransmission-safety for a stream's bytes belongs in
 // quic/reassembly_test.go, not duplicated at this layer.
+//
+// Frames runs in this order: clear the delivery's scratch (batch, ids,
+// failures, the 100s owed); expire the streams past their deadline and forget
+// the closed streamed bodies; fold each frame in packet order — a STOP_SENDING
+// cancels the request it names, a request stream's bytes go through framing
+// and assembly (head, body, trailers, FIN, RESET_STREAM), a unidirectional
+// stream goes to the control or QPACK reader; refuse the whole delivery when a
+// charge in it went over a connection bound (excess); hand over the requests
+// whose head is complete (handOver); and keep the interim 100s still owed.
 func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint64, []h3StreamError, error) {
 	a.batch, a.ids, a.failed = a.batch[:0], a.ids[:0], a.failed[:0]
 	a.after, a.continues = a.after[:0], a.continues[:0]
@@ -1457,6 +1466,14 @@ func (a *h3Assembler) rawStreamBound() int {
 // drain consumes whole HTTP/3 frames out of a stream's buffer, leaving what
 // has not arrived. A QUIC stream is a byte stream: a frame split across two
 // datagrams is ordinary rather than an error.
+//
+// drain runs in this order: skip what an ignored frame still owes and stream
+// what a DATA frame still owes (dataLeft); parse the whole frames in the
+// buffer, refusing one past its bound; then one case per frame type — HEADERS
+// (the head, or the trailers once the head is in), DATA (into the body, whole
+// or streamed), a control-stream frame on a request stream (refused),
+// PUSH_PROMISE (refused); and last, keep the start of a frame not yet arrived,
+// checking its declared type and length before waiting for the rest.
 func (a *h3Assembler) drain(st *h3Stream) error {
 	if st.skip > 0 {
 		// The buffer is this delivery alone: an unknown frame being skipped

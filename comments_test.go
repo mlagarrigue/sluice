@@ -215,3 +215,37 @@ func TestADRCitations(t *testing.T) {
 		cite(f, string(b))
 	}
 }
+
+// maxUnplannedLines is the longest function a reader is left to read with no
+// map. Past it, a function's doc comment states its plan: the steps it runs,
+// in order, as a numbered list or a sentence that says "in this order" —
+// or, for a dispatch loop, "one case per" what it dispatches on.
+const maxUnplannedLines = 150
+
+var readingPlan = regexp.MustCompile(`(?m)^\s*1\. |\bin this order\b|\bone case per\b`)
+
+// A function longer than maxUnplannedLines lines carries a reading plan in
+// its doc comment, so that its length is navigable rather than read top to
+// bottom. Splitting it is the other way out; the plan is the floor.
+func TestLongFunctionsHaveAReadingPlan(t *testing.T) {
+	for _, src := range goSources(t) {
+		if src.generated || src.test || src.nested {
+			continue
+		}
+		for _, decl := range src.file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			start, end := src.fset.Position(fd.Pos()), src.fset.Position(fd.End())
+			n := end.Line - start.Line + 1
+			if n <= maxUnplannedLines {
+				continue
+			}
+			if fd.Doc == nil || !readingPlan.MatchString(fd.Doc.Text()) {
+				t.Errorf("%s: %s runs %d lines with no reading plan in its doc comment (a numbered list, or \"in this order\")",
+					start, fd.Name.Name, n)
+			}
+		}
+	}
+}

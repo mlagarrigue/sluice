@@ -89,6 +89,10 @@ var floors = []floor{
 	},
 }
 
+// init registers the host rules, in this order: one linux/<name> rule per
+// entry of floors (a kernel value with its least), then linux/ephemeral-ports,
+// linux/swap, linux/transparent-hugepages, linux/cpu-governor, linux/nofile
+// and go/gomaxprocs. Each is one Register call, read on its own.
 func init() {
 	for _, f := range floors {
 		Register(Rule{

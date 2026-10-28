@@ -1065,6 +1065,15 @@ func (q *query) recordRows(err error) {
 	c.stmts.entries[q.entry].lastRows = n
 }
 
+// run executes one query and hands its rows to yield, in this order: refuse
+// what cannot be written (parameter count, SQL text, bind length) and a
+// demand that already wants nothing; mark the connection busy; ask the
+// statement cache what to bind against and decide the fetch; write Parse,
+// Bind, Describe and the first Execute in one flush; settle a ReadyForQuery
+// the previous read left owed; arm the resync that puts the connection back
+// at a known position on every way out; then loop, one batch per turn —
+// readChunk, the context checked at the boundary, the demand read and the
+// portal re-bound or the next batches asked for.
 func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bool) (err error) {
 	c := q.conn
 

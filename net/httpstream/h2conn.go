@@ -531,6 +531,16 @@ func ServeH2Conn(ctx context.Context, c net.Conn, cfg Config, handle Handler) er
 // safe side. A peer that never acknowledges the PING holds the connection
 // until the grace closes it, which is the bound every drain has. A nil state
 // is a test driving the connection directly, which nothing drains.
+//
+// serveH2Conn runs in this order: build the connection's state and start the
+// responder goroutine; read the preface and send SETTINGS (hello); register
+// with the drain; start the goroutine that runs one handler call per applied
+// request; read the frames until the connection ends — each batch consumed
+// (consume), the phase marked before a handler starts, the ready requests
+// handed to the calls, the drain's GOAWAY and PING sent when idle; then wake
+// the handlers waiting on a streamed body, leave the drain's count, wait for
+// the calls and the responder, send the last GOAWAY with the code the end
+// deserves, and linger on an error so that GOAWAY is read.
 func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, handler Handler) error {
 	s := &h2Server{
 		cfg:      cfg,
@@ -1235,6 +1245,16 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 	return nil, nil
 }
 
+// headers takes one HEADERS or CONTINUATION frame of a stream, in this order:
+// find the stream (stream); strip the padding and the priority fields of a
+// HEADERS frame; append the fragment to the stream's block, and wait for the
+// rest unless the frame ends the headers; decode the whole block — always,
+// since HPACK's table is shared — into the storage the stream's state allows;
+// refuse a block over MaxHeaders fields; then one case per state — a block on
+// a half-closed stream is refused, a block after the head is the trailer
+// section (checked, kept or discarded, and the stream finished), and a first
+// block is the request's head (buildRequest), refused with a status or a
+// reset, or admitted.
 func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 	st, err := s.stream(f.StreamID)
 	if err != nil {

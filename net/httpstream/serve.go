@@ -1309,6 +1309,14 @@ func streamedIn(res []Response) bool {
 // no such repair: a 500 appended to a half-written body would be read as
 // body bytes, so a mid-stream write failure closes the connection with
 // nothing more said.
+//
+// writeStreamedBatch runs in this order: prepare the keep-alive field and the
+// 500 that answers a refused response; then each response of the batch —
+// checked; a buffered one appended to buf; a streamed one has the buffered
+// responses before it flushed with its own header, then its producer pulled at
+// the socket's pace, chunk by chunk or delimited by the close, a panic in it
+// closing the connection; and last, the buffered responses after the last
+// streamed one, in one write.
 func writeStreamedBatch(c *prefixConn, st *connState, cfg Config, requests []Request, res []Response, buf []byte) (_ []byte, closed bool, _ error) {
 	var field [keepAliveFieldMax]byte
 	keepAlive := appendKeepAlive(field[:0], cfg.IdleTimeout)

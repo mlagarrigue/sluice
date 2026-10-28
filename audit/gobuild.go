@@ -17,6 +17,9 @@ import (
 // months.
 const minGoVersion = "go1.26.0"
 
+// init registers the build rules, in this order: gobuild/trimpath,
+// gobuild/cgo, gobuild/goamd64, gobuild/pgo, gobuild/toolchain, gobuild/vcs.
+// Each is one Register call, read on its own.
 func init() {
 	needs := func(goal string) Selection {
 		return Selection{

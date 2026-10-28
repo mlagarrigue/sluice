@@ -1320,6 +1320,15 @@ func (c *Conn) handshake(ctx context.Context) error {
 
 // driveHandshake is handshake's body; every error it returns has closed the
 // connection.
+//
+// driveHandshake runs in this order: start TLS on a client; set the
+// handshake's deadline — the default or the handshake budget, replaced by
+// ctx's, extendable only when this package chose it; tie ctx's cancellation to
+// the close; then loop until the handshake completes or fails — pump TLS's
+// events, send the flight they produce as one datagram, send the ticket a
+// server owes once done, read and process the next datagram, give up after too
+// many refusals heard from nobody or past the deadline, and report a
+// connection the peer closed meanwhile as itself.
 func (c *Conn) driveHandshake(ctx context.Context) error {
 	if c.isClient {
 		if err := c.start(); err != nil {
