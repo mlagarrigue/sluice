@@ -751,6 +751,23 @@ func TestInteropRunnerIsPinned(t *testing.T) {
 	}
 }
 
+// h3spec is a release binary the HTTP/3 conformance run downloads: it is held
+// to one release by its tag and to one build by its SHA-256, as the runner is
+// held to one commit, so a moved release cannot change what the exclusions
+// file is read against.
+func TestH3SpecIsPinned(t *testing.T) {
+	script, err := os.ReadFile("scripts/interop-http3.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^H3SPEC_URL=\S+/releases/download/v\d+\.\d+\.\d+/\S+$`).Match(script) {
+		t.Error("scripts/interop-http3.sh: H3SPEC_URL does not name a release tag; a latest link moves under the results")
+	}
+	if !regexp.MustCompile(`(?m)^H3SPEC_SHA256=[0-9a-f]{64}$`).Match(script) {
+		t.Error("scripts/interop-http3.sh: H3SPEC_SHA256 is not a 64-hex digest; the binary would run unchecked")
+	}
+}
+
 // packageDirs lists the directory of every package of the root module, test
 // files included or not: go list stops at nested modules, which have their
 // own go.mod and their own reviews.
