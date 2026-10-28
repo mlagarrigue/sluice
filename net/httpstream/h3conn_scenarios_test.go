@@ -436,6 +436,29 @@ func TestH3AStreamArrivingAfterTheDrainFinishedIsRejected(t *testing.T) {
 	}
 }
 
+// A streamed body's first delivery may carry the head and the body's start
+// together, as large as the stream window. It was held, before the head was
+// even parsed, to the raw bound of a whole body (MaxBodyBytes,
+// MaxHeaderBytes and the frame slack) and refused EXCESSIVE_LOAD:
+// TestH3StreamedUploadsInParallel lost an upload so under a loaded
+// check.sh (2026-10-28), when the transport delivered more than the bound
+// before the reader ran. Bounded after drain, on what stays in the buffer,
+// the request streams.
+func TestH3AStreamedBodyMayArriveWithItsHead(t *testing.T) {
+	a := testAssembler(Config{BodyDelivery: BodyStreamed, MaxBodyBytes: 16 << 10, MaxStreamedBodyBytes: 8 << 20})
+	a.CreditConn = func(uint64) {}
+	a.CreditStream = func(uint64, uint64) {}
+	req := h3Request("POST", "/up")
+	for len(req) <= a.rawStreamBound() {
+		req = appendH3Frame(req, h3Data, make([]byte, 16<<10))
+	}
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, req, false)})
+	if err != nil || len(failed) != 0 || batch.Len() != 1 {
+		t.Fatalf("a head and %d bytes of streamed body in one delivery (raw bound %d): %d requests, refusals %+v, %v; want the request, its body streaming",
+			len(req), a.rawStreamBound(), batch.Len(), failed, err)
+	}
+}
+
 // Trailers reach the handler in Request.Trailers, apart from the headers,
 // and their bytes answer to the same octet rules as everything else that
 // could be re-serialised toward an HTTP/1.1 hop — and a frame after them is

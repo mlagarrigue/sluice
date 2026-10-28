@@ -552,8 +552,17 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// a frame header or a trailer section: its DATA moves on to the queue
 		// in this very drain, and the stream window bounds the delta, which
 		// the transport's reassembly may make as large as the window.
+		// Before its head, a stream whose body will stream is bounded after
+		// drain instead, on what stays in buf: its first delivery may carry
+		// the head and the body's start together, as large as the stream
+		// window, and the DATA behind the head leaves buf for the queue in
+		// this very drain. Bounded here, on what arrived, such a request
+		// was refused EXCESSIVE_LOAD whenever the transport delivered more
+		// than the raw bound before the reader ran — a client sending its
+		// upload at once over a fast path.
 		streams := a.streaming() && st.gotHead
-		if bound := a.rawStreamBound(); !streams && len(st.buf)+len(f.Data) > bound {
+		headFirst := a.streaming() && !st.gotHead
+		if bound := a.rawStreamBound(); !streams && !headFirst && len(st.buf)+len(f.Data) > bound {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf("%w: a stream over %d bytes",
 				ErrTooLarge, bound))
 			a.release(f.StreamID, len(f.Data)) // never appended; fail released the rest
@@ -565,7 +574,7 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 		// peer park per-stream bounds times the stream limit. ServeH3Conn's
 		// manual credit closes that at the window; this cap stays as the
 		// standalone bound and as defense in depth.
-		if !streams && a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
+		if !streams && !headFirst && a.assembling+len(f.Data) > 4*a.cfg.MaxBodyBytes {
 			a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf(
 				"%w: over %d bytes buffered across this connection's unfinished requests",
 				ErrTooLarge, 4*a.cfg.MaxBodyBytes))
@@ -614,6 +623,20 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 			}
 			a.fail(f.StreamID, code, err)
 			continue
+		}
+		if headFirst && !st.gotHead {
+			// Still short of its head after drain: the two bounds above,
+			// on what it keeps.
+			if bound := a.rawStreamBound(); len(st.buf) > bound {
+				a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf("%w: a stream over %d bytes", ErrTooLarge, bound))
+				continue
+			}
+			if a.assembling > 4*a.cfg.MaxBodyBytes {
+				a.fail(f.StreamID, h3ExcessiveLoad, fmt.Errorf(
+					"%w: over %d bytes buffered across this connection's unfinished requests",
+					ErrTooLarge, 4*a.cfg.MaxBodyBytes))
+				continue
+			}
 		}
 		if st.gotHead && !headBefore && expectsContinue(st.req) {
 			// The head is complete and the client says it waits to be told
