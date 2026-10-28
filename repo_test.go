@@ -299,6 +299,12 @@ func TestDecisionRecordsShareOneHeader(t *testing.T) {
 				if r := strings.TrimPrefix(l, "- **Revised:** "); r != "—" && !date.MatchString(r) {
 					t.Errorf("%s: a revision is dated YYYY-MM-DD: %q", f, l)
 				}
+				// The header says when, not what: past 300 characters it
+				// is a changelog nobody reads, and the record's history is
+				// its git log (adr/README.md).
+				if len(l) > 300 {
+					t.Errorf("%s: the Revised line runs %d characters, 300 at most; keep the last revision and count the others", f, len(l))
+				}
 			case strings.HasPrefix(l, "- **Theme:** "):
 				th := strings.TrimPrefix(l, "- **Theme:** ")
 				theme = slices.Contains(scopes, th)

@@ -1618,7 +1618,8 @@ per-request-pipeline shape is the expensive one, and it is the one everybody
 writes first.
 
 No HTTP adapter ships with the gateway, deliberately: the handler that joins
-`net/http` to it is eight explicit lines, and an adapter taking decode and
+`net/http` to it is a few explicit lines — decode, run, pick the status,
+encode — and an adapter taking decode and
 encode functions would save three of them while hiding the two decisions that
 matter — the status code and the encoding. `net/http` also stays the protocol
 parser: rewriting a parser exposed to hostile input is how CVEs are
@@ -1718,7 +1719,7 @@ credit; any unbounded buffer reintroduces this bug.
 
 ### Dependencies — the exact rule
 
-[ADR 0002](adr/0002-one-dependency.md) records the decision: every
+[ADR 0002](adr/0002-dependency-graph.md) records the decision: every
 production dependency is a recorded decision, and the graph is as small as
 the job allows. Today:
 

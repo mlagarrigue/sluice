@@ -13,9 +13,9 @@ go test -run='^$' -bench=. ./...    # the comparisons
 
 The root's `go test ./...` does not see this directory, and three tests in the
 root module keep the arrangement honest: `go.mod` must require nothing outside
-the allowlist (`golang.org/x/crypto` and the `golang.org/x/sys` it brings), its
-`go` line must match the oldest version CI builds, and this module must still
-`replace` the root with the working tree rather than a published tag.
+the allowlist (`golang.org/x/crypto`, the `golang.org/x/sys` it brings, and
+`golang.org/x/text`), its `go` line must match the oldest version CI builds,
+and this module must still `replace` the root with the working tree rather than a published tag.
 
 ## Two rules
 

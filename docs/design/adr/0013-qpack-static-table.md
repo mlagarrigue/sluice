@@ -1,7 +1,7 @@
 # ADR 0013 — QPACK's static table ships, checked
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-07 (renumbered), 2026-10-28 (the foreign interop run named)
+- **Revised:** 2026-10-07 (renumbered), 2026-10-28 (the foreign interop run named; the path no longer called experimental)
 - **Theme:** httpstream
 
 ## Problem
@@ -29,7 +29,7 @@ table refuses indexed field lines outright.
 The risk is real and a required parameter is the wrong remedy: pushing the
 transcription to every caller gives it less checking than one shared copy,
 against the
-project's usage-simple rule, and prices the experimental path's headline
+project's usage-simple rule, and prices the streaming path's headline
 (three protocols, one handler) out of reach of any real client. The
 residual risk is stated: a transcription error shared by this copy and its
 checks would survive, and only an interop run against a foreign peer

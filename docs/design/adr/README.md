@@ -74,7 +74,7 @@ theme, the question each one settles beside its title.
 
 ## Tooling (`ci`)
 
-- [ADR 0002 — The dependency graph is a decision, never a default](0002-one-dependency.md)
+- [ADR 0002 — The dependency graph is a decision, never a default](0002-dependency-graph.md)
   — why every production dependency is a recorded decision.
 
 ## Documentation (`docs`)

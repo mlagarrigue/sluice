@@ -180,7 +180,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 		_ = c.SetKeepAlive(cfg.KeepAlive) // positive: SetKeepAlive refuses only a negative period
 	}
 	a := newH3Assembler(cfg)
-	// Manual flow-control credit closes the security report's M-3 residue:
+	// Manual flow-control credit keeps retention under the windows:
 	// an auto-crediting window reopens for bytes this layer still retains,
 	// so retention is bounded only by this layer's own caps instead of by
 	// the windows. Under manual credit a retained byte keeps its window

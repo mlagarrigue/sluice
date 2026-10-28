@@ -1,7 +1,7 @@
 # ADR 0017 — Shutdown drains, it does not cut
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-15 (HTTP/2 and HTTP/3 drain; `web.Shutdown` for every `Serve(ctx)`; two stops, `Server` and `ErrShutdownForced`; `ServeH2Conn` drains), 2026-10-16 (HTTP/3 GOAWAY pair; only idempotent requests replay), 2026-10-21 (an idle HTTP/2 connection is told, not cut; a preface-only one is given the linger, then told GOAWAY 0 and closed), 2026-10-28 (a closer with a `Shutdown(ctx)` method, as `gateway.Gateway` has, is stopped under `ctx` rather than closed), 2026-10-28 (the two-stage close stated as built)
+- **Revised:** 2026-10-28 (the two-stage close stated as built); 4 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem

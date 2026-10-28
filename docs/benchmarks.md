@@ -1685,6 +1685,8 @@ A single run of each contender produces numbers in an order, which invites
 ranking. The sign test says which of those differences survive interleaving.
 
 <!-- consolidate: verdicts -->
+| pair | first | second | verdict | sign test |
+|---|---|---|---|---|
 | `BenchmarkSocketNetHTTP` vs `BenchmarkSocketSluice` | 183857 ns | 183752 ns | noise | 5/12 wins, 10 needed |
 | `BenchmarkSocketGin` vs `BenchmarkSocketSluice` | 177060 ns | 177126 ns | noise | 8/12 wins, 10 needed |
 | `BenchmarkSocketNetHTTP` vs `BenchmarkSocketFiberFasthttp` | 175211 ns | 191202 ns | SLOWER +8.8% | 0/12 wins, 10 needed |

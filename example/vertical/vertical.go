@@ -7,7 +7,7 @@
 // compose without a layer in between, and — because a claim nobody can check is
 // decoration — it counts the round trips it makes and says so.
 //
-// It runs on the experimental transport: the architecture's request table
+// It runs on the streaming transport: the architecture's request table
 // with every arrow a stream stage, [httpstream] carrying the outer ones and
 // [github.com/mlagarrigue/sluice/web/stream] the
 // middle, so a batch of pipelined requests reaches the gateway as one
@@ -393,7 +393,7 @@ func (s *Service) Close() error { return s.gw.Close() }
 
 // --- the transport -------------------------------------------------------------
 
-// StreamHandler joins the experimental transport to the vertical. The status
+// StreamHandler joins the streaming transport to the vertical. The status
 // code and the encoding stay visible in the render callback on purpose: they
 // are the two decisions that matter, and an adapter would hide them.
 //

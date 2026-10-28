@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it), 2026-10-23 (session tickets on request; 0-RTT decided in ADR 0019), 2026-10-28 (0-RTT and foreign interoperation stated as shipped), 2026-10-28 (one rule without a spare identifier: nothing toward a new path but a NAT rebinding), 2026-10-28 (the old path's answer proves it; the peer's packets there move back)
+- **Revised:** 2026-10-28 (the old path's answer proves it; the peer's packets there move back); 17 earlier, from 2026-10-03, in its `git log`
 - **Theme:** quic
 
 ## Problem

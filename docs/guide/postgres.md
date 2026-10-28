@@ -1,5 +1,7 @@
 # PostgreSQL
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## What this is about
 
 PostgreSQL is a server: your program talks to it over a network

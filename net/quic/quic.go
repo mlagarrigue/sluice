@@ -19,8 +19,8 @@
 // judged, so treat them as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
 // a server on a host with several addresses (Linux, macOS and Windows,
-// through [net/quic/udp]) — are gathered in docs/guide/experimental.md
-// ("Supported deployments"); each row names where the code decides it.
+// through [net/quic/udp]) — are gathered in docs/guide/deployments.md, one
+// section each, which names where the code decides it.
 //
 // # Why it exists
 //

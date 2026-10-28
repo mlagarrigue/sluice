@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone), 2026-10-28 (the authority as received, compared without regard to case; written in the present tense; the absolute-form, the streaming default and its cost stated as delivered)
+- **Revised:** 2026-10-28 (the authority as received, compared without regard to case; written in the present tense; the absolute-form, the streaming default and its cost stated as delivered); 3 earlier, from 2026-10-15, in its `git log`
 - **Theme:** httpstream
 
 ## Problem

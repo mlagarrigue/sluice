@@ -325,7 +325,7 @@ func TestVerticalRefusalsNeverReachThePipeline(t *testing.T) {
 }
 
 // The vertical, end to end: a token, a grant, a batch, a rule, a policy, an
-// answer — over the experimental transport, socket included.
+// answer — over the streaming transport, socket included.
 func TestVerticalEndToEnd(t *testing.T) {
 	_, addr := build(t)
 

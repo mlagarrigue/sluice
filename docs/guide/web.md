@@ -1,5 +1,7 @@
 # Web
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## What this is about
 
 A web server receives HTTP **requests** ("give me order 42", "change line

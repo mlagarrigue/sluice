@@ -1,5 +1,7 @@
 # Choosing an operator
 
+A word you do not know is likely in the [glossary](../glossary.md).
+
 ## One question: what does it keep in memory?
 
 An operator receives batches and produces batches. Some only need the batch
