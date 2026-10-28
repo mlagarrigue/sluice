@@ -1351,14 +1351,14 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 					return a.drain(st) // the frame ended here: frames follow it
 				}
 				return nil
-			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by withDefaults
+			case typ == h3Headers && length > uint64(a.cfg.MaxHeaderBytes): //nolint:gosec // G115: positive config, set by Config.resolve
 				return fmt.Errorf("%w: a HEADERS frame of %d bytes, over the %d header bound",
 					ErrTooLarge, length, a.cfg.MaxHeaderBytes)
 			case typ == h3Data && !st.gotHead:
 				return fmt.Errorf("%w: DATA before HEADERS", errH3FrameUnexpected)
 			case typ == h3Data && st.gotTrailers:
 				return fmt.Errorf("%w: DATA after the trailers", errH3FrameUnexpected)
-			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by withDefaults
+			case typ == h3Data && uint64(len(st.req.Body))+length > uint64(a.cfg.MaxBodyBytes): //nolint:gosec // G115: positive config, set by Config.resolve
 				return h3StatusFail(413, st.req.Method, "%w: a body over %d bytes", ErrTooLarge, a.cfg.MaxBodyBytes)
 			}
 		}

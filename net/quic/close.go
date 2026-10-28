@@ -158,7 +158,7 @@ func (c *Conn) abort(err error) {
 //
 // The error return always comes back nil, kept for [io.Closer] rather than
 // for anything it could report: a failed write here is already "best
-// effort" and swallowed upstream (sendCloseLocked), not a reason for the
+// effort" and swallowed where it is sent, not a reason for the
 // caller to think closing failed.
 func (c *Conn) Close() error {
 	c.closeOnce(transportNoError, false)

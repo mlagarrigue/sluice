@@ -775,7 +775,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 
 	// Not on a stream the peer has just ended: nothing more will arrive on
 	// it, and the grant would name a stream that is closing.
-	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by withDefaults
+	initial := int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by Config.resolve
 	// Rounded up: at a window of 1, initial/2 is 0 and a window at 0 would
 	// never be granted back. When bodies stream, a body still arriving at
 	// the end of this batch is handed over and its window goes back as the
@@ -935,7 +935,7 @@ func (s *h2Server) stream(id uint32) (*h2Stream, error) {
 	}
 	s.openID(id)
 	st := &h2Stream{
-		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by withDefaults
+		id: id, declared: -1, recvWind: int32(s.cfg.InitialWindowSize), //nolint:gosec // G115: capped by Config.resolve
 		deadline: time.Now().Add(s.cfg.ReadTimeout),
 	}
 	if !s.settingsAcked && s.cfg.InitialWindowSize < defaultInitialWindow {

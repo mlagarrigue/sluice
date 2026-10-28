@@ -134,7 +134,7 @@ type Tx struct {
 
 // Begin opens a transaction.
 //
-// The deferred Rollback in the example above is the shape to copy: it is a
+// The deferred Rollback in [Tx]'s example is the shape to copy: it is a
 // no-op after a successful Commit, and it is the only thing that closes the
 // transaction on the paths nobody writes a test for — an early return, a
 // validation failure, a panic caught upstream. A transaction left open holds

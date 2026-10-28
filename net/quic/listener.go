@@ -1537,10 +1537,10 @@ const defaultResetsPerAddress = 4
 // the resets this end *sends*.
 //
 // Those connections are looked up in byPeer, not found by walking the
-// table: the walk took every live connection's lock to read its address,
-// one lock per connection per datagram on the goroutine that reads the
-// socket, which a flow of unroutable datagrams kept busy serialising the
-// peer with every receive loop. The index follows
+// table: a walk would take every live connection's lock to read its
+// address, one lock per connection per datagram on the goroutine that reads
+// the socket, and a flow of unroutable datagrams would keep that goroutine
+// contending with every connection's receive loop. The index follows
 // each migration (setPeerLocked), and isStatelessResetFrom still compares
 // the address under the connection's lock, since a move may land between
 // the lookup and the comparison.

@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// Array type OIDs for the element types this file covers.
+// Array type OIDs, one per element type the Append…Array and Decode…Array
+// functions of this package cover.
 const (
 	OIDBoolArray        uint32 = 1000
 	OIDByteaArray       uint32 = 1001

@@ -99,9 +99,9 @@ func (q *recvQuota) nextMax() uint64 {
 // violation on an authenticated packet, and connection-fatal by design.
 var errFlowControl = fmt.Errorf("%w: flow control violated", ErrQUIC)
 
-// streamLimits picks the initial per-stream credit both ways, which depends
-// on who opened the stream and in which direction it runs (§18.2: "local"
-// and "remote" are named from the announcer's side).
+// initialStreamSendLimit picks the initial per-stream credit this end may
+// send, which depends on who opened the stream and in which direction it
+// runs (§18.2: "local" and "remote" are named from the announcer's side).
 func initialStreamSendLimit(params TransportParameters, id uint64, isClient bool) uint64 {
 	switch {
 	case id&0x02 != 0: // unidirectional: only its opener sends

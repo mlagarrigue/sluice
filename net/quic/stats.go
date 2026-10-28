@@ -4,8 +4,11 @@ import (
 	"time"
 )
 
-// Stats is a snapshot of the counters a connection keeps about what it
-// could not process, for the dashboard rather than the data path.
+// Stats is a snapshot of what a connection counts and estimates, for the
+// dashboard rather than the data path: what it could not process or write,
+// the ECN marks it received, its key updates, its round-trip estimates, the
+// state of its congestion controller, its losses and probes, and the path's
+// datagram size.
 type Stats struct {
 	// DiscardedPackets is how many incoming datagrams or packets were dropped
 	// without being processed: wrong sender, failed parse, failed
@@ -33,8 +36,8 @@ type Stats struct {
 	// ECT0Received, ECT1Received and CEReceived count the packets processed
 	// whose IP header carried that ECN codepoint (RFC 9000 §13.4.1), the
 	// counts this end reports back in its ACK frames. All zero where the
-	// socket does not report the field (every platform but Linux today), or
-	// when the peer does not mark. A rising CEReceived is the network
+	// socket does not report the field (platforms other than Linux, Windows
+	// and macOS), or when the peer does not mark. A rising CEReceived is the network
 	// signalling congestion without dropping.
 	ECT0Received uint64
 	ECT1Received uint64

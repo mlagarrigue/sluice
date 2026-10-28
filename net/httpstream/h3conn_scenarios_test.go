@@ -75,7 +75,7 @@ func TestH3BodyOverManyDatagramsPastMaxBodyBytesIsRefused(t *testing.T) {
 // request refused rather than the connection lost once a server is at its
 // limit, and H3Assembler enforces it as [Config.MaxConcurrentStreams] —
 // concurrently open, unfinished request streams, not a lifetime total. The
-// default is 100 (httpstream.go's withDefaults, the floor RFC 9114 §6.1
+// default is 100 (httpstream.go's Config.resolve, the floor RFC 9114 §6.1
 // recommends and the transport's own MAX_STREAMS grant), so the 101st
 // distinct stream opened while the other 100 are still unfinished is the
 // one that must be refused. MaxRequestsPerBatch is deliberately set to its

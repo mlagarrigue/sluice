@@ -3,7 +3,7 @@
 //
 // It exists because reflection costs on every field of every row, even
 // written carefully: the gap is measured by BenchmarkHydrateReflect against
-// BenchmarkHydrateRowMajor in postgres/hydrate_test.go, and the figure lives
+// BenchmarkHydrateRowMajor in database/postgres/hydrate_test.go, and the figure lives
 // in docs/design/architecture.md, "Hydration". Generated code is how a caller gets the
 // hand-written figure without writing it per entity and keeping it in step
 // with the schema.

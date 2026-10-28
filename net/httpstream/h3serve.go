@@ -54,7 +54,7 @@ import (
 //
 // # Concurrency, stated rather than guarded
 //
-// [h3Assembler] is not safe for concurrent use and is touched by the read
+// The assembly of requests is not safe for concurrent use and runs on the read
 // goroutine only. Streams are taken from [quic.Conn.Stream], which is safe
 // for concurrent use, and each response stream is written by exactly one
 // writer goroutine — writes on different streams may interleave, which
@@ -192,9 +192,9 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// need only cover a request's head; streaming takes manual credit, and
 	// on windows too small for that it is off and bodies arrive whole.
 	credit := quic.CreditOnDelivery
-	streamWindow, connWindow := uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack, uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
+	streamWindow, connWindow := uint64(cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack, uint64(4*cfg.MaxBodyBytes+cfg.MaxHeaderBytes)+h3FrameSlack //nolint:gosec // G115: positive config, set by Config.resolve
 	if cfg.BodyDelivery == BodyStreamed {
-		streamWindow = uint64(cfg.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config, set by withDefaults
+		streamWindow = uint64(cfg.MaxHeaderBytes) + h3FrameSlack //nolint:gosec // G115: positive config, set by Config.resolve
 		connWindow = streamWindow
 	}
 	if p := c.LocalParameters(); p.InitialMaxStreamDataBidiRemote >= streamWindow && p.InitialMaxData >= connWindow {
@@ -232,7 +232,7 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// credit there by a SHOULD, and a client that grants less than SETTINGS
 	// needs would otherwise park this write for the life of the connection.
 	wb := writeBoundOf(cfg)
-	if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by withDefaults
+	if err := wb.write(control.SetWriteDeadline, control.Write, appendH3Control(nil, uint64(cfg.MaxHeaderBytes))); err != nil { //nolint:gosec // G115: positive config, set by Config.resolve
 		// Closed on the way out, like the two refusals above. The one
 		// failure a live connection produces here is the client's
 		// STOP_SENDING on the control stream landing between Stream(3)

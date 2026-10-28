@@ -353,8 +353,8 @@ var ErrHeaderInjection = fmt.Errorf("%w: a response header holds CR or LF", ErrM
 //
 // Every response that does not close says Connection: keep-alive and
 // Keep-Alive: timeout=<seconds>, from cfg's IdleTimeout, as [Serve] writes
-// them: a caller serving the connection itself answers the way Serve would
-// (see appendKeepAlive). IdleTimeout is the one field of cfg it reads, and it
+// them: a caller serving the connection itself answers the way Serve would.
+// IdleTimeout is the one field of cfg it reads, and it
 // is resolved as Serve resolves it: zero is the default, and a negative value
 // is refused with the same error. The other fields are not checked here —
 // resolving them all on every batch would cost more than writing one.

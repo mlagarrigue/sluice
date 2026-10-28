@@ -637,23 +637,18 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// gathered datagram have a known closer: the last writer out flushes
 	// it. One writer on its own sends at once.
 	//
-	// What that is worth, and what it cost not to do it. A client that
-	// opens many streams at once and writes a small request on each — 40
-	// requests the moment the connection opens, which is the QUIC Interop
-	// Runner's zerortt case and the shape of any multiplexed request
-	// burst — sent one datagram per write, and a second for the end of the
-	// stream: 138 datagrams of 214 bytes on average for a 10 KB request
-	// (measured on the runner, 2026-10-25, pass 40187114552). The path of
-	// that case queues 25 datagrams before it drops; a burst of eighty
-	// overran it, 23 datagrams were lost, and RFC 9001 §4.6.1 has their
-	// 0-RTT data resent in 1-RTT packets once the keys are there. The case
-	// counts what the client sends in 1-RTT and refuses more than
-	// 0.5 x FILENAMELEN x NUM_FILES of it: 7795 bytes against a bound of
-	// 5000, and the case failed against every peer that runs it — not for
-	// anything the peer did, but because the burst was shaped wrong. A
-	// conformant peer sees the same thing on any path with a queue: a
-	// sender that pays a datagram per frame loses the ones the queue has
-	// no room for, and pays for them twice.
+	// What that is worth. A client that opens many streams at once and
+	// writes a small request on each — 40 requests the moment the
+	// connection opens, which is the QUIC Interop Runner's zerortt case and
+	// the shape of any multiplexed request burst — would otherwise send one
+	// datagram per write and a second for the end of each stream: some 140
+	// datagrams of about 200 bytes for 10 KB of requests. A path that queues
+	// 25 datagrams drops most of such a burst, and RFC 9001 §4.6.1 has the
+	// lost 0-RTT data resent in 1-RTT packets once the keys are there,
+	// which the zerortt case counts against the client (at most
+	// 0.5 x FILENAMELEN x NUM_FILES bytes in 1-RTT). Any path with a queue
+	// does the same: a sender that pays a datagram per frame loses the ones
+	// the queue has no room for, and pays for them twice.
 	gathering := !opts.close && ((c.gather && (space != spaceApplication || early)) ||
 		(early && c.writersIn.Load() > 1))
 	if !gathering {
