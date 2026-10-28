@@ -153,7 +153,7 @@ and what to do beyond. There is no default, because a table without a limit
 is a program that will die once the reference list has grown.
 
 **Why prefer the merge join** when you have the choice: on 65,536 rows a
-side, the merge costs 19 ns per element and 25 KB; the table, 83 ns and
+side, the merge costs 19 ns per element and 25 KB; the table, 93 ns and
 8.4 MB ([measured](../benchmarks.md#joins-and-hydration-in-isolation)). That is not a small difference, it is a difference in kind: the
 merge advances a cursor, the table does a lookup per element. Loading a
 side into memory is what you do when you *cannot* sort.
@@ -268,7 +268,8 @@ enriched := parallel.OrderedWithState(rows, 4,
 rows := parallel.Async(readCSV(path), 4)
 ```
 
-> **In plain words: parallelism pays less than you think.** Measured:
+> **In plain words: parallelism pays less than you think.**
+> [Measured](../benchmarks.md#the-architectures-figures):
 > four ordered goroutines give ×1.04 on 34 µs of work per batch, ×1.7 on
 > 83 µs and ×2.9 on 850 µs, never ×4 — handing each batch over and waking a
 > goroutine costs about what light work does, and the operator waits for the

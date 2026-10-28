@@ -23,6 +23,7 @@ its row.
   - [HTTP/2 and HTTP/3, from a real client](#http2-and-http3-from-a-real-client)
   - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
   - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
+  - [Authentication, in a request](#authentication-in-a-request)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -531,6 +532,31 @@ What this does not say is what streaming itself costs — a body that does
 not fit in one read. That is paid when it is asked for, and the default
 does not move it.
 
+## Authentication, in a request
+
+What `HMACVerifier.Verify` costs a request, read against the request it is
+paid in rather than against an assumed one. `BenchmarkVerify` is the check
+alone: the byte scan, three base64url decodes, the header and the claims
+parsed as JSON, one HMAC-SHA256. `BenchmarkVerifyRoundTrip` is one GET over
+a loopback connection kept alive, to a `net/http` server whose handler
+answers 204, without authentication (`open`) and through `web.Authenticate`
+(`authenticated`). Six runs of one second, median, 2026-10-28, go1.26.9,
+15 cores, under WSL2, not pinned (`web`).
+
+| benchmark | ns per request | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkVerify` | 3,272 | 3,167–3,598 | 2,073 | 49 |
+| `BenchmarkVerifyRoundTrip/open` | 170,538 | 157,662–188,568 | 4,997 | 56 |
+| `BenchmarkVerifyRoundTrip/authenticated` | 153,804 | 143,346–172,918 | 7,166 | 105 |
+
+The check is 2% of the request it guards (3.27 µs of about 160 µs), less
+than the round trip's own spread from one run to the next: the two
+round-trip rows cannot be told apart, and the authenticated one even came
+out faster. A request that crosses a real network or reaches a database
+makes the share smaller still. The 49 allocations are the JSON decoding of
+the claims; they are where a cheaper check would start, and nothing above
+asks for one.
+
 ## QUIC, on an emulated path
 
 `net/quic`'s path benchmarks (`net/quic/netem_bench_test.go`) move one
@@ -921,18 +947,33 @@ internal/bench/scripts/gate-path.sh main
 
 ## Joins and hydration, in isolation
 
-The figures the guides quote for choosing a join and for the generated
-hydration. Six runs of one second, median, 2026-10-23, go1.26.9, 15 cores,
-under WSL2, not pinned. `JoinMerge` and `JoinHash` join 65,536 rows a side,
-sorted, through `join.Merge` and through the hash table (`internal/bench`);
+The figures the guides and the architecture quote for choosing a join, and
+for the generated hydration.
+
+The four joins are measured in the same runs, so they compare with each
+other: 65,536 rows a side, sorted, joined one to one through `join.Merge`,
+through the hash table, and through the interval join on a zero-width and on
+a ±2 s window (`internal/bench`). Six runs of one second, median,
+2026-10-28, go1.26.9, 15 cores, under WSL2, not pinned.
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkJoinMerge` | 19.0 | 18.8–19.5 | 25,464 | 20 |
+| `BenchmarkJoinHash` | 93.2 | 83.8–118.4 | 8,421,987 | 599 |
+| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.8 | 81.9–83.8 | 24,252 | 56 |
+| `BenchmarkIntervalJoinWide` (±2 s window) | 140 | 139–146 | 92,541 | 105 |
+
+The hash join's spread is the widest of the four on every run of this
+machine: its 8.4 MB table is rebuilt on each run, and the collector's pace
+moves with it. Read the merge join's gap to it as a factor of four to five.
+
 `GeneratedHydrate` decodes 1,024 rows of six columns into a struct through
 the code `sluicegen` writes, a nullable `*string` and a copied string
-included (`database/postgres/internal/entity`).
+included (`database/postgres/internal/entity`). Six runs of one second,
+median, 2026-10-23, same machine.
 
-| benchmark | ns per element or row | spread | B/op | allocs/op |
+| benchmark | ns per row | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkJoinMerge` | 18.5 | 18.3–19.3 | 25,465 | 20 |
-| `BenchmarkJoinHash` | 83.0 | 81.9–88.7 | 8,422,070 | 600 |
 | `BenchmarkGeneratedHydrate` | 53.8 | 52.8–55.7 | 21,846 | 2,048 |
 
 ## The architecture's figures
@@ -963,17 +1004,9 @@ by `iter.Pull`, one value or one batch of 1024 at a time.
 Pulling one value at a time costs ×243 the ceiling (53.3 against 0.219 ns per
 element); pulling a batch of 1024, ×1.4.
 
-The joins, 65,536 rows a side. The interval join and the two joins it is
-compared with are measured in the same runs here; the hash join's spread is
-wide on this machine, and the [section above](#joins-and-hydration-in-isolation)
-is the one the guides quote.
-
-| benchmark | ns per element | spread | B/op | allocs/op |
-|---|---|---|---|---|
-| `BenchmarkIntervalJoinNarrow` (zero-width window) | 82.5 | 81.4–83.1 | 24,248 | 56 |
-| `BenchmarkIntervalJoinWide` (±2 s window) | 141 | 139–141 | 92,538 | 105 |
-| `BenchmarkJoinHash` | 93.5 | 76.9–101.6 | 8,421,980 | 599 |
-| `BenchmarkJoinMerge` | 21.8 | 21.0–22.1 | 25,464 | 20 |
+The joins, the interval join among them, are in
+[the section above](#joins-and-hydration-in-isolation), measured in one set
+of runs.
 
 Per row, six columns decoded into a struct (`database/postgres`), over a
 batch of 1,024 rows or of one.
@@ -1049,6 +1082,65 @@ by the parallel one.
 | 256 | 192 | 12,307 | 5,139 | 4,432 | ×2.39 | ×2.78 |
 | 512 | 404 | 25,868 | 9,693 | 8,473 | ×2.67 | ×3.05 |
 | 1024 | 850 | 54,390 | 18,487 | 17,076 | ×2.94 | ×3.19 |
+
+### The designs turned down
+
+Five decisions of the architecture compare the shape kept with one it
+turned down. Each benchmark mirrors the rejected shape in a few lines beside
+the kept one, so the comparison can be run again without the library
+carrying it. Six runs of one second, median, 2026-10-28, go1.26.9, 15
+cores, under WSL2, not pinned.
+
+Per element. `BatchContext` runs four map stages over 1,048,576 `int64` in
+batches of 1024: the batch as it is (`items`), with a `context.Context`
+carried in it (`ctx`, 24 bytes to 40), and with that context checked by each
+stage on each batch (`ctx-checked`). `JoinTableShape` builds a table of
+65,536 distinct keys and probes each once, as a flat value slice with an
+`int32` chain (`chain`, the shape `join` keeps) and as a `map[K][]B`
+(`slice-per-key`). `ParallelInputCopy` is the copy `parallel` makes of each
+input batch, alone, into one reused buffer (`internal/bench`).
+
+| benchmark | ns per element | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkBatchContext/items` | 4.55 | 4.43–4.61 | 328 | 11 |
+| `BenchmarkBatchContext/ctx` | 4.50 | 4.45–4.62 | 472 | 11 |
+| `BenchmarkBatchContext/ctx-checked` | 4.52 | 4.48–4.59 | 472 | 11 |
+| `BenchmarkJoinTableShape/chain` | 86.8 | 82.1–108.1 | 8,415,152 | 583 |
+| `BenchmarkJoinTableShape/slice-per-key` | 128.1 | 121.6–133.7 | 11,016,472 | 66,066 |
+| `BenchmarkParallelInputCopy` | 0.0512 | 0.0509–0.0514 | 0 | 0 |
+
+A context in the batch costs nothing measurable, checked or not: the three
+rows are within 1% of each other and inside each other's spread. A slice per
+key costs ×1.48 the time and ×113 the allocations of the chain. The input
+copy of `parallel` is 3% of the ~1.5 ns per-stage budget.
+
+Per call. `DiagnosticReceiver` builds the example of `NewDiagnostic`'s
+documentation from a template — a message, then an origin — through the
+`With` methods, which take and return the struct by value (`value`), and
+through setters on a pointer to one copy of the template (`pointer`).
+
+| benchmark | ns per call | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkDiagnosticReceiver/value` | 7.70 | 7.65–8.48 | 0 | 0 |
+| `BenchmarkDiagnosticReceiver/pointer` | 4.68 | 4.66–4.79 | 0 | 0 |
+
+The value receiver costs ×1.65 the pointer one: 3 ns per diagnostic built,
+neither allocating.
+
+Per run. `ScanTake` is the core `sluice.Take` of 2,048 rows over the
+[`pushdown`](design/architecture.md#enriched-stop-signal--pushdown)
+benchmarks' scan; `ScanTakePublished` is the same count taken by a `Take`
+that publishes what it still wants to a `Demand` after each batch, over a
+scan that reads it (`pushdown`).
+
+| benchmark | µs per run | spread | B/op | allocs/op |
+|---|---|---|---|---|
+| `BenchmarkScanTake` | 9.80 | 9.56–10.29 | 8,192 | 1 |
+| `BenchmarkScanTakePublished` | 10.27 | 9.81–11.06 | 8,256 | 2 |
+
+Publishing the count saves nothing: the scan decodes the same two pages
+either way, and the publishing `Take` came out 5% slower, inside the two
+rows' spreads.
 
 ---
 

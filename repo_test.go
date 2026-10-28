@@ -103,18 +103,7 @@ func headingSlugs(content string) map[string]bool {
 		if !strings.HasPrefix(text, " ") {
 			continue
 		}
-		text = strings.TrimSpace(text)
-		text = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`).ReplaceAllString(text, "$1")
-		var b strings.Builder
-		for _, r := range strings.ToLower(text) {
-			switch {
-			case r == ' ':
-				b.WriteByte('-')
-			case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r):
-				b.WriteRune(r)
-			}
-		}
-		s := b.String()
+		s := slugOf(text)
 		n := seen[s]
 		seen[s] = n + 1
 		if n > 0 {
@@ -123,6 +112,22 @@ func headingSlugs(content string) map[string]bool {
 		out[s] = true
 	}
 	return out
+}
+
+// slugOf is the slug of one heading's text, before any suffix for repeats.
+func slugOf(text string) string {
+	text = strings.TrimSpace(text)
+	text = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`).ReplaceAllString(text, "$1")
+	var b strings.Builder
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case r == ' ':
+			b.WriteByte('-')
+		case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 var linkRE = regexp.MustCompile(`\]\(([^)\s]+)\)`)

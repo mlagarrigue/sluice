@@ -7,9 +7,9 @@ import "github.com/mlagarrigue/sluice"
 // The obvious operator here would be a [sluice.Take] that also publishes its
 // remaining count, so a source could stop producing rather than be stopped
 // after producing. It was written, benchmarked against the core operator over
-// a scan, and removed: **8.63 µs against 8.35, a 3% cost and no gain**
-// (BenchmarkScanWithoutPushdown against WithPushdown, which left with the
-// operator).
+// a scan, and removed: **5% slower, inside the spread, and no gain**
+// (BenchmarkScanTakePublished against BenchmarkScanTake, which keep the
+// operator in the benchmarks).
 //
 // The reason is structural rather than incidental. A source whose unit of work
 // *is* the batch it yields cannot do less than one batch of work for the last

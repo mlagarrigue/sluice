@@ -774,7 +774,8 @@ server), 348 µs against 363 for a thousand keys in `= ANY` with
 `FetchAll`, a wide scan 4% slower (9.8 ms against 9.4) but in 23
 allocations against 280,008, and a faster COPY (7.3 ms against 8.3). The
 last three figures are those of the table re-measured on 2026-10-19; the
-rows and the method: [Measurements](../benchmarks.md).
+rows and the method:
+[Measurements](../benchmarks.md#connector-against-pgx--libpq--databasesql).
 
 ## You can now
 

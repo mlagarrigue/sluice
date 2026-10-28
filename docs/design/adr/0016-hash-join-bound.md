@@ -1,7 +1,7 @@
 # ADR 0016 — A hash join's build side is bounded, and the bound is required
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-22 (the storage seam removed), 2026-10-28 (written in the present tense)
+- **Revised:** 2026-10-22 (the storage seam removed), 2026-10-28 (written in the present tense; the table shapes re-measured)
 - **Theme:** join
 
 ## Problem
@@ -29,8 +29,10 @@ every row. The table is in memory and nothing supplies another: spill to
 disk, the reason an interface would exist, has neither a consumer nor a
 measure, and adding the interface back is a compatible change the day it
 does. The table is a flat value slice with an `int32` index chain, not
-`map[K][]B`: measured at 2.6× the time and 110× the allocations against the
-obvious shape, which caps `MaxEntries` at the chain's addressable range and
+`map[K][]B`: the obvious shape measures ×1.48 the time and ×113 the
+allocations over 65,536 distinct keys
+([measured](../../benchmarks.md#the-designs-turned-down)). The chain caps
+`MaxEntries` at its addressable range and
 refuses more at construction.
 
 ## Rationale

@@ -796,3 +796,49 @@ func BenchmarkVerify(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkVerifyRoundTrip puts BenchmarkVerify's figure beside the request it
+// is paid in: one GET over a loopback connection kept alive, to a net/http
+// server whose handler answers 204, without authentication and through
+// Authenticate. The gap between the two is what the check costs a request.
+func BenchmarkVerifyRoundTrip(b *testing.B) {
+	v := verifier(b, web.HMACConfig{Audience: "orders", Issuer: "auth.internal", TenantClaim: "tenant"})
+	token := mint(b, map[string]any{"alg": "HS256", "typ": "JWT"}, map[string]any{
+		"sub": "user-1", "exp": 1_700_000_600, "aud": "orders", "iss": "auth.internal", "tenant": "acme",
+	}, testSecret)
+	for _, auth := range []bool{false, true} {
+		name := "open"
+		if auth {
+			name = "authenticated"
+		}
+		b.Run(name, func(b *testing.B) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if auth {
+					if _, _, err := web.Authenticate(r, v); err != nil {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			req, err := http.NewRequest(http.MethodGet, srv.URL, http.NoBody)
+			if err != nil {
+				b.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			b.ReportAllocs()
+			for b.Loop() {
+				resp, err := client.Do(req)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if resp.StatusCode != http.StatusNoContent {
+					b.Fatalf("status %d", resp.StatusCode)
+				}
+				_ = resp.Body.Close()
+			}
+		})
+	}
+}
