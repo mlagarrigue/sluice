@@ -66,11 +66,19 @@ type spentTokens struct {
 // takes that many Retry tokens consumed by connections within one TTL.
 const defaultMaxSpentRetryTokens = 1 << 14
 
-// consume records newSCID's token as spent until expiry and reports whether
-// it was still unspent — false is a replay, or a full failClosed register. now is the caller's clock, so
-// expiries stay in insertion order and the sweep below stops at the first
-// live one.
+// consume records newSCID's token as spent for ttl from now and reports
+// whether it was still unspent — false is a replay, or a full failClosed
+// register. now is the caller's clock, so expiries stay in insertion order
+// and the sweep below stops at the first live one.
 func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
+	return s.consumeUntil(newSCID, now, now.Add(s.ttl))
+}
+
+// consumeUntil is consume with the expiry given: an earlyGate entry
+// expires with its ticket, on the ticket's clock (earlyGate.eligible). Such
+// expiries are not in insertion order, so an expired entry may wait behind
+// a live one for the sweep — kept longer, never shorter, and within max.
+func (s *spentTokens) consumeUntil(newSCID []byte, now, expiry time.Time) bool {
 	if s.byID == nil {
 		s.byID = make(map[string]time.Time)
 	}
@@ -89,7 +97,7 @@ func (s *spentTokens) consume(newSCID []byte, now time.Time) bool {
 		delete(s.byID, s.order[0])
 		s.order = s.order[1:]
 	}
-	s.byID[id] = now.Add(s.ttl)
+	s.byID[id] = expiry
 	s.order = append(s.order, id)
 	return true
 }

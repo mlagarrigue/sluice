@@ -516,3 +516,41 @@ func TestDeferred0RTTPacketsAreBounded(t *testing.T) {
 		t.Fatalf("%d 0-RTT packets held before the early secret, want the bound of 16", n)
 	}
 }
+
+// RFC 9846 §8: 0-RTT is accepted at most once per ticket. The ticket's age
+// is judged on the wall clock — its time of issue is a Unix timestamp, so
+// that it survives a restart — while the spent entry expired a window
+// after the admission on the monotonic clock that time.Now carries. A wall
+// clock stepped back after an admission left the ticket young after its
+// entry was gone, and the same ticket was admitted again. The entry now
+// lives on the ticket's clock: it carries no monotonic reading and expires
+// with the ticket, at its time of issue plus the window. A test cannot
+// build two instants whose clocks diverge (time.Time.Add moves both
+// readings together), so the entry's clock is what is checked, then the
+// wall-clock recession itself.
+func TestASpentTicketLivesOnTheTicketsClock(t *testing.T) {
+	const window = 10 * time.Minute
+	now := time.Now()
+	issued := now.Add(-time.Minute)
+	g := newEarlyGate(window, 4)
+	ticket := [][]byte{g.ticketExtra(issued)}
+	id, ok := g.eligible(ticket, now)
+	if !ok {
+		t.Fatal("a fresh ticket is not eligible")
+	}
+	exp := g.spent.byID[string(id)]
+	if want := time.Unix(0, issued.UnixNano()).Add(window); exp != exp.Round(0) || !exp.Equal(want) {
+		t.Errorf("the spent entry expires at %v (monotonic reading kept: %v), want the ticket's own expiry %v on the wall clock",
+			exp, exp != exp.Round(0), want)
+	}
+
+	// The wall clock steps back five minutes after the admission, and
+	// another ticket's admission sweeps the register at that reading.
+	back := now.Round(0).Add(-5 * time.Minute).Add(window - time.Second)
+	if !admitOnce(g, [][]byte{g.ticketExtra(back)}, back) {
+		t.Fatal("a second, fresh ticket is not eligible")
+	}
+	if admitOnce(g, ticket, back) {
+		t.Error("the ticket was admitted a second time after the wall clock stepped back")
+	}
+}

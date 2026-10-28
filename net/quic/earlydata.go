@@ -39,9 +39,9 @@ type earlyGate struct {
 	window   time.Duration
 
 	mu sync.Mutex
-	// spent is the ticket identifiers already admitted, each kept for a
-	// window from its admission — at least as long as the ticket itself
-	// stays young enough — and refusing rather than forgetting when full.
+	// spent is the ticket identifiers already admitted, each kept until
+	// the ticket itself is too old (its time of issue plus the window, on
+	// the wall clock) and refusing rather than forgetting when full.
 	spent spentTokens
 }
 
@@ -90,12 +90,21 @@ func (g *earlyGate) eligible(extra [][]byte, now time.Time) ([]byte, bool) {
 			return nil, false
 		}
 		issued := time.Unix(0, int64(binary.BigEndian.Uint64(e[32:]))) //nolint:gosec // G115: written by ticketExtra from a positive time
-		if age := now.Sub(issued); age < 0 || age >= g.window {
+		// One clock for the age and for the spent entry: the wall clock,
+		// the ticket's own, since its time of issue must survive a
+		// restart. An entry timed on the monotonic reading time.Now
+		// carries would expire a window after the admission, and a wall
+		// clock stepped back meanwhile would leave the ticket young once
+		// its entry was gone: admitted twice, against RFC 9846 §8. On the
+		// ticket's clock the entry lives exactly as long as the ticket is
+		// young.
+		wall := now.Round(0)
+		if age := wall.Sub(issued); age < 0 || age >= g.window {
 			return nil, false
 		}
 		id := e[16:32]
 		g.mu.Lock()
-		ok := g.spent.consume(id, now)
+		ok := g.spent.consumeUntil(id, wall, issued.Add(g.window))
 		g.mu.Unlock()
 		return id, ok
 	}
