@@ -7,8 +7,11 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unsafe"
+
+	"github.com/mlagarrigue/sluice/internal/dgram"
 )
 
 func ackFrameFor(t *testing.T, tracker *ackTracker) Frame {
@@ -1067,52 +1070,77 @@ func TestShortWriteIsApplicationLimited(t *testing.T) {
 // A writer that pauses longer than a pacing slot between writes leaves the
 // window unused for that long, and each write after a pause opens a new
 // application-limited phase (§4.1.2.4); writes that follow each other at
-// once open none after the first.
+// once open none after the first. Under synctest the clock moves only when
+// every goroutine waits, so "at once" and "after a pause" are exact, and
+// the count is strict.
 func TestSpacedWritesAreApplicationLimited(t *testing.T) {
-	client, _ := plainPair(t)
-	s, err := client.OpenStream(t.Context())
+	synctest.Test(t, func(t *testing.T) {
+		client, _ := memPair(t)
+		s, err := client.OpenStream(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		marks := func() int {
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			return client.appLimitedMarks
+		}
+		for range 3 {
+			if _, err := s.Write(make([]byte, 100)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := marks(); got != 1 {
+			t.Fatalf("%d marks over three writes in a row, want 1", got)
+		}
+		for i := range 3 {
+			time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
+			if _, err := s.Write(make([]byte, 100)); err != nil {
+				t.Fatal(err)
+			}
+			if got, want := marks(), 1+i+1; got != want {
+				t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
+			}
+		}
+	})
+}
+
+// memPair is plainPair over an in-memory datagram pair, for a test that
+// runs under synctest: no socket, so every wait is one synctest can see.
+func memPair(t *testing.T) (client, server *Conn) {
+	t.Helper()
+	clientPC, serverPC := dgram.Pair()
+	l, err := NewListener(serverPC, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	marks := func() int {
-		client.mu.Lock()
-		defer client.mu.Unlock()
-		return client.appLimitedMarks
-	}
-	// "In a row" is a clock reading, not a promise: the rule opens a phase
-	// after a gap past granularity, and a Windows runner stalled between
-	// two writes for longer than that (2026-10-22, twice). Each write's
-	// span is measured; a pair of writes whose spans, end to end, stayed
-	// within granularity can open no phase, and each pair that did not may
-	// open one.
-	var allowed int
-	var prevStart time.Time
-	for i := range 3 {
-		start := time.Now()
-		if _, err := s.Write(make([]byte, 100)); err != nil {
-			t.Fatal(err)
+	accepted := make(chan *Conn, 1)
+	go func() {
+		c, err := l.Accept()
+		if err != nil {
+			t.Error(err)
+			close(accepted)
+			return
 		}
-		if i > 0 && time.Since(prevStart) > granularity {
-			allowed++
-		}
-		prevStart = start
+		accepted <- c
+	}()
+	client = dialInternal(t, clientPC, serverPC.LocalAddr())
+	server = <-accepted
+	if server == nil {
+		t.Fatal("no server connection")
 	}
-	base := marks()
-	if base < 1 || base > 1+allowed {
-		t.Fatalf("%d marks over three writes in a row, want 1 (and up to %d more for the writes the clock saw apart)", base, allowed)
-	}
-	// Counted from what the writes in a row left, which may be one more
-	// than 1 on a stalled runner (2026-10-22, a third time): each spaced
-	// write opens exactly one phase.
-	for i := range 3 {
-		time.Sleep(20 * time.Millisecond) // well past a slot: the window has room, nothing to send
-		if _, err := s.Write(make([]byte, 100)); err != nil {
-			t.Fatal(err)
-		}
-		if got, want := marks(), base+i+1; got != want {
-			t.Fatalf("%d marks after %d spaced writes, want %d", got, i+1, want)
-		}
-	}
+	// In order, so that nothing in the bubble is left waiting: the server's
+	// closing state ends (three probe timeouts, on the bubble's clock)
+	// before the listener that forgets it closes, then the sockets.
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+		<-server.gone
+		_ = l.Close()
+		_ = clientPC.Close()
+		_ = serverPC.Close()
+	})
+	return client, server
 }
 
 // plainPair is a client and a server connection over loopback, handshake
