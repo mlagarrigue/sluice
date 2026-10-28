@@ -3372,3 +3372,38 @@ func TestPreferredAddressMoveRetiresTheHandshakeIdentifier(t *testing.T) {
 		t.Error("no RETIRE_CONNECTION_ID for sequence 0 after the move to the preferred address")
 	}
 }
+
+// RFC 9000 §8.2.2: a PATH_RESPONSE is expanded to 1200 bytes unless the
+// anti-amplification limit does not permit it. Toward an off-path address
+// the limit is three times what that address sent (Conn.offPath), and an
+// answer to a challenge of 400 to 1199 bytes was left unexpanded although
+// the budget covered 1200: only a challenge that arrived at full size was
+// answered at full size. The expansion now goes as far as the budget.
+func TestOffPathResponseIsExpandedWithinTheBudget(t *testing.T) {
+	c, pc := newMigratableServer(t, "expand21")
+	c.mu.Lock()
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")}, peerCID{seq: 2, cid: []byte("peercid2")})
+	c.mu.Unlock()
+	challenge := varint.Append(nil, framePathChallenge)
+	challenge = append(challenge, 1, 2, 3, 4, 5, 6, 7, 8)
+	for i, tc := range []struct {
+		received int
+		min, max int
+	}{
+		{600, 1200, 1200},
+		{100, 0, 300},
+	} {
+		addr := fakeFuzzAddr(fmt.Sprintf("expand21:peer%c", 'B'+i))
+		rxFromNewAddress(c, addr, tc.received, true)
+		if err := c.frames(spaceApplication, challenge, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		writes := pc.recorded()
+		if len(writes) != i+1 || !sameAddr(writes[i].to, addr) {
+			t.Fatalf("challenge of %d bytes: %d datagrams left, want the answer to %v", tc.received, len(writes), addr)
+		}
+		if n := len(writes[i].data); n < tc.min || n > tc.max {
+			t.Errorf("challenge of %d bytes answered in %d bytes, want %d to %d", tc.received, n, tc.min, tc.max)
+		}
+	}
+}

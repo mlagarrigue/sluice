@@ -1144,19 +1144,19 @@ func (c *Conn) sendPathChallengeLocked() {
 // section itself says happens only when the challenge did not arrive
 // expanded. On the path in use the §8.1 books cover the send; toward any
 // other address the books are Conn.offPath, seeded by the challenge's own
-// datagram: a ≥1200-byte challenge earns a 1200-byte answer, a small one
-// gets a small one — never a 1200-byte reflection of a few spoofed-source
-// bytes — and writePacketLocked keeps the sum under three times what that
-// address sent. Nine bytes per response, so one packet answers a packet
+// datagram. The first packet asks for 1200 bytes either way, and
+// writePacketLocked expands it only as far as the books allow: a challenge
+// of 400 bytes or more earns a 1200-byte answer, a smaller one an answer
+// of at most three times its size — never a 1200-byte reflection of a few
+// spoofed-source bytes. Until 2026-10-28 only a challenge of 1200 bytes
+// was answered expanded, though the budget covered it from 400. Nine bytes
+// per response, so one packet answers a packet
 // full of challenges; a larger packet's responses take as many packets as
 // needed, the first one expanded. Callers hold mu.
 func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	c.flushControlLocked()
 	onPath := c.rxFrom == nil || sameAddr(c.rxFrom, c.peer)
-	padTo := 0
-	if onPath || c.rxDatagramLen >= 1200 {
-		padTo = 1200
-	}
+	padTo := 1200
 	// A challenge that reached a server's preferred-address socket is
 	// answered with this end's own probe of that path in the same packet
 	// (§9.6.2), under the identifier that path gets.
