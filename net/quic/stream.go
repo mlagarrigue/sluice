@@ -194,9 +194,9 @@ func (s *Stream) deliver(f Frame, dst []byte) (delta []byte, finished bool, high
 // stream flow control, even though these frames can be discarded upon
 // receipt" — counted they were, by receive; discarded they are here, and
 // the count is reported back so the caller gives the connection window
-// their credit at once, as a Read would have. Until 2026-10-27 they sat in
-// the read buffer nobody would drain, uncredited for the life of the
-// connection: 24 streams abandoned with 16 KiB each in flight took 384 KiB
+// their credit at once, as a Read would have. Kept in the read buffer
+// nobody drains, they would stay uncredited for the life of the
+// connection: 24 streams abandoned with 16 KiB each in flight take 384 KiB
 // off a 1 MiB window for good (measured).
 func (s *Stream) keepForRead(delta []byte, finished bool) (dropped uint64) {
 	s.mu.Lock()
@@ -665,8 +665,8 @@ func (s *Stream) abandon(code, finalSize uint64) (highGrowth, neverConsumed uint
 	// The reset's final size is the stream's final size from here on, held
 	// exactly as a FIN's: a later STREAM frame past it, a FIN elsewhere, or
 	// a second RESET_STREAM naming another size is FINAL_SIZE_ERROR through
-	// the checks above and deliver's. Until 2026-10-21 only a FIN set these,
-	// so a reset stream accepted a larger reset or data beyond its end.
+	// the checks above and deliver's: set by a FIN alone, a reset stream
+	// would accept a larger reset or data beyond its end.
 	s.fin, s.finAt = true, finalSize
 	s.readReset, s.readCode = true, code
 	s.recvDone = true

@@ -326,9 +326,9 @@ type ackOutcome struct {
 	// It dates a congestion event (RFC 9002 B.7) where largestSentAt
 	// cannot: only ack-eliciting packets are recorded, and the peer
 	// acknowledges every number it received, ACK-only ones included; a
-	// frame whose largest is one of those left largestSentAt at zero, which
-	// read as "before the recovery began" and dropped the CE mark it
-	// carried (§7.3.1 MUST), until 2026-10-21.
+	// frame whose largest is one of those leaves largestSentAt at zero,
+	// which reads as "before the recovery began" and would drop the CE mark
+	// it carries (§7.3.1 MUST).
 	latestSentAt time.Time
 	lostBytes    int
 	lostCount    uint64 // packets behind lostBytes, for Stats.LostPackets
@@ -827,10 +827,9 @@ func (s *sentTracker) oldestEliciting() (sentPacket, bool) {
 // resendable, be copied again at every backoff step, and shadow every
 // packet behind it. A server whose two-packet Initial flight is lost would
 // then resend the first packet forever and never the second, and the
-// client, holding half a ServerHello, would wait out the handshake.
-//
-// Until 2026-10-21 the packet was removed from the record instead, which
-// kept the flight the same size when §7.5 says it must grow.
+// client, holding half a ServerHello, would wait out the handshake. Nor is
+// the packet removed from the record: that would keep the flight the same
+// size when §7.5 says it must grow.
 func (s *sentTracker) liftOldestResendable() ([]byte, bool) {
 	for i := range s.packets {
 		if p := &s.packets[i]; p.ackEliciting && len(p.payload) > 0 {
@@ -1248,8 +1247,8 @@ type newReno struct {
 	// maxDatagram·size/cwnd falls short of it: the window grows within the
 	// window it is divided by, a byte lost per window at 2 MB. The price is
 	// the datagram arriving at the window's end rather than spread over it:
-	// measured 2026-10-16 against B.5 (gate-path.sh, three runs of eight
-	// rounds), BurstLoss 0.8–1% and Loss1pct 1.6–4.7% slower, the rest flat.
+	// measured against B.5 (gate-path.sh, three runs of eight rounds),
+	// BurstLoss 0.8–1% and Loss1pct 1.6–4.7% slower, the rest flat.
 	credit int
 	// hs is the initial slow start's HyStart++ state (hystart.go); the zero
 	// value is disarmed, the standard slow start (see newController).

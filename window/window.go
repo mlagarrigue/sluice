@@ -125,7 +125,7 @@ func (l Late) String() string {
 // travelled up through a [github.com/mlagarrigue/sluice/gateway] and left
 // every later call failing.
 //
-// What keeps the state at one window is unchanged: nothing before the open
+// What keeps the state at one window: nothing before the open
 // window's start is ever buffered, so window indices never decrease and a new
 // index means every earlier window is complete. Memory is O(elements in one
 // window), which is why maxPerWindow bounds that count.

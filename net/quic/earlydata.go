@@ -70,11 +70,11 @@ func (g *earlyGate) ticketExtra(now time.Time) []byte {
 // the original) and a full register (spentTokens.failClosed) both come back
 // as not eligible, and crypto/tls answers without early_data: every refusal
 // is a TLS refusal, after which no 0-RTT packet is read (RFC 9001 §4.6.2).
-// Until 2026-10-27 the ticket was spent later, in installEarly, once the
-// 0-RTT was accepted; a full register or a lost race was then found with
-// early_data already announced, and the connection kept no key: its 0-RTT
-// packets were dropped, which the client saw as loss and resent in 1-RTT
-// after a probe timeout instead of the refusal ADR 0019 promises.
+// Spent later, in installEarly once the 0-RTT is accepted, the ticket
+// would find a full register or a lost race with early_data already
+// announced, and the connection would keep no key: its 0-RTT packets
+// dropped, which the client sees as loss and resends in 1-RTT after a probe
+// timeout instead of the refusal ADR 0019 promises.
 //
 // crypto/tls asks before it checks the PSK binder and before it knows
 // whether the client offered 0-RTT at all, so a reservation may go unused:

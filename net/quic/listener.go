@@ -1525,15 +1525,13 @@ const defaultResetsPerAddress = 4
 // associated with the remote address on which the datagram was received"
 // (isStatelessResetFrom; used identifiers only, constant time).
 //
-// That address is also what bounds the cost. Until 2026-10-26 the tail was
-// compared against every live connection, and this comment claimed the
-// per-second reset budget as its bound — "a flood of unroutable datagrams
-// costs a comparison per connection each until the budget is spent". It is
-// not one: that budget is l.resetsSent, which only a reset actually sent
-// raises, and StatelessResetsPerAddress caps one source at four of the
-// sixteen. Measured: 200 datagrams from a single source left it at 4, so
-// the gate never closed and every datagram paid the whole table — on the
-// one goroutine that reads the socket, with MaxConns zero by default.
+// That address is also what bounds the cost. The per-second reset budget
+// does not: it is l.resetsSent, which only a reset actually sent raises,
+// and StatelessResetsPerAddress caps one source at four of the sixteen.
+// Measured: 200 datagrams from a single source left it at 4, so compared
+// against every live connection, every datagram would pay the whole
+// table — on the one goroutine that reads the socket, with MaxConns zero
+// by default.
 // Scoped to the address, a flood from a source holding no connection
 // compares nothing, and the budget is left to do what it is for: bounding
 // the resets this end *sends*.

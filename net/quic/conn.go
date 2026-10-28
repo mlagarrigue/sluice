@@ -511,7 +511,7 @@ type Conn struct {
 	// A ring rather than a set: §13.3 makes the peer retransmit the frame
 	// within a probe timeout or two of the original, and remembering the
 	// last few retirements covers that window. Past it the frame is pooled
-	// again, as it was before 2026-10-26.
+	// again.
 	peerRetiredSelf []uint64
 	pathProbe       pathProbe
 	migrations      uint64
@@ -1720,7 +1720,7 @@ func (c *Conn) discardSpaceLocked(space int) {
 // handshake with no 1-RTT opener, and the 1-RTT packets already deferred —
 // the request a client coalesces with its Finished, a server's 0.5-RTT data
 // — waited for the peer's next datagram, a round trip plus its
-// max_ack_delay later. Until 2026-10-27.
+// max_ack_delay later.
 func (c *Conn) pump() (done bool, err error) {
 	for {
 		e := c.tls.NextEvent()
@@ -2042,9 +2042,9 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 	// parameters arrive in EncryptedExtensions, while this end's 1-RTT
 	// write keys come only after the rest of the server's flight and this
 	// client's own Finished, and writePacketLocked picks a 0-RTT packet for
-	// as long as the application space has no sealer. Until 2026-10-26 the
-	// raise happened at once, and 300 bytes of stream data left in a real
-	// 0-RTT packet against a remembered limit of 100 (measured). The
+	// as long as the application space has no sealer. Raised at once, the
+	// limit let 300 bytes of stream data leave in a real 0-RTT packet
+	// against a remembered limit of 100 (measured). The
 	// window is open whenever the server's flight takes more than one
 	// packet, which a certificate chain and §8.1's amplification limit
 	// make ordinary. The raise is therefore held for the first 1-RTT

@@ -521,9 +521,9 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// a stream's slot back as soon as both directions are done
 				// — which a client's STOP_SENDING on a complete request
 				// does at once (§4.1.1), with the handler call still
-				// running. Counting the streams still assembling, as this
-				// did before 2026-10-20, let a client run one call per
-				// cancellation: the rapid-reset shape (CVE-2023-44487).
+				// running. Counting only the streams still assembling would
+				// let a client run one call per cancellation: the
+				// rapid-reset shape (CVE-2023-44487).
 				a.fail(f.StreamID, h3RequestRejected, fmt.Errorf("%w: over %d unanswered request streams",
 					ErrH3Protocol, a.cfg.MaxConcurrentStreams))
 				a.release(f.StreamID, len(f.Data))
@@ -622,8 +622,8 @@ func (a *h3Assembler) Frames(frames []quic.Frame) (sluice.Batch[Request], []uint
 				// stream was truncated, this MUST be treated as a connection
 				// error"): the tail the peer declared never arrived, and a
 				// framer that ends streams mid-frame cannot be trusted on
-				// the next one either. Until 2026-10-21 the stream alone was
-				// reset with that code — the right code at the wrong scope.
+				// the next one either. Resetting the stream alone with that
+				// code would be the right code at the wrong scope.
 				return sluice.Batch[Request]{}, nil, a.failed, h3ConnectionError{Code: h3FrameError, Err: fmt.Errorf(
 					"%w: stream %d ended inside a frame, %d bytes short", ErrH3Protocol, f.StreamID, len(st.buf)+int(st.skip)+int(st.dataLeft))} //nolint:gosec // G115: skip and dataLeft are under the stream's bounds, far below 2^63
 			}
@@ -812,9 +812,9 @@ func (a *h3Assembler) failBodies(err error) {
 //
 // The sweep runs only once the earliest deadline (nextExpiry) has passed,
 // and finds the next one as it goes: a datagram costs one comparison, not
-// a walk of every stream parked. Measured before 2026-10-21, the walk cost
-// 6.5 ns per parked stream on every datagram — 6.7 µs at 1024 — paid by a
-// peer that trickles one byte per datagram across many open uploads.
+// a walk of every stream parked. The walk measured 6.5 ns per parked stream
+// on every datagram — 6.7 µs at 1024 — paid by a peer that trickles one
+// byte per datagram across many open uploads.
 // Streams are created with one ReadTimeout each, so the earliest deadline
 // is the oldest stream's; a stream that leaves before its deadline leaves
 // nextExpiry early, and the sweep that finds it gone moves on — one walk
@@ -1051,9 +1051,9 @@ const (
 // Admitting and counting under one lock is what makes the GOAWAY's promise
 // hold: beginDrain reads the count under the same lock, so a stream is
 // either counted before the drain looks — and waited for — or rejected.
-// Until 2026-10-21 the count was raised after admit returned, and a drain
-// deciding in between saw nothing in flight, finished the connection, and
-// cut the request it had just promised to serve.
+// Raised after admit returns, the count would let a drain deciding in
+// between see nothing in flight, finish the connection, and cut the request
+// it had just promised to serve.
 func (a *h3Assembler) admit(id uint64) admission {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1181,9 +1181,8 @@ func (a *h3Assembler) uni(f quic.Frame) error {
 		// reads, under MaxHeaderBytes plus its header: parseH3Frames
 		// refuses a longer known frame on its declaration and skips an
 		// unknown one unbuffered, so what controlFrames keeps is bounded
-		// without a check of its own. Until 2026-10-21 the bound was
-		// checked on arrival, which refused a long GREASE frame the
-		// section says to ignore.
+		// without a check of its own. Checked on arrival, the bound
+		// would refuse a long GREASE frame the section says to ignore.
 		data, skip := skipAhead(f.Data, u.skip)
 		u.skip = skip
 		u.buf = append(u.buf, data...)

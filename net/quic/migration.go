@@ -823,8 +823,8 @@ func (c *Conn) resetPathStateLocked(now time.Time) {
 	c.rtt = rttEstimator{}
 	c.resetPMTULocked()
 	// A new socket — Rebind's, the preferred address's — is asked for
-	// Don't Fragment like the first one was (§14); until 2026-10-24 a
-	// rebound socket kept whatever the caller opened it with.
+	// Don't Fragment like the first one was (§14), whatever the caller
+	// opened it with.
 	c.fragmentable = !dfSocket(c.pc)
 	// ECN is validated per path (§13.4.2): the new one starts its test.
 	c.ecnRecv = ecnSocket(c.pc)
@@ -1163,9 +1163,8 @@ func (c *Conn) sendPathChallengeLocked() {
 // writePacketLocked expands it only as far as the books allow: a challenge
 // of 400 bytes or more earns a 1200-byte answer, a smaller one an answer
 // of at most three times its size — never a 1200-byte reflection of a few
-// spoofed-source bytes. Until 2026-10-28 only a challenge of 1200 bytes
-// was answered expanded, though the budget covered it from 400. Nine bytes
-// per response, so one packet answers a packet
+// spoofed-source bytes. Nine bytes per response, so one packet answers a
+// packet
 // full of challenges; a larger packet's responses take as many packets as
 // needed, the first one expanded. Callers hold mu.
 func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
@@ -1183,16 +1182,15 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// of its own — newPathCIDLocked's whole purpose, which takes one the
 	// pool has never used on any path.
 	//
-	// Until 2026-10-26 the socket case gave up before ever asking it: a
-	// challenge that reached a server's preferred-address socket *from an
-	// address other than the client's current one* got no identifier from
-	// preferredPathChallengeLocked, and the refusal below fired although
-	// the pool held unused identifiers. Nothing left, by either socket,
-	// and the client's validation of the offered path failed in silence —
-	// so the move to the preferred address never happened for any client
-	// whose access network gives a distinct binding toward that address,
-	// which is the case §9.6.3 names. ADR 0015 records the refusal for
-	// having *no* spare identifier; this was not that.
+	// The socket case asks too: a challenge that reaches a server's
+	// preferred-address socket *from an address other than the client's
+	// current one* gets no identifier from preferredPathChallengeLocked,
+	// and refused there although the pool holds unused identifiers, nothing
+	// would leave by either socket and the client's validation of the
+	// offered path would fail in silence — no move to the preferred address
+	// for any client whose access network gives a distinct binding toward
+	// that address, which is the case §9.6.3 names. ADR 0015 records the
+	// refusal for having *no* spare identifier; this is not that.
 	offSocket := c.rxVia != nil && c.rxVia != c.pc
 	if dcid == nil && len(c.dcid) > 0 && (!onPath || offSocket) {
 		dcid = c.newPathCIDLocked()
@@ -1334,18 +1332,17 @@ func (c *Conn) startPathChallengeData(data []byte, now time.Time) {
 	c.pathProbe.target, c.pathProbe.targetCID, c.pathProbe.via = nil, nil, nil
 	// The two §9.6.2 conditions describe a probe from pathProbe.via, so they
 	// go with it: viaValidated without a socket is a validation that belongs
-	// to no path. Until 2026-10-26 they stayed standing here, and a
-	// conformant client reached a panic with them — it validated the
-	// preferred address, then migrated (§9.3), which comes through here; the
-	// next non-probing packet from its new address arriving on the preferred
-	// socket (§9.6.3's own "a different NAT binding for the server's
-	// preferred address") met the stale flag, and movePreferredLocked moved
-	// c.pc to the nil via. The next send dereferenced it. The guard that
-	// would have caught it in maybeMigrate is skipped for a peer that chose
-	// a zero-length connection identifier, which §5.1 allows, so nothing
-	// hostile was needed. The invariant the two call sites of
-	// movePreferredLocked rely on is the one restored here: viaValidated
-	// implies via != nil.
+	// to no path. Left standing here, they would bring a conformant client
+	// to a panic — it validates the preferred address, then migrates
+	// (§9.3), which comes through here; the next non-probing packet from
+	// its new address arriving on the preferred socket (§9.6.3's own "a
+	// different NAT binding for the server's preferred address") meets the
+	// stale flag, movePreferredLocked moves c.pc to the nil via, and the
+	// next send dereferences it. The guard in maybeMigrate is skipped for a
+	// peer that chose a zero-length connection identifier, which §5.1
+	// allows, so nothing hostile is needed. The invariant the two call
+	// sites of movePreferredLocked rely on is the one kept here:
+	// viaValidated implies via != nil.
 	c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
 	c.pathProbe.retransmits = 0
 	c.pathProbe.sentAt = now
@@ -1566,7 +1563,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 	// RFC 9000 §9.4: the timer is RFC 9002 §6.2.1's PTO, max_ack_delay
 	// included as in the application space — "MUST NOT be more aggressive"
 	// leaves no room to drop the term because a PATH_RESPONSE is not
-	// delayed the way an ACK is. Until 2026-10-21 the term was zero.
+	// delayed the way an ACK is.
 	interval := c.rtt.pto(c.peerMaxAckDelayLocked()) << min(c.pathProbe.retransmits, 10)
 	deadline := c.pathProbe.sentAt.Add(interval)
 	if now.Before(deadline) {

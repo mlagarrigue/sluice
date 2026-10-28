@@ -658,8 +658,8 @@ func (b *bbr3) startProbeBWRefill() {
 // flight held down, and is usually under max_bw: seeded with it, a probe
 // that merely finds max_bw again reads as growth and runs a round longer.
 // Seeded with max_bw, only a rate above what is already known counts.
-// Decided 2026-10-16 with paired benchmarks at noise either way; the same
-// seed is used after the precautionary reset in isTimeToGoDown.
+// Paired benchmarks put either seed at noise; the same seed is used after
+// the precautionary reset in isTimeToGoDown.
 func (b *bbr3) startProbeBWUp() {
 	b.ackPhase = bbr3AcksProbeStarting
 	b.startRound()

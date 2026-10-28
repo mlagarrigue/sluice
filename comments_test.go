@@ -139,6 +139,13 @@ var processMarkerInAudit = regexp.MustCompile(`(?i)\b(the brief|brief's|backlog|
 // ", used to" are the verb's other sense.
 var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore removal\b`)
 
+// datedHistory is a production comment that dates what the code did, or
+// when a choice was made: "until 2026-10-21 the term was zero", "decided
+// 2026-10-16". The commit carries the date and the regression test the
+// failure; the comment states the rule. "Since 2000-01-01", an epoch, is
+// not a history.
+var datedHistory = regexp.MustCompile(`(?i)\b(until|before|decided|measured)\s+(on\s+)?20\d{2}-\d{2}-\d{2}\b`)
+
 var usedToOtherSense = regexp.MustCompile(`(?i)\b(is|are|be|was|were|being|never|not|only)\s+used to\b|,\s*used to\b`)
 
 func TestCommentMarkers(t *testing.T) {
@@ -161,6 +168,9 @@ func TestCommentMarkers(t *testing.T) {
 				}
 				if historyMarker.MatchString(c.Text) && !usedToOtherSense.MatchString(c.Text) {
 					t.Errorf("%s: the comment tells the code's history; state the rule it holds: %s", pos, strings.TrimSpace(c.Text))
+				}
+				if m := datedHistory.FindString(c.Text); m != "" {
+					t.Errorf("%s: the comment dates the code's history (%q); state the rule it holds", pos, m)
 				}
 			}
 		}

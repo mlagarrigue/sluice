@@ -342,12 +342,11 @@ func (c *Conn) admitSource(datagram []byte, from net.Addr) bool {
 	// A datagram is counted once, when it arrives. A packet held for keys
 	// that were not in yet — 0-RTT before the early secret, Handshake or
 	// 1-RTT before theirs — comes back through here when the keys land
-	// (releaseEarly, install), and counting it again grew the §8.1
+	// (releaseEarly, install), and counting it again would grow the §8.1
 	// allowance by three times the replayed bytes while the client's
-	// address was still unvalidated. Measured before 2026-10-26: 36 bytes
-	// received counted as 72. A client that coalesces its 0-RTT with its
-	// Initial, which is the ordinary way to send it, reached it on every
-	// connection.
+	// address is still unvalidated: 36 bytes received counted as 72, on
+	// every connection whose client coalesces its 0-RTT with its Initial,
+	// which is the ordinary way to send it.
 	if !c.rxReplay {
 		if c.amplActive && fromPeer {
 			// RFC 9000 §8.1 counts raw bytes received from the peer's
@@ -1329,15 +1328,14 @@ frames:
 			c.rxProgress = true
 			c.handlePeerClose(f)
 			// Out of the loop, not out of the function: the packet's
-			// fourth pass still has to run. Until 2026-10-26 this
-			// returned, and the STREAM bytes of the same packet were
-			// reassembled, acknowledged — so the peer counted them
-			// received — and then dropped, because the pass that moves
-			// them to the read buffers or to the batch callback
-			// (dispatchDeltas) was skipped. The same two frames in two
-			// packets were delivered normally, so whether the application
-			// ever saw the bytes depended on how the peer had filled its
-			// packets. No text requires the delivery — §10.2 lets an
+			// fourth pass still has to run. Returning here, the STREAM
+			// bytes of the same packet would be reassembled, acknowledged
+			// — so the peer counts them received — and then dropped,
+			// because the pass that moves them to the read buffers or to
+			// the batch callback (dispatchDeltas) would be skipped; the
+			// same two frames in two packets are delivered normally, so
+			// whether the application saw the bytes would depend on how
+			// the peer had filled its packets. No text requires the delivery — §10.2 lets an
 			// endpoint treat streams as implicitly reset — but this
 			// package's own contract announces it: Read serves s.buf
 			// first, and dispatchDeltas is written around "the bytes the

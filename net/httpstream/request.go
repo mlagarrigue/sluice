@@ -911,8 +911,8 @@ func splitRequestLine(line []byte) (method, target, version, authority []byte, e
 	if string(method) == "CONNECT" {
 		// The authority-form target is CONNECT's alone (RFC 9112 §3.2.3) and
 		// a tunnel is what it asks for: 501 whatever the target, as on
-		// HTTP/2 and HTTP/3 (errConnect), where this was 400 "neither
-		// origin-form nor absolute-form" until 2026-10-20. The target is not
+		// HTTP/2 and HTTP/3 (errConnect), not 400 "neither origin-form nor
+		// absolute-form". The target is not
 		// parsed: an empty or invalid port is rejected with the rest
 		// (RFC 9110 §9.3.6 asks for the rejection, not the status).
 		return nil, nil, nil, nil, fmt.Errorf("%w: a tunnel to %q", errConnect, target)
