@@ -17,12 +17,14 @@ if git ls-files -z -- . ':!scripts/check-hygiene.sh' ':!repo_test.go' \
   echo "check-hygiene: the lines above carry an attribution" >&2
   status=1
 fi
-# release-please's own commits, "chore(main): release X.Y.Z", name the bot
-# that opened the pull request, and GitHub writes dependabot's squash
-# messages with a Co-authored-by line per author the branch carried; those
-# two are skipped here, as in repo_test.go, and every other commit is read.
+# release-please's own commits, "chore(main): release X.Y.Z" — or, for a
+# rehearsal under a component, "chore(release-dry-run): release dryrun
+# X.Y.Z" — name the bot that opened the pull request, and GitHub writes
+# dependabot's squash messages with a Co-authored-by line per author the
+# branch carried; those two are skipped here, by the whole shape of the
+# subject as in repo_test.go, and every other commit is read.
 if git log --format='%H%x09%an%x09%s' \
-    | awk -F'\t' '$2 != "dependabot[bot]" && $3 !~ /^chore\(main\): release / { print $1 }' \
+    | awk -F'\t' '$2 != "dependabot[bot]" && $3 !~ /^chore\([a-z][a-z-]*\): release ([a-z-]+ )?[0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$/ { print $1 }' \
     | git log --no-walk --stdin --format='%h %b' \
     | grep -iE "$pattern"; then
   echo "check-hygiene: the commits above carry an attribution" >&2

@@ -436,25 +436,29 @@ func TestCommitMessagesFollowTheConvention(t *testing.T) {
 var (
 	commitSubject = regexp.MustCompile(`^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\(([a-z]+)\))?!?: \S.*[^.]$`)
 	commitTrailer = regexp.MustCompile(`(?mi)^co-authored-by:`)
+	// The same shape scripts/check-hygiene.sh exempts.
+	releaseSubject = regexp.MustCompile(`^chore\([a-z][a-z-]*\): release ([a-z-]+ )?[0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$`)
 )
 
 // commitMessageFaults says what is wrong with one commit message — author,
 // subject and body apart — or nothing. release-please's own commits are
-// "chore(main): release X.Y.Z": that scope is its, not ours, and so is the
-// trailer naming the bot that opened the pull request — both are let
-// through on that one shape of subject and refused on every other. The
+// "chore(main): release X.Y.Z", or "chore(release-dry-run): release dryrun
+// X.Y.Z" for a rehearsal under a component: that scope is its, not ours,
+// and so is the trailer naming the bot that opened the pull request — both
+// are let through on that one shape of subject, version included, and
+// refused on every other. The
 // trailer is also let through when the author is dependabot[bot]: GitHub
 // writes the squash message of its pull requests, and adds a
 // Co-authored-by line for every author the branch carried, as it does after
 // an update of the branch from main. A person's commit with that trailer is
 // still refused.
 func commitMessageFaults(author, subj, body string) (faults []string) {
+	releaseCommit := releaseSubject.MatchString(subj)
 	m := commitSubject.FindStringSubmatch(subj)
-	if m == nil {
+	if m == nil && !releaseCommit {
 		return []string{fmt.Sprintf("subject %q is not `<type>(<scope>): <subject>` without a trailing period", subj)}
 	}
-	releaseCommit := m[1] == "chore" && m[3] == "main" && strings.HasPrefix(subj, "chore(main): release ")
-	if m[3] != "" && !releaseCommit && !slices.Contains(scopes, m[3]) {
+	if !releaseCommit && m[3] != "" && !slices.Contains(scopes, m[3]) {
 		faults = append(faults, fmt.Sprintf("scope %q is not in the closed list", m[3]))
 	}
 	if len(subj) > 72 {
@@ -481,6 +485,9 @@ func TestCommitMessageFaults(t *testing.T) {
 		{"mlagarrigue", "fix(web): bound the int conversion explicitly", "", 0},
 		{"mlagarrigue", "fix(web): bound the int conversion explicitly", trailer, 1},
 		{"mlagarrigue", "chore(main): tidy the release notes", trailer, 2},
+		{"sluice-release[bot]", "chore(release-dry-run): release dryrun 0.4.0 (#25)", trailer, 0},
+		{"mlagarrigue", "chore(release-dry-run): tidy the rehearsal", trailer, 1},
+		{"mlagarrigue", "chore(web): release 1.2.3 early", trailer, 1},
 		{"mlagarrigue", "docs: a trailing period.", "", 1},
 		{"mlagarrigue", "feat(nowhere): an unknown scope", "", 1},
 		{"dependabot[bot]", "ci: bump actions/upload-artifact from 7.0.1 to 7.0.2 (#13)", trailer, 0},
