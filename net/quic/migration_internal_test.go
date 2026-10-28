@@ -2225,9 +2225,22 @@ func TestOldPathFlightDoesNotShapeTheNewPath(t *testing.T) {
 // "peercid2", …, and feeds it one sealed 1-RTT datagram from a new address,
 // naming the local identifier given and carrying a PATH_CHALLENGE padded to
 // 1200 bytes: RFC 9000 §9.5's probe of a new path when the identifier is
-// not the path's, a NAT rebinding when it is. Returns what it takes to send
-// more from that address.
+// not the path's, a NAT rebinding when it is. The challenge must have drawn
+// one answer, to the new address. Returns what it takes to send more from
+// that address.
 func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
+	t.Helper()
+	c, pc, newAddr, seal = sendChallengeFromNewAddress(t, named, fresh)
+	w := pc.recorded()
+	if len(w) != 1 || !sameAddr(w[0].to, newAddr) {
+		t.Fatalf("writes = %d, want one to %v", len(w), newAddr)
+	}
+	return c, pc, newAddr, seal
+}
+
+// sendChallengeFromNewAddress is challengeFromNewAddress without the check
+// on what the challenge drew.
+func sendChallengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc *recordingPC, newAddr net.Addr, seal func(pn uint64, payload []byte) []byte) {
 	t.Helper()
 	pc = &recordingPC{addr: fakeFuzzAddr("np:self")}
 	c = newConn(pc, fakeFuzzAddr("np:peerA"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
@@ -2266,10 +2279,6 @@ func challengeFromNewAddress(t *testing.T, named []byte, fresh int) (c *Conn, pc
 	newAddr = fakeFuzzAddr("np:peerB")
 	if err := c.receive(seal(1, challenge), newAddr); err != nil {
 		t.Fatal(err)
-	}
-	w := pc.recorded()
-	if len(w) != 1 || !sameAddr(w[0].to, newAddr) {
-		t.Fatalf("writes = %d, want one to %v", len(w), newAddr)
 	}
 	return c, pc, newAddr, seal
 }
@@ -2346,13 +2355,106 @@ func TestRebindChallengeIsAnsweredUnderTheCurrentCID(t *testing.T) {
 	}
 }
 
-// With no pooled identifier to take, the answer goes under the current one
-// rather than not at all: §9.3 owes it.
-func TestNewPathChallengeWithAnEmptyPoolIsStillAnswered(t *testing.T) {
-	_, pc, newAddr, _ := challengeFromNewAddress(t, []byte("selfcid1"), 0)
-	if got := answerDCID(t, pc, newAddr, 0); !bytes.Equal(got, []byte("peercid0")) {
-		t.Fatalf("answer names %q, want peercid0, the only identifier the peer issued", got)
+// With no pooled identifier to take, a challenge from a new path goes
+// unanswered (RFC 9000 §9.5, mayFollowLocked): an answer under the
+// identifier in use toward the old address would link the two. It used to
+// go under the current one, §8.2.2's MUST taken over §9.5's.
+func TestNewPathChallengeWithAnEmptyPoolGoesUnanswered(t *testing.T) {
+	_, pc, newAddr, _ := sendChallengeFromNewAddress(t, []byte("selfcid1"), 0)
+	for _, w := range pc.recorded() {
+		if sameAddr(w.to, newAddr) {
+			t.Fatalf("a datagram left for %v under %q with no identifier never used", newAddr, w.data[1:9])
+		}
 	}
+}
+
+// RFC 9000 §9.5: "an endpoint MUST NOT reuse a connection ID when sending
+// to more than one destination address", and §9.3: a recipient with no
+// unused identifier from the peer "will not be able to send anything on
+// the new path until the peer provides one". A peer that moves under a new
+// identifier of this end, leaving no spare one, is not followed: nothing
+// leaves for its new address and the connection keeps its path, until the
+// peer issues one and its next packet moves the connection under it. The
+// section's one exception, a NAT rebinding — the path's own identifier of
+// this end, from a new address — is followed under the current
+// identifier. migrateLocked used to follow either way, under a used
+// identifier or the current one, whatever the packet named.
+func TestMigrationWithoutASpareIdentifierDoesNotReuseAnIdentifierAcrossAddresses(t *testing.T) {
+	// moveTo feeds c a non-probing packet from addr naming this end's
+	// identifier of sequence named.
+	moveTo := func(t *testing.T, c *Conn, addr net.Addr, named uint64) {
+		t.Helper()
+		rxFromNewAddress(c, addr, 1200, true)
+		c.mu.Lock()
+		c.rxLocalCIDSeq = named
+		c.mu.Unlock()
+		if err := c.frames(spaceApplication, []byte{framePing}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.flushControlLocked()
+		c.mu.Unlock()
+	}
+	// state is the migrations made and the identifier sent under.
+	state := func(c *Conn) (uint64, string) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.migrations, string(c.dcid)
+	}
+	// under is the set of identifiers each destination was sent under.
+	under := func(pc *recordingPC) map[string]map[string]bool {
+		ids := map[string]map[string]bool{}
+		for _, w := range pc.recorded() {
+			to := w.to.String()
+			if ids[to] == nil {
+				ids[to] = map[string]bool{}
+			}
+			ids[to][string(w.data[1:9])] = true
+		}
+		return ids
+	}
+
+	t.Run("a new identifier, none spare", func(t *testing.T) {
+		c, pc := newMigratableServer(t, "spare")
+		peerA, peerB := fakeFuzzAddr("spare:peerA"), fakeFuzzAddr("spare:peerB")
+		moveTo(t, c, peerB, 1)
+		if migrated, dcid := state(c); migrated != 0 || dcid != "peercid0" {
+			t.Fatalf("with no spare identifier: %d migrations, sending under %q; want none, under peercid0", migrated, dcid)
+		}
+		if ids := under(pc); len(ids[peerB.String()]) != 0 {
+			t.Fatalf("datagrams left for %v under %v with no spare identifier", peerB, ids[peerB.String()])
+		}
+
+		// The peer issues one: its next packet moves the connection there.
+		c.mu.Lock()
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1")})
+		c.mu.Unlock()
+		moveTo(t, c, peerB, 1)
+		if migrated, dcid := state(c); migrated != 1 || dcid != "peercid1" {
+			t.Fatalf("with peercid1 issued: %d migrations, sending under %q; want one, under peercid1", migrated, dcid)
+		}
+		ids := under(pc)
+		for id := range ids[peerA.String()] {
+			if ids[peerB.String()][id] {
+				t.Fatalf("identifier %q sent toward both %v and %v: %v", id, peerA, peerB, ids)
+			}
+		}
+		if len(ids[peerB.String()]) == 0 {
+			t.Fatalf("nothing left for %v once it had an identifier: %v", peerB, ids)
+		}
+	})
+
+	t.Run("a NAT rebinding", func(t *testing.T) {
+		c, pc := newMigratableServer(t, "nat")
+		peerB := fakeFuzzAddr("nat:peerB")
+		moveTo(t, c, peerB, 0)
+		if migrated, dcid := state(c); migrated != 1 || dcid != "peercid0" {
+			t.Fatalf("a rebinding with no spare identifier: %d migrations, sending under %q; want one, under peercid0", migrated, dcid)
+		}
+		if ids := under(pc)[peerB.String()]; !ids["peercid0"] || len(ids) != 1 {
+			t.Fatalf("toward the rebound address under %v, want peercid0 alone", ids)
+		}
+	})
 }
 
 // RFC 9000 §9.5: a new local address never sends under a connection

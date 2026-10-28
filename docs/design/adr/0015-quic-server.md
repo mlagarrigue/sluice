@@ -1,7 +1,7 @@
 # ADR 0015 — The QUIC server: transport machinery, a real listener, a moving client
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it), 2026-10-23 (session tickets on request; 0-RTT decided in ADR 0019), 2026-10-28 (0-RTT and foreign interoperation stated as shipped)
+- **Revised:** 2026-10-03 (listener, migration), 2026-10-04 (stateless reset, `Rebind`, preferred address, path abandonment, surface pass), 2026-10-07 (three records merged into one current state), 2026-10-09 (`PreferredAddress` exported), 2026-10-10 (key update), 2026-10-14 (`HandshakeTimeout`, `MaxConns`, `MaxConnsPerIP`), 2026-10-16 (`MaxConnsPerIP` counts by prefix), 2026-10-18 (tuning and keys public, one preferred address per family), 2026-10-21 (shared reset key: the §21.11 routing condition), 2026-10-21 (the reassembly fragment bound stated), 2026-10-21 (a path challenge without a spare identifier goes unanswered), 2026-10-22 (ChaCha20-Poly1305 credited to its module by name), 2026-10-22 (a validated handshake runs to the idle timeout), 2026-10-22 (the congestion controllers shipped, persistent congestion as §7.6 defines it), 2026-10-23 (session tickets on request; 0-RTT decided in ADR 0019), 2026-10-28 (0-RTT and foreign interoperation stated as shipped), 2026-10-28 (one rule without a spare identifier: nothing toward a new path but a NAT rebinding)
 - **Theme:** quic
 
 ## Problem
@@ -126,15 +126,29 @@ a deployment, not a test. The preferred address is announced by
 parameter carries one address per family (§18.2), and the type enforces it
 instead of a list being checked.
 
-A client's PATH_CHALLENGE that reaches the preferred-address socket while
-the client has issued no spare identifier goes unanswered: §19.17's "MUST
-generate a PATH_RESPONSE" meets §9.5's "MUST NOT reuse a connection ID when
-sending from more than one local address", and the second wins — an answer
-under the identifier in use would tie the two paths for any observer, which
-is the harm §9.5 names, while the silence costs the client only the failed
-validation §9.6.1 already provides for, on the original address it keeps. A
-client that wants the preferred address issues a spare identifier (§5.1.1);
-a real one found waiting without any is the signal to revisit.
+Without a spare identifier — none of the peer's never used on any path —
+nothing is sent toward a new path, by one rule (`mayFollowLocked`): a
+PATH_CHALLENGE from a new address, or one that reached the preferred-address
+socket, goes unanswered, and a peer that moves to a new address is not
+followed; the connection keeps its path until the peer issues an identifier
+and its next packet moves it.
+
+§19.17's "MUST generate a PATH_RESPONSE" and
+§9.3's "MUST send subsequent packets to the new peer address" meet §9.5's
+"MUST NOT reuse a connection ID when sending from more than one local
+address" and "to more than one destination address", and the second wins,
+as §9.5 itself has it ("cannot … respond to probes or attempts by its peer
+to migrate") and §9.3 ("will not be able to send anything on the new path
+until the peer provides one"): an answer under an identifier already used
+would tie the two paths for any observer, which is the harm §9.5 names,
+while the silence costs the peer only a failed validation, on the path it
+keeps.
+
+The one exception is the section's: a packet from a new address that
+names the identifier of this end the path already uses, on the socket in
+use — a NAT rebinding — is followed under the current identifier. A peer
+that wants to move issues a spare identifier first (§5.1.1); a real one
+found moving without any is the signal to revisit.
 
 ## Rationale
 

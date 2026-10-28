@@ -536,7 +536,9 @@ func (c *Conn) queueRetireLocked(seq uint64) error {
 // switchToFreshPeerCIDLocked moves this end's sends to a pooled peer
 // identifier, preferring one never used on any path (§9.5) and the lowest
 // sequence among those, and falling back to a used one: its callers keep
-// the local address, where §9.5's MUST NOT does not bite. Callers hold mu.
+// the path — the local address and the peer's — where §9.5's MUST NOT does
+// not bite. A move to another peer address goes through mayFollowLocked
+// instead. Callers hold mu.
 //
 // RFC 9000 §9.5 lets an endpoint change the identifier it sends under at
 // any time; this one changes it on a new path only. On the same path a
@@ -843,11 +845,13 @@ func (c *Conn) resetPathStateLocked(now time.Time) {
 // initial state because the old path's measurements are not evidence about
 // the new one (§9.4). The destination identifier moves to the one the
 // address's challenge was answered under, if the peer probed first, else to
-// a never-used one if the peer issued any (§9.5); the old one is retired
-// once the new path answers (retireLeftCIDLocked) — until then it carries
-// the challenge to the path left, and a failed probe falls back there. via,
-// when non-nil, is the local socket the move also lands on (the listener's
-// preferred-address one, §9.6). Callers hold mu.
+// a never-used one if the peer issued any (§9.5), else it stays: a NAT
+// rebinding, the one move mayFollowLocked lets through without a spare.
+// An identifier left is retired once the new path answers
+// (retireLeftCIDLocked) — until then it carries the challenge to the path
+// left, and a failed probe falls back there. via, when non-nil, is the
+// local socket the move also lands on (the listener's preferred-address
+// one, §9.6). Callers hold mu.
 func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	newPC := c.pc
 	if via != nil {
@@ -860,6 +864,14 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// new one is still unproven — the §9.3.3 outcome of a migration
 		// forged from copied packets, or a peer that never really left.
 		c.revertToValidatedLocked(now)
+		return
+	}
+	if !c.mayFollowLocked(to, newPC) {
+		// §9.3: "If the recipient has no unused connection IDs from the
+		// peer, it will not be able to send anything on the new path
+		// until the peer provides one." The connection stays where it
+		// is; the peer's first packet from the new address after its
+		// NEW_CONNECTION_ID moves it.
 		return
 	}
 	if !unvalidated {
@@ -897,12 +909,44 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.resetPathStateLocked(now)
 	previous := c.currentPeerSeq
 	if cid, ok := c.answeredCIDLocked(to); !ok || !c.adoptPeerCIDLocked(cid) {
-		c.switchToFreshPeerCIDLocked()
+		// One never used on any path; without one, mayFollowLocked let
+		// only a NAT rebinding through, and the current identifier serves.
+		if i := c.pickPeerCIDLocked(true); i >= 0 {
+			c.adoptPeerCIDAtLocked(i)
+		}
 	}
 	c.retireLeftCIDLocked(previous, false)
 	c.answered = c.answered[:0]
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
+}
+
+// mayFollowLocked is the one rule for sending toward a new peer address,
+// to, from the local socket via, when the peer may have left no identifier
+// to send under (RFC 9000 §9.5): "an endpoint MUST NOT reuse a connection
+// ID when sending to more than one destination address", and one "that
+// exhausts available connection IDs cannot probe new paths or initiate
+// migration, nor can it respond to probes or attempts by its peer to
+// migrate". It holds when the address's challenge was already answered
+// under a pooled identifier, when the pool holds one never used on any
+// path, or for the section's one exception: on the socket in use, a packet
+// that named the identifier of this end the path already does — "network
+// changes outside the control of its peer", a NAT rebinding — where the
+// current identifier may go on. Without it nothing leaves for to: neither
+// an answer to its challenges (answerPathChallengesLocked) nor the
+// connection's traffic (migrateLocked). A peer with zero-length
+// identifiers has none to reuse. Callers hold mu.
+func (c *Conn) mayFollowLocked(to net.Addr, via net.PacketConn) bool {
+	if len(c.dcid) == 0 {
+		return true
+	}
+	if via == c.pc && c.rxLocalCIDSeq == c.pathLocalSeq {
+		return true
+	}
+	if cid, ok := c.answeredCIDLocked(to); ok && slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return bytes.Equal(e.cid, cid) }) {
+		return true
+	}
+	return c.pickPeerCIDLocked(true) >= 0
 }
 
 // probePreferredAddressLocked is the client half of §9.6.2: a PATH_CHALLENGE
@@ -1193,7 +1237,13 @@ func (c *Conn) answerPathChallengesLocked(responses []byte, now time.Time) {
 	// refusal for having *no* spare identifier; this is not that.
 	offSocket := c.rxVia != nil && c.rxVia != c.pc
 	if dcid == nil && len(c.dcid) > 0 && (!onPath || offSocket) {
-		dcid = c.newPathCIDLocked()
+		var ok bool
+		if dcid, ok = c.newPathCIDLocked(); !ok {
+			// No identifier the path could take: nothing leaves for it
+			// (mayFollowLocked), and its validation fails until the peer
+			// issues one.
+			return
+		}
 	}
 	if offSocket && dcid == nil && len(c.dcid) > 0 {
 		// No identifier that path could take: nothing leaves that socket.
@@ -1266,36 +1316,38 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 // NAT rebinding: the challenge named the identifier the path in use
 // already does, and the current identifier may serve. A client probing the
 // server's preferred address answers under the identifier set aside for
-// it (§9.6.2). An empty pool — the peer issued none beyond the one in use
-// — answers under the current identifier rather than not at all: §9.3
-// owes the response, and a conformant peer, which issues identifiers up
-// to active_connection_id_limit before probing, never gets here. Returns
-// nil for "the one in use". Callers hold mu.
-func (c *Conn) newPathCIDLocked() []byte {
+// it (§9.6.2). With none of these — the peer issued nothing beyond the
+// identifiers already used — ok is false and the challenge goes
+// unanswered, the rule mayFollowLocked states: §8.2.2's MUST respond meets
+// §9.5's MUST NOT reuse, and §9.5 itself says such an endpoint "cannot
+// ... respond to probes". A conformant peer, which issues identifiers up to
+// active_connection_id_limit before probing, never gets here. cid is nil
+// for "the one in use". Callers hold mu.
+func (c *Conn) newPathCIDLocked() (cid []byte, ok bool) {
 	if c.pathProbe.target != nil && sameAddr(c.rxFrom, c.pathProbe.target) {
-		return c.pathProbe.targetCID
+		return c.pathProbe.targetCID, true
 	}
 	if c.rxLocalCIDSeq == c.pathLocalSeq {
-		return nil
+		return nil, true
 	}
 	if cid, ok := c.answeredCIDLocked(c.rxFrom); ok {
 		for i := range c.peerCIDs {
 			if bytes.Equal(c.peerCIDs[i].cid, cid) {
-				return cid
+				return cid, true
 			}
 		}
 		// Retired since the first answer: this one takes another.
 	}
-	cid, _, ok := c.pickFreshPeerCIDLocked()
+	cid, _, ok = c.pickFreshPeerCIDLocked()
 	if !ok {
-		return nil
+		return nil, false
 	}
 	c.answered = slices.DeleteFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
 	if len(c.answered) == maxAnsweredPaths {
 		c.answered = c.answered[1:]
 	}
 	c.answered = append(c.answered, answeredPath{from: c.rxFrom, cid: cid})
-	return cid
+	return cid, true
 }
 
 // answeredPath is one new address answered under a fresh peer identifier,
