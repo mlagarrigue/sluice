@@ -39,10 +39,6 @@ claim. A deliberate update re-runs the comparison.
 | `github.com/go-chi/chi/v5` | v5.4.0 |
 | `github.com/gofiber/fiber/v2` | v2.52.15 |
 
-The web pipeline's figures name, row by row, the version they were measured
-against: echo v4.15.4 and chi v5.3.2, below what the module requires. They
-are measured again before they are quoted again.
-
 Six direct dependencies pull **51 modules** of transitive graph. That number is
 not an argument against any of them — it is what a comparison costs, and it is
 the reason it lives here rather than in the module that promises one.
@@ -124,19 +120,21 @@ Same statuses and same body on every side, asserted by
 `TestWebContendersAgree` before any figure is believed. Each framework is
 written the way its own documentation writes it.
 
-One pinned core, `GOMAXPROCS=1`, three runs of 300 ms:
+One pinned core, `GOMAXPROCS=1`, six runs of 300 ms, median, 2026-10-28,
+go1.26.9:
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `net/http` (no framework) | **1 745** | 1 928 | 21 |
-| `gin` v1.12.0 | 1 770 | 1 864 | 19 |
-| **sluice** | 1 880 | 1 952 | 22 |
-| `echo` v4.15.4 | 1 970 | 1 896 | 21 |
-| `chi` v5.3.2 | 2 075 | 2 584 | 23 |
+| `net/http` (no framework) | **1 656** | 1 928 | 21 |
+| `gin` v1.12.0 | 1 677 | 1 864 | 19 |
+| `echo` v4.16.1 | 1 875 | 1 896 | 21 |
+| `chi` v5.4.0 | 1 945 | 2 584 | 23 |
+| **sluice** | 1 985 | 2 056 | 26 |
 
 Nobody wins by much, which is the honest shape of this comparison: all five are
 doing the same JSON decode and encode, and that is most of the time. sluice
-sits 8% above hand-written `net/http` and between `gin` and `echo`.
+sits 20% above hand-written `net/http`, level with `chi`, and makes the most
+allocations of the five.
 
 **The harness was wrong first.** Measured through `httptest.NewRecorder`, all
 five came out within 15% of each other at ~3 400 ns and 8 184 B/op — forty
@@ -160,7 +158,7 @@ keep-alive. This is the row that says how much the table above matters.
 | `fiber` (fasthttp) | 190 µs | **6 720** | **82** |
 
 **Everything is within 8% of everything else.** The in-process table spreads
-those same five frameworks over 18% — 1 745 ns to 2 075 ns — and a loopback
+those same five frameworks over 20% — 1 656 ns to 1 985 ns — and a loopback
 socket costs 175 µs, so the whole spread lands inside the noise of one round
 trip. On a real network it would disappear entirely.
 
@@ -270,9 +268,9 @@ hand-off, and a batch that usually holds one element.
 
 | | per request |
 |---|---|
-| sluice, direct handler | 1 880 ns |
-| sluice through a gateway, **one caller at a time** | 1 140 000 ns |
-| sluice through a gateway, **64 concurrent callers** | ~19 300 ns |
+| sluice, direct handler | 1 985 ns |
+| sluice through a gateway, **one caller at a time** | 1 105 000 ns |
+| sluice through a gateway, **64 concurrent callers** | ~20 300 ns |
 
 **Read the serial figure carefully — it is mostly not the framework.** The
 gateway was configured with `Within: 200µs`, and a lone call waits for that
@@ -291,9 +289,9 @@ the clock rather than the code. Observed under WSL2, where Linux neither sees
 nor controls the host clock; it may differ elsewhere, which is why it is a test
 that reruns rather than a number written into a document.
 
-The mechanism's own cost is what is left: **five more allocations per request**
-(27 against 22) and, under the concurrency it is designed for, ~19 µs per
-request against 1.9 µs direct. Whether that pays is arithmetic this table
+The mechanism's own cost is what is left: **four more allocations per request**
+(30 against 26) and, under the concurrency it is designed for, ~20 µs per
+request against 2.0 µs direct. Whether that pays is arithmetic this table
 cannot finish: it pays when the round trips saved exceed it, and the round trip
 is exactly what has not been measured yet.
 
