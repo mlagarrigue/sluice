@@ -1020,6 +1020,77 @@ func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 	c.kickTimer()
 }
 
+// preferredCandidate is the server's preferred address probed from a
+// client's new socket beside the original (Conn.preferredCandidate): its
+// own identifier, never used on any path (§9.5: the one the first probe
+// went under left from the old socket), and its own challenge.
+type preferredCandidate struct {
+	pending, sent bool
+	to            net.Addr
+	cid           []byte
+	data          [8]byte
+}
+
+// probePreferredCandidateLocked starts the second of §9.6.3's two
+// validations from a client's new socket, toward the server's preferred
+// address. Without a second identifier never used — the first went to the
+// original address — nothing is probed: the original's validation alone
+// goes on, which the section's MAY allows. Callers hold mu.
+func (c *Conn) probePreferredCandidateLocked(now time.Time) {
+	c.preferredCandidate = preferredCandidate{}
+	if c.preferred == nil {
+		return
+	}
+	cid, _, ok := c.pickFreshPeerCIDLocked()
+	if !ok {
+		return
+	}
+	data, err := randomID(8)
+	if err != nil {
+		return
+	}
+	p := &c.preferredCandidate
+	p.pending, p.to, p.cid = true, c.preferred, cid
+	copy(p.data[:], data)
+	c.sendPreferredCandidateLocked()
+}
+
+// sendPreferredCandidateLocked sends the preferred candidate's challenge,
+// fresh data on a resend (§8.2.1), expanded to 1200 bytes. It goes with
+// every challenge toward the original address (sendPathChallengeLocked),
+// on that probe's timer. Callers hold mu.
+func (c *Conn) sendPreferredCandidateLocked() {
+	p := &c.preferredCandidate
+	if !p.pending {
+		return
+	}
+	if p.sent {
+		if data, err := randomID(8); err == nil {
+			copy(p.data[:], data)
+		}
+	}
+	p.sent = true
+	payload := append(varint.Append(nil, framePathChallenge), p.data[:]...)
+	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{noRetrans: true, to: p.to, dcid: p.cid, padTo: 1200})
+}
+
+// adoptPreferredCandidateLocked is §9.6.3's MUST once the preferred
+// candidate answers: "the client MUST abandon validation of the original
+// address and migrate to using the server's preferred address". Callers
+// hold mu.
+func (c *Conn) adoptPreferredCandidateLocked(now time.Time) {
+	p := c.preferredCandidate
+	c.preferredCandidate = preferredCandidate{}
+	c.pathProbe.pending, c.pathProbe.fatal = false, false
+	c.setPeerLocked(p.to)
+	previous := c.currentPeerSeq
+	c.adoptPeerCIDLocked(p.cid)
+	c.retireLeftCIDLocked(previous, true)
+	c.migrations++
+	c.resetPathStateLocked(now)
+	c.kickTimer()
+}
+
 // ErrMigrationDisabled is what [Conn.Rebind] returns when the server
 // announced disable_active_migration (RFC 9000 §18.2) and the connection
 // still sends to the address the handshake used.
@@ -1122,21 +1193,22 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	c.resetPathStateLocked(now)
 	previous := c.currentPeerSeq
 	c.adoptPeerCIDAtLocked(fresh)
+	// The preferred address still unvalidated: its probe from the old
+	// socket, or a candidate of an earlier Rebind's. Either way it is
+	// probed again from this socket, or not at all.
+	preferred := (c.pathProbe.pending && c.pathProbe.target != nil) || c.preferredCandidate.pending
+	c.preferredCandidate = preferredCandidate{}
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
 	c.retireLeftCIDLocked(previous, false)
-	// One challenge, toward the address in use. RFC 9000 §9.6.3 says a
-	// client that migrates before it has moved to the server's preferred
-	// address SHOULD validate both addresses concurrently from its new
-	// one; not taken: the preferred address is probed at confirmation
-	// (adoptPreferredPathLocked), so a later Rebind normally finds the
-	// move done, and pathProbe is one in-flight challenge — a second,
-	// concurrent one is a probe per candidate path, the same change the
-	// server's §9.6.3 SHOULD waits for (maybeMigrate). What the client
-	// loses is the direct hop to the preferred address from its new
-	// address when the two migrations race; it reaches it on the next
-	// confirmation-time probe or stays on the original address, which
-	// §9.6.3 allows.
+	if preferred {
+		// The move interrupted the probe of the server's preferred
+		// address: RFC 9000 §9.6.3, "a client that migrates before it has
+		// moved to the preferred address SHOULD perform path validation to
+		// both the original and preferred server address from the
+		// client's new address concurrently".
+		c.probePreferredCandidateLocked(now)
+	}
 	c.kickTimer()
 	// Jolt the read loop out of the old socket: it re-reads c.pc on its
 	// next iteration. Done under mu so the loop cannot re-arm a later
@@ -1197,6 +1269,9 @@ func (c *Conn) sendPathChallengeLocked() {
 	_ = c.sendPacketLocked(spaceApplication, payload, sendOpts{
 		noRetrans: true, to: c.pathProbe.target, via: c.pathProbe.via, dcid: c.pathProbe.targetCID, padTo: 1200,
 	})
+	if c.preferredCandidate.sent {
+		c.sendPreferredCandidateLocked() // the resend of §9.6.3's second validation
+	}
 }
 
 // answerPathChallengesLocked sends the PATH_RESPONSE frames one packet's
@@ -1631,6 +1706,12 @@ func (c *Conn) handlePathResponse(f Frame, now time.Time) {
 			a.validated = true
 			c.rxProgress = true
 		}
+	}
+	if p := &c.preferredCandidate; p.pending && bytes.Equal(f.Data, p.data[:]) {
+		c.rxProgress = true
+		c.adoptPreferredCandidateLocked(now)
+		c.mu.Unlock()
+		return
 	}
 	if c.pathProbe.oldPending && bytes.Equal(f.Data, c.pathProbe.oldData[:]) {
 		// The old path is alive. Nothing moves on that alone: the peer's

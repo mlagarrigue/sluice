@@ -510,7 +510,12 @@ type Conn struct {
 	// again.
 	peerRetiredSelf []uint64
 	pathProbe       pathProbe
-	migrations      uint64
+	// preferredCandidate is a client's second probe after a Rebind that
+	// interrupted its probe of the server's preferred address: that
+	// address, validated from the new socket beside the original
+	// (RFC 9000 §9.6.3).
+	preferredCandidate preferredCandidate
+	migrations         uint64
 	// lastValidated* is the path a server last proved — address, socket,
 	// and the peer identifier sequence used on it — recorded when a
 	// migration leaves it: where §9.3.2 sends a migration that never

@@ -865,6 +865,87 @@ func TestRebindDuringThePreferredProbeRefusesTheOfferedIdentifier(t *testing.T) 
 	}
 }
 
+// RFC 9000 §9.6.3: "a client that migrates before it has moved to the
+// preferred address SHOULD perform path validation to both the original
+// and preferred server address from the client's new address
+// concurrently", and "if path validation of the server's preferred address
+// succeeds, the client MUST abandon validation of the original address and
+// migrate to using the server's preferred address". A Rebind while the
+// preferred address is probed challenges both from the new socket, each
+// under an identifier never used (§9.5: sequence 1 already left from the
+// old socket), and the preferred address's answer moves the client there.
+// A Rebind used to drop the preferred probe and challenge the original
+// address alone.
+func TestRebindDuringThePreferredProbeValidatesBothAddresses(t *testing.T) {
+	first := &recordingPC{addr: fakeFuzzAddr("pref14:first")}
+	original, preferred := fakeFuzzAddr("pref14:peer"), fakeFuzzAddr("pref14:preferred")
+	c := newConn(first, original, []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	c.handshakeConfirmed = true
+	for i := 1; i <= 3; i++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: uint64(i), cid: []byte("peercid" + string(rune('0'+i)))})
+	}
+	c.preferred = preferred
+	c.probePreferredAddressLocked(time.Now())
+	c.mu.Unlock()
+
+	second := &recordingPC{addr: fakeFuzzAddr("pref14:second")}
+	if err := c.Rebind(second); err != nil {
+		t.Fatal(err)
+	}
+	// What left the new socket, by destination: the identifier and the
+	// challenge each datagram carries.
+	sec, err := initialSecrets([]byte("appkeys0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cids, challenges := map[string]string{}, map[string][]byte{}
+	for _, w := range second.recorded() {
+		h, err := parseShortHeader(append([]byte(nil), w.data...), 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _, err := opener.Open(h.Raw, h.PNOffset, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames, err := parseFrames(nil, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range frames {
+			if f.Type == framePathChallenge {
+				cids[w.to.String()], challenges[w.to.String()] = string(h.DCID), f.Data
+			}
+		}
+	}
+	toOriginal, toPreferred := cids[original.String()], cids[preferred.String()]
+	if toOriginal == "" || toPreferred == "" {
+		t.Fatalf("challenges from the new socket went to %v; want both %v and %v", cids, original, preferred)
+	}
+	if toOriginal == toPreferred || toPreferred == "peercid1" || toOriginal == "peercid0" {
+		t.Fatalf("challenges under %q (original) and %q (preferred); want two identifiers never used before", toOriginal, toPreferred)
+	}
+
+	// The preferred address answers.
+	response := append(varint.Append(nil, framePathResponse), challenges[preferred.String()]...)
+	if err := c.frames(spaceApplication, response, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !sameAddr(c.peer, preferred) || string(c.dcid) != toPreferred || c.pathProbe.pending {
+		t.Fatalf("after the preferred address answered: peer %v under %q, original still probed %v; want %v under %q, the original's validation abandoned",
+			c.peer, c.dcid, c.pathProbe.pending, preferred, toPreferred)
+	}
+}
+
 // RFC 9000 §21.5.6: "Endpoints SHOULD NOT allow connections or migration to
 // a loopback address if the same service was provided by a service at a
 // non-loopback address." A server's preferred_address is probed by the
