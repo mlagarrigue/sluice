@@ -18,9 +18,16 @@ var ErrProtocol = errors.New("postgres: malformed backend message")
 // ErrMessageTooLarge reports a backend message longer than the reader's
 // limit, and ErrMalformedMessage a length field that cannot be right. Both
 // are raised by the wire layer and surface through a connection's error.
+//
+// ErrOutgoingTooLarge reports a message this end would send past what a
+// server accepts — 1 GiB less one byte, its MaxAllocSize — typically a
+// query parameter that large. It is refused before a byte leaves, the
+// connection stays usable, and no setting moves the bound: split the
+// value, which PostgreSQL could not store whole anyway.
 var (
 	ErrMessageTooLarge  = pgwire.ErrMessageTooLarge
 	ErrMalformedMessage = pgwire.ErrMalformedMessage
+	ErrOutgoingTooLarge = pgwire.ErrOutgoingTooLarge
 )
 
 // Error is an ErrorResponse from the server, kept as fields rather than

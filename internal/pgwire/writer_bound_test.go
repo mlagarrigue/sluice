@@ -16,8 +16,8 @@ func TestWriterRefusesAMessageOverTheBound(t *testing.T) {
 
 	w.Message('Q', make([]byte, 16))
 	w.Message('Q', make([]byte, 100))
-	if err := w.Flush(); !errors.Is(err, ErrMessageTooLarge) {
-		t.Fatalf("Flush = %v, want ErrMessageTooLarge", err)
+	if err := w.Flush(); !errors.Is(err, ErrOutgoingTooLarge) {
+		t.Fatalf("Flush = %v, want ErrOutgoingTooLarge", err)
 	}
 	if sink.Len() != 0 {
 		t.Errorf("%d bytes were written although the batch held a message over the bound", sink.Len())
@@ -33,8 +33,8 @@ func TestWriterRefusesAMessageOverTheBound(t *testing.T) {
 	at := w.Begin('B')
 	w.AppendBytes(make([]byte, 100))
 	w.End(at)
-	if err := w.Flush(); !errors.Is(err, ErrMessageTooLarge) {
-		t.Fatalf("Flush after an oversized in-place message = %v, want ErrMessageTooLarge", err)
+	if err := w.Flush(); !errors.Is(err, ErrOutgoingTooLarge) {
+		t.Fatalf("Flush after an oversized in-place message = %v, want ErrOutgoingTooLarge", err)
 	}
 	if sink.Len() != 0 {
 		t.Errorf("%d bytes were written for an in-place message over the bound", sink.Len())

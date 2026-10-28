@@ -19,17 +19,21 @@ import (
 // and reported by [Writer.Flush], before a byte of it is written.
 const MaxOutgoingMessage = 1<<30 - 1
 
-// ErrMessageTooLarge reports a message longer than a bound, in either
-// direction. Read, it is a message whose declared length exceeds the
-// reader's limit, returned before anything is allocated for that message,
-// which is the whole point of the limit (guarantee S8): a length prefix is
-// attacker-controlled, and a reader that allocates first and checks second
-// can be made to allocate two gigabytes by four bytes of input. Written, it
-// is a message past [MaxOutgoingMessage], reported by [Writer.Flush] before
-// a byte of the batch goes out. The read limit is the connector's
-// Config.MaxMessage, which the connector's error names when it breaks the
-// connection.
+// ErrMessageTooLarge reports a message read whose declared length exceeds
+// the reader's limit, returned before anything is allocated for that
+// message, which is the whole point of the limit (guarantee S8): a length
+// prefix is attacker-controlled, and a reader that allocates first and
+// checks second can be made to allocate two gigabytes by four bytes of
+// input. The limit is the connector's Config.MaxMessage, which the
+// connector's error names when it breaks the connection.
 var ErrMessageTooLarge = errors.New("postgres: message longer than the limit")
+
+// ErrOutgoingTooLarge reports a message to write past [MaxOutgoingMessage],
+// reported by [Writer.Flush] before a byte of the batch goes out, or found
+// before anything is buffered ([BindLen]). It is not ErrMessageTooLarge:
+// nothing is wrong with the stream, no setting moves the bound, and the
+// connection stays usable.
+var ErrOutgoingTooLarge = errors.New("postgres: message too long to send")
 
 // ErrMalformedMessage reports a length prefix that cannot describe a message —
 // shorter than the four bytes it counts itself. There is no recovery: the
@@ -374,7 +378,7 @@ func (wr *Writer) framed(from, n int) bool {
 		return true
 	}
 	if wr.err == nil {
-		wr.err = fmt.Errorf("%w: a %d-byte message, over the %d bytes a server accepts", ErrMessageTooLarge, n, wr.max)
+		wr.err = fmt.Errorf("%w: a %d-byte message, over the %d bytes a server accepts", ErrOutgoingTooLarge, n, wr.max)
 	}
 	wr.buf = wr.buf[:from]
 	return false

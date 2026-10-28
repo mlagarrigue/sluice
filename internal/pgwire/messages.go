@@ -130,6 +130,18 @@ func (wr *Writer) Parse(name, sql string, paramOIDs []uint32) {
 	wr.End(at)
 }
 
+// BindLen is the framed length of the Bind [Writer.BindBinary] would append
+// — length field included, type byte excluded, as the bound counts it — so
+// that a caller can refuse an oversized one before buffering anything
+// ([ErrOutgoingTooLarge]).
+func BindLen(portal, stmt string, params [][]byte) int {
+	n := LengthSize + len(portal) + 1 + len(stmt) + 1 + 2 + 2 + 2 + 2 + 2
+	for _, p := range params {
+		n += 4 + len(p)
+	}
+	return n
+}
+
 // BindBinary appends a Bind message with every parameter and every result
 // column in binary format.
 //

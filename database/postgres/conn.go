@@ -639,6 +639,30 @@ func (c *Conn) declaredOIDs(params []Param) []uint32 {
 // writeBind queues a Bind of the unnamed portal to stmt with the values of
 // params. The scratch is cleared once the values are buffered, so the
 // connection does not keep the caller's bytes alive until its next query.
+// maxStmtName is the longest name prepare.go gives a statement.
+const maxStmtName = "sluice_18446744073709551615"
+
+// maxOutgoing is the bound checkBindLen holds a Bind to: the wire layer's,
+// a variable so that a test can lower it.
+var maxOutgoing = pgwire.MaxOutgoingMessage
+
+// checkBindLen refuses, before anything is buffered, a Bind the wire layer
+// would refuse at Flush: a parameter past what a server accepts. Found at
+// Flush, the refusal comes after the statement cache and the query's state
+// have moved for a batch that never leaves, and the connection is broken
+// for a stream that is intact. The statement name is counted at its
+// longest, so the answer does not depend on the cache.
+func checkBindLen(params []Param) error {
+	n := pgwire.BindLen("", maxStmtName, nil)
+	for _, p := range params {
+		n += 4 + len(p.Value)
+	}
+	if n > maxOutgoing {
+		return fmt.Errorf("%w: a %d-byte Bind, over the %d bytes a server accepts in one message", pgwire.ErrOutgoingTooLarge, n, maxOutgoing)
+	}
+	return nil
+}
+
 func (c *Conn) writeBind(stmt string, params []Param) {
 	values := c.valuesScratch[:0]
 	for _, p := range params {
@@ -1050,6 +1074,9 @@ func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bo
 		return err
 	}
 	if err := checkSQLText(sql); err != nil {
+		return err
+	}
+	if err := checkBindLen(params); err != nil {
 		return err
 	}
 	// A consumer that already wants nothing costs the server nothing: no
@@ -1839,7 +1866,8 @@ func (c *Conn) breakConn(cause error) error {
 	if c.broken == nil {
 		if errors.Is(cause, pgwire.ErrMessageTooLarge) {
 			// The one break the caller can configure away, so the error
-			// names the field rather than leaving a number to look up.
+			// names the field rather than leaving a number to look up. Only
+			// the read side: ErrOutgoingTooLarge is a bound no setting moves.
 			cause = fmt.Errorf("%w; Config.MaxMessage raises the limit", cause)
 		}
 		c.broken = fmt.Errorf("%w: %w", ErrConnBroken, cause)
