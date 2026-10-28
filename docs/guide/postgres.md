@@ -546,6 +546,15 @@ the context's error with `ErrConnBroken`: the connection is no longer good,
 open another. `Config.Logger` (`slog.Default()` if nil) receives a warning
 that says why.
 
+**When the confirmation is not enough.** The close of the second
+connection says the signal reached the server, not that the statement is
+over: the server interrupts it at its next check, then answers on the main
+connection. If it never answers — a server that goes silent after
+confirming — nothing bounded your call any more. So the statement still
+has `CancelTimeout` after the confirmation to end; past that, the main
+connection is closed and the call returns what it does above: the
+context's error with `ErrConnBroken`, and the warning.
+
 One case stands apart: the statement finished just before the close
 reached it. The call then returns its real result (`nil`, the rows
 delivered) and it is the next call that finds `ErrConnBroken`. The warning,

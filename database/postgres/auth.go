@@ -379,7 +379,11 @@ type Config struct {
 	// A cancellation not confirmed in time closes the connection, and the
 	// statement ends with [ErrConnBroken]: a request still on its way could
 	// reach the server during the next statement and cancel that one
-	// instead.
+	// instead. A confirmed one gives the statement CancelTimeout again to
+	// end — the server interrupts it, then answers on the main connection —
+	// and closes the connection the same way when it has not: the
+	// confirmation says the signal arrived, not that the server will speak
+	// again.
 	CancelTimeout time.Duration
 
 	// Logger receives the warnings the connection has no error to return

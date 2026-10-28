@@ -1192,3 +1192,41 @@ func TestReadsOnly(t *testing.T) {
 		}
 	}
 }
+
+// A confirmed cancellation followed by silence on the main connection still
+// ends the statement: CancelTimeout after the confirmation, the connection
+// is closed under it, and the call returns the context's error with
+// ErrConnBroken. Until 2026-10-28 the confirmation ended the watch's part,
+// and a server that confirmed and then said nothing held the statement, the
+// connection and its caller for as long as the socket lived
+// (RP-20261027-secapp-03).
+func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, conn := newPipeServer(t)
+		conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+		packets := make(chan []byte, 1)
+		conn.cancelDial = cancelHolding(0, packets) // confirms at once
+		conn.cancelTimeout = 2 * time.Second
+		go func() { <-srv.read; <-packets }() // and never answers the statement
+
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		res := make(chan error, 1)
+		go func() { res <- conn.Exec(ctx, "CALL slow()") }()
+		var err error
+		select {
+		case err = <-res:
+		case <-time.After(time.Minute):
+			_ = conn.rw.Close()
+			<-res
+			t.Fatal("Exec still blocked a minute after a confirmed cancellation, CancelTimeout 2 s")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrConnBroken) {
+			t.Fatalf("Exec returned %v, want the context's error with ErrConnBroken", err)
+		}
+		if took := time.Since(start); took < 2*time.Second || took > 3*time.Second {
+			t.Errorf("Exec returned %v after it began, want CancelTimeout after the confirmation", took)
+		}
+	})
+}
