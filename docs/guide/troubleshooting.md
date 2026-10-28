@@ -21,8 +21,10 @@ Three habits first:
 > even wrapped inside another error that adds context; comparing the text
 > breaks the day the message changes a word.
 
-To find which stage of a pipeline makes the others wait, rather than which
-one failed, see the `probe` package.
+To see where elements stop in a pipeline — a stage that filters or
+accumulates — or which side of a `parallel.Async` waits for the other, see
+the `probe` package. Which stage costs the time on a single goroutine is a
+question for a CPU profile: no counter can answer it.
 
 ## The core: `sluice`, `parallel`
 

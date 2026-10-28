@@ -144,7 +144,7 @@ group's, which are experimental.
 | `sluice/diagnostics` | errors, warnings and remedies that travel with the data without stopping the stream |
 | `sluice/web` | an HTTP request's path over `net/http`: bounded reading, authentication, authorisation, clean shutdown |
 | `sluice/gateway` | simultaneous calls grouped into one batch |
-| `sluice/probe` | counters to find the stage that makes the others wait |
+| `sluice/probe` | counters between stages: how many elements each let through, and, across a `parallel.Async`, which side is the slower |
 | `sluice/pushdown` | the reader tells the source what it no longer needs; the PostgreSQL connector listens |
 
 #### Talking to PostgreSQL and to HTTP clients
