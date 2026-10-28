@@ -455,6 +455,10 @@ type Conn struct {
 	// was accepted), after which it is never given back.
 	earlyTicket []byte
 	earlyTaken  bool
+	// ticketChainOrigin is when the full handshake a resuming client's
+	// chain of tickets started from (ticketchain.go), zero on a full
+	// handshake. Set on the handshake goroutine, read by issueTicket there.
+	ticketChainOrigin time.Time
 	// On a client: wantsEarly is DialEarly asking for 0-RTT; remembered is
 	// the ticket's parameters it is sent under, adopted as the peer's
 	// (paramsRemembered) once earlySealer, the 0-RTT write keys, is in;
@@ -1544,10 +1548,9 @@ func (c *Conn) endedDuringHandshakeErr() error {
 // Called once the handshake is complete, on a server: before then
 // crypto/tls refuses, and on a client it has no ticket to send.
 func (c *Conn) issueTicket() error {
-	opts := tls.QUICSessionTicketOptions{}
-	if c.early != nil {
-		opts.EarlyData = true
-		opts.Extra = [][]byte{c.early.ticketExtra(time.Now())}
+	opts, ok := c.ticketOptions(time.Now())
+	if !ok {
+		return nil // the chain is over: the client's next connection is a full handshake
 	}
 	if err := c.tls.SendSessionTicket(opts); err != nil {
 		return err
@@ -1762,6 +1765,9 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 		return false, nil
 	case tls.QUICResumeSession:
 		if !c.isClient {
+			// The chain this resumption continues, for the ticket this
+			// connection issues (ticketOptions).
+			c.ticketChainOrigin = ticketChainOrigin(e.SessionState.Extra)
 			// A client resumes. Its 0-RTT stands only if this listener
 			// admits the ticket (ADR 0019); otherwise crypto/tls answers
 			// without early_data, and no 0-RTT packet is read (RFC 9001

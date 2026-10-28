@@ -234,7 +234,11 @@ type ListenerConfig struct {
 	// SessionTicketsDisabled is refused by [NewListener] alongside this
 	// field: crypto/tls would send nothing, silently. One ticket per
 	// connection is all crypto/tls sends, and the client, which presents a
-	// ticket once (see [Dial]), gets the next one on the resumed connection.
+	// ticket once (see [Dial]), gets the next one on the resumed connection
+	// — for seven days from the full handshake the chain started from:
+	// past that, the resumed connection issues no ticket and the client's
+	// next connection checks the certificate again (RFC 9846 §4.7.1
+	// recommends a bound on keying material tickets keep extending).
 	SessionTickets bool
 
 	// EarlyData lets clients send their first requests in 0-RTT packets on
