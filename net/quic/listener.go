@@ -22,13 +22,15 @@ import (
 // listenerCIDLen is the length every connection identifier a [Listener]
 // issues gets — the same 8 bytes [Dial] and standalone accept have always
 // used (randomID(8), every call site), so a short-header packet's DCID can
-// be peeled off with [ParseShortHeader] without first knowing which
+// be peeled off with [parseShortHeader] without first knowing which
 // connection it belongs to.
 // RFC 9000 §8.1 lets an endpoint treat a peer address as validated once
 // the peer uses a connection ID this end chose with 64 bits of entropy, as
 // these are; not done: validation waits for a Handshake packet or a Retry
-// token, one round trip later at most, and the earlier lift would only
-// matter to 0-RTT, which this server does not serve.
+// token, one round trip later at most. The earlier lift would only matter
+// to a 0-RTT response (served on request, ADR 0019): that response stays
+// within three times what the client sent until the round trip that
+// validates it, the cost of one round trip on a large answer.
 const listenerCIDLen = 8
 
 // defaultMaxPendingConns is [ListenerConfig.MaxPendingConns]'s value when

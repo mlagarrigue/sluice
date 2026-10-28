@@ -374,11 +374,11 @@ func (c *Conn) activeLocalCIDsLocked() uint64 {
 // you are using to say so proves the sender confused, and §5.1.2 forbids
 // honouring it).
 // It reports whether it moved anything, which the frame loop turns into
-// rxProgress: that field belongs to the receive goroutine and is written
-// without the lock (conn.go), so a handler that also takes the lock must
-// not touch it — the CONNECTION_CLOSE arm of the loop already sets it at
-// the call site for the same reason. A duplicate retirement moves nothing
-// and is counted non-productive (RFC 9000 §21.9).
+// rxProgress. That field is the receive goroutine's alone (conn.go), and
+// every handler runs on it, so setting it under the lock, as
+// handleNewConnectionID and handlePathResponse do, is as safe as here at
+// the call site. A duplicate retirement moves nothing and is counted
+// non-productive (RFC 9000 §21.9).
 func (c *Conn) handleRetireConnectionID(seq uint64) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

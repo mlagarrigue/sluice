@@ -37,13 +37,13 @@ var initialSalt = []byte{
 	0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
 }
 
-// Secrets are one direction's Initial keys.
+// secrets are one direction's Initial keys.
 type secrets struct {
 	Client []byte
 	Server []byte
 }
 
-// InitialSecrets derives both directions' Initial secrets from the
+// initialSecrets derives both directions' Initial secrets from the
 // destination connection identifier the client chose (RFC 9001 §5.2).
 //
 // They need no handshake, which is what makes an Initial packet readable by

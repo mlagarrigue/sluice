@@ -12,7 +12,7 @@ import (
 // The packet-path harness an allocation inventory of net/quic is taken on:
 // one benchmark per direction, each counting ns and allocations per packet
 // with the socket stubbed out (fuzzSink), so the inventory's candidates —
-// payload copies on send, ParseFrames and Open copies on receive, the lock
+// payload copies on send, parseFrames and Open copies on receive, the lock
 // takes of settleBatchConsumption — can be A/B-measured where they run.
 
 // newBenchConn is a server-role connection with application keys installed
@@ -114,7 +114,7 @@ func benchSealStreamPacket(sealer *packetSealer, dcid []byte, pn uint64, offset 
 }
 
 // BenchmarkConnReceivePacket measures one datagram through the batch-mode
-// receive path: header parse, Open, ParseFrames, delivery to the batch
+// receive path: header parse, Open, parseFrames, delivery to the batch
 // callback and settleBatchConsumption — the receive side of the allocation
 // inventory, and nothing else. The peer's seal is not this connection's
 // work: packets are sealed ahead in blocks with the timer stopped (a packet

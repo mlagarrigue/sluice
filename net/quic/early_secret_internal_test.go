@@ -9,9 +9,9 @@ import (
 // 0-RTT secret at tls.QUICEncryptionLevelEarly, and spaceFor files every
 // level it does not name under the application space: the early secret used
 // to become 1-RTT keys, sealing short-header packets with a key the peer
-// holds only for 0-RTT. A client sends nothing in 0-RTT and keeps no early
-// key at all; a server reads the client's 0-RTT with its own opener, never
-// with the application space's.
+// holds only for 0-RTT. A client that did not offer 0-RTT (Dial, not
+// DialEarly) keeps no early key at all; a server reads the client's 0-RTT
+// with its own opener, never with the application space's.
 func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 	secret := make([]byte, 32)
 	for _, isClient := range []bool{true, false} {

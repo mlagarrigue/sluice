@@ -18,9 +18,9 @@
 // against interop/expected-results.json; the others are reported, not
 // judged, so treat them as untested.
 // The deployments it is written for — a client behind a NAT that rebinds,
-// a server on a host with several addresses (Linux only, through
-// [net/quic/udp]) — are gathered in docs/guide/experimental.md ("Supported
-// deployments"); each row names where the code decides it.
+// a server on a host with several addresses (Linux, macOS and Windows,
+// through [net/quic/udp]) — are gathered in docs/guide/experimental.md
+// ("Supported deployments"); each row names where the code decides it.
 //
 // # Why it exists
 //
@@ -129,11 +129,11 @@
 //     rotates its own keys before the AEAD's confidentiality limit (§6.6)
 //     rather than closing — a long-lived connection does not die of its
 //     packet count. [Stats.KeyUpdates] counts the rotations.
-//   - ECN (§13.4), on Linux: the field is read off every datagram and
-//     reported in ACK frames, this end marks its own packets ECT(0) once
-//     the path validates, and a rise in the CE count a peer reports is a
-//     congestion event for the controller. Elsewhere the field is neither
-//     read nor set, and [Stats] shows zero.
+//   - ECN (§13.4), on Linux, macOS and Windows: the field is read off
+//     every datagram and reported in ACK frames, this end marks its own
+//     packets ECT(0) once the path validates, and a rise in the CE count a
+//     peer reports is a congestion event for the controller. Elsewhere the
+//     field is neither read nor set, and [Stats] shows zero.
 //   - Session resumption and 0-RTT (RFC 9001 §4.5, §4.6; ADR 0019), on
 //     request. A [Listener] issues tickets ([ListenerConfig.SessionTickets])
 //     and accepts 0-RTT ([ListenerConfig.EarlyData]) once per ticket and
@@ -155,6 +155,11 @@
 //     (RFC 9000 §7.4.2). Version 2 differs from 1 in constants only and
 //     exists against middlebox ossification, which no peer of this
 //     package has shown; it is to be added the day one does.
+//   - **The latency spin bit** (RFC 9000 §17.4), an optional signal that
+//     lets an observer on the path measure the round trip. The bit is
+//     drawn at random per connection and per connection identifier, as
+//     the section asks of an endpoint that does not spin, and the peer's
+//     bit is ignored.
 //
 // # The socket is the caller's
 //

@@ -657,10 +657,6 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 	}
 }
 
-// handlePeerParameters validates and adopts what the peer announced. The
-// checks are RFC 9000 §7.3's authentication of the handshake against the
-// packets that carried it: the identifiers each side saw on the wire must be
-// the ones the handshake names, or someone spliced two conversations.
 // idleDuration converts an announced max_idle_timeout (max_ack_delay uses
 // it too) to a Duration, saturating. The field is a varint of up to 2^62-1
 // milliseconds, far past what a Duration holds, and a wrapped product turns
@@ -720,6 +716,10 @@ func (c *Conn) sendLimitsLocked() TransportParameters {
 	return c.peerParams
 }
 
+// handlePeerParameters validates and adopts what the peer announced. The
+// checks are RFC 9000 §7.3's authentication of the handshake against the
+// packets that carried it: the identifiers each side saw on the wire must be
+// the ones the handshake names, or someone spliced two conversations.
 func (c *Conn) handlePeerParameters(raw []byte) error {
 	p, err := parseParameters(raw)
 	if err != nil {

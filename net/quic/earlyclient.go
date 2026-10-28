@@ -103,6 +103,13 @@ func rememberedParams(extra [][]byte) (TransportParameters, bool) {
 // only what a duplicate does not hurt — RFC 9846 §8 leaves that judgement
 // to the client.
 //
+// Early data has no forward secrecy either: it is sealed under keys derived
+// from the ticket's secret alone, and whether the server can still decrypt
+// it after a leak of that secret depends on how the server keeps tickets,
+// which the protocol does not tell the client. Absent such knowledge, RFC
+// 9846 §2.3 has the client assume 0-RTT data is not forward secret: send
+// nothing in it that must stay confidential should the ticket keys leak.
+//
 // The server may refuse 0-RTT. Every stream opened before the refusal then
 // fails with [ErrEarlyDataRejected] — on Read, on Write, and on the next
 // call after either — and the connection continues in 1-RTT, where new

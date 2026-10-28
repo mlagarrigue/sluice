@@ -782,9 +782,11 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		// the front of the retransmission queue, and retransmitLocked
 		// sends it once the peer's next datagram raises amplRecv. An ACK
 		// was settled when it was encoded, so its debt is owed again
-		// (rearm) for the flush that follows that datagram; probes
-		// regenerate from current state and are simply skipped. No packet
-		// number was consumed.
+		// (rearm) for the flush that follows that datagram. A packet sent
+		// without retransmission — a PMTU probe, a PATH_CHALLENGE, a
+		// PATH_RESPONSE — is skipped: what sends it again is its own
+		// timer, or the peer's next challenge. No packet number was
+		// consumed.
 		if opts.ackOnly || opts.carriesAck {
 			sp.ack.rearm()
 		}
@@ -807,9 +809,10 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	}
 	if oldBudgeted && c.pathProbe.oldSent+int64(size) > 3*c.pathProbe.oldRecv {
 		// Same for the unproven path left behind: the challenge is given
-		// up rather than sent past the budget. A legitimate peer still
+		// up rather than sent past the budget, which nothing raises again:
+		// oldRecv was counted up to the migration. A legitimate peer still
 		// there answers the one that did go, or sends from that address
-		// again, which raises the budget.
+		// again, which makes it the path in use, with its own books.
 		return nil
 	}
 
@@ -927,10 +930,12 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 // packets are sealed long before their datagram leaves, and a write that
 // fails is a packet the network lost — recovery declares it so and resends
 // its payload, releasing the window it held, exactly as for a loss on the
-// wire. Nothing here is sized past maxDatagram (sendPacketLocked cuts the
-// queues to it, under the packet's real header, and sends a waiting writer
-// back to cut its frame again when the size fell meanwhile), but maxDatagram is what the path search believes, not what
-// the outgoing interface will carry: a probe above the interface MTU comes
+// wire. No queued frame is sized past maxDatagram (sendPacketLocked cuts
+// the queues to it, under the packet's real header, and sends a waiting
+// writer back to cut its frame again when the size fell meanwhile); a
+// DPLPMTUD probe is, on purpose, padded to the size it tries. And
+// maxDatagram is what the path search believes, not what the outgoing
+// interface will carry: a probe above the interface MTU comes
 // back EMSGSIZE, since the socket forbids fragmenting (udp.Configure), and
 // that needs no special case either — the probe is never acknowledged, and
 // the search reads its loss and caps the path where the interface does

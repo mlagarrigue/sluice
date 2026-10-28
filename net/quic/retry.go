@@ -118,12 +118,12 @@ func (s *spentTokens) forget(id []byte) {
 	}
 }
 
-// AppendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
+// appendRetryPacket writes a Retry packet (RFC 9000 §17.2.5): dcid is the
 // identifier to address it to (the client's own SCID from the Initial it
 // answers), newSCID is the identifier the client should use as its DCID
 // from here on, odcid is that Initial's destination identifier (needed only
 // for the integrity tag, RFC 9001 §5.8 — it does not appear in the packet
-// itself), and token is what AppendRetryToken produced.
+// itself), and token is what appendRetryToken produced.
 func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	start := len(dst)
 	// Long header, fixed bit set, type 11 (Retry). The four low bits are
@@ -133,7 +133,7 @@ func appendRetryPacket(dst, dcid, newSCID, odcid, token []byte) []byte {
 	// to depend on one value.
 	var unused [1]byte
 	_, _ = rand.Read(unused[:])                                         // never fails since Go 1.24
-	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; Version1
+	dst = append(dst, 0xf0|unused[0]&0x0f, 0, 0, 0, 1, byte(len(dcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes; version1
 	dst = append(dst, dcid...)
 	dst = append(dst, byte(len(newSCID))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, newSCID...)
@@ -150,7 +150,7 @@ func newRetryTokenKey() ([32]byte, error) {
 	return k, err
 }
 
-// AppendRetryToken writes a token binding this Retry to the peer address and
+// appendRetryToken writes a token binding this Retry to the peer address and
 // original destination identifier a later Initial must match, and to the
 // server-chosen identifier (newSCID) that Initial's DCID must equal — the
 // whole point being that verifying the token alone, with no connection
@@ -160,7 +160,7 @@ func appendRetryToken(dst []byte, key [32]byte, peer net.Addr, odcid, newSCID []
 	return appendRetryTokenAt(dst, key, time.Now(), peer, odcid, newSCID)
 }
 
-// appendRetryTokenAt is AppendRetryToken with the issue time explicit, so a
+// appendRetryTokenAt is appendRetryToken with the issue time explicit, so a
 // test can produce a genuinely encoded token that has already expired.
 func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Addr, odcid, newSCID []byte) []byte {
 	start := len(dst)
@@ -169,7 +169,7 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	// to a second at birth.
 	dst = varint.Append(dst, uint64(issued.UnixMilli())) //nolint:gosec // G115: milliseconds since epoch, nowhere near overflowing a varint
 	addr := []byte(peer.String())
-	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port, at most 18 bytes
+	dst = append(dst, byte(len(addr))) //nolint:gosec // G115: an IP address and port in text, 47 bytes for IPv6 and a zone name past that, far under 256
 	dst = append(dst, addr...)
 	dst = append(dst, byte(len(odcid))) //nolint:gosec // G115: a connection ID is at most 20 bytes
 	dst = append(dst, odcid...)
@@ -180,8 +180,8 @@ func appendRetryTokenAt(dst []byte, key [32]byte, issued time.Time, peer net.Add
 	return mac.Sum(dst)
 }
 
-// retryToken is what AppendRetryToken encoded, recovered by
-// VerifyRetryToken.
+// retryToken is what appendRetryToken encoded, recovered by
+// verifyRetryToken.
 type retryToken struct {
 	odcid, newSCID []byte
 }
@@ -195,7 +195,7 @@ type retryToken struct {
 // this listener provably issued and cannot accept.
 var errForeignToken = fmt.Errorf("%w: a token this listener did not issue", ErrQUIC)
 
-// VerifyRetryToken checks a token a client echoed on its post-Retry Initial:
+// verifyRetryToken checks a token a client echoed on its post-Retry Initial:
 // the HMAC must verify, the token must not have expired, and it must name
 // the peer address it is arriving from. ttl is [ListenerConfig.RetryTokenTTL]. On success it returns the original
 // destination identifier and server-chosen identifier the token bound,

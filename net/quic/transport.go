@@ -294,7 +294,7 @@ func (a CongestionAlgorithm) String() string {
 	return "CongestionAlgorithm(" + strconv.Itoa(int(a)) + ")"
 }
 
-// PreferredAddress is RFC 9000 §18.2's preferred_address: up to one
+// preferredAddress is RFC 9000 §18.2's preferred_address: up to one
 // address per family a server would rather be reached at, the connection
 // identifier (sequence 1) a client must use there, and that identifier's
 // stateless reset token. A family not offered is nil here and all-zero on
@@ -460,7 +460,7 @@ func DefaultParameters() TransportParameters {
 	}
 }
 
-// AppendParameters encodes the parameters as the TLS extension carries them:
+// appendParameters encodes the parameters as the TLS extension carries them:
 // a sequence of identifier, length and value, all variable-length integers
 // except the value.
 func appendParameters(dst []byte, p TransportParameters) []byte {

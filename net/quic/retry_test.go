@@ -21,7 +21,7 @@ func TestRetryTokenRoundTrips(t *testing.T) {
 	token := appendRetryToken(nil, key, peer, odcid, newSCID)
 	got, err := verifyRetryToken(token, key, defaultRetryTokenTTL, peer)
 	if err != nil {
-		t.Fatalf("VerifyRetryToken: %v", err)
+		t.Fatalf("verifyRetryToken: %v", err)
 	}
 	if string(got.odcid) != string(odcid) {
 		t.Errorf("odcid = %q, want %q", got.odcid, odcid)
@@ -150,7 +150,7 @@ func TestRetryPacketIntegrityTagVerifies(t *testing.T) {
 	pkt := appendRetryPacket(nil, dcid, newSCID, odcid, []byte("a-token"))
 	h, rest, err := parseLongHeader(pkt)
 	if err != nil {
-		t.Fatalf("ParseLongHeader: %v", err)
+		t.Fatalf("parseLongHeader: %v", err)
 	}
 	if len(rest) != 0 {
 		t.Errorf("%d bytes left over, want none — a Retry cannot be coalesced", len(rest))

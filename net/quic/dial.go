@@ -40,6 +40,13 @@ import (
 // connection refills it. A cache that ignores Put(key, nil) reuses its
 // tickets anyway; that is the caller's choice to make, not the default.
 //
+// crypto/tls files tickets under cfg.ServerName alone — the empty string
+// when it is unset, since a QUIC handshake has no net.Conn whose address
+// could stand in — so every Dial with one cache and one ServerName draws
+// from the same tickets, whatever addr is. Whatever must not be linked to
+// whatever else — two users, two tenants, one origin reached through two
+// proxies — gets a cache of its own.
+//
 // crypto/tls refuses RSA keys under 1024 bits and no more. RFC 9846
 // Appendix C.2 asks applications to hold certification paths to at least
 // 2048-bit RSA or 224-bit ECDSA: a cfg that wants that enforces it in
@@ -128,7 +135,7 @@ func (c *Conn) installEarlySealer(suiteID uint16, secret []byte) error {
 // when no context deadline says otherwise.
 const DefaultHandshakeTimeout = 10 * time.Second
 
-// Accept completes a server handshake for a connection whose first
+// accept completes a server handshake for a connection whose first
 // datagram, first, has already been read.
 //
 // It serves exactly one connection per [net.PacketConn] — for a shared

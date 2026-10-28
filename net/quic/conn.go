@@ -711,7 +711,7 @@ func spaceFor(l tls.QUICEncryptionLevel) int {
 	}
 }
 
-// Datagram is one UDP datagram as read from a socket: who sent it, its
+// datagram is one UDP datagram as read from a socket: who sent it, its
 // bytes, and the ECN field of the IP header it arrived in — 0b00 Not-ECT,
 // 0b01 ECT(1), 0b10 ECT(0), 0b11 CE, the codepoints [udp.PacketECN]
 // reports (RFC 3168 §5). Zero is Not-ECT, the value to leave where the

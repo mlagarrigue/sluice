@@ -86,7 +86,7 @@ func TestOneDatagramCarriesSeveralStreams(t *testing.T) {
 
 	frames, err := parseFrames(nil, payload)
 	if err != nil {
-		t.Fatalf("ParseFrames returned %v", err)
+		t.Fatalf("parseFrames returned %v", err)
 	}
 
 	streams := map[uint64]string{}
@@ -122,7 +122,7 @@ func TestParseFramesRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := parseFrames(nil, tt.payload); !errors.Is(err, ErrQUIC) {
-				t.Fatalf("ParseFrames returned %v, want ErrQUIC", err)
+				t.Fatalf("parseFrames returned %v, want ErrQUIC", err)
 			}
 		})
 	}
@@ -173,7 +173,7 @@ func TestParseLongHeader(t *testing.T) {
 
 	h, rest, err := parseLongHeader(pkt)
 	if err != nil {
-		t.Fatalf("ParseLongHeader returned %v", err)
+		t.Fatalf("parseLongHeader returned %v", err)
 	}
 	if h.Type != packetInitial {
 		t.Errorf("type = %d, want Initial", h.Type)
@@ -207,7 +207,7 @@ func TestParseLongHeaderRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, _, err := parseLongHeader(tt.pkt); !errors.Is(err, ErrQUIC) {
-				t.Fatalf("ParseLongHeader returned %v, want ErrQUIC", err)
+				t.Fatalf("parseLongHeader returned %v, want ErrQUIC", err)
 			}
 		})
 	}
@@ -383,7 +383,7 @@ func TestFramesCarryTheirVarintFields(t *testing.T) {
 
 	frames, err := parseFrames(nil, concat(reset, stop, maxStream, maxData))
 	if err != nil {
-		t.Fatalf("ParseFrames: %v", err)
+		t.Fatalf("parseFrames: %v", err)
 	}
 	if len(frames) != 4 {
 		t.Fatalf("%d frames, want 4", len(frames))

@@ -162,7 +162,9 @@ func EnablePacketInfo(c *net.UDPConn) error {
 // from a socket [EnablePacketInfo] was applied to, the local address the
 // datagram reached and the index of the interface it arrived on. An
 // AF_INET socket reports an IPv4 address; an AF_INET6 one reports IPv4
-// traffic as IPv4-mapped. ok is false when oob carries no such message.
+// traffic as IPv4-mapped on Linux and macOS, and as plain IPv4 on Windows,
+// whose dual-stack socket hands it over under IP_PKTINFO: compare through
+// [netip.Addr.Unmap]. ok is false when oob carries no such message.
 // It does not allocate.
 func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 	return packetDestination(oob)

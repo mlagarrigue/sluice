@@ -98,7 +98,7 @@ func (f Frame) Code() uint64 {
 	return 0
 }
 
-// ParseFrames decodes every frame in a packet payload, appending to dst.
+// parseFrames decodes every frame in a packet payload, appending to dst.
 //
 // This is where the batch comes from. A QUIC datagram carries whatever frames
 // the sender had ready, which for a multiplexing peer means frames for

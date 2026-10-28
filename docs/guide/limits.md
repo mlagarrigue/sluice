@@ -367,6 +367,13 @@ whichever way the conditions go:
   middleboxes that ossify on version 1; none of this package's peers has
   shown one, and when one does, that is when to add it. In plain words:
   there is one dialect, and it is the one everybody speaks today.
+- **`net/quic` spin bit**: the latency spin bit (RFC 9000 §17.4), an
+  optional signal from which an observer on the path reads the round
+  trip, is not implemented: the bit is random per connection and per
+  connection identifier, as the section asks of an endpoint that does not
+  spin, and the peer's is ignored. An operator who asks to measure paths
+  this way is the signal to add it. In plain words: the packets carry no
+  signal put there for a watcher to time the round trip.
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
   `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Three of its

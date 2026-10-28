@@ -34,8 +34,6 @@ func (c *Conn) timerLoop() {
 	}
 }
 
-// actOnDeadlines fires whatever matured and returns the earliest deadline
-// still pending.
 // maxIdleFloor caps §10.1's floor on the idle timeout, which the section
 // states as a MUST — "endpoints MUST increase the idle timeout period to be
 // at least three times the current Probe Timeout (PTO)" — with no bound on
@@ -85,7 +83,7 @@ func (c *Conn) idleDeadlineLocked() time.Time {
 	return deadline
 }
 
-// actOnDeadlines runs in this order: close a connection whose idle timeout
+// actOnDeadlines fires whatever matured, in this order: close a connection whose idle timeout
 // passed; send the keepalive PING that is due; retransmit an unanswered
 // PATH_CHALLENGE; wake a writer parked on the pacer; fire the streams' read
 // and write deadlines; re-announce a *_BLOCKED; then, per packet number space,

@@ -769,12 +769,6 @@ func (c *Conn) expectedDCID(dcid []byte, space int) bool {
 	return ok
 }
 
-// isStatelessReset reports whether a datagram that failed to route or to
-// authenticate ends in a stateless reset token the peer announced for one
-// of its identifiers (RFC 9000 §10.3.1) — via the handshake's
-// stateless_reset_token parameter or a NEW_CONNECTION_ID frame. Token
-// comparison is constant-time; an unannounced (all-zero) slot never
-// matches, so noise cannot probe for it.
 // isStatelessResetFrom is isStatelessReset for a datagram that reached the
 // listener rather than this connection: §10.3.1 compares the tail against
 // "all stateless reset tokens associated with the remote address on which
@@ -791,6 +785,12 @@ func (c *Conn) isStatelessResetFrom(datagram []byte, from net.Addr) bool {
 	return c.isStatelessReset(datagram)
 }
 
+// isStatelessReset reports whether a datagram that failed to route or to
+// authenticate ends in a stateless reset token the peer announced for one
+// of its identifiers (RFC 9000 §10.3.1) — via the handshake's
+// stateless_reset_token parameter or a NEW_CONNECTION_ID frame. Token
+// comparison is constant-time; an unannounced (all-zero) slot never
+// matches, so noise cannot probe for it.
 func (c *Conn) isStatelessReset(datagram []byte) bool {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return false
