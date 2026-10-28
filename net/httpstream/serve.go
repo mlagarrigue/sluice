@@ -1047,7 +1047,10 @@ func (k *streamCalls[K]) release(x *batchCtx, ids []K) {
 // the wake-up of an idle thread the watch's goroutine needs, 24 µs on a
 // GitHub Linux runner (serial: 46 µs watched, 23 plain). Starting it later
 // — a timer, so that only slow handlers pay — was measured and costs more:
-// arming a timer wakes the network poller. The read is [watchPeer]'s, whose
+// arming a timer wakes the network poller. Keeping one reader for the
+// connection's life was measured too, and costs more again: every request,
+// watched or not, then pays the wake-up one at a time (15.5 to 98.4 µs
+// serial, ADR 0008). The read is [watchPeer]'s, whose
 // bytes are put back for the request reader, and it ends when the handler
 // returns: a streamed response has its own watch.
 //

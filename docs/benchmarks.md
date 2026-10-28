@@ -26,6 +26,7 @@ its row.
   - [Authentication, in a request](#authentication-in-a-request)
   - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
   - [HTTP/3 without a socket](#http3-without-a-socket)
+  - [HTTP/1.1, watching for a client that leaves](#http11-watching-for-a-client-that-leaves)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -612,6 +613,29 @@ it carries — starting the batch's goroutine, registering it for
 cancellation, copying its slices — about 4.5%. That is the most that
 grouping several datagrams into one delivery could save at eight requests
 in flight.
+
+## HTTP/1.1, watching for a client that leaves
+
+A handler that asks `ctx.Done` on HTTP/1.1 starts a read of the connection
+that watches for the client leaving, for the batch's duration
+([ADR 0008](design/adr/0008-multiplexed-connection.md#rationale)).
+`BenchmarkServeH1RoundTrip` sends one request at a time on one connection
+(`serial`) or on four per core (`parallel`), over loopback, to a handler
+that does not ask (`plain`) or does (`watched`). The rejected alternative
+is a reader kept for the connection's life, the serving goroutine taking
+its bytes through a channel; it was built for this A/B only. Paired by
+`internal/bench/scripts/ab.sh`, sixteen rounds of `-benchtime 300ms`,
+unpinned, the first dropped, 2026-10-28, go1.26.9, under WSL2.
+
+| benchmark | per-batch watch, ns per op | kept reader, ns per op | rounds won by the kept reader | verdict |
+|---|---|---|---|---|
+| `BenchmarkServeH1RoundTrip/serial/plain` | 15,486 | 98,410 | 0 of 15 | slower, +542% |
+| `BenchmarkServeH1RoundTrip/parallel/plain` | 2,822 | 2,985 | 4 of 15 | noise |
+
+One unpaired run of the per-batch watch beside it: `serial/watched`
+100,501 ns per op and `parallel/watched` 4,059. A kept reader makes every
+request pay, one at a time, what the watch costs only the handlers that
+ask.
 
 ## QUIC, on an emulated path
 

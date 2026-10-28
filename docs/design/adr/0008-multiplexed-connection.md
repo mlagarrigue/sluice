@@ -1,7 +1,7 @@
 # ADR 0008 — A multiplexed connection is a reader, a responder and a writer
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol; grouping a burst's datagrams leaves the HTTP/3 p50 where it was), 2026-10-24 (the connection receive window is the sum of the stream windows; RFC 9218 priorities are not read), 2026-10-28 (the assembler's lock and grouped reception measured without a socket)
+- **Revised:** 2026-10-05 (streamed bodies hold the responder; HTTP/3 per-stream writers), 2026-10-07 (renumbered), 2026-10-16 (the HTTP/2 responder no longer waits for the wire), 2026-10-19 (each HTTP/2, then HTTP/3, handler call on a goroutine of its own), 2026-10-20 (a header block on a closed stream the ring has forgotten is decoded and dropped; the HTTP/3 limit counts the requests in flight, not the transport's streams, and a connection that only cancels is closed), 2026-10-21 (three framing refusals keep the generic error code; a response stays valid until it is written), 2026-10-22 (the HTTP/3 p99 gap measured against the apparatus' floor), 2026-10-23 (what cancellation reaches the handler, per protocol; grouping a burst's datagrams leaves the HTTP/3 p50 where it was), 2026-10-24 (the connection receive window is the sum of the stream windows; RFC 9218 priorities are not read), 2026-10-28 (the assembler's lock and grouped reception measured without a socket; the per-batch watch kept against a reader kept for the connection)
 - **Theme:** httpstream
 
 ## Problem
@@ -120,7 +120,19 @@ protocols; the client's departure on HTTP/1.1, from the handler's first
 call to `ctx.Done` (a watching read of the connection, measured at 1.2 µs
 a batch under load and 24 µs one request at a time on an idle Linux
 runner, where it wakes a sleeping thread; paid only by a handler that
-asks). On HTTP/2 and
+asks).
+
+The criterion is that a request whose handler does not ask pays
+nothing, and it is what keeps the watch per batch. A reader kept for the
+connection's whole life, the serving goroutine taking its bytes through a
+channel, removes the watch's cost under load but hands every request the
+wake-up the watch costs a watched one: in a paired A/B
+([measured](../../benchmarks.md#http11-watching-for-a-client-that-leaves)),
+one request at a time went from 15.5 to 98.4 µs, slower in all fifteen
+rounds, and under load stayed within noise. It would also take the read
+deadlines off the connection, where `ReadTimeout` bounds a slow client.
+
+On HTTP/2 and
 HTTP/3 a batch's context is cancelled once no request of the batch has a
 client left — each `RST_STREAM`, `RESET_STREAM` or `STOP_SENDING` takes
 one away, the connection's close takes them all — and not before: the
