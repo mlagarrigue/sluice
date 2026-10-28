@@ -388,33 +388,51 @@ func TestH3ControlIdentifiersAreChecked(t *testing.T) {
 // identifier an answer, and ServeH3Conn finishes a draining connection the
 // moment nothing is in flight. The two agree only if admitting a stream and
 // counting it in flight cannot interleave with the drain's reading of the
-// count: a stream admitted but not yet counted when the drain looked was
-// served into a connection already finishing. Here streams are admitted on
-// one goroutine while the drain is decided on another, many times over; if
-// the drain ever finds nothing in flight, nothing may be in flight after it.
-func TestH3DrainNeverFinishesOverAnAdmittedStream(t *testing.T) {
-	head := h3Request("GET", "/x") // no FIN: the stream stays in flight
-	for round := range 2000 {
-		a := testAssembler(Config{MaxConcurrentStreams: 1 << 16})
-		a.Finish = func() {}
-		start := make(chan struct{})
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			<-start
-			for id := uint64(0); id < 16*4; id += 4 {
-				if _, _, _, err := a.Frames([]quic.Frame{streamFrame(id, head, false)}); err != nil {
-					t.Error(err)
-					return
-				}
-			}
-		}()
-		close(start)
-		_, idle := a.beginDrain()
-		<-done
-		if n := a.inFlight.Load(); idle && n != 0 {
-			t.Fatalf("round %d: the drain found nothing in flight, yet %d request streams are in flight after it", round, n)
-		}
+// count. They cannot when admit counts the stream before it lets go of the
+// lock beginDrain reads the count under; a stream admitted but counted after
+// admit returned left a window, too narrow for goroutines racing two
+// thousand times to hit, where the drain saw nothing in flight and finished
+// the connection over it.
+func TestH3AStreamIsCountedWhenItIsAdmitted(t *testing.T) {
+	a := testAssembler(Config{})
+	a.Finish = func() {}
+	if got := a.admit(8); got != admitted {
+		t.Fatalf("a first request stream was not admitted: %v", got)
+	}
+	if n := a.inFlight.Load(); n != 1 {
+		t.Fatalf("admit let go of its lock with %d streams in flight, want 1: a drain deciding then finds nothing and finishes over the stream", n)
+	}
+	if _, idle := a.beginDrain(); idle {
+		t.Error("the drain finished the connection over an admitted stream")
+	}
+}
+
+// Once a drain has found nothing in flight and finished the connection, a
+// request stream below the GOAWAY's identifier that arrives late — streams
+// arrive in any order, 8 before 4 here — is rejected REQUEST_REJECTED, as
+// §5.2 lets a server reject requests below the identifier it announced. It
+// was admitted, being below the identifier, into a connection already
+// closing: served, then cut.
+func TestH3AStreamArrivingAfterTheDrainFinishedIsRejected(t *testing.T) {
+	a := testAssembler(Config{})
+	a.Finish = func() {}
+	head := h3Request("GET", "/x")
+	if _, _, _, err := a.Frames([]quic.Frame{streamFrame(8, head, false)}); err != nil {
+		t.Fatal(err)
+	}
+	a.retire() // stream 8 leaves: nothing is in flight
+	if from, idle := a.beginDrain(); from != 12 || !idle {
+		t.Fatalf("the drain decided GOAWAY(%d), idle %v; want GOAWAY(12) with nothing in flight", from, idle)
+	}
+	batch, _, failed, err := a.Frames([]quic.Frame{streamFrame(4, head, true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Len() != 0 || len(failed) != 1 || failed[0].StreamID != 4 || failed[0].Code != h3RequestRejected {
+		t.Errorf("stream 4 after the drain finished: %d requests delivered, refusals %+v; want it rejected REQUEST_REJECTED", batch.Len(), failed)
+	}
+	if n := a.inFlight.Load(); n != 0 {
+		t.Errorf("%d request streams in flight in a finished connection", n)
 	}
 }
 

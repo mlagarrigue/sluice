@@ -56,7 +56,12 @@ type h2client struct {
 
 func dialH2(t *testing.T, addr string) *h2client {
 	t.Helper()
-	c := dial(t, addr)
+	return h2clientOn(t, dial(t, addr))
+}
+
+// h2clientOn is dialH2 on a connection the test dialled itself.
+func h2clientOn(t *testing.T, c net.Conn) *h2client {
+	t.Helper()
 	if _, err := c.Write([]byte(Preface)); err != nil {
 		t.Fatal(err)
 	}
