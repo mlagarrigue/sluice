@@ -839,9 +839,9 @@ type QueryConfig struct {
 //	if err := src.Err(); err != nil { ... }
 //
 // That shape is the point of this package: a thousand keys leave as one
-// parameter in one round trip, no value ever touches SQL text (§8.8), and the
-// rows come back as batches the rest of the library already knows how to
-// operate on.
+// parameter in one round trip, no value ever touches SQL text (architecture,
+// "Security by construction"), and the rows come back as batches the rest of
+// the library already knows how to operate on.
 //
 // # What ctx stops, and what it does not
 //
@@ -886,10 +886,11 @@ type QueryConfig struct {
 //
 // # Errors
 //
-// A [github.com/mlagarrigue/sluice.Source] carries them, which is what it exists for (§4.7): a query that
-// fails to start produced no row to attach an error to, and one that fails at
-// the end has already produced all of them. Consume, then check
-// [sluice.Source.Err]. A server error arrives as [*Error] with its SQLSTATE.
+// A [github.com/mlagarrigue/sluice.Source] carries them, which is what it
+// exists for (architecture, "Errors outside the stream"): a query that fails to
+// start produced no row to attach an error to, and one that fails at the end
+// has already produced all of them. Consume, then check [sluice.Source.Err]. A
+// server error arrives as [*Error] with its SQLSTATE.
 //
 // An early stop is safe: the connection is resynchronised to the next
 // ReadyForQuery before Query's stream returns, so the connection stays usable.
@@ -1121,10 +1122,10 @@ func (q *query) run(sql string, params []Param, yield func(sluice.Batch[Row]) bo
 		}
 	}
 
-	// Parse, Bind, Describe and the first Execute leave together: §8.5's
-	// pipelining, and the reason a query costs two round trips rather than
-	// eleven. No Sync yet — Sync ends the sequence, and the portal must stay
-	// open for the Executes that follow.
+	// Parse, Bind, Describe and the first Execute leave together: the
+	// pipelining of the architecture's "Pipelining and COPY", and the reason a
+	// query costs two round trips rather than eleven. No Sync yet — Sync ends
+	// the sequence, and the portal must stay open for the Executes that follow.
 	if needsParse {
 		c.w.Parse(stmt, sql, q.oids)
 	}

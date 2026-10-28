@@ -380,7 +380,7 @@ func DecodeUUID(b []byte) ([16]byte, error) {
 // The array encoding is what makes `= ANY($1)` possible, and `= ANY($1)` is
 // what makes a batch worth assembling: a thousand keys travel as one parameter
 // in one round trip, with zero injection surface because no value ever touches
-// SQL text (§8.8).
+// SQL text (architecture, "Security by construction").
 
 // arrayHeaderSize is ndim + flags + element OID, then one dimension's length
 // and lower bound. This package writes one-dimensional arrays only, which is

@@ -11,11 +11,12 @@ import (
 	"github.com/mlagarrigue/sluice/database/postgres/pgtype"
 )
 
-// §8.6 asserts that reflection "works row by row and field by field, which
-// breaks vectorization", and concludes that hydration must be generated. That
-// is a performance claim, and this file measures it before anything is
-// generated on the strength of it — if the gap turns out to be small, the
-// spec is what needs correcting, not the code that needs writing.
+// The architecture's "Hydration" asserts that reflection "works row by row and
+// field by field, which breaks vectorization", and concludes that hydration
+// must be generated. That is a performance claim, and this file measures it
+// before anything is generated on the strength of it — if the gap turns out to
+// be small, the architecture is what needs correcting, not the code that needs
+// writing.
 //
 // Three hydrations of the same entity from the same batch:
 //
@@ -25,8 +26,8 @@ import (
 //   - row-major, a hand-written loop calling Value and a decoder per field —
 //     what a person writes without a generator;
 //   - columnar, one pass per column with [ScanInt8] and friends, then one
-//     pass to assemble — the shape §8.6 argues for and the one a generator
-//     would emit.
+//     pass to assemble — the shape a vectorized engine takes, which the
+//     architecture's "Hydration" measured and set aside for row-major.
 
 type order struct {
 	ID      int64

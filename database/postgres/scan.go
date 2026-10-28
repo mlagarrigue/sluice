@@ -14,20 +14,18 @@ import (
 // often — the keys of one result becoming the `= ANY($1)` parameter of the
 // next is the shape this whole package is built around.
 //
-// **They are not the fast way to hydrate structs, and §8.6's claim that they
-// would be is measured false.** That section argues that a monomorphic loop
-// over a thousand values of one type beats a row-major loop alternating
-// decoders per field. On this workload it does not: assembling five-column
-// rows costs 34.7 ns/row through scanners against 31.2 ns/row row-major, and
-// 37.6 against 26.3 on a batch of one. The likely reason is that the scanners
-// make two passes — into scratch arrays, then out again to build the structs —
-// and the extra memory traffic costs more than the branch predictability
-// buys, since a row-major loop over five repeating fields is a pattern the
-// processor predicts perfectly well.
+// **They are not the fast way to hydrate structs**, as the architecture's
+// "Hydration" measures: a monomorphic loop over a thousand values of one type
+// might be expected to beat a row-major loop alternating decoders per field,
+// and on this workload it does not: assembling five-column rows through
+// scanners costs more than row-major, on a full batch and on a batch of one.
+// The likely reason is that the scanners make two passes — into scratch
+// arrays, then out again to build the structs — and the extra memory traffic
+// costs more than the branch predictability buys, since a row-major loop over
+// five repeating fields is a pattern the processor predicts perfectly well.
 //
-// What the architecture's "Hydration" section is right about is the other half: reflection costs measurably
-// more than generated code, which should simply emit row-major code. The
-// figure lives in docs/benchmarks.md, measured by
+// The same section measures the other half: reflection costs more than
+// generated code, which therefore emits row-major code. The figure lives in docs/benchmarks.md, measured by
 // BenchmarkHydrateReflect against BenchmarkHydrateRowMajor (hydrate_test.go).
 //
 // Each scanner appends to dst so a caller reuses one slice per column across

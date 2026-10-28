@@ -179,9 +179,10 @@ type Copier struct {
 //	    CopyConfig{RowsPerTx: 100_000})
 //
 // The statement is the caller's rather than assembled from a table name and
-// columns, because assembling it would mean quoting identifiers — and §8.8
-// says identifiers come from a generated catalog, not from strings this
-// package escapes hopefully.
+// columns, because assembling it would mean quoting identifiers, which this
+// package does not do: the architecture's "Security by construction" keeps
+// SQL text the caller's, and names a generated catalog of identifiers as the
+// way to build it, not built yet.
 //
 // # What ctx stops
 //

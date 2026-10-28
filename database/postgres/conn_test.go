@@ -251,8 +251,9 @@ func TestConnQuery(t *testing.T) {
 		t.Errorf("rows = %v, want %v", rows, want)
 	}
 
-	// The client must have pipelined the sequence §8.5 describes, asked the
-	// backend to deliver, then synced.
+	// The client must have pipelined the sequence the architecture's
+	// "Pipelining and COPY" describes, asked the backend to deliver, then
+	// synced.
 	//
 	// The Flush is not decoration and removing it must fail here. The backend
 	// holds everything an extended-query sequence produces until a Sync or a

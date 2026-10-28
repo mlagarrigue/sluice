@@ -803,8 +803,9 @@ func TestIntegrationExecutesAheadReachAFinishedPortalHarmlessly(t *testing.T) {
 // different path from one that fails before the first row: the consumer has
 // seen data, and the error has to reach it anyway.
 //
-// It is what [sluice.Source] exists for (§4.7) — consume, then check — and the
-// case that makes the "then check" half load-bearing rather than a formality.
+// It is what [sluice.Source] exists for (architecture, "Errors outside the
+// stream") — consume, then check — and the case that makes the "then check"
+// half load-bearing rather than a formality.
 func TestIntegrationErrorAfterRowsHaveBeenDelivered(t *testing.T) {
 	conn := dial(t)
 

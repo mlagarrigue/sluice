@@ -587,10 +587,11 @@ func (tx *Tx) Query(ctx context.Context, sql string, params []Param, cfg QueryCo
 //
 // So this uses `set_config($1, $2, true)`, which is the same setting through a
 // function call, where both arguments are ordinary bound parameters travelling
-// in binary. No value reaches the wire as SQL text (§8.8). The *name* is still
-// a value here rather than an identifier, which is why it can be a parameter
-// at all — and it is validated anyway, because a name assembled from user
-// input is a caller reaching a setting they were not meant to reach.
+// in binary. No value reaches the wire as SQL text (architecture, "Security by
+// construction"). The *name* is still a value here rather than an identifier,
+// which is why it can be a parameter at all — and it is validated anyway,
+// because a name assembled from user input is a caller reaching a setting they
+// were not meant to reach.
 func (tx *Tx) SetLocal(ctx context.Context, name, value string) error {
 	if err := tx.check(ctx); err != nil {
 		return err

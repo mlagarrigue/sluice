@@ -172,8 +172,10 @@
 // already holds. When the socket given is a [net.UDPConn], [Dial] and
 // [NewListener] apply them themselves, best effort, as they ask it to
 // report ECN; a plain [net.ListenPacket] socket therefore works as one
-// from udp.Listen. A socket of any other type is used as it comes, and
-// is fragmentable unless the caller configured it.
+// from udp.Listen. A socket of any other type is used as it comes: the
+// package cannot set DF on it, takes it as the caller configured it, and
+// searches the path as on a configured socket — a socket that fragments
+// makes that search's probes prove nothing.
 //
 // # The TLS callbacks are the caller's
 //
@@ -245,6 +247,8 @@ import (
 // allow it. errors.Is(err, ErrQUIC) tells them from a context's and the
 // socket's own errors; the message says which, and [Conn.Err] whether the
 // connection ended. Nothing is gained by retrying the same call.
+// [ErrEarlyDataRejected] stands apart: a refused 0-RTT is no misuse, and
+// sending again on a new stream is its remedy.
 var ErrQUIC = errors.New("quic: malformed")
 
 // ErrTruncated reports a buffer that ends inside what it was describing. It

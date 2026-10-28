@@ -72,8 +72,9 @@ var ErrSplitDrained = batch.NewSentinel("sluice: Split branch consumed after the
 //
 // Like a Stream, a Split never consumed runs nothing: the source's traversal
 // starts at the first read of a branch, so a Split built and abandoned
-// holds no coroutine. Split panics if route is nil or n is negative; an n of
-// zero returns nil.
+// holds no coroutine. Split panics if n is negative, or if route is nil for
+// an n that has branches; an n of zero returns nil, with no branch to route
+// to and route never read.
 func Split[T any](s Stream[T], n int, route func(Batch[T]) []int) []Stream[T] {
 	if n < 0 {
 		panic(negativeArg{"Split n", n, "no branches"})

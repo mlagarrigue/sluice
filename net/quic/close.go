@@ -548,7 +548,9 @@ func (c *Conn) closingPeriodLocked() time.Duration {
 // connection keeps its routing entry and its MaxConns and MaxConnsPerIP
 // slots for the whole period, so an uncapped one let a peer hold a slot
 // for a minute or more after every close. Ten seconds is three PTOs of a
-// path with a 2.5 s round trip, past any satellite hop. What ending early
+// path with a 2.5 s round trip, past any satellite hop: a PTO is the round
+// trip, four times its variation and max_ack_delay (RFC 9002 §6.2.1), 2.5 s
+// + 4 × 0.2 s + 25 ms ≈ 3.3 s on a steady such path. What ending early
 // costs is the one thing §10.2 names: a packet arriving later than that is
 // answered with a Stateless Reset rather than the close repeated, and both
 // tell the peer the connection is gone.

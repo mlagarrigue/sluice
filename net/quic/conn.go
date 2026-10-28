@@ -40,7 +40,7 @@ import (
 // A connection: the TLS handshake driven by [crypto/tls], the packets sealed
 // by this package, streams assembled out of what arrives, and the transport
 // machinery of RFC 9002 — acknowledgements, loss detection, retransmission
-// and NewReno congestion control — underneath.
+// and congestion control (NewReno, CUBIC or BBR, as configured) — underneath.
 //
 // # What this is and is not
 //

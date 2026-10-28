@@ -354,8 +354,9 @@ func (rd *Reader) bodyBuffer(n int) []byte {
 //
 // Messages accumulate until [Writer.Flush], which is what makes the extended
 // query protocol worth its name: Parse, Bind, Execute and Sync for a whole
-// batch leave in one write, and §8.5's eleven round trips become two. Like
-// [Reader] it is single-conversation, not concurrent.
+// batch leave in one write, and the eleven round trips of the architecture's
+// "Pipelining and COPY" become two. Like [Reader] it is single-conversation,
+// not concurrent.
 type Writer struct {
 	w   io.Writer
 	buf []byte

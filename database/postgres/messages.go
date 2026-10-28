@@ -225,12 +225,12 @@ func parseRowDescription(dst []Field, body []byte) ([]Field, error) {
 // Rows accumulates decoded DataRow messages for a whole batch.
 //
 // Values are packed end to end in one buffer with a table of offsets beside
-// them, rather than a slice per row or per field. That is §8.6's columnar
-// principle applied to decoding: a thousand-row batch costs a handful of
-// allocations that are then reused for the next batch, where the obvious shape
-// — [][]byte per row — costs a thousand and a half. It is also what lets a
-// generated hydration function walk one column across every row, which is the
-// loop a CPU predicts.
+// them, rather than a slice per row or per field. That is the architecture's
+// "Hydration" — allocate at batch size, reuse between batches — applied to
+// decoding: a thousand-row batch costs a handful of allocations that are then
+// reused for the next batch, where the obvious shape — [][]byte per row —
+// costs a thousand and a half. A generated hydration function walks it row
+// by row, the order that section measured faster than column by column.
 //
 // A Rows is reset and refilled per batch, so the bytes it hands out are valid
 // only until the next batch — the same rule as everything else here.
