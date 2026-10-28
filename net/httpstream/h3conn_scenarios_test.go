@@ -1117,3 +1117,36 @@ func TestH3ATwoFrameCancellationIsOneCharge(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9114 §4.1, §7.2.3, §7.2.4, §7.2.5, §7.2.6, §7.2.7: SETTINGS, GOAWAY,
+// MAX_PUSH_ID and CANCEL_PUSH belong on the control stream, and a client
+// never sends PUSH_PROMISE; on a request stream each is a connection error
+// of type H3_FRAME_UNEXPECTED, whatever length it declares. Declared over
+// the frame bound, each used to be refused for its size on the stream alone
+// (H3_EXCESSIVE_LOAD): the length was judged before the type. Only the
+// frame header is sent — the refusal is on the declaration.
+func TestH3AMisplacedControlFrameOverTheBoundIsAConnectionError(t *testing.T) {
+	cfg := Config{MaxBodyBytes: 1 << 10, BodyDelivery: BodyWhole}.mustResolve()
+	for _, c := range []struct {
+		name string
+		typ  uint64
+	}{
+		{"SETTINGS", h3Settings},
+		{"GOAWAY", h3GoAway},
+		{"MAX_PUSH_ID", h3MaxPushID},
+		{"CANCEL_PUSH", h3CancelPush},
+		{"PUSH_PROMISE", h3PushPromise},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			a := testAssembler(cfg)
+			frame := varint.Append(nil, c.typ)
+			frame = varint.Append(frame, uint64(cfg.MaxBodyBytes)+1)
+			_, _, failed, err := a.Frames([]quic.Frame{streamFrame(0, frame, false)})
+			ce, ok := errors.AsType[h3ConnectionError](err)
+			if !ok || ce.Code != h3FrameUnexpected {
+				t.Fatalf("a %s frame declaring %d bytes on a request stream gave err=%v, failed=%v; want a connection error of type H3_FRAME_UNEXPECTED (%#x)",
+					c.name, cfg.MaxBodyBytes+1, err, failed, h3FrameUnexpected)
+			}
+		})
+	}
+}

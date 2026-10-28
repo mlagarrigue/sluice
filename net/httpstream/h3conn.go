@@ -1482,10 +1482,19 @@ func (a *h3Assembler) drain(st *h3Stream) error {
 	// A frame over the bound leaves rest at its start. A DATA frame there is
 	// judged below, after the frames ahead of it, as a body over
 	// MaxBodyBytes: h1 and h2 answer that with a 413, and the declared length
-	// says so before any of the payload is buffered. Any other type keeps the
-	// refusal parseH3Frames gave it.
-	if typ, _, e := varint.Read(rest); err != nil && (e != nil || typ != h3Data) {
-		return err
+	// says so before any of the payload is buffered. A frame of a type a
+	// request stream never carries is judged on its type first — the
+	// connection error the switch below gives it under the bound — so its
+	// declared length cannot buy it the lesser stream error. Any other type
+	// keeps the refusal parseH3Frames gave it.
+	if err != nil {
+		typ, _, e := varint.Read(rest)
+		switch {
+		case e == nil && (typ == h3Settings || typ == h3GoAway || typ == h3MaxPushID || typ == h3CancelPush || typ == h3PushPromise):
+			return fmt.Errorf("%w: frame type %#x does not belong on a request stream", errH3FrameUnexpected, typ)
+		case e != nil || typ != h3Data:
+			return err
+		}
 	}
 	a.frames = keepFrames(frames)
 	for _, f := range frames {
