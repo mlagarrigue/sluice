@@ -72,6 +72,7 @@ var _ congestionController = (*cubic)(nil)
 func newCubic(maxDatagram int) *cubic {
 	c := &cubic{newReno: *newNewReno(maxDatagram)}
 	c.hs = newHystart()
+	c.ssPace = 2.5 // newReno.pacingRate
 	return c
 }
 

@@ -17,15 +17,14 @@
 # - cubic: BenchmarkTransferRTT80Shallow, the long avoidance transfer CUBIC's
 #   window function was designed for, run on CUBIC and on Reno in the same
 #   round. The median over the rounds of Reno's time over CUBIC's is at
-#   least MINGAIN. Both sides are bimodal, by where the slow start's exit
-#   loss lands: CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21,
-#   where Reno read 8.8 s every round when the bound was set (2026-10-14).
-#   A round that pairs CUBIC's slow mode with Reno's fast one reads 1.03 and
-#   says nothing about the controller, so the worst round, the criterion
-#   until then, failed three of the sixteen CI runs of 2026-10-21; the
-#   median falls under the bound only when the slow mode is the common
-#   case. 1.3 is below the 1.40-1.44 of the fast modes and above
-#   the 1.09-1.12 of every round with CUBIC's beta at 0.5.
+#   least MINGAIN. Both sides were bimodal, by where the slow start's exit
+#   loss lands (CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21),
+#   so the median of the rounds is judged, not the worst. Since Reno paces
+#   its slow start at twice the window (newReno.pacingRate, 2026-10-28) it
+#   no longer exits a round early: Reno 4.6 s, CUBIC 3.8 s, the gain 1.21 to
+#   1.23 over eight rounds, where it read 1.40-1.44 against Reno's slow
+#   exit. 1.15 is below that and above the 1.06-1.09 of every round with
+#   CUBIC's beta at 0.5, measured the same day against the same Reno.
 # - bbr: BenchmarkTransferDeepBufferECN, the deep buffer behind a marking
 #   AQM. Every round, rtt_x — the final smoothed RTT over the smallest — is
 #   at most MAXRTTX: the "RTT within 1.5x min_rtt" the palette plan asked of
@@ -40,7 +39,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 ROUNDS="${1:-8}"
 PKG="./net/quic"
 MAXSHARE="${MAXSHARE:-0.70}"
-MINGAIN="${MINGAIN:-1.3}"
+MINGAIN="${MINGAIN:-1.15}"
 MAXRTTX="${MAXRTTX:-1.5}"
 
 CC="${SLUICE_QUIC_CC:-}"

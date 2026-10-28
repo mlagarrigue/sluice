@@ -453,7 +453,8 @@ func BenchmarkProcessAck(b *testing.B) {
 
 // The pacer's bucket: starts full at one initial window, spends below zero,
 // refills at the controller's rate — NewReno's is 5/4 of its window per
-// smoothed round trip, doubled in slow start — and prices a deficit in time,
+// smoothed round trip, twice its window in slow start, CUBIC's 2.5 times
+// there — and prices a deficit in time,
 // with sub-granularity deficits released immediately, since the timer could
 // not honour them anyway.
 func TestPacerBucket(t *testing.T) {
@@ -467,8 +468,13 @@ func TestPacerBucket(t *testing.T) {
 		t.Fatalf("NewReno paces at %v B/s, want 5/4 × 12000 per 100ms = 150000", rate)
 	}
 	cc.ssthresh = 1 << 30
-	if r := cc.pacingRate(srtt); r != 2*rate {
-		t.Fatalf("NewReno paces slow start at %v B/s, want twice the avoidance rate", r)
+	if r := cc.pacingRate(srtt); r != 240000 {
+		t.Fatalf("NewReno paces slow start at %v B/s, want 2 × 12000 per 100ms = 240000", r)
+	}
+	cu := newCubic(1200)
+	cu.hs.disarm() // the standard slow start, not HyStart++'s conservative one
+	if r := cu.pacingRate(srtt); r != 300000 {
+		t.Fatalf("CUBIC paces slow start at %v B/s, want 2.5 × 12000 per 100ms = 300000", r)
 	}
 
 	p.refill(now, rate)

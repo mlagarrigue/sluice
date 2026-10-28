@@ -551,7 +551,7 @@ datagram that arrives late and that the sender took for lost.
 | `BenchmarkTransferLoss1pct` | 20 ms RTT, 1% loss each way | 4 MiB | 4.40 s | 0.95 MB/s | ±4% |
 | `BenchmarkTransferBurstLoss` | 20 ms RTT, 1% loss in bursts of 4 | 4 MiB | 755 ms | 5.55 MB/s | ±1%, one round at +42% |
 | `BenchmarkTransferReorder` | 20 ms RTT, 2% of datagrams up to 2 ms late | 4 MiB | 4.89 s | 0.86 MB/s | ±12%, not gated |
-| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 865 ms | 4.86 MB/s | ±2%, one round at +23% |
+| `BenchmarkTransferBottleneck` | 20 ms RTT, 50 Mbit/s, 5 ms of buffer | 4 MiB | 840 ms | 4.99 MB/s | −3% to +2% over 80 transfers |
 | `BenchmarkTransferBottleneck16MiB` | the `Bottleneck` link | 16 MiB | 3.33 s | 5.04 MB/s | −1% to +3%, not gated |
 | `BenchmarkTransferDeepBuffer` | 20 ms RTT, 50 Mbit/s, 200 ms of buffer | 4 MiB | 788 ms | 5.33 MB/s, `rtt_x` 5.9 | ±0.2% |
 | `BenchmarkTransferTwoFlows` | 20 ms RTT, 50 Mbit/s, 20 ms of buffer, two flows | 2 × 4 MiB | 1.49 s | 5.63 MB/s, `share` 0.47–0.60 | ±1%, one round at +17% |
@@ -847,35 +847,39 @@ under CUBIC it moves neither `Bottleneck` (0.957) nor `TwoFlows` (1.038).
 Under Reno, `Bottleneck` turned the job red three times in one day (1.149,
 1.153, 1.138 against a bound of 10%), twice on commits that did not touch
 `net/quic`. Eighty interleaved rounds on an identical tree (2026-10-28,
-fifteen cores) show a bimodal transfer: 86 of 160 between 824 and 875 ms,
-74 between 950 and 1,026 ms. The median of eight lands in whichever mode
-holds four of them: passes of eight read 0.927 to 1.159, four in ten over
-1.10. Resampled from those 160 transfers, a pass reads more than 10%
-slower 13% of the time. No bound under 20% holds that, so the row leaves
-Reno's gate, and only Reno's, under the rule of 5% on an identical tree.
-The seven others keep 6% under Reno and turn red under the halved initial
-window.
+fifteen cores) showed a bimodal transfer: 86 of 160 between 824 and
+875 ms, 74 between 950 and 1,026 ms, and passes of eight read 0.927 to
+1.159. The row left Reno's gate the same day, and came back once the cause
+was traced: every transfer has one congestion event, in slow start, and
+it halved a window of about 160 kB or about 230 kB depending on which
+round overflowed the five-millisecond buffer. Reno paced its slow start at
+2.5 times the window per round trip; at twice the window
+(`newReno.pacingRate`) the early overflow is gone: 80 transfers of 80
+within 816–856 ms, median 840 ms, so no two medians of eight can differ
+by more than 4.8%, and the row is back under 6%. The same change takes
+Reno's `RTT80Shallow` from 5.4 s to 4.6 s. CUBIC keeps 2.5: at twice it
+lost 15% on `RTT80Shallow` (3.8 s to 4.4 s) and gained nothing on
+`Bottleneck` (0.991 in its path gate).
 
 A second script, `gate-cc.sh`, holds the three controllers other than
 Reno to their own criteria, on one tree and without a base: the median of
 `share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
 0.51, BBRv1 0.61, BBR 0.50); the median round of `RTT80Shallow` is at
-least 1.3 times faster on CUBIC than on Reno in the same round (measured:
-1.42 to 1.48, median 1.44, 2026-10-21); every round of `DeepBufferECN`
+least 1.15 times faster on CUBIC than on Reno in the same round (measured:
+1.21 to 1.23, median 1.22, 2026-10-28); every round of `DeepBufferECN`
 keeps `rtt_x` at 1.5 at most on BBR (measured: 1.05 to 1.09). Both sides of
-`RTT80Shallow` are bimodal, by where the slow start's exit loss lands —
-CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21, where Reno read
-8.8 s every round when the bound was set (2026-10-14) — and a round that
-pairs CUBIC's slow mode with Reno's fast one reads 1.03 and says nothing
-about the controller: the worst round, the criterion until then, failed
-three of the sixteen CI runs of 2026-10-21. The median falls
-under the bound only when the slow mode becomes the common case. `gate-path.sh` sees a controller
+`RTT80Shallow` were bimodal, by where the slow start's exit loss lands —
+CUBIC 3.7 s or 5.1 s, Reno 5.3 s or 8.6 s on 2026-10-21 — so the median
+round is judged, not the worst. The bound was 1.3 against the 1.40–1.48
+Reno's early slow-start exit left; once Reno stopped exiting early (Reno
+4.6 s, CUBIC 3.8 s), it moved to 1.15, between the measured gain and the
+injection below. `gate-path.sh` sees a controller
 that gets worse from one commit to the next; `gate-cc.sh` sees one that
 never met its criterion, or drifts from it by less than 6% a commit.
 CUBIC's β brought from 0.7 to 0.5 turns the cubic job red in both scripts
 — `BurstLoss` 1.566 and `Loss1pct` 1.255 in `gate-path.sh`, every round
-of `RTT80Shallow` within 1.09–1.12 in `gate-cc.sh` — and leaves the reno
-job green (0.991 to 1.007).
+of `RTT80Shallow` within 1.06–1.09 in `gate-cc.sh` (2026-10-28; 1.09–1.12
+against the former Reno) — and leaves the reno job green (0.991 to 1.007).
 
 **The CI gate watches the rows of its `GATED` list per controller** —
 eight on each — through a second script,

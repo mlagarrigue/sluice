@@ -1263,6 +1263,9 @@ type newReno struct {
 	limited     bool
 	maxInFlight int
 	roundMark   time.Time
+	// ssPace is the slow-start pacing rate, in windows per smoothed round
+	// trip: 2 for NewReno, 2.5 for CUBIC (pacingRate says why they differ).
+	ssPace float64
 }
 
 var _ congestionController = (*newReno)(nil)
@@ -1276,7 +1279,7 @@ func initialWindow(maxDatagram int) int {
 }
 
 func newNewReno(maxDatagram int) *newReno {
-	return &newReno{cwnd: initialWindow(maxDatagram), ssthresh: 1 << 30, maxDatagram: maxDatagram}
+	return &newReno{cwnd: initialWindow(maxDatagram), ssthresh: 1 << 30, maxDatagram: maxDatagram, ssPace: 2}
 }
 
 func (c *newReno) window() int              { return c.cwnd }
@@ -1348,22 +1351,32 @@ func (c *newReno) onMarked(ev markEvent) {
 
 // pacingRate is 5/4 of the window per smoothed round trip — the RFC's
 // "slightly higher than necessary" rate (§7.7), so pacing never becomes
-// the throughput ceiling — and of twice the window in slow start, where
-// the window itself doubles per round trip and pacing at the current cwnd
+// the throughput ceiling — and ssPace windows in slow start, where the
+// window itself doubles per round trip and pacing at the current cwnd
 // would lag the growth it is spreading (measured: ~3% off a clean 20ms
 // path's goodput; §7.7 permits a higher slow-start rate). The round trip
 // is floored at the timer's granularity: below it the rate is meaningless
 // and the division is unsafe.
 //
+// ssPace is 2 for NewReno and 2.5 for CUBIC, each the faster of the two on
+// the paths that tell them apart. At 2.5, a 50 Mbit/s path with five
+// milliseconds of buffer overflows a round early in about half of
+// NewReno's transfers: the slow start's one loss event then halves a
+// window of ~160 kB instead of ~230 kB, and the transfer takes 1 000 ms
+// instead of 840 (BenchmarkTransferBottleneck, 74 of 160 in the slow mode;
+// at 2, 80 of 80 within 816-856 ms, and RTT80Shallow 5.4 s → 4.6 s). CUBIC
+// at 2 loses 15% on RTT80Shallow (3.8 s → 4.4 s) and gains nothing on
+// Bottleneck (docs/benchmarks.md).
+//
 // Conservative Slow Start is the exception: HyStart++ grows the window a
 // quarter per round trip there, and five quarters cover it — pacing at
 // twice the window would burst into the buffer it just saw filling.
 func (c *newReno) pacingRate(srtt time.Duration) float64 {
-	w := c.cwnd
+	g := 1.25
 	if c.cwnd < c.ssthresh && (!c.hs.armed || !c.hs.css) {
-		w = 2 * c.cwnd
+		g = c.ssPace
 	}
-	return 1.25 * float64(w) / max(srtt, granularity).Seconds()
+	return g * float64(c.cwnd) / max(srtt, granularity).Seconds()
 }
 
 // absorb is the part of an acknowledgement every loss-based controller

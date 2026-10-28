@@ -64,21 +64,16 @@ GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurst
 # only its gate. Measured 2026-10-16, eight rounds each: Reno 0.978-1.012,
 # CUBIC 0.991-1.011, BBR 0.990-1.013: every controller kept the eight names.
 #
-# Reno has since left Bottleneck out. The job turned red on it three times
-# in a day (088d762, 81cbdd6, 2570cbe; 1.149, 1.153, 1.138 against a bound
-# of 10%), twice on commits that changed nothing in net/quic. Measured
-# 2026-10-28, Reno, an identical tree, 80 interleaved rounds on fifteen
-# cores: the transfer is bimodal, 86 of 160 in 824-875 ms and 74 in
-# 950-1026 ms, and the median of eight sits in whichever mode holds four of
-# them — passes of eight read 0.927 to 1.159, four of ten over 1.10.
-# Resampled from those 160 transfers, a pass reads over 10% slower 13% of
-# the time. No bound short of 20% holds that, so the name leaves Reno's
-# gate as this rule says. Nothing is lost: the injection below reddens the
-# seven names Reno keeps, not this one.
-case "$CC" in
-  reno) UNSTABLE='BenchmarkTransferBottleneck$' ;;
-  *) UNSTABLE='' ;;
-esac
+# UNSTABLE lists, per controller, a name this rule takes out; none today.
+# Reno's Bottleneck was out from 2026-10-28 to the same day's evening: the
+# transfer was bimodal (86 of 160 in 824-875 ms, 74 in 950-1026), passes of
+# eight read 0.927 to 1.159, and no bound short of 20% held it. Traced: the
+# slow start's one loss event halved a window of ~160 kB or ~230 kB
+# depending on which round overflowed the five-millisecond buffer, under a
+# slow-start pacing of 2.5 times the window; at twice the window
+# (newReno.pacingRate), 80 transfers of 80 within 816-856 ms, so no two
+# medians differ by more than 4.8%, and the name is back under 6%.
+UNSTABLE=''
 GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | paste -sd'|')"
 
 # 6%: four times the widest upward spread measured on an identical tree, and
@@ -121,17 +116,8 @@ PATHEFFECT="${PATHEFFECT:-0.06}"
 # window halved leaves TwoFlows at 1.018 and turns the job red four times
 # over on the rows that keep 6% — Clean 1.094, RTT80 1.109, BurstLoss 1.080,
 # Loss1pct 1.076 — while the restored tree passes.
-# Reno reads Bottleneck the same way, and it took a commit that cannot have
-# regressed anything to show it: 3f05f83, whose whole diff is two workflow
-# files, read 1.093 and then — rerun, same binaries, same base — 1.064,
-# while the seven other names sat within 0.994-1.004 in both passes
-# (2026-10-25). Two concordant reds on an identical tree is the same
-# bimodality CUBIC's campaign traced to where HyStart++ exits, on the same
-# benchmark; the band is widened on that evidence and on that campaign's 160
-# transfers, without a new one under Reno, which is what this comment says
-# so the next reader does not take it for measured here. The campaign came
-# on 2026-10-28 and took the name out of Reno's gate (UNSTABLE, above): a
-# wider band was not enough.
+# Reno read Bottleneck as bimodal too, and its cause was traced and removed
+# (UNSTABLE, above): Reno keeps 6% on all eight names.
 case "$CC" in
   cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
   bbr) WIDE='BenchmarkTransferTwoFlows$' ;;
