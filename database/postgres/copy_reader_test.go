@@ -27,7 +27,7 @@ func newCopyBackend(t *testing.T, script func(rd *pgwire.Reader, w net.Conn) err
 		done <- script(pgwire.NewReader(server), server)
 		_ = server.Close()
 	}()
-	return NewConn(client), done
+	return NewConn(client, Config{}), done
 }
 
 // expectQuery reads the next frontend message and checks it is the simple
@@ -201,7 +201,7 @@ func TestCopyRefusedRowFailsAWriteBeforeTheCommit(t *testing.T) {
 // refused before a byte is written, and the copy stays finishable.
 func TestExecRefusedWhileACopyIsOpen(t *testing.T) {
 	srv := &fakeServer{responses: txCycle()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	cp, err := conn.CopyFrom(t.Context(), copyTestSQL, CopyConfig{RowsPerTx: 100})
 	if err != nil {
 		t.Fatal(err)

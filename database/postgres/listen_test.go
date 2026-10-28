@@ -22,7 +22,7 @@ func TestListenerKeepsWhatArrivesWhileSubscribing(t *testing.T) {
 	script = append(script, beNotification("orders", "a")...)
 	script = append(script, beNotification("audit", "")...)
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	l := &Listener{c: NewConn(rw), batch: 100}
+	l := &Listener{c: NewConn(rw, Config{}), batch: 100}
 	sql, err := listenSQL(ListenConfig{Channels: []string{"orders", `Au"dit`}})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestListenBoundsWhatArrivesBeforeReadyForQuery(t *testing.T) {
 	}
 	// No ReadyForQuery: the stream simply ends, past the bound.
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	l := &Listener{c: NewConn(rw), batch: 64}
+	l := &Listener{c: NewConn(rw, Config{}), batch: 64}
 	err := l.subscribe("LISTEN orders;")
 	if kept := len(l.pending) * cost; kept > maxPendingNotificationBytes {
 		t.Errorf("subscribe kept %d notifications, %d bytes, before ReadyForQuery (err = %v): past the %d-byte bound",
@@ -106,7 +106,7 @@ func TestListenBoundsWhatArrivesBeforeReadyForQuery(t *testing.T) {
 // batch however long it was.
 func TestListenBatchHoldsNoMoreThanItsBound(t *testing.T) {
 	const batch = 4
-	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}), batch: batch}
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}, Config{}), batch: batch}
 	for i := range batch * 2 {
 		l.pending = append(l.pending, Notification{Channel: "orders", Payload: string(rune('a' + i))})
 	}
@@ -146,7 +146,7 @@ func TestListenDeliversWhatArrivesBeforeReadyForQueryInBatches(t *testing.T) {
 	script = append(script, beNotification("c", "a")...)
 	script = append(script, beNotification("c", "b")...)
 	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
-	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: 1}
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: 1}
 	if err := l.subscribe("LISTEN c;"); err != nil {
 		t.Fatalf("subscribe refused two notifications before ReadyForQuery under BatchNotifications = 1: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestListenEndsAtAnEncodingNobodyAskedFor(t *testing.T) {
 	script = append(script, beNotification("orders", "first")...)
 	script = append(script, frame(pgwire.BackendParameterStatus, "client_encoding\x00LATIN1\x00")...)
 	script = append(script, beNotification("orders", "caf\xe9")...)
-	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: 1}
+	l := &Listener{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: 1}
 	var got []string
 	src := l.Notifications(t.Context())
 	err := src.Consume(func(b sluice.Batch[Notification]) bool {

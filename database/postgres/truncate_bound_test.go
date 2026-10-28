@@ -38,7 +38,7 @@ func TestATruncateNamingARelationTwiceIsRefused(t *testing.T) {
 		script = append(script, frame(pgwire.BackendCopyDone, "")...)
 		script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
 		script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
-		r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: 100, batchBytes: 1 << 20, interval: time.Hour}
+		r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: 100, batchBytes: 1 << 20, interval: time.Hour}
 		var sizes []int
 		src := r.Changes(t.Context())
 		src.Stream()(func(b sluice.Batch[Change]) bool { sizes = append(sizes, len(b.Items)); return true })

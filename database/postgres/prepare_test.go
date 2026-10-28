@@ -130,7 +130,7 @@ func TestStatementCacheSizeComesFromTheConfig(t *testing.T) {
 // statement, re-parsed every time.
 func TestStatementCacheOff(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = nil // what a negative Config.StatementCacheSize leaves
 
 	for range 2 {
@@ -155,7 +155,7 @@ func TestStatementCacheOff(t *testing.T) {
 // already parsed.
 func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 
 	for range 2 {
@@ -188,7 +188,7 @@ func TestStatementCacheReusesAPreparedStatement(t *testing.T) {
 // query silently starts comparing an int4 against a bigint column.
 func TestStatementCacheKeyIncludesTheParameterTypes(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id WHERE k = $1"
@@ -222,7 +222,7 @@ func TestStatementCacheEvictsLeastRecentlyUsedAndClosesIt(t *testing.T) {
 		// its own.
 		append(beSimple(pgwire.BackendCloseComplete), oneRow()[0]...), oneRow()[1],
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(2)
 
 	for _, sql := range []string{"SELECT a", "SELECT b", "SELECT a", "SELECT c"} {
@@ -283,7 +283,7 @@ func TestStatementCacheRetriesAnUnconfirmedClose(t *testing.T) {
 		failed, beReadyForQuery(), // B: evicts A, but the batch fails before CloseComplete
 		append(append(beSimple(pgwire.BackendCloseComplete), beSimple(pgwire.BackendCloseComplete)...), oneRow()[0]...), oneRow()[1], // C
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(1)
 	if err := drain(t, conn.Query(t.Context(), "SELECT a", nil, batched)); err != nil {
 		t.Fatal(err)
@@ -318,7 +318,7 @@ func TestStatementCacheBreaksOnACloseTheServerAnsweredAround(t *testing.T) {
 		responses = append(responses, oneRow()...) // never a CloseComplete
 	}
 	srv := &fakeServer{responses: responses}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(2)
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
 		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -351,7 +351,7 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 		// front of its Parse: the CloseComplete comes in the same answer.
 		append(beSimple(pgwire.BackendCloseComplete), oneRow()[0]...), oneRow()[1],
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id"
@@ -412,7 +412,7 @@ func TestStatementCacheDropsAStalePlan(t *testing.T) {
 // would be the one place this package builds an identifier it did not choose.
 func TestStatementNamesAreGenerated(t *testing.T) {
 	srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 	for _, sql := range []string{"SELECT a", "SELECT b"} {
 		if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -491,7 +491,7 @@ func TestStatementCacheForgetsAStatementTheServerRefused(t *testing.T) {
 	refused := append(beErrorResponse("42601", "syntax error at or near \"SELCT\""), beReadyForQuery()...)
 	srv := &fakeServer{responses: [][]byte{refused, beReadyForQuery()}}
 	srv.responses = append(srv.responses, oneRow()...)
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 
 	const sql = "SELCT id"
@@ -523,7 +523,7 @@ func TestStatementCacheForgetsAStatementTheServerNoLongerHolds(t *testing.T) {
 	srv := &fakeServer{responses: oneRow()}
 	srv.responses = append(srv.responses, gone, beReadyForQuery())
 	srv.responses = append(srv.responses, oneRow()...)
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 
 	const sql = "SELECT id"
@@ -587,7 +587,7 @@ func TestStatementCacheKeepsEntryOnOtherFeatureNotSupported(t *testing.T) {
 	refused = append(refused, frame(pgwire.BackendErrorResponse, string(errBody("S", "ERROR", "C", "0A000", "M", "FOR UPDATE is not allowed with aggregate functions", "R", "CheckSelectLocking")))...)
 
 	srv := &fakeServer{responses: [][]byte{oneRow()[0], oneRow()[1], refused, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.stmts = newStmtCache(8)
 	const sql = "SELECT id"
 	if err := drain(t, conn.Query(t.Context(), sql, nil, batched)); err != nil {
@@ -622,7 +622,7 @@ func TestParseDeclaresTheStatedTypes(t *testing.T) {
 		{[]Param{{Value: val}, {OID: pgtype.OIDText, Value: nil}}, []uint32{0, pgtype.OIDText}},
 	} {
 		srv := &fakeServer{responses: oneRow()}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		if err := drain(t, conn.Query(t.Context(), "SELECT id WHERE k = $1 AND v = $2", tc.params, batched)); err != nil {
 			t.Fatal(err)
 		}

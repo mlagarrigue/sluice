@@ -359,7 +359,7 @@ func TestReplicationStreamScripted(t *testing.T) {
 	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
 	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
 	rw := &scriptedRW{Reader: bytes.NewReader(script)}
-	r := &Replication{c: NewConn(rw), batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
+	r := &Replication{c: NewConn(rw, Config{}), batch: 100, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.Ack(0x08)
 
 	var batches [][]ChangeKind
@@ -403,7 +403,7 @@ func TestReplicationStreamScripted(t *testing.T) {
 
 // A second call to Changes is refused: one connection streams a slot once.
 func TestReplicationChangesOnce(t *testing.T) {
-	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(nil)}, Config{}), batch: 1, batchBytes: defaultBatchBytes, interval: time.Hour}
 	r.started.Store(true)
 	if _, err := r.Changes(t.Context()).Collect(); err == nil {
 		t.Error("a second Changes was accepted")
@@ -489,7 +489,7 @@ func TestReplicationBoundsPayloadThatCarriesNoChange(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			srv := &noChangeServer{payload: c.payload}
 			r := &Replication{
-				c: NewConn(srv), batch: sluice.DefaultBatchSize,
+				c: NewConn(srv, Config{}), batch: sluice.DefaultBatchSize,
 				batchBytes: defaultBatchBytes, interval: time.Minute,
 			}
 			b, err := r.readBatch()
@@ -615,7 +615,7 @@ func TestReplicationBoundsTheRelationTableInBytes(t *testing.T) {
 func TestReplicationOpensABatchOnARelationWiderThanBatchBytes(t *testing.T) {
 	rel := relMsg(42, "public", "t", "a", "b")
 	rw := &scriptedRW{Reader: bytes.NewReader(xlog(0x100, rel))}
-	r := &Replication{c: NewConn(rw), batch: 100, batchBytes: 8, interval: time.Hour}
+	r := &Replication{c: NewConn(rw, Config{}), batch: 100, batchBytes: 8, interval: time.Hour}
 	b, err := r.readBatch()
 	if err != nil {
 		t.Fatalf("a %d-byte Relation under BatchBytes = 8: %v", len(rel), err)
@@ -671,7 +671,7 @@ func TestReplicationSplitsATruncateAtBatchChanges(t *testing.T) {
 	script = append(script, frame(pgwire.BackendCopyDone, "")...)
 	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
 	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
-	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: batch, batchBytes: defaultBatchBytes, interval: time.Hour}
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}, Config{}), batch: batch, batchBytes: defaultBatchBytes, interval: time.Hour}
 
 	var sizes []int
 	var names []string

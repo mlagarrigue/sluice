@@ -214,7 +214,7 @@ func TestConnQuery(t *testing.T) {
 	first = append(first, beCommandComplete("SELECT 2")...)
 
 	srv := &fakeServer{responses: [][]byte{first, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	keys := pgtype.AppendInt8Array(nil, []int64{1, 2})
 	src := conn.Query(t.Context(), "SELECT id, total FROM orders WHERE id = ANY($1)",
@@ -282,7 +282,7 @@ func TestConnQueryExposesFields(t *testing.T) {
 	script = append(script, beDataRow(int8Val(7))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 
-	conn := NewConn(&fakeServer{responses: [][]byte{script, beReadyForQuery()}})
+	conn := NewConn(&fakeServer{responses: [][]byte{script, beReadyForQuery()}}, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
 
 	var fields []Field
@@ -320,7 +320,7 @@ func TestConnQueryAsksForEachBatch(t *testing.T) {
 		second = append(second, beCommandComplete("SELECT 0")...)
 
 		srv := &fakeServer{responses: [][]byte{head, second, beReadyForQuery()}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2})
 
 		var sizes []int
@@ -365,7 +365,7 @@ func TestConnQueryEarlyStopResynchronises(t *testing.T) {
 	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 
 	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
 
 	n := 0
@@ -424,7 +424,7 @@ func TestEarlyStopDrainsTheBatchesAskedForAhead(t *testing.T) {
 		next = append(next, beCommandComplete("SELECT 1")...)
 
 		srv := &fakeServer{responses: [][]byte{head, ahead, beReadyForQuery(), next, beReadyForQuery()}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
 
 		var askedBeforeDelivery int
@@ -473,7 +473,7 @@ func TestConnQueryServerError(t *testing.T) {
 	script = append(script, beErrorResponse("42P01", `relation "orders" does not exist`)...)
 
 	srv := &fakeServer{responses: [][]byte{script, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT * FROM orders", nil, QueryConfig{})
 
 	n := 0
@@ -504,7 +504,7 @@ func TestConnQueryTruncatedResponseBreaksConn(t *testing.T) {
 	script = append(script, beRowDescription([]string{"id"}, []uint32{pgtype.OIDInt8})...)
 	// The stream stops here: no CommandComplete, no ReadyForQuery.
 
-	conn := NewConn(&fakeServer{responses: [][]byte{script}})
+	conn := NewConn(&fakeServer{responses: [][]byte{script}}, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 
@@ -533,7 +533,7 @@ func TestConnQueryRowBeforeDescription(t *testing.T) {
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)
 	script = append(script, beDataRow(int8Val(1))...)
 
-	conn := NewConn(&fakeServer{responses: [][]byte{script}})
+	conn := NewConn(&fakeServer{responses: [][]byte{script}}, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 
@@ -546,7 +546,7 @@ func TestConnQueryRowBeforeDescription(t *testing.T) {
 // unknown, and resending would corrupt rather than repair.
 func TestConnQueryWriteFailure(t *testing.T) {
 	srv := &fakeServer{writeErr: errors.New("connection reset")}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT 1", nil, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 
@@ -565,7 +565,7 @@ func TestConnQueryIgnoresNotices(t *testing.T) {
 	script = append(script, beDataRow(int8Val(9))...)
 	script = append(script, beCommandComplete("SELECT 1")...)
 
-	conn := NewConn(&fakeServer{responses: [][]byte{script, beReadyForQuery()}})
+	conn := NewConn(&fakeServer{responses: [][]byte{script, beReadyForQuery()}}, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{})
 
 	n := 0
@@ -588,7 +588,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 	script = append(script, beCommandComplete("SELECT 0")...)
 
 	srv := &fakeServer{responses: [][]byte{script, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	keys := make([]int64, 1000)
 	for i := range keys {
@@ -627,7 +627,7 @@ func TestConnQueryBatchOfKeysIsOneParameter(t *testing.T) {
 
 func TestConnCloseSendsTerminate(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close returned %v", err)
 	}
@@ -643,7 +643,7 @@ func TestConnCloseSendsTerminate(t *testing.T) {
 // position is unknown adds bytes nobody can interpret.
 func TestConnCloseSkipsTerminateWhenBroken(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT 1", nil, QueryConfig{})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if conn.Err() == nil {
@@ -685,7 +685,7 @@ func TestBatchBytesCutsABatchEarly(t *testing.T) {
 	next = append(next, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script, next}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	logs := &recordHandler{}
 	conn.logger = slog.New(logs)
 
@@ -742,7 +742,7 @@ func TestBatchBytesCutsTheBatchedFetch(t *testing.T) {
 	head = append(head, beCommandComplete("SELECT 5")...)
 
 	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	conn.logger = slog.New(&recordHandler{})
 	src := conn.Query(t.Context(), "SELECT v", nil, QueryConfig{BatchRows: 100, BatchBytes: 2 * rowBytes, Fetch: FetchBatches})
 	var sizes []int
@@ -769,7 +769,7 @@ func TestBatchedFetchRefusesARowPastTheExecute(t *testing.T) {
 	head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 
 	srv := &fakeServer{responses: [][]byte{head, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, Fetch: FetchBatches})
 	delivered := 0
 	src.Stream()(func(b sluice.Batch[Row]) bool { delivered += b.Len(); return true })
@@ -793,7 +793,7 @@ func TestFetchAllSendsSyncInsteadOfFlush(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 	var seen int
@@ -826,7 +826,7 @@ func TestFetchAllAsksForEveryRow(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, Fetch: FetchAll})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
@@ -866,7 +866,7 @@ func TestFetchAllDoesNotSyncTwice(t *testing.T) {
 		return append(s, beReadyForQuery()...)
 	}
 	srv := &fakeServer{responses: [][]byte{one(1), one(2)}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	for _, want := range []int64{1, 2} {
 		var got []int64
@@ -928,7 +928,7 @@ func TestFetchAllEarlyStopKeepsTheConnection(t *testing.T) {
 	second = append(second, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{first, second}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 2, Fetch: FetchAll})
 	var batches int
@@ -973,7 +973,7 @@ func TestWithoutFetchAllTheFlushRemains(t *testing.T) {
 	first = append(first, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{first, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
 	if err := src.Err(); err != nil {
@@ -1029,7 +1029,7 @@ func TestConnReadsATransportOncePerBuffer(t *testing.T) {
 	script := bytes.Repeat(row, messages)
 	tr := &countingTransport{script: script}
 
-	conn := NewConn(tr)
+	conn := NewConn(tr, Config{})
 	for i := range messages {
 		m, err := conn.r.Next()
 		if err != nil {
@@ -1049,7 +1049,7 @@ func TestConnReadsATransportOncePerBuffer(t *testing.T) {
 	// a read into the last few bytes of it is a system call for a few bytes,
 	// and the wide scan measured +16% when the tail stayed put.
 	tr = &countingTransport{script: script, chunk: 1000}
-	conn = NewConn(tr)
+	conn = NewConn(tr, Config{})
 	for i := range messages {
 		if _, err := conn.r.Next(); err != nil {
 			t.Fatalf("short reads, message %d: %v", i, err)
@@ -1080,7 +1080,7 @@ func TestBufferedReadsSpanFills(t *testing.T) {
 		_, _ = server.Write(frame(pgwire.BackendCommandComplete, "SELECT 1\x00"))
 	}()
 
-	conn := NewConn(client)
+	conn := NewConn(client, Config{})
 	m, err := conn.r.Next()
 	if err != nil {
 		t.Fatalf("reading a message larger than the buffer: %v", err)
@@ -1129,7 +1129,7 @@ func TestAnUnreadableRowDoesNotBreakTheConnection(t *testing.T) {
 		bad, beReadyForQuery(), // the resync recovers the position
 		good, beReadyForQuery(),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
@@ -1173,7 +1173,7 @@ func TestAnUnreadableDescriptionDoesNotBreakTheConnection(t *testing.T) {
 	bad = append(bad, frame(pgwire.BackendRowDescription, "\x00\x7f")...)
 
 	srv := &fakeServer{responses: [][]byte{bad, beReadyForQuery(), beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
@@ -1191,7 +1191,7 @@ func TestAFramingFailureStillBreaksTheConnection(t *testing.T) {
 	// A message whose declared length runs past what the server sends.
 	truncated := []byte{pgwire.BackendDataRow, 0x7f, 0xff, 0xff, 0xff, 0x01, 0x02}
 	srv := &fakeServer{responses: [][]byte{truncated}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4})
 	src.Stream()(func(sluice.Batch[Row]) bool { return true })
@@ -1232,7 +1232,7 @@ func TestRowRefusesToBeReadAfterItsQuery(t *testing.T) {
 	} {
 		t.Run(read.what, func(t *testing.T) {
 			srv := &fakeServer{responses: append(oneRow(), oneRow()...)}
-			conn := NewConn(srv)
+			conn := NewConn(srv, Config{})
 
 			var retained Row
 			conn.Query(t.Context(), "SELECT id", nil, QueryConfig{}).Stream()(
@@ -1270,7 +1270,7 @@ func TestRowRefusesToBeReadAfterItsQuery(t *testing.T) {
 // what is new is that it is refused rather than left to corrupt.
 func TestConnRefusesANestedQuery(t *testing.T) {
 	srv := &fakeServer{responses: oneRow()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	var inner error
 	conn.Query(t.Context(), "SELECT id", nil, QueryConfig{}).Stream()(
@@ -1325,7 +1325,7 @@ func TestWireTouchingCallsInsideAConsumerAreRefused(t *testing.T) {
 	first = append(first, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{first}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 
 	cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
@@ -1386,7 +1386,7 @@ func TestAnErrorMetDuringTheDrainIsSurfaced(t *testing.T) {
 	second = append(second, frame(pgwire.BackendReadyForQuery, "E")...)
 
 	srv := &fakeServer{responses: [][]byte{first, second}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	src := conn.Query(t.Context(), "SELECT id FROM big", nil, QueryConfig{BatchRows: 1})
 	src.Stream()(func(sluice.Batch[Row]) bool { return false }) // an early stop
@@ -1418,7 +1418,7 @@ func TestQueryToleratesANotification(t *testing.T) {
 	first = append(first, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{first}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	var got []int64
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 4, Fetch: FetchAll})
@@ -1460,7 +1460,7 @@ func TestQueryCopyToStdoutFailsTheStatementNotTheConnection(t *testing.T) {
 	next = append(next, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{first, beReadyForQuery(), next, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	err := drain(t, conn.Query(t.Context(), "COPY t TO STDOUT", nil, QueryConfig{BatchRows: 4}))
 	if err == nil {
@@ -1506,7 +1506,7 @@ func TestQueryCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
 		beErrorResponse("57014", "COPY from stdin failed"), // answers the CopyFail
 		beReadyForQuery(), // answers the Sync
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	err := drain(t, conn.Query(t.Context(), "COPY t FROM STDIN", nil, QueryConfig{BatchRows: 4}))
 	if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
@@ -1540,7 +1540,7 @@ func TestExecParamsCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
 	second = append(second, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{first, second}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	_, err := conn.ExecParams(t.Context(), "COPY t FROM STDIN", nil)
 	if err == nil || !strings.Contains(err.Error(), "CopyFrom") {
@@ -1563,7 +1563,7 @@ func TestExecParamsCopyFromStdinFailsCleanlyWithCopyFail(t *testing.T) {
 func TestSQLWithNULIsRefusedBeforeSending(t *testing.T) {
 	const bad = "SELECT 1\x00; DROP TABLE t"
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	isNUL := func(what string, err error) {
 		t.Helper()
 		if err == nil || !strings.Contains(err.Error(), "NUL") {
@@ -1683,7 +1683,7 @@ func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) 
 		head = append(head, beSimple(pgwire.BackendPortalSuspended)...)
 		tail := append(frame('z', "invented"), beReadyForQuery()...)
 
-		conn := NewConn(&fakeServer{responses: [][]byte{head, tail}})
+		conn := NewConn(&fakeServer{responses: [][]byte{head, tail}}, Config{})
 		src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 1})
 		src.Stream()(func(sluice.Batch[Row]) bool { return false })
 
@@ -1697,7 +1697,7 @@ func TestConnUnknownMessageTypeBreaksTheConnectionWhileRecovering(t *testing.T) 
 		script = append(script, beCommandComplete("SELECT 1")...)
 		script = append(script, beReadyForQuery()...)
 
-		conn := NewConn(&fakeServer{responses: [][]byte{script}})
+		conn := NewConn(&fakeServer{responses: [][]byte{script}}, Config{})
 		if err := conn.Exec(t.Context(), "SELECT 1"); !errors.Is(err, ErrProtocol) {
 			t.Errorf("Exec = %v, want ErrProtocol", err)
 		}

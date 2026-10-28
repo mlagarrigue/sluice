@@ -116,7 +116,7 @@ func BenchmarkListDecode(b *testing.B) {
 			out = append(out, orderRow{ID: id, Total: total, Label: pgtype.DecodeText(labelB)})
 		}
 	}
-	conn := postgres.NewConn(replay{bytes.NewReader(replayedList(bodies))})
+	conn := postgres.NewConn(replay{bytes.NewReader(replayedList(bodies))}, postgres.Config{})
 	src := conn.Query(b.Context(), "SELECT id, total, label FROM bench_orders", nil,
 		postgres.QueryConfig{BatchRows: listLimit + 1})
 	for batch := range src.Stream() {

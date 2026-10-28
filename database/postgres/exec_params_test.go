@@ -62,7 +62,7 @@ func TestCommandTagRowsAffected(t *testing.T) {
 // costs one round trip.
 func TestExecParamsReturnsTheTag(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{extendedCycle("UPDATE 3", "I")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	const hostile = "acme'; DROP TABLE orders; --"
 	tag, err := conn.ExecParams(t.Context(), "UPDATE orders SET shipped = true WHERE customer = $1",
@@ -94,7 +94,7 @@ func TestExecParamsReturnsTheTag(t *testing.T) {
 
 // Rows the statement returns are dropped, and the tag still counts them.
 func TestExecParamsDropsRowsAndKeepsTheCount(t *testing.T) {
-	conn := NewConn(&fakeServer{responses: setConfigCycle()})
+	conn := NewConn(&fakeServer{responses: setConfigCycle()}, Config{})
 	tag, err := conn.ExecParams(t.Context(), "SELECT set_config($1, $2, false)",
 		[]Param{{Value: pgtype.AppendText(nil, "a.b")}, {Value: pgtype.AppendText(nil, "c")}})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestExecParamsDropsRowsAndKeepsTheCount(t *testing.T) {
 // error comes back, and the connection stays usable.
 func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 	failed := append(beErrorResponse("23505", "duplicate key"), beReadyForQuery()...)
-	conn := NewConn(&fakeServer{responses: [][]byte{failed, extendedCycle("INSERT 0 1", "I")}})
+	conn := NewConn(&fakeServer{responses: [][]byte{failed, extendedCycle("INSERT 0 1", "I")}}, Config{})
 	ctx := t.Context()
 
 	tag, err := conn.ExecParams(ctx, "INSERT INTO t VALUES ($1)", []Param{{OID: pgtype.OIDInt8, Value: pgtype.AppendInt8(nil, 1)}})
@@ -130,7 +130,7 @@ func TestExecParamsErrorLeavesTheTagEmpty(t *testing.T) {
 // server answers "ROLLBACK" and no error, and nil would report writes that
 // never happened.
 func TestExecParamsCommitInAbortedBlockReportsRollback(t *testing.T) {
-	conn := NewConn(abortedBlock(extendedCycle("ROLLBACK", "I")))
+	conn := NewConn(abortedBlock(extendedCycle("ROLLBACK", "I")), Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestExecParamsCommitInAbortedBlockReportsRollback(t *testing.T) {
 // A ROLLBACK through ExecParams completes with the same tag and did what it
 // was asked: nil, and the tag says what happened.
 func TestExecParamsRollbackInAbortedBlockSucceeds(t *testing.T) {
-	conn := NewConn(abortedBlock(extendedCycle("ROLLBACK", "I")))
+	conn := NewConn(abortedBlock(extendedCycle("ROLLBACK", "I")), Config{})
 	ctx := t.Context()
 	_ = conn.Exec(ctx, "BEGIN")
 	_ = conn.Exec(ctx, "SELECT nope")
@@ -169,7 +169,7 @@ func TestExecParamsRollbackInAbortedBlockSucceeds(t *testing.T) {
 // A refused Tx sends nothing.
 func TestTxExecParamsAfterEndIsRefused(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{cmdCycle("BEGIN"), cmdCycle("COMMIT")}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	ctx := t.Context()
 	tx, err := conn.Begin(ctx, TxConfig{})
 	if err != nil {

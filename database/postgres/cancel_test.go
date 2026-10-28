@@ -25,7 +25,7 @@ import (
 // wasted round trip, not a resynchronisation, not a byte.
 func TestQueryRefusesACancelledContextWithoutSpeaking(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -84,7 +84,7 @@ func TestQueryCancelledBetweenBatchesKeepsTheConnection(t *testing.T) {
 			second,
 			beReadyForQuery(),
 		}}
-		conn := NewConn(srv)
+		conn := NewConn(srv, Config{})
 
 		ctx, cancel := context.WithCancel(t.Context())
 		src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 1})
@@ -160,7 +160,7 @@ func TestQueryCancelledInsideTheLastBatchStillSucceeds(t *testing.T) {
 	script = append(script, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{script, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	src := conn.Query(ctx, "SELECT id", nil, QueryConfig{BatchRows: 16})
@@ -173,7 +173,7 @@ func TestQueryCancelledInsideTheLastBatchStillSucceeds(t *testing.T) {
 
 func TestCopyFromRefusesACancelledContext(t *testing.T) {
 	srv := &fakeServer{}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -198,7 +198,7 @@ func TestCopyCancelledStillRollsBack(t *testing.T) {
 		append(beErrorResponse("57014", "COPY from stdin failed"), beReadyForQuery()...),
 		append(beCommandComplete("ROLLBACK"), beReadyForQuery()...),
 	}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cp, err := conn.CopyFrom(ctx, "COPY t FROM STDIN WITH (FORMAT BINARY)", CopyConfig{RowsPerTx: 10})
@@ -249,7 +249,7 @@ func TestStartupKeepsTheCancelKey(t *testing.T) {
 // A Conn that never saw a startup exchange has no key, and must say so rather
 // than offer a zero one that cancels backend 0.
 func TestNewConnHasNoCancelKey(t *testing.T) {
-	if conn := NewConn(&fakeServer{}); conn.CancelKey().Known() {
+	if conn := NewConn(&fakeServer{}, Config{}); conn.CancelKey().Known() {
 		t.Error("a Conn from NewConn reports a cancellation key it never received")
 	}
 }
@@ -428,7 +428,7 @@ func newPipeServer(t *testing.T) (*pipeServer, *Conn) {
 			}
 		}
 	}()
-	conn := NewConn(client)
+	conn := NewConn(client, Config{})
 	// Run before the close above: a read that ended the test with its
 	// ReadyForQuery owed leaves the script writing it on a pipe, which waits
 	// for a reader.
@@ -857,7 +857,7 @@ func TestARecipeReturningTheMainConnectionIsRefused(t *testing.T) {
 // Nothing is armed without a key, a dialer or a context that can end: no
 // goroutine, no dial.
 func TestCancelWatchIsNotArmedWithoutItsThreeInputs(t *testing.T) {
-	conn := NewConn(&fakeServer{})
+	conn := NewConn(&fakeServer{}, Config{})
 	dial := func(context.Context) (io.ReadWriteCloser, error) {
 		t.Error("the recipe was called")
 		return nil, errors.New("called")

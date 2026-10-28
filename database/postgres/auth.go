@@ -457,15 +457,9 @@ func startup(rw io.ReadWriteCloser, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("%w: Config.ChannelBinding is ChannelBindingRequire and the connection is not a *tls.Conn — channel binding ties the exchange to the server's certificate, so the DialFunc must return the *tls.Conn itself, not a wrapper around it — DialTLS does", ErrAuth)
 	}
 
-	c := NewConn(rw)
-	switch n := cfg.StatementCacheSize; {
-	case n < 0:
-		c.stmts = nil
-	case n > 0:
-		c.stmts = newStmtCache(n)
-	}
+	c := NewConn(rw, cfg)
 	_, c.encodingChosen = cfg.Params["client_encoding"]
-	c.cancelTimeout, c.logger = cfg.CancelTimeout, cfg.Logger
+	c.cancelTimeout = cfg.CancelTimeout
 	c.r.SetMaxMessage(maxStartupMessage)
 	c.w.Startup(body)
 	if err := c.w.Flush(); err != nil {

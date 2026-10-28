@@ -77,7 +77,7 @@ func (b *Backend) exec(sql string, params [][]byte, settings map[string]string) 
 // connection on the other, closed when the test ends.
 func (b *Backend) Conn(tb testing.TB) *postgres.Conn {
 	tb.Helper()
-	return postgres.NewConn(b.pipe(tb, false))
+	return postgres.NewConn(b.pipe(tb, false), postgres.Config{})
 }
 
 // Dial is a [postgres.DialFunc] onto this backend, for the callers that go

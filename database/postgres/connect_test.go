@@ -383,3 +383,33 @@ func TestConfigValidateIsConnectsCheck(t *testing.T) {
 		}
 	}
 }
+
+// NewConn takes the statement cache setting Connect takes: a connection
+// whose startup someone else ran differs from Connect's by its defaults,
+// never by what it can be set to (ADR 0022). Negative turns the cache off,
+// zero is the default bound, a positive value is the bound.
+func TestNewConnHonoursStatementCacheSize(t *testing.T) {
+	for _, tc := range []struct {
+		size int
+		off  bool
+		max  int
+	}{
+		{size: -1, off: true},
+		{size: 0, max: defaultStatementCacheBound},
+		{size: 7, max: 7},
+	} {
+		c := NewConn(&fakeServer{}, Config{StatementCacheSize: tc.size})
+		switch {
+		case tc.off && c.stmts != nil:
+			t.Errorf("StatementCacheSize %d: the cache is on, want it off", tc.size)
+		case !tc.off && (c.stmts == nil || c.stmts.max != tc.max):
+			t.Errorf("StatementCacheSize %d: cache %+v, want a bound of %d", tc.size, c.stmts, tc.max)
+		}
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("NewConn accepted a MaxMessage Validate refuses")
+		}
+	}()
+	NewConn(&fakeServer{}, Config{MaxMessage: 1})
+}

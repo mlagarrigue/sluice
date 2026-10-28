@@ -74,7 +74,7 @@ func executesAfterFirstBatch(t *testing.T, rtt, batch time.Duration) (executes i
 			read() // Sync
 			write(beReadyForQuery())
 		}()
-		conn := NewConn(client)
+		conn := NewConn(client, Config{})
 		src := conn.Query(t.Context(), "SELECT n", nil, QueryConfig{BatchRows: 2})
 		src.Stream()(func(sluice.Batch[Row]) bool { return true })
 		if err := src.Err(); err != nil {
@@ -149,7 +149,7 @@ func TestBatchedReadKeepsTheDepthOfItsShortestFirstBatch(t *testing.T) {
 			}
 			write(beReadyForQuery())
 		}()
-		conn := NewConn(client)
+		conn := NewConn(client, Config{})
 		for i := range batches {
 			src := conn.Query(t.Context(), "SELECT n", nil, QueryConfig{BatchRows: 2, Fetch: FetchBatches})
 			src.Stream()(func(sluice.Batch[Row]) bool { return true })

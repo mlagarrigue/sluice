@@ -389,19 +389,35 @@ func (c *Conn) emitRows(ctx context.Context, rows *Rows, items []Row, deliver fu
 // client_encoding in its Params: a later announcement of any encoding other
 // than UTF8 breaks it.
 //
-// Its statement cache has the default bound, 512 statements. A connection
-// that needs another bound, or none, is built by [Connect] with
-// [Config.StatementCacheSize]: its [DialFunc] may return any
-// io.ReadWriteCloser, a scripted server included.
+// cfg is read for what still applies once the startup is past:
+// [Config.StatementCacheSize], [Config.MaxMessage] and [Config.Logger], with
+// the defaults their zero values name, so a connection built here differs
+// from one [Connect] builds by its defaults, never by what it can be set
+// to. The other fields are the startup's, already done, and are not read.
+// NewConn panics on a MaxMessage [Config.Validate] refuses: a value written
+// in the code is a programmer's mistake.
 //
 // rw is read on one goroutine while it is written on another during a
 // [Copier]'s COPY, as a [net.Conn] allows: the server's notices and errors
 // are read while the rows go out.
-func NewConn(rw io.ReadWriteCloser) *Conn {
-	return &Conn{
-		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
-		stmts: newStmtCache(defaultStatementCacheBound),
+func NewConn(rw io.ReadWriteCloser, cfg Config) *Conn {
+	if m := cfg.MaxMessage; m != 0 && (m < maxStartupMessage || m > maxMaxMessage) {
+		panic(fmt.Sprintf("postgres: NewConn: Config.MaxMessage %d is outside %d..%d bytes", m, maxStartupMessage, maxMaxMessage))
 	}
+	c := &Conn{
+		rw: rw, r: pgwire.NewReaderSize(rw, readBufferSize), w: pgwire.NewWriter(rw),
+		stmts: newStmtCache(defaultStatementCacheBound), logger: cfg.Logger,
+	}
+	switch n := cfg.StatementCacheSize; {
+	case n < 0:
+		c.stmts = nil
+	case n > 0:
+		c.stmts = newStmtCache(n)
+	}
+	if cfg.MaxMessage != 0 {
+		c.r.SetMaxMessage(cfg.MaxMessage)
+	}
+	return c
 }
 
 // readBufferSize is how much of the stream a connection pulls in one read.

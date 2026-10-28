@@ -44,7 +44,7 @@ func TestPipelineBatchBytesCutsABatchEarly(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	var sizes []int
@@ -97,7 +97,7 @@ func TestAPipelinePartThatCannotBeReadKeepsTheConnection(t *testing.T) {
 	next = append(next, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{script, next, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	parts := []Part{{SQL: "SELECT id"}, {SQL: "SELECT id"}}
@@ -142,7 +142,7 @@ func TestAPipelineThatCannotRecoverBreaksTheConnection(t *testing.T) {
 	// No ReadyForQuery follows, so the drain runs out of messages.
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	err := tx.Pipeline(t.Context(), []Part{{SQL: "SELECT id"}}, QueryConfig{BatchRows: 4},
@@ -174,7 +174,7 @@ func TestAPipelineThatCannotRecoverBreaksTheConnection(t *testing.T) {
 // result, from a call that had already reported an error.
 func TestPipelineValidatesEveryPartBeforeWritingAny(t *testing.T) {
 	srv := &fakeServer{responses: oneRow()}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	parts := []Part{
@@ -232,7 +232,7 @@ func TestPipelineDrainsWhenTheCallbackPanics(t *testing.T) {
 	next = append(next, beCommandComplete("SELECT 1")...)
 
 	srv := &fakeServer{responses: [][]byte{script, next, beReadyForQuery()}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	boom := errors.New("the caller's own bug")
@@ -291,7 +291,7 @@ func TestPipelineRefusesAnExtraResultCycle(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	parts := []Part{{SQL: "SELECT id"}}
@@ -333,7 +333,7 @@ func TestPipelineRefusesAnEarlySplitCommandComplete(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	parts := []Part{{SQL: "SELECT a"}, {SQL: "SELECT b"}}
@@ -366,7 +366,7 @@ func TestPipelineToleratesANotification(t *testing.T) {
 	script = append(script, beReadyForQuery()...)
 
 	srv := &fakeServer{responses: [][]byte{script}}
-	conn := NewConn(srv)
+	conn := NewConn(srv, Config{})
 	tx := &Tx{conn: conn}
 
 	var rows int
@@ -412,7 +412,7 @@ func TestPipelineReadsWhileItStillWrites(t *testing.T) {
 		served <- answerAsRead(server, parts, result)
 	}()
 
-	conn := NewConn(client)
+	conn := NewConn(client, Config{})
 	tx := &Tx{conn: conn}
 	ps := make([]Part, parts)
 	for i := range ps {
@@ -500,7 +500,7 @@ func TestPipelineSendFailureBreaksTheConnection(t *testing.T) {
 		_ = server.Close()
 	}()
 
-	conn := NewConn(client)
+	conn := NewConn(client, Config{})
 	tx := &Tx{conn: conn}
 	ps := make([]Part, 8)
 	for i := range ps {
@@ -554,7 +554,7 @@ func TestSavepointsReadWhileTheyStillWrite(t *testing.T) {
 	for i := range names {
 		names[i] = fmt.Sprintf("sp%d", i)
 	}
-	tx := &Tx{conn: NewConn(client)}
+	tx := &Tx{conn: NewConn(client, Config{})}
 	if err := tx.Savepoints(t.Context(), names...); err != nil {
 		t.Fatalf("Savepoints over an unbuffered transport: %v", err)
 	}

@@ -40,6 +40,15 @@ signatures — a value now refused — come last.
   their bounds and their contents are what they were for an input that was
   already non-decreasing.
 
+### PostgreSQL: `database/postgres`
+
+- **`NewConn` takes a `Config`** ("NewConn takes Config, ADR 0022"):
+  `postgres.NewConn(rw)` becomes `postgres.NewConn(rw, postgres.Config{})`,
+  which keeps what it did. The `Config` is read for what applies once the
+  startup is past — `StatementCacheSize`, `MaxMessage`, `Logger` — so a
+  transport authenticated outside the package can turn its statement cache
+  off or size it, as `Connect` can.
+
 ## From v0.2.2 to v0.3.0
 
 In v0.3.0, a negative size, count, bound or timeout is refused across

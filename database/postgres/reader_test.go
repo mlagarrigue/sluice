@@ -69,7 +69,7 @@ func TestQuerySurvivesAFragmentedStream(t *testing.T) {
 	stream = append(stream, frame(pgwire.BackendCommandComplete, "SELECT 3\x00")...)
 	stream = append(stream, frame(pgwire.BackendReadyForQuery, "I")...)
 
-	conn := NewConn(&dribbleTransport{dribbleReader{data: stream}})
+	conn := NewConn(&dribbleTransport{dribbleReader{data: stream}}, Config{})
 	var got []int64
 	src := conn.Query(t.Context(), "SELECT id", nil, QueryConfig{BatchRows: 8, Fetch: FetchAll})
 	src.Stream()(func(b sluice.Batch[Row]) bool {

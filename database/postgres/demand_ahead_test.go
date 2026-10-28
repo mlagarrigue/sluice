@@ -61,7 +61,7 @@ func readDemandAhead(t *testing.T, d *pushdown.Demand, publish func(), rest func
 			}
 			rest(read, write)
 		}()
-		conn := NewConn(client)
+		conn := NewConn(client, Config{})
 		src := conn.Query(t.Context(), demandAheadSQL, []Param{{OID: pgtype.OIDInt8, Value: int8Val(0)}},
 			QueryConfig{BatchRows: 2, Demand: d, KeyParam: 1})
 		src.Stream()(func(b sluice.Batch[Row]) bool {

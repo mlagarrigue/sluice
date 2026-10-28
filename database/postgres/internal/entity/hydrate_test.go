@@ -54,7 +54,7 @@ func eachBatch(tb testing.TB, fields []postgres.Field, batches [][][]byte, fn fu
 	msg('C', fmt.Appendf(nil, "SELECT %d\x00", total))
 	msg('Z', []byte("I"))
 
-	conn := postgres.NewConn(replay{bytes.NewReader(script)})
+	conn := postgres.NewConn(replay{bytes.NewReader(script)}, postgres.Config{})
 	src := conn.Query(tb.Context(), "SELECT", nil, postgres.QueryConfig{
 		BatchRows: len(batches[0]),
 		Fetch:     postgres.FetchBatches,

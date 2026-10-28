@@ -37,7 +37,7 @@ func wantClosedBy(t *testing.T, err error, code string) {
 // reports that reason, not the EOF that followed it.
 func TestExecReportsWhyTheServerClosed(t *testing.T) {
 	srv := &fakeServer{responses: [][]byte{beFatal("57P01", "terminating connection due to administrator command")}}
-	err := NewConn(srv).Exec(t.Context(), "UPDATE orders SET status = 'late'")
+	err := NewConn(srv, Config{}).Exec(t.Context(), "UPDATE orders SET status = 'late'")
 	wantClosedBy(t, err, "57P01")
 }
 
@@ -46,7 +46,7 @@ func TestCommitReportsWhyTheServerClosed(t *testing.T) {
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 		beFatal("25P03", "terminating connection due to idle-in-transaction timeout"),
 	}}
-	tx, err := NewConn(srv).Begin(t.Context(), TxConfig{})
+	tx, err := NewConn(srv, Config{}).Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestPipelineReportsWhyTheServerClosed(t *testing.T) {
 		append(beCommandComplete("BEGIN"), frame(pgwire.BackendReadyForQuery, "T")...),
 		beFatal("57P05", "terminating connection due to idle-session timeout"),
 	}}
-	tx, err := NewConn(srv).Begin(t.Context(), TxConfig{})
+	tx, err := NewConn(srv, Config{}).Begin(t.Context(), TxConfig{})
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCopyCommitReportsWhyTheServerClosed(t *testing.T) {
 		beCopyInResponse(),
 		beFatal("57P01", "terminating connection due to administrator command"),
 	}}
-	cp, err := NewConn(srv).CopyFrom(t.Context(), "COPY orders (id, name) FROM STDIN WITH (FORMAT BINARY)",
+	cp, err := NewConn(srv, Config{}).CopyFrom(t.Context(), "COPY orders (id, name) FROM STDIN WITH (FORMAT BINARY)",
 		CopyConfig{RowsPerTx: 100})
 	if err != nil {
 		t.Fatalf("CopyFrom: %v", err)
