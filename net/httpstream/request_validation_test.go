@@ -32,6 +32,10 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 		{"a path in :authority", "GET", "/x", ptr("h/x"), nil, false, ""},
 		{"a name with a port", "GET", "/x", ptr("h:8080"), nil, true, ""},
 		{"an empty port", "GET", "/x", ptr("h:"), nil, true, ""},
+		// RFC 9110 §4.2.1: an empty host identifier is rejected.
+		{"an empty host before a port", "GET", "/x", ptr(":80"), nil, false, ""},
+		{"an empty host and an empty port", "GET", "/x", ptr(":"), nil, false, ""},
+		{"an empty host before a port in host", "GET", "/x", nil, ptr(":80"), false, ""},
 		{"a port that is not digits", "GET", "/x", ptr("h:8a"), nil, false, ""},
 		{"an IPv6 literal with a port", "GET", "/x", ptr("[::1]:8443"), nil, true, ""},
 		{"an unclosed IPv6 literal", "GET", "/x", ptr("[::1"), nil, false, ""},

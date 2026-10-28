@@ -538,6 +538,11 @@ func validAuthority(b []byte) bool {
 	}
 	for i := 0; i < len(host); i++ {
 		switch c := host[i]; {
+		case c == ':' && i == 0 && b[0] != '[':
+			// An empty reg-name before the port: RFC 9110 §4.2.1 has an
+			// "http" URI with an empty host identifier rejected as
+			// invalid, and ":80" names no host a handler could serve.
+			return false
 		case c == ':':
 			for _, d := range host[i+1:] {
 				if d < '0' || d > '9' {

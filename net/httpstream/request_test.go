@@ -49,6 +49,16 @@ func TestParseRefusals(t *testing.T) {
 			errUnsupportedCoding,
 		},
 		{
+			"an empty host before a port (RFC 9110 §4.2.1)",
+			req("GET /x HTTP/1.1", "Host: :80"),
+			ErrMalformed,
+		},
+		{
+			"an absolute-form target with an empty host",
+			req("GET http://:80/x HTTP/1.1", "Host: h"),
+			ErrMalformed,
+		},
+		{
 			"chunked stacked on itself — chunked is not the final coding",
 			req("POST /x HTTP/1.1", "Host: h", "Transfer-Encoding: chunked, chunked"),
 			ErrMalformed,
