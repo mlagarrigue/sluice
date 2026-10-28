@@ -512,11 +512,9 @@ func DecodeTextArray(dst []string, b []byte) ([]string, error) {
 	return dst, nil
 }
 
-// AppendUUIDArray appends a one-dimensional uuid[] with no NULLs.
-//
-// uuid[] is here and float8[] is not because this list is about keys: a batch
-// of identifiers travelling as one parameter is what `= ANY($1)` is for, and a
-// batch of floating-point numbers is not something anything is keyed by.
+// AppendUUIDArray appends a one-dimensional uuid[] with no NULLs, the form a
+// batch of identifiers takes to travel as one parameter of `= ANY($1)`. An
+// array that holds NULLs is [AppendNullableUUIDArray]'s.
 func AppendUUIDArray(dst []byte, values [][16]byte) []byte {
 	dst = appendArrayHeader(dst, OIDUUID, len(values))
 	for _, v := range values {
