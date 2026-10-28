@@ -28,10 +28,12 @@
 # red case is a failure only where the file expects it green, a 127 is an
 # unsupported case the runner records as such, and a case that turns green
 # where the file says otherwise fails too, until the file records it. A peer
-# the file has no entry for is reported and not judged: the weekly matrix
-# crosses every peer, and only those whose results someone has read and
-# written down can regress. The logs of every case stay in RUNNER_DIR/logs
-# for reading.
+# the file has no entry for fails as well: the matrix is read at the pinned
+# RUNNER_REF, so a new peer arrives with a deliberate bump of that commit,
+# and its results are read and written down in the same change.
+# INTEROP_UNJUDGED=<reason> reports such a peer without judging it, for a
+# first look, and prints the reason. The logs of every case stay in
+# RUNNER_DIR/logs for reading.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -170,6 +172,9 @@ if jq -e --arg peer "$peer" 'has($peer)' interop/expected-results.json >/dev/nul
   if [ "$SIDE" != server ]; then CASES_CLIENT=$TESTS; fi
   export CASES_SERVER CASES_CLIENT
   scripts/interop-expect.sh "$peer" "$asServer" "$asClient"
+elif [ -n "${INTEROP_UNJUDGED:-}" ]; then
+  echo "interop-runner: no expected results for $peer: reported, not judged ($INTEROP_UNJUDGED)"
 else
-  echo "interop-runner: no expected results for $peer: reported, not judged"
+  # interop-expect.sh refuses a peer the file does not list, and says so.
+  scripts/interop-expect.sh "$peer" "$asServer" "$asClient"
 fi
