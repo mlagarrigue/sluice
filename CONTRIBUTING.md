@@ -310,9 +310,11 @@ Three places, depending on what the peer or the benchmark needs:
   reaches the program at run time — a socket, a secret, a certificate, a
   server's reply — can be wrong on one machine and right on the next, so the
   constructor returns an `error` for the caller to report: `quic.NewListener`,
-  `web.NewHMACVerifier` on a short secret. A constructor that can fail on its
-  environment returns an `error` for all its refusals, programming errors
-  included, so the caller has one path to handle rather than two. The reason
+  `web.NewHMACVerifier` on a short secret.
+
+  A constructor that can fail on its environment returns an `error` for all
+  its refusals, programming errors included, so the caller has one path to
+  handle rather than two. The reason
   is rule 4: an `error` a caller may ignore (`rt, _ :=`) on a value the
   program itself wrote is a silent failure waiting for its first request,
   while a panic at startup is a crash with a name. A configuration the

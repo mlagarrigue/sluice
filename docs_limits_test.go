@@ -3,6 +3,7 @@ package sluice_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -198,5 +199,61 @@ func TestArchitectureQuotesAreShort(t *testing.T) {
 			t.Errorf("%s:%d: %d quoted lines in a row; give their subjects headings", page, start, n)
 		}
 		n = 0
+	}
+}
+
+// maxParagraphLines is the longest paragraph of prose a guide or an entry
+// document may hold. Past it a paragraph carries eight or more things at
+// once, and a beginner the guides are written for loses the thread; it is
+// cut where its subject changes, or becomes a list.
+const maxParagraphLines = 18
+
+var numbered = regexp.MustCompile(`^\d+\. `)
+
+// Every paragraph of prose in the README, CONTRIBUTING, the guides and the
+// architecture runs maxParagraphLines lines at most. Code blocks and tables
+// do not count; a list item counts as a paragraph of its own, from its
+// marker; a quoted box counts without its "> ".
+func TestProseParagraphsAreShort(t *testing.T) {
+	guides, err := filepath.Glob("docs/guide/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, page := range append(guides, "README.md", "CONTRIBUTING.md", "docs/design/architecture.md") {
+		b, err := os.ReadFile(page) //nolint:gosec // G304: a repository path, not input
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, n, fenced := 0, 0, false
+		flush := func() {
+			if n > maxParagraphLines {
+				t.Errorf("%s:%d: a paragraph of %d lines; cut it where its subject changes (at most %d)",
+					page, start, n, maxParagraphLines)
+			}
+			n = 0
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(line, "```") {
+				fenced = !fenced
+				flush()
+				continue
+			}
+			if fenced {
+				continue
+			}
+			text := strings.TrimPrefix(strings.TrimPrefix(line, ">"), " ")
+			if strings.TrimSpace(text) == "" || strings.HasPrefix(text, "- ") || numbered.MatchString(text) || strings.HasPrefix(text, "|") {
+				flush()
+				if strings.HasPrefix(text, "- ") || numbered.MatchString(text) {
+					start, n = i+1, 1
+				}
+				continue
+			}
+			if n == 0 {
+				start = i + 1
+			}
+			n++
+		}
+		flush()
 	}
 }

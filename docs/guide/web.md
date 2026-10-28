@@ -266,7 +266,9 @@ if err := web.Serve(ctx, srv, 10*time.Second, gw); err != nil {
 stopped: on context cancellation, it gives in-flight requests ten seconds
 to finish, then closes what it was handed — the gateway, the database
 connection. A grace of zero means five seconds, as an `httpstream`
-`ShutdownGrace` left at zero does, and a negative grace means no bound. A server without `ReadHeaderTimeout` gets ten seconds by
+`ShutdownGrace` left at zero does, and a negative grace means no bound.
+
+A server without `ReadHeaderTimeout` gets ten seconds by
 default: a client sending its headers one byte at a time cannot hold the
 process hostage. Likewise, a server with neither `IdleTimeout` nor
 `ReadTimeout` gets two minutes: a *keep-alive* connection (kept open for
@@ -278,9 +280,10 @@ them, a client that sends one byte of body and then goes quiet holds the
 handler inside `DecodeJSON` until the forced stop. A handler that streams
 for long, or reads a slow body on purpose, moves its own deadlines with
 `http.NewResponseController(w)` (`SetReadDeadline`, `SetWriteDeadline`); a
-negative value lifts the bound for the whole server. `Recover` turns a
-panic in a handler into a 500 response you observe, instead of killing the
-process and every request in flight.
+negative value lifts the bound for the whole server.
+
+`Recover` turns a panic in a handler into a 500 response you observe,
+instead of killing the process and every request in flight.
 
 ### Over TLS, and HTTP/2
 

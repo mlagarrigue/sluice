@@ -1514,7 +1514,9 @@ lying to the user.
 > join's cursor, with the timestamp as its key) and sentinel (`ErrUnsorted`)
 > as `join.Merge`. Ordering is what makes eviction safe without guessing
 > lateness: a row dies the moment the other side's clock passes the last
-> instant that could match it. This also settles **what a timestamp is in
+> instant that could match it.
+>
+> This also settles **what a timestamp is in
 > this library** — an event time extracted per element as `time.Time`, with
 > ordering as the operator's requirement — and `window.Tumbling` inherits
 > the convention, though not the whole requirement: a window is closed by an
@@ -1524,7 +1526,9 @@ lying to the user.
 > than that window's start meets a policy (`window.LateFail`,
 > `window.LateDrop`) — measured on the first consumer built on the library,
 > where one client's clock a second behind panicked up through a `gateway`
-> and left every later call failing. Two additions: the S1 bound is a required
+> and left every later call failing.
+>
+> Two additions: the S1 bound is a required
 > `join.BuildLimit` counting both sides' retained rows (`Fail` | `DropNewest`,
 > the first drop reported once through `Report`), because
 > O(throughput × interval) is a class, not a bound; and the measured class is

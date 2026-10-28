@@ -451,10 +451,14 @@ ignores it, where RFC 5802 §5.1 wants a name. A password that SASLprep
 (RFC 4013) would refuse — not UTF-8, a prohibited character, mixed
 bidirectional text — is sent as its raw bytes, the way `pg_saslprep`
 derived the role's key on the server: refusing it here would lock out a
-password the server accepts. **`md5` is refused**
+password the server accepts.
+
+**`md5` is refused**
 — on purpose: the hash stored server-side is as good as the password, and
 PostgreSQL has deprecated it. The error message says what to change on
-the server. The PBKDF2 iteration count the server asks for is accepted
+the server.
+
+The PBKDF2 iteration count the server asks for is accepted
 between 4096 (RFC 7677's floor, PostgreSQL's default) and 1,048,576, and
 the salt at 16 bytes or more; a server outside that range is refused with
 the field to set in the message — `Config.MinSCRAMIterations`,
@@ -487,7 +491,9 @@ handshakeloss and handshakecorruption pass against quic-go and, against
 ngtcp2, in most passes: under 30 % loss a handshake sometimes outlives
 `ListenerConfig.HandshakeTimeout` (10 s), and under corruption a file
 sometimes never arrives; both are recorded as alternating, with their
-cause. As a client it passes handshake, transfer,
+cause.
+
+As a client it passes handshake, transfer,
 longrtt, multiplexing, retry, resumption, zerortt, blackhole,
 amplificationlimit, handshakeloss, transferloss, handshakecorruption,
 transfercorruption, ipv6, rebind-port and rebind-addr against both, plus
@@ -495,6 +501,7 @@ ecn against ngtcp2. It refuses, with the exit status 127 the runner asks
 for, what is documented as not there: QUIC v2, and on the client side
 chacha20 (Go's TLS 1.3 offers no way to restrict the cipher suites it
 offers), a forced key update and HTTP/3.
+
 Failures whose cause lies outside sluice: quic-go's image refuses ecn
 itself. quic-go's client never moves to a server's preferred address, so
 connectionmigration sees one path. msquic's server sometimes answers
@@ -517,14 +524,18 @@ first size lost, each probe halves the range between the last size
 confirmed and the smallest lost, down to 20 bytes. A size is lost after
 three unanswered probes. A tunnel with an MTU of 1420 settles within
 20 bytes of its 1372 bytes of payload, the IPv6 minimum of 1280 at 1212
-or more. The ceiling is `TransportParameters.MaxDatagramSize` (zero:
+or more.
+
+The ceiling is `TransportParameters.MaxDatagramSize` (zero:
 1452; 8952 for a 9000-byte jumbo path), bounded by the
 `MaxUDPPayloadSize` the peer announces; the size reached reads in
 `Stats.DatagramSize`. The search starts over at 1200 after each
 migration. It needs a socket that refuses to fragment (the "Don't
 Fragment" option, which the package sets on a `*net.UDPConn` on Linux,
 macOS and Windows): on a platform without the option, datagrams stay at
-1200 bytes, since a probe the network may fragment proves nothing. A path that shrinks under a connection (a "black hole",
+1200 bytes, since a probe the network may fragment proves nothing.
+
+A path that shrinks under a connection (a "black hole",
 RFC 8899 §4.3) shows as three probe timeouts in a row, or three
 full-size packets lost while only smaller ones are acknowledged: the size
 falls back to 1200, what was lost is resent cut to that size, the search
@@ -532,8 +543,9 @@ runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
 outage of three probe timeouts counts too, and costs one probe once the
 path is back. A completed search is not run again on a path that might
 have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
-require them, and `net.PacketConn` does not deliver them). A path that
-cannot carry 1200 bytes is therefore never detected: sending on it goes
+require them, and `net.PacketConn` does not deliver them).
+
+A path that cannot carry 1200 bytes is therefore never detected: sending on it goes
 on at probe-timeout pace, doubling each time, until the idle timeout
 ends the connection; §14.2's "cease sending" has no trigger here, and
 the backoff is the bound. A lost probe is not a congestion event
@@ -544,7 +556,9 @@ the backoff is the bound. A lost probe is not a congestion event
 The handshake is `crypto/tls`'s, from the Go release
 `go.mod` names as the floor, run through `tls.QUICClient` and
 `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
-documentation says. Four of its positions depart from RFC 9846 and are
+documentation says.
+
+Four of its positions depart from RFC 9846 and are
 inherited as they are: the ClientHello's X25519 key share repeats the
 key inside the hybrid X25519MLKEM768 share (§4.3.8, the one departure a
 conformant peer can see); a `pre_shared_key` extension out of last place
@@ -553,13 +567,17 @@ protocol_version rather than illegal_parameter (§4.3.11, §4.3.1); an
 extension known but forbidden in the message carrying it is ignored
 rather than refused (§4.3, §4.4.1); a `pre_shared_key` without
 `psk_key_exchange_modes` continues without the PSK rather than aborting
-(§4.3.9). The TLS 1.3 compatibility mode is neither asked for by this
+(§4.3.9).
+
+The TLS 1.3 compatibility mode is neither asked for by this
 client nor policed by this server: `crypto/tls` sends no
 `legacy_session_id` in QUIC and echoes one it receives without the
 change_cipher_spec RFC 9846 Appendix E.4 would want — RFC 9001 §8.4
 removes that record from QUIC — and the ClientHello field is not
 exposed to the server, so the PROTOCOL_VIOLATION §8.4 asks of a server
-waits on `crypto/tls`. A server issues one ticket per connection:
+waits on `crypto/tls`.
+
+A server issues one ticket per connection:
 `crypto/tls` refuses a second `SendSessionTicket` on a QUIC connection. A
 client presents a ticket once — RFC 9846 Appendix C.4 asks it not to reuse
 one, and the cache `Dial` wraps drops it at its first resumption. Of six
@@ -567,14 +585,18 @@ connections opened at once from one ticket, the first resumes and the other
 five run a full handshake — one round trip more, the certificate checked
 again, and no 0-RTT — until each resumed connection has handed back a ticket
 of its own; the same appendix recommends that a server offer as many
-tickets as a client might open connections. A `DialEarly` client that
+tickets as a client might open connections.
+
+A `DialEarly` client that
 offers 0-RTT does not survive a HelloRetryRequest — the answer of a server
 that wants a key share the ClientHello did not carry: `crypto/tls` computes
 the PSK binders of its second ClientHello before it drops `early_data` from
 it, and the server closes with decrypt_error. The connection is lost, not
 only its 0-RTT; its error wraps `ErrEarlyDataRejected` and names the
 HelloRetryRequest, and `Dial`, which offers no 0-RTT, resumes through a
-HelloRetryRequest unharmed. Rewriting the TLS stack is out of the question (ADR 0002:
+HelloRetryRequest unharmed.
+
+Rewriting the TLS stack is out of the question (ADR 0002:
 the standard library owns the sensitive ground); these follow the Go
 release, and a peer refused over one of them is the signal to revisit.
 In plain words: the lock on the door is the one Go ships, quirks
