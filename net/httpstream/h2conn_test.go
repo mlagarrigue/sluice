@@ -1302,7 +1302,7 @@ func TestH2HPACKTableShrinkToZeroThenRestore(t *testing.T) {
 	}
 }
 
-// B6. h2conn.go strips PADDED and PRIORITY off a HEADERS frame before HPACK
+// B6. h2read.go strips PADDED and PRIORITY off a HEADERS frame before HPACK
 // ever sees it. The normal case: both flags set, a real header block between
 // the priority fields and the padding.
 func TestH2PaddedPriorityHeadersAreStrippedCorrectly(t *testing.T) {

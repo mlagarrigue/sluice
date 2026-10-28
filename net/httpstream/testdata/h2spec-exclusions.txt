@@ -26,7 +26,7 @@ http2/3.5/2
 # any other type of frame on a closed stream as a connection error".
 # RFC 7540 made the stream error mandatory; this server takes the other
 # branch of the MAY and tolerates the frame for a while, because the
-# RST_STREAM and the DATA may have crossed on the wire (h2conn.go, retire).
+# RST_STREAM and the DATA may have crossed on the wire (h2read.go, retire).
 http2/5.1/8
 http2/5.1/9
 
@@ -35,14 +35,14 @@ http2/5.1/9
 # this server counts the DATA against the connection window, decodes the
 # HEADERS block for the HPACK table, and drops either, sending nothing —
 # §5.1 forbids any frame but PRIORITY on a closed stream — rather than the
-# connection error RFC 7540 required (h2conn.go, data and reset; h2write.go,
+# connection error RFC 7540 required (h2read.go, data and reset; h2write.go,
 # responded; TestH2NoResetOnAStreamClosedByBothEndStreams).
 http2/5.1/11
 http2/5.1/12
 
 # RFC 9113 §5.3.2 deprecates the priority scheme and §6.2/§6.3 no longer
 # say that a stream cannot depend on itself: the dependency fields are
-# skipped, unread (h2conn.go, headers; frame, PRIORITY). ADR 0008 on
+# skipped, unread (h2read.go, headers; frame, PRIORITY). ADR 0008 on
 # the connection records that RFC 9218 is not implemented either.
 http2/5.3.1/1
 http2/5.3.1/2
