@@ -213,22 +213,33 @@ func TestIntegrationReplicationDeliversTypeAndOrigin(t *testing.T) {
 	}
 	defer repl.Close()
 
+	// The transaction judged is the one that carries the Insert: before
+	// PostgreSQL 15, pgoutput also sends the empty ones — the origin's
+	// creation after the slot's — as a bare Begin and Commit.
 	var kinds []postgres.ChangeKind
 	var typ postgres.DataType
 	var from string
 	var fromLSN postgres.LSN
+	inserted := false
 	src := repl.Changes(rctx)
 	src.Stream()(func(b sluice.Batch[postgres.Change]) bool {
 		for _, c := range b.Items {
+			if c.Kind == postgres.ChangeBegin {
+				kinds, inserted = nil, false
+			}
 			kinds = append(kinds, c.Kind)
 			switch c.Kind {
 			case postgres.ChangeType:
 				typ = c.Type
 			case postgres.ChangeOrigin:
 				from, fromLSN = c.Origin, c.LSN
+			case postgres.ChangeInsert:
+				inserted = true
 			case postgres.ChangeCommit:
 				repl.Ack(c.EndLSN)
-				return false
+				if inserted {
+					return false
+				}
 			}
 		}
 		return true
