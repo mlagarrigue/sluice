@@ -95,6 +95,7 @@ type TxConfig struct {
 	// context stops this client waiting, and CancelRequest is advisory. In a
 	// batched pipeline one unbounded statement stalls every caller in the
 	// batch, so a transaction with no timeout is a decision, not a default.
+	// Zero sets none: the server's own statement_timeout applies.
 	Timeout time.Duration
 }
 

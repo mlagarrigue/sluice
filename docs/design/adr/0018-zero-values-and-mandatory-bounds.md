@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split), 2026-10-28 (written in the present tense)
+- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split), 2026-10-28 (written in the present tense; the rule's reader across every configuration)
 - **Theme:** httpstream
 
 ## Problem
@@ -46,6 +46,12 @@ never removed.**
    first byte: `Serve`, `Server`, `ServeH2Conn`, `ServeH3Conn` and `TransportParameters`
    return an error naming the field, the value and what zero would have
    meant, all errors joined (`errors.Join`).
+
+   The rule holds for every configuration the module exports:
+   `TestConfigZeroValuesAreNamed` reads each numeric field and requires its
+   comment to say what its zero is worth, or that it is required; the
+   fields whose zero is the protocol's own value (QUIC's transport
+   parameters) are named in the test.
 
    A default may depend on another field: `LingerTimeout` at zero is one
    second, or `ReadTimeout` if shorter; `MaxStreamedBodyBytes` at zero is

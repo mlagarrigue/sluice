@@ -1417,3 +1417,79 @@ func importablePackages(t *testing.T) map[string]string {
 	out["sluice"] = "github.com/mlagarrigue/sluice"
 	return out
 }
+
+// zeroSays is how a field's doc comment says what its zero value does:
+// "Zero means 64 MiB", "zero is no bound", "A zero ... is refused".
+var zeroSays = regexp.MustCompile(`(?i)\bzero\b|\bunset\b|\bleft at 0\b|\brequired\b`)
+
+// zeroIsTheProtocols names the fields whose zero is not a default but the
+// protocol's own value, carried as is: a transport parameter announced as 0
+// grants nothing (RFC 9000 §18.2), and DefaultParameters fills the defaults.
+var zeroIsTheProtocols = map[string]bool{
+	"TransportParameters.InitialMaxData": true, "TransportParameters.InitialMaxStreamDataUni": true,
+	"TransportParameters.InitialMaxStreamDataBidiLocal": true, "TransportParameters.InitialMaxStreamDataBidiRemote": true,
+	"TransportParameters.InitialMaxStreamsBidi": true, "TransportParameters.InitialMaxStreamsUni": true,
+	"TransportParameters.AckDelayExponent": true, "TransportParameters.MaxAckDelay": true,
+}
+
+// ADR 0018: a numeric field of a configuration whose zero is not refused
+// means a default the field's documentation names. Every integer or
+// duration field of an exported configuration says what its zero does.
+func TestConfigZeroValuesAreNamed(t *testing.T) {
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
+	numeric := map[string]bool{
+		"int": true, "int32": true, "int64": true, "uint": true, "uint8": true,
+		"uint16": true, "uint32": true, "uint64": true, "time.Duration": true, "float64": true,
+	}
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if slices.Contains(skip, d.Name()) || (p != "." && strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution|parser.ParseComments)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok || !ts.Name.IsExported() || !strings.HasSuffix(ts.Name.Name, "Config") && !strings.HasSuffix(ts.Name.Name, "Parameters") {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			prev := ""
+			for _, field := range st.Fields.List {
+				doc := field.Doc.Text() + field.Comment.Text()
+				// "IPv4PrefixBits and IPv6PrefixBits are …": one comment
+				// above two fields says for both.
+				if field.Doc == nil && len(field.Names) > 0 && strings.Contains(prev, field.Names[0].Name) {
+					doc = prev
+				}
+				prev = doc
+				typ := types.ExprString(field.Type)
+				if !numeric[typ] || len(field.Names) == 0 || !field.Names[0].IsExported() ||
+					zeroIsTheProtocols[ts.Name.Name+"."+field.Names[0].Name] {
+					continue
+				}
+				if !zeroSays.MatchString(doc) {
+					t.Errorf("%s: %s.%s.%s (%s) does not say what its zero does (ADR 0018)", p, f.Name.Name, ts.Name.Name, field.Names[0].Name, typ)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
