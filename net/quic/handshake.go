@@ -686,9 +686,11 @@ func (c *Conn) earlyWriteStillLocked() bool {
 // while 0-RTT packets are still being written, where the remembered ones
 // apply (§7.4.1). Callers hold mu.
 func (c *Conn) applyPeerLimitsLocked(p TransportParameters) {
+	// Raised, never lowered, like the credit: a MAX_STREAMS read while the
+	// limits were held has already moved the counts past the initial ones.
 	c.connSend.grant(p.InitialMaxData)
-	c.peerMaxStreamsBidi = p.InitialMaxStreamsBidi
-	c.peerMaxStreamsUni = p.InitialMaxStreamsUni
+	c.peerMaxStreamsBidi = max(c.peerMaxStreamsBidi, p.InitialMaxStreamsBidi)
+	c.peerMaxStreamsUni = max(c.peerMaxStreamsUni, p.InitialMaxStreamsUni)
 	// Streams opened before the grants arrived: the 0-RTT ones, which wrote
 	// under the ticket's per-stream limit, and otherwise none in the
 	// ordinary order of things, but harmless to repair. §7.4.1 names this

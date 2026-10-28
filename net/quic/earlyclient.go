@@ -181,6 +181,9 @@ func (c *Conn) rejectEarlyLocked() {
 	c.openedBidi, c.openedUni = 0, 0
 	c.connSend = sendQuota{}
 	c.peerMaxStreamsBidi, c.peerMaxStreamsUni = 0, 0
+	// The server's limits apply from here, below or not at all: nothing
+	// waits for the 1-RTT key to apply them again.
+	c.limitsHeld = false
 	if c.paramsRemembered {
 		c.peerParams, c.hasPeerParams, c.paramsRemembered = TransportParameters{}, false, false
 	} else if c.hasPeerParams {

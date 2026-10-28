@@ -915,9 +915,10 @@ func (c *Conn) handleRetry(h longHeader) {
 	c.mu.Lock()
 	// §17.2.5.1: a Retry whose source identifier echoes the Initial's
 	// destination is discarded — it would re-derive the very keys it asks
-	// to replace. Discarded, not consumed: a later, well-formed Retry is
-	// still honoured.
-	if !c.isClient || c.retried || c.peerCIDSet || len(h.Token) == 0 || bytes.Equal(h.SCID, c.initialDCID) {
+	// to replace. So is one whose destination is not the Source Connection
+	// ID the Initial carried: it answers some other connection. Discarded,
+	// not consumed: a later, well-formed Retry is still honoured.
+	if !c.isClient || c.retried || c.peerCIDSet || len(h.Token) == 0 || bytes.Equal(h.SCID, c.initialDCID) || !bytes.Equal(h.DCID, c.scid) {
 		c.mu.Unlock()
 		c.noteDiscard()
 		return
@@ -994,6 +995,11 @@ func (c *Conn) frames(space int, payload []byte, now time.Time) error {
 	return c.framesIn(space, false, payload, now)
 }
 
+// maxKeptFrames is the most frames the parse scratch keeps between packets:
+// past any packet ordinary traffic sends, far under what a packet of PINGs
+// holds.
+const maxKeptFrames = 64
+
 // framesIn is frames for a packet that may be 0-RTT (early), whose frame
 // types §12.4 restricts further.
 //
@@ -1035,10 +1041,18 @@ func (c *Conn) framesIn(space int, early bool, payload []byte, now time.Time) er
 	// hand TLS the keys a deferred packet was waiting on, and that packet
 	// replays from inside the handler. The nested call finds nil, allocates
 	// its own, and the unwind puts each level's slice back.
+	//
+	// Kept only up to maxKeptFrames: a packet of 1 451 one-byte PINGs grows
+	// the slice to that many frames, and a connection would hold that much
+	// for its whole life on the strength of one packet.
 	parseScratch := c.parseScratch
 	c.parseScratch = nil
 	frames, err := parseFrames(parseScratch[:0], payload)
-	defer func() { c.parseScratch = frames[:0] }()
+	defer func() {
+		if cap(frames) <= maxKeptFrames {
+			c.parseScratch = frames[:0]
+		}
+	}()
 	if err != nil {
 		return &transportError{code: transportFrameEncoding, err: err}
 	}

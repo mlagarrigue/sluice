@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -31,29 +32,45 @@ const cmsgLenSize = strconv.IntSize / 8
 // UDP_SEND_MSG_SIZE, which older releases lack.
 // Asking costs a system call, and the answer is the system's, not the
 // socket's: msquic asks once, on the socket its datapath opens first.
+// decided is read without the lock on every send; mu serialises the asking.
 var segmentation struct {
-	once    sync.Once
-	offered bool
+	mu      sync.Mutex
+	decided atomic.Bool
+	offered atomic.Bool
 }
 
-// offersSegmentation asks Winsock, on the first socket it sees, whether it
-// knows UDP_SEND_MSG_SIZE. Asking rather than trying: a system that does
-// not know a control message might not say so on the write.
+// offersSegmentation asks Winsock, on the first socket that can answer,
+// whether it knows UDP_SEND_MSG_SIZE. Asking rather than trying: a system
+// that does not know a control message might not say so on the write. Only
+// an answer about the option is kept for the process — yes, or one of the
+// codes of an option Winsock does not apply; a socket already closed, or
+// any other failure of the call, says nothing about the system, and the
+// next socket asks again.
 func offersSegmentation(uc *net.UDPConn) bool {
-	segmentation.once.Do(func() {
-		rc, err := uc.SyscallConn()
-		if err != nil {
-			return
-		}
-		var serr error
-		if err := rc.Control(func(fd uintptr) {
-			_, serr = syscall.GetsockoptInt(syscall.Handle(fd), ipprotoUDP, udpSendMsgSize)
-		}); err != nil {
-			return
-		}
-		segmentation.offered = serr == nil
-	})
-	return segmentation.offered
+	if segmentation.decided.Load() {
+		return segmentation.offered.Load()
+	}
+	segmentation.mu.Lock()
+	defer segmentation.mu.Unlock()
+	if segmentation.decided.Load() {
+		return segmentation.offered.Load()
+	}
+	rc, err := uc.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var serr error
+	if err := rc.Control(func(fd uintptr) {
+		_, serr = syscall.GetsockoptInt(syscall.Handle(fd), ipprotoUDP, udpSendMsgSize)
+	}); err != nil {
+		return false
+	}
+	if serr != nil && !refusedSegmentation(serr) {
+		return false
+	}
+	segmentation.offered.Store(serr == nil)
+	segmentation.decided.Store(true)
+	return serr == nil
 }
 
 // refusedSegmentation tells Winsock declining the option from a write that

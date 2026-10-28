@@ -2,6 +2,7 @@ package quic
 
 import (
 	"encoding/binary"
+	"net"
 	"syscall"
 	"testing"
 	"unsafe"
@@ -45,4 +46,38 @@ func TestRefusedSegmentationCodes(t *testing.T) {
 			t.Errorf("%v taken for a refusal", err)
 		}
 	}
+}
+
+// The answer kept for the process is Winsock's about the option, never a
+// failure of the socket that asked: a closed socket first leaves the
+// question open, and the next, open one answers it.
+func TestSegmentationIsAskedAgainAfterAClosedSocket(t *testing.T) {
+	segmentation.mu.Lock()
+	decided, offered := segmentation.decided.Load(), segmentation.offered.Load()
+	segmentation.decided.Store(false)
+	segmentation.offered.Store(false)
+	segmentation.mu.Unlock()
+	t.Cleanup(func() {
+		segmentation.decided.Store(decided)
+		segmentation.offered.Store(offered)
+	})
+
+	closed, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = closed.Close()
+	if offersSegmentation(closed) || segmentation.decided.Load() {
+		t.Fatal("a closed socket decided the process's answer")
+	}
+	open, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	got := offersSegmentation(open)
+	if !segmentation.decided.Load() {
+		t.Fatal("an open socket left the question open")
+	}
+	t.Logf("UDP_SEND_MSG_SIZE offered: %v", got)
 }

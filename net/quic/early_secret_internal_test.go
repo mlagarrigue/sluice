@@ -53,3 +53,42 @@ func TestEarlySecretInstallsNoApplicationKeys(t *testing.T) {
 		t.Errorf("UnhandledTLSEvents = %d after QUICRejectedEarlyData; want 0", got)
 	}
 }
+
+// The server's limits held behind 0-RTT packets (limitsHeld) take over when
+// the 1-RTT write key arrives, and they raise this end's stream counts,
+// never lower them: a MAX_STREAMS read meanwhile already moved the count
+// past the server's initial value (RFC 9000 §4.6: a MAX_STREAMS that does
+// not raise the limit is ignored, and an initial value is no different).
+// And a refused 0-RTT applies the server's limits at once, so nothing is
+// held for the 1-RTT key to apply again.
+func TestHeldLimitsNeverLowerTheStreamCounts(t *testing.T) {
+	secret := make([]byte, 32)
+	c := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.mu.Lock()
+	c.peerParams.InitialMaxStreamsBidi, c.peerParams.InitialMaxStreamsUni = 10, 10
+	c.hasPeerParams, c.limitsHeld = true, true
+	c.peerMaxStreamsBidi, c.peerMaxStreamsUni = 50, 50 // raised by a MAX_STREAMS
+	c.mu.Unlock()
+	if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICSetWriteSecret, Level: tls.QUICEncryptionLevelApplication, Suite: tls.TLS_AES_128_GCM_SHA256, Data: secret}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	bidi, uni, held := c.peerMaxStreamsBidi, c.peerMaxStreamsUni, c.limitsHeld
+	c.mu.Unlock()
+	if bidi != 50 || uni != 50 || held {
+		t.Errorf("after the 1-RTT key: streams (%d, %d), held %v; want (50, 50), false", bidi, uni, held)
+	}
+
+	r := assembleConn(&fuzzSink{addr: "held:self"}, fakeFuzzAddr("held:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, true, DefaultParameters())
+	t.Cleanup(func() { _ = r.Close() })
+	r.mu.Lock()
+	r.peerParams.InitialMaxStreamsBidi = 10
+	r.hasPeerParams, r.limitsHeld = true, true
+	r.rejectEarlyLocked()
+	held = r.limitsHeld
+	r.mu.Unlock()
+	if held {
+		t.Error("a refused 0-RTT left the server's limits held")
+	}
+}

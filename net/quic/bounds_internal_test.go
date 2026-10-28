@@ -545,3 +545,24 @@ func TestRetiredSelfRingIsBounded(t *testing.T) {
 		t.Error("the oldest retirement is still remembered past the ring")
 	}
 }
+
+// One packet of 1 451 PINGs parses to as many frames; the parse scratch
+// that held them is not what the connection keeps for the next packet.
+// An ordinary packet's scratch still is, which is what the scratch is for.
+func TestParseScratchDoesNotKeepAPacketOfPings(t *testing.T) {
+	c := assembleConn(&fuzzSink{addr: "scratch:self"}, fakeFuzzAddr("scratch:peer"), []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	pings := bytes.Repeat([]byte{framePing}, 1451)
+	if err := c.frames(spaceApplication, pings, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := cap(c.parseScratch); got > maxKeptFrames {
+		t.Errorf("after 1451 PINGs the connection keeps a scratch of %d frames, want at most %d", got, maxKeptFrames)
+	}
+	if err := c.frames(spaceApplication, pings[:3], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if c.parseScratch == nil {
+		t.Error("an ordinary packet's scratch was not kept")
+	}
+}
