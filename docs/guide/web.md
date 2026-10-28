@@ -234,7 +234,11 @@ correct only if the token's issuer is your own service. Otherwise,
 implement `Authorizer` against whatever knows the policy. The grant is then
 passed to the database through `tx.SetLocal`, so that PostgreSQL's
 row-level security filters the right tenant's data — without ever writing
-the tenant into the SQL text.
+the tenant into the SQL text. When a rule is decided in Go instead,
+`grant.Allows("region", "eu")` answers it, `grant.Dimension("region")`
+lists what the grant permits on that axis (none means match nothing, never
+"no filter"), and `principal.HasScope("orders:write")` reads the token's
+scopes.
 
 ### Verifier settings
 
@@ -314,7 +318,8 @@ header `Early-Data: 1`: the proxy received it in *early data*, sent by the
 client before its TLS handshake ended, which a third party can replay
 as is. `web.EarlyData(allow, h)` answers such a request 425 Too Early,
 unless `allow` accepts it; the client sends it again once its handshake is
-through. Accept only what a duplicate does not hurt — a catalogue read, not
+through. The body of that 425 is `web.TooEarlyReport()`, for a handler that
+refuses early data on its own terms. Accept only what a duplicate does not hurt — a catalogue read, not
 an order.
 
 > **In plain words.** With no such proxy in front of you, the header never

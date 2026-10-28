@@ -118,7 +118,7 @@ restored (§9.3.2); with none known, the connection closes silently.
 
 The client has `Conn.Rebind` (a new socket, a fatal probe), and moves to a
 server's preferred address on its own after the handshake. The server half
-is `ListenerConfig. PreferredAddress`, a second socket the listener reads
+is `ListenerConfig.PreferredAddress`, a second socket the listener reads
 and announces: it is public because the feature is otherwise unreachable,
 and the parameter's whole point (§9.6) is a server behind a shared address —
 a deployment, not a test. The preferred address is announced by

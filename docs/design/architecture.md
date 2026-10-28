@@ -283,7 +283,7 @@ remains to be verified with several batches alive simultaneously.*
 - Go has **no** monomorphization — generating a specialised copy of a generic function per type, which is how Rust makes generics free. Rust is a conceptual model, **not a cost
   model** — no "zero-cost" promise is made here.
 - `iter.Pull` (the standard function that turns an iterator into a `next()` call) costs a runtime coroutine — a suspended function the runtime resumes on demand — and a context switch **per value
-  pulled**: **53.3 ns/element measured** (×243 the ceiling), against 1.05 ns in
+  pulled**: **53.3 ns/element measured** (×243 the native loop, the ceiling), against 1.05 ns in
   direct push. It is reserved for lockstep joins and merge, and then **on
   batches** — never on elements. This is not a recommendation but an
   **obligation**: see [Measurements](../benchmarks.md#the-architectures-figures).
@@ -311,7 +311,7 @@ Contexts are **stratified**: the HTTP context exists up to the HTTP layer, the
 user/business context beyond it. An operator sees only the stratum that concerns
 it.
 
-### Three causes of stopping, not to be confused
+### Four causes of stopping, not to be confused
 
 | Cause | Origin | Mechanism |
 |---|---|---|
@@ -579,7 +579,7 @@ package captures nothing. Trace only if `Severity >= Error` or in debug mode.
 |---|---|
 | `[]Diagnostic` carried by the element | **business** diagnostic — never interrupts |
 | the element type itself | the element **could not** be produced — the caller's own field, see below |
-| `Source.Err()` outside the stream | **setup / teardown** failure and **stop cause** ([Three causes of stopping, not to be confused](#three-causes-of-stopping-not-to-be-confused), [Errors outside the stream](#errors-outside-the-stream)) |
+| `Source.Err()` outside the stream | **setup / teardown** failure and **stop cause** ([Four causes of stopping, not to be confused](#four-causes-of-stopping-not-to-be-confused), [Errors outside the stream](#errors-outside-the-stream)) |
 
 > **No `Result[T]` wrapper, no `OrFail` operator, no `Stream.Err()`.**
 > `Stream[T]` is a named `iter.Seq[Batch[T]]` with no methods, so the stop
@@ -816,7 +816,7 @@ Never build an implicit unbounded tee.
 Rayon (Rust) parallelizes because its sources are *splittable* (`split_at`). An
 opaque `iter.Seq` **is not**. Our only option is per-batch fan-out, hence:
 
-- either loss of ordering (`parallel.Ordered`), or an O(k) reordering buffer;
+- either loss of ordering (`parallel.Unordered`), or an O(k) reordering buffer (`parallel.Ordered`);
 - local loss of native traces → enrich the error context at the crossing;
 - `parallel.Ordered` with one worker must be an explicit no-op, never a silent concurrent path.
 
@@ -963,8 +963,8 @@ without a buffer or `iter.Pull`. At **batch** grain, it becomes trivial: one
 `iter.Pull` per source, and you alternate.
 
 **[Measured](../benchmarks.md#the-architectures-figures)**: merging two streams costs **53.2 ns/element** tuple-at-a-
-time against **0.295 ns/element** per batch of 1024 — a factor of **180**. At 1.3×
-the ceiling, the operator is essentially free in batch, and unusable without it.
+time against **0.295 ns/element** per batch of 1024 — a factor of **180**. At 1.3× the native
+loop, the operator is essentially free in batch, and unusable without it.
 
 > Tuple-at-a-time, this cost is prohibitive and `Merge` would require an inversion
 > of control. **It is all-batch that makes the operator possible**, not merely
@@ -1683,7 +1683,7 @@ nested calls, so a chain would break exactly where a pipeline does its work.
 |---|---|---|
 | S1 | No unbounded allocation. A zero is never the absence of a bound: either it stands for a safe default named in the field's comment (`httpstream.Config`, [ADR 0018](adr/0018-zero-values-and-mandatory-bounds.md)), or it is refused at construction where no default suits every caller (`join.BuildLimit`, `gateway.Config`, `postgres.CopyConfig.RowsPerTx`). `diagnostics.NewCollector(0)` keeps nothing and counts every diagnostic as truncated. Two named exceptions, `MaxConns` and `MaxConnsPerIP`, have no bound at zero, because they are the deployer's memory budget (ADR 0018). | Overflow → error, not OOM; a refused zero → a panic or an error naming the field: `TestJoinLimitCeilingIsNamed`, `TestCopyRequiresRowsPerTx`, `TestDiagnosticsZeroValue`; ADR 0018's lists held to the fields' documentation: `TestADR0018ListsMatchConfig` |
 | S2 | No `panic` crosses a public boundary while data flows, other than the documented sentinels that `Try` converts into an error ([ADR 0006](adr/0006-sentinel-panics-and-try.md)). A constructor's panic on a programming error — a nil function, a size that is not positive — is outside it: raised when the pipeline is built, before any data, and documented on the constructor (CONTRIBUTING, "A constructor panics on a programming error"). | Fuzzing of the parsers, where a panic fails the fuzz: `FuzzParseRequest`, `FuzzH2Connection`, `FuzzParseLongHeader`, `FuzzReaderNext`, `FuzzPathJSONPointerRoundTrip`; every sentinel goes through one constructor and `Try` knows them all: `TestTryKnowsEverySentinel` |
-| S3 | Restrictive default limits. | The values are chosen by review; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
+| S3 | Restrictive default limits. | The values are fixed in the code, each beside its field; that zero takes them is tested: `TestADR0018ListsMatchConfig`, `TestServeBoundsHeaderReadsAndIdleConnectionsByDefault`, and that zero takes the value each field's comment names: `TestZeroConfigResolvesToTheDefaultsItsCommentsName` |
 | S4 | `unsafe` forbidden except under a named audit. One exception: `net/quic/udp/configure_windows.go`, for the input buffer of `syscall.WSAIoctl`. | `scripts/check-hygiene.sh` fails on any import of `unsafe` outside the audited list |
 | S5 | Mandatory timeouts on all I/O. | Silent connection → released: `TestSilentConnectionHasReadTimeoutToSpeak` (httpstream), `TestIdleTimeoutEndsASilentConnection` (QUIC) |
 | S6 | No goroutine leak. | A `synctest` bubble that fails while a goroutine is still blocked: `TestParallelLeavesNoGoroutines`, `TestConnectionsLeaveNoGoroutines` (QUIC); for `httpstream`, whose connections run on real sockets, no goroutine of the package left once they close, checked by name: `TestH2ConnectionsLeaveNoGoroutines` |

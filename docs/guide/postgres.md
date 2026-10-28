@@ -697,6 +697,10 @@ return src.Err()
 > log growing, so drop a slot you no longer use
 > (`SELECT pg_drop_replication_slot('orders_slot')`).
 
+A position is an `LSN`; `postgres.ParseLSN` reads one as PostgreSQL writes
+it (`0/16B3748`, the `confirmed_flush_lsn` column of `pg_replication_slots`),
+for a `ReplicationConfig.Start` taken from somewhere else than the slot.
+
 A transaction arrives as a `Begin`, its row changes and a `Commit`, and
 nothing of it before the server has committed it. The values are binary and
 decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The

@@ -53,7 +53,8 @@ and `web` with `web/stream` beside it. Cross-cutting extensions
 (`diagnostics`, `gateway`, `probe`, `pushdown`) stay as root-level
 packages. Shared machinery is internal: `internal/batch`, `internal/dgram`,
 `internal/handoff`, `internal/ipkey`, `internal/pgwire`, `internal/streamtest`,
-`internal/varint` for the module, and an `internal/` under the one package
+`internal/varint` for the module, `internal/bench` and its two commands for
+the measurements, and an `internal/` under the one package
 that needs it (`database/postgres/internal/entity`, `web/internal/reqbody`,
 `net/httpstream/internal/interopserver`). The root imports nothing of the
 module beyond `internal/batch`, and a test enforces it.

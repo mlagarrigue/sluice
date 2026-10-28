@@ -1,7 +1,7 @@
 # ADR 0018 — Zero is the safe default, the bound is mandatory
 
 - **Created:** 2026-10-15
-- **Revised:** 2026-10-21, 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split), 2026-10-28 (written in the present tense; the rule's reader across every configuration)
+- **Revised:** 2026-10-21 (the rule held for every `Config` of the periphery, `postgres.Config` first), 2026-10-22 (`MaxConnsPerIP` and `LingerTimeout` in the lists, held to the code by a test), 2026-10-23 (`MaxStreamedBodyBytes` in the HTTP/1.1 list, then in an HTTP/1.1 and HTTP/2 list, out of the lists once HTTP/3 streams), 2026-10-24 (a zero that is not a size: `BodyDelivery`, and why the field was split), 2026-10-28 (written in the present tense; the rule's reader across every configuration)
 - **Theme:** httpstream
 
 ## Problem
