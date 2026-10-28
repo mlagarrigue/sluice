@@ -246,6 +246,7 @@ func TestDeferredEarlyReplayIsNotCountedTwice(t *testing.T) {
 
 	server := boundsConn(t, false)
 	server.mu.Lock()
+	server.early = newEarlyGate(0, 0) // a server that admits 0-RTT holds the packet
 	server.amplActive, server.amplRecv, server.amplSent = true, 0, 0
 	server.mu.Unlock()
 

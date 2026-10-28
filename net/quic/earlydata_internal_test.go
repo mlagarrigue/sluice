@@ -83,7 +83,8 @@ func TestZeroRTTRefusesTheFramesTable3Forbids(t *testing.T) {
 
 // A client never receives 0-RTT, and a server without the early secret reads
 // none: the packet is dropped before any key is tried, and a server keeps it
-// only while the secret may still come.
+// only while the secret may still come — which on a server that does not
+// admit 0-RTT it never does, so that one keeps nothing (RP-20261025-quict-13).
 func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 	zeroRTT := func(dcid []byte) []byte {
 		// A long header of type 0-RTT (§17.2.3): form and fixed bits, type
@@ -103,15 +104,22 @@ func TestZeroRTTPacketsWithoutTheEarlySecret(t *testing.T) {
 		t.Errorf("a client counted %d discards for a 0-RTT packet, want 1", client.Stats().DiscardedPackets)
 	}
 
-	server := boundsConn(t, false)
-	if err := server.receiveAt(zeroRTT(server.scid), fakeFuzzAddr("bounds:peer"), time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	server.mu.Lock()
-	held := len(server.deferredEarly)
-	server.mu.Unlock()
-	if held != 1 {
-		t.Errorf("a server before its keys held %d 0-RTT packets, want 1", held)
+	for _, admits := range []bool{true, false} {
+		server := boundsConn(t, false)
+		if admits {
+			server.mu.Lock()
+			server.early = newEarlyGate(0, 0)
+			server.mu.Unlock()
+		}
+		if err := server.receiveAt(zeroRTT(server.scid), fakeFuzzAddr("bounds:peer"), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		server.mu.Lock()
+		held := len(server.deferredEarly)
+		server.mu.Unlock()
+		if want := map[bool]int{true: 1, false: 0}[admits]; held != want {
+			t.Errorf("a server that admits 0-RTT: %v; before its keys it held %d 0-RTT packets, want %d", admits, held, want)
+		}
 	}
 }
 
@@ -498,12 +506,40 @@ func TestTheFirst1RTTPacketDropsThe0RTTKeys(t *testing.T) {
 	}
 }
 
+// A server that admits 0-RTT and then had it refused for this connection —
+// no early secret, the 1-RTT keys in — holds the 0-RTT packets that came
+// before the ClientHello was read, and its first 1-RTT packet frees them:
+// they wait for a secret that will never come. Until 2026-10-28 both ways
+// out of the queue required the 0-RTT opener, and they stayed until the
+// connection ended (RP-20261025-quict-13).
+func TestTheFirst1RTTPacketDropsRefused0RTTPackets(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("refuse0rtt:self")}, fakeFuzzAddr("refuse0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.early = newEarlyGate(0, 0)
+	for i := range 3 {
+		pkt := &rxPacket{space: spaceApplication, early: true, raw: []byte{0xd0, byte(i)}}
+		if v, err := c.openPacket(pkt, time.Now()); err != nil || v != rxSkip {
+			t.Fatalf("0-RTT packet %d before the early secret: (%v, %v), want held", i, v, err)
+		}
+	}
+	installAppSealer(t, c)
+	if err := c.processPacket(spaceApplication, false, 0, []byte{framePing}, time.Now()); err != nil {
+		t.Fatalf("a 1-RTT PING: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.earlyOpener != nil || c.deferredEarly != nil {
+		t.Fatalf("after the first 1-RTT packet, 0-RTT refused: %d 0-RTT packets still held", len(c.deferredEarly))
+	}
+}
+
 // The 0-RTT packets that arrive before the early secret wait for it, at
 // most sixteen: the one memory bound of that path. A peer sending more
 // before its ClientHello is read loses the rest, which its 1-RTT resends.
 func TestDeferred0RTTPacketsAreBounded(t *testing.T) {
 	c := newConn(&recordingPC{addr: fakeFuzzAddr("defer0rtt:self")}, fakeFuzzAddr("defer0rtt:peer"), []byte("peercid0"), []byte("selfcid0"), false, DefaultParameters())
 	t.Cleanup(func() { _ = c.Close() })
+	c.early = newEarlyGate(0, 0) // the queue exists only where 0-RTT is admitted
 	for i := range 40 {
 		pkt := &rxPacket{space: spaceApplication, early: true, raw: []byte{0xd0, byte(i)}}
 		if v, err := c.openPacket(pkt, time.Now()); err != nil || v != rxSkip {

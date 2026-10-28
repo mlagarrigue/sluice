@@ -514,10 +514,13 @@ func (c *Conn) openPacket(pkt *rxPacket, now time.Time) (rxVerdict, error) {
 	opener, largest, discarded := sp.opener, sp.largest, sp.discarded
 	if pkt.early {
 		opener = c.earlyOpener
-		if opener == nil && !c.earlyOver() {
+		if opener == nil && !c.earlyOver() && c.early != nil {
 			// Before the early secret: the ClientHello that carries it
 			// may be in this very datagram, ahead of this packet, and
 			// crypto/tls reads it only once the datagram is through.
+			// Only on a server that admits 0-RTT (c.early): on any other
+			// the secret never comes, and a packet kept would wait for
+			// nothing until the connection ended (RP-20261025-quict-13).
 			if len(c.deferredEarly) < 16 {
 				c.deferredEarly = append(c.deferredEarly, deferredPacket{
 					raw: append([]byte(nil), pkt.raw...),
@@ -528,8 +531,8 @@ func (c *Conn) openPacket(pkt *rxPacket, now time.Time) (rxVerdict, error) {
 			c.mu.Unlock()
 			return rxSkip, nil
 		}
-		// No early secret and none coming: 0-RTT refused, or its keys
-		// already dropped. Not one of these packets is read (RFC 9001
+		// No early secret and none coming: 0-RTT refused, never
+		// admitted by this end, or its keys already dropped. Not one of these packets is read (RFC 9001
 		// §4.6.2), and a reordered one is resent by the client in
 		// 1-RTT.
 		discarded = discarded || opener == nil
@@ -654,10 +657,12 @@ func (c *Conn) earlyOver() bool {
 func (c *Conn) processPacket(space int, early bool, pn uint64, payload []byte, now time.Time) error {
 	c.mu.Lock()
 	sp := &c.spaces[space]
-	if space == spaceApplication && !early && c.earlyOpener != nil {
+	if space == spaceApplication && !early && (c.earlyOpener != nil || c.deferredEarly != nil) {
 		// RFC 9001 §4.9.3: a server MAY drop its 0-RTT keys at the first
 		// 1-RTT packet that authenticates; a 0-RTT packet reordered
-		// behind it is resent by the client in 1-RTT.
+		// behind it is resent by the client in 1-RTT. The packets held
+		// for an early secret go with them — also when it never came,
+		// the 0-RTT refused: nothing else would ever read or free them.
 		c.earlyOpener, c.deferredEarly = nil, nil
 	}
 	if !sp.ack.record(pn, now) {
