@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/mlagarrigue/sluice"
@@ -42,6 +43,9 @@ type bodyStream struct {
 	done   bool // the body ended, and what follows it is the next request's
 	closed bool // the handler returned: the stream is over whatever its state
 	err    error
+
+	// progress is the clock its reads wait under (readProgress).
+	progress readProgress
 
 	// onDone is called once when the body ends: the client watch, deferred
 	// while the body was still on the wire, may then start.
@@ -276,10 +280,18 @@ func (b *bodyStream) read() error {
 		}
 		r.sent100 = true
 	}
-	if err := r.conn.SetReadDeadline(time.Now().Add(r.cfg.ReadTimeout)); err != nil {
+	left := b.progress.left(r.cfg.ReadTimeout)
+	if left <= 0 {
+		return fmt.Errorf("%w: the body did not move by %d bytes within the read timeout %v",
+			os.ErrDeadlineExceeded, r.cfg.ReadProgressBytes, r.cfg.ReadTimeout)
+	}
+	start := time.Now()
+	if err := r.conn.SetReadDeadline(start.Add(left)); err != nil {
 		return err
 	}
 	n, err := r.conn.Read(r.buf[r.n:])
+	b.progress.wait(time.Since(start))
+	b.progress.moved(n, r.cfg.ReadProgressBytes)
 	r.n += n
 	if n > 0 {
 		return nil
@@ -357,3 +369,29 @@ type streamBody struct {
 }
 
 func (streamBody) Error() string { return "httpstream: the body streams" }
+
+// readProgress is the clock a streamed body reads under: ReadTimeout of
+// waiting for the peer to deliver [Config.ReadProgressBytes], refilled each
+// time it has — WriteTimeout's rule on the reading side. Only time spent
+// waiting for the peer counts; the handler's own between two reads does
+// not. A timeout re-armed at every read is no bound at all: a peer that
+// sends a byte per fraction of it holds the request for as long as it
+// likes.
+type readProgress struct {
+	waited time.Duration // waiting since the last step of progress
+	got    int           // bytes since the last step of progress
+}
+
+// left is how much of timeout the body has to make its next step.
+func (p *readProgress) left(timeout time.Duration) time.Duration { return timeout - p.waited }
+
+// wait counts d of waiting for the peer.
+func (p *readProgress) wait(d time.Duration) { p.waited += d }
+
+// moved counts n bytes delivered; need of them since the last step is the
+// next step, which gives the whole timeout back.
+func (p *readProgress) moved(n, need int) {
+	if p.got += n; p.got >= need {
+		p.got, p.waited = 0, 0
+	}
+}

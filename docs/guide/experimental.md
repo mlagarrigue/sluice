@@ -305,9 +305,10 @@ anything is read. The "Protocols" column says where the field acts.
 | `MaxConcurrentStreams` | 100 | streams; at most 4096 on 3 | 2, 3 | the requests open at once on one connection |
 | `MaxRequestsPerConn` | 1024 | requests | 1.1 | the requests of one connection before it closes |
 | `IdleTimeout` | 2 min | duration | all | the silence between two requests; on 3, the transport's max_idle_timeout |
-| `ReadTimeout` | 10 s | duration | all | the arrival of a whole request, and of the first byte |
+| `ReadTimeout` | 10 s | duration | all | the arrival of a whole request, and of the first byte; each `ReadProgressBytes` of a streamed body |
 | `WriteTimeout` | 10 s | duration | all | a response write without progress |
 | `WriteProgressBytes` | 4 KiB | bytes | all | the progress that restarts `WriteTimeout` |
+| `ReadProgressBytes` | 4 KiB | bytes | all | the progress of a streamed body that restarts `ReadTimeout` |
 | `MaxConns` | **no bound** | connections | 1.1, 2 | the connections open at once; also the memory bound |
 | `MaxConnsPerIP` | **no bound** | connections | 1.1, 2 | the same bound per remote address |
 | `IPv4PrefixBits` | 32 | bits; 1 to 32 | 1.1, 2 | the prefix `MaxConnsPerIP` counts IPv4 by |

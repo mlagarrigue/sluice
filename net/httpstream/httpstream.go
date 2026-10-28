@@ -395,9 +395,10 @@ type Config struct {
 	// 413 before any of the body is read, and before the 100 Continue a
 	// client may be waiting for, which goes out when the handler first waits
 	// for the body; a body of unannounced length that grows past it ends its
-	// stream with ErrTooLarge. Each read that waits for body bytes has
-	// ReadTimeout; there is no deadline on the whole body, so a large upload
-	// that keeps moving is not cut, and a client that stops is.
+	// stream with ErrTooLarge. The body must move by ReadProgressBytes within
+	// each ReadTimeout of waiting; there is no deadline on the whole body, so
+	// a large upload that keeps moving is not cut, and a client that stops,
+	// or drips, is.
 	//
 	// Over HTTP/2 and HTTP/3 a streamed body's window is granted back as the
 	// handler consumes it, so what it holds is bounded by the stream window —
@@ -494,8 +495,20 @@ type Config struct {
 	// protocol. This is the bound that answers slowloris: a client that
 	// sends a header byte a minute is disconnected by the clock rather than
 	// tolerated; over HTTP/2 and HTTP/3 it is the stream still assembling
-	// that is reset, not the connection.
+	// that is reset, not the connection. A streamed body ([Request.Stream])
+	// has it as WriteTimeout has its writes: ReadTimeout of waiting to
+	// deliver [Config.ReadProgressBytes], given back whole each time it
+	// has, so an upload that keeps moving is read to the end and one that
+	// drips a byte at a time is cut.
 	ReadTimeout time.Duration
+
+	// ReadProgressBytes is the progress that moves [Config.ReadTimeout] on a
+	// streamed body: how much of it must arrive for the wait to start
+	// again. Only waiting for the peer counts, not the handler's own time
+	// between two reads; a body shorter than this has ReadTimeout to arrive
+	// whole. Zero means 4 KiB — 400 bytes a second at the default timeout,
+	// as for [Config.WriteProgressBytes]. Every protocol.
+	ReadProgressBytes int
 
 	// WriteTimeout is how long a response may go without progress: a write
 	// that has not put [Config.WriteProgressBytes] on the wire by the time it
@@ -785,6 +798,7 @@ func (c Config) resolve() (Config, error) {
 		orDefault("Config.ReadTimeout", &c.ReadTimeout, defaultReadTimeout),
 		orDefault("Config.WriteTimeout", &c.WriteTimeout, defaultWriteTimeout),
 		orDefault("Config.WriteProgressBytes", &c.WriteProgressBytes, defaultMaxFrameSize/4),
+		orDefault("Config.ReadProgressBytes", &c.ReadProgressBytes, defaultMaxFrameSize/4),
 		orDefault("Config.ShutdownGrace", &c.ShutdownGrace, 5*time.Second),
 		orDefault("Config.MaxFramesPerBatch", &c.MaxFramesPerBatch, 64),
 		orDefault("Config.MaxContinuationFrames", &c.MaxContinuationFrames, 16),

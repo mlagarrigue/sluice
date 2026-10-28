@@ -41,6 +41,10 @@ type bodyQueue struct {
 	id      uint64
 	limit   int // the most a body may carry, whole or streamed
 	timeout time.Duration
+	// need is ReadProgressBytes, and progress the clock the handler's
+	// waits run under (readProgress); progress is the handler's alone.
+	need     int
+	progress readProgress
 
 	// h2 is the HTTP/2 connection whose window this is, nil over HTTP/3;
 	// initial is the window it grants, InitialWindowSize.
@@ -93,7 +97,7 @@ var errBodyConnClosed = fmt.Errorf("%w: the connection closed mid-body", ErrMalf
 // to stream as its first bytes.
 func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool) *bodyQueue {
 	b := &bodyQueue{
-		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout,
+		id: id, limit: max(cfg.MaxBodyBytes, cfg.MaxStreamedBodyBytes), timeout: cfg.ReadTimeout, need: cfg.ReadProgressBytes,
 		wake: make(chan struct{}, 1), total: len(first), declared: declared, expect: expect,
 	}
 	if len(first) > 0 {
@@ -365,6 +369,7 @@ func (b *bodyQueue) next() ([]byte, error) {
 			k := min(b.n, len(b.buf)-b.head)
 			piece := b.buf[b.head : b.head+k : b.head+k]
 			b.viewed = k
+			b.progress.moved(k, b.need)
 			b.mu.Unlock()
 			b.giveBack(freed)
 			return piece, b.sendGrant(inc)
@@ -393,8 +398,8 @@ func (b *bodyQueue) next() ([]byte, error) {
 		if !b.wait() {
 			b.mu.Lock()
 			if b.n == 0 && !b.ended && b.err == nil && !b.closed {
-				b.err = fmt.Errorf("%w: no body bytes on stream %d within the read timeout %v",
-					os.ErrDeadlineExceeded, b.id, b.timeout)
+				b.err = fmt.Errorf("%w: the body of stream %d did not move by %d bytes within the read timeout %v",
+					os.ErrDeadlineExceeded, b.id, b.need, b.timeout)
 			}
 			continue
 		}
@@ -402,14 +407,21 @@ func (b *bodyQueue) next() ([]byte, error) {
 	}
 }
 
-// wait blocks until the reader signals or ReadTimeout passes, and reports
-// which.
+// wait blocks until the reader signals or what is left of ReadTimeout
+// passes (readProgress), and reports which. Called by the handler only, so
+// progress needs no lock.
 func (b *bodyQueue) wait() bool {
-	if b.timer == nil {
-		b.timer = time.NewTimer(b.timeout)
-	} else {
-		b.timer.Reset(b.timeout)
+	left := b.progress.left(b.timeout)
+	if left <= 0 {
+		return false
 	}
+	if b.timer == nil {
+		b.timer = time.NewTimer(left)
+	} else {
+		b.timer.Reset(left)
+	}
+	start := time.Now()
+	defer func() { b.progress.wait(time.Since(start)) }()
 	select {
 	case <-b.wake:
 		b.timer.Stop()
