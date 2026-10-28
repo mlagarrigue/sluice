@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused)
+- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why)
 - **Theme:** quic
 
 ## Problem
@@ -44,6 +44,15 @@ refused and the connection resumes in 1-RTT. The register is sized as the
 rate of 0-RTT connections times the window. Every refusal is a TLS refusal
 (`SessionState.EarlyData` set to false): no 0-RTT packet is then processed
 (RFC 9001 §4.6.2).
+
+A full register is the one global refusal of 0-RTT: neither processor load
+nor the number of requests in flight makes it refuse, where RFC 8470 §6.3
+advises refusing early data under load. The reason: a request the
+predicate does not admit in 0-RTT is held until the handshake ends, and
+what is held is bounded by flow control and `MaxConcurrentStreams`; a
+replay never gets past the handshake; and load is not measured here in a
+way a threshold would make right. An operator who wants less 0-RTT under
+load turns `EarlyData` off or lowers `MaxEarlyDataTickets`.
 
 `crypto/tls` asks before it verifies the PSK binder and before it knows
 whether the client offered 0-RTT at all, so an entry may go unused — a
