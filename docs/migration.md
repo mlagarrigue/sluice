@@ -1,60 +1,29 @@
-# Migrating from v0.2.2
+# Migrating to `main`
 
 In v0, a minor version may break what the previous one offered; `main`
-groups the breaking changes for the next one. Each entry below names the
-commit that made the change, says what changed, and what to write instead.
-The packages come in the order a reader meets them; within a package, the
-changes of behavior that keep the signatures — a value now refused — come
-last.
+groups the breaking changes for the next one. Code written against v0.3.0
+reads the first section; code written against v0.2.2 reads both, the
+second first. Each entry names the commit that made the change, says what
+changed, and what to write instead. The packages come in the order a reader
+meets them; within a package, the changes of behavior that keep the
+signatures — a value now refused — come last.
 
-Since v0.2.2, a negative size, count, bound or timeout is refused across
-the library: the core and the operators panic with a message that names
-the argument, and a configuration returns an error that names the field.
-Zero keeps its documented meaning — usually "the default" — so a program
-that never passed a negative value has nothing to change there.
+## Since v0.3.0
 
-## The core: `sluice`
+### Fan-out: `parallel`
 
-- **`FlatMap` appends into the output batch** (`632eeb9`). The function is
-  handed the slice to fill: `func(a A) []B` becomes `func(dst []B, a A) []B`
-  — append to `dst` and return it:
-  `func(dst []Line, o Order) []Line { return append(dst, o.Lines...) }`.
-- **`Overflow` and `Completion` have no zero value** (`2a9a2ab`).
-  `DropOldest` and `WhenAll` are no longer zero, and a zero `Overflow` or
-  `Completion` is invalid. Name the policy wherever a field or a variable
-  was left at zero.
-- **A `Split` route outside the branches panics** (`d4a8182`). An index
-  outside `[0, n)` was ignored, silently dropping the batch; it now panics,
-  naming the index.
-- **A negative size or count panics** (`372329f`): `Of`, `Take`,
-  `Coalesce`, `window.CoalesceWithin` and the other operators that take one.
-
-## Joins: `join`
-
-- **`Interval` takes an `IntervalSpec`** (`948ecc3`). The positional key,
-  time and merge functions move into the fields of `join.IntervalSpec`
-  (`KeyL`, `KeyR`, `TimeL`, `TimeR`, `Lower`, `Upper`, `Merge`).
-- **The storage seam is gone** (`948ecc3`): `BuildTable` and
-  `StreamTableWith` no longer exist; use `StreamTable`, whose table is in
-  memory.
-
-## Fan-out: `parallel`
-
-- **`WithState` is `OrderedWithState`** (`336817d`), and `ErrState` names
-  it in its message.
-- **A negative depth or worker count panics** (`cd7dce7`); zero or one
-  means no concurrency, as before.
-- **A panic raised on a worker or a producer comes back wrapped**
-  (`94858d0`, "every relayed panic carries its stack"): `Ordered`, `OrderedWithState`, `Unordered`,
-  `Async`, and `window.CoalesceWithin` raise it again in a
-  `*sluice.PanicError` that carries the stack it was raised on. An error is
-  still found by `errors.Is` and `errors.As`; a direct assertion
+- **Every panic raised on a worker or a producer comes back wrapped**
+  (`02a5cc9`, "every relayed panic carries its stack"): `Ordered`,
+  `OrderedWithState`, `Unordered`, `Async`, and `window.CoalesceWithin`
+  raise it again in a `*sluice.PanicError` that carries the stack it was
+  raised on — any value, no longer a runtime error alone. An error is still
+  found by `errors.Is` and `errors.As`; a direct assertion
   (`r.(runtime.Error)`, `r == ErrX`) or a comparison of another value
   (`r == "boom"`) on the recovered value no longer matches: read
   `r.(*sluice.PanicError).Value`. `sluice.Try` still recognises a sentinel
   raised on a worker.
 
-## Time windows: `window`
+### Time windows: `window`
 
 - **`Tumbling` takes a late-element policy** (`86a1325`):
   `Tumbling(s, ts, size, maxPerWindow, policy, late)`. Pass `window.LateFail` to keep what the operator did
@@ -71,16 +40,62 @@ that never passed a negative value has nothing to change there.
   their bounds and their contents are what they were for an input that was
   already non-decreasing.
 
-## Deduplication: `distinct`
+## From v0.2.2 to v0.3.0
+
+In v0.3.0, a negative size, count, bound or timeout is refused across
+the library: the core and the operators panic with a message that names
+the argument, and a configuration returns an error that names the field.
+Zero keeps its documented meaning — usually "the default" — so a program
+that never passed a negative value has nothing to change there.
+
+### The core: `sluice`
+
+- **`FlatMap` appends into the output batch** (`632eeb9`). The function is
+  handed the slice to fill: `func(a A) []B` becomes `func(dst []B, a A) []B`
+  — append to `dst` and return it:
+  `func(dst []Line, o Order) []Line { return append(dst, o.Lines...) }`.
+- **`Overflow` and `Completion` have no zero value** (`2a9a2ab`).
+  `DropOldest` and `WhenAll` are no longer zero, and a zero `Overflow` or
+  `Completion` is invalid. Name the policy wherever a field or a variable
+  was left at zero.
+- **A `Split` route outside the branches panics** (`d4a8182`). An index
+  outside `[0, n)` was ignored, silently dropping the batch; it now panics,
+  naming the index.
+- **A negative size or count panics** (`372329f`): `Of`, `Take`,
+  `Coalesce`, `window.CoalesceWithin` and the other operators that take one.
+
+### Joins: `join`
+
+- **`Interval` takes an `IntervalSpec`** (`948ecc3`). The positional key,
+  time and merge functions move into the fields of `join.IntervalSpec`
+  (`KeyL`, `KeyR`, `TimeL`, `TimeR`, `Lower`, `Upper`, `Merge`).
+- **The storage seam is gone** (`948ecc3`): `BuildTable` and
+  `StreamTableWith` no longer exist; use `StreamTable`, whose table is in
+  memory.
+
+### Fan-out: `parallel`
+
+- **`WithState` is `OrderedWithState`** (`336817d`), and `ErrState` names
+  it in its message.
+- **A negative depth or worker count panics** (`cd7dce7`); zero or one
+  means no concurrency, as before.
+- **A runtime error raised on a worker or a producer comes back wrapped**
+  (`94858d0`): `Ordered`, `OrderedWithState`, `Unordered`, `Async`, and
+  `window.CoalesceWithin`, raise it again in an error that carries the
+  stack it was raised on. `errors.As` with a `runtime.Error` target still
+  finds it; a direct assertion `r.(runtime.Error)` on the recovered value
+  no longer does. Any other value comes back as raised.
+
+### Deduplication: `distinct`
 
 - **A negative window panics** (`3cf7f66`).
 
-## Demand: `pushdown`
+### Demand: `pushdown`
 
 - **`Demand` carries no column set** (`60c9544`): the `Columns` field and
   `NeedColumns` are gone; nothing read them.
 
-## The web path: `web` and `web/stream`
+### The web path: `web` and `web/stream`
 
 - **`web.Shutdown` drains any server** (`a42f4d6`). It takes a
   `web.Server` — anything with `Shutdown(context.Context) error`, which
@@ -106,7 +121,7 @@ that never passed a negative value has nothing to change there.
   `"ALG"` is no longer read as `alg`. A `typ` of `application/jwt` is now
   accepted, like `JWT`.
 
-## PostgreSQL: `database/postgres`
+### PostgreSQL: `database/postgres`
 
 - **`Connect` replaces `Startup`** (`0ddc63b`).
   `postgres.Startup(rw, postgres.StartupConfig{…})` becomes
@@ -149,7 +164,7 @@ that never passed a negative value has nothing to change there.
 - **An out-of-range batch bound or a negative statement cache bound is
   refused** (`a3b3f23`, `655ba3b`).
 
-## HTTP: `net/httpstream`
+### HTTP: `net/httpstream`
 
 - **`Handler` takes a context** (`4f1e365`):
   `func(ctx context.Context, b sluice.Batch[Request]) sluice.Batch[Response]`.
@@ -190,7 +205,7 @@ that never passed a negative value has nothing to change there.
   meaning; one that left it at zero to mean "whole" says `BodyWhole`
   instead. See [ADR 0009](design/adr/0009-request-contract.md), article 4.
 
-## QUIC: `net/quic`
+### QUIC: `net/quic`
 
 - **One `Dial`, with a context** (`bc762a9`): `Dial(ctx, pc, addr, cfg,
   params)` replaces both `Dial` without a context and `DialContext`.

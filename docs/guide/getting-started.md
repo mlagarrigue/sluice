@@ -32,9 +32,9 @@ shape of the object.
 ## Installing
 
 This guide describes the `main` branch, which carries the changes grouped
-for the next minor release; the last one published, v0.3.0, has a different
-API ([Migrating from v0.2.2](../migration.md) lists what changed). Until
-that release, install `main`:
+for the next minor release; the last one published, v0.3.0, differs from it
+by the breaking changes [Migrating to main](../migration.md#since-v030)
+lists. Until that release, install `main`:
 
 ```sh
 go get github.com/mlagarrigue/sluice@main

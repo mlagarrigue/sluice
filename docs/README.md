@@ -61,8 +61,8 @@ place.
 
 - [CHANGELOG](../CHANGELOG.md) — each release: what it adds, fixes or
   breaks.
-- [Migrating from v0.2.2](migration.md) — what to change in code written
-  against the last release.
+- [Migrating to main](migration.md) — what to change in code written
+  against v0.3.0 or v0.2.2.
 
 ## Something is wrong
 
