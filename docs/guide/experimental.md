@@ -107,6 +107,35 @@ announces.
 | `HoldClosing` | false | *local* | whether a connection from `Dial` holds the closing states of RFC 9000 §10.2 |
 | `MaxDatagramSize` | 1452 | bytes, *local*; 1200 to 65527, otherwise refused | the largest datagram sent, once the path is probed |
 
+### Listener settings
+
+`ListenerConfig`, the server side's own bounds and policies, none of them on
+the wire:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `AlwaysRetry` | off | | a Retry round trip for every new attempt, on top of the amplification limit |
+| `MaxPendingConns` | 1024 | ≥ 0 | handshakes in progress, and completed ones waiting for `Accept` |
+| `HandshakeTimeout` | `DefaultHandshakeTimeout`, 10 s | ≥ 0 | how long one handshake may hold a pending slot |
+| `MaxConns` | no bound | ≥ 0 | every connection the listener carries, closing ones included |
+| `MaxConnsPerIP` | no bound | ≥ 0 | the same bound per source address |
+| `IPv4PrefixBits` | 32 | 1 to 32 | how much of an IPv4 source `MaxConnsPerIP` counts by |
+| `IPv6PrefixBits` | 64 | 1 to 128 | the same for IPv6 |
+| `PreferredAddress` | nil: none announced | | a second socket clients move to once the handshake confirms |
+| `PreferredIPv4` | the socket's own address | IPv4 | the address announced for that socket when it listens on the unspecified address |
+| `PreferredIPv6` | the socket's own address | IPv6 | the same for IPv6 |
+| `ConnQueueLen` | 64 | ≥ 0 | datagrams queued for one connection before they are dropped |
+| `RetryTokenTTL` | 10 s | ≥ 0 | how long a Retry token stays acceptable |
+| `MaxSpentRetryTokens` | 16 384 | ≥ 0 | the record of Retry tokens already used, against a replay |
+| `StatelessResetsPerSecond` | 16 | ≥ 0 | stateless resets sent per second |
+| `StatelessResetsPerAddress` | 4 | ≥ 0 | one source address's share of them |
+| `StatelessResetKey` | random per listener | | derives the reset tokens; set it to survive a restart |
+| `TokenKey` | random per listener | | authenticates Retry tokens; share it across instances |
+| `SessionTickets` | off | | one session ticket per completed handshake, for resumption |
+| `EarlyData` | off | | 0-RTT on resumption ([Deployments](deployments.md)) |
+| `EarlyDataWindow` | 10 minutes | ≥ 0 | how long after its issue a ticket may carry 0-RTT |
+| `MaxEarlyDataTickets` | 16 384 | ≥ 0 | the record of tickets whose 0-RTT was accepted once |
+
 ### Choosing a congestion controller
 
 An advanced setting: it asks you to know your network path — round trip,
@@ -155,6 +184,14 @@ with the command that replays the comparison). To judge on yours,
 `Conn.Stats()` gives the controller in use (`Algorithm`), its window
 (`CongestionWindow`), the losses (`LostPackets`) and the round trip
 (`SmoothedRTT` against `MinRTT`: the gap is the queue the flow keeps).
+
+`CongestionConfig`, in `TransportParameters.Congestion`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Algorithm` | NewReno | unknown values run the default | the controller |
+| `SlowStart` | the algorithm's default: HyStart++ for CUBIC, standard for NewReno | | how a loss-based controller ends its initial slow start |
+| `DisableFastConvergence` | on | | turns off CUBIC's fast convergence, for a flow alone on its path |
 
 ## Deployments
 

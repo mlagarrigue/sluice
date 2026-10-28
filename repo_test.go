@@ -1096,31 +1096,54 @@ func TestSettingsHaveATableRow(t *testing.T) {
 			}
 		}
 	}
-	for _, c := range []struct{ file, typ string }{
-		{"net/httpstream/httpstream.go", "Config"},
-		{"net/quic/transport.go", "TransportParameters"},
-	} {
-		f, err := parser.ParseFile(token.NewFileSet(), c.file, nil, parser.SkipObjectResolution)
+	// Every configuration the library exports: a struct named Config, or
+	// ending in Config or Parameters, outside the examples, the internal
+	// packages and the nested modules.
+	skip := []string{"example", "internal", "cmd", "benchmarks", "comparison", "interop", "audit"}
+	configs := 0
+	err = filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		var fields *ast.FieldList
-		ast.Inspect(f, func(n ast.Node) bool {
-			if ts, ok := n.(*ast.TypeSpec); ok && ts.Name.Name == c.typ {
-				fields = ts.Type.(*ast.StructType).Fields
+		if d.IsDir() {
+			if slices.Contains(skip, d.Name()) || (p != "." && strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
 			}
-			return fields == nil
-		})
-		if fields == nil {
-			t.Fatalf("%s: no type %s", c.file, c.typ)
+			return nil
 		}
-		for _, field := range fields.List {
-			for _, name := range field.Names {
-				if name.IsExported() && !rows[name.Name] {
-					t.Errorf("%s: %s.%s has no row in a settings table of docs/guide", c.file, c.typ, name.Name)
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok || !ts.Name.IsExported() || !strings.HasSuffix(ts.Name.Name, "Config") && !strings.HasSuffix(ts.Name.Name, "Parameters") {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			configs++
+			for _, field := range st.Fields.List {
+				for _, name := range field.Names {
+					if name.IsExported() && !rows[name.Name] {
+						t.Errorf("%s: %s.%s.%s has no row in a settings table of docs/guide", p, f.Name.Name, ts.Name.Name, name.Name)
+					}
 				}
 			}
-		}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configs < 10 {
+		t.Fatalf("found %d configuration types; the walk no longer sees them", configs)
 	}
 }
 

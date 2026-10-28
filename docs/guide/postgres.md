@@ -177,6 +177,19 @@ trip per batch.
 > other; your program asks again, and pays a round trip to learn there is
 > nothing. Ask for one more than you expect.
 
+### Query settings
+
+`QueryConfig`, the last argument of `Query`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `BatchRows` | `sluice.DefaultBatchSize` | ≥ 0 | rows per batch, and rows asked of the server at a time |
+| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of values per batch; a wider row travels alone |
+| `Fetch` | `FetchAuto` | | everything at once when the statement fits one batch, in batches otherwise |
+| `Demand` | none | exclusive of `FetchAll` | what the consumer no longer needs (a limit, a lower bound) |
+| `KeyParam` | the bound is not pushed down | 1-based | the parameter the demand's lower bound replaces |
+| `Tag` | nothing copied | | receives the command tag, read once the source is consumed |
+
 ## Decoding
 
 A `Row` is a view into its batch, valid for the call (rule 1 of
@@ -335,6 +348,13 @@ applications slow down without knowing why. By writing `RowsPerTx:
 > unique key, for instance). And index the table **after** the COPY, not
 > during: about twice as fast.
 
+`CopyConfig`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `RowsPerTx` | — (required) | > 0 | rows per transaction, at least (a floor, not a cap) |
+| `ChunkBytes` | 64 KiB | ≥ 0 | bytes gathered into one CopyData message |
+
 ### Retail: transactions
 
 ```go
@@ -366,6 +386,14 @@ after the request's context has expired, and a block left open on a reused
 connection is the worst outcome. A stream obtained from `tx.Query` is read
 **before** the `Commit`; afterwards it refuses to run rather than running
 outside the transaction under nobody's identity.
+
+`TxConfig`, the argument of `Begin`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Isolation` | the server's default | | the isolation level |
+| `ReadOnly` | read-write | | opens the transaction READ ONLY |
+| `Timeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
 
 ## Securing and controlling the connection
 
@@ -672,6 +700,17 @@ nothing of it before the server has committed it. The values are binary and
 decode with `pgtype`, like a query's; a `NULL` has `Status` `ValueNull`. The
 design is in [ADR 0023](../design/adr/0023-logical-replication.md).
 
+`ReplicationConfig`, the argument of `Replicate`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Slot` | — (required) | ≤ 63 bytes | the logical slot, created with pgoutput |
+| `Publications` | — (required) | ≤ 63 bytes each | the publications whose tables are streamed |
+| `Start` | the slot's `confirmed_flush_lsn` | | the position to stream from |
+| `BatchChanges` | `sluice.DefaultBatchSize` | ≥ 0 | changes per batch |
+| `BatchBytes` | 64 MiB | 0 to 1 GiB | bytes of messages per batch |
+| `StatusInterval` | 10 s | ≥ 0 | how often, at most, the acknowledged position is reported |
+
 ### Signals: LISTEN and NOTIFY
 
 `NOTIFY` is PostgreSQL's built-in publish and subscribe: one session says
@@ -704,6 +743,13 @@ return src.Err()
 > is full it is the *senders'* transactions that fail.
 
 The design is in [ADR 0024](../design/adr/0024-listen-notify.md).
+
+`ListenConfig`, the argument of `Listen`:
+
+| Field | Zero | Bounds | What it sets |
+|---|---|---|---|
+| `Channels` | — (required) | ≤ 63 bytes each | the channels listened to, case included |
+| `BatchNotifications` | `sluice.DefaultBatchSize` | ≥ 0 | notifications per batch |
 
 ## What is not there
 

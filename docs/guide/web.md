@@ -50,9 +50,13 @@ mux.HandleFunc("PATCH /orders/{order}/lines/{line}", func(w http.ResponseWriter,
 
 `DecodeJSON` requires a maximum size: a body without a limit is an open
 door to a client sending gigabytes. `PathInt64` reads a **wildcard** from
-the address (`{order}`), which `http.ServeMux` can extract since Go 1.22.
-`Status` picks the code from the diagnostics (see below); `WriteJSON`
-writes the response as JSON.
+the address (`{order}`), which `http.ServeMux` can extract since Go 1.22;
+`QueryInt64` reads a query parameter (`?limit=50`) the same way, an absent
+one and an unparseable one being two diagnostics with two fixes.
+`Status` picks the code from the diagnostics (see below); `IsTransport`
+tells one of this package's — a body that would not parse, a parameter
+that was not there, usually a 400 — from a business rule's, usually a 422.
+`WriteJSON` writes the response as JSON.
 
 `DecodeJSON` also requires the request to say it carries JSON: one
 `Content-Type` header, `application/json` or a `+json` subtype (such as
