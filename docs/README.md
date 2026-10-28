@@ -109,6 +109,9 @@ An integration is requested with the "Integration request" issue template.
 
 - [CONTRIBUTING](../CONTRIBUTING.md) — rules, checks, commit format, releases.
 - [SECURITY](../SECURITY.md) — reporting a vulnerability, privately.
+- [Code of conduct](../CODE_OF_CONDUCT.md) — what everyone here keeps to.
+- A question about using the library, or feedback after trying it: the
+  "Question or feedback" issue template.
 
 ## Reference
 

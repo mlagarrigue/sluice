@@ -4,6 +4,10 @@ The project is at v0: the API is not stable and will change before v1. The
 most useful contributions today are **arguments about the design**,
 measurements, and adversarial tests — not only patches.
 
+A question about using it, or feedback after trying it: open a "Question or
+feedback" issue. Everyone here follows the
+[code of conduct](CODE_OF_CONDUCT.md).
+
 ## Before you write code
 
 Read the [architecture](docs/design/architecture.md) and the
