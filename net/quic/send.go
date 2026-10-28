@@ -1181,6 +1181,17 @@ func (c *Conn) armPaceLocked(until time.Time) {
 // that releases most of a large flight and declares the rest lost.
 // Nothing parks here: the read and timer loops are the callers.
 func (c *Conn) retransmitLocked() {
+	// The read loop calls this after every packet it receives, and almost
+	// always every queue is empty: then there is nothing to pace, and the
+	// clock read, the controller's rate and the bucket's refill below would
+	// be paid per packet for nothing. Skipping the refill changes nothing
+	// either — it credits the time elapsed since the last one, capped at
+	// the burst, so the next refill credits the same total.
+	if len(c.spaces[spaceInitial].retrans) == 0 && len(c.spaces[spaceHandshake].retrans) == 0 &&
+		len(c.spaces[spaceApplication].retrans) == 0 {
+		c.pruneResetIDsLocked()
+		return
+	}
 	rate := c.cc.pacingRate(c.rtt.current())
 	c.pacer.refill(time.Now(), rate)
 	for space := range c.spaces {
