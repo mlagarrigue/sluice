@@ -100,6 +100,59 @@ func BenchmarkH2Consume(b *testing.B) {
 	}
 }
 
+// BenchmarkH2ConsumeLongConn is consume on a connection that has served more
+// than MaxConcurrentStreams requests, the steady state of a long-lived one:
+// each retirement pushes the oldest remembered stream out of the reader's
+// memory and tells the writer to forget it too (h2Writer.evict, under w.mu),
+// which BenchmarkH2Consume never reaches, starting every round from an empty
+// memory. Identifiers climb across rounds as on the wire, every request is
+// answered before the next round as the writer would answer it, and the run
+// starts over on a fresh connection when the identifiers are spent.
+func BenchmarkH2ConsumeLongConn(b *testing.B) {
+	const depth, rounds = 8, 512
+	frames := make([]h2Frame, 0, depth*rounds)
+	for i := range depth * rounds {
+		raw := h2HeadersFrame(uint32(2*i+1), fmt.Sprintf("/orders/%d", i)) //nolint:gosec // G115: 2i+1 for i < 4096
+		parsed, _, err := parseFrame(raw, defaultMaxFrameSize)
+		if err != nil {
+			b.Fatal(err)
+		}
+		frames = append(frames, parsed)
+	}
+
+	s := newBenchH2Server(Config{})
+	next := 0
+	b.ReportAllocs()
+	for b.Loop() {
+		if next == rounds {
+			resetBenchH2Server(s)
+			next = 0
+		}
+		round := frames[next*depth : (next+1)*depth]
+		ready, _, err := s.consume(round)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(ready) != depth {
+			b.Fatalf("consumed %d requests, want %d", len(ready), depth)
+		}
+		for _, f := range round {
+			benchAnswered(s.w, f.StreamID)
+		}
+		s.inFlight.Store(0)
+		next++
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*depth), "ns/request")
+}
+
+// benchAnswered is the writer's own record of an answer that reached
+// END_STREAM, as fill makes it. Without the lock fill already holds for a
+// whole batch of jobs: one goroutine runs the benchmark.
+func benchAnswered(w *h2Writer, id uint32) {
+	delete(w.windows, id)
+	w.noteEndedLocked(id)
+}
+
 // countingConn wraps memConn to count the write syscalls a benchmark would
 // otherwise have to infer from timing alone — the number candidate 3 of the
 // performance pass is measured against directly.
