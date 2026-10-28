@@ -24,6 +24,7 @@ its row.
   - [Web pipeline, from a real client](#web-pipeline-from-a-real-client)
   - [Request bodies, whole or streamed](#request-bodies-whole-or-streamed)
   - [Authentication, in a request](#authentication-in-a-request)
+  - [Two changes read as noise, paired](#two-changes-read-as-noise-paired)
   - [Web pipeline, in process](#web-pipeline-in-process)
   - [Web pipeline, over a socket](#web-pipeline-over-a-socket)
   - [The gateway, with a database behind it](#the-gateway-with-a-database-behind-it)
@@ -556,6 +557,32 @@ out faster. A request that crosses a real network or reaches a database
 makes the share smaller still. The 49 allocations are the JSON decoding of
 the claims; they are where a cheaper check would start, and nothing above
 asks for one.
+
+## Two changes read as noise, paired
+
+Two changes to `net/httpstream` were first judged on unpaired runs: the
+burst's buffers given back when a connection goes idle (`bd2c9fd`), after
+which `BenchmarkH2StreamBody/chunks=64` read 44% slower, and the capacity
+HTTP/3 assembly retains bounded (`9f3a581`), after which
+`BenchmarkH3Assemble` read 1 to 2% slower in five to seven rounds of eight.
+Each is measured here against its parent commit by
+`internal/bench/scripts/ab.sh`: twenty rounds of `-benchtime 300ms` on one
+core under `GOMAXPROCS=1`, the first round dropped, the ratio taken inside
+each round, the verdict from the sign test, which needs 15 rounds of 19 to
+call a side faster. Measured 2026-10-28, go1.26.9.
+
+| benchmark | commit | before, ns per op | after, ns per op | rounds won by after | verdict |
+|---|---|---|---|---|---|
+| `BenchmarkH2StreamBody/chunks=64` | `bd2c9fd` | 58,764 | 55,622 | 11 of 19 | noise |
+| `BenchmarkH3Assemble/depth=1` | `9f3a581` | 461 | 468 | 8 of 19 | noise |
+| `BenchmarkH3Assemble/depth=8` | `9f3a581` | 3,517 | 3,468 | 13 of 19 | noise |
+| `BenchmarkH3Assemble/depth=64` | `9f3a581` | 26,789 | 26,337 | 13 of 19 | noise |
+
+Medians of the rounds. Neither change costs what its first reading said.
+`H2StreamBody/chunks=64` ranges from 50 to 73 µs on either side, a spread
+wider than the 44% that was read into it: the benchmark hands each frame to
+the writer's goroutine, and the scheduler's timing is most of what it
+measures. It does not run the loop `bd2c9fd` changed at all.
 
 ## QUIC, on an emulated path
 
