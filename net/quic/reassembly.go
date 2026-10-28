@@ -164,7 +164,8 @@ func (r *reassembly) add(off uint64, data []byte) error {
 		// not a violation on the peer's part — fragmenting is legal — and
 		// RFC 9000 §20.1 offers no other code for "cannot continue". The
 		// reason travels with it, for the peer's log. Written up in
-		// docs/guide/limits.md and ADR 0015.
+		// docs/guide/limits.md and ADR 0015. For CRYPTO data handleCrypto
+		// closes with CRYPTO_BUFFER_EXCEEDED instead, the code §7.5 has.
 		return &transportError{
 			code: transportInternalError,
 			err:  fmt.Errorf("%w: stream bytes parked in over %d fragments", ErrQUIC, limit),

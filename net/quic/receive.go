@@ -1510,6 +1510,14 @@ func (c *Conn) handleCrypto(space int, f Frame) error {
 	delta, err := sp.crypto.addThenTake(f.offset, f.Data, nil)
 	c.mu.Unlock()
 	if err != nil {
+		// Too many fragments parked is the buffer exceeded too, by count
+		// rather than by bytes: §7.5 names CRYPTO_BUFFER_EXCEEDED for an
+		// endpoint that cannot buffer what the peer sent, and fragmenting
+		// is legal, so it is no PROTOCOL_VIOLATION. reassembly states
+		// INTERNAL_ERROR for a stream, where no such code exists.
+		if te := (*transportError)(nil); errors.As(err, &te) && te.code == transportInternalError {
+			return &transportError{code: transportCryptoBufferExceeded, err: err}
+		}
 		return &transportError{code: transportProtocolViolation, err: err}
 	}
 	if len(delta) == 0 {

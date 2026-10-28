@@ -1022,3 +1022,27 @@ func TestStatelessResetTokenOfAnUnusedIDIsNotCompared(t *testing.T) {
 		t.Fatalf("receive returned %v for the used identifier's token, want ErrStatelessReset", err)
 	}
 }
+
+// RFC 9000 §7.5 again, for the other way of filling the buffer: CRYPTO data
+// in many disjoint fragments, each a byte, far under the byte bound but
+// over what reassembly parks. The close is CRYPTO_BUFFER_EXCEEDED as for
+// the byte bound, not the PROTOCOL_VIOLATION a fragmenting peer — which is
+// legal — has not committed.
+func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
+	pcA, pcB := newLoopbackPair(t)
+	c := newConn(pcA, pcB.LocalAddr(), []byte("dcid0000"), []byte("scid0000"), true, DefaultParameters())
+	defer c.Close()
+	var err error
+	for i := range uint64(300) {
+		if err = c.handleCrypto(spaceInitial, Frame{Type: frameCrypto, offset: 1 + 2*i, Data: []byte("x")}); err != nil {
+			break
+		}
+	}
+	if err == nil {
+		t.Fatal("300 disjoint one-byte CRYPTO fragments were parked without complaint")
+	}
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {
+		t.Errorf("the refusal is %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
+	}
+}
