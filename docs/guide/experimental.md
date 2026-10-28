@@ -97,8 +97,8 @@ announces.
 | `InitialMaxStreamDataBidiLocal` | 256 KiB | bytes | one bidirectional stream this end opened |
 | `InitialMaxStreamDataBidiRemote` | 256 KiB | bytes | one bidirectional stream the peer opened — an HTTP/3 request |
 | `InitialMaxStreamDataUni` | 64 KiB | bytes | one unidirectional stream of the peer |
-| `InitialMaxStreamsBidi` | 100 | streams | how many bidirectional streams the peer may open (RFC 9114 §6.1 asks for 100) |
-| `InitialMaxStreamsUni` | 8 | streams | how many unidirectional streams |
+| `InitialMaxStreamsBidi` | 100 | streams | how many bidirectional streams the peer may open (RFC 9114 §6.1 asks for 100); each is memory this end holds, `MaxConns` times |
+| `InitialMaxStreamsUni` | 8 | streams; 3 to 32 under `ServeH3Conn` | how many unidirectional streams; each stream the peer may open is memory this end holds, `MaxConns` times |
 | `AckDelayExponent` | — | exponent; *read from the peer*, never announced (this end uses 3) | the scale of the peer's ACK delays |
 | `MaxAckDelay` | — | duration; *read from the peer*, never announced (this end uses 25 ms) | how long the peer may sit on an acknowledgement |
 | `ActiveConnIDLimit` | 4 | identifiers; 0 or 1 become 4 | the peer's connection IDs kept active, and the ones this end issues |

@@ -633,8 +633,12 @@ type Config struct {
 	// of connections a forced stop cut with requests in flight, and the
 	// error that ended a connection [Serve] or [Server] accepted when it is
 	// not an ordinary end (the peer's close, a deadline, a reset): a peer
-	// that broke the protocol, a transport that failed. Nil means
-	// [slog.Default]. Every protocol.
+	// that broke the protocol, a transport that failed. That last line is one
+	// per connection and within any client's reach, and its text may quote,
+	// escaped, bytes the peer sent: a client that opens connections only to
+	// break them sets its rate. A Logger that must hold a
+	// budget rate-limits what it receives. Nil means [slog.Default]. Every
+	// protocol.
 	Logger *slog.Logger
 
 	// LingerTimeout is how long a closing HTTP/1.1 connection, its write side

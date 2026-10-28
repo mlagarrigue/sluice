@@ -171,10 +171,14 @@ Three reasons come up, and the difference matters:
   `Config.BodyDelivery: BodyWhole` asks for the other contract, every body
   complete before its handler runs, bounded by `Config.MaxBodyBytes`
   (1 MiB). What is accepted is the same either way
-  ([ADR 0009](../design/adr/0009-request-contract.md), article 4). A body a handler leaves unread costs the
-  HTTP/1.1 connection, a reset of its stream (`RST_STREAM` with `NO_ERROR`)
-  after the response on HTTP/2, and a `STOP_SENDING` with `H3_NO_ERROR`
-  after it on HTTP/3.
+  ([ADR 0009](../design/adr/0009-request-contract.md), article 4). A body a
+  handler leaves unread costs the HTTP/1.1 connection, a `RST_STREAM` with
+  `NO_ERROR` after the response on HTTP/2, a `STOP_SENDING` with
+  `H3_NO_ERROR` on HTTP/3.
+- **A streaming connection is bounded by its windows, not `MaxBodyBytes`**:
+  `MaxConcurrentStreams` times `InitialWindowSize` on HTTP/2, times
+  `InitialMaxStreamDataBidiRemote` on HTTP/3 — the figure to multiply by
+  the connections a server accepts.
 - **One token verifier provided**: HMAC (a symmetric signature with a
   shared secret). Public-key tokens (RSA, ECDSA, EdDSA) are not provided —
   not yet; the `Verifier` interface is the extension point.

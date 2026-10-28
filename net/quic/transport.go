@@ -63,6 +63,13 @@ type TransportParameters struct {
 
 	// InitialMaxData bounds everything the peer may send on all streams
 	// together, and the three below bound it per stream and per stream count.
+	//
+	// The stream counts are also a memory budget the peer spends at will: a
+	// STREAM frame of a few bytes on identifier n opens every stream of its
+	// type below n at once (RFC 9000 §3.2), each a Stream, a channel and two
+	// table entries, so InitialMaxStreamsBidi and InitialMaxStreamsUni are
+	// what one connection may make this end hold, and a Listener holds that
+	// MaxConns times.
 	InitialMaxData                 uint64
 	InitialMaxStreamDataUni        uint64
 	InitialMaxStreamDataBidiLocal  uint64
