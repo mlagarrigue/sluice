@@ -62,9 +62,23 @@ GATED='BenchmarkTransferClean$|BenchmarkTransferLoss1pct$|BenchmarkTransferBurst
 # The same rule per controller: a name whose median does not hold within 5%
 # of itself on an identical tree under that controller leaves its gate, and
 # only its gate. Measured 2026-10-16, eight rounds each: Reno 0.978-1.012,
-# CUBIC 0.991-1.011, BBR 0.990-1.013: every controller keeps the eight
-# names, and the list of those it leaves out is empty today.
-UNSTABLE=''
+# CUBIC 0.991-1.011, BBR 0.990-1.013: every controller kept the eight names.
+#
+# Reno has since left Bottleneck out. The job turned red on it three times
+# in a day (088d762, 81cbdd6, 2570cbe; 1.149, 1.153, 1.138 against a bound
+# of 10%), twice on commits that changed nothing in net/quic. Measured
+# 2026-10-28, Reno, an identical tree, 80 interleaved rounds on fifteen
+# cores: the transfer is bimodal, 86 of 160 in 824-875 ms and 74 in
+# 950-1026 ms, and the median of eight sits in whichever mode holds four of
+# them — passes of eight read 0.927 to 1.159, four of ten over 1.10.
+# Resampled from those 160 transfers, a pass reads over 10% slower 13% of
+# the time. No bound short of 20% holds that, so the name leaves Reno's
+# gate as this rule says. Nothing is lost: the injection below reddens the
+# seven names Reno keeps, not this one.
+case "$CC" in
+  reno) UNSTABLE='BenchmarkTransferBottleneck$' ;;
+  *) UNSTABLE='' ;;
+esac
 GATED="$(tr '|' '\n' <<<"$GATED" | grep -vxF -f <(tr '|' '\n' <<<"$UNSTABLE") | paste -sd'|')"
 
 # 6%: four times the widest upward spread measured on an identical tree, and
@@ -115,13 +129,12 @@ PATHEFFECT="${PATHEFFECT:-0.06}"
 # bimodality CUBIC's campaign traced to where HyStart++ exits, on the same
 # benchmark; the band is widened on that evidence and on that campaign's 160
 # transfers, without a new one under Reno, which is what this comment says
-# so the next reader does not take it for measured here. Nothing is lost:
-# the seven other names keep 6% under Reno, and the injection above reddens
-# them, not this one.
+# so the next reader does not take it for measured here. The campaign came
+# on 2026-10-28 and took the name out of Reno's gate (UNSTABLE, above): a
+# wider band was not enough.
 case "$CC" in
   cubic) WIDE='BenchmarkTransferBottleneck$|BenchmarkTransferTwoFlows$' ;;
   bbr) WIDE='BenchmarkTransferTwoFlows$' ;;
-  reno) WIDE='BenchmarkTransferBottleneck$' ;;
   *) WIDE='' ;;
 esac
 WIDEEFFECT="${WIDEEFFECT:-0.10}"

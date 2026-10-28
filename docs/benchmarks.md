@@ -844,6 +844,18 @@ doubled the job. The initial window halved still turns the cubic job red,
 on rows that keep 6% (`Clean` 1.140, `RTT80` 1.077, `BurstLoss` 1.069);
 under CUBIC it moves neither `Bottleneck` (0.957) nor `TwoFlows` (1.038).
 
+Under Reno, `Bottleneck` turned the job red three times in one day (1.149,
+1.153, 1.138 against a bound of 10%), twice on commits that did not touch
+`net/quic`. Eighty interleaved rounds on an identical tree (2026-10-28,
+fifteen cores) show a bimodal transfer: 86 of 160 between 824 and 875 ms,
+74 between 950 and 1,026 ms. The median of eight lands in whichever mode
+holds four of them: passes of eight read 0.927 to 1.159, four in ten over
+1.10. Resampled from those 160 transfers, a pass reads more than 10%
+slower 13% of the time. No bound under 20% holds that, so the row leaves
+Reno's gate, and only Reno's, under the rule of 5% on an identical tree.
+The seven others keep 6% under Reno and turn red under the halved initial
+window.
+
 A second script, `gate-cc.sh`, holds the three controllers other than
 Reno to their own criteria, on one tree and without a base: the median of
 `share` on `TwoFlowsVsReno` is 0.70 at most for all three (measured: CUBIC
