@@ -351,3 +351,35 @@ func TestDialTLSRefusals(t *testing.T) {
 		})
 	}
 }
+
+// Validate is Connect's own check, run without a connection: every
+// configuration Connect refuses before dialling, Validate refuses with the
+// same error, and one it accepts Validate accepts.
+func TestConfigValidateIsConnectsCheck(t *testing.T) {
+	for _, cfg := range []Config{
+		{},
+		{User: "u", Params: map[string]string{"user": "x"}},
+		{User: "u", Params: map[string]string{"replication": "database"}},
+		{User: "u", MaxMessage: 1},
+		{User: "u", CancelTimeout: -1},
+		{User: "u", MinProtocol: Protocol32, MaxProtocol: Protocol30},
+		{User: "u", Database: "d"},
+	} {
+		dialled := false
+		dial := func(context.Context) (io.ReadWriteCloser, error) {
+			dialled = true
+			return nil, errors.New("no server here")
+		}
+		_, connErr := Connect(context.Background(), dial, cfg)
+		valErr := cfg.Validate()
+		if dialled {
+			if valErr != nil {
+				t.Errorf("%v: Connect dialled, Validate refused: %v", cfg, valErr)
+			}
+			continue
+		}
+		if valErr == nil || valErr.Error() != connErr.Error() {
+			t.Errorf("%v: Validate = %v, Connect refused before dialling with %v", cfg, valErr, connErr)
+		}
+	}
+}

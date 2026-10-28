@@ -384,6 +384,13 @@ func parsePreferredAddress(val []byte) (*preferredAddress, error) {
 // kind announced, which no caller can mean literally.
 var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no credit at all — start from DefaultParameters()")
 
+// Validate reports what [Dial], [DialEarly] and [NewListener] would refuse
+// in p — the zero value, a count past what the wire can carry, a
+// MaxDatagramSize no path can carry — and nil when they would accept it. A
+// configuration read at deployment is checked with it before any socket is
+// opened; the three run the same check.
+func (p TransportParameters) Validate() error { return p.check() }
+
 // check refuses the zero value, which would announce a connection that
 // cannot move, and a MaxDatagramSize no path can carry.
 func (p TransportParameters) check() error {

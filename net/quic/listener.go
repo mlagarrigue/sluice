@@ -390,6 +390,18 @@ type Listener struct {
 	done     chan struct{} // closed when every read loop has returned
 }
 
+// Validate reports what [NewListener] would refuse in c alone — a negative
+// bound or one out of range — and nil when it would accept it. A
+// configuration read at deployment, from the environment or a file, is
+// checked with it before any socket is opened; NewListener runs the same
+// check. What depends on the rest of NewListener's arguments — a preferred
+// address of the other family, session tickets the tls.Config disables —
+// stays for NewListener.
+func (c ListenerConfig) Validate() error {
+	_, err := c.resolve()
+	return err
+}
+
 // resolve applies the defaults zero stands for and returns an error naming
 // every field whose value is negative or out of range: a negative bound is the caller's
 // mistake, said at start rather than quietly turned into the default

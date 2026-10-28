@@ -398,6 +398,18 @@ type Config struct {
 	replication bool
 }
 
+// Validate reports what [Connect] would refuse in cfg before dialling — an
+// empty User, a role or database set through Params, a bound outside its
+// range, protocol versions that exclude each other — and nil when it would
+// accept it. A configuration read at deployment, from the environment or a
+// file, is checked with it before any connection is opened; Connect runs
+// the same check, so the two never disagree. What only the server can
+// refuse — the password, the database's existence — stays for Connect.
+func (cfg Config) Validate() error {
+	_, err := startupBody(cfg)
+	return err
+}
+
 // String prints the configuration with the password hidden: %v and %+v on
 // a struct print every field, and a password that reaches a log is a
 // credential anyone reading the log holds.

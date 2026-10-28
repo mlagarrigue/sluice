@@ -204,8 +204,9 @@ The library reads no environment variable and no command-line flag: your
 program reads its settings, with `os.LookupEnv`, `flag` or `encoding/json`,
 and puts them in the `Config` types. A field left at zero takes the default
 the tables give. Before listening, call `Validate` (`httpstream.Config`,
-`gateway.Config`): a value the server would refuse stops the program at
-start, naming the field, before it takes its port.
+`gateway.Config`, `postgres.Config`, `quic.ListenerConfig`,
+`quic.TransportParameters`): a value the server would refuse stops the
+program at start, naming the field, before it takes its port.
 [`example/settings`](../../example/settings/settings.go) does it for the
 gateway and the HTTP timeouts. The tables:
 [PostgreSQL](postgres.md#connection-settings),

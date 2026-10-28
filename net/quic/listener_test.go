@@ -588,3 +588,37 @@ func TestALostFinishedOutlivesTheHandshakeTimeout(t *testing.T) {
 		t.Fatalf("dropped %d Finished packets and passed %d acknowledgements; the test did not set up what it checks", dropped, passed)
 	}
 }
+
+// ListenerConfig.Validate and TransportParameters.Validate are NewListener's
+// own checks, run without a socket: what NewListener refuses in either,
+// Validate refuses with the same error, and the defaults pass both.
+func TestValidateIsNewListenersCheck(t *testing.T) {
+	if err := quic.DefaultParameters().Validate(); err != nil {
+		t.Fatalf("DefaultParameters().Validate() = %v", err)
+	}
+	if err := (quic.ListenerConfig{}).Validate(); err != nil {
+		t.Fatalf("ListenerConfig{}.Validate() = %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		params quic.TransportParameters
+		lcfg   quic.ListenerConfig
+		got    error
+	}{
+		{name: "zero parameters", params: quic.TransportParameters{}, got: quic.TransportParameters{}.Validate()},
+		{name: "a negative bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{MaxConns: -1}, got: quic.ListenerConfig{MaxConns: -1}.Validate()},
+	} {
+		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := quic.NewListener(udp, serverTLS(t), tc.params, tc.lcfg)
+		if err == nil {
+			_ = l.Close()
+		}
+		_ = udp.Close()
+		if err == nil || tc.got == nil || tc.got.Error() != err.Error() {
+			t.Errorf("%s: Validate = %v, NewListener = %v", tc.name, tc.got, err)
+		}
+	}
+}

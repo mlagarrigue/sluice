@@ -319,8 +319,11 @@ Three places, depending on what the peer or the benchmark needs:
   program itself wrote is a silent failure waiting for its first request,
   while a panic at startup is a crash with a name. A configuration the
   program reads at deployment is checked first with its type's `Validate`
-  (`gateway.Config`, `httpstream.Config`), which returns the same refusals
-  as an error.
+  (`gateway.Config`, `httpstream.Config`, `postgres.Config`,
+  `quic.ListenerConfig`, `quic.TransportParameters`), which returns the
+  same refusals as the constructor, from the same code. A type the program
+  writes in its own code (`postgres.QueryConfig`, `CopyConfig`) has none:
+  its constructor's refusal is what the program's first test meets.
 - **The godoc of every exported symbol starts with its name**, says what it
   retains and what it costs where that matters, and links to the
   architecture's named anchors, never to section numbers.
