@@ -38,6 +38,12 @@ type Request struct {
 	// handler decides what a segment means is how two layers route one
 	// request differently. The one other form is "*", on an OPTIONS request
 	// only (RFC 9110 §7.1: the server as a whole, not a resource on it).
+	//
+	// What two layers could read differently is refused with a 400 on every
+	// protocol: a control byte or a space, a "#" (origin-form carries no
+	// fragment), a "%" not followed by two hex digits. Any other byte —
+	// one outside RFC 3986's pchar such as "|", or raw UTF-8 — has one
+	// reading and is passed on as it came; it is the handler's to refuse.
 	Target []byte
 
 	// Headers is the request's field section, in the order the client sent
@@ -422,9 +428,21 @@ func checkTarget(method, target []byte, protocolErr error) error {
 	if len(target) == 0 || target[0] != '/' {
 		return fmt.Errorf("%w: the target is neither origin-form nor absolute-form", protocolErr)
 	}
-	for _, c := range target {
-		if c <= 0x20 || c == 0x7f {
+	for i := 0; i < len(target); i++ {
+		switch c := target[i]; {
+		case c <= 0x20 || c == 0x7f:
 			return fmt.Errorf("%w: the target holds a control character", protocolErr)
+		case c == '#':
+			// Origin-form has no fragment (RFC 9112 §3.2.1): a router that
+			// cuts at "#" and one that does not would serve two paths.
+			return fmt.Errorf("%w: the target holds a fragment", protocolErr)
+		case c == '%':
+			// RFC 3986 §2.1: a "%" begins two hex digits. A lone one is
+			// decoded one way by one layer and left alone by the next.
+			if i+2 >= len(target) || !isHex(target[i+1]) || !isHex(target[i+2]) {
+				return fmt.Errorf("%w: a malformed percent-encoding in the target", protocolErr)
+			}
+			i += 2
 		}
 	}
 	return nil

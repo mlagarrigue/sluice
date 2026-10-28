@@ -49,6 +49,21 @@ func TestParseRefusals(t *testing.T) {
 			errUnsupportedCoding,
 		},
 		{
+			"a fragment in the target",
+			req("GET /a#b HTTP/1.1", "Host: h"),
+			ErrMalformed,
+		},
+		{
+			"a malformed percent in the target",
+			req("GET /a%zz HTTP/1.1", "Host: h"),
+			ErrMalformed,
+		},
+		{
+			"a percent at the end of the target",
+			req("GET /a% HTTP/1.1", "Host: h"),
+			ErrMalformed,
+		},
+		{
 			"an empty host before a port (RFC 9110 §4.2.1)",
 			req("GET /x HTTP/1.1", "Host: :80"),
 			ErrMalformed,
