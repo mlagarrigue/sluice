@@ -182,7 +182,12 @@ var hostFieldName = []byte("host")
 // A request carrying both must have them agree (RFC 9113 §8.3.1, RFC 9114
 // §4.3.1): two hops reading a different authority out of one request is the
 // routing half of the smuggling family, and the disagreement is refused here
-// rather than resolved in favour of either.
+// rather than resolved in favour of either. They agree when they differ in
+// ASCII case only: the host and the "%" triplets are case-insensitive (RFC
+// 3986 §3.2.2, §2.1), and a conformant intermediary that lowercases one of
+// them must not get the request refused. A port on one side and none on the
+// other stays a disagreement (docs/design/adr/0009). The value is delivered
+// as received, case and port included.
 func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Header, error) {
 	if authority == nil {
 		return regular, nil
@@ -191,7 +196,7 @@ func withAuthority(regular []Header, authority []byte, protocolErr error) ([]Hea
 		if !equalFold(h.Name, "host") {
 			continue
 		}
-		if !bytes.Equal(h.Value, authority) {
+		if !bytes.EqualFold(h.Value, authority) {
 			return nil, fmt.Errorf("%w: host %q and :authority %q name different hosts",
 				protocolErr, h.Value, authority)
 		}

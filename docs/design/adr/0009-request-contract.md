@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone), 2026-10-28 (the authority as received, compared without regard to case)
 - **Theme:** httpstream
 
 ## Problem
@@ -22,7 +22,15 @@ enforces it:
    refused, not resolved. The value is an authority by one grammar on all
    three (RFC 9110 §7.2: a host, an optional port, no userinfo, never
    empty); `Host: u@h` is refused on HTTP/1.1 as `:authority: u@h` is on
-   HTTP/2 and HTTP/3.
+   HTTP/2 and HTTP/3. It is delivered as received: not lowercased, not
+   stripped of an empty or default port, not decoded — a handler that
+   compares host names compares them without regard to case (RFC 3986
+   §6.2.2.1). The two fields agree when they differ in ASCII case only,
+   the host and the `%` triplets being case-insensitive: a conformant
+   intermediary that lowercases one of them does not get the request
+   refused. A port written on one side and left out on the other is still
+   a disagreement: a port's default depends on the scheme, and judging it
+   here would normalise what the delivered value does not.
 
 2. **Target raw and origin-form.** Begins with `/`, query attached, nothing
    percent-decoded. The one exception is `*` on an `OPTIONS` request (RFC

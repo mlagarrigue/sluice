@@ -3,11 +3,13 @@ package httpstream
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/mlagarrigue/sluice"
 	"github.com/mlagarrigue/sluice/net/quic"
 )
 
@@ -45,6 +47,11 @@ func TestRequestValidationIsTheSameOnH2AndH3(t *testing.T) {
 		{"a vertical bar in :path", "GET", "/a|b", ptr("h"), nil, true, ""},
 		{"raw UTF-8 in :path", "GET", "/\u00e9", ptr("h"), nil, true, ""},
 		{"a well-formed percent in :path", "GET", "/a%2Fb", ptr("h"), nil, true, ""},
+		// Host and :authority: the same entity in another case agrees, a
+		// port on one side only does not (ADR 0009).
+		{"host and :authority differing in case only", "GET", "/x", ptr("Example.com"), ptr("example.COM"), true, ""},
+		{"host and :authority differing in a triplet's case", "GET", "/x", ptr("h%4a"), ptr("h%4A"), true, ""},
+		{"host and :authority differing by a port", "GET", "/x", ptr("h"), ptr("h:80"), false, ""},
 		// RFC 9110 §4.2.1: an empty host identifier is rejected.
 		{"an empty host before a port", "GET", "/x", ptr(":80"), nil, false, ""},
 		{"an empty host and an empty port", "GET", "/x", ptr(":"), nil, false, ""},
@@ -170,6 +177,26 @@ func TestH1KeepsTargetsWithOneReading(t *testing.T) {
 		status, body := readResponse(t, br)
 		if !strings.HasPrefix(status, "HTTP/1.1 200") || body != target {
 			t.Errorf("GET %q: status %q, body %q; want 200 and the target echoed", target, status, body)
+		}
+	}
+}
+
+// The authority reaches the handler as the client wrote it: not lowercased,
+// its port, empty or default, left in place (ADR 0009).
+func TestTheAuthorityIsDeliveredAsReceived(t *testing.T) {
+	for _, host := range []string{"Example.COM", "h:", "h:80"} {
+		addr, _ := serveTest(t, Config{}, func(_ context.Context, b sluice.Batch[Request]) sluice.Batch[Response] {
+			out := make([]Response, b.Len())
+			for i, r := range b.Items {
+				out[i] = Response{Status: 200, Body: append([]byte(nil), r.Get("host")...)}
+			}
+			return sluice.Batch[Response]{Items: out}
+		})
+		c := dial(t, addr)
+		br := bufio.NewReader(c)
+		fmt.Fprintf(c, "GET /x HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host)
+		if status, body := readResponse(t, br); !strings.HasPrefix(status, "HTTP/1.1 200") || body != host {
+			t.Errorf("Host %q: status %q, the handler saw %q; want it as received", host, status, body)
 		}
 	}
 }
