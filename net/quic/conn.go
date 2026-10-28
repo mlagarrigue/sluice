@@ -1827,6 +1827,18 @@ func (c *Conn) handleTLSEvent(e tls.QUICEvent) (done bool, err error) {
 		}
 		return false, c.handlePeerParameters(e.Data)
 	case tls.QUICHandshakeDone:
+		// RFC 9001 §8.1: ALPN is mandatory. NewListener refuses a Config
+		// without NextProtos, but not one GetConfigForClient returns, and
+		// crypto/tls negotiates the empty protocol without complaint when
+		// neither side names one. The server ends the handshake as a
+		// failed negotiation would: no_application_protocol, 0x0178 on
+		// the wire (closeCodeFor). A client needs no check: Dial refuses
+		// a Config without NextProtos, and crypto/tls refuses a server
+		// that selects nothing from a client that offered something.
+		if !c.isClient && c.tls.ConnectionState().NegotiatedProtocol == "" {
+			return false, fmt.Errorf("quic: TLS: the handshake negotiated no application protocol (RFC 9001 §8.1): %w",
+				tls.AlertError(120))
+		}
 		// A server that reserved a ticket and installed no early keys
 		// served a resumption without 0-RTT: the ticket keeps its 0-RTT.
 		c.mu.Lock()
