@@ -35,7 +35,9 @@ type ReplicationConfig struct {
 	// BatchChanges is the most changes one batch holds. Zero means
 	// [sluice.DefaultBatchSize]; a negative value is refused. A batch also
 	// ends as soon as the next message is not already received, so a
-	// change is never held back waiting for the one after it.
+	// change is never held back waiting for the one after it. A Truncate,
+	// one Change per relation it names, is split across batches when it
+	// names more than the batch has room for.
 	BatchChanges int
 
 	// BatchBytes bounds the message payloads one batch keeps, in bytes.
@@ -96,6 +98,10 @@ type Replication struct {
 	spans   []tupleSpans
 	vals    []Value
 	scratch []byte
+	// carry holds the changes past BatchChanges that the last batch's final
+	// message brought — only a Truncate brings more than one — for the next
+	// batch to open with. They hold no tuple, so nothing of the arena.
+	carry []Change
 	// kept is the payload bytes this batch has copied into the arena, the
 	// figure BatchBytes bounds; small counts the batches in a row that
 	// fitted the retained size, for giving an oversized arena back.
@@ -292,7 +298,7 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 				r.err = context.Cause(ctx)
 			}
 		}()
-		for !r.done {
+		for !r.done || len(r.carry) > 0 {
 			b, err := r.readBatch()
 			if err != nil {
 				r.err = err
@@ -308,8 +314,10 @@ func (r *Replication) Changes(ctx context.Context) sluice.Source[Change] {
 				return
 			}
 			if r.done {
-				// The server left copy mode: nothing more may be sent in it.
-				return
+				// The server left copy mode: nothing more may be sent in
+				// it, and what a Truncate carried past the last batch's
+				// bound is all that is left to yield.
+				continue
 			}
 			if err := r.report(false); err != nil {
 				r.err = err
@@ -335,7 +343,11 @@ func (r *Replication) ServerWALEnd() LSN { return LSN(r.serverEnd.Load()) }
 func (r *Replication) readBatch() (sluice.Batch[Change], error) {
 	r.changes, r.spans, r.vals = r.changes[:0], r.spans[:0], r.vals[:0]
 	r.resetArena()
-	for len(r.changes) < r.batch && r.kept < r.batchBytes &&
+	for _, c := range r.carry {
+		r.changes, r.spans = append(r.changes, c), append(r.spans, tupleSpans{})
+	}
+	r.carry = r.carry[:0]
+	for !r.done && len(r.changes) < r.batch && r.kept < r.batchBytes &&
 		(len(r.changes) == 0 || r.c.r.Buffered()) {
 		m, err := r.c.r.Next()
 		if err != nil {
@@ -474,6 +486,15 @@ func (r *Replication) keep(p []byte) []byte {
 // materialize points each change at its tuples, now that the value slab no
 // longer grows.
 func (r *Replication) materialize() sluice.Batch[Change] {
+	// The count is compared between messages, and one pgoutput Truncate
+	// adds a Change per relation it names: a batch one short of
+	// BatchChanges took a Truncate of two hundred tables whole, two
+	// hundred past the bound its documentation gives as the maximum. What
+	// passes the bound waits for the next batch, which opens with it.
+	if len(r.changes) > r.batch {
+		r.carry = append(r.carry[:0], r.changes[r.batch:]...)
+		r.changes, r.spans = r.changes[:r.batch], r.spans[:r.batch]
+	}
 	for i, sp := range r.spans {
 		if sp.hasOld {
 			r.changes[i].Old = Tuple(r.vals[sp.old[0]:sp.old[1]:sp.old[1]])

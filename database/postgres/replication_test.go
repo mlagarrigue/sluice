@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -655,6 +656,57 @@ func TestReplDecoderKeepsTheTruncateOptions(t *testing.T) {
 		}
 		if c := changes[0]; c.Cascade != tc.cascade || c.RestartIdentity != tc.restart {
 			t.Errorf("bits %d: Cascade=%v RestartIdentity=%v, want %v %v", tc.bits, c.Cascade, c.RestartIdentity, tc.cascade, tc.restart)
+		}
+	}
+}
+
+// ReplicationConfig.BatchChanges is the most changes one batch holds, and a
+// Truncate brings a Change per relation it names in one message: a Truncate
+// of 25 tables under a bound of 10 arrives as batches of 10, 10 and 5, every
+// relation once and in order, also when the server leaves copy mode right
+// after it. The count used to be compared between messages only, and the
+// first batch held all 25.
+func TestReplicationSplitsATruncateAtBatchChanges(t *testing.T) {
+	const relations, batch = 25, 10
+	var script []byte
+	truncate := binary.BigEndian.AppendUint32([]byte{'T'}, relations)
+	truncate = append(truncate, 0)
+	for i := range relations {
+		oid := uint32(1000 + i) //nolint:gosec // G115: a small loop index
+		script = append(script, xlog(LSN(0x100+i), relMsg(oid, "s", fmt.Sprintf("t%d", i), "a"))...)
+		truncate = binary.BigEndian.AppendUint32(truncate, oid)
+	}
+	script = append(script, xlog(0x900, truncate)...)
+	script = append(script, frame(pgwire.BackendCopyDone, "")...)
+	script = append(script, frame(pgwire.BackendCommandComplete, "START_REPLICATION\x00")...)
+	script = append(script, frame(pgwire.BackendReadyForQuery, "I")...)
+	r := &Replication{c: NewConn(&scriptedRW{Reader: bytes.NewReader(script)}), batch: batch, batchBytes: defaultBatchBytes, interval: time.Hour}
+
+	var sizes []int
+	var names []string
+	src := r.Changes(t.Context())
+	src.Stream()(func(b sluice.Batch[Change]) bool {
+		sizes = append(sizes, b.Len())
+		for _, c := range b.Items {
+			if c.Kind != ChangeTruncate {
+				t.Errorf("a %v change in a stream of one Truncate", c.Kind)
+			}
+			names = append(names, c.Relation.Name)
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{10, 10, 5}; !slices.Equal(sizes, want) {
+		t.Errorf("batches of %v changes under BatchChanges = %d, want %v", sizes, batch, want)
+	}
+	if len(names) != relations {
+		t.Fatalf("%d relations truncated, want %d", len(names), relations)
+	}
+	for i, n := range names {
+		if want := fmt.Sprintf("t%d", i); n != want {
+			t.Errorf("change %d truncates %s, want %s: a carried change lost its place", i, n, want)
 		}
 	}
 }
