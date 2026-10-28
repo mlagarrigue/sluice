@@ -425,7 +425,9 @@ func NewConn(rw io.ReadWriteCloser) *Conn {
 const readBufferSize = 64 << 10
 
 // Close closes the underlying connection, sending a Terminate first when the
-// protocol position still allows it.
+// protocol position still allows it. A Conn is not safe for concurrent use:
+// call Close from the goroutine that uses it, once its last stream has ended,
+// and end a stream that is still running through its context.
 func (c *Conn) Close() error {
 	if c.broken == nil {
 		c.w.Terminate()

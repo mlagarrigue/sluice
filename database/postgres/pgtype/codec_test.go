@@ -318,6 +318,48 @@ func TestInt8ArrayRoundTrip(t *testing.T) {
 	}
 }
 
+// A byte after an empty array is refused like a byte after any other value:
+// the stream is being read at the wrong offset. Every array decoder, from the
+// empty array its own encoder writes.
+func TestDecodeArrayRefusesBytesAfterAnEmptyArray(t *testing.T) {
+	check := func(name string, encoded []byte, decode func([]byte) error) {
+		t.Helper()
+		if err := decode(encoded); err != nil {
+			t.Errorf("%s: the empty array itself: %v", name, err)
+		}
+		if err := decode(append(encoded, 0)); !errors.Is(err, ErrCodec) {
+			t.Errorf("%s: an empty array then one byte: %v, want ErrCodec", name, err)
+		}
+	}
+	both := func(name string, enc func([]byte) []byte, dec func([]byte) error) { check(name, enc(nil), dec) }
+	both("Bool", func(d []byte) []byte { return AppendBoolArray(d, nil) }, func(b []byte) error { _, err := DecodeBoolArray(nil, b); return err })
+	both("NullableBool", func(d []byte) []byte { return AppendNullableBoolArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableBoolArray(nil, b); return err })
+	both("Int2", func(d []byte) []byte { return AppendInt2Array(d, nil) }, func(b []byte) error { _, err := DecodeInt2Array(nil, b); return err })
+	both("NullableInt2", func(d []byte) []byte { return AppendNullableInt2Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt2Array(nil, b); return err })
+	both("Int4", func(d []byte) []byte { return AppendInt4Array(d, nil) }, func(b []byte) error { _, err := DecodeInt4Array(nil, b); return err })
+	both("NullableInt4", func(d []byte) []byte { return AppendNullableInt4Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt4Array(nil, b); return err })
+	both("Int8", func(d []byte) []byte { return AppendInt8Array(d, nil) }, func(b []byte) error { _, err := DecodeInt8Array(nil, b); return err })
+	both("NullableInt8", func(d []byte) []byte { return AppendNullableInt8Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableInt8Array(nil, b); return err })
+	both("Float4", func(d []byte) []byte { return AppendFloat4Array(d, nil) }, func(b []byte) error { _, err := DecodeFloat4Array(nil, b); return err })
+	both("NullableFloat4", func(d []byte) []byte { return AppendNullableFloat4Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableFloat4Array(nil, b); return err })
+	both("Float8", func(d []byte) []byte { return AppendFloat8Array(d, nil) }, func(b []byte) error { _, err := DecodeFloat8Array(nil, b); return err })
+	both("NullableFloat8", func(d []byte) []byte { return AppendNullableFloat8Array(d, nil) }, func(b []byte) error { _, err := DecodeNullableFloat8Array(nil, b); return err })
+	both("Text", func(d []byte) []byte { return AppendTextArray(d, nil) }, func(b []byte) error { _, err := DecodeTextArray(nil, b); return err })
+	both("NullableText", func(d []byte) []byte { return AppendNullableTextArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTextArray(nil, b); return err })
+	both("Bytea", func(d []byte) []byte { return AppendByteaArray(d, nil) }, func(b []byte) error { _, err := DecodeByteaArray(nil, b); return err })
+	both("NullableBytea", func(d []byte) []byte { return AppendNullableByteaArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableByteaArray(nil, b); return err })
+	both("UUID", func(d []byte) []byte { return AppendUUIDArray(d, nil) }, func(b []byte) error { _, err := DecodeUUIDArray(nil, b); return err })
+	both("NullableUUID", func(d []byte) []byte { return AppendNullableUUIDArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableUUIDArray(nil, b); return err })
+	both("TimestampTZ", func(d []byte) []byte { return AppendTimestampTZArray(d, nil) }, func(b []byte) error { _, err := DecodeTimestampTZArray(nil, b); return err })
+	both("NullableTimestampTZ", func(d []byte) []byte { return AppendNullableTimestampTZArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTimestampTZArray(nil, b); return err })
+	both("Timestamp", func(d []byte) []byte { return AppendTimestampArray(d, nil) }, func(b []byte) error { _, err := DecodeTimestampArray(nil, b); return err })
+	both("NullableTimestamp", func(d []byte) []byte { return AppendNullableTimestampArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableTimestampArray(nil, b); return err })
+	both("Date", func(d []byte) []byte { return AppendDateArray(d, nil) }, func(b []byte) error { _, err := DecodeDateArray(nil, b); return err })
+	both("NullableDate", func(d []byte) []byte { return AppendNullableDateArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableDateArray(nil, b); return err })
+	both("Numeric", func(d []byte) []byte { return AppendNumericArray(d, nil) }, func(b []byte) error { _, err := DecodeNumericArray(nil, b); return err })
+	both("NullableNumeric", func(d []byte) []byte { return AppendNullableNumericArray(d, nil) }, func(b []byte) error { _, err := DecodeNullableNumericArray(nil, b); return err })
+}
+
 // An empty array arrives as zero dimensions, not one dimension of length zero.
 // A decoder that expected a dimension header would fail on the ordinary result
 // of a query that matched nothing.

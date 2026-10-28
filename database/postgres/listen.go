@@ -234,7 +234,10 @@ func (l *Listener) Notifications(ctx context.Context) sluice.Source[Notification
 	return sluice.NewSource(sluice.Stream[Notification](stream), func() error { return l.err })
 }
 
-// Close closes the connection, which ends its subscriptions.
+// Close closes the connection, which ends its subscriptions. Call it once the
+// stream has ended, from the goroutine that read it: to stop a stream that is
+// waiting for a notification, end the ctx given to [Listener.Notifications],
+// which closes the connection on the stream's own goroutine.
 func (l *Listener) Close() error { return l.c.Close() }
 
 // readBatch returns what the subscription kept, or reads until a batch is

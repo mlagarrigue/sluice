@@ -588,6 +588,10 @@ func arrayBody(b []byte, elem uint32) (body []byte, n int, err error) {
 		// input; any other value means the stream is being read at the wrong
 		// offset, and the rest of the header would be believed from there.
 		return nil, 0, fmt.Errorf("%w: array flags are %#x, want 0 or 1", ErrCodec, flags)
+	case ndim == 0 && len(b) != 12:
+		// A byte past an empty array's header means the stream is read at the
+		// wrong offset, as a byte past any other value does.
+		return nil, 0, fmt.Errorf("%w: %d bytes after an empty array's header", ErrCodec, len(b)-12)
 	case ndim == 0:
 		return nil, 0, nil // the empty array, which the server sends as zero dimensions
 	case ndim != 1:

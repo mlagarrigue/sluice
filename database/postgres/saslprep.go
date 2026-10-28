@@ -11,8 +11,9 @@ import (
 
 // saslprep prepares a password for SCRAM as SASLprep (RFC 4013) defines it,
 // the way PostgreSQL's pg_saslprep does. RFC 4013 and the stringprep of RFC
-// 3454 are obsolete (RFC 7613, then 8265, and RFC 7564 replace them), but
-// SCRAM (RFC 5802 §5.1) and PostgreSQL still name SASLprep, so it is the
+// 3454 are obsolete (RFC 7613 then 8265 replace the first, RFC 7564 then
+// 8264 the second), but SCRAM (RFC 5802 §5.1) and PostgreSQL still name
+// SASLprep, so it is the
 // one that derives the stored key — and it must be that way rather than
 // the RFC's alone, because the server ran the same function on the password
 // when it stored the role's key, and a client that prepares the password any
