@@ -1565,6 +1565,16 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 			// and nothing is wrong (§9.6.2 lets the client stay).
 			c.pathProbe.via, c.pathProbe.targetCID = nil, nil
 			c.pathProbe.viaValidated, c.pathProbe.viaNonProbing = false, false
+			if c.amplActive {
+				// Unless the path in use is a migration still unproven: the
+				// probe replaced the migration's own (preferredPathChallengeLocked
+				// starts one for a challenge from the peer's new address), so
+				// its abandonment is that migration's, and §9.3.2 falls back
+				// to the last validated path. Left there, the server stayed on
+				// the new address under the amplification limit with no probe
+				// left to lift it.
+				c.revertToValidatedLocked(now)
+			}
 			return time.Time{}
 		}
 		if !c.isClient {

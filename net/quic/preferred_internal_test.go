@@ -911,3 +911,56 @@ func TestAnUnusablePreferredAddressIsNotTaken(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9000 §9.3.2: a migrated path that does not validate falls back to the
+// last validated one. A server that had just followed its client to B, and
+// then received the client's challenge on its preferred socket from B,
+// replaced the migration's probe with one from that socket (§9.6.2); when
+// that one went unanswered, its abandonment cleared the probe and nothing
+// else — the server stayed on B, held to three times what B sent, with no
+// probe left to validate it. The abandonment now reverts as the
+// migration's own would have.
+func TestAbandonedPreferredProbeDoesNotStrandAnUnvalidatedMigration(t *testing.T) {
+	c, _ := newMigratableServer(t, "strand22")
+	pref := &recordingPC{addr: fakeFuzzAddr("strand22:preferred")}
+	tok := make([]byte, 16)
+	for seq, cid := range []string{"cli-cid1", "cli-cid2"} {
+		if err := c.frames(spaceApplication, ncidFrame(uint64(seq+1), 0, []byte(cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := fakeFuzzAddr("strand22:peerA"), fakeFuzzAddr("strand22:peerB")
+
+	now := time.Now()
+	rxFromNewAddress(c, b, 1200, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+	c.mu.Lock()
+	moved, unvalidated := sameAddr(c.peer, b), c.amplActive
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = b, pref, 1200, true
+	c.mu.Unlock()
+	if !moved || !unvalidated {
+		t.Fatalf("after B's packet: on B %v, unvalidated %v; want both", moved, unvalidated)
+	}
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	via := c.pathProbe.via
+	c.mu.Unlock()
+	if via != net.PacketConn(pref) {
+		t.Fatal("the challenge on the preferred socket did not start the server's probe from it")
+	}
+
+	for range pathProbeMaxRetransmits + 2 {
+		c.mu.Lock()
+		now = now.Add(time.Hour)
+		c.pathProbeDeadlineLocked(now)
+		c.mu.Unlock()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.amplActive && !sameAddr(c.peer, a) {
+		t.Errorf("after the preferred probe was given up: on %v, still under the amplification limit, no probe pending %v; want the validated path %v", c.peer, !c.pathProbe.pending, a)
+	}
+}
