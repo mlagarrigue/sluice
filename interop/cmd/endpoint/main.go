@@ -478,10 +478,13 @@ func fetch(c *quic.Conn, p string) error {
 	if err != nil {
 		return fmt.Errorf("open stream: %w", err)
 	}
-	if _, err := io.WriteString(s, "GET "+p+"\r\n"); err != nil {
-		return err
-	}
-	if err := s.CloseWrite(); err != nil {
+	// The request and its FIN in one write. Written apart, the FIN could
+	// wait for the congestion window while the server, its answer sent,
+	// dropped the stream and sent STOP_SENDING (RFC 9000 §3.5 allows it):
+	// the FIN's write then failed on a stream the peer had stopped, and the
+	// case with it — 1,999 requests against s2n-quic. Together, nothing is
+	// left to write once the server holds the request.
+	if _, err := s.WriteFinal([]byte("GET " + p + "\r\n")); err != nil {
 		return err
 	}
 	name := filepath.Join(downloadsDir, filepath.FromSlash(path.Clean("/"+p)))
