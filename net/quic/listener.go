@@ -180,6 +180,26 @@ type ListenerConfig struct {
 	// negative value is refused by [NewListener].
 	MaxSpentRetryTokens int
 
+	// StatelessResetsPerSecond bounds the stateless resets the listener
+	// sends, each an answer to a short-header datagram no connection here
+	// owns — the way a client still holding a connection this listener
+	// forgot (a restart) learns it is gone, instead of waiting out its idle
+	// timeout. Every reset answers unauthenticated bytes, so unbounded the
+	// listener would generate traffic toward whatever source address a
+	// sender claims; RFC 9000 §10.3.3 has an endpoint stop once a limit is
+	// reached. A server restarting in front of thousands of clients tells
+	// them at this rate. Zero means 16; a negative value is refused by
+	// [NewListener].
+	StatelessResetsPerSecond int
+
+	// StatelessResetsPerAddress is one source address's share of that
+	// budget, the separate limit §10.3.3 recommends so that one sender
+	// spraying random identifiers cannot spend it all. The address is the
+	// IP alone, a port being free for a sender to vary, so every client
+	// behind one NAT shares it. Zero means 4; a negative value is refused
+	// by [NewListener].
+	StatelessResetsPerAddress int
+
 	// StatelessResetKey derives the stateless reset token of every
 	// connection identifier the listener issues (RFC 9000 §10.3.2:
 	// HMAC-SHA256 of the identifier, truncated to 16 bytes). Zero draws a
@@ -396,6 +416,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	if c.MaxSpentRetryTokens < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.MaxSpentRetryTokens %d is negative — zero means %d", c.MaxSpentRetryTokens, defaultMaxSpentRetryTokens))
 	}
+	if c.StatelessResetsPerSecond < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerSecond %d is negative — zero means %d", c.StatelessResetsPerSecond, defaultResetsPerSecond))
+	}
+	if c.StatelessResetsPerAddress < 0 {
+		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.StatelessResetsPerAddress %d is negative — zero means %d", c.StatelessResetsPerAddress, defaultResetsPerAddress))
+	}
 	if c.EarlyDataWindow < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.EarlyDataWindow %v is negative — zero means %v", c.EarlyDataWindow, defaultEarlyDataWindow))
 	}
@@ -440,6 +466,12 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	}
 	if c.MaxSpentRetryTokens == 0 {
 		c.MaxSpentRetryTokens = defaultMaxSpentRetryTokens
+	}
+	if c.StatelessResetsPerSecond == 0 {
+		c.StatelessResetsPerSecond = defaultResetsPerSecond
+	}
+	if c.StatelessResetsPerAddress == 0 {
+		c.StatelessResetsPerAddress = defaultResetsPerAddress
 	}
 	// A random key per listener when none is given; both are drawn here so
 	// that what the listener runs with is all in its resolved config.
@@ -1471,18 +1503,17 @@ func (l *Listener) resetTokenFor(cid []byte) [16]byte {
 	return token
 }
 
-// maxResetsPerSecond bounds how many stateless resets one listener emits:
-// each is an answer to unauthenticated bytes, and answering every stray at
-// line rate would make the listener a traffic generator pointed wherever
-// the source addresses claim (§10.3's rate-limit advice).
-const maxResetsPerSecond = 16
+// defaultResetsPerSecond is ListenerConfig.StatelessResetsPerSecond when
+// zero: each reset is an answer to unauthenticated bytes, and answering
+// every stray at line rate would make the listener a traffic generator
+// pointed wherever the source addresses claim (§10.3.3).
+const defaultResetsPerSecond = 16
 
-// maxResetsPerSourcePerSecond is one source address's share of that
-// budget. Without it, one sender spraying short headers at random
-// identifiers spends the whole budget, and every genuine client whose
-// connection this listener lost waits out its idle timeout instead. The
-// address is the IP alone: the port is free for a sender to vary.
-const maxResetsPerSourcePerSecond = 4
+// defaultResetsPerAddress is ListenerConfig.StatelessResetsPerAddress when
+// zero. Without a share per address, one sender spraying short headers at
+// random identifiers spends the whole budget, and every genuine client
+// whose connection this listener lost waits out its idle timeout instead.
+const defaultResetsPerAddress = 4
 
 // resetFor reports which live connection, if any, an unroutable short-header
 // datagram is a stateless reset for: RFC 9000 §10.3.1 has the comparison
@@ -1499,7 +1530,7 @@ const maxResetsPerSourcePerSecond = 4
 // per-second reset budget as its bound — "a flood of unroutable datagrams
 // costs a comparison per connection each until the budget is spent". It is
 // not one: that budget is l.resetsSent, which only a reset actually sent
-// raises, and maxResetsPerSourcePerSecond caps one source at four of the
+// raises, and StatelessResetsPerAddress caps one source at four of the
 // sixteen. Measured: 200 datagrams from a single source left it at 4, so
 // the gate never closed and every datagram paid the whole table — on the
 // one goroutine that reads the socket, with MaxConns zero by default.
@@ -1610,7 +1641,7 @@ func (l *Listener) resetBudgetLocked(now time.Time, src string) bool {
 		l.resetWindow, l.resetsSent = now, 0
 		clear(l.resetsTo)
 	}
-	return l.resetsSent < maxResetsPerSecond && l.resetsTo[src] < maxResetsPerSourcePerSecond
+	return l.resetsSent < l.lcfg.StatelessResetsPerSecond && l.resetsTo[src] < l.lcfg.StatelessResetsPerAddress
 }
 
 // maybeSendStatelessReset answers one unroutable short-header datagram with
@@ -1638,7 +1669,7 @@ func (l *Listener) maybeSendStatelessReset(datagram, dcid []byte, from net.Addr,
 	}
 	l.resetsSent++
 	if l.resetsTo == nil {
-		l.resetsTo = make(map[string]int, maxResetsPerSecond)
+		l.resetsTo = make(map[string]int, l.lcfg.StatelessResetsPerSecond)
 	}
 	l.resetsTo[src]++
 	l.mu.Unlock()

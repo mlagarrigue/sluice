@@ -712,11 +712,11 @@ func TestListenerSendsStatelessResetForUnknownShortHeader(t *testing.T) {
 	}
 
 	// The budget: within one window, emission stops at the cap.
-	for range 3 * maxResetsPerSecond {
+	for range 3 * defaultResetsPerSecond {
 		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
-	if got := len(pc.taken()); got > maxResetsPerSecond {
-		t.Errorf("%d resets in one window, over the %d budget", got, maxResetsPerSecond)
+	if got := len(pc.taken()); got > defaultResetsPerSecond {
+		t.Errorf("%d resets in one window, over the %d budget", got, defaultResetsPerSecond)
 	}
 }
 
@@ -735,18 +735,55 @@ func TestStatelessResetBudgetIsPerSource(t *testing.T) {
 	trigger[0] = 0x40
 	copy(trigger[1:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
 
-	for port := range 3 * maxResetsPerSecond {
+	for port := range 3 * defaultResetsPerSecond {
 		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
 		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
 	}
-	if got := len(pc.taken()); got != maxResetsPerSourcePerSecond {
-		t.Errorf("one address drew %d resets in one window, want its share of %d", got, maxResetsPerSourcePerSecond)
+	if got := len(pc.taken()); got != defaultResetsPerAddress {
+		t.Errorf("one address drew %d resets in one window, want its share of %d", got, defaultResetsPerAddress)
 	}
 
 	other := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 443}
 	l.dispatch(append([]byte(nil), trigger...), other, l.pc, 0)
 	if got := len(pc.taken()); got != 1 {
 		t.Errorf("another address drew %d resets after the first one's flood, want 1", got)
+	}
+}
+
+// The budget is the operator's to set: a server restarting in front of
+// many clients raises it to tell them sooner, one behind a NAT raises the
+// per-address share. Here 3 in all and 2 per address — the third datagram
+// from one address goes unanswered, and a second address spends the last.
+func TestStatelessResetBudgetIsConfigured(t *testing.T) {
+	pc := &capturePC{fuzzSink: fuzzSink{addr: "listener:self"}, stopped: make(chan struct{})}
+	l, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h3"}}, DefaultParameters(),
+		ListenerConfig{StatelessResetsPerSecond: 3, StatelessResetsPerAddress: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	trigger := make([]byte, 60)
+	trigger[0] = 0x40
+	copy(trigger[1:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+
+	for port := range 5 {
+		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000 + port}
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
+	}
+	if got := len(pc.taken()); got != 2 {
+		t.Errorf("one address drew %d resets, want the configured share of 2", got)
+	}
+	for i := range 3 {
+		from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, byte(2+i)), Port: 443}
+		l.dispatch(append([]byte(nil), trigger...), from, l.pc, 0)
+	}
+	if got := len(pc.taken()); got != 1 {
+		t.Errorf("three more addresses drew %d resets, want the 1 left of a budget of 3", got)
+	}
+
+	if _, err := NewListener(pc, &tls.Config{MinVersion: tls.VersionTLS13}, DefaultParameters(),
+		ListenerConfig{StatelessResetsPerSecond: -1}); err == nil {
+		t.Error("a negative reset budget was accepted")
 	}
 }
 
