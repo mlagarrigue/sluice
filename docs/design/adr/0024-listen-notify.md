@@ -1,7 +1,7 @@
 # ADR 0024 — `LISTEN/NOTIFY` is a `Source` on a connection of its own
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-27
+- **Revised:** 2026-10-27, 2026-10-28 (the moment a kept notification arrives named)
 - **Theme:** postgres
 
 ## Problem
@@ -21,8 +21,9 @@ a `*Listener` whose `Notifications(ctx)` is a `Source[Notification]`
 nothing else: it stays outside any transaction, so it receives as early as
 the server sends.
 
-**Nothing is lost while subscribing.** A notification can arrive before the
-`ReadyForQuery` that closes the `LISTEN` query; it is kept and delivered
+**Nothing is lost while subscribing.** A notification can arrive before
+the server answered LISTEN — before the `ReadyForQuery` that closes the
+query; it is kept and delivered
 first, in batches of `BatchNotifications`, where `Exec` would discard it.
 The protocol does not bound how many arrive: what is kept is bounded at
 4 MiB, a bound of the package and not the caller's batch size; past it the

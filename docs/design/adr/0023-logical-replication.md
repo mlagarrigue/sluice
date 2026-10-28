@@ -1,7 +1,7 @@
 # ADR 0023 — Logical replication is a `Source` of changes, acknowledged by the consumer
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record), 2026-10-27 (the relation table is bounded in bytes)
+- **Revised:** 2026-10-23 (LISTEN/NOTIFY has its own record), 2026-10-27 (the relation table is bounded in bytes), 2026-10-28 (a batch is bounded in bytes too, and a Truncate split at BatchChanges)
 - **Theme:** postgres
 
 ## Problem
@@ -36,10 +36,14 @@ count and in bytes: a server describing more relations, or longer names,
 than a budget allows is refused rather than followed into memory.
 
 **A batch is what the server has already delivered**, capped by
-`ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`): a batch
-closes when it is full or when the next message is not already received, so
-a received change is never held back waiting for the next one. A batch's
-bytes live until the next batch (rule 1).
+`ReplicationConfig.BatchChanges` (zero: `sluice.DefaultBatchSize`) and by
+`ReplicationConfig.BatchBytes`, the message payloads it keeps (zero: the
+default of `QueryConfig.BatchBytes`): a batch closes when either is
+reached or when the next message is not already received, so a received
+change is never held back waiting for the next one. A Truncate naming more
+relations than the batch has room for is split across batches; a batch
+that reaches `BatchBytes` without a change closes empty and the stream goes
+on. A batch's bytes live until the next batch (rule 1).
 
 **The consumer acknowledges.** `Replication.Ack(lsn)` declares everything
 before `lsn` processed — typically a `Commit`'s `EndLSN`. The position
