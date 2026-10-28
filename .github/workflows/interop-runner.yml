@@ -154,7 +154,13 @@ jobs:
             input_filename as $f
             | (.results[0] // [])[] as $r
             | { server: .servers[0], client: .clients[0], name: $r.name, result: $r.result, first: $r.first }
-          ' {} + > matrix/cases.jsonl || true
+          ' {} + > matrix/cases.jsonl
+          # A join that found nothing — artefacts missing, a format changed —
+          # must not publish a header-only table over the last real pass.
+          if [ ! -s matrix/cases.jsonl ]; then
+            echo "no case joined from the passes' results; nothing is published" >&2
+            exit 1
+          fi
           {
             echo "# QUIC Interop Runner: sluice against every implementation"
             echo
