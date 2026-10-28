@@ -241,3 +241,36 @@ func TestStreamSlotsComeBackAnEighthAtATime(t *testing.T) {
 		})
 	}
 }
+
+// RFC 9000 §4.6: the peer may open as many streams at once as the limit
+// announces. Returning slots an eighth at a time held back up to an eighth
+// of them from a peer at the limit: with 90 of 100 streams kept open and
+// 10 short ones opened and finished, the 101st waited on two more
+// retirements. A peer that opened to within a batch of the limit gets each
+// slot back at once; one far from it still gets them by the batch.
+func TestStreamCreditIsReturnedWhenThePeerIsAtTheLimit(t *testing.T) {
+	c := &Conn{}
+	c.params.InitialMaxStreamsBidi = 100
+	c.localMaxStreamsBidi = 100
+	c.seenPeerBidi = 100 // 90 kept open, 10 short ones opened
+	for range 10 {
+		c.returnStreamSlotLocked(false) // the 10 short ones finish
+	}
+	if c.localMaxStreamsBidi < 101 {
+		t.Fatalf("limit %d with 90 streams open of the 100 announced: the peer cannot open another", c.localMaxStreamsBidi)
+	}
+	if live := c.localMaxStreamsBidi - 10; live != 100 {
+		t.Errorf("limit %d leaves %d streams open at once, want the 100 announced", c.localMaxStreamsBidi, live)
+	}
+
+	far := &Conn{}
+	far.params.InitialMaxStreamsBidi = 100
+	far.localMaxStreamsBidi = 100
+	far.seenPeerBidi = 20
+	for range 10 {
+		far.returnStreamSlotLocked(false)
+	}
+	if len(far.grants) != 0 {
+		t.Error("a peer far from the limit got its slots back one by one, not by the batch")
+	}
+}
