@@ -246,7 +246,19 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 		// The chunk is not cut, so a full chunk stays one packet; the
 		// extra datagram is the price of the peer's gaps. One not yet owed
 		// simply stays behind for its timer.
-		if len(payload) > 0 && c.packetOverhead(space)+len(ack)+len(payload) > c.maxDatagram {
+		//
+		// The same holds for the congestion window (RFC 9002 §7): the gates
+		// that let this packet through — the writer's above, the
+		// retransmission and CRYPTO passes — counted the payload and 64
+		// bytes of header, tag and slack, which a short ACK fits in and a
+		// gapped one does not. An ACK-only packet is not in flight, so
+		// leaving ahead keeps the flight under the window; a packet over
+		// the window without its ACK is cwnd-exempt (a probe, a grant
+		// flush) and keeps it. The application space only: a client's
+		// Initial is padded to 1200 bytes whatever it carries, and the
+		// handshake spaces' ACKs stay short.
+		size := c.packetOverhead(space) + len(ack) + len(payload)
+		if len(payload) > 0 && (size > c.maxDatagram || space == spaceApplication && c.ackOverflowsWindowLocked(size, len(ack))) {
 			if owed {
 				_ = c.writePacketLocked(sp, space, sp.ack.appendAck(nil, now), nil, sendOpts{ackOnly: true}, now)
 			}
@@ -256,7 +268,7 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	retransPart := payload
 	if space == spaceApplication && !opts.noRetrans && (len(c.grants) > 0 || len(c.control) > 0) {
 		room := c.maxDatagram - c.packetOverhead(space) - len(ack) - len(payload)
-		if queued := c.takeQueuedLocked(room, len(payload)); len(queued) > 0 {
+		if queued := c.takeQueuedLocked(room, len(ack)+len(payload)); len(queued) > 0 {
 			retransPart = append(queued, payload...)
 			// Control frames are cheap to lose only if someone resends
 			// them; they carry window and stream grants, so they are
@@ -274,6 +286,16 @@ func (c *Conn) sendPacketLocked(space int, payload []byte, opts sendOpts) error 
 	}
 
 	return c.writePacketLocked(sp, space, payload, retransPart, opts, now)
+}
+
+// ackOverflowsWindowLocked reports whether a packet of size bytes, ack of
+// them its ACK frame, would fit the congestion window without the ACK and
+// does not with it. Read off the window, not through canSend: the payload
+// leaves either way, so this is no refusal for §7.8 to count. Callers hold
+// mu.
+func (c *Conn) ackOverflowsWindowLocked(size, ack int) bool {
+	room := c.cc.window() - c.cc.bytesInFlight()
+	return size > room && size-ack <= room
 }
 
 // shortPacketOverhead is what a 1-RTT packet costs on the wire beyond its

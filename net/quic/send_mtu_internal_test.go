@@ -234,3 +234,35 @@ func TestPacketsFitTheDatagramWhateverTheirHeader(t *testing.T) {
 		}
 	})
 }
+
+// RFC 9002 §7: the sender does not send packets that would exceed the
+// congestion window. The writer's gate counted the stream frame and 64
+// bytes of header, tag and slack; the ACK the packet then carried was
+// encoded after the gate, and a peer that opened maxAckRanges gaps makes it
+// a few hundred bytes — the flight left above the window by that much.
+func TestWindowGateCountsTheAckTheWriterCarries(t *testing.T) {
+	c, _ := sealedAppConn(t)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sp := &c.spaces[spaceApplication]
+	for i := range uint64(maxAckRanges) {
+		sp.ack.record(1+i<<20, now)
+	}
+	sp.ack.onAckEliciting(spaceApplication, now, false)
+	if !sp.ack.owes(now) {
+		t.Fatal("the ACK is not owed")
+	}
+	payload := streamFrameBytes(0, 0, make([]byte, 100))
+	reno := c.reno()
+	reno.cwnd = reno.inFlight + len(payload) + 64 + 1
+	if err := c.sendPacketLocked(spaceApplication, payload, sendOpts{waitCwnd: true}); err != nil {
+		t.Fatal(err)
+	}
+	if in, w := c.cc.bytesInFlight(), c.cc.window(); in > w {
+		t.Errorf("%d bytes in flight, the window is %d", in, w)
+	}
+	if sp.ack.owes(time.Now()) {
+		t.Error("the ACK is still owed after the packet left")
+	}
+}
