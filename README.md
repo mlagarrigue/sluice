@@ -315,7 +315,7 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── net/quic/           QUIC v1 (experimental)
 ├── pushdown/ probe/    upstream demand · instrumentation
 ├── cmd/sluicegen/      generator of hydration code
-├── example/            orders (supported path) · vertical (native path)
+├── example/            orders (supported path) · vertical (native path) · settings
 ├── internal/           shared machinery, measurement harness, wire protocol
 ├── interop/            confrontation with other implementations (own module)
 ├── benchmarks/         measurements against other libraries (own module)
@@ -337,7 +337,9 @@ runnable example per operator. Two complete examples:
 PostgreSQL (`go test ./example/orders -run TestIntegration -v`), and
 [`example/vertical`](example/vertical), the same over the native transport
 (`go test ./example/vertical -run TestVerticalEndToEnd -v`); both take their
-PostgreSQL from the `SLUICE_PG` variables and skip without one.
+PostgreSQL from the `SLUICE_PG` variables and skip without one. A third,
+[`example/settings`](example/settings), reads a deployment's settings from
+its environment and refuses a bad value before it opens a socket.
 
 Inspired by the Volcano model, MonetDB/X100, Akka Streams, Flink, and the
 FHIR and SARIF diagnostic models — sources cited in the architecture.

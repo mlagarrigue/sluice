@@ -1,5 +1,6 @@
 // Package diagnostics is what can be said about a value without stopping the
-// stream: what is wrong with it, and what can be done about it.
+// stream: what is wrong with it, and what can be done about it. What is said
+// is kept by a Collector, up to the ceiling it was built with.
 //
 // It is deliberately outside the core. docs/design/architecture.md sets one test
 // for anything that would live beside the core's Stream and Batch — if

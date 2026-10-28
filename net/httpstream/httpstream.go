@@ -1,5 +1,7 @@
 // Package httpstream serves HTTP/1.1, /2 and /3 where the transport is a
-// stream stage rather than a thing that calls you.
+// stream stage rather than a thing that calls you. A connection keeps, from
+// one batch of requests to the next, only what its protocol carries across
+// them — header tables and stream states — within the bounds of Config.
 //
 // # Read this before using it
 //

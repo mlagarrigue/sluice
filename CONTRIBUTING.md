@@ -73,10 +73,10 @@ directory.
 Before every commit, all of this, and none of it may print anything:
 
 ```bash
-gofumpt -l .
 go vet ./...
-go test -race -shuffle=on ./...
+gofumpt -l .
 golangci-lint run ./...
+go test -race -shuffle=on ./...
 go generate ./...        # generated files are committed; drift fails a test
 ```
 
@@ -117,8 +117,8 @@ it along.
 CI additionally runs `go vet` for Windows and macOS (`net/quic/udp` has
 per-OS files a Linux build never compiles), runs the integration tests against
 PostgreSQL 14 to 18 with the same `init.sql` as the devcontainer, and runs every
-fuzz target for 30 seconds nightly (`.github/scripts/fuzz.sh`, which also
-runs locally); a failing input is uploaded as an artifact, and committing it
+fuzz target for 30 seconds each night and five minutes on Sundays
+(`.github/scripts/fuzz.sh`, which also runs locally); a failing input is uploaded as an artifact, and committing it
 under the package's `testdata/fuzz/` makes it a regression test. Test order
 is shuffled: a failure that depends on order prints its seed, and
 `-shuffle=<seed>` reproduces it.

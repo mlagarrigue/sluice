@@ -1,6 +1,6 @@
 // Package gateway turns concurrent request/reply calls into batched stream
 // processing: many goroutines call, one pipeline serves them a batch at a
-// time.
+// time, and each call is held until its reply comes back.
 //
 // It exists for one reason, and the reason is not CPU. A handler that answers
 // one request per database round trip spends its life waiting on the network;

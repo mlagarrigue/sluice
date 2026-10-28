@@ -10,9 +10,12 @@ import (
 	"github.com/mlagarrigue/sluice/internal/pgwire"
 )
 
-// ErrProtocol reports a backend message this package could not parse. It means
-// the stream is no longer understood, so the connection is finished — there is
-// no way to resynchronise a protocol whose framing has been misread.
+// ErrProtocol reports a backend message stream this package can no longer
+// follow: a message that does not parse, one of a kind that has no place where
+// it arrived, or, before the answer to LISTEN, more notifications than it keeps.
+// The connection is finished — there is no way to resynchronise a protocol
+// whose framing has been misread, or whose server is not answering what was
+// asked.
 var ErrProtocol = errors.New("postgres: malformed backend message")
 
 // The wire layer's errors, which surface through a connection's error.

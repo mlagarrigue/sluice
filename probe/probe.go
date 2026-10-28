@@ -1,5 +1,6 @@
 // Package probe counts what flows through the points of a pipeline: how many
-// batches and elements each point has delivered downstream.
+// batches and elements each point has delivered downstream, kept as two
+// running counts per point and nothing else.
 //
 //	var in, out probe.Counter
 //	s := probe.Probe(source, &in)

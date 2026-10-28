@@ -38,8 +38,10 @@ repeated here; a term used in several places is.
   (PostgreSQL) to read it as a stream.
 - **Hydration** — filling a Go struct from a result row.
 - **Wire protocol** — the exact shape of the bytes exchanged with a server.
-- **Sentinel** — a named error, raised by panic for lack of another channel
-  in an iterator, which `Try` knows how to convert.
+- **Sentinel** — an exported error value, always the same one
+  (`ErrOverflow`, `postgres.ErrAuth`), that code finds with `errors.Is`
+  rather than by reading a message. The core's are also raised by panic,
+  for lack of another channel in an iterator, and `Try` converts them back.
 - **S1 … S14** — the fourteen verifiable security guarantees listed in the
   [Security section](design/architecture.md#security--verifiable-properties)
   of the architecture, which refers to them by number.

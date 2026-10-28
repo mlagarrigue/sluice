@@ -1,5 +1,6 @@
 // Package web is the reusable half of the request path: reading a request
-// into a batch element, and rendering what comes back.
+// into a batch element, and rendering what comes back. It keeps nothing from
+// one request to the next.
 //
 // # What is deliberately not here
 //

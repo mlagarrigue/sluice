@@ -1,5 +1,6 @@
 // Package pushdown lets a consumer tell its source something better than
-// "stop" — how many rows it still needs, and how far ahead it may skip.
+// "stop" — how many rows it still needs, and how far ahead it may skip —
+// kept in a Demand both sides share, which only ever tightens.
 //
 // The mechanism has a name — sideways information passing — and a modern
 // reference: DataFusion's dynamic filters, where a TopK operator hands its

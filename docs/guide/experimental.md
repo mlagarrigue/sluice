@@ -157,8 +157,9 @@ p.Congestion = quic.CongestionConfig{Algorithm: quic.CongestionCubic} // or quic
 
 - **NewReno** (RFC 9002 §7), the zero value and the default: the window
   grows by one datagram per round trip and halves on each loss episode.
-  Every measurement of this package is made with it, and it stays the
-  default until another has been measured against a real client.
+  Outside the comparisons below, the package's measurements (throughput,
+  interop) are made with it, and it stays the default until another has
+  been measured against a real client.
 - **CUBIC** (RFC 9438, `CongestionCubic`): after a loss the window drops
   to seven tenths rather than half, and grows back along a cubic curve. It
   wins on long paths that lose: 1.7 to 2.3 times faster than NewReno on the

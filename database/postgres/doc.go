@@ -1,5 +1,7 @@
 // Package postgres speaks the PostgreSQL frontend/backend protocol, version 3,
-// over the standard library alone.
+// over the standard library alone. A connection keeps its session — the
+// statement cache, the transaction in progress — and a batch's rows only until
+// the next batch is read.
 //
 // It exists because database/sql cannot batch (docs/design/architecture.md,
 // "`database/sql` does not fit"):
