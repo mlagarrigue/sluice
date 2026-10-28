@@ -136,8 +136,10 @@ var processMarkerInAudit = regexp.MustCompile(`(?i)\b(the brief|brief's|backlog|
 // historyMarker is a production comment telling what the code used to do.
 // The rule it carries is stated in the present; what it replaced is in the
 // history and in the regression test. "Is used to", "never used to" and
-// ", used to" are the verb's other sense.
-var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore removal\b`)
+// ", used to" are the verb's other sense. A measurement that justifies a
+// choice compares it with the alternative it names, not with "the previous
+// shape".
+var historyMarker = regexp.MustCompile(`(?i)\bused to\b|\bformerly\b|\bbefore removal\b|\bprevious shape\b|\btried and reverted\b|\buntil this existed\b|\bturned out not to\b|\bbecame the (zero|default)\b`)
 
 // datedHistory is a production comment that dates what the code did, or
 // when a choice was made: "until 2026-10-21 the term was zero", "decided

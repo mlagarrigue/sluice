@@ -20,9 +20,9 @@ import (
 // is still a required argument with no usable zero, for the same reason web's
 // is.
 //
-// A body that arrives through [httpstream.Request.Stream] — the default since
-// [httpstream.BodyStreamed] became the zero [httpstream.Config.BodyDelivery]
-// — is assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
+// A body that arrives through [httpstream.Request.Stream] — the default, the
+// zero [httpstream.Config.BodyDelivery] being [httpstream.BodyStreamed] — is
+// assembled here, up to limit, by [httpstream.Request.ReadAll]: a stage
 // decoding one JSON value needs the value whole, and this is the step that
 // turns the streamed form back into it. Nothing about the refusals changes
 // with the form, which is the point: a body that rode along with the request's

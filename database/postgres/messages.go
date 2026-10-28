@@ -503,14 +503,14 @@ func (r *Rows) Value(row, col int) (b []byte, isNull bool) {
 // instead of parsing a sentence.
 //
 // It also keeps `fmt.Sprintf` out of the body of a function that runs once per
-// field per row, which takes it from cost 137 to 66 against the inliner's
-// budget of 80 — and **that turned out not to matter**: paired against the
-// previous shape it measures as noise, 5 wins out of 14. The bounds check
-// itself is what costs, at −4.2% on BenchmarkPGReadDecode when removed
-// entirely, and it stays: returning a zero value for an index a caller had no
-// business asking for would let a typo in a generated hydration function read
-// as a legitimate NULL, which this project ranks below a crash. The number is
-// written down so nobody measures it twice.
+// field per row, which puts it at cost 66 against the inliner's budget of 80,
+// where a formatted string costs 137 — and **that does not matter**: paired
+// against the formatted string it measures as noise, 5 wins out of 14. The
+// bounds check itself is what costs, at −4.2% on BenchmarkPGReadDecode when
+// removed entirely, and it stays: returning a zero value for an index a caller
+// had no business asking for would let a typo in a generated hydration
+// function read as a legitimate NULL, which this project ranks below a crash.
+// The number is written down so nobody measures it twice.
 type IndexOutOfRange struct {
 	Row, Col     int // what was asked for
 	Rows, Fields int // what the batch holds

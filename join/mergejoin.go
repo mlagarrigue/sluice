@@ -45,11 +45,11 @@ func (e EitherOrBoth[L, R]) Both() bool { return e.HasLeft && e.HasRight }
 // identifier stays O(1) over runs of any length.
 //
 // The unique case is also taken separately for speed, since buffering a run to
-// discover it holds one element is most of what the general path costs: 11.6
-// ns/element before, 10.2 after, and the same change is worth 15% on a join of
-// 65536 rows. A key repeated on both sides pays ~2% for the test that finds
-// this out, which is the trade — the common shape gets the saving, the rare one
-// carries the check.
+// discover it holds one element is most of what the general path costs: 10.2
+// ns/element against 11.6 for a unique key sent through the general path, and
+// 15% on a join of 65536 rows. A key repeated on both sides pays ~2% for the
+// test that finds this out, which is the trade — the common shape gets the
+// saving, the rare one carries the check.
 //
 // Once one side is exhausted, the other drains batch-wise rather than through
 // the per-element peek machinery — nothing re-peeks a tail element, so its

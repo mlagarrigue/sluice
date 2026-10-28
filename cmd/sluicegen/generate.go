@@ -8,10 +8,10 @@
 // hand-written figure without writing it per entity and keeping it in step
 // with the schema.
 //
-// The same measurement corrected what to generate. That section argued for columnar
-// decoding — one pass per column, then assemble — and that shape measured
-// *slower* than the row-major loop it was meant to beat, by 11% at a thousand
-// rows and 43% at one. So this generator emits row-major code.
+// The same measurement decides what to generate. Columnar decoding — one pass
+// per column, then assemble — measures *slower* than the row-major loop, by
+// 11% at a thousand rows and 43% at one. So this generator emits row-major
+// code.
 //
 //	//go:generate go run github.com/mlagarrigue/sluice/cmd/sluicegen -type Order
 //

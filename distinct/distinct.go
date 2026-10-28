@@ -60,10 +60,10 @@ import (
 //
 // The saturated figure is three map operations per element — a lookup that
 // misses, a delete to evict, an insert — and a profile puts 90% of the runtime
-// in the map. Hoisting the policy switch out of the element loop was tried and
-// reverted: it measured 13% *slower* on the all-duplicates case, because the
-// branch it removes is one the predictor already had right and the three
-// unrolled loops cost more instruction cache than they save.
+// in the map. The policy switch stays in the element loop: hoisted out, it
+// measures 13% *slower* on the all-duplicates case, because the branch it
+// removes is one the predictor already has right and the three unrolled
+// loops cost more instruction cache than they save.
 //
 // A window of zero remembers nothing and passes every element through; a
 // negative maxKeys panics. By also panics if key is nil or if policy is not a
