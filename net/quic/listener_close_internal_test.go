@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -380,8 +381,10 @@ func TestListenerAnswersFromTheAddressDialled(t *testing.T) {
 
 // A completed connection parked on a full accept queue that ends there —
 // its peer closed, or its idle timer fired — leaves at once: its pending
-// slot and demux entries are freed, and it never reaches Accept. It used
-// to stay parked until Listener.Close.
+// slot is freed, and it never reaches Accept. It used to stay parked until
+// Listener.Close. Its demux entries are freed when its closing or draining
+// state ends (gone), as an accepted connection's are: §10.2 asks a server
+// that keeps its socket open not to end that state early.
 func TestParkedConnectionThatEndsLeavesThePendingTable(t *testing.T) {
 	l, pc := newInternalUDPListener(t, "udp", "127.0.0.1:0", ListenerConfig{MaxPendingConns: 1})
 	dialInternal(t, loopbackSocket(t), pc.LocalAddr())
@@ -408,15 +411,117 @@ func TestParkedConnectionThatEndsLeavesThePendingTable(t *testing.T) {
 	waitFor(t, "the parked connection to leave the pending table", func() bool {
 		return isClosed(parked) && pendingCount(l) == 0
 	})
-	l.mu.Lock()
-	for _, c := range l.byDCID {
-		if c == parked {
-			t.Error("the ended connection still routes")
-			break
+	waitFor(t, "the ended connection to stop routing once its draining state is over", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, c := range l.byDCID {
+			if c == parked {
+				return false
+			}
 		}
-	}
-	l.mu.Unlock()
+		return true
+	})
 	if queued(l) != 1 {
 		t.Errorf("%d connections queued, want only the first", queued(l))
 	}
+}
+
+// RFC 9000 §10.2: "Servers that retain an open socket for accepting new
+// connections SHOULD NOT end the closing or draining state early", and
+// §10.2.1 has a closing endpoint send its close again to a peer that is
+// still sending. A handshake the server refuses — an ALPN it does not speak
+// — ends in a CONNECTION_CLOSE; if that close is lost, the client sends its
+// Initial again. The connection stays routable through its closing state,
+// so the Initial lands on it and the same close goes again. Forgotten at
+// once, the Initial found no route and opened a fresh attempt under a new
+// identifier, which a client pinned to the first one discards.
+func TestAFailedHandshakeRepeatsItsCloseToARetransmittedInitial(t *testing.T) {
+	spc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tap := newTap(spc)
+	l, err := NewListener(tap, ServerTLSForTest(t), DefaultParameters(), ListenerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	cpc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cpc.Close()
+	initial := &firstInitialPC{PacketConn: cpc}
+	cfg := ClientTLSForTest()
+	cfg.NextProtos = []string{"not-spoken-here"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := Dial(ctx, initial, l.Addr(), cfg, DefaultParameters()); err == nil {
+		t.Fatal("a dial with an ALPN the server refuses succeeded")
+	}
+	first := initial.get()
+	if first == nil {
+		t.Fatal("the client's first Initial was not captured")
+	}
+	// The refusal is over on the server's side: its handshake goroutine
+	// gave its pending slot back, and the close it sent is the last
+	// datagram it wrote.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		pending := len(l.pendingConns)
+		l.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the refused handshake never gave its pending slot back")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	sent := tap.recorded()
+	if len(sent) == 0 {
+		t.Fatal("the server sent nothing for a refused handshake")
+	}
+	closeDatagram := sent[len(sent)-1].data
+
+	// The close lost, as far as the client knows: its Initial again.
+	l.dispatch(first, cpc.LocalAddr(), l.pc, 0)
+	l.mu.Lock()
+	pending := len(l.pendingConns)
+	l.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("the retransmitted Initial opened a new handshake (%d pending): the refused connection's closing state was cut short", pending)
+	}
+	after := tap.recorded()
+	if len(after) == len(sent) {
+		t.Fatal("nothing answered the retransmitted Initial: the close was not sent again")
+	}
+	if got := after[len(sent)].data; !bytes.Equal(got, closeDatagram) {
+		t.Fatalf("the retransmitted Initial was answered with a %d-byte datagram that is not the %d-byte close sent before", len(got), len(closeDatagram))
+	}
+}
+
+// firstInitialPC keeps the first full-size long-header datagram written
+// through it: a client's first Initial.
+type firstInitialPC struct {
+	net.PacketConn
+	mu    sync.Mutex
+	first []byte
+}
+
+func (p *firstInitialPC) WriteTo(b []byte, a net.Addr) (int, error) {
+	p.mu.Lock()
+	if p.first == nil && len(b) >= 1200 && b[0]&0x80 != 0 {
+		p.first = append([]byte(nil), b...)
+	}
+	p.mu.Unlock()
+	return p.PacketConn.WriteTo(b, a)
+}
+
+func (p *firstInitialPC) get() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.first
 }

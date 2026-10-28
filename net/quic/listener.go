@@ -1268,15 +1268,26 @@ func preferredAnnouncements(local net.Addr, ip4, ip6 netip.Addr) (v4, v6 *net.UD
 // stalled handshake must not head-of-line block every other connection's
 // datagrams behind it.
 func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8) {
-	accepted := false
+	accepted, watched := false, false
 	defer func() {
 		l.mu.Lock()
 		delete(l.pendingConns, c)
 		l.mu.Unlock()
 		if !accepted {
-			l.forget(c)
 			_ = c.Close()
 			c.endTLS()
+			// A connection that never reached Accept — its handshake
+			// refused, or the peer's CONNECTION_CLOSE — keeps its closing
+			// state too, routable until gone like an accepted one (below):
+			// forgotten at once, the client's Initial sent again after a
+			// lost close would find no route and open a fresh attempt
+			// instead of the close repeated (§10.2, §10.2.1).
+			if !watched {
+				go func() {
+					<-c.gone
+					l.forget(c)
+				}()
+			}
 		}
 	}()
 
@@ -1315,6 +1326,7 @@ func (l *Listener) runHandshake(c *Conn, first []byte, from net.Addr, ecn uint8)
 	// missed it (§10.2.1), and only then do its identifiers — and the
 	// MaxConns slot they hold — come free. §10.2 asks a server that keeps
 	// its socket open not to cut this short.
+	watched = true
 	go func() {
 		<-c.gone
 		l.forget(c)
@@ -1351,7 +1363,8 @@ func (l *Listener) routeLocked(key string, c *Conn) {
 }
 
 // forget removes every demux entry a connection holds once it has no
-// further use for them: closed, or never going to be — its scid, the
+// further use for them: its closing state over (gone), accepted or not, or
+// the connection never served — its scid, the
 // client's first identifier, and whatever NEW_CONNECTION_ID issued since,
 // all found through keysOf. A key is deleted only while it still routes to
 // c: a client's first identifier is its own choice and may since name
