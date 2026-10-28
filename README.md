@@ -291,10 +291,10 @@ preparation** — scenarios, method and results will be published together.
   never sends the password), cleartext and trust
   authentication; codecs for the common types (no `money`, `tsvector`,
   ranges, composites).
-- **QUIC is experimental**: confronted with two other implementations
-  (quic-go and ngtcp2, in the QUIC Interop Runner, run by hand: the last
-  results are in the run log), with no external cryptographic review;
-  HTTP/3 runs over it.
+- **QUIC is experimental**: crossed every Sunday with the other
+  implementations of the QUIC Interop Runner, each case judged against a
+  written record ([the detail](docs/guide/limits.md#the-interop-runner-in-detail)),
+  with no external cryptographic review; HTTP/3 runs over it.
 - **No resumption of a long job** after the process dies
   ([architecture](docs/design/architecture.md#a-stage-is-not-a-phase)).
 

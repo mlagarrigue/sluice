@@ -483,7 +483,7 @@ jobs:
   # graph) runs sluice's client against a quic-go server and the reverse —
   # handshake, an echo across flow-control windows, a close the peer sees —
   # and quic-go's HTTP/3 client against ServeH3.
-  # The QUIC Interop Runner is its own workflow, run by hand
+  # The QUIC Interop Runner is its own workflow, every Sunday
   # (interop-runner.yml, docs/guide/limits.md).
   interop-quic:
     runs-on: ubuntu-latest
