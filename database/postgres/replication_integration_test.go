@@ -144,3 +144,106 @@ func TestIntegrationReplicationReadsASlot(t *testing.T) {
 		t.Errorf("confirmed_flush_lsn = %v after acknowledging %v", confirmed, end)
 	}
 }
+
+// A Type and an Origin come from a real server as decoded, not only as a
+// scripted stream encodes them: a column of an enum the publishing database
+// defined is preceded by a Type naming it, and a transaction marked with a
+// replication origin is followed, after its Begin, by an Origin naming the
+// node and the commit's position there (pgoutput's 'Y' and 'O').
+func TestIntegrationReplicationDeliversTypeAndOrigin(t *testing.T) {
+	addr, cfg := pgTarget(t)
+	conn := dialWith(t, addr, cfg)
+	if lvl := queryText(t, conn, "SELECT current_setting('wal_level')"); lvl != "logical" {
+		t.Skipf("wal_level is %q, not logical: the server cannot replicate logically", lvl)
+	}
+	if queryText(t, conn, "SELECT rolreplication::text FROM pg_roles WHERE rolname = current_user") != "true" {
+		t.Skip("the role lacks the REPLICATION attribute")
+	}
+
+	suffix := strconv.FormatInt(time.Now().UnixNano()%1_000_000_000, 10)
+	mood, table, pub, slot, origin := "sluice_repl_mood_"+suffix, "sluice_repl_"+suffix, "sluice_repl_pub_"+suffix, "sluice_repl_slot_"+suffix, "sluice_repl_origin_"+suffix
+	ctx := t.Context()
+	for _, sql := range []string{
+		"CREATE TYPE " + mood + " AS ENUM ('calm', 'busy')",
+		"CREATE TABLE " + table + " (id bigint PRIMARY KEY, m " + mood + ")",
+		"CREATE PUBLICATION " + pub + " FOR TABLE " + table,
+	} {
+		if err := conn.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	queryText(t, conn, "SELECT pg_create_logical_replication_slot('"+slot+"', 'pgoutput')::text")
+	queryText(t, conn, "SELECT pg_replication_origin_create('"+origin+"')::text")
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_ = conn.Exec(ctx, "SELECT pg_replication_origin_session_reset()")
+		_ = conn.Exec(ctx, "SELECT pg_replication_origin_drop('"+origin+"')")
+		_ = conn.Exec(ctx, "SELECT pg_drop_replication_slot('"+slot+"')")
+		_ = conn.Exec(ctx, "DROP PUBLICATION "+pub)
+		_ = conn.Exec(ctx, "DROP TABLE "+table)
+		_ = conn.Exec(ctx, "DROP TYPE "+mood)
+	})
+	// The session replays as the origin; the transaction carries the
+	// position the origin committed it at, which the Origin message reports.
+	const originLSN = "0/2A00"
+	queryText(t, conn, "SELECT pg_replication_origin_session_setup('"+origin+"')::text")
+	tx, err := conn.Begin(ctx, postgres.TxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range []string{
+		"SELECT pg_replication_origin_xact_setup('" + originLSN + "', now())",
+		"INSERT INTO " + table + " VALUES (1, 'busy')",
+	} {
+		if err := tx.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	repl, err := postgres.Replicate(rctx, postgres.DialTCP(addr), cfg, postgres.ReplicationConfig{
+		Slot: slot, Publications: []string{pub},
+	})
+	if err != nil {
+		t.Fatalf("Replicate: %v", err)
+	}
+	defer repl.Close()
+
+	var kinds []postgres.ChangeKind
+	var typ postgres.DataType
+	var from string
+	var fromLSN postgres.LSN
+	src := repl.Changes(rctx)
+	src.Stream()(func(b sluice.Batch[postgres.Change]) bool {
+		for _, c := range b.Items {
+			kinds = append(kinds, c.Kind)
+			switch c.Kind {
+			case postgres.ChangeType:
+				typ = c.Type
+			case postgres.ChangeOrigin:
+				from, fromLSN = c.Origin, c.LSN
+			case postgres.ChangeCommit:
+				repl.Ack(c.EndLSN)
+				return false
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if !slices.Contains(kinds, postgres.ChangeType) || typ.Name != mood || typ.OID == 0 {
+		t.Errorf("Type = %+v in %v, want the enum %s", typ, kinds, mood)
+	}
+	want, err := postgres.ParseLSN(originLSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kinds) < 2 || kinds[1] != postgres.ChangeOrigin || from != origin || fromLSN != want {
+		t.Errorf("Origin = %q at %v in %v, want %q at %v right after the Begin", from, fromLSN, kinds, origin, want)
+	}
+}

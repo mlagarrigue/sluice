@@ -357,7 +357,7 @@ jobs:
             echo "::error::SCRAM-SHA-256-PLUS did not pass against PostgreSQL $PG_MAJOR over direct TLS" >&2
             exit 1
           fi
-          for name in TestIntegrationProtocolNegotiated TestIntegrationMinProtocolRefusesAnOlderServer TestIntegrationDeclinedProtocolOption; do
+          for name in TestIntegrationProtocolNegotiated TestIntegrationMinProtocolRefusesAnOlderServer TestIntegrationDeclinedProtocolOption TestIntegrationReplicationDeliversTypeAndOrigin; do
             if ! grep -- "--- PASS: $name " test.log; then
               echo "::error::$name did not pass against PostgreSQL $PG_MAJOR" >&2
               exit 1
