@@ -209,18 +209,21 @@
 // TLS alert leaves in a CONNECTION_CLOSE with code 0x0100 plus the alert
 // (RFC 9001 §4.8), which is also how the codes that RFC mandates — 0x0178
 // for no application protocol (§8.1), 0x016d for missing transport
-// parameters (§8.2), 0x010a for a KeyUpdate message (§6) — reach the wire.
-// Four refusals RFC 9001 names PROTOCOL_VIOLATION (0x0a) go out under
-// their alert's code instead: CRYPTO data of a level already finished,
-// past the end received (§4.1.3, internal_error); data of a level left
-// unconsumed when the next level's keys arrive (§4.1.3,
-// unexpected_message); a CertificateRequest after the handshake, on a
-// client (§4.4, unexpected_message); a NewSessionTicket whose early_data
-// is not 0xffffffff (§4.6.1, illegal_parameter). The connection closes in
-// each case; only the code differs. The alert is all this package sees,
-// and the same alert serves other causes — an internal_error is also a
-// real one — so no translation is made. To revisit when crypto/tls states
-// the cause of an alert. The TLS 1.3 compatibility mode (RFC 9846 Appendix
+// parameters (§8.2) — reach the wire. Two refusals RFC 9001 names
+// PROTOCOL_VIOLATION (0x0a) go out under their alert's code instead:
+// CRYPTO data of a level already finished, past the end received (§4.1.3,
+// internal_error); data of a level left unconsumed when the next level's
+// keys arrive (§4.1.3, unexpected_message). After the handshake,
+// crypto/tls gives no alert at all: its post-handshake path sends the
+// alert on a record layer QUIC does not have and returns an error without
+// it, so a KeyUpdate message (§6, which wants 0x010a), a CertificateRequest
+// on a client (§4.4) and a NewSessionTicket whose early_data is not
+// 0xffffffff (§4.6.1) — the last two PROTOCOL_VIOLATION — close as
+// internal_error, 0x0150. The connection closes in each case; only the
+// code differs. The error is all this package sees, and the same alert
+// serves other causes — an internal_error is also a real one — so no
+// translation is made. To revisit when crypto/tls states the cause of an
+// alert, or surfaces the one it records after the handshake. The TLS 1.3 compatibility mode (RFC 9846 Appendix
 // E.4, legacy_session_id) is neither requested nor policed here; the
 // limits guide says why.
 package quic

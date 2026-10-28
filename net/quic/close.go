@@ -120,8 +120,10 @@ func (e *ConnectionError) Error() string {
 // INTERNAL_ERROR. A TLS alert anywhere in the chain maps to RFC 9001 §4.8's
 // crypto range (0x0100 + alert), which is how the codes that RFC mandates —
 // 0x0178 for ALPN failure (§8.1), 0x016d for missing transport parameters
-// (§8.2), 0x010a for a KeyUpdate message (§6) — all reach the wire without
-// this package naming each alert; everything else is INTERNAL_ERROR.
+// (§8.2) — reach the wire without this package naming each alert; after
+// the handshake crypto/tls's errors carry internal_error alone, and a
+// KeyUpdate message (§6) closes as 0x0150, not 0x010a (the package's
+// godoc, "On the cryptography"); everything else is INTERNAL_ERROR.
 func closeCodeFor(err error) uint64 {
 	if te, ok := errors.AsType[*transportError](err); ok {
 		return te.code

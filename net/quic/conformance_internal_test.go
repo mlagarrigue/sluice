@@ -162,6 +162,33 @@ func TestCloseCodeForTLSAlerts(t *testing.T) {
 	}
 }
 
+// RFC 9001 §6 wants a TLS KeyUpdate message closed as 0x010a
+// (unexpected_message); after the handshake crypto/tls sends that alert on
+// a record layer QUIC does not have and returns an error without it, and
+// the close is 0x0150 (internal_error) — what the package's godoc says, the
+// deviation it records. The godoc used to promise 0x010a. Here the server
+// sends the client one, in a 1-RTT CRYPTO frame, and reads the code of the
+// client's CONNECTION_CLOSE. This test turns red the day crypto/tls
+// surfaces the alert: the godoc is then to be corrected the other way.
+func TestAPostHandshakeKeyUpdateClosesAsInternalError(t *testing.T) {
+	client, server := plainPair(t)
+	// A TLS KeyUpdate handshake message: type 24, length 1, update_not_requested.
+	if err := server.sendCrypto(tls.QUICEncryptionLevelApplication, []byte{24, 0, 0, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the server to read the client's close", func() bool { return server.Err() != nil })
+	ce, ok := errors.AsType[*ConnectionError](server.Err())
+	if !ok {
+		t.Fatalf("the server ended with %v, want the client's CONNECTION_CLOSE", server.Err())
+	}
+	if want := uint64(transportCryptoErrorBase + 0x50); ce.Application || ce.Code != want {
+		t.Errorf("a KeyUpdate after the handshake closed with %#x (application %v), want %#x (internal_error), as the godoc says", ce.Code, ce.Application, want)
+	}
+	if client.Err() == nil {
+		t.Error("the client is still open")
+	}
+}
+
 // RFC 9000 §7.5: CRYPTO reassembly is bounded in bytes, not only in chunk
 // count — 256 chunks of ~1380 bytes each used to park ~350 KB per
 // never-completing handshake.
