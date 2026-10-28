@@ -33,8 +33,11 @@ trap cleanup EXIT
 # and the gate on an AMD EPYC 7763 runner called seven benchmarks SLOWER by
 # 3% to 32%, the same in two passes of one job; with it, one remained, at 4%.
 # An injected 15% slowdown of Scan stays SLOWER. Alignment of function
-# entries only: a loop inside a function can still fall across a boundary.
-LDFLAGS=-funcalign=64
+# entries only: a loop inside a function can still fall across a boundary,
+# and every address still moves with the code before it. FUNCALIGN sets
+# another alignment for both sides: gate.sh measures a SLOWER name again
+# at 128, which moves every address, and keeps only what both layouts say.
+LDFLAGS="-funcalign=${FUNCALIGN:-64}"
 
 echo "building 'after' from the working tree..."
 go test -c -ldflags="$LDFLAGS" -o "$BINDIR/bench.after" "$ROOT/internal/bench"

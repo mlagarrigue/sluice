@@ -132,6 +132,17 @@ case shows. A diff that only moves one function within `database/postgres`
 left the four benchmarks that depend on it at noise in two passes of one job
 (2026-10-23, two different runners), and the gate measured no other.
 
+Aligned entries still leave every address moving with the code before it:
+`d4a8182`, whose diff touched `Split` alone, read `JoinTail` 5.9% slower on
+the runner, the sign test unanimous, where the same pair read 3.5% faster
+on a laptop. So a benchmark the gate calls SLOWER is measured again with
+both binaries rebuilt at another alignment (`-funcalign=128`, which moves
+every address), and fails the gate only if it is SLOWER there too: a
+regression costs the same work under either layout. A slowdown injected
+into `Scan` stays SLOWER under both (+50% and +50%, +19% and +15%, on a
+laptop, 2026-10-28). The second pass runs only on the names the first
+called SLOWER.
+
 **Host settings that raise the floor**, none of them required: disabling
 Core Performance Boost in the BIOS, which removes the clock ramp at the cost
 of about 15% absolute speed; `powercfg` with `PROCTHROTTLEMIN 100` on
