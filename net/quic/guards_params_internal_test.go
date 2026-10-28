@@ -246,6 +246,15 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 			close(held.release)
 			select {
 			case <-c.HandshakeComplete():
+				if tt.wantRejected {
+					// The toggle: crypto/tls now drops early_data before it
+					// computes the binders, and a DialEarly survives a
+					// HelloRetryRequest. The limit docs/guide/limits.md states
+					// ("does not survive a HelloRetryRequest") is gone; drop it,
+					// and this check with it, so that the assertions below
+					// hold the fixed behaviour.
+					t.Fatal("DialEarly survived a HelloRetryRequest: crypto/tls fixed the binder order; update docs/guide/limits.md and drop this toggle")
+				}
 			case <-c.Done():
 				// crypto/tls (Go 1.26.9 and 1.27.3 alike) computes the PSK
 				// binders of a second ClientHello before it drops
@@ -254,8 +263,8 @@ func TestADialEarlyClientHasItsZeroRTTRefusedByAHelloRetryRequest(t *testing.T) 
 				// decrypt_error (CRYPTO_ERROR 0x133). The connection cannot
 				// survive that, and its error says why: the refused 0-RTT,
 				// the HelloRetryRequest, and the server's code beneath. On a
-				// toolchain with the order fixed the handshake completes and
-				// the rest of the subtest runs.
+				// toolchain with the order fixed the handshake completes, and
+				// the toggle above fails the subtest so the limit is revisited.
 				err := c.Err()
 				if !tt.wantRejected {
 					t.Fatalf("the connection ended before the handshake completed: %v", err)
