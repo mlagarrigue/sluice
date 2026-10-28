@@ -406,6 +406,88 @@ func TestDecisionRecordsDateTheirLastRevision(t *testing.T) {
 	}
 }
 
+// Every exported name of database/postgres/pgtype is one a reader can find:
+// derived from the guide's table of codecs (AppendX and DecodeX for each X,
+// the array and the array with NULLs where the table says yes, and the OID
+// constants of the same types), named in the PostgreSQL guide itself, or used
+// outside the package. A codec is the caller's to call, so a consumer in the
+// tree is not required of it; a name nothing documents and nothing uses is.
+func TestPgtypeNamesAreDocumentedOrUsed(t *testing.T) {
+	guide, err := os.ReadFile("docs/guide/postgres.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	documented := map[string]bool{}
+	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)`.*\\| `([A-Za-z0-9]+)`[^|]*\\| (yes|—) \\| (yes|—) \\|")
+	for _, m := range row.FindAllStringSubmatch(string(guide), -1) {
+		for _, x := range regexp.MustCompile("`([A-Z][A-Za-z0-9]*)`").FindAllStringSubmatch(m[0][strings.Index(m[0], m[2])-1:], -1) {
+			name := x[1]
+			documented["Append"+name], documented["Decode"+name] = true, true
+			documented["OID"+name], documented["OID"+name+"Array"] = true, true
+			if m[3] == "yes" {
+				documented["Append"+name+"Array"], documented["Decode"+name+"Array"] = true, true
+			}
+			if m[4] == "yes" {
+				documented["AppendNullable"+name+"Array"], documented["DecodeNullable"+name+"Array"] = true, true
+			}
+		}
+	}
+	for _, w := range regexp.MustCompile(`\b[A-Z][A-Za-z0-9]*\b`).FindAllString(string(guide), -1) {
+		documented[w] = true
+	}
+	used := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, dir := range packageDirs(t) {
+		if filepath.ToSlash(dir) == "database/postgres/pgtype" {
+			continue
+		}
+		for _, tests := range []bool{false, true} {
+			for _, f := range parseDir(t, fset, dir, tests) {
+				ast.Inspect(f, func(n ast.Node) bool {
+					if sel, ok := n.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "pgtype" {
+							used[sel.Sel.Name] = true
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
+	var missing []string
+	for _, f := range parseDir(t, fset, "database/postgres/pgtype", false) {
+		for _, d := range f.Decls {
+			var names []string
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Recv == nil {
+					names = append(names, d.Name.Name)
+				}
+			case *ast.GenDecl:
+				for _, s := range d.Specs {
+					switch s := s.(type) {
+					case *ast.TypeSpec:
+						names = append(names, s.Name.Name)
+					case *ast.ValueSpec:
+						for _, n := range s.Names {
+							names = append(names, n.Name)
+						}
+					}
+				}
+			}
+			for _, n := range names {
+				if ast.IsExported(n) && !documented[n] && !used[n] {
+					missing = append(missing, n)
+				}
+			}
+		}
+	}
+	slices.Sort(missing)
+	for _, n := range missing {
+		t.Errorf("pgtype.%s is neither derived from the guide's table of codecs, named in the PostgreSQL guide, nor used outside the package", n)
+	}
+}
+
 // adrRuleSince is the last day before a commit that changes a decision
 // record had to name it; the history before it is read as it was written.
 const adrRuleSince = "2026-10-28"

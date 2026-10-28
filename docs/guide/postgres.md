@@ -243,6 +243,19 @@ missing is listed in [Limits](limits.md), not discovered at use.
 | `macaddr`, `macaddr8` | `[6]byte`, `[8]byte` | `Macaddr`, `Macaddr8` | — | — | — |
 | `bit`, `varbit` | `Bits` | `Bits` | — | — | — |
 
+Each type's OID — the number the server names it by — is `OIDX` in `pgtype`,
+and `OIDXArray` for its array, after the same X; the types that share an
+X have one each — `OIDVarchar`, `OIDBPChar` (char(n)) and `OIDName` beside
+`OIDText`, `OIDBit` and `OIDVarbit` for `Bits`. A few values are
+special. A timestamp, timestamptz or date of `infinity` or `-infinity`
+decodes to `pgtype.InfinityTime()` or `NegInfinityTime()`, and those two
+encode back to it; compare them with `Equal`. A `Numeric` carries a
+`NumericSign`: `NumericPositive`, `NumericNegative`, or one of the
+non-numbers `NumericNaN`, `NumericPosInf`, `NumericNegInf`. `TimeOfDayFrom`
+builds a `TimeOfDay` from a `time.Time`, dropping the date and the zone and
+truncating to the server's microsecond. And `JSONBVersion` is the version
+byte a binary `jsonb` starts with; any other is refused.
+
 **NULL has one form in the connector: `pgtype.Null[T]`** — the value beside a
 `Valid` bit, no pointer, so no allocation. The nullable arrays carry
 `[]Null[T]`, and a generated hydrator (next section) fills a
