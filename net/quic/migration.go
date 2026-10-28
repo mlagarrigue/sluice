@@ -140,8 +140,9 @@ type pathProbe struct {
 	// nothing to fall back to. A server's probe of a migrated client is
 	// never fatal — the idle timer owns that silence.
 	fatal bool
-	// retireOld, with retireSeq, marks a [Conn.Rebind] probe whose success
-	// retires the peer identifier the old path sent under (§5.1.2: retire
+	// retireOld, with retireSeq, marks a probe of a move — a [Conn.Rebind],
+	// a server following its client — whose success retires the peer
+	// identifier the old path sent under (§5.1.2: retire
 	// what is no longer used on the address it was used on). Retired on
 	// validation rather than at once: a probe that fails ends the
 	// connection, and until then the old identifier may still be answering
@@ -593,6 +594,32 @@ func (c *Conn) retirePeerCIDLocked(seq uint64) {
 	c.noteRetiredSelfLocked(seq)
 }
 
+// retireLeftCIDLocked retires the peer identifier previous once a move away
+// from it leaves it serving no address (§5.1.2) — what makes a peer that
+// keeps its pool full issue the replacement the next move needs (§9.5).
+// At once when the path moved to is already validated (a preferred
+// address, a revert); otherwise when that path answers its challenge
+// (handlePathResponse): until then the identifier carries the §9.3.3
+// challenge to the path left, a failed probe falls back there, and it may
+// still be answering stragglers. A retirement still pending from an earlier
+// move — a second move before the first validated — would be overwritten
+// and lost for good: never used again, never told to the peer; its path is
+// two moves behind, so it is retired now. Nothing happens when the move
+// kept the identifier (a peer with one zero-length identifier, §5.1).
+// Callers hold mu.
+func (c *Conn) retireLeftCIDLocked(previous uint64, validated bool) {
+	if previous == c.currentPeerSeq {
+		return
+	}
+	if c.pathProbe.retireOld && c.pathProbe.retireSeq != previous {
+		c.retirePeerCIDLocked(c.pathProbe.retireSeq)
+	}
+	c.pathProbe.retireOld, c.pathProbe.retireSeq = !validated, previous
+	if validated {
+		c.retirePeerCIDLocked(previous)
+	}
+}
+
 // maxRetiredSelf bounds peerRetiredSelf. Every entry is one identifier this
 // end retired and whose NEW_CONNECTION_ID the peer may still retransmit;
 // §13.3 has that retransmission follow the original by a probe timeout or
@@ -760,7 +787,9 @@ func (c *Conn) maybeMigrate(frames []Frame, now time.Time) {
 func (c *Conn) movePreferredLocked(now time.Time) {
 	c.pc = c.pathProbe.via
 	c.pathLocalSeq = c.pathProbe.viaLocalSeq
+	previous := c.currentPeerSeq
 	c.adoptProbedCIDLocked()
+	c.retireLeftCIDLocked(previous, true)
 	c.migrations++
 	c.resetPathStateLocked(now)
 }
@@ -799,8 +828,9 @@ func (c *Conn) resetPathStateLocked(now time.Time) {
 // initial state because the old path's measurements are not evidence about
 // the new one (§9.4). The destination identifier moves to the one the
 // address's challenge was answered under, if the peer probed first, else to
-// a never-used one if the peer issued any (§9.5) — retiring nothing: the
-// old identifier may still be answering stragglers on the old path. via,
+// a never-used one if the peer issued any (§9.5); the old one is retired
+// once the new path answers (retireLeftCIDLocked) — until then it carries
+// the challenge to the path left, and a failed probe falls back there. via,
 // when non-nil, is the local socket the move also lands on (the listener's
 // preferred-address one, §9.6). Callers hold mu.
 func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
@@ -850,9 +880,11 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.amplRecv = int64(c.rxDatagramLen)
 	c.amplSent = 0
 	c.resetPathStateLocked(now)
+	previous := c.currentPeerSeq
 	if cid, ok := c.answeredCIDLocked(to); !ok || !c.adoptPeerCIDLocked(cid) {
 		c.switchToFreshPeerCIDLocked()
 	}
+	c.retireLeftCIDLocked(previous, false)
 	c.answered = c.answered[:0]
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
@@ -902,6 +934,7 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 // offered identifier, with the path state reset (§9.4). Callers hold mu.
 func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 	c.peer = c.pathProbe.target
+	previous := c.currentPeerSeq
 	for i := range c.peerCIDs {
 		e := &c.peerCIDs[i]
 		if bytes.Equal(e.cid, c.pathProbe.targetCID) {
@@ -912,6 +945,7 @@ func (c *Conn) adoptPreferredPathLocked(now time.Time) {
 		}
 	}
 	c.pathProbe.target, c.pathProbe.targetCID = nil, nil
+	c.retireLeftCIDLocked(previous, true)
 	c.migrations++
 	c.resetPathStateLocked(now)
 	c.kickTimer()
@@ -1021,15 +1055,7 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	c.adoptPeerCIDAtLocked(fresh)
 	c.startPathChallengeLocked(now)
 	c.pathProbe.fatal = c.pathProbe.pending
-	if c.pathProbe.retireOld && c.pathProbe.retireSeq != previous {
-		// A Rebind before the previous one validated: its retirement was
-		// still pending, and overwriting it here lost that identifier for
-		// good — this end never used it again and never told the peer. The
-		// path it belonged to is two Rebinds behind, so it is retired now
-		// rather than waiting for a validation that will not name it.
-		c.retirePeerCIDLocked(c.pathProbe.retireSeq)
-	}
-	c.pathProbe.retireOld, c.pathProbe.retireSeq = true, previous
+	c.retireLeftCIDLocked(previous, false)
 	// One challenge, toward the address in use. RFC 9000 §9.6.3 says a
 	// client that migrates before it has moved to the server's preferred
 	// address SHOULD validate both addresses concurrently from its new
@@ -1437,6 +1463,7 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 		return
 	}
 	c.peer, c.pc = c.lastValidatedPeer, c.lastValidatedPC
+	failed := c.currentPeerSeq
 	restored := false
 	for i := range c.peerCIDs {
 		if e := &c.peerCIDs[i]; e.seq == c.lastValidatedSeq {
@@ -1448,6 +1475,8 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 	if !restored {
 		c.switchToFreshPeerCIDLocked()
 	}
+	// The path given up is not coming back: its identifier is retired now.
+	c.retireLeftCIDLocked(failed, true)
 	c.resetPathStateLocked(now)
 	c.kickTimer()
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"slices"
@@ -3304,5 +3305,70 @@ func TestTwoAddressesProbingInTurnKeepTheirIdentifiers(t *testing.T) {
 	c.mu.Unlock()
 	if unused != 2 {
 		t.Fatalf("%d peer identifiers left unused after three rounds, want 2: the alternation spent the pool", unused)
+	}
+}
+
+// RFC 9000 §5.1.2: an endpoint SHOULD retire a connection ID it no longer
+// uses on the address it was used on. A server following a client from
+// address to address moved to a fresh identifier each time and retired
+// none, so a client keeping its pool full issued no replacement, and after
+// a few moves the server had no fresh identifier left and sent under one
+// another path had used (§9.5). Each move now retires the identifier it
+// left once the new path answers its challenge.
+func TestPassiveMigrationRetiresTheIdentifierItLeaves(t *testing.T) {
+	c, _ := newMigratableServer(t, "retire16")
+	c.mu.Lock()
+	for seq := uint64(1); seq <= 3; seq++ {
+		c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: []byte(fmt.Sprintf("peercid%d", seq))})
+	}
+	c.mu.Unlock()
+
+	now := time.Now()
+	used := map[uint64]string{0: "retire16:peerA"}
+	for i := range 3 {
+		addr := fakeFuzzAddr(fmt.Sprintf("retire16:peer%c", 'B'+i))
+		rxFromNewAddress(c, addr, 1200, true)
+		now = now.Add(time.Second)
+		c.maybeMigrate([]Frame{{Type: framePing}}, now)
+		c.mu.Lock()
+		seq, data := c.currentPeerSeq, c.pathProbe.data
+		c.mu.Unlock()
+		if prev, ok := used[seq]; ok {
+			t.Fatalf("move %d sends under sequence %d, which %s used", i+1, seq, prev)
+		}
+		used[seq] = addr.String()
+		c.handlePathResponse(Frame{Type: framePathResponse, Data: data[:]}, now)
+
+		// The queue drains into the next packet — the next move's
+		// challenge — so each retirement is read as it is queued.
+		left := uint64(i)
+		c.mu.Lock()
+		queued := bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, left))
+		pooled := slices.ContainsFunc(c.peerCIDs, func(e peerCID) bool { return e.seq == left })
+		c.mu.Unlock()
+		if !queued || pooled {
+			t.Errorf("after move %d, sequence %d: RETIRE_CONNECTION_ID queued %v, still pooled %v", i+1, left, queued, pooled)
+		}
+	}
+}
+
+// RFC 9000 §5.1.2 on the client: once it moves to the server's preferred
+// address, the identifier the handshake's path used serves no address.
+func TestPreferredAddressMoveRetiresTheHandshakeIdentifier(t *testing.T) {
+	c := newConn(&recordingPC{addr: fakeFuzzAddr("retirepa:self")}, fakeFuzzAddr("retirepa:peer"), []byte("peercid0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	installAppSealer(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handshakeConfirmed = true
+	c.peerCIDs = append(c.peerCIDs, peerCID{seq: 1, cid: []byte("peercid1"), used: true})
+	c.pathProbe.target = fakeFuzzAddr("retirepa:preferred")
+	c.pathProbe.targetCID = []byte("peercid1")
+	c.adoptPreferredPathLocked(time.Now())
+	if c.currentPeerSeq != 1 {
+		t.Fatalf("sending under sequence %d, want 1", c.currentPeerSeq)
+	}
+	if !bytes.Contains(c.control, appendFrame(nil, frameRetireConnectionID, 0)) {
+		t.Error("no RETIRE_CONNECTION_ID for sequence 0 after the move to the preferred address")
 	}
 }
