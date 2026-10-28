@@ -139,7 +139,7 @@ type Tx struct {
 // transaction on the paths nobody writes a test for — an early return, a
 // validation failure, a panic caught upstream. A transaction left open holds
 // the vacuum horizon back for as long as the connection lives.
-func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
+func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 	if c.broken != nil {
 		return nil, c.broken
 	}
@@ -150,12 +150,12 @@ func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
 		return nil, fmt.Errorf("abandoning the transaction before it was opened: %w", err)
 	}
 
-	level, err := opts.Isolation.sql()
+	level, err := cfg.Isolation.sql()
 	if err != nil {
 		return nil, err
 	}
 	begin := "BEGIN" + level
-	if opts.ReadOnly {
+	if cfg.ReadOnly {
 		begin += " READ ONLY"
 	}
 	if err := c.execBusy(begin); err != nil {
@@ -164,8 +164,8 @@ func (c *Conn) Begin(ctx context.Context, opts TxConfig) (*Tx, error) {
 	c.inTx = true
 	tx := &Tx{conn: c, gen: c.txGen}
 
-	if opts.Timeout > 0 {
-		if err := tx.SetLocalTimeout(ctx, opts.Timeout); err != nil {
+	if cfg.Timeout > 0 {
+		if err := tx.SetLocalTimeout(ctx, cfg.Timeout); err != nil {
 			// The transaction opened but is not in the state that was asked
 			// for. Running it anyway would mean running it unbounded, which is
 			// the opposite of what the caller requested.

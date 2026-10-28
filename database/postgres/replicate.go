@@ -41,8 +41,8 @@ type ReplicationConfig struct {
 	BatchChanges int
 
 	// BatchBytes bounds the message payloads one batch keeps, in bytes.
-	// Zero means the same default as [QueryConfig.BatchBytes]; a negative
-	// value, or one above the same ceiling, is refused.
+	// Zero means 64 MiB, the default of [QueryConfig.BatchBytes]; a negative
+	// value, or one above its ceiling of 1 GiB, is refused.
 	//
 	// It is the bound that makes a batch end: the values a change carries
 	// borrow the payload they were decoded from, so the batch holds every
@@ -121,20 +121,20 @@ type Replication struct {
 // has not acknowledged through [Replication.Ack], and a stream that stops
 // and starts again resumes after the last acknowledged position; what came
 // after it is delivered again.
-func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationConfig) (*Replication, error) {
-	sql, err := startReplicationSQL(rc)
+func Replicate(ctx context.Context, dial DialFunc, cfg Config, rcfg ReplicationConfig) (*Replication, error) {
+	sql, err := startReplicationSQL(rcfg)
 	if err != nil {
 		return nil, err
 	}
-	batch := rc.BatchChanges
+	batch := rcfg.BatchChanges
 	if batch == 0 {
 		batch = sluice.DefaultBatchSize
 	}
-	batchBytes := rc.BatchBytes
+	batchBytes := rcfg.BatchBytes
 	if batchBytes == 0 {
 		batchBytes = defaultBatchBytes
 	}
-	interval := rc.StatusInterval
+	interval := rcfg.StatusInterval
 	if interval == 0 {
 		interval = defaultStatusInterval
 	}
@@ -152,8 +152,8 @@ func Replicate(ctx context.Context, dial DialFunc, cfg Config, rc ReplicationCon
 		_ = c.Close()
 		return nil, err
 	}
-	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rc.Start, sentAt: time.Now()}
-	r.acked.Store(uint64(rc.Start))
+	r := &Replication{c: c, batch: batch, batchBytes: batchBytes, interval: interval, sent: rcfg.Start, sentAt: time.Now()}
+	r.acked.Store(uint64(rcfg.Start))
 	return r, nil
 }
 

@@ -59,12 +59,12 @@ type Listener struct {
 // Delivery is the server's: a notification sent while the listener is closed
 // is not kept for it. A consumer that must see every event reads a table, and
 // uses notifications as the signal to look.
-func Listen(ctx context.Context, dial DialFunc, cfg Config, lc ListenConfig) (*Listener, error) {
-	sql, err := listenSQL(lc)
+func Listen(ctx context.Context, dial DialFunc, cfg Config, lcfg ListenConfig) (*Listener, error) {
+	sql, err := listenSQL(lcfg)
 	if err != nil {
 		return nil, err
 	}
-	batch := lc.BatchNotifications
+	batch := lcfg.BatchNotifications
 	if batch == 0 {
 		batch = sluice.DefaultBatchSize
 	}
