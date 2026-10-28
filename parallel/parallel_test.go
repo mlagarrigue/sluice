@@ -111,7 +111,8 @@ func TestParallelActuallyRunsConcurrently(t *testing.T) {
 	})
 }
 
-// S6 — no worker is still running when Ordered returns, on every exit path.
+// The architecture's S6 — no worker is still running when Ordered returns, on
+// every exit path.
 //
 // Counting goroutines after the fact is not enough: closing the job channel
 // ends the workers on its own, so they exit shortly afterwards whether or not

@@ -35,18 +35,18 @@ import (
 //
 // # Contracts shared with Ordered
 //
-// The input batch is copied at the hand-off (S14), so composing downstream of
-// a buffer-reusing operator is safe. f runs concurrently and must be safe to;
-// the batch handed to f is valid for that call only; the batch f returns is
-// retained until emitted, so f must not return a buffer it reuses across
-// calls. Memory is bounded by O(workers) batches (S11). An early stop or a
-// panic anywhere releases every worker before the call returns (S6); a panic
-// in f is re-raised on the consuming goroutine after the workers have been
-// shut down. A panic is never swallowed: under an early stop the results
-// still in flight are discarded, but a panic among them is re-raised all the
-// same — exactly as [Ordered] behaves. A panic already unwinding through the
-// consumer takes precedence, and of several panics in f the first to arrive
-// is the one raised.
+// The input batch is copied at the hand-off (the architecture's S14), so
+// composing downstream of a buffer-reusing operator is safe. f runs
+// concurrently and must be safe to; the batch handed to f is valid for that
+// call only; the batch f returns is retained until emitted, so f must not
+// return a buffer it reuses across calls. Memory is bounded by O(workers)
+// batches (S11). An early stop or a panic anywhere releases every worker before
+// the call returns (S6); a panic in f is re-raised on the consuming goroutine
+// after the workers have been shut down. A panic is never swallowed: under an
+// early stop the results still in flight are discarded, but a panic among them
+// is re-raised all the same — exactly as [Ordered] behaves. A panic already
+// unwinding through the consumer takes precedence, and of several panics in f
+// the first to arrive is the one raised.
 //
 // # Degenerate arguments
 //
@@ -80,9 +80,10 @@ type unorderedResult[B any] struct {
 
 // runParallelUnordered is the concurrent path.
 //
-// Input slots cycle producer → jobs → worker → free list, copied into per S14
-// and recycled; results flow workers → the consuming goroutine through a
-// channel sized so a worker can never block on it. Emission happens only on
+// Input slots cycle producer → jobs → worker → free list: each batch is copied
+// into one, as S14 asks (above), and the slot recycled; results flow workers
+// → the consuming goroutine through a channel sized so a worker can never
+// block on it. Emission happens only on
 // the consuming goroutine — the iterator contract — which drains ready
 // results before feeding each new batch, then drains the tail once the source
 // is done.

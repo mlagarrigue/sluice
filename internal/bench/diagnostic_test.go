@@ -118,9 +118,10 @@ func BenchmarkDiagnosticsReuse(b *testing.B) {
 	}
 }
 
-// BenchmarkDiagnosticsOverCeiling is the pathological batch S12 exists for:
-// far more diagnostics than the ceiling. Past the limit, recording must cost
-// nothing but a counter increment — no allocation, no growth.
+// BenchmarkDiagnosticsOverCeiling is the pathological batch the architecture's
+// S12 exists for: far more diagnostics than the ceiling. Past the limit,
+// recording must cost nothing but a counter increment — no allocation, no
+// growth.
 func BenchmarkDiagnosticsOverCeiling(b *testing.B) {
 	const limit = 10
 

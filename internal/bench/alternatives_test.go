@@ -176,11 +176,11 @@ func BenchmarkJoinTableShape(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// The input copy of parallel (S14): Ordered and Unordered copy each batch's
-// Items into a recycled per-slot buffer before a worker reads it. The copy
-// cannot be switched off inside the operator, so this is the copy alone, into
-// one reused buffer, over the 65,536 elements BenchmarkParallelTrivialWork
-// runs through the operator on a pass-through f.
+// The input copy of parallel (the architecture's S14): Ordered and Unordered
+// copy each batch's Items into a recycled per-slot buffer before a worker reads
+// it. The copy cannot be switched off inside the operator, so this is the copy
+// alone, into one reused buffer, over the 65,536 elements
+// BenchmarkParallelTrivialWork runs through the operator on a pass-through f.
 // ---------------------------------------------------------------------------
 
 func BenchmarkParallelInputCopy(b *testing.B) {

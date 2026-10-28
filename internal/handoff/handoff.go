@@ -2,13 +2,13 @@
 // its batches to the consumer through a fixed set of recycled slots: the
 // producer that [parallel.Async] and [window.CoalesceWithin] share.
 //
-// One implementation, because the order of the producer's exits is the
-// subtle part and was written out twice: the panic is recorded before the
-// data channel closes, so a consumer that sees the close can look at it;
-// the data channel closes before done, which releases Stop. Every path out
-// of the consumer goes through Stop, so no goroutine outlives the operator
-// (S6), and a panic the source died from is raised on the consumer's
-// goroutine, with the producer's stack ([Panic]).
+// One implementation, because the order of the producer's exits is the subtle
+// part and was written out twice: the panic is recorded before the data channel
+// closes, so a consumer that sees the close can look at it; the data channel
+// closes before done, which releases Stop. Every path out of the consumer goes
+// through Stop, so no goroutine outlives the operator (the architecture's S6),
+// and a panic the source died from is raised on the consumer's goroutine, with
+// the producer's stack ([Panic]).
 //
 // [parallel.Async]: https://pkg.go.dev/github.com/mlagarrigue/sluice/parallel#Async
 // [window.CoalesceWithin]: https://pkg.go.dev/github.com/mlagarrigue/sluice/window#CoalesceWithin

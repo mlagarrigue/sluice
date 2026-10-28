@@ -289,9 +289,9 @@ const (
 var maxRowBytes = math.MaxInt32
 
 // ErrTooManyRows reports a result larger than the batch bound the caller set.
-// It exists for the same reason [github.com/mlagarrigue/sluice/distinct.By] takes a bound: a query whose
-// result is larger than expected must fail rather than grow until the process
-// dies (S1).
+// It exists for the same reason [github.com/mlagarrigue/sluice/distinct.By]
+// takes a bound: a query whose result is larger than expected must fail rather
+// than grow until the process dies (the architecture's S1).
 var ErrTooManyRows = errors.New("postgres: result exceeds the batch row limit")
 
 // newRows returns an accumulator for results of the given width, holding at

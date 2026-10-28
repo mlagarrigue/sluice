@@ -676,7 +676,7 @@ func (c *Conn) writeBind(stmt string, params []Param) {
 }
 
 // QueryConfig states the bounds a query runs under. They are the caller's,
-// per S1: none has a value that suits every result.
+// per the architecture's S1: none has a value that suits every result.
 type QueryConfig struct {
 	// BatchRows is how many rows a batch holds, and — because the server is
 	// asked for exactly that many at a time — what bounds the rows in flight.

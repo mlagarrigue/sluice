@@ -204,10 +204,10 @@ func TestPipelineValidatesEveryPartBeforeWritingAny(t *testing.T) {
 	}
 }
 
-// A panic in the caller's callback leaves the connection mid-pipeline with
-// rows still on the wire and nothing marking it broken, so the next query
-// would read them as its own. Query has deferred that drain since S10; the
-// pipeline had no equivalent.
+// A panic in the caller's callback leaves the connection mid-pipeline with rows
+// still on the wire and nothing marking it broken, so the next query would read
+// them as its own. Query has deferred that drain since the architecture's S10;
+// the pipeline had no equivalent.
 func TestPipelineDrainsWhenTheCallbackPanics(t *testing.T) {
 	var script []byte
 	script = append(script, beSimple(pgwire.BackendParseComplete)...)

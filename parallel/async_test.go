@@ -96,8 +96,8 @@ func TestAsyncProducerRunsAhead(t *testing.T) {
 	})
 }
 
-// The S14 composition: Async downstream of a buffer-reusing operator must be
-// race-free and correct — the producer copies at the hand-off.
+// The architecture's S14 composition: Async downstream of a buffer-reusing
+// operator must be race-free and correct — the producer copies at the hand-off.
 func TestAsyncCopiesInputBatch(t *testing.T) {
 	const n = 1 << 14
 	src := make([]int64, n)

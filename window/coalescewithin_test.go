@@ -152,8 +152,8 @@ func TestCoalesceWithinSplitsLargeBatches(t *testing.T) {
 	}
 }
 
-// S14: composed downstream of a buffer-reusing operator, every element must
-// arrive intact — the producer copies at the hand-off.
+// The architecture's S14: composed downstream of a buffer-reusing operator,
+// every element must arrive intact — the producer copies at the hand-off.
 func TestCoalesceWithinCopiesInputBatch(t *testing.T) {
 	const n = 1 << 13
 	src := make([]int64, n)

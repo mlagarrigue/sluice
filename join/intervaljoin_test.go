@@ -276,7 +276,7 @@ func TestIntervalJoinOverflowDropNewest(t *testing.T) {
 }
 
 // An early stop must reach both sources promptly and run their deferred
-// cleanup (S9 through the cursors, S10 through the refusal).
+// cleanup (the architecture's S9 through the cursors, S10 through the refusal).
 func TestIntervalJoinEarlyStopReleasesBoth(t *testing.T) {
 	mkSrc := func(done *bool) sluice.Stream[tRow] {
 		return func(yield func(sluice.Batch[tRow]) bool) {

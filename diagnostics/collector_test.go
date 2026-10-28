@@ -156,7 +156,7 @@ func TestDiagnosticsReset(t *testing.T) {
 // Reset must release what it dropped. A Diagnostic holds an Args map and a
 // wrapped cause; leaving them live in the backing array would pin the first
 // batch's memory for the life of a reused collector — the unbounded retention
-// S1 exists to prevent.
+// the architecture's S1 exists to prevent.
 func TestDiagnosticsResetReleasesReferences(t *testing.T) {
 	d := NewCollector(4)
 

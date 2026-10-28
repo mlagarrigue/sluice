@@ -205,8 +205,8 @@ func TestParallelInitClosesStatesOnEveryPath(t *testing.T) {
 	}
 }
 
-// The S10 contract: an early stop reaches the source promptly and its deferred
-// cleanup runs before OrderedWithState returns.
+// The architecture's S10 contract: an early stop reaches the source promptly
+// and its deferred cleanup runs before OrderedWithState returns.
 func TestParallelInitPropagatesEarlyStop(t *testing.T) {
 	finalized := false
 	src := sluice.Stream[int](func(yield func(sluice.Batch[int]) bool) {

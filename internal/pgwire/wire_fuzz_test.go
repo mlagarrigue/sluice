@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// The verification S8 names: every network input is bounded before allocation,
-// checked by fuzzing rather than by reading the code. The reader's whole
-// contract against hostile input is here — it must not panic, must not
-// allocate past its limit whatever a length prefix claims, and must fail with
-// something a caller can act on rather than with a surprise.
+// The verification the architecture's S8 names: every network input is bounded
+// before allocation, checked by fuzzing rather than by reading the code. The
+// reader's whole contract against hostile input is here — it must not panic,
+// must not allocate past its limit whatever a length prefix claims, and must
+// fail with something a caller can act on rather than with a surprise.
 func FuzzReaderNext(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{'D', 0, 0, 0, 4})                     // empty body

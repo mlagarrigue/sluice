@@ -300,8 +300,9 @@ func TestRowsRejectsMalformed(t *testing.T) {
 	}
 }
 
-// The row limit is S1 applied to a result set: a query returning more than the
-// caller budgeted must fail rather than grow until the process dies.
+// The row limit is the architecture's S1 applied to a result set: a query
+// returning more than the caller budgeted must fail rather than grow until the
+// process dies.
 func TestRowsBounded(t *testing.T) {
 	r := newRows(1, 2, 0)
 	for range 2 {

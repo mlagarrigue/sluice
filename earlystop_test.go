@@ -12,7 +12,8 @@ import (
 	"github.com/mlagarrigue/sluice/window"
 )
 
-// S10 — every operator propagates false and lets the generator unwind.
+// The architecture's S10 — every operator propagates false and lets the
+// generator unwind.
 //
 // The specification calls this streaming's problem number one, ahead of
 // performance, and says it is a tested invariant rather than a convention. It

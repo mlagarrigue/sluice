@@ -43,9 +43,9 @@ import (
 // # Contracts
 //
 // Memory is O(size) for the accumulation buffer, claimed on the first element,
-// plus two upstream batches in transport. Elements are copied into the buffer as they arrive, so nothing of
-// the upstream's is retained (S14) and an upstream that reuses its output
-// buffer composes safely.
+// plus two upstream batches in transport. Elements are copied into the buffer
+// as they arrive, so nothing of the upstream's is retained (the architecture's
+// S14) and an upstream that reuses its output buffer composes safely.
 //
 // Output batches reuse the accumulation buffer: valid for the duration of the
 // call, retaining requires a copy. Order is preserved. An empty upstream batch

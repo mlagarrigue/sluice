@@ -985,6 +985,43 @@ func TestSectionReferencesNameTheirSource(t *testing.T) {
 	}
 }
 
+// S1 to S14 are the architecture's security guarantees, a name a reader who
+// opens one file cannot look up unless something says where they live. The
+// first comment of each file that cites one names the architecture, or the
+// guarantees, in its own text or within three lines of the citation.
+func TestGuaranteeReferencesNameTheirSource(t *testing.T) {
+	cite := regexp.MustCompile(`\bS([1-9]|1[0-4])\b`)
+	named := regexp.MustCompile(`(?i)architecture|guarantee`)
+	for _, dir := range packageDirs(t) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".go") {
+				continue
+			}
+			p := filepath.Join(dir, e.Name())
+			b, err := os.ReadFile(p) //nolint:gosec // G304: a repository path, not input
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(b), "\n")
+			for i, l := range lines {
+				c := strings.Index(l, "//")
+				if c < 0 || !cite.MatchString(l[c:]) {
+					continue
+				}
+				near := strings.Join(lines[max(0, i-3):min(len(lines), i+4)], " ")
+				if !named.MatchString(near) {
+					t.Errorf("%s:%d: %q cites a guarantee without naming the architecture", p, i+1, cite.FindString(l[c:]))
+				}
+				break
+			}
+		}
+	}
+}
+
 // namedDoc is one doc comment go doc shows, with what it documents.
 type namedDoc struct{ name, text string }
 

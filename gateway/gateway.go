@@ -397,12 +397,12 @@ func (g *Gateway[In, Out]) run(pipeline func(sluice.Stream[*Call[In, Out]])) {
 			// No "did they all answer?" sweep here, deliberately. Returning
 			// from yield means the batch was accepted downstream, not that it
 			// was handled: an asynchronous operator — [parallel.Async],
-			// [parallel.Unordered] — returns as soon as a worker has
-			// taken it, with the replies still to come. Checking here would
-			// fail calls the pipeline is about to answer correctly, and the
-			// answer that followed would then panic as a second one. The only
-			// safe moment is after the pipeline returns, and by S6 that is
-			// after every worker it started has stopped.
+			// [parallel.Unordered] — returns as soon as a worker has taken it,
+			// with the replies still to come. Checking here would fail calls
+			// the pipeline is about to answer correctly, and the answer that
+			// followed would then panic as a second one. The only safe moment
+			// is after the pipeline returns, and by the architecture's S6 that
+			// is after every worker it started has stopped.
 			//
 			// A fresh slice per batch, because the batch may now outlive this
 			// call: an asynchronous operator holds it while the loop moves on,

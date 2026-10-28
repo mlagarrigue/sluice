@@ -14,7 +14,8 @@ import "fmt"
 //
 // Credit is granted back as data is *consumed*, not as it arrives — the gap
 // between the two is exactly the memory a slow reader is allowed to occupy,
-// which is what makes the receive window the S1 bound for this transport.
+// which is what makes the receive window the architecture's S1 bound for this
+// transport.
 
 // sendQuota is one level's view of how much the peer allows.
 type sendQuota struct {
