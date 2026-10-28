@@ -84,7 +84,7 @@ func readAll(t *testing.T, c net.Conn, cfg Config) (bodies [][]byte, err error) 
 // terminating chunk, which the moving pass then walks from the start.
 type rewalkProbe struct {
 	net.Conn // the deadlines; never read
-	r        *reader
+	r        *h1Conn
 	writes   [][]byte
 	at       int // the first chunk's size digit in r.buf
 }
@@ -127,7 +127,7 @@ func TestChunkedBodyArrivingOneChunkPerReadIsLinear(t *testing.T) {
 
 	client, server := net.Pipe()
 	t.Cleanup(func() { client.Close(); server.Close() })
-	r := &reader{cfg: Config{BodyDelivery: BodyWhole, ReadTimeout: 30 * time.Second}.mustResolve()}
+	r := &h1Conn{cfg: Config{BodyDelivery: BodyWhole, ReadTimeout: 30 * time.Second}.mustResolve()}
 	r.conn = &rewalkProbe{Conn: server, r: r, writes: writes, at: len(head)}
 	var bodies [][]byte
 	r.stream(func(b sluice.Batch[Request]) bool {

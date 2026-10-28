@@ -991,7 +991,7 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 	// probe from its preferred socket (no identifier of ours had reached
 	// it), and that answer moved this client to an address the server never
 	// answered at: the client sent from there, the server stayed behind.
-	c.startPathChallengeData(data, now)
+	c.startPathChallengeDataLocked(data, now)
 	c.pathProbe.target = c.preferred
 	c.pathProbe.targetCID = cid
 	c.sendPathChallengeLocked()
@@ -1231,7 +1231,7 @@ func (c *Conn) startPathChallengeLocked(now time.Time) {
 		// amplification-limited; the idle timer judges the rest.
 		return
 	}
-	c.startPathChallengeData(data, now)
+	c.startPathChallengeDataLocked(data, now)
 	c.sendPathChallengeLocked()
 }
 
@@ -1388,7 +1388,7 @@ func (c *Conn) preferredPathChallengeLocked(now time.Time) (frame, dcid []byte) 
 	if !ok && len(c.dcid) > 0 {
 		return nil, nil
 	}
-	c.startPathChallengeData(data, now)
+	c.startPathChallengeDataLocked(data, now)
 	c.pathProbe.via, c.pathProbe.targetCID = c.rxVia, cid
 	c.pathProbe.sent, c.pathProbe.full = true, true
 	return append(varint.Append(nil, framePathChallenge), data...), cid
@@ -1519,10 +1519,10 @@ func (c *Conn) answeredCIDLocked(addr net.Addr) ([]byte, bool) {
 	return nil, false
 }
 
-// startPathChallengeData arms the probe state around data without sending
+// startPathChallengeDataLocked arms the probe state around data without sending
 // anything: the caller is putting the challenge in a packet of its own.
 // Callers hold mu.
-func (c *Conn) startPathChallengeData(data []byte, now time.Time) {
+func (c *Conn) startPathChallengeDataLocked(data []byte, now time.Time) {
 	copy(c.pathProbe.data[:], data)
 	c.pathProbe.pending = true
 	c.pathProbe.fatal = false

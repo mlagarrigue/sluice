@@ -13,7 +13,7 @@ import (
 // frames behind it — which belong to other requests — are served. That is the
 // difference the split made, and the reason the loop looks like this rather
 // than returning at the first refusal.
-func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
+func (s *h2Conn) consume(frames []h2Frame) ([]Request, []uint32, error) {
 	var (
 		ready []Request
 		ids   []uint32
@@ -53,7 +53,7 @@ func (s *h2Server) consume(frames []h2Frame) ([]Request, []uint32, error) {
 // bound reads — and the batch queue — what it was, and it is a request
 // served, for the rapid-reset bound. It stays in streams, where its DATA is
 // routed, until its body has ended or its handler has returned.
-func (s *h2Server) handOver(ready []Request, ids []uint32) (reqs []Request, streams []uint32) {
+func (s *h2Conn) handOver(ready []Request, ids []uint32) (reqs []Request, streams []uint32) {
 	for _, st := range s.pending {
 		if s.streams[st.id] != st || st.state != stateOpen {
 			continue // reset, or finished, within the batch
@@ -94,7 +94,7 @@ func (s *h2Server) handOver(ready []Request, ids []uint32) (reqs []Request, stre
 // wait for its bytes has ReadTimeout, on the handler's side — and is
 // forgotten here once its handler has returned: nobody reads it, and its
 // response resets it if the peer is still sending.
-func (s *h2Server) expireAssembly() error {
+func (s *h2Conn) expireAssembly() error {
 	if s.open.Load() == 0 && s.handed == 0 {
 		return nil
 	}
@@ -128,7 +128,7 @@ func (s *h2Server) expireAssembly() error {
 // that only ever sends malformed requests would otherwise hold a connection
 // open indefinitely for the cost of one refusal each, which is the rapid-reset
 // shape with the roles swapped.
-func (s *h2Server) reset(se streamError) error {
+func (s *h2Conn) reset(se streamError) error {
 	if s.streams[se.id] == nil && s.closed[se.id] == stateHalfClosed && s.w.responded(se.id) {
 		// Its request ended and its answer reached END_STREAM: "closed" in
 		// §5.1's state machine, where this server's books still say
@@ -163,7 +163,7 @@ func (s *h2Server) reset(se streamError) error {
 // rapid-reset allowance: four batches' worth of frames, plus two for every
 // request this connection has completed. The RST_STREAM branch of frame
 // states what "completed" has to mean for the bound to hold.
-func (s *h2Server) countReset() error {
+func (s *h2Conn) countReset() error {
 	s.resets++
 	if s.resets > s.cfg.MaxFramesPerBatch*4+2*s.served {
 		return fmt.Errorf("%w: %w: %d stream resets against %d completed requests",
@@ -176,7 +176,7 @@ func (s *h2Server) countReset() error {
 // identifier, which only a server opens and this one opens none, or an odd
 // one past the highest the client has used. A stream that has fallen out of
 // the closed-stream ring is not idle — its identifier is at or below lastID.
-func (s *h2Server) idle(id uint32) bool {
+func (s *h2Conn) idle(id uint32) bool {
 	return id%2 == 0 || id > s.lastID
 }
 
@@ -206,7 +206,7 @@ func (s *h2Server) idle(id uint32) bool {
 // the stream is retired is handed to late, where its remaining fragments land.
 //
 // The memory is bounded to MaxConcurrentStreams entries, oldest evicted first.
-func (s *h2Server) retire(id uint32, state h2State) {
+func (s *h2Conn) retire(id uint32, state h2State) {
 	st := s.streams[id]
 	if st == nil {
 		// Half-closed to closed; a stream already closed, or forgotten,
@@ -238,7 +238,7 @@ func (s *h2Server) retire(id uint32, state h2State) {
 }
 
 // remember records a retired stream, evicting the oldest past the bound.
-func (s *h2Server) remember(id uint32, state h2State) {
+func (s *h2Conn) remember(id uint32, state h2State) {
 	s.closed[id] = state
 	s.closedRing = append(s.closedRing, id)
 	for len(s.closedRing) > s.cfg.MaxConcurrentStreams {
@@ -251,7 +251,7 @@ func (s *h2Server) remember(id uint32, state h2State) {
 // lookup returns what this end knows of a stream the client opened: the
 // stream itself while it is open, late standing in for it once it is
 // retired, nil once it is forgotten.
-// h2OpenedWindow is how many of the most recent odd identifiers h2Server
+// h2OpenedWindow is how many of the most recent odd identifiers h2Conn
 // remembers as opened or skipped (h2OpenedWords words of 64 bits). Past it,
 // an identifier is taken as opened: the tolerant answer, which costs the
 // decode of one block and nothing else. 256 bytes a connection.
@@ -264,7 +264,7 @@ const (
 // lastID, and advances lastID. The odd identifiers skipped on the way are
 // marked as never opened, so that a frame on one of them is refused as
 // §5.1.1 asks rather than tolerated as a late frame.
-func (s *h2Server) openID(id uint32) {
+func (s *h2Conn) openID(id uint32) {
 	if (id-s.lastID)/2 > h2OpenedWindow {
 		clear(s.opened[:])
 	} else {
@@ -278,14 +278,14 @@ func (s *h2Server) openID(id uint32) {
 
 // wasOpened reports whether the client opened id, an odd identifier at or
 // below lastID — or whether it is too old to tell, which reads as opened.
-func (s *h2Server) wasOpened(id uint32) bool {
+func (s *h2Conn) wasOpened(id uint32) bool {
 	if (s.lastID-id)/2 >= h2OpenedWindow {
 		return true
 	}
 	return s.opened[(id>>1)%h2OpenedWindow/64]&(1<<((id>>1)%64)) != 0
 }
 
-func (s *h2Server) lookup(id uint32) *h2Stream {
+func (s *h2Conn) lookup(id uint32) *h2Stream {
 	if st := s.streams[id]; st != nil {
 		return st
 	}
@@ -300,7 +300,7 @@ func (s *h2Server) lookup(id uint32) *h2Stream {
 	return &s.late
 }
 
-func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
+func (s *h2Conn) frame(f h2Frame) (*h2Stream, error) {
 	switch f.Type {
 	case frameSettings:
 		if f.Flags&flagAck != 0 {
@@ -455,7 +455,7 @@ func (s *h2Server) frame(f h2Frame) (*h2Stream, error) {
 // section (checked, kept or discarded, and the stream finished), and a first
 // block is the request's head (buildRequest), refused with a status or a
 // reset, or admitted.
-func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
+func (s *h2Conn) headers(f h2Frame) (*h2Stream, error) {
 	st, err := s.stream(f.StreamID)
 	if err != nil {
 		return nil, err
@@ -653,7 +653,7 @@ func (s *h2Server) headers(f h2Frame) (*h2Stream, error) {
 // read the block to its end and the table is consistent (RFC 9113 §10.5.1).
 // On a stream already closed it is nothing at all, for the reason the
 // field-count bound in headers gives.
-func (s *h2Server) blockRefused(st *h2Stream, err error) error {
+func (s *h2Conn) blockRefused(st *h2Stream, err error) error {
 	switch {
 	case !errors.Is(err, errHeadersTooLarge):
 		return err
@@ -663,7 +663,7 @@ func (s *h2Server) blockRefused(st *h2Stream, err error) error {
 	return statusFail(st.id, 431, nil, "%w", err)
 }
 
-func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
+func (s *h2Conn) data(f h2Frame) (*h2Stream, error) {
 	st := s.lookup(f.StreamID)
 	if st == nil {
 		// An even identifier can never have been opened: those are the
@@ -801,7 +801,7 @@ func (s *h2Server) data(f h2Frame) (*h2Stream, error) {
 // the trap in tolerating those: the peer debited them at the connection level
 // whatever this end thinks of the stream, and skipping the accounting stalls
 // the connection a few resets later.
-func (s *h2Server) consumeConnWindow(f h2Frame) error {
+func (s *h2Conn) consumeConnWindow(f h2Frame) error {
 	used := int32(len(f.Payload)) //nolint:gosec // G115: bounded by MaxFrameSize
 	if used > s.recvWind {
 		return fmt.Errorf("%w: %w: %d bytes against a connection window of %d",
@@ -822,7 +822,7 @@ func (s *h2Server) consumeConnWindow(f h2Frame) error {
 // nothing more may arrive on it, and its slot in the concurrency bound moves
 // from open to inFlight in the same step, which is what keeps the sum — and
 // therefore the batch queue — bounded.
-func (s *h2Server) finish(st *h2Stream) (*h2Stream, error) {
+func (s *h2Conn) finish(st *h2Stream) (*h2Stream, error) {
 	if st.state != stateOpen {
 		return nil, streamFail(st.id, errStreamClosed,
 			"%w: stream %d ended twice", ErrH2Protocol, st.id)
@@ -858,7 +858,7 @@ func (s *h2Server) finish(st *h2Stream) (*h2Stream, error) {
 }
 
 // stream returns the state for an identifier, opening it if the client may.
-func (s *h2Server) stream(id uint32) (*h2Stream, error) {
+func (s *h2Conn) stream(id uint32) (*h2Stream, error) {
 	if id == 0 || id%2 == 0 {
 		// Even identifiers are the server's to open, and zero is the
 		// connection. A client using either is not addressing a request.
@@ -1018,7 +1018,7 @@ func parseContentLength(v []byte) (int, error) {
 // SETTINGS_HEADER_TABLE_SIZE is returned rather than applied: it changes what
 // the next header block this end sends must begin with, and that is decided
 // where the ACK is queued (see [h2Writer.ackSettings]).
-func (s *h2Server) applySettings(payload []byte) (table uint32, haveTable bool, err error) {
+func (s *h2Conn) applySettings(payload []byte) (table uint32, haveTable bool, err error) {
 	var (
 		haveWindow, haveFrame bool
 		window, frame         uint32

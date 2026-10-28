@@ -885,7 +885,7 @@ func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 	if !c.hasPeerParams {
 		return nil, fmt.Errorf("%w: opening a stream before the handshake delivered the peer's limits", ErrQUIC)
 	}
-	opened, limit := c.localStreamCounters(uni)
+	opened, limit := c.localStreamCountersLocked(uni)
 	if *opened >= *limit {
 		if err := c.waitStreamCreditLocked(ctx, uni); err != nil {
 			return nil, err
@@ -905,10 +905,10 @@ func (c *Conn) open(ctx context.Context, uni bool) (*Stream, error) {
 	return s, nil
 }
 
-// localStreamCounters returns how many streams of the kind this end has
+// localStreamCountersLocked returns how many streams of the kind this end has
 // opened and how many the peer allows, for open and its wait to read and
 // advance the same pair. Callers hold c.mu.
-func (c *Conn) localStreamCounters(uni bool) (opened, limit *uint64) {
+func (c *Conn) localStreamCountersLocked(uni bool) (opened, limit *uint64) {
 	if uni {
 		return &c.openedUni, &c.peerMaxStreamsUni
 	}
@@ -929,7 +929,7 @@ func (c *Conn) waitStreamCreditLocked(ctx context.Context, uni bool) error {
 		c.mu.Unlock()
 	})
 	defer stop()
-	opened, limit := c.localStreamCounters(uni)
+	opened, limit := c.localStreamCountersLocked(uni)
 	told, frame := &c.bidiBlockedTold, uint64(frameStreamsBlocked)
 	if uni {
 		told, frame = &c.uniBlockedTold, frameStreamsBlocked|1

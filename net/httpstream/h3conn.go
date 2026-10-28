@@ -971,7 +971,7 @@ func (a *h3Assembler) answer(id uint64, status int, method []byte, err error) {
 // the connection is closed with H3_EXCESSIVE_LOAD (RFC 9114 §10.5), at the
 // end of the delivery that crossed the line.
 //
-// The HTTP/2 side keeps the same rule (h2Server.countReset): a long-lived
+// The HTTP/2 side keeps the same rule (h2Conn.countReset): a long-lived
 // connection that serves requests may go on cancelling; one that only
 // cancels runs out. It is expressed against work done rather than against a
 // clock, so it holds while a connection is stalled and it can be tested

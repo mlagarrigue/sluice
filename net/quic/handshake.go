@@ -164,7 +164,7 @@ func (c *Conn) driveHandshake(ctx context.Context) error {
 		}
 		c.mu.Lock()
 		if done {
-			c.handshakeComplete()
+			c.handshakeCompleteLocked()
 		}
 		c.gatherLocked(false)
 		c.mu.Unlock()
@@ -334,7 +334,7 @@ func (c *Conn) endedDuringHandshakeErr() error {
 // issueTicket has crypto/tls write the connection's one session ticket —
 // marked for 0-RTT, with what earlyGate needs to admit it, when the
 // listener has EarlyData — and sends it, in the application space where RFC 9001 §4.5 puts it, beside
-// the HANDSHAKE_DONE handshakeComplete adds — gathered into one datagram.
+// the HANDSHAKE_DONE handshakeCompleteLocked adds — gathered into one datagram.
 // Called once the handshake is complete, on a server: before then
 // crypto/tls refuses, and on a client it has no ticket to send.
 func (c *Conn) issueTicket() error {
@@ -429,11 +429,11 @@ func (c *Conn) releaseEarly() error {
 // select on [Conn.Done] beside it.
 func (c *Conn) HandshakeComplete() <-chan struct{} { return c.hsComplete }
 
-// handshakeComplete is the transition TLS reports: the server confirms at
+// handshakeCompleteLocked is the transition TLS reports: the server confirms at
 // once and tells the client with HANDSHAKE_DONE; the client confirms when
 // that frame arrives (§4.1.2 of RFC 9001). Handshake keys are dropped on
 // confirmation (§4.9.2). Called under mu.
-func (c *Conn) handshakeComplete() {
+func (c *Conn) handshakeCompleteLocked() {
 	close(c.hsComplete)
 	if !c.isClient {
 		c.control = varint.Append(c.control, frameHandshakeDone)

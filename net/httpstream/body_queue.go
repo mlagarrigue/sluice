@@ -18,7 +18,7 @@ import (
 // The two protocols differ in who keeps the window. HTTP/2's is this end's
 // arithmetic (h2 set): a grant never takes window plus held bytes past the
 // stream's initial window, and nothing is granted on arrival while bodies
-// stream (see h2Server.data). HTTP/3's is the QUIC transport's, run on manual
+// stream (see h2Conn.data). HTTP/3's is the QUIC transport's, run on manual
 // credit (release set): every byte delivered is released once at the stream
 // level, here, when the handler is done with it or it is dropped. Either way
 // the peer can send no more than the stream window allows, so the window
@@ -48,7 +48,7 @@ type bodyQueue struct {
 
 	// h2 is the HTTP/2 connection whose window this is, nil over HTTP/3;
 	// initial is the window it grants, InitialWindowSize.
-	h2      *h2Server
+	h2      *h2Conn
 	initial int32
 	// release gives n bytes of stream-level credit back to the QUIC
 	// transport, nil over HTTP/2.
@@ -116,7 +116,7 @@ func newBodyQueue(cfg Config, id uint64, first []byte, declared int, expect bool
 
 // newH2Body turns st, whose head is complete and whose body has not ended,
 // into a streamed body. Called by the reader.
-func (s *h2Server) newH2Body(st *h2Stream) *bodyQueue {
+func (s *h2Conn) newH2Body(st *h2Stream) *bodyQueue {
 	b := newBodyQueue(s.cfg, uint64(st.id), st.body, st.declared, expectsContinue(st.req))
 	b.h2 = s
 	b.initial = int32(s.cfg.InitialWindowSize) //nolint:gosec // G115: capped by resolve
@@ -135,7 +135,7 @@ func (b *bodyQueue) receive(used int32, data []byte, last bool) error {
 	if used > b.window+b.grace {
 		window := b.window
 		b.mu.Unlock()
-		// §6.9.1, as for a stream assembled whole (see h2Server.data).
+		// §6.9.1, as for a stream assembled whole (see h2Conn.data).
 		return streamFail(uint32(b.id), errFlowControlError, //nolint:gosec // G115: an HTTP/2 stream identifier
 			"%w: %w: %d bytes on stream %d against a window of %d",
 			ErrH2Protocol, errFlowControl, used, b.id, window)

@@ -36,8 +36,8 @@ import (
 //     ACK SETTINGS, and read the WINDOW_UPDATE a stalled response is waiting
 //     for.
 //   - Each **call** runs the handler over one batch, on a goroutine the
-//     reader starts and never waits for. See [h2Server.call].
-//   - The **responder** frames what the calls return. See [h2Server.answer].
+//     reader starts and never waits for. See [h2Conn.call].
+//   - The **responder** frames what the calls return. See [h2Conn.answer].
 //   - The **writer** owns the socket's write side, the send windows and the
 //     scheduling. See [h2Writer].
 //
@@ -267,7 +267,10 @@ type h2Answer struct {
 	unread bool
 }
 
-type h2Server struct {
+// h2Conn is one HTTP/2 connection's state, read and written by the three
+// goroutines the top of this file names; [Server] is the whole server, which
+// holds many of them.
+type h2Conn struct {
 	cfg     Config
 	handler Handler
 	// ctx is the handler's context: cancelled when the connection is cut
@@ -541,7 +544,7 @@ func ServeH2Conn(ctx context.Context, c net.Conn, cfg Config, handle Handler) er
 // the calls and the responder, send the last GOAWAY with the code the end
 // deserves, and linger on an error so that GOAWAY is read.
 func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, handler Handler) error {
-	s := &h2Server{
+	s := &h2Conn{
 		cfg:      cfg,
 		handler:  handler,
 		ctx:      ctx,
@@ -783,7 +786,7 @@ func codeFor(err error) uint32 {
 // hello sends the settings this end imposes. They are sent before anything is
 // read, because a peer may start sending on the defaults immediately and the
 // only way to bound it is to have said so first.
-func (s *h2Server) hello() error {
+func (s *h2Conn) hello() error {
 	var payload []byte
 	settings := [][2]uint32{
 		{settingEnablePush, 0}, // a server does not push here
@@ -813,7 +816,7 @@ func (s *h2Server) hello() error {
 // handler's panic value (see apply) — an internal detail handed to a stranger
 // who caused the failure. The code is what a peer acts on; the text stays on
 // this side, where the caller reads it as ServeH2Conn's return value.
-func (s *h2Server) goAway(code uint32) {
+func (s *h2Conn) goAway(code uint32) {
 	s.goAwayWith(s.lastID, code)
 }
 
@@ -823,7 +826,7 @@ func (s *h2Server) goAway(code uint32) {
 // Whatever the caller names, the identifier sent never rises above one
 // already announced (§6.8 MUST NOT): the peer may have retried the streams
 // past it elsewhere.
-func (s *h2Server) goAwayWith(last, code uint32) {
+func (s *h2Conn) goAwayWith(last, code uint32) {
 	for {
 		announced := s.goAwayLast.Load()
 		if last >= announced {
@@ -847,7 +850,7 @@ const (
 	drainAnnounced
 )
 
-// The states of h2Server.greeted.
+// The states of h2Conn.greeted.
 const (
 	greetPending int32 = iota
 	greetTaken
@@ -880,7 +883,7 @@ const maxStreamID = 1<<31 - 1
 // the GOAWAY. So the peer is told as any other is and given LingerTimeout,
 // the time this package gives a closing connection to say its last bytes,
 // for its first frame; with none by then, refuseSilent takes the connection.
-func (s *h2Server) beginDrain() {
+func (s *h2Conn) beginDrain() {
 	s.goAwayWith(maxStreamID, errNoError)
 	_ = s.w.control(h2Frame{Type: framePing, Payload: []byte(drainPing)})
 	s.drainStep.Store(drainBegun)
@@ -894,7 +897,7 @@ func (s *h2Server) beginDrain() {
 // request crossing the close may be retried as is — and the socket closes
 // once the writer has sent it. The reader's first batch races this on
 // greeted, so a stream is either taken before the decision or never.
-func (s *h2Server) refuseSilent() {
+func (s *h2Conn) refuseSilent() {
 	if !s.greeted.CompareAndSwap(greetPending, greetRefused) {
 		return
 	}

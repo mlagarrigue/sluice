@@ -292,7 +292,7 @@ var errIncomplete = errors.New("httpstream: incomplete request")
 // errIdleTimeout is internal: the read timeout fired while the connection
 // held no part of a request, between one pipelined batch and the next client
 // that may never come. Distinct from a timeout mid-request (conn.go's
-// reader.fill, [Config.ReadTimeout]) so the two are not answered the same
+// h1Conn.fill, [Config.ReadTimeout]) so the two are not answered the same
 // way — see statusFor in serve.go. The HTTP/2 frame reader returns it too,
 // for the same silence between requests, which ServeH2Conn ends with
 // GOAWAY(NO_ERROR) rather than as a failure.

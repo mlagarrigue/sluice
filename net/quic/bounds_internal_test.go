@@ -136,7 +136,7 @@ func TestAckDelayParametersAnnouncedAtZeroAreNotTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	exp, delay := c.peerAckDelayExponent(), c.peerMaxAckDelayLocked()
+	exp, delay := c.peerAckDelayExponentLocked(), c.peerMaxAckDelayLocked()
 	c.mu.Unlock()
 	if exp != 3 || delay != 25*time.Millisecond {
 		t.Errorf("absent parameters read as exponent %d, max_ack_delay %v; want the defaults 3 and 25ms", exp, delay)
@@ -148,7 +148,7 @@ func TestAckDelayParametersAnnouncedAtZeroAreNotTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.mu.Lock()
-	exp, delay = c.peerAckDelayExponent(), c.peerMaxAckDelayLocked()
+	exp, delay = c.peerAckDelayExponentLocked(), c.peerMaxAckDelayLocked()
 	c.mu.Unlock()
 	if exp != 0 || delay != 0 {
 		t.Errorf("parameters announced at 0 read as exponent %d, max_ack_delay %v; want 0 and 0", exp, delay)

@@ -3128,7 +3128,7 @@ func TestH2RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
 	} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
-		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
+		if _, err := (&h2Conn{}).appendHead(nil, 1, []byte("GET"), res, 16384); !errors.Is(err, ErrMalformed) {
 			t.Errorf("%s: %s: got %v, want ErrMalformed", tc.name, tc.value, err)
 		}
 	}

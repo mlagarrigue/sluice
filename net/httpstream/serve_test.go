@@ -1732,7 +1732,7 @@ func TestWritersHoldThe205And426Constraints(t *testing.T) {
 		if _, err := WriteBatch(nil, Config{}, nil, []Response{tc.res}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("h1: %s: got %v, want ErrMalformed", tc.name, err)
 		}
-		if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), tc.res, 16384); !errors.Is(err, ErrMalformed) {
+		if _, err := (&h2Conn{}).appendHead(nil, 1, []byte("GET"), tc.res, 16384); !errors.Is(err, ErrMalformed) {
 			t.Errorf("h2: %s: got %v, want ErrMalformed", tc.name, err)
 		}
 		if _, err := appendH3ResponseBasic(nil, tc.res); !errors.Is(err, ErrMalformed) {
@@ -1747,7 +1747,7 @@ func TestWritersHoldThe205And426Constraints(t *testing.T) {
 	if !strings.HasPrefix(string(out), "HTTP/1.1 205 ") || !strings.HasSuffix(string(out), "Content-Length: 0\r\n\r\n") {
 		t.Errorf("h1: a bare 205 is framed as %q, want a 205 ending in Content-Length: 0 and no body", out)
 	}
-	if _, err := (&h2Server{}).appendHead(nil, 1, []byte("GET"), bare, 16384); err != nil {
+	if _, err := (&h2Conn{}).appendHead(nil, 1, []byte("GET"), bare, 16384); err != nil {
 		t.Errorf("h2: a bare 205 was refused: %v", err)
 	}
 	if _, err := appendH3ResponseBasic(nil, bare); err != nil {
@@ -1829,7 +1829,7 @@ func TestBareHeadResponseStatesNoContentLength(t *testing.T) {
 		}
 
 		// HTTP/2: one HEADERS frame, and nothing after it for a HEAD.
-		out, err = (&h2Server{}).appendHead(nil, 1, method, tc.res, 16384)
+		out, err = (&h2Conn{}).appendHead(nil, 1, method, tc.res, 16384)
 		if err != nil {
 			t.Fatalf("h2: %s: %v", tc.name, err)
 		}

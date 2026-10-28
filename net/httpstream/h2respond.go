@@ -35,7 +35,7 @@ type h2Applied struct {
 // alone, about half a microsecond on one core (BenchmarkH2FromNetHTTP/plain);
 // reusing call goroutines is the known way down if that ever matters more
 // than the p99 above.
-func (s *h2Server) call(b h2Batch, out chan<- *h2Applied) {
+func (s *h2Conn) call(b h2Batch, out chan<- *h2Applied) {
 	answered := false
 	defer func() {
 		if !answered {
@@ -81,7 +81,7 @@ func closeBodies(reqs []Request) {
 // Every request of b is answered once: by the writer, for a buffered answer,
 // when its job leaves its hands; here for the others — a stream reset
 // because nothing could be framed, a streamed body once it has ended.
-func (s *h2Server) answer(got *h2Applied) {
+func (s *h2Conn) answer(got *h2Applied) {
 	b, res, err := got.b, got.res, got.err
 	if b.ctx != nil {
 		defer s.calls.release(b.ctx, b.ids)
@@ -235,7 +235,7 @@ func (s *h2Server) answer(got *h2Applied) {
 // answered counts one request as answered: its stream no longer counts
 // against [Config.MaxConcurrentStreams] on this end's side, and the
 // responder rechecks whether a drained connection is done.
-func (s *h2Server) answered() {
+func (s *h2Conn) answered() {
 	s.inFlight.Add(-1)
 	select {
 	case s.settled <- struct{}{}:
@@ -245,7 +245,7 @@ func (s *h2Server) answered() {
 
 // appendHead frames a response's HEADERS, and its CONTINUATION frames if the
 // block does not fit one. s.date is the batch's Date value, set by answer.
-func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, maxFrame int) ([]byte, error) {
+func (s *h2Conn) appendHead(dst []byte, id uint32, method []byte, r Response, maxFrame int) ([]byte, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
@@ -349,7 +349,7 @@ func (s *h2Server) appendHead(dst []byte, id uint32, method []byte, r Response, 
 // carrying END_STREAM (RFC 9113 §8.1), held to [checkTrailer] and to the
 // peer's SETTINGS_MAX_HEADER_LIST_SIZE as the head is. Its fields go on the
 // wire lowercase, from copies, as the head's do.
-func (s *h2Server) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
+func (s *h2Conn) appendTrailers(dst []byte, id uint32, r Response, maxFrame int) ([]byte, error) {
 	fields, err := r.trailers()
 	if err != nil {
 		reportPanic(s.cfg.logger(), err)
@@ -428,7 +428,7 @@ func appendHeaderFrames(dst []byte, id uint32, flags byte, block []byte, maxFram
 //
 // unread is the request's streamed body left unread: the stream is reset
 // with NO_ERROR once the response's end is written.
-func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header, unread bool) {
+func (s *h2Conn) streamBody(id uint32, stream sluice.Stream[[]byte], length int64, trailers func() []Header, unread bool) {
 	// Both jobs start free: done is what marks a job as reusable.
 	s.streamJobs[0].done, s.streamJobs[1].done = true, true
 	s.streamCur = nil
@@ -513,7 +513,7 @@ func (s *h2Server) streamBody(id uint32, stream sluice.Stream[[]byte], length in
 }
 
 // streamSpare is the streamed-body job the last batch did not go to.
-func (s *h2Server) streamSpare() *h2Job {
+func (s *h2Conn) streamSpare() *h2Job {
 	if s.streamCur == &s.streamJobs[0] {
 		return &s.streamJobs[1]
 	}

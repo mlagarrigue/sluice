@@ -44,7 +44,7 @@ func Requests(c net.Conn, cfg Config) sluice.Source[Request] {
 // newRequestReader is Requests with the shutdown's view of the connection attached,
 // which [Serve] has and a caller of Requests does not. cfg is resolved.
 func newRequestReader(c net.Conn, st *connState, cfg Config) sluice.Source[Request] {
-	r := &reader{conn: c, cfg: cfg, state: st}
+	r := &h1Conn{conn: c, cfg: cfg, state: st}
 	r.held, _ = c.(interface{ buffered() bool })
 	return sluice.NewSource(sluice.Stream[Request](r.stream), func() error { return r.err })
 }
@@ -59,7 +59,10 @@ func (c Config) maxBuffer() int {
 	return c.MaxRequestLineBytes + c.MaxHeaderBytes + c.MaxBodyBytes
 }
 
-type reader struct {
+// h1Conn is one HTTP/1.1 connection's state: the socket, the buffer its
+// requests are read from, and whether the last one left its body unread.
+// h2Conn and h3Assembler are the same for HTTP/2 and HTTP/3.
+type h1Conn struct {
 	conn   net.Conn
 	cfg    Config
 	buf    []byte
@@ -126,7 +129,7 @@ type reader struct {
 	body *bodyStream
 }
 
-func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
+func (r *h1Conn) stream(yield func(sluice.Batch[Request]) bool) {
 	for {
 		batch, ok := r.next()
 		if !ok {
@@ -153,7 +156,7 @@ func (r *reader) stream(yield func(sluice.Batch[Request]) bool) {
 // keepAlive reports whether the connection may serve another batch. The last
 // request of the batch decides, since responses go back in order and anything
 // after a Connection: close would have nobody to read it.
-func (r *reader) keepAlive(batch []Request) bool {
+func (r *h1Conn) keepAlive(batch []Request) bool {
 	if len(batch) == 0 || !batch[len(batch)-1].KeepAlive {
 		return false
 	}
@@ -183,7 +186,7 @@ func refusedMethod(err error) []byte {
 }
 
 // next fills the buffer and parses everything complete in it.
-func (r *reader) next() ([]Request, bool) {
+func (r *h1Conn) next() ([]Request, bool) {
 	for {
 		if r.pending > 0 {
 			r.consume(r.pending)
@@ -230,7 +233,7 @@ func (r *reader) next() ([]Request, bool) {
 
 // parseBuffered takes as many complete requests as the buffer holds, stopping
 // at the batch bound.
-func (r *reader) parseBuffered() (batch []Request, used int, err error) {
+func (r *h1Conn) parseBuffered() (batch []Request, used int, err error) {
 	r.batch, r.headers, r.bounds = r.batch[:0], r.headers[:0], r.bounds[:0]
 	// A batch may not serve more than the connection has left, and it may
 	// not carry a request beyond one that already said Connection: close —
@@ -349,7 +352,7 @@ func (r *reader) parseBuffered() (batch []Request, used int, err error) {
 }
 
 // fill reads once, growing the buffer toward the ceiling but never past it.
-func (r *reader) fill() error {
+func (r *h1Conn) fill() error {
 	limit := r.cfg.maxBuffer()
 	if r.n >= limit {
 		// The buffer is full and nothing in it parsed, so the request at its
@@ -432,7 +435,7 @@ func (r *reader) fill() error {
 // waiting for this before it sends the body, and this package is waiting for
 // the body — both sides blocking would be a deadlock broken only by the read
 // deadline, well after RFC 9110 §10.1.1 says to send the interim response.
-func (r *reader) write100Continue() error {
+func (r *h1Conn) write100Continue() error {
 	if err := r.conn.SetWriteDeadline(time.Now().Add(r.cfg.WriteTimeout)); err != nil {
 		return err
 	}
@@ -441,7 +444,7 @@ func (r *reader) write100Continue() error {
 }
 
 // consume drops what was parsed, keeping the tail that has not been.
-func (r *reader) consume(used int) {
+func (r *h1Conn) consume(used int) {
 	copy(r.buf, r.buf[used:r.n])
 	r.n -= used
 	r.head.n = 0

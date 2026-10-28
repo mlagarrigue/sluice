@@ -2868,7 +2868,7 @@ func TestThePathLeftIsChallengedUnderAFreshIDWhenItsOwnIsRetired(t *testing.T) {
 // packet number arrived there, and this end's own probe from it was
 // answered. The second is remembered in pathProbe.viaValidated, beside the
 // socket itself in pathProbe.via — and until 2026-10-26
-// startPathChallengeData cleared via on every new probe while leaving both
+// startPathChallengeDataLocked cleared via on every new probe while leaving both
 // flags standing. A client that validated the preferred address and then
 // migrated (§9.3) left a validation behind that belonged to no socket; its
 // next non-probing packet arriving on the preferred socket — §9.6.3's own

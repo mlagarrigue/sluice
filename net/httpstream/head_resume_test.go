@@ -41,7 +41,7 @@ func TestAHeadDrippedByteByByteIsParsedOnce(t *testing.T) {
 			}
 		}
 	}()
-	r := &reader{conn: server, cfg: cfg}
+	r := &h1Conn{conn: server, cfg: cfg}
 	batch, ok := r.next()
 	if !ok || len(batch) != 1 || r.pending != len(raw) {
 		t.Fatalf("the dripped head: %d requests over %d of %d bytes, %v", len(batch), r.pending, len(raw), r.err)

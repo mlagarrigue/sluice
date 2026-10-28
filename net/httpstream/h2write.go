@@ -988,7 +988,7 @@ func (w *h2Writer) noteEndedLocked(id uint32) {
 	w.ended[id] = struct{}{}
 }
 
-// evict is the reader forgetting a retired stream (h2Server.remember): its
+// evict is the reader forgetting a retired stream (h2Conn.remember): its
 // END_STREAM, written or to come, is no longer anyone's question. An
 // answer already ended is dropped from ended; one still being written is
 // marked, so that its END_STREAM is not recorded for nobody to clear. A

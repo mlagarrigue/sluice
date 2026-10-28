@@ -30,7 +30,7 @@ import (
 // is only what Request.Stream reads it through. One pointer type for all
 // three keeps Request one word over what it was before bodies streamed.
 type bodyStream struct {
-	r *reader
+	r *h1Conn
 	q *bodyQueue
 
 	chunked bool
@@ -81,7 +81,7 @@ const (
 // errBodyAfterReturn reports a streamed body read after its handler returned.
 var errBodyAfterReturn = errors.New("httpstream: a request body read after its handler returned — the stream is valid during the call")
 
-func newBodyStream(r *reader, req Request, frame streamBody, start int) *bodyStream {
+func newBodyStream(r *h1Conn, req Request, frame streamBody, start int) *bodyStream {
 	b := &bodyStream{
 		r: r, chunked: frame.chunked, left: frame.length,
 		limit: max(r.cfg.MaxBodyBytes, r.cfg.MaxStreamedBodyBytes), start: start, pos: start,

@@ -1650,7 +1650,7 @@ func (c *Conn) handleAck(space int, f Frame, now time.Time) error {
 	if out.largestWasNew && out.largestEliciting {
 		var ackDelay time.Duration
 		if space == spaceApplication {
-			exp := c.peerAckDelayExponent()
+			exp := c.peerAckDelayExponentLocked()
 			micros := f.delay << exp
 			if exp > 0 && micros>>exp != f.delay {
 				micros = 1 << 62 // overflowed; any huge value behaves the same below
@@ -1774,12 +1774,12 @@ func (c *Conn) settleProbeLocked(out ackOutcome) {
 	}
 }
 
-// peerAckDelayExponent is the scale the peer applies to its ACK delay
+// peerAckDelayExponentLocked is the scale the peer applies to its ACK delay
 // fields: what it announced, or RFC 9000 §18.2's default of 3 only when it
 // announced nothing. An announced 0 is a multiplier of 1, not the default —
 // read as 3 it would inflate every ACK delay eightfold and with it the RTT
 // sample. Callers hold mu.
-func (c *Conn) peerAckDelayExponent() uint64 {
+func (c *Conn) peerAckDelayExponentLocked() uint64 {
 	if c.hasPeerParams && c.peerParams.sawAckDelayExponent {
 		return c.peerParams.AckDelayExponent
 	}
