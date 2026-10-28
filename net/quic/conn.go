@@ -517,12 +517,12 @@ type Conn struct {
 	// fresh one of its own — from a NAT rebinding, which keeps the
 	// identifier and may keep the answer's (§9.5's exception).
 	pathLocalSeq uint64
-	// answeredFrom and answeredCID are the new address whose challenge was
-	// last answered under a fresh peer identifier, and that identifier: a
-	// repeat of the challenge is answered under the same one, and a
-	// migration to that address adopts it rather than taking another.
-	answeredFrom net.Addr
-	answeredCID  []byte
+	// answered holds the new addresses whose challenges were answered under
+	// a fresh peer identifier, with that identifier, oldest first and at
+	// most maxAnsweredPaths: a repeat of a challenge is answered under the
+	// same one, a migration to one of them adopts it rather than taking
+	// another, and two addresses probing in turn (§8.2) keep theirs.
+	answered []answeredPath
 
 	// rxFrom, rxDatagramLen, rxLocalCIDSeq and rxHighest describe the
 	// datagram currently being processed — its source address, its size,

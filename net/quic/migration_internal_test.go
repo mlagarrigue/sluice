@@ -3263,3 +3263,46 @@ func TestAZeroLengthCIDPeersOldPathIsChallenged(t *testing.T) {
 			toOld, oldPending)
 	}
 }
+
+// RFC 9000 §8.2 lets a peer probe several paths, and a challenge goes
+// again at every probe timeout: two addresses probing in turn are an
+// ordinary sequence. Each is answered under its own fresh identifier, the
+// same one every time (§9.5), and the pool is not spent by the alternation.
+// Remembering one answered address only, every return to the first took
+// another identifier, until the pool ran dry and the answers fell back to
+// the identifier in use — linking the paths.
+func TestTwoAddressesProbingInTurnKeepTheirIdentifiers(t *testing.T) {
+	c, pc, addrB, seal := challengeFromNewAddress(t, []byte("selfcid1"), 4)
+	addrC := fakeFuzzAddr("np:peerC")
+	challenge := func(n byte) []byte {
+		p := varint.Append(nil, framePathChallenge)
+		p = append(p, n, n, n, n, n, n, n, n)
+		return append(p, make([]byte, 1200-len(p)-1-8-4-16)...)
+	}
+	pn := uint64(2)
+	for round := range 3 {
+		for _, to := range []net.Addr{addrB, addrC} {
+			if err := c.receive(seal(pn, challenge(byte(pn))), to); err != nil {
+				t.Fatal(err)
+			}
+			pn++
+		}
+		if got := answerDCID(t, pc, addrB, round+1); !bytes.Equal(got, []byte("peercid1")) {
+			t.Fatalf("round %d: the answer to B names %q, want peercid1, B's from the start", round, got)
+		}
+		if got := answerDCID(t, pc, addrC, round); !bytes.Equal(got, []byte("peercid2")) {
+			t.Fatalf("round %d: the answer to C names %q, want peercid2, C's from the start", round, got)
+		}
+	}
+	c.mu.Lock()
+	unused := 0
+	for _, e := range c.peerCIDs {
+		if !e.used {
+			unused++
+		}
+	}
+	c.mu.Unlock()
+	if unused != 2 {
+		t.Fatalf("%d peer identifiers left unused after three rounds, want 2: the alternation spent the pool", unused)
+	}
+}

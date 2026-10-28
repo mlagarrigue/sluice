@@ -837,10 +837,10 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 	c.amplRecv = int64(c.rxDatagramLen)
 	c.amplSent = 0
 	c.resetPathStateLocked(now)
-	if c.answeredFrom == nil || !sameAddr(to, c.answeredFrom) || !c.adoptPeerCIDLocked(c.answeredCID) {
+	if cid, ok := c.answeredCIDLocked(to); !ok || !c.adoptPeerCIDLocked(cid) {
 		c.switchToFreshPeerCIDLocked()
 	}
-	c.answeredFrom, c.answeredCID = nil, nil
+	c.answered = c.answered[:0]
 	c.startPathChallengeLocked(now)
 	c.kickTimer()
 }
@@ -1226,10 +1226,10 @@ func (c *Conn) newPathCIDLocked() []byte {
 	if c.rxLocalCIDSeq == c.pathLocalSeq {
 		return nil
 	}
-	if c.answeredFrom != nil && sameAddr(c.rxFrom, c.answeredFrom) {
+	if cid, ok := c.answeredCIDLocked(c.rxFrom); ok {
 		for i := range c.peerCIDs {
-			if bytes.Equal(c.peerCIDs[i].cid, c.answeredCID) {
-				return c.answeredCID
+			if bytes.Equal(c.peerCIDs[i].cid, cid) {
+				return cid
 			}
 		}
 		// Retired since the first answer: this one takes another.
@@ -1238,8 +1238,36 @@ func (c *Conn) newPathCIDLocked() []byte {
 	if !ok {
 		return nil
 	}
-	c.answeredFrom, c.answeredCID = c.rxFrom, cid
+	c.answered = slices.DeleteFunc(c.answered, func(a answeredPath) bool { return sameAddr(a.from, c.rxFrom) })
+	if len(c.answered) == maxAnsweredPaths {
+		c.answered = c.answered[1:]
+	}
+	c.answered = append(c.answered, answeredPath{from: c.rxFrom, cid: cid})
 	return cid
+}
+
+// answeredPath is one new address answered under a fresh peer identifier,
+// and that identifier (Conn.answered).
+type answeredPath struct {
+	from net.Addr
+	cid  []byte
+}
+
+// maxAnsweredPaths bounds the addresses remembered as answered. A peer
+// probes a handful of paths at once at most (§8.2); one that spreads its
+// challenges over more is answered, past the bound, under a fresh
+// identifier again, as long as the pool lasts.
+const maxAnsweredPaths = 4
+
+// answeredCIDLocked is the identifier a challenge from addr was answered
+// under, if addr is remembered. Callers hold mu.
+func (c *Conn) answeredCIDLocked(addr net.Addr) ([]byte, bool) {
+	for _, a := range c.answered {
+		if sameAddr(a.from, addr) {
+			return a.cid, true
+		}
+	}
+	return nil, false
 }
 
 // startPathChallengeData arms the probe state around data without sending
