@@ -110,12 +110,12 @@ type h3Assembler struct {
 	// unidirectional stream past its parse — is released here, the moment
 	// it stops being retained. Request bodies handed to the handler are the
 	// one exception: the handler call releases those once the handler
-	// returns. Nil means the transport credits on delivery, as before.
+	// returns. Nil means the transport credits on delivery.
 	Credit func(streamID, n uint64)
 
 	// CreditConn and CreditStream are Credit's two levels apart, and Interim
 	// writes an interim 100 on a request stream. ServeH3Conn sets them when
-	// request bodies stream (Config.MaxStreamedBodyBytes) and the transport
+	// request bodies stream (Config.BodyDelivery) and the transport
 	// runs manual credit, which streaming needs: a streamed body's bytes are
 	// released at the connection level as they arrive and at the stream
 	// level as the handler consumes them (bodyQueue), so the stream window

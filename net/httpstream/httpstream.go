@@ -185,7 +185,8 @@
 // guessing:
 //
 //   - **Transfer-Encoding, except "chunked" alone.** A chunked body with no
-//     Content-Length beside it is decoded — bounded by [Config.MaxBodyBytes],
+//     Content-Length beside it is decoded — bounded like any body, by
+//     [Config.MaxBodyBytes] or, streamed, [Config.MaxStreamedBodyBytes];
 //     chunk extensions ignored, trailers delivered in [Request.Trailers]
 //     ([Request.StreamTrailers] behind a streamed body). A
 //     coding this server does not implement is answered 501;
@@ -210,12 +211,14 @@
 //     this package: the server takes a [net.Listener], and [crypto/tls]
 //     wraps one.
 //
-// Request bodies stay bounded and are not streamed, deliberately: the handler
-// takes a batch of complete requests, and an element that is not complete is
-// not an element. Every limit is a number the caller sets in [Config]; none
-// of them has a value that suits every deployment, so none has a default
-// that pretends otherwise beyond the modest ones a zero field takes, each
-// named in the field's own documentation.
+// Request bodies stay bounded whether they stream or arrive whole. A body
+// streams by default ([Config.BodyDelivery]): the handler's batch holds
+// requests whose head is complete, a body already whole within
+// [Config.MaxBodyBytes] in [Request.Body], any other read through
+// [Request.Stream] as it arrives. Every limit is a number the caller sets in
+// [Config]; none of them has a value that suits every deployment, so none
+// has a default that pretends otherwise beyond the modest ones a zero field
+// takes, each named in the field's own documentation.
 package httpstream
 
 import (
@@ -303,11 +306,12 @@ var errExpectContinue = fmt.Errorf("httpstream: awaiting a 100-continue body: %w
 // (docs/design/adr/0009, article 4). The zero value streams it: a body is
 // handed over as it arrives, so a server holds a stream window rather than
 // a whole upload, and a handler can answer before the last byte. A server
-// that wants the older contract — every body complete and in memory before
-// its handler runs — asks for [BodyWhole].
+// that wants every body complete and in memory before its handler runs asks
+// for [BodyWhole].
 //
-// It is what a body arrives as, not what is accepted: the accepted size is
-// [Config.MaxBodyBytes] and [Config.MaxStreamedBodyBytes] either way.
+// It is what a body arrives as, and what bounds it: [Config.MaxBodyBytes]
+// for a body held whole, raised by [Config.MaxStreamedBodyBytes] for one
+// that streams.
 type BodyDelivery int
 
 const (
@@ -385,7 +389,8 @@ type Config struct {
 	// MaxStreamedBodyBytes bounds a streamed body. Zero means MaxBodyBytes;
 	// a negative value is refused. It is read when BodyDelivery streams, and
 	// raises what is accepted above MaxBodyBytes for a body that arrives as
-	// a stream.
+	// a stream; under [BodyWhole] it takes MaxBodyBytes's value, whatever it
+	// was set to.
 	//
 	// When bodies stream, a body already whole in the read that brought
 	// the request's headers — over HTTP/2, in the frames read with them;

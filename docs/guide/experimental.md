@@ -250,8 +250,12 @@ server. Two fields are the exception, `MaxConns` and `MaxConnsPerIP`, whose zero
 bound": they are the deployer's memory budget and one client's share of it,
 and a server facing the public sets them
 ([ADR 0018](../design/adr/0018-zero-values-and-mandatory-bounds.md)).
-Request bodies are bounded and read whole before being handed over.
-Responses, on the other hand, can be **streamed**: `Response.Stream` lets
+A request body is **streamed** by default (`Config.BodyDelivery`): a body
+already whole in the read that brought the headers, under `MaxBodyBytes`,
+arrives in `Request.Body`; any other arrives through `Request.Stream`, at
+the pace the handler reads it, bounded by `MaxStreamedBodyBytes`.
+`BodyWhole` hands every body over whole. Responses can be **streamed**
+too: `Response.Stream` lets
 your code supply batches of bytes that the transport pulls at the client's
 pace; if the client leaves, your producer sees it (`yield` returns `false`)
 and stops.

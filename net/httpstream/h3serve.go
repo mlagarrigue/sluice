@@ -177,14 +177,15 @@ func serveH3(drain, forced context.Context, c *quic.Conn, cfg Config, handle Han
 	// the windows. Under manual credit a retained byte keeps its window
 	// debt until released — which also means a request body must fit the
 	// *initial* stream window, since a body is retained until the handler
-	// takes it. So the mode turns on only when the connection's announced
-	// windows cover the layer's admission bounds (MaxBodyBytes per stream,
-	// 4× across the connection, headroom for headers); on smaller windows
-	// the transport keeps crediting on delivery and the caps bound the
-	// exposure, exactly as before. [Config.TransportParameters] produces
+	// takes it. Under [BodyWhole], the mode turns on only when the
+	// connection's announced windows cover the layer's admission bounds
+	// (MaxBodyBytes per stream, 4× across the connection, headroom for
+	// headers); on smaller windows the transport keeps crediting on delivery
+	// and the caps bound the exposure. [Config.TransportParameters] produces
 	// windows this check accepts.
 	//
-	// When request bodies stream (Config.MaxStreamedBodyBytes), a body is
+	// When request bodies stream (Config.BodyDelivery, BodyStreamed by
+	// default), a body is
 	// retained whole only when it ended in the delivery that completed its
 	// head — a packet's worth at most — and every other one is handed over
 	// as a stream whose bytes are released as it is read, so the windows
