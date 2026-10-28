@@ -365,10 +365,9 @@ whichever way the conditions go:
   there is one dialect, and it is the one everybody speaks today.
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
-  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Four of its
-  positions depart from RFC 9846, one of them visible to a conformant peer
-  (the X25519 key share repeated inside the hybrid X25519MLKEM768 share),
-  and the compatibility mode is neither asked for nor policed; they are
+  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Three of its
+  positions depart from RFC 9846, none visible to a conformant peer, and
+  the compatibility mode is neither asked for nor policed; they are
   inherited as they are, listed in [TLS, in detail](#tls-in-detail).
   Rewriting the TLS stack is out of the question (ADR 0002); a peer refused
   over one of them is the signal to revisit. In plain words: the lock on
@@ -566,10 +565,15 @@ The handshake is `crypto/tls`'s, from the Go release
 `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR, as the package
 documentation says.
 
-Four of its positions depart from RFC 9846 and are
-inherited as they are: the ClientHello's X25519 key share repeats the
-key inside the hybrid X25519MLKEM768 share (§4.3.8, the one departure a
-conformant peer can see); a `pre_shared_key` extension out of last place
+The ClientHello's X25519 key share repeats the key inside the hybrid
+X25519MLKEM768 share, the group RFC 10024 defines. RFC 9846 §4.3.8 asks
+for key shares generated independently, and RFC 9954 §3.2, which RFC 10024
+builds on, relaxes that for the same algorithm reused within one
+ClientHello: the repetition is the shape both texts allow, not a departure.
+
+Three of its positions depart from RFC 9846 and are
+inherited as they are, none of them visible to a conformant peer: a
+`pre_shared_key` extension out of last place
 or a version never offered end the handshake with decode_error or
 protocol_version rather than illegal_parameter (§4.3.11, §4.3.1); an
 extension known but forbidden in the message carrying it is ignored
