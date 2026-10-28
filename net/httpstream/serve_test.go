@@ -1686,7 +1686,8 @@ func TestRequestTrailersReachTheHandler(t *testing.T) {
 
 // RFC 9110 §2.2 forbids a sender the elements of another role: Host, TE and
 // Expect belong to a request, and a response carrying one tells its reader
-// about a request it is not reading. A handler's own Date is believed but
+// about a request it is not reading; RFC 8470 §5.1 keeps Early-Data out of
+// responses in as many words. A handler's own Date is believed but
 // must be the IMF-fixdate §5.6.7 lets a sender generate: one a cache cannot
 // read would misdate the entry. The one check serves the three writers;
 // this is the HTTP/1.1 side of it.
@@ -1695,6 +1696,7 @@ func TestWriteBatchRefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 		{"Host", "example.test"},
 		{"te", "trailers"},
 		{"Expect", "100-continue"},
+		{"Early-Data", "1"},
 		{"Date", "yesterday"},
 		{"Date", "Tue, 20 Oct 2026 20:58:44 +0000"},
 	} {

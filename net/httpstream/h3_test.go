@@ -279,6 +279,12 @@ func TestH3RefusesMalformedRequests(t *testing.T) {
 			{[]byte(":scheme"), []byte("ht\rtps")},
 			{[]byte(":authority"), []byte("h")},
 		}},
+		{"a :scheme that is a token but no URI scheme", []Header{
+			{[]byte(":method"), []byte("GET")},
+			{[]byte(":path"), []byte("/x")},
+			{[]byte(":scheme"), []byte("a_b")},
+			{[]byte(":authority"), []byte("h")},
+		}},
 		{"a :path with a control character", []Header{
 			{[]byte(":method"), []byte("GET")},
 			{[]byte(":path"), []byte("/x\ry")},
@@ -1484,6 +1490,21 @@ func TestH3StreamProducerPanicResetsOneStream(t *testing.T) {
 	}
 }
 
+// :scheme is a URI scheme (RFC 3986 §3.1): a letter, then letters, digits,
+// "+", "-" and ".". A token is wider, and its extra characters are refused.
+func TestIsSchemeIsRFC3986Scheme(t *testing.T) {
+	for _, s := range []string{"https", "http", "a+b.c-d", "z39.50r", "H2"} {
+		if !isScheme([]byte(s)) {
+			t.Errorf("isScheme(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "a_b", "a!b", "1x", "+a", "a b", "ht\rtps", "é"} {
+		if isScheme([]byte(s)) {
+			t.Errorf("isScheme(%q) = true, want false", s)
+		}
+	}
+}
+
 // Response field names obey the token rule on every version, as the HTTP/1.1
 // writer has always made them: HPACK and QPACK carry any byte, and a name
 // with a space or a colon becomes a second field, or a malformed one, at the
@@ -2052,7 +2073,7 @@ func h3StreamOf(t *testing.T, c *quic.Conn, id uint64) *quic.Stream {
 // check.
 func TestH3RefusesRequestFieldsAndAMalformedDate(t *testing.T) {
 	for _, tc := range []struct{ name, value string }{
-		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"date", "yesterday"},
+		{"host", "example.test"}, {"te", "trailers"}, {"expect", "100-continue"}, {"early-data", "1"}, {"date", "yesterday"},
 	} {
 		res := Response{Status: 200, Headers: []Header{{Name: []byte(tc.name), Value: []byte(tc.value)}}}
 		if _, err := appendH3ResponseBasic(nil, res); !errors.Is(err, ErrMalformed) {

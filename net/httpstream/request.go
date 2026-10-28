@@ -387,8 +387,8 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 	if !isToken(method) {
 		return req, 0, fmt.Errorf("%w: :method is not a token", protocolErr)
 	}
-	if !isToken(scheme) {
-		return req, 0, fmt.Errorf("%w: :scheme is not a token", protocolErr)
+	if !isScheme(scheme) {
+		return req, 0, fmt.Errorf("%w: :scheme is not a URI scheme", protocolErr)
 	}
 	if err := checkTarget(method, path, protocolErr); err != nil {
 		return req, 0, err
@@ -635,6 +635,24 @@ var tchar = func() (t [256]bool) {
 	}
 	return t
 }()
+
+// isScheme reports whether b is a URI scheme as RFC 3986 §3.1 writes it:
+// scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). A token is wider
+// ("a_b", "1x" pass it), and :scheme is a scheme, not a token (RFC 9113
+// §8.3.1, RFC 9114 §4.3.1).
+func isScheme(b []byte) bool {
+	if len(b) == 0 || !isAlpha(b[0]) {
+		return false
+	}
+	for _, c := range b[1:] {
+		if !isAlpha(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlpha(c byte) bool { return c|0x20 >= 'a' && c|0x20 <= 'z' }
 
 func isToken(b []byte) bool {
 	if len(b) == 0 {

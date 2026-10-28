@@ -245,12 +245,14 @@ var refusedTrailers = [...]string{
 // response is not the role of Host (§7.2, the request's routing), TE
 // (§10.1.4, what the client accepts) or Expect (§10.1.1, what the client
 // expects of the server). Each would tell a recipient something about a
-// request it is not reading. One point for the three writers and the
+// request it is not reading. Early-Data is named by its own text: RFC 8470
+// §5.1 says it "MUST NOT be included in responses or request trailers". One
+// point for the three writers and the
 // trailers; the other request fields (Accept, Range, If-Match…) are not
 // listed: they mislead no one about the message, and a catalogue of every
 // request field is a mirror this package would keep wrong.
 func checkResponseField(name []byte) error {
-	if equalFold(name, "host") || equalFold(name, "te") || equalFold(name, "expect") {
+	if equalFold(name, "host") || equalFold(name, "te") || equalFold(name, "expect") || equalFold(name, "early-data") {
 		return fmt.Errorf("%w: %s is a request field, not a response's", ErrMalformed, name)
 	}
 	return nil

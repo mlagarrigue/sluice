@@ -1,7 +1,7 @@
 # ADR 0019 — 0-RTT: accepted once, delivered early, acted on when allowed
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why)
+- **Revised:** 2026-10-27 (the ticket is entered when the resumption is checked, and given back if unused), 2026-10-28 (a full register is the one load signal, and why; the intermediary role is not this package's)
 - **Theme:** quic
 
 ## Problem
@@ -89,7 +89,10 @@ not complete is held until it is when the predicate does not allow it, and
 delivered at once when it does. The same predicate judges an HTTP/1.1 or
 HTTP/2 request carrying `Early-Data: 1` (an intermediary received it in
 early data): not allowed, it is answered 425 Too Early, because waiting does
-not make it safe (RFC 8470 §5.2).
+not make it safe (RFC 8470 §5.2). The intermediary's own duties in RFC 8470
+— adding `Early-Data: 1` to what it forwards, retrying on a 425 — are not
+this package's: it is a server, never a proxy. A handler's own
+`Early-Data` field in a response is refused, as §5.1 asks.
 
 **Client.** `quic.DialEarly` returns the connection as soon as the 0-RTT key
 is installed, when the ticket allows it, and otherwise when the handshake
