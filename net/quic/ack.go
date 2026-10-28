@@ -229,3 +229,15 @@ func (a *ackTracker) settle() {
 	a.outOfOrder = false
 	a.due = time.Time{}
 }
+
+// rearm owes again the ACK a settled packet did not deliver: one the
+// anti-amplification budget withheld (writePacketLocked). The debt rides
+// the next packet sent, or the next flush — flushAcksLocked runs after
+// every processed packet, so the peer's next datagram, which raises the
+// budget, also releases the ACK. No deadline is armed: the timer would
+// only find the budget still spent.
+func (a *ackTracker) rearm() {
+	if len(a.ranges) > 0 {
+		a.immediate = true
+	}
+}

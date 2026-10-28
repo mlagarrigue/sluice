@@ -266,3 +266,49 @@ func TestWindowGateCountsTheAckTheWriterCarries(t *testing.T) {
 		t.Error("the ACK is still owed after the packet left")
 	}
 }
+
+// RFC 9000 §13.2.1 with §8.1: an endpoint before address validation may
+// not send past three times what it received, and the ACK-only packet the
+// budget withholds was still settled — the debt cleared with nothing sent,
+// so the ACK waited for the next ack-eliciting packet. The debt stays until
+// a packet carries it: the peer's next datagram raises the budget, and the
+// flush that follows its processing sends the ACK.
+func TestAWithheldAckIsOwedAgainWhenTheBudgetLifts(t *testing.T) {
+	c, tap := sealedAppConn(t)
+	now := time.Now()
+	c.mu.Lock()
+	c.amplActive, c.amplRecv, c.amplSent = true, 1200, 3600 // the budget is spent
+	sp := &c.spaces[spaceApplication]
+	sp.ack.record(1, now)
+	sp.ack.onAckEliciting(spaceApplication, now, false)
+	due := now.Add(time.Second) // the delayed-ACK deadline has passed
+	c.flushAcksLocked(due)
+	if n := len(tap.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left past the budget", n)
+	}
+	if !sp.ack.owes(due) {
+		t.Error("the withheld ACK is no longer owed")
+	}
+	c.mu.Unlock()
+
+	// The timer does not spin on it while the budget stays spent: the
+	// next deadline is not one already past.
+	if next := c.actOnDeadlines(due); !next.IsZero() && !next.After(due) {
+		t.Errorf("the timer re-arms at %v, at or before now", next.Sub(due))
+	}
+	if n := len(tap.recorded()); n != 0 {
+		t.Fatalf("%d datagrams left past the budget", n)
+	}
+
+	c.mu.Lock()
+	c.amplRecv += 50 // the client's next datagram, an ACK of its own
+	c.flushAcksLocked(due)
+	owed := sp.ack.owes(due)
+	c.mu.Unlock()
+	if n := len(tap.recorded()); n != 1 {
+		t.Errorf("%d datagrams left once the budget lifted, want the ACK", n)
+	}
+	if owed {
+		t.Error("the ACK is still owed after it left")
+	}
+}

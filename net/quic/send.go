@@ -745,9 +745,14 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		// kill every handshake whose first flight overflows the budget,
 		// which a real certificate chain does. The payload goes back to
 		// the front of the retransmission queue, and retransmitLocked
-		// sends it once the peer's next datagram raises amplRecv.
-		// Acknowledgements and probes regenerate from current state, so
-		// they are simply skipped. No packet number was consumed.
+		// sends it once the peer's next datagram raises amplRecv. An ACK
+		// was settled when it was encoded, so its debt is owed again
+		// (rearm) for the flush that follows that datagram; probes
+		// regenerate from current state and are simply skipped. No packet
+		// number was consumed.
+		if opts.ackOnly || opts.carriesAck {
+			sp.ack.rearm()
+		}
 		if !opts.ackOnly && !opts.noRetrans && len(retransPart) > 0 {
 			sp.retrans = append(sp.retrans, nil)
 			copy(sp.retrans[1:], sp.retrans)
