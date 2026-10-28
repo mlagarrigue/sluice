@@ -411,9 +411,9 @@ comparative study, streaming compression, and the exit from experimental
 of what meets its conditions. The end-to-end bench and the comparative
 study have their apparatus in `comparison/` (the study's server, one flag
 per axis, and its load generator); what they lack is the campaign on the
-machines the protocol names, and its results. The exit from experimental
-has begun: `pushdown` and `net/httpstream` are out of it. The rest
-is not started, and each item needs a written decision first.
+machines the protocol names, and its results. `pushdown` and
+`net/httpstream` are out of the label; for the rest, each item needs a
+written decision first.
 
 ## Details
 
@@ -469,8 +469,8 @@ The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
 every implementation in its list every Sunday, on each side its role
 allows — 31 peer-directions — with the image the `Interop image` workflow
 builds from each release tag from v0.3.0 on
-(`ghcr.io/mlagarrigue/sluice-interop`; the three tags before it were
-published by hand, and `latest` is not moved backwards to them). The
+(`ghcr.io/mlagarrigue/sluice-interop`; the three tags before it carry
+images pushed by hand, and `latest` never moves back to them). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case is run once more. `interop/expected-results.json` records

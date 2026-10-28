@@ -79,8 +79,8 @@ addresses answer from the address a datagram reached.
 
 **Key update** (RFC 9001 §6, changing the encryption keys mid-connection)
 is handled both ways: a peer's rotation is followed, and this end rotates
-its own keys before the cipher's packet budget runs out, so a long
-connection no longer dies of its packet count. `Stats().KeyUpdates`
+its own keys before the cipher's packet budget runs out: a long
+connection does not die of its packet count. `Stats().KeyUpdates`
 counts the rotations.
 
 ### `net/quic` settings

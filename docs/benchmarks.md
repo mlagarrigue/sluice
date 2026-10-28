@@ -191,9 +191,10 @@ cd interop && go test -run xxx -bench 'H2|H3' -benchtime 3s -count 3
 Median of three passes on 2026-10-10, on the same machine as the rest of
 this document (laptop, WSL2, not pinned: a socket bench cannot be pinned),
 after the commit `perf(httpstream): coalesce streamed batches into one
-write` (1ed3551). This session is slower than the one of the morning
-(`plain` over HTTP/2 at 196 µs against 118): only the ratios can be compared
-from one session to the next, which is why the earlier figures are recalled.
+write` (1ed3551). Absolute times move from one session to the next on this
+machine — `plain` over HTTP/2 read 118 µs in the session before 1ed3551, 196
+µs in this one — so only the ratios within a column compare; the last column
+recalls the earlier session's figures.
 
 | benchmark | median | spread | B/op | allocs/op | before 1ed3551 |
 |---|---|---|---|---|---|
@@ -354,8 +355,7 @@ contention on `mu` is no longer an item to treat until a benchmark with
 several writers per connection shows it.
 
 **One datagram per exchange (measured 2026-10-23).** Three commits made a
-small HTTP/3 exchange cost the server one datagram where it used to cost
-several: the response's data and the end of its stream (FIN) leave in one
+small HTTP/3 exchange cost the server one datagram rather than several: the response's data and the end of its stream (FIN) leave in one
 frame (`feat(quic): WriteClose sends data and FIN together`), the
 acknowledgements and the MAX_STREAMS credit ride the packets that carry
 data instead of leaving on their own (`fix(quic): ACKs ride data,
