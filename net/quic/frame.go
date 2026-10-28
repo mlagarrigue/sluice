@@ -160,9 +160,8 @@ func parseFrame(b []byte) (Frame, []byte, error) {
 			// §19.6: offset plus length past 2^62-1 is FRAME_ENCODING_ERROR
 			// (the code every parse failure here maps to) or
 			// CRYPTO_BUFFER_EXCEEDED; the frame is malformed before any
-			// buffer is asked, so the first. STREAM frames need no such
-			// check: flow control refuses them long before (§19.8, stream
-			// deliver).
+			// buffer is asked, so the first. parseStream has the same check
+			// for §19.8.
 			return f, nil, fmt.Errorf("%w: a CRYPTO frame reaching past offset 2^62-1", ErrQUIC)
 		}
 		return f, rest, nil
@@ -237,9 +236,17 @@ func parseStream(f Frame, b []byte) (Frame, []byte, error) {
 		// No length: the frame runs to the end of the packet, which is why
 		// such a frame may only be the last one.
 		f.Data, b = b, nil
-		return f, b, nil
+	} else if f, b, err = takeLengthPrefixed(f, b); err != nil {
+		return f, nil, err
 	}
-	return takeLengthPrefixed(f, b)
+	if f.offset > varint.Max-uint64(len(f.Data)) {
+		// §19.8: FRAME_ENCODING_ERROR, whatever the stream's state. Left to
+		// the stream, the frame was flow control's on an open stream,
+		// FINAL_SIZE_ERROR on one whose final size was known, and ignored
+		// on a closed one.
+		return f, nil, fmt.Errorf("%w: a STREAM frame reaching past offset 2^62-1", ErrQUIC)
+	}
+	return f, b, nil
 }
 
 // takeLengthPrefixed reads a varint length and that many bytes.
