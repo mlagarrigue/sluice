@@ -567,7 +567,11 @@ runs again, and `Stats.MTUBlackHoles` counts the fall back. A total
 outage of three probe timeouts counts too, and costs one probe once the
 path is back. A completed search is not run again on a path that might
 have grown. ICMP "packet too big" messages are ignored (§14.2.1 does not
-require them, and `net.PacketConn` does not deliver them).
+require them, and `net.PacketConn` does not deliver them). The kernel
+still reads them: on Linux, `udp.Configure` keeps the path MTU it caches
+from one from refusing the 1200-byte datagram (`IP_PMTUDISC_PROBE`,
+tested); on macOS and Windows no such option is set, and whether a cached
+MTU below 1200 refuses the datagram there is not verified.
 
 A path that cannot carry 1200 bytes is therefore never detected: sending on it goes
 on at probe-timeout pace, doubling each time, until the idle timeout
