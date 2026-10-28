@@ -138,11 +138,11 @@ func (c *Conn) pmtuTargetLocked() int {
 }
 
 // pmtuEarnedAfter is what a path must have carried, acknowledged, before
-// the search starts. Two initial windows: one is what the probe's own
+// the search starts: two initial windows. One is what the probe's own
 // padding costs to recoup — 1452 bytes of it, against the 252 a later
-// datagram saves — and a path that has carried twice that is one more
-// is likely to follow on. Measured at one window, the runner's zerortt
-// case still paid for a probe at the very moment it ended.
+// datagram saves — and a path that has carried twice that is likely to
+// carry more. At one window, the runner's zerortt case still paid for a
+// probe at the very moment it ended.
 func pmtuEarnedAfter() int { return 2 * initialWindow(pmtuBaseSize) }
 
 // resetPMTULocked restarts the search: datagrams fall back to the 1200
@@ -178,9 +178,10 @@ func (c *Conn) maybeProbePMTULocked() {
 	// sends more than 5000 bytes outside 0-RTT, so the padding alone was
 	// three tenths of its budget, bought for nothing.
 	//
-	// One initial window carried on this path is the bar: a bulk sender
-	// passes it in its second round trip, so the search is not delayed in
-	// the one case it serves, and a short exchange never does. The count
+	// What pmtuEarnedAfter names, carried on this path, is the bar: a bulk
+	// sender passes it within its first few round trips, so the search is
+	// not delayed in the one case it serves, and a short exchange never
+	// does. The count
 	// is the path's own, reset with the rest of its state on a migration,
 	// and it is acknowledged bytes rather than the congestion window,
 	// which a single loss halves. RFC 8899 leaves the moment to probe to

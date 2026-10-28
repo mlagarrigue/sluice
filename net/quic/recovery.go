@@ -937,8 +937,8 @@ type ackEvent struct {
 // markEvent is one ACK frame's newly reported CE marks, as onMarked sees
 // them: the peer counts marked packets, not bytes, and names no packet
 // (RFC 9000 §19.3.2), so the event is a count at a time, not a packet.
-// latestSent is when the frame's largest acknowledged packet left — what
-// RFC 9002 B.7 dates the congestion event with.
+// latestSent is when the latest tracked packet the frame acknowledges left —
+// what RFC 9002 B.7 dates the congestion event with.
 type markEvent struct {
 	now        time.Time
 	latestSent time.Time

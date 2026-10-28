@@ -206,8 +206,8 @@ func (c *cubic) onLost(ev lossEvent) {
 
 // onMarked is the multiplicative decrease of a loss (RFC 9438 §3.1 reads a
 // CE mark as a congestion event) with nothing leaving the flight: the
-// marked packets were delivered. Dated by the frame's largest acknowledged
-// packet (RFC 9002 B.7), once per recovery period.
+// marked packets were delivered. Dated by the latest tracked packet the
+// frame acknowledges (RFC 9002 B.7), once per recovery period.
 func (c *cubic) onMarked(ev markEvent) {
 	c.onLost(lossEvent{now: ev.now, latestSent: ev.latestSent})
 }
