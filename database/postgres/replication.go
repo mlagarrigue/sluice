@@ -313,8 +313,13 @@ func (d *replDecoder) decode(body []byte, at LSN, dst []Change, spans []tupleSpa
 		d.relation(&r)
 	case 'Y', 'O':
 		// Type names a type that is not built in, and Origin the node a
-		// transaction came from. Neither changes what a value is: the
-		// column's type OID already says how it decodes.
+		// transaction came from; both are read and dropped (ADR 0023). A
+		// built-in type loses nothing: its OID is fixed and pgtype decodes
+		// it. A non-built-in one — an enum, a domain, a composite — leaves
+		// the column's TypeOID an OID of the publishing database, which the
+		// Type message names and nothing here keeps; and without Origin a
+		// cascaded setup cannot tell what came from where. Both losses are
+		// written in docs/guide/limits.md.
 		return dst, spans, vals, nil
 	case 'I', 'U', 'D':
 		c := Change{Kind: ChangeInsert, LSN: at}
