@@ -278,6 +278,30 @@ negative value lifts the bound for the whole server. `Recover` turns a
 panic in a handler into a 500 response you observe, instead of killing the
 process and every request in flight.
 
+### Over TLS, and HTTP/2
+
+Outside the loopback, serve over TLS: `ServeTLS` is `Serve` over TLS, with
+the same default timeouts and the same clean stop.
+
+```go
+srv := &http.Server{Addr: ":8443", Handler: web.Recover(observe, mux)}
+if err := web.ServeTLS(ctx, srv, 10*time.Second, "cert.pem", "key.pem", gw); err != nil {
+    log.Fatal(err)
+}
+```
+
+There is nothing to turn on for HTTP/2: `net/http` offers it through ALPN
+whenever it serves TLS, and a client that asks for it gets it. Nothing
+changes in the pipeline — a batch of one is still a batch of one. What
+changes is on the wire: requests multiplexed on one connection reach the
+server together, where the same requests pipelined over HTTP/1.1 each wait
+for the one before; that is what makes a `gateway` worth having behind a
+single client. The two file names may be empty when `srv.TLSConfig` already
+carries the certificates.
+
+> **In plain terms.** ALPN is the TLS extension by which client and server
+> agree on the protocol spoken inside.
+
 Behind a CDN or a TLS-terminating proxy, a request may arrive with the
 header `Early-Data: 1`: the proxy received it in *early data*, sent by the
 client before its TLS handshake ended, which a third party can replay
