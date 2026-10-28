@@ -912,8 +912,8 @@ func exportedDocs(p *godoc.Package) []namedDoc {
 // reader may ask: it had been "supported" in one page, "on no supported
 // path" in its own documentation, "fuzzed in CI" in a guide and "not fuzzed"
 // in the architecture.
-const httpstreamStatus = "net/httpstream is supported — out of the experimental label since " +
-	"2026-10-10 and under the compatibility promise — and fuzzed in CI without " +
+const httpstreamStatus = "net/httpstream is supported — outside the experimental label " +
+	"and under the compatibility promise — and fuzzed in CI without " +
 	"a public corpus; it has neither run in production nor had an outside " +
 	"security review."
 

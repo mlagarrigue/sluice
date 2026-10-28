@@ -1,7 +1,7 @@
 # ADR 0022 — The PostgreSQL connector's shape: one connection, binary, the codec apart
 
 - **Created:** 2026-10-23
-- **Revised:** —
+- **Revised:** 2026-10-28 (written in the present tense)
 - **Theme:** postgres
 
 ## Problem
@@ -51,7 +51,7 @@ the `Scan*` functions (they read `*Rows`), the framing of a COPY row
 move is a break (`feat(postgres)!`), in the one grouped breaking release;
 `sluicegen` emits `pgtype.`.
 
-**Five names leave the API** now: `ParseError` and `ParseRowDescription`
+**Five names are not in the API**: `ParseError` and `ParseRowDescription`
 (the message layer is internal: a caller receives an `*Error` through
 `errors.As`, never a message body), and `ReadBufferSize`,
 `MaxServerParameters`, `MaxServerParameterBytes` (internal bounds no

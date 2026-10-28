@@ -1,7 +1,7 @@
 # ADR 0016 — A hash join's build side is bounded, and the bound is required
 
-- **Created:** 2026-10-07 (the decision dates from the operator; this writes it down)
-- **Revised:** 2026-10-22 (the storage seam removed)
+- **Created:** 2026-10-07
+- **Revised:** 2026-10-22 (the storage seam removed), 2026-10-28 (written in the present tense)
 - **Theme:** join
 
 ## Problem

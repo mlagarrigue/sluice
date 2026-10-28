@@ -1,7 +1,7 @@
 # ADR 0020 — What v1 freezes
 
 - **Created:** 2026-10-23
-- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental)
+- **Revised:** 2026-10-28 (`gateway.Partitions` listed experimental; written in the present tense)
 - **Theme:** docs
 
 ## Problem
@@ -73,7 +73,7 @@ text of errors does not, because it improves and a caller that compares it
 holds the wrong handle.
 
 What this costs: after v1, fixing a badly shaped stable API costs a v2,
-hence the grouped breaking version before v1 (decided on 2026-10-20). The
+hence one grouped breaking version before v1. The
 promise does not cover the experimental packages, which are precisely the
 ones whose shape has not met real use.
 

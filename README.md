@@ -283,8 +283,8 @@ preparation** — scenarios, method and results will be published together.
 ## Status and limits
 
 - **Nothing has run in production**, and the v0 API will change.
-- **net/httpstream is supported — out of the experimental label since
-  2026-10-10 and under the compatibility promise — and fuzzed in CI without
+- **net/httpstream is supported — outside the experimental label and
+  under the compatibility promise — and fuzzed in CI without
   a public corpus; it has neither run in production nor had an outside
   security review.**
 - **PostgreSQL only** for now; SCRAM-SHA-256 (password authentication that

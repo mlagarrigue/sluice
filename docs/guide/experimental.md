@@ -198,8 +198,8 @@ The router is a table compiled once: first match wins in table order,
 
 ## `net/httpstream` — supported
 
-net/httpstream is supported — out of the experimental label since
-2026-10-10 and under the compatibility promise — and fuzzed in CI without
+net/httpstream is supported — outside the experimental label and
+under the compatibility promise — and fuzzed in CI without
 a public corpus; it has neither run in production nor had an outside
 security review.
 

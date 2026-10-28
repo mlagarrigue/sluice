@@ -152,8 +152,8 @@ responsibility. The other transport is `net/httpstream`, which brings the
 byte → Frame → Request boundary into the library's own table, under the
 caveat that writing protocol parsers exposed to hostile input is how CVEs are
 made — the risk the first transport leaves to the standard library.
-net/httpstream is supported — out of the experimental label since
-2026-10-10 and under the compatibility promise — and fuzzed in CI without
+net/httpstream is supported — outside the experimental label and
+under the compatibility promise — and fuzzed in CI without
 a public corpus; it has neither run in production nor had an outside
 security review. Its HTTP/3 runs on `net/quic`, which is still experimental.
 
@@ -871,7 +871,7 @@ joining pairs elements on a key, merging combines sequences.
 | `join.Merge` | ordered merge of sorted streams | **O(1)**, O(m) per run repeated on both sides | sorted |
 | `join.ZipLongest` | positional pairs, goes to the longest | O(1) | positional |
 | `Coalesce` | recombines batches to a target size | O(k) | preserved |
-| ~~unsorted `Union`/`Intersect`/`Except`~~ | HashSet deduplication | **O(distinct)** | — |
+| unsorted `Union`/`Intersect`/`Except` (not provided) | HashSet deduplication | **O(distinct)** | — |
 
 The last three **do not exist** as stream operators: an unbounded HashSet
 violates S1. They are provided only in a sorted variant, derived from
@@ -1316,9 +1316,9 @@ reflection works **row by row and field by field**, which breaks vectorization.
 
 - a generated hydration function **per entity**, looping over the 1024 rows
   internally — one indirection per batch, not per row;
-- ~~**columnar decoding**: the loop over 1024 values of the same type is
-  monomorphic and predictable — the X100 principle applied to hydration~~
-  **— measured false, see the note below;**
+- **row-major decoding**, not columnar: the loop over 1024 values of one
+  type — the X100 principle applied to hydration — was measured and loses
+  here, see the note below;
 - **zero `interface{}`** in the hot path; **binary** format mandatory;
 - pre-allocation at batch size, buffer reuse between batches.
 

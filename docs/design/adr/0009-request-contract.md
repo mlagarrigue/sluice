@@ -1,7 +1,7 @@
 # ADR 0009 — One request contract for three protocols
 
 - **Created:** 2026-08-22
-- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone), 2026-10-28 (the authority as received, compared without regard to case)
+- **Revised:** 2026-10-15 (what a bounded body costs; `*` for OPTIONS; the authority rule), 2026-10-23 (the response says its payload one way; the body streamed when asked for; what bounds a streamed HTTP/2 body; HTTP/3 streams on manual credit), 2026-10-24 (the default streams: `BodyDelivery`, and `MaxStreamedBodyBytes` left with the bound alone), 2026-10-28 (the authority as received, compared without regard to case; written in the present tense)
 - **Theme:** httpstream
 
 ## Problem
@@ -98,14 +98,13 @@ enforces it:
      midway, with `os.ErrDeadlineExceeded` when a wait passes
      `ReadTimeout`.
 
-   - **The default has switched** (a break, 0.3.0). The three protocols
-     stream since fb556c5, and a paired A/B of small h1, h2 and h3
-     requests read noise on all six pairs with identical allocations
-     (`docs/benchmarks.md`, `body_bench_test.go`). The third condition
-     written here — a real consumer had used it — was waived rather than
-     met: the first consumer builds on 0.3.0, so the switch had to be in
-     that release or cost a second breaking version for a change already
-     decided and measured (decision 235: one breaking version).
+   - **Streaming is the default.** The three protocols stream, and a
+     paired A/B of small h1, h2 and h3 requests reads noise on all six
+     pairs with identical allocations (`docs/benchmarks.md`,
+     `body_bench_test.go`). Of the conditions set for making it the
+     default, one — a real consumer had used it — was waived rather than
+     met: the first consumer builds on 0.3.0, the one grouped breaking
+     version, and a later switch would have cost a second.
 
 5. **The cookie arrives whole.** HTTP/2 and HTTP/3 let a client split its
    `Cookie` into one field per pair (RFC 9113 §8.2.3, RFC 9114 §4.2.1);

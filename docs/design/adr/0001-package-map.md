@@ -1,7 +1,7 @@
 # ADR 0001 — The package map: a core that retains nothing, operators by what they retain, the periphery by external system
 
 - **Created:** 2026-10-07
-- **Revised:** 2026-10-23 (what the root retains, the internal packages, operators and stages, two names that collide, where Partitions lives)
+- **Revised:** 2026-10-23 (what the root retains, the internal packages, operators and stages, two names that collide, where Partitions lives), 2026-10-28 (written in the present tense)
 - **Theme:** core
 
 ## Problem
@@ -60,7 +60,7 @@ module beyond `internal/batch`, and a test enforces it.
 
 ## Rationale
 
-The import path now says the cost before the documentation does: `join.`
+The import path says the cost before the documentation does: `join.`
 in a call site means "this holds a side in memory". Grouping the periphery
 by system follows what a Go reader already knows from `net/http` and
 `database/sql`, and leaves room for `database/mysql` or `net/grpc` without

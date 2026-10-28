@@ -9,8 +9,8 @@
 // input is how CVEs are manufactured" — and that judgement is not revised
 // here: [web] over net/http leaves that parsing to the standard library.
 //
-// net/httpstream is supported — out of the experimental label since
-// 2026-10-10 and under the compatibility promise — and fuzzed in CI without
+// net/httpstream is supported — outside the experimental label and
+// under the compatibility promise — and fuzzed in CI without
 // a public corpus; it has neither run in production nor had an outside
 // security review. It has faced curl, h2spec, h2load, h3spec, aioquic,
 // quic-go's HTTP/3 client, and nginx, HAProxy and Envoy in front of it, in
