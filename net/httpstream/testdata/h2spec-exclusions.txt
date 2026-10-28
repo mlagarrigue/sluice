@@ -47,16 +47,18 @@ http2/5.1/12
 http2/5.3.1/1
 http2/5.3.1/2
 
-# RFC 9113 §5.1, "half-closed (remote)" (5.1/5, 5.1/6) and §6.3 (6.3/2):
-# h2spec sends a request with END_STREAM, then a DATA, a HEADERS or a
-# PRIORITY of the wrong length on the same stream, in a second write. When both writes reach the
-# server in one read, the stream is still half-closed and the server answers
-# STREAM_CLOSED or FRAME_SIZE_ERROR, as h2spec wants. When the second comes
-# later, the response has already gone out with END_STREAM, the stream is
-# closed both ways, and §5.1 forbids any frame but PRIORITY on it: the server
-# says nothing (h2write.go, responded), and h2spec reads the response's DATA
-# first. Red on CI on 2026-10-28: 5.1/6 twice and 6.3/2 once in ten runs,
-# 5.1/5 once (run 40695068915); green in six local runs.
+# RFC 9113 §5.1, "half-closed (remote)" (5.1/5, 5.1/6), §6.1 (6.1/2) and
+# §6.3 (6.3/2): h2spec sends a request with END_STREAM, then a DATA, a
+# HEADERS or a PRIORITY of the wrong length on the same stream, in a second
+# write. When both writes reach the server in one read, the stream is still
+# half-closed and the server answers STREAM_CLOSED or FRAME_SIZE_ERROR, as
+# h2spec wants. When the second comes later, the response has already gone
+# out with END_STREAM, the stream is closed both ways, and §5.1 forbids any
+# frame but PRIORITY on it: the server says nothing (h2write.go, responded),
+# and h2spec reads the response's DATA first. Red on CI on 2026-10-28: 5.1/6
+# twice and 6.3/2 once in ten runs, 5.1/5 once (run 40695068915), 6.1/2 once
+# (run 40698994351); green in six local runs.
 random:http2/5.1/5
 random:http2/5.1/6
+random:http2/6.1/2
 random:http2/6.3/2
