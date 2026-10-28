@@ -522,3 +522,26 @@ func TestCallerValuesPastTheVarintCeilingAreRefused(t *testing.T) {
 		}
 	})
 }
+
+// peerRetiredSelf is a ring that never grows with the connection's age:
+// every NEW_CONNECTION_ID scans it (retiredSelfLocked), so a list that kept
+// one sequence per migration would make that scan grow for the connection's
+// life. The newest retirement is remembered, the oldest past the ring is not.
+func TestRetiredSelfRingIsBounded(t *testing.T) {
+	c := boundsConn(t, false)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	const retired = 10 * maxRetiredSelf
+	for seq := uint64(1); seq <= retired; seq++ {
+		c.noteRetiredSelfLocked(seq)
+	}
+	if got := len(c.peerRetiredSelf); got > maxRetiredSelf {
+		t.Fatalf("%d sequences remembered after %d retirements, want at most %d", got, retired, maxRetiredSelf)
+	}
+	if !c.retiredSelfLocked(retired) {
+		t.Error("the newest retirement is not remembered")
+	}
+	if c.retiredSelfLocked(1) {
+		t.Error("the oldest retirement is still remembered past the ring")
+	}
+}
