@@ -54,19 +54,40 @@ func JSONMediaType[T string | []byte](v T) bool {
 	for end > start && (v[end-1] == ' ' || v[end-1] == '\t') {
 		end--
 	}
+	// One media type, type "/" subtype, each a token (RFC 9110 §8.3.1): a
+	// comma, a blank or a second slash inside makes it something else — a
+	// list a hop reading its first member reads as another type.
+	slash := -1
+	for i := start; i < end; i++ {
+		switch {
+		case v[i] == '/' && slash < 0:
+			slash = i
+		case !isTChar(v[i]):
+			return false
+		}
+	}
+	if slash <= start || slash == end-1 {
+		return false
+	}
 	if foldEqual(v, start, end, "application/json") {
 		return true
 	}
-	// The suffix needs a type, a slash and a subtype name in front of it.
+	// The suffix needs a subtype name in front of it.
 	const suffix = "+json"
-	slash := -1
-	for i := start; i < end; i++ {
-		if v[i] == '/' {
-			slash = i
-			break
-		}
+	return end-slash-1 > len(suffix) && foldEqual(v, end-len(suffix), end, suffix)
+}
+
+// isTChar reports whether c may appear in a token (RFC 9110 §5.6.2).
+func isTChar(c byte) bool {
+	switch {
+	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		return true
 	}
-	return slash > start && end-slash-1 > len(suffix) && foldEqual(v, end-len(suffix), end, suffix)
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return false
 }
 
 // foldEqual reports whether v[start:end] equals want, ASCII case folded; want
