@@ -529,7 +529,12 @@ func parseParameters(b []byte) (TransportParameters, error) {
 	// peer itself repeats is the same malformed block. The defined
 	// identifiers all sit below 64 and take a bit each; anything above
 	// (extensions, §18.1's reserved values) goes in a slice no longer than
-	// the block has parameters.
+	// the block has parameters, sorted and checked for a repeat once the
+	// block is read. A scan of every earlier identifier at each one cost the
+	// square of their count, which the peer chooses at three bytes an
+	// identifier: 19,000 of them fit a 64 KiB ClientHello (§7.4.2 has them
+	// ignored, not refused). Refusing at the end rather than at the repeat
+	// changes nothing: the block is refused whole either way.
 	var seen uint64
 	var seenHigh []uint64
 	for len(b) > 0 {
@@ -558,9 +563,6 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			}
 			seen |= bit
 		} else {
-			if slices.Contains(seenHigh, id) {
-				return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, id))
-			}
 			seenHigh = append(seenHigh, id)
 		}
 
@@ -653,6 +655,12 @@ func parseParameters(b []byte) (TransportParameters, error) {
 				p.MaxAckDelay = idleDuration(v)
 				p.sawMaxAckDelay = true
 			}
+		}
+	}
+	slices.Sort(seenHigh)
+	for i := 1; i < len(seenHigh); i++ {
+		if seenHigh[i] == seenHigh[i-1] {
+			return p, parameterError(fmt.Errorf("%w: transport parameter %#x appears twice", ErrQUIC, seenHigh[i]))
 		}
 	}
 	if seen&(1<<paramMaxUDPPayloadSize) == 0 {
