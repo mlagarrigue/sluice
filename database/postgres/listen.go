@@ -14,7 +14,9 @@ import (
 // ListenConfig says which channels [Listen] subscribes to.
 type ListenConfig struct {
 	// Channels are the channels to LISTEN on. At least one is required. A
-	// name is taken as written, case included.
+	// name is taken as written, case included, and is at most 63 bytes:
+	// PostgreSQL truncates a longer one, and two channels that differ past
+	// that byte would be one subscription.
 	Channels []string
 
 	// BatchNotifications is the most notifications one batch holds. Zero
@@ -96,6 +98,9 @@ func listenSQL(lc ListenConfig) (string, error) {
 	for _, ch := range lc.Channels {
 		if ch == "" {
 			return "", errors.New("postgres: ListenConfig.Channels holds an empty name")
+		}
+		if err := checkNameLength("ListenConfig.Channels", ch); err != nil {
+			return "", err
 		}
 		b.WriteString("LISTEN " + quoteIdent(ch) + ";")
 	}

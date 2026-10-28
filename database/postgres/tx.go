@@ -773,8 +773,8 @@ func validIdentifier(name string) error {
 	if name == "" {
 		return errors.New("postgres: the identifier is empty")
 	}
-	if len(name) > 63 {
-		return fmt.Errorf("postgres: the identifier %q is %d bytes; PostgreSQL truncates at 63, so two of them would silently become one", name, len(name))
+	if len(name) > maxIdentifierBytes {
+		return fmt.Errorf("postgres: the identifier %q is %d bytes; PostgreSQL truncates at %d, so two of them would silently become one", name, len(name), maxIdentifierBytes)
 	}
 	for i := range len(name) {
 		ch := name[i]

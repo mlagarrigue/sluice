@@ -188,3 +188,37 @@ func TestListenEndsAtAnEncodingNobodyAskedFor(t *testing.T) {
 		t.Fatalf("delivered %q, want only the notification before the announcement", got)
 	}
 }
+
+// A channel, slot or publication name past 63 bytes is refused, with its
+// field and the reason: PostgreSQL truncates a name there, and two channels
+// that differ only past it became one subscription in silence — the server's
+// NOTICE says so, and the Listener drops notices (RP-20261025-secapp-03).
+// At 63 bytes a name is taken.
+func TestNamesPastTheServersTruncationAreRefused(t *testing.T) {
+	long, fits := strings.Repeat("c", 64), strings.Repeat("c", 63)
+	for _, tc := range []struct {
+		field string
+		build func(name string) error
+	}{
+		{"ListenConfig.Channels", func(n string) error {
+			_, err := listenSQL(ListenConfig{Channels: []string{"orders", n}})
+			return err
+		}},
+		{"ReplicationConfig.Slot", func(n string) error {
+			_, err := startReplicationSQL(ReplicationConfig{Slot: n, Publications: []string{"p"}})
+			return err
+		}},
+		{"ReplicationConfig.Publications", func(n string) error {
+			_, err := startReplicationSQL(ReplicationConfig{Slot: "s", Publications: []string{"p", n}})
+			return err
+		}},
+	} {
+		err := tc.build(long)
+		if err == nil || !strings.Contains(err.Error(), tc.field) || !strings.Contains(err.Error(), "truncates a name at 63") {
+			t.Errorf("%s with a 64-byte name: %v, want a refusal naming the field and the truncation", tc.field, err)
+		}
+		if err := tc.build(fits); err != nil {
+			t.Errorf("%s with a 63-byte name: %v, want it taken", tc.field, err)
+		}
+	}
+}

@@ -23,7 +23,8 @@ type ReplicationConfig struct {
 	Slot string
 
 	// Publications names the publications whose tables are streamed
-	// (CREATE PUBLICATION). At least one is required.
+	// (CREATE PUBLICATION). At least one is required. A name, like Slot,
+	// is at most 63 bytes, where PostgreSQL truncates one.
 	Publications []string
 
 	// Start is the position to stream from. Zero means the slot's
@@ -156,6 +157,9 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 	if rc.Slot == "" {
 		return "", errors.New("postgres: ReplicationConfig.Slot is empty — the slot is created by the caller, with pg_create_logical_replication_slot")
 	}
+	if err := checkNameLength("ReplicationConfig.Slot", rc.Slot); err != nil {
+		return "", err
+	}
 	if len(rc.Publications) == 0 {
 		return "", errors.New("postgres: ReplicationConfig.Publications is empty — pgoutput streams the tables of at least one publication")
 	}
@@ -173,6 +177,9 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 		if p == "" {
 			return "", errors.New("postgres: ReplicationConfig.Publications holds an empty name")
 		}
+		if err := checkNameLength("ReplicationConfig.Publications", p); err != nil {
+			return "", err
+		}
 		pubs[i] = quoteIdent(p)
 	}
 	sql := "START_REPLICATION SLOT " + quoteIdent(rc.Slot) + " LOGICAL " + rc.Start.String() +
@@ -181,6 +188,21 @@ func startReplicationSQL(rc ReplicationConfig) (string, error) {
 		return "", err
 	}
 	return sql, nil
+}
+
+// maxIdentifierBytes is where PostgreSQL truncates an identifier:
+// NAMEDATALEN − 1 bytes.
+const maxIdentifierBytes = 63
+
+// checkNameLength refuses a name the server would truncate: two names that
+// differ only past the 63rd byte would silently become one — two LISTEN
+// channels one subscription — which validIdentifier refuses for a savepoint
+// for the same reason. field is the configuration field, for the message.
+func checkNameLength(field, name string) error {
+	if len(name) > maxIdentifierBytes {
+		return fmt.Errorf("postgres: %s holds %q, %d bytes; PostgreSQL truncates a name at %d, so two that differ after that would silently become one", field, name, len(name), maxIdentifierBytes)
+	}
+	return nil
 }
 
 // quoteIdent writes name as a quoted identifier, its case and characters kept.
