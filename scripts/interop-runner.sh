@@ -111,8 +111,18 @@ run() {
   (
     cd "$RUNNER_DIR"
     # The runner refuses a log directory that exists: one per direction.
-    rm -rf "logs/$1_$2" "logs/$1_$2-again"
+    rm -rf "logs/$1_$2" "logs/$1_$2-first" "logs/$1_$2-again"
     .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
+    # A direction that wrote no results at all is run once more: a tool the
+    # runner drives can crash mid-direction and leave no file (tshark, from
+    # a PPA that keeps no older build to pin, exited 255 on 2026-10-27). A
+    # second direction without results is refused below, as a first one
+    # was; the first try's logs stay under -first.
+    if [ ! -f "results_$1_$2.json" ]; then
+      echo "## server $1, client $2: no results, once more"
+      if [ -d "logs/$1_$2" ]; then mv "logs/$1_$2" "logs/$1_$2-first"; fi
+      .venv/bin/python run.py -d -s "$1" -c "$2" -t "$TESTS" -l "logs/$1_$2" -j "results_$1_$2.json" || true
+    fi
     # A failed case is run once more and keeps both results: the runner's
     # own capture sometimes misses a handshake both ends completed
     # ("Expected exactly one version. Got []", a quarter-size pcap on one

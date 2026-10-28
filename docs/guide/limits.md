@@ -493,7 +493,8 @@ builds from each release tag from v0.3.0 on
 images pushed by hand, and `latest` never moves back to them). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
-a failed case is run once more. `interop/expected-results.json` records
+a failed case, or a direction that wrote no results, is run once more.
+`interop/expected-results.json` records
 every case of every implementation the workflow crosses, with the cause
 of every failure, and a pass that departs from it fails the job. Green
 means every case passed against at least two peers.
