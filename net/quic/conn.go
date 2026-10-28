@@ -1941,16 +1941,16 @@ func (c *Conn) handlePeerParameters(raw []byte) error {
 		// kept in retrySCID, because c.dcid has usually already moved on to
 		// the server's own identifier by the time the parameters arrive.
 		if c.retried {
-			if !bytes.Equal(p.retrySourceCID, c.retrySCID) {
+			if !p.hasRetrySourceCID || !bytes.Equal(p.retrySourceCID, c.retrySCID) {
 				return parameterError(fmt.Errorf("%w: the server did not echo the Retry's source identifier", ErrQUIC))
 			}
-		} else if p.retrySourceCID != nil {
+		} else if p.hasRetrySourceCID {
 			return parameterError(fmt.Errorf("%w: retry_source_connection_id without a Retry", ErrQUIC))
 		}
 	// §18.2: the four server-only announcements a client must not send.
 	case p.originalDCID != nil:
 		return parameterError(fmt.Errorf("%w: a client sent original_destination_connection_id", ErrQUIC))
-	case p.retrySourceCID != nil:
+	case p.hasRetrySourceCID:
 		return parameterError(fmt.Errorf("%w: a client sent retry_source_connection_id", ErrQUIC))
 	case p.sawStatelessResetToken:
 		return parameterError(fmt.Errorf("%w: a client sent stateless_reset_token", ErrQUIC))

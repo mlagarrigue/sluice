@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1044,5 +1045,30 @@ func TestCryptoInTooManyFragmentsIsABufferExceeded(t *testing.T) {
 	te := &transportError{}
 	if !errors.As(err, &te) || te.code != transportCryptoBufferExceeded {
 		t.Errorf("the refusal is %v, want CRYPTO_BUFFER_EXCEEDED (0x0d)", err)
+	}
+}
+
+// RFC 9000 §7.3: after a Retry, the server's retry_source_connection_id
+// must be present and equal to the Retry's Source Connection ID — which may
+// be zero-length. Absent and empty both read as a nil slice; the presence
+// is what tells them apart, as for initial_source_connection_id.
+func TestARetryWithAnEmptySourceIDStillNeedsItsEcho(t *testing.T) {
+	dcid, scid := []byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}
+	c := assembleConn(&fuzzSink{addr: "rsc:self"}, fakeFuzzAddr("rsc:peer"), dcid, scid, true, DefaultParameters())
+	t.Cleanup(func() { _ = c.Close() })
+	c.initialDCID = dcid
+	c.mu.Lock()
+	c.retried, c.retrySCID = true, nil // the Retry carried an empty Source Connection ID
+	c.mu.Unlock()
+	srv := DefaultParameters()
+	srv.initialSourceCID = dcid // what the client checks it against here
+	srv.originalDCID = dcid
+	err := c.handlePeerParameters(appendParameters(nil, srv))
+	te := &transportError{}
+	if !errors.As(err, &te) || te.code != transportParameterError {
+		t.Fatalf("parameters without retry_source_connection_id after a Retry: %v, want TRANSPORT_PARAMETER_ERROR", err)
+	}
+	if !strings.Contains(err.Error(), "Retry") {
+		t.Fatalf("refused for another reason: %v", err)
 	}
 }

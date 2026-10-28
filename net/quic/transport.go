@@ -107,7 +107,10 @@ type TransportParameters struct {
 	// RetrySourceCID is the identifier a server put on the Retry packet it
 	// sent, echoed so the client can bind the connection it ends up with to
 	// the Retry that redirected it — present only when a Retry happened.
-	retrySourceCID []byte
+	// hasRetrySourceCID says it was present: a Retry may carry a
+	// zero-length identifier, whose echo is as empty as its absence.
+	retrySourceCID    []byte
+	hasRetrySourceCID bool
 
 	// ActiveConnIDLimit is how many of the peer's connection identifiers
 	// this endpoint will keep active at once (§18.2; the protocol minimum
@@ -575,7 +578,7 @@ func parseParameters(b []byte) (TransportParameters, error) {
 			// slice alone cannot tell the two apart.
 			p.initialSourceCID, p.hasInitialSourceCID = val, true
 		case paramRetrySourceCID:
-			p.retrySourceCID = val
+			p.retrySourceCID, p.hasRetrySourceCID = val, true
 		case paramStatelessResetToken:
 			p.sawStatelessResetToken = true
 			if len(val) != 16 {
