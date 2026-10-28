@@ -2032,7 +2032,9 @@ func TestStalePlanStatementIsClosedOnTheServer(t *testing.T) {
 // count is what makes this a check a scripted server cannot stand in for:
 // the refusal reads the i= the real server derived the stored key with.
 func TestIntegrationSCRAMIterationBounds(t *testing.T) {
-	const role = "sluice_scram_iter_test"
+	// A name of its own: two go test runs against one server must not drop
+	// each other's role.
+	role := "sluice_scram_iter_" + strings.ToLower(rand.Text())
 	const password = "iter-pass" //nolint:gosec // G101: a throwaway role's password
 	addr, cfg := pgTarget(t)
 	admin := dial(t)
