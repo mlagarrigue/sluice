@@ -57,7 +57,9 @@ import (
 //   - **The target is raw and origin-form.** It begins with "/", the query is
 //     still attached, and nothing has been percent-decoded — decoding before
 //     the handler decides what a segment means is how two layers route one
-//     request differently. Other target forms are refused at the parser.
+//     request differently. The one other form is the asterisk "*", on an
+//     OPTIONS request only (RFC 9112 §3.2.4: the server as a whole, not a
+//     resource on it); every other target form is refused at the parser.
 //   - **Header names keep the case the protocol sent.** HTTP/1.1 preserves
 //     what the client wrote; HTTP/2 and HTTP/3 enforce lowercase on the wire.
 //     A handler therefore matches names case-insensitively, which is what

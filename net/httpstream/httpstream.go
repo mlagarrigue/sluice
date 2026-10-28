@@ -194,9 +194,10 @@
 //     in its entirety — or on an HTTP/1.0 request is answered 400.
 //   - **A repeated or non-numeric Content-Length**, answered 400.
 //   - **Authority-form targets** — origin-form, a target starting with "/",
-//     is what the handler sees; an absolute-form target is accepted as RFC
-//     9112 §3.2.2 requires, its authority replacing the Host and its path
-//     delivered as origin-form. The authority-form is CONNECT's, and a
+//     is what the handler sees, or the asterisk "*" of an OPTIONS request
+//     (§3.2.4); an absolute-form target is accepted as RFC 9112 §3.2.2
+//     requires, its authority replacing the Host and its path delivered as
+//     origin-form. The authority-form is CONNECT's, and a
 //     CONNECT is answered 501 on every protocol: this server opens no
 //     tunnel, and the handler never sees the request.
 //   - **A missing or repeated Host**, answered 400, as HTTP/1.1 requires.
