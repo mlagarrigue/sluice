@@ -14,7 +14,8 @@ import (
 // arrives, and gives the request one read of it would. Every read used to
 // parse the request line and every field line received so far again: 51,423
 // field lines for a head of 60 fields, work in the square of the head's
-// length for one byte of the peer's.
+// length for one byte of the peer's. The head goes through reader.next
+// itself, over net.Pipe, whose every Read returns what one Write gave it.
 func TestAHeadDrippedByteByByteIsParsedOnce(t *testing.T) {
 	cfg := Config{BodyDelivery: BodyWhole, MaxHeaders: 1024}.mustResolve()
 	var b strings.Builder
@@ -30,35 +31,28 @@ func TestAHeadDrippedByteByByteIsParsedOnce(t *testing.T) {
 		t.Fatalf("the head in one read: used %d of %d, %v", wantUsed, len(raw), err)
 	}
 
-	// The reader's steps (conn.go, reader.next): a head left short is
-	// scanned, not parsed, until its blank line is in.
-	var progress chunkProgress
-	var scan headScan
-	parsedLines := 0
-	for n := 1; n < len(raw); n++ {
-		if headStillShort(raw[:n], &cfg, &scan) {
-			continue
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+	go func() {
+		for i := range raw {
+			if _, err := client.Write(raw[i : i+1]); err != nil {
+				return
+			}
 		}
-		_, _, arena, err := parseRequest(raw[:n], cfg, nil, &progress)
-		if !errors.Is(err, errIncomplete) {
-			t.Fatalf("a %d-byte prefix returned %v, want errIncomplete", n, err)
-		}
-		noteShortHead(raw[:n], &cfg, &progress, &scan)
-		parsedLines += len(arena)
+	}()
+	r := &reader{conn: server, cfg: cfg}
+	batch, ok := r.next()
+	if !ok || len(batch) != 1 || r.pending != len(raw) {
+		t.Fatalf("the dripped head: %d requests over %d of %d bytes, %v", len(batch), r.pending, len(raw), r.err)
 	}
-	if headStillShort(raw, &cfg, &scan) {
-		t.Fatal("the whole head still reads as short")
+	// The first short reads parse what they have, until the request line
+	// is whole; every later one is a scan.
+	if r.shortParses > 2 {
+		t.Errorf("reader.next parsed the head %d times before its blank line arrived, want two at most", r.shortParses)
 	}
-	got, used, arena, err := parseRequest(raw, cfg, nil, &progress)
-	if err != nil || used != len(raw) {
-		t.Fatalf("the dripped head: used %d of %d, %v", used, len(raw), err)
-	}
-	// The first short read parses what it has (a request line, a field or
-	// two at most); every later one is a scan.
-	if parsedLines > 4 {
-		t.Errorf("the prefixes parsed %d field lines before the head was whole, want a handful at most", parsedLines)
-	}
-	if string(got.Method) != string(want.Method) || string(got.Target) != string(want.Target) || len(got.Headers) != len(want.Headers) || len(arena) != len(want.Headers) {
+	got := batch[0]
+	if string(got.Method) != string(want.Method) || string(got.Target) != string(want.Target) || len(got.Headers) != len(want.Headers) {
 		t.Fatalf("dripped %s %s with %d fields, one read %s %s with %d", got.Method, got.Target, len(got.Headers), want.Method, want.Target, len(want.Headers))
 	}
 	for i := range want.Headers {

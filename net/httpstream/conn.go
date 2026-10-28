@@ -115,6 +115,11 @@ type reader struct {
 	// head is how far the head at the front of buf, short of its blank
 	// line, has been scanned (headScan); consume ends the scan.
 	head headScan
+	// shortParses counts the parses that found the request at the front of
+	// buf short of its end. A head dripped a byte per read is parsed a
+	// couple of times before its blank line arrives, whatever its length;
+	// the tests hold next to that. Raised on the short path only.
+	shortParses int
 
 	// body is the streamed body of the batch just handed over, if it has
 	// one: the next request cannot be read before it has ended.
@@ -213,6 +218,7 @@ func (r *reader) next() ([]Request, bool) {
 			// Nothing taken: the front of the buffer is a request short of
 			// its end, and if that is its head, how far it holds no blank
 			// line.
+			r.shortParses++
 			noteShortHead(r.buf[:r.n], &r.cfg, &r.progress, &r.head)
 		}
 		if err := r.fill(); err != nil {
