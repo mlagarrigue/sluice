@@ -775,7 +775,7 @@ func (c *Conn) expectedDCID(dcid []byte, space int) bool {
 // "all stateless reset tokens associated with the remote address on which
 // the datagram was received", so a connection whose peer is somewhere else
 // is not compared at all. The listener's unroutable path is the only caller,
-// and it walks every live connection.
+// and it asks only the connections its index files under that address.
 func (c *Conn) isStatelessResetFrom(datagram []byte, from net.Addr) bool {
 	c.mu.Lock()
 	elsewhere := !sameAddr(from, c.peer)

@@ -63,6 +63,8 @@ func (r *testRegistrar) resetTokenFor(cid []byte) [16]byte {
 	return t
 }
 
+func (r *testRegistrar) peerMoved(*Conn, net.Addr) {}
+
 func (r *testRegistrar) addLocalCID(c *Conn) ([]byte, error) {
 	cid, err := randomID(listenerCIDLen)
 	if err != nil {

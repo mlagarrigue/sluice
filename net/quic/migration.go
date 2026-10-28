@@ -67,6 +67,10 @@ type cidRegistrar interface {
 	// trace of the connection is gone, which only a key the registrar
 	// keeps for its own lifetime can honour.
 	resetTokenFor(cid []byte) [16]byte
+	// peerMoved follows c to the remote address it now sends to: a
+	// listener finds the connections a stateless reset may be for by that
+	// address (Listener.resetFor).
+	peerMoved(c *Conn, to net.Addr)
 }
 
 // ownerRegistrar is the registrar of a connection that owns its socket —
@@ -95,6 +99,17 @@ func (r *ownerRegistrar) addLocalCID(c *Conn) ([]byte, error) {
 }
 
 func (r *ownerRegistrar) removeLocalCID([]byte) {}
+
+func (r *ownerRegistrar) peerMoved(*Conn, net.Addr) {}
+
+// setPeerLocked is the one way peer changes once the connection is live,
+// so the registrar follows every move (peerMoved). Callers hold mu.
+func (c *Conn) setPeerLocked(to net.Addr) {
+	c.peer = to
+	if c.registrar != nil {
+		c.registrar.peerMoved(c, to)
+	}
+}
 
 func (r *ownerRegistrar) resetTokenFor(cid []byte) [16]byte {
 	mac := hmac.New(sha256.New, r.resetKey[:])
@@ -872,7 +887,7 @@ func (c *Conn) migrateLocked(to net.Addr, via net.PacketConn, now time.Time) {
 		// — §8.1 bounds what goes to an address this end has not validated.
 		c.pathProbe.oldRecv, c.pathProbe.oldSent = c.amplRecv, c.amplSent
 	}
-	c.peer = to
+	c.setPeerLocked(to)
 	c.pc = newPC
 	c.pathLocalSeq = c.rxLocalCIDSeq
 	c.migrations++
@@ -933,7 +948,7 @@ func (c *Conn) probePreferredAddressLocked(now time.Time) {
 // preferred address once its probe is answered: sends go there, under the
 // offered identifier, with the path state reset (§9.4). Callers hold mu.
 func (c *Conn) adoptPreferredPathLocked(now time.Time) {
-	c.peer = c.pathProbe.target
+	c.setPeerLocked(c.pathProbe.target)
 	previous := c.currentPeerSeq
 	for i := range c.peerCIDs {
 		e := &c.peerCIDs[i]
@@ -1462,7 +1477,8 @@ func (c *Conn) revertToValidatedLocked(now time.Time) {
 		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
 		return
 	}
-	c.peer, c.pc = c.lastValidatedPeer, c.lastValidatedPC
+	c.setPeerLocked(c.lastValidatedPeer)
+	c.pc = c.lastValidatedPC
 	failed := c.currentPeerSeq
 	restored := false
 	for i := range c.peerCIDs {

@@ -341,6 +341,14 @@ type Listener struct {
 	// back without the address. MaxConns itself reads len(keysOf).
 	connsByIP map[string]int
 	ipOf      map[*Conn]string
+	// byPeer files the connections in keysOf by the remote address they
+	// send to, and peerOf is each one's key: resetFor finds a stateless
+	// reset's connections there, by the address §10.3.1 names, instead of
+	// walking every connection and taking each one's lock. A migration
+	// moves the entry (peerMoved, under the connection's lock); forget
+	// removes it.
+	byPeer map[peerKey][]*Conn
+	peerOf map[*Conn]peerKey
 	// spent is the Retry tokens that already admitted a connection, which a
 	// second Initial echoing one must not open again (RFC 9000 §8.1.4).
 	spent spentTokens
@@ -490,6 +498,8 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 		pendingConns: make(map[*Conn]struct{}),
 		connsByIP:    make(map[string]int),
 		ipOf:         make(map[*Conn]string),
+		byPeer:       make(map[peerKey][]*Conn),
+		peerOf:       make(map[*Conn]peerKey),
 		accepted:     make(chan *Conn, lcfg.MaxPendingConns),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
@@ -1194,6 +1204,7 @@ func (l *Listener) bootstrapConn(datagram []byte, from net.Addr, h longHeader, r
 	ip := l.connKey(from)
 	l.ipOf[c] = ip
 	l.connsByIP[ip]++
+	l.placePeerLocked(c, from)
 	l.mu.Unlock()
 
 	go l.runHandshake(c, datagram, from, ecn)
@@ -1389,6 +1400,7 @@ func (l *Listener) forget(c *Conn) {
 		}
 	}
 	delete(l.keysOf, c)
+	l.unplacePeerLocked(c)
 	// The per-address count follows ipOf, not keysOf: a connection the
 	// closing listener turned away before registering (above) has keys but
 	// no address, and a second forget of the same one finds neither.
@@ -1495,10 +1507,14 @@ const maxResetsPerSourcePerSecond = 4
 // compares nothing, and the budget is left to do what it is for: bounding
 // the resets this end *sends*.
 //
-// The table is still walked to find those connections, which is a lock and
-// an address comparison each. An index by remote address would make it a
-// lookup; it would also have to follow every migration, and the walk is
-// not what the scan cost.
+// Those connections are looked up in byPeer, not found by walking the
+// table: the walk took every live connection's lock to read its address,
+// one lock per connection per datagram on the goroutine that reads the
+// socket, which a flow of unroutable datagrams kept busy serialising the
+// peer with every receive loop (RP-20261025-secnet-07). The index follows
+// each migration (setPeerLocked), and isStatelessResetFrom still compares
+// the address under the connection's lock, since a move may land between
+// the lookup and the comparison.
 //
 // Long headers are not compared: §10.3 says "any packet", but a reset has
 // the short-header shape by construction (§10.3), a conforming peer never
@@ -1512,11 +1528,9 @@ func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 	if len(datagram) < 21 { // §10.3: a reset is at least 21 bytes
 		return nil
 	}
+	var room [4]*Conn
 	l.mu.Lock()
-	conns := make([]*Conn, 0, len(l.keysOf))
-	for c := range l.keysOf {
-		conns = append(conns, c)
-	}
+	conns := append(room[:0], l.byPeer[peerKeyOf(from)]...)
 	l.mu.Unlock()
 	for _, c := range conns {
 		if c.isStatelessResetFrom(datagram, from) {
@@ -1524,6 +1538,68 @@ func (l *Listener) resetFor(datagram []byte, from net.Addr) *Conn {
 		}
 	}
 	return nil
+}
+
+// peerKey is a remote address as sameAddr compares them: for a UDP address
+// the IP without its IPv4-in-IPv6 mapping, and the port; for any other, its
+// network and text.
+type peerKey struct {
+	ap   netip.AddrPort
+	text string
+}
+
+func peerKeyOf(a net.Addr) peerKey {
+	if u, ok := a.(*net.UDPAddr); ok {
+		ap := u.AddrPort()
+		return peerKey{ap: netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())}
+	}
+	if a == nil {
+		return peerKey{}
+	}
+	return peerKey{text: a.Network() + " " + a.String()}
+}
+
+// placePeerLocked files c under the remote address to, out of the one it
+// was filed under. Callers hold mu.
+func (l *Listener) placePeerLocked(c *Conn, to net.Addr) {
+	l.unplacePeerLocked(c)
+	k := peerKeyOf(to)
+	l.byPeer[k] = append(l.byPeer[k], c)
+	l.peerOf[c] = k
+}
+
+// unplacePeerLocked takes c out of byPeer. Callers hold mu.
+func (l *Listener) unplacePeerLocked(c *Conn) {
+	k, ok := l.peerOf[c]
+	if !ok {
+		return
+	}
+	delete(l.peerOf, c)
+	conns := l.byPeer[k]
+	for i, o := range conns {
+		if o == c {
+			last := len(conns) - 1
+			conns[i], conns[last] = conns[last], nil
+			conns = conns[:last]
+			break
+		}
+	}
+	if len(conns) == 0 {
+		delete(l.byPeer, k)
+	} else {
+		l.byPeer[k] = conns
+	}
+}
+
+// peerMoved is cidRegistrar's: c, whose lock the caller holds, now sends to
+// to (Conn.mu before Listener.mu). A connection already forgotten is not
+// filed again.
+func (l *Listener) peerMoved(c *Conn, to net.Addr) {
+	l.mu.Lock()
+	if _, ok := l.peerOf[c]; ok {
+		l.placePeerLocked(c, to)
+	}
+	l.mu.Unlock()
 }
 
 // resetBudgetLocked reports whether this end may still spend a reset on src
