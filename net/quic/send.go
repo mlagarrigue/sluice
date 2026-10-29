@@ -843,7 +843,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 		if c.closeErr == nil {
 			c.closeErr = err
 		}
-		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		c.closeAsyncLocked()
 		return err
 	}
 
@@ -883,7 +883,7 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 			c.closeErr = err
 		}
 		c.sendCloseLocked(transportAEADLimitReached, false)
-		go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+		c.closeAsyncLocked()
 		return err
 	}
 

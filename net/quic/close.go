@@ -148,6 +148,10 @@ func (c *Conn) abort(err error) {
 	_ = c.Close()
 }
 
+// closeAsyncLocked ends the connection from a path that holds mu: Close
+// takes mu, so it runs on its own goroutine once the caller lets go.
+func (c *Conn) closeAsyncLocked() { go func() { _ = c.Close() }() }
+
 // Close ends the connection, telling the peer with a CONNECTION_CLOSE frame
 // (NO_ERROR) so it can drop its state now rather than wait out an idle
 // period (§10.2). Close never blocks on the peer: the frame is sent once,

@@ -1722,8 +1722,8 @@ func (c *Conn) endSilentlyLocked(err error) {
 	if c.closeErr == nil {
 		c.closeErr = err
 	}
-	c.closeSent = true            // silently: §9.3.2 discards the state, it says nothing
-	go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+	c.closeSent = true // silently: §9.3.2 discards the state, it says nothing
+	c.closeAsyncLocked()
 }
 
 // revertToValidatedLocked is §9.3.2's fallback: sending returns to the last
@@ -1908,7 +1908,7 @@ func (c *Conn) pathProbeDeadlineLocked(now time.Time) time.Time {
 				c.closeErr = fmt.Errorf("quic: the path Rebind moved to never validated (%d PATH_CHALLENGEs unanswered)", pathProbeMaxRetransmits+1)
 			}
 			c.sendCloseLocked(transportNoError, false)
-			go func() { _ = c.Close() }() // Close takes mu; it cannot run under it
+			c.closeAsyncLocked()
 		}
 		return time.Time{}
 	}
