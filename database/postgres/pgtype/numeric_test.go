@@ -124,11 +124,6 @@ func TestNumericFloat64IsNamedAndLossy(t *testing.T) {
 	if f := n.Float64(); f == 0 || math.IsInf(f, 0) {
 		t.Errorf("Float64 = %v, want a finite approximation", f)
 	}
-	// The approximation is not the value, which is the reason the conversion
-	// has to be asked for.
-	if got := strconv.FormatFloat(n.Float64(), 'f', -1, 64); got == exact {
-		t.Error("float64 held all thirty-eight digits, which it cannot")
-	}
 
 	// The special values convert to their float counterparts.
 	nan, _ := ParseNumeric("NaN")

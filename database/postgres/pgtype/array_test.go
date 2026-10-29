@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -344,11 +345,14 @@ func TestNullableInt2ArrayRoundTrip(t *testing.T) {
 	if _, err := DecodeNullableInt2Array(nil, AppendNullableInt4Array(nil, []Null[int32]{present[int32](1)})); !errors.Is(err, ErrCodec) {
 		t.Errorf("int4[] decoded as int2[]: %v, want ErrCodec", err)
 	}
-	// An element of the wrong width is refused.
+	// An element of the wrong width is refused by the element's own
+	// decoder, and the error says which element: a decoder whose error was
+	// swallowed would leave the stream misaligned and fail later, on some
+	// other count, or not at all.
 	bad := slices.Clone(enc)
 	binary.BigEndian.PutUint32(bad[arrayHeaderSize:], 4)
-	if _, err := DecodeNullableInt2Array(nil, bad); err == nil {
-		t.Error("a 4-byte int2 element was accepted")
+	if _, err := DecodeNullableInt2Array(nil, bad); !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), "array element 0") {
+		t.Errorf("a 4-byte int2 element: %v, want ErrCodec for array element 0", err)
 	}
 }
 

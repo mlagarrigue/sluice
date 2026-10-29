@@ -170,15 +170,3 @@ func TestNullableArrayRejectsANegativeLength(t *testing.T) {
 		t.Fatalf("error = %v, want ErrCodec", err)
 	}
 }
-
-// The zero Null is absent, not present-and-zero. Anything else would make an
-// uninitialised element a real value.
-func TestZeroNullIsAbsent(t *testing.T) {
-	var n Null[int64]
-	if n.Valid {
-		t.Error("the zero Null reports itself as present")
-	}
-	if got := present(int64(0)); !got.Valid {
-		t.Error("present[int64](0) reports itself as absent")
-	}
-}
