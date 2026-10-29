@@ -417,3 +417,65 @@ func TestResetDuringAwaitSealSendsNoStreamFrame(t *testing.T) {
 		t.Errorf("%d bytes still charged to the stream", sent)
 	}
 }
+
+// RFC 9000 §8.1.2: after a Retry the client repeats its token in every
+// Initial, so a token is taken only if the Initial can carry it beside the
+// handshake (retryTokenFits). Until 2026-10-29 any length was taken: from
+// 1134 bytes at a 1200-byte datagram sendCrypto had no room for a CRYPTO
+// byte — an empty frame queued forever under mu, then a negative length and
+// a panic — and from about 1150 the ClientHello resent after the Retry left
+// in a datagram of 1801 bytes. A token over 566 bytes at a 1200-byte
+// datagram, the bound docs/guide/limits.md writes, is now discarded with the
+// Retry; one of 566 is taken, and every Initial, the ClientHello resent
+// under the new keys and a second one sent after it, fits the datagram.
+func TestARetryTokenTheInitialCannotCarryIsDiscarded(t *testing.T) {
+	for _, tc := range []struct {
+		tokenLen int
+		taken    bool
+	}{{1100, false}, {1300, false}, {567, false}, {566, true}, {500, true}} {
+		tap := newTap(&fuzzSink{addr: "retrytok:self"})
+		dcid, scid := []byte{1, 2, 3, 4, 5, 6, 7, 8}, []byte{9, 10, 11, 12, 13, 14, 15, 16}
+		peer := fakeFuzzAddr("retrytok:peer")
+		c := assembleConn(tap, peer, dcid, scid, true, DefaultParameters())
+		if err := c.installInitial(dcid); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		c.initialDCID = dcid
+		c.mu.Unlock()
+		if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 1500)); err != nil {
+			t.Fatal(err)
+		}
+		c.mu.Lock()
+		discarded := c.discarded
+		c.mu.Unlock()
+		token := make([]byte, tc.tokenLen)
+		_ = c.receive(appendRetryPacket(nil, scid, []byte("server-scid-xyz"), dcid, token), peer)
+		c.mu.Lock()
+		retried, discards := c.retried, c.discarded-discarded
+		c.mu.Unlock()
+		if retried != tc.taken {
+			t.Errorf("%d-byte token: Retry honoured = %v, want %v", tc.tokenLen, retried, tc.taken)
+		}
+		if !tc.taken && discards != 1 {
+			t.Errorf("%d-byte token: %d packets counted as discarded, want 1", tc.tokenLen, discards)
+		}
+		if tc.taken {
+			c.mu.Lock()
+			c.retransmitLocked()
+			c.mu.Unlock()
+			if err := c.sendCrypto(tls.QUICEncryptionLevelInitial, make([]byte, 1500)); err != nil {
+				t.Fatalf("%d-byte token: %v", tc.tokenLen, err)
+			}
+		}
+		for i, w := range tap.recorded() {
+			if len(w.data) > c.maxDatagram {
+				t.Errorf("%d-byte token: datagram %d is %d bytes, over maxDatagram %d", tc.tokenLen, i, len(w.data), c.maxDatagram)
+			}
+		}
+		if tc.taken && len(tap.recorded()) < 3 {
+			t.Errorf("%d-byte token: %d datagrams; the resend after the Retry is not reached", tc.tokenLen, len(tap.recorded()))
+		}
+		_ = c.Close()
+	}
+}

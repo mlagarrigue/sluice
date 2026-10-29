@@ -1060,6 +1060,11 @@ func (c *Conn) sendCrypto(l tls.QUICEncryptionLevel, data []byte) error {
 			// After a Retry the client's Initial carries the token, which
 			// maxStreamChunk's slack does not cover (§14.2).
 			n = min(n, c.maxStreamChunk()-varintBytes(uint64(len(c.retryToken)))-len(c.retryToken))
+			if n <= 0 {
+				// handleRetry takes no token this long (retryTokenFits);
+				// were one taken, no CRYPTO byte would fit beside it.
+				return fmt.Errorf("%w: a %d-byte Retry token leaves no room for CRYPTO data", ErrQUIC, len(c.retryToken))
+			}
 		}
 		// Beside a gathered Initial, a chunk cut to the room left fills the
 		// datagram the Initial would otherwise pad with zeros (§14.1): the

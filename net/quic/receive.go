@@ -905,6 +905,22 @@ func (c *Conn) handleVersionNegotiation(datagram []byte) {
 	_ = c.Close()
 }
 
+// retryTokenFits reports whether a Retry's token is one this client can
+// repeat in every Initial packet it sends from here on (RFC 9000 §8.1.2):
+// not empty (§17.2.5.2), and no longer, with its length field, than half
+// the room an Initial has for handshake data (maxStreamChunk). The token
+// then takes no more of each Initial than the CRYPTO bytes it travels
+// beside, and the ClientHello goes again in at most twice the packets it
+// took first. RFC 9000 sets no bound; a server's token is a few dozen bytes
+// to a few hundred (this package's own, appendRetryToken, is at most 130
+// for an IPv6 peer without a zone name). Without the bound, a token of 1134
+// bytes at a 1200-byte datagram leaves sendCrypto no room for a CRYPTO byte,
+// and from about 1150 fitFrames cannot cut the ClientHello resent after the
+// Retry to the datagram. Callers hold mu.
+func (c *Conn) retryTokenFits(token []byte) bool {
+	return len(token) > 0 && varintBytes(uint64(len(token)))+len(token) <= c.maxStreamChunk()/2
+}
+
 // handleRetry acts on a Retry packet (§17.2.5): re-derive the Initial keys
 // from the server's new identifier, remember the token, and let loss
 // recovery resend the ClientHello under them. At most one Retry is honoured,
@@ -916,9 +932,10 @@ func (c *Conn) handleRetry(h longHeader) {
 	// §17.2.5.1: a Retry whose source identifier echoes the Initial's
 	// destination is discarded — it would re-derive the very keys it asks
 	// to replace. So is one whose destination is not the Source Connection
-	// ID the Initial carried: it answers some other connection. Discarded,
-	// not consumed: a later, well-formed Retry is still honoured.
-	if !c.isClient || c.retried || c.peerCIDSet || len(h.Token) == 0 || bytes.Equal(h.SCID, c.initialDCID) || !bytes.Equal(h.DCID, c.scid) {
+	// ID the Initial carried: it answers some other connection. So is one
+	// whose token the Initial cannot carry beside the handshake (retryTokenFits).
+	// Discarded, not consumed: a later, well-formed Retry is still honoured.
+	if !c.isClient || c.retried || c.peerCIDSet || !c.retryTokenFits(h.Token) || bytes.Equal(h.SCID, c.initialDCID) || !bytes.Equal(h.DCID, c.scid) {
 		c.mu.Unlock()
 		c.noteDiscard()
 		return
