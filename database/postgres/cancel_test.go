@@ -1229,3 +1229,72 @@ func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
 		}
 	})
 }
+
+// Conn.Exec, every Query, Tx.Pipeline and a Copier's WriteTuples were
+// watched, and the transaction's control statements were not: Begin,
+// Tx.Exec, Tx.Commit, Tx.Savepoint, Tx.Savepoints, Tx.RollbackTo and
+// Tx.Release checked ctx on entry and then read with no watch. Until
+// 2026-10-29 a server that took one of them and never answered held the
+// caller for as long as the socket lived, whatever ctx said — the COMMIT of a
+// batched pipeline included. Each now ends as a watched statement does: the
+// cancellation is sent when ctx ends, and the statement returns ctx's error.
+// Rollback, which takes no ctx, is bounded by CancelTimeout.
+func TestTxControlStatementsEndWithTheirContext(t *testing.T) {
+	begun := append(frame(pgwire.BackendCommandComplete, "BEGIN\x00"), frame(pgwire.BackendReadyForQuery, "T")...)
+	for _, tc := range []struct {
+		name string
+		run  func(ctx context.Context, conn *Conn, tx *Tx) error
+	}{
+		{"Tx.Commit", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Commit(ctx) }},
+		{"Tx.Exec", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Exec(ctx, "CALL slow()") }},
+		{"Tx.Savepoint", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Savepoint(ctx, "sp") }},
+		{"Tx.Savepoints", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Savepoints(ctx, "sp1", "sp2") }},
+		{"Tx.RollbackTo", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.RollbackTo(ctx, "sp") }},
+		{"Tx.Release", func(ctx context.Context, _ *Conn, tx *Tx) error { return tx.Release(ctx, "sp") }},
+		{"Begin", func(ctx context.Context, conn *Conn, _ *Tx) error {
+			_, err := conn.Begin(ctx, TxConfig{})
+			return err
+		}},
+		// Rollback takes no ctx: CancelTimeout stands in for one.
+		{"Tx.Rollback", func(_ context.Context, _ *Conn, tx *Tx) error { return tx.Rollback() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				srv, conn := newPipeServer(t)
+				conn.cancelKey = CancelKey{PID: 1, Secret: testSecret}
+				packets := make(chan []byte, 1)
+				conn.cancelDial = cancelHolding(0, packets) // confirms at once
+				conn.cancelTimeout = time.Second
+
+				var tx *Tx
+				if tc.name != "Begin" {
+					go func() { <-srv.read; srv.write(t, begun) }()
+					var err error
+					if tx, err = conn.Begin(t.Context(), TxConfig{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// The server reads the statement (the pipe server drains its
+				// reads) and answers nothing, ever.
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				defer cancel()
+				res := make(chan error, 1)
+				go func() { res <- tc.run(ctx, conn, tx) }()
+				var err error
+				select {
+				case err = <-res:
+				case <-time.After(time.Minute):
+					// A guard, not a measurement: the ctx ends at 100 ms and
+					// CancelTimeout is a second, so a watched statement is
+					// back long before.
+					_ = conn.rw.Close()
+					<-res
+					t.Fatalf("%s is still blocked a minute after its ctx ended", tc.name)
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("%s returned %v, want the ctx's error once the cancellation ran its course", tc.name, err)
+				}
+			})
+		})
+	}
+}

@@ -210,13 +210,15 @@ func (tx *Tx) Pipeline(ctx context.Context, parts []Part, cfg QueryConfig, fn fu
 	// Joined on every way out, a panic in fn included: the next statement
 	// on this connection reuses the Writer's buffer, which is the sender's
 	// until it has returned.
-	join := sync.OnceValue(func() error { return <-sent })
+	join := sync.OnceValue(func() error { return c.joinSender(sent) })
 	defer func() { _ = join() }()
 	w := c.watchCancel(ctx)
 	defer w.disarm()
 	err = c.readPipeline(ctx, parts, batchRows, batchBytes, fn)
 	if sendErr := join(); sendErr != nil {
-		c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		if c.broken == nil {
+			c.broken = fmt.Errorf("%w: sending the pipeline: %w", ErrConnBroken, sendErr)
+		}
 		err = c.broken
 	}
 	return c.settleCancel(ctx, w, err)

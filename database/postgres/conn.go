@@ -1888,6 +1888,20 @@ func (c *Conn) noteTxStatus(body []byte) {
 	}
 }
 
+// joinSender waits for the goroutine that flushes a pipelined write
+// (Tx.Pipeline, Tx.Savepoints) to return what Flush said. A read that broke
+// the connection first closes the socket under the sender: a server that
+// stopped reading leaves Flush blocked on a full send buffer — on any
+// transport, and at once on an unbuffered one — and nothing else would
+// release it, whatever ctx says, since a ctx that cannot end or a backend
+// with no cancel key arms no watch. Callers hold the busy guard.
+func (c *Conn) joinSender(sent <-chan error) error {
+	if c.broken != nil {
+		_ = c.rw.Close()
+	}
+	return <-sent
+}
+
 // breakConn records why the connection can no longer be used and returns that
 // reason, so a caller cannot keep going by ignoring one error.
 func (c *Conn) breakConn(cause error) error {

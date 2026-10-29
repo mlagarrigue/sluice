@@ -139,6 +139,10 @@ type Tx struct {
 // transaction on the paths nobody writes a test for — an early return, a
 // validation failure, a panic caught upstream. A transaction left open holds
 // the vacuum horizon back for as long as the connection lives.
+//
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 	if c.broken != nil {
 		return nil, c.broken
@@ -158,7 +162,8 @@ func (c *Conn) Begin(ctx context.Context, cfg TxConfig) (*Tx, error) {
 	if cfg.ReadOnly {
 		begin += " READ ONLY"
 	}
-	if err := c.execBusy(begin); err != nil {
+	w := c.watchCancel(ctx)
+	if err := c.settleCancel(ctx, w, c.execBusy(begin)); err != nil {
 		return nil, fmt.Errorf("opening the transaction: %w", err)
 	}
 	c.inTx = true
@@ -422,12 +427,15 @@ func skipSpaceAndComments(sql string) int {
 
 // Commit ends the transaction, keeping its effects. A context that is
 // already done abandons the commit without sending it, as every statement
-// does; the transaction then stays open until [Tx.Rollback].
+// does; the transaction then stays open until [Tx.Rollback]. A context that
+// ends while the server has not answered the COMMIT cancels it as it cancels
+// any statement ([Conn.Query], "What ctx stops, and what it does not"): a COMMIT the server
+// completed anyway reports nil, one it did not reports ctx's error.
 func (tx *Tx) Commit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("abandoning the commit: %w", err)
 	}
-	return tx.end("COMMIT")
+	return tx.end(ctx, "COMMIT")
 }
 
 // Rollback ends the transaction, discarding its effects. It is a no-op on a
@@ -436,15 +444,24 @@ func (tx *Tx) Commit(ctx context.Context) error {
 //
 // It takes no context, deliberately: it runs from a defer, after the context
 // that drove the transaction may already be done, and a block left open on a
-// connection that will be reused is the worse outcome.
+// connection that will be reused is the worse outcome. It is bounded all the
+// same, by [Config.CancelTimeout]: a server that has not answered the
+// ROLLBACK by then is sent a cancellation, and one that does not end it
+// within CancelTimeout more has the connection closed under it, which rolls
+// the transaction back on the server and leaves [ErrConnBroken] here. A
+// ROLLBACK is the cheapest statement a server runs, so the bound is for a
+// server gone silent, not for a slow one.
 func (tx *Tx) Rollback() error {
 	if tx.done {
 		return nil
 	}
-	return tx.end("ROLLBACK")
+	ctx, cancel := context.WithTimeout(context.Background(), tx.conn.cancelBound())
+	defer cancel()
+	return tx.end(ctx, "ROLLBACK")
 }
 
-func (tx *Tx) end(verb string) error {
+// end sends COMMIT or ROLLBACK under ctx's cancellation watch.
+func (tx *Tx) end(ctx context.Context, verb string) error {
 	if tx.done {
 		return ErrTxDone
 	}
@@ -472,8 +489,9 @@ func (tx *Tx) end(verb string) error {
 	// Read before the statement runs: the ReadyForQuery that answers it
 	// resets the flag to the clean state the connection is now in.
 	failed := tx.conn.txFailed
-	rolledBack, err := tx.conn.execRolledBack(verb)
-	if err != nil {
+	w := tx.conn.watchCancel(ctx)
+	rolledBack, execErr := tx.conn.execRolledBack(verb)
+	if err := tx.conn.settleCancel(ctx, w, execErr); err != nil {
 		return err
 	}
 	// Belt and braces: the status byte said the block was aborted, or the
@@ -493,11 +511,15 @@ func (tx *Tx) end(verb string) error {
 // SQL.
 // A COMMIT sent this way in an aborted block reports [ErrTxCommitRollback], as
 // [Conn.Exec] does.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Exec(ctx context.Context, sql string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
 	}
-	err := tx.conn.execUser(sql)
+	w := tx.conn.watchCancel(ctx)
+	err := tx.conn.settleCancel(ctx, w, tx.conn.execUser(sql))
 	tx.endedBySQL()
 	return err
 }
@@ -648,11 +670,14 @@ func (tx *Tx) SetLocalTimeout(ctx context.Context, d time.Duration) error {
 // The name is an SQL identifier, not a value, so it cannot be a bound
 // parameter and is validated instead. Do not build it from anything a request
 // carried.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("SAVEPOINT "+name))
 }
 
 // Savepoints establishes several savepoints in one round trip.
@@ -678,6 +703,9 @@ func (tx *Tx) Savepoint(ctx context.Context, name string) error {
 // The answers are read while the SAVEPOINTs are still being written, as
 // [Tx.Pipeline] does, so the number of names is bounded by nothing but the
 // backend; keep it to the hundreds its subtransaction cache suits.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	if err := tx.check(ctx); err != nil {
 		return err
@@ -716,6 +744,7 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 		}
 		sent <- err
 	}()
+	w := c.watchCancel(ctx)
 	// A simple Query message is its own transaction boundary, so each one
 	// answers with its own ReadyForQuery.
 	var first error
@@ -731,33 +760,41 @@ func (tx *Tx) Savepoints(ctx context.Context, names ...string) error {
 	}
 	// Joined before returning: the next statement reuses the Writer's
 	// buffer, which is the sender's until it has returned.
-	if err := <-sent; err != nil {
-		c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
-		return c.broken
+	if err := c.joinSender(sent); err != nil {
+		if c.broken == nil {
+			c.broken = fmt.Errorf("%w: establishing %d savepoints: %w", ErrConnBroken, len(names), err)
+		}
+		first = c.broken
 	}
 	if c.broken != nil {
-		return c.broken
+		first = c.broken
 	}
-	return first
+	return c.settleCancel(ctx, w, first)
 }
 
 // RollbackTo undoes everything since the named savepoint, leaving the
 // transaction open and the savepoint still established.
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) RollbackTo(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("ROLLBACK TO SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("ROLLBACK TO SAVEPOINT "+name))
 }
 
 // Release forgets a savepoint, keeping its effects. Releasing one that is no
 // longer needed is what keeps the subtransaction count away from the cliff
 // described on [Tx.Savepoint].
+// A ctx that ends before the server has answered cancels the statement as
+// [Conn.Query] does ("What ctx stops, and what it does not"), and the call
+// returns ctx's error.
 func (tx *Tx) Release(ctx context.Context, name string) error {
 	if err := tx.checkName(ctx, name); err != nil {
 		return err
 	}
-	return tx.conn.execBusy("RELEASE SAVEPOINT " + name)
+	return tx.conn.settleCancel(ctx, tx.conn.watchCancel(ctx), tx.conn.execBusy("RELEASE SAVEPOINT "+name))
 }
 
 func (tx *Tx) check(ctx context.Context) error {
