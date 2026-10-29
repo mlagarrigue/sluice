@@ -86,8 +86,12 @@ func AppendTupleHeader(dst []byte, fields int) []byte {
 }
 
 // AppendField appends one field: its length, then its bytes.
+//
+// The length is not checked here. A field leaves inside one CopyData, which
+// pgwire refuses past MaxOutgoingMessage (1 GiB): a length the conversion
+// would wrap, or that the server would read as negative, cannot reach it.
 func AppendField(dst, v []byte) []byte {
-	dst = binary.BigEndian.AppendUint32(dst, uint32(len(v))) //nolint:gosec // G115: bounded by the caller's value
+	dst = binary.BigEndian.AppendUint32(dst, uint32(len(v))) //nolint:gosec // G115: past 1 GiB the CopyData carrying it is refused
 	return append(dst, v...)
 }
 
@@ -121,7 +125,7 @@ func BeginField(dst []byte) (out []byte, at int) {
 // EndField writes the length of the field [BeginField] opened at.
 func EndField(dst []byte, at int) []byte {
 	n := len(dst) - at - 4
-	binary.BigEndian.PutUint32(dst[at:at+4], uint32(n)) //nolint:gosec // G115: bounded by what the caller wrote
+	binary.BigEndian.PutUint32(dst[at:at+4], uint32(n)) //nolint:gosec // G115: past 1 GiB the CopyData carrying it is refused (AppendField)
 	return dst
 }
 
