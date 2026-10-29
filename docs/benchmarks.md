@@ -1663,21 +1663,25 @@ benchmark's comment tells why.
 
 ### Statement cache
 
-This table was measured apart from the rest of the page, by the same
+This table is measured apart from the rest of the page, by the same
 method on the same machine (core 14 pinned, `GOMAXPROCS=1`, 1 s × 3,
-median), on 2026-10-28 with go1.26.9 at a load of 1.6. `PGPrepareOff` runs
-with the cache off since `aa67ba7`; the 783 ns published before measured it
-on, level with `PGPrepareHit`. Off, it pays the parse on every query: 10%
-over the hit (685 against 621 ns over five further passes).
+median); the dated line inside its markers says when. That session ran
+~15% slower than the one of 2026-10-28: `StmtCacheHit` takes 18.6 ns at
+the commit of the previous measurement (`eaff6ce`) and at the head alike,
+paired A/B, against the 16 ns published that day — the machine, not the
+code. `PGPrepareOff` runs with the cache off since `aa67ba7`; off, it pays
+the parse on every query: 12% over the hit (836 against 743 ns).
 
 <!-- consolidate: statement-cache -->
+Measured apart from the session above, by the same method: 2026-10-29 23:37 UTC, go1.26.9, load 0.39.
+
 | benchmark | median | spread | B/op | allocs/op |
 |---|---|---|---|---|
-| `BenchmarkPGPrepareHit` | 614 ns | ±4% | 80 B | 5 |
-| `BenchmarkPGPrepareMissUnbounded` | 1894 ns | ±19% ** | 1017 B | 9 |
-| `BenchmarkPGPrepareOff` | 702 ns | ±11% | 80 B | 5 |
-| `BenchmarkStmtCacheChurn` | 145 ns | ±2% | 55 B | 3 |
-| `BenchmarkStmtCacheHit` | 16 ns | ±4% | 0 B | 0 |
+| `BenchmarkPGPrepareHit` | 743 ns | ±6% | 80 B | 5 |
+| `BenchmarkPGPrepareMissUnbounded` | 2169 ns | ±8% | 1010 B | 9 |
+| `BenchmarkPGPrepareOff` | 836 ns | ±2% | 80 B | 5 |
+| `BenchmarkStmtCacheChurn` | 166 ns | ±3% | 55 B | 3 |
+| `BenchmarkStmtCacheHit` | 19 ns | ±0% | 0 B | 0 |
 <!-- /consolidate -->
 
 ### Paired verdicts
