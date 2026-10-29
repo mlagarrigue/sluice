@@ -232,7 +232,8 @@ caller; authenticating first keeps it for those you serve. And a refused
 authentication says nothing about the body: an anonymous client does not
 learn which fields your API expects.
 
-`ClaimAuthorizer` builds the grant from the token's own claims; that is
+`ClaimAuthorizer` builds the grant from the token's own claims —
+`DimensionClaims` says which claim carries each dimension's values; that is
 correct only if the token's issuer is your own service. Otherwise,
 implement `Authorizer` against whatever knows the policy. The grant is then
 passed to the database through `tx.SetLocal`, so that PostgreSQL's

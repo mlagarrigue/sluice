@@ -408,7 +408,7 @@ outside the transaction under nobody's identity.
 
 | Field | Zero | Bounds | What it sets |
 |---|---|---|---|
-| `Isolation` | the server's default | | the isolation level |
+| `Isolation` | the server's default (`IsolationDefault`) | `IsolationReadCommitted`, `IsolationRepeatableRead`, `IsolationSerializable` | the isolation level |
 | `ReadOnly` | read-write | | opens the transaction READ ONLY |
 | `Timeout` | no bound | > 0 to bound | statement_timeout for the transaction's lifetime |
 
