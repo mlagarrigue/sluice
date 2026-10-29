@@ -19,13 +19,13 @@ func ExampleProbe() {
 	result := probe.Probe(kept, &out)
 
 	fmt.Println(sluice.Collect(result))
-	fmt.Println("in: ", in.Elems(), "elements in", in.Batches(), "batches")
-	fmt.Println("out:", out.Elems(), "elements in", out.Batches(), "batches")
+	fmt.Println("in: ", in.Elements(), "elements in", in.Batches(), "batches")
+	fmt.Println("out:", out.Elements(), "elements in", out.Batches(), "batches")
 
 	// The lag is the subtraction, and in a real pipeline it can be read from
 	// another goroutine while this one runs. On one goroutine it is volume:
 	// what the filter consumed without emitting.
-	fmt.Println("dropped by the filter:", in.Elems()-out.Elems())
+	fmt.Println("dropped by the filter:", in.Elements()-out.Elements())
 	// Output:
 	// [2 4 6 8]
 	// in:  8 elements in 4 batches
@@ -44,6 +44,6 @@ func ExampleCounter() {
 		return seen < 2 // take one batch, refuse the second
 	})
 
-	fmt.Println("accepted:", c.Batches(), "batches,", c.Elems(), "elements")
+	fmt.Println("accepted:", c.Batches(), "batches,", c.Elements(), "elements")
 	// Output: accepted: 1 batches, 2 elements
 }

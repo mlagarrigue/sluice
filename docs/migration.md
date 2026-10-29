@@ -40,6 +40,12 @@ signatures — a value now refused — come last.
   their bounds and their contents are what they were for an input that was
   already non-decreasing.
 
+### Instrumentation: `probe`
+
+- **`Counter.Elems` is `Counter.Elements`** ("Counter.Elements replaces
+  Elems"): the same count, its name spelled out as everywhere else in the
+  API. Rename the call; `Counter.Batches` and `probe.Probe` keep theirs.
+
 ### PostgreSQL: `database/postgres`
 
 - **`NewConn` takes a `Config`** (`ef256c7`):
