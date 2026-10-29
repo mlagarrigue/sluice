@@ -200,6 +200,12 @@ func TestGenericDecodersRefuseNull(t *testing.T) {
 	if _, err := DecodeBoolArray(nil, rawBool); !errors.Is(err, ErrCodec) {
 		t.Fatalf("DecodeBoolArray accepted a NULL: %v", err)
 	}
+	// A variable-width element is the case the refusal exists for: no width
+	// check stands behind it, and bytea would read a NULL as empty bytes.
+	rawBytea := appendNullableArrayOf(nil, OIDBytea, []Null[[]byte]{{}}, AppendBytea)
+	if _, err := DecodeByteaArray(nil, rawBytea); !errors.Is(err, ErrCodec) || !strings.Contains(err.Error(), "is NULL") {
+		t.Fatalf("DecodeByteaArray on a NULL: %v, want ErrCodec saying it is NULL", err)
+	}
 }
 
 // bytea elements must be copied out: the wire buffer is reused per batch.
