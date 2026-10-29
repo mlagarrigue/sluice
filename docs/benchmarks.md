@@ -498,7 +498,7 @@ stages'.
 
 **What remains for the exit from experimental.** This measurement was one of
 the two conditions; the other, a first real consumer building its request
-path on these stages, stays open (`docs/guide/limits.md`).
+path on these stages, is met since 0.3.0 (`docs/guide/limits.md`).
 
 ## Request bodies, whole or streamed
 

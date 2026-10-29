@@ -15,8 +15,8 @@
 //
 // It lives outside the core by the library's own test: nothing in the core
 // stops compiling if this package is removed. Nothing here is on the
-// supported path, and no real consumer has built its request path on these
-// stages yet: that is what keeps the label.
+// supported path yet: a first real consumer has met the exit condition
+// (docs/guide/limits.md), and the label goes in a commit of its own.
 //
 // # The element is the exchange
 //
