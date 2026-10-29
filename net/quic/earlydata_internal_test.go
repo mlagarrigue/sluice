@@ -740,3 +740,112 @@ func TestATicketPresentedFourTimesIsAdmittedOnce(t *testing.T) {
 		t.Errorf("0-RTT admitted to %v; want the first presentation only (RFC 9846 §8: at most once)", admitted)
 	}
 }
+
+// A connection that reserved a ticket and never used its 0-RTT — the
+// handshake ended without the early keys, or the connection did — gives the
+// reservation back when it ends, and the next presentation of the ticket
+// is admitted. One that used it keeps the ticket spent.
+func TestAnUnusedReservationIsGivenBackWhenTheConnectionEnds(t *testing.T) {
+	g := newEarlyGate(10*time.Minute, 16)
+	ticket := g.ticketExtra(time.Now())
+	present := func(name string) (*Conn, bool) {
+		c := newConn(&fuzzSink{addr: fakeFuzzAddr("release:" + name)}, fakeFuzzAddr("release:peer"),
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		c.early = g
+		ss := &tls.SessionState{EarlyData: true, Extra: [][]byte{ticket}}
+		if _, err := c.handleTLSEvent(tls.QUICEvent{Kind: tls.QUICResumeSession, SessionState: ss}); err != nil {
+			t.Fatal(err)
+		}
+		return c, ss.EarlyData
+	}
+	end := func(c *Conn) {
+		c.mu.Lock()
+		c.releaseEarlyTicketLocked()
+		c.mu.Unlock()
+	}
+	a, ok := present("a")
+	if !ok {
+		t.Fatal("the first presentation is refused; the case under test is not reached")
+	}
+	end(a) // never took its early keys
+	b, ok := present("b")
+	if !ok {
+		t.Fatal("the reservation of a connection that never used it was not given back")
+	}
+	b.mu.Lock()
+	b.earlyTaken = true // its 0-RTT accepted (installEarly)
+	b.mu.Unlock()
+	end(b)
+	if _, ok := present("c"); ok {
+		t.Error("a ticket whose 0-RTT was accepted was admitted again once its connection ended")
+	}
+}
+
+// Every 0-RTT packet held for the early secret is read once the connection
+// can answer in 1-RTT, not only the first: a burst of early requests is
+// several packets, and each one left unread is a request resent in 1-RTT.
+func TestEveryHeldZeroRTTPacketIsReadOnRelease(t *testing.T) {
+	sec, err := initialSecrets([]byte("held0rtt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := newPacketOpener(sec.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := boundsConn(t, false)
+	held := func() []byte {
+		// A 0-RTT long header and bytes that never authenticate: each read
+		// is counted as a discard, which is what this test counts.
+		b := []byte{0xc0 | packetZeroRTT<<4, 0, 0, 0, 1, byte(len(c.scid))}
+		b = append(b, c.scid...)
+		b = append(b, 0)
+		b = varint.Append(b, 24)
+		return append(b, make([]byte, 24)...)
+	}
+	c.mu.Lock()
+	c.earlyOpener = opener
+	c.earlyAccepted = make(chan struct{})
+	for range 3 {
+		c.deferredEarly = append(c.deferredEarly, deferredPacket{raw: held(), at: time.Now()})
+	}
+	before := c.discarded
+	c.mu.Unlock()
+	if err := c.releaseEarly(); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	read := c.discarded - before
+	c.mu.Unlock()
+	if read != 3 {
+		t.Errorf("%d of 3 held 0-RTT packets were read on release", read)
+	}
+}
+
+// The same for the packets of a space held for its keys: every one is read
+// once the keys arrive, not only the first.
+func TestEveryPacketHeldForItsKeysIsReadWhenTheyArrive(t *testing.T) {
+	c := boundsConn(t, false)
+	held := func() []byte {
+		b := []byte{0xc0 | packetHandshake<<4, 0, 0, 0, 1, byte(len(c.scid))}
+		b = append(b, c.scid...)
+		b = append(b, 0)
+		b = varint.Append(b, 24)
+		return append(b, make([]byte, 24)...)
+	}
+	c.mu.Lock()
+	for range 3 {
+		c.deferred[spaceHandshake] = append(c.deferred[spaceHandshake], deferredPacket{raw: held(), at: time.Now()})
+	}
+	before := c.discarded
+	c.mu.Unlock()
+	if err := c.install(tls.QUICEncryptionLevelHandshake, tls.TLS_AES_128_GCM_SHA256, make([]byte, 32), false); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	read := c.discarded - before
+	c.mu.Unlock()
+	if read != 3 {
+		t.Errorf("%d of 3 held Handshake packets were read when the keys arrived", read)
+	}
+}

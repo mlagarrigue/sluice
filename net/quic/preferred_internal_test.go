@@ -1158,3 +1158,43 @@ func TestRetirePriorToMovesThePreferredCandidateOffTheRetiredIdentifier(t *testi
 		t.Errorf("the candidate probes under %q after Retire Prior To 4, with %q in use; want a pooled identifier never used", after, c.dcid)
 	}
 }
+
+// The peer's transport parameters arm the idle clock at the smaller of the
+// two announced timeouts (RFC 9000 §10.1), and leave it disarmed when
+// neither end announced one: a deadline of "now" there would end a
+// connection that asked never to idle out.
+func TestPeerParametersArmTheIdleClockOnlyWithATimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		local, peer time.Duration
+		want        time.Duration // zero: no deadline
+	}{
+		{"both announce one", 30 * time.Second, 10 * time.Second, 10 * time.Second},
+		{"neither announces one", 0, 0, 0},
+	} {
+		c := newConn(&recordingPC{addr: fakeFuzzAddr("idle:self")}, fakeFuzzAddr("idle:peer"),
+			[]byte("srv-cid0"), []byte("cli-cid0"), true, DefaultParameters())
+		c.initialDCID = []byte("srv-cid0")
+		c.pinPeerSCID([]byte("srv-cid0"))
+		p := DefaultParameters()
+		p.MaxIdleTimeout = tc.peer
+		p.initialSourceCID, p.originalDCID = []byte("srv-cid0"), []byte("srv-cid0")
+		c.mu.Lock()
+		c.idleTimeout, c.idleDeadline = tc.local, time.Time{}
+		c.mu.Unlock()
+		before := time.Now()
+		if err := c.handlePeerParameters(appendParameters(nil, p)); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		c.mu.Lock()
+		deadline := c.idleDeadline
+		c.mu.Unlock()
+		_ = c.Close()
+		switch {
+		case tc.want == 0 && !deadline.IsZero():
+			t.Errorf("%s: idle deadline armed at %v with no timeout announced", tc.name, deadline.Sub(before))
+		case tc.want != 0 && (deadline.Before(before.Add(tc.want)) || deadline.After(time.Now().Add(tc.want))):
+			t.Errorf("%s: idle deadline %v after the parameters, want %v", tc.name, deadline.Sub(before), tc.want)
+		}
+	}
+}
