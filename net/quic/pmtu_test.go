@@ -20,10 +20,15 @@ func TestPMTUProbeNotStarvedBySaturatingTransfer(t *testing.T) {
 	const (
 		rtt   = 20 * time.Millisecond
 		total = 4 << 20
-		// Measured at 2.2 to 2.3 round trips on 2026-10-18 — the
-		// confirmation, then the probe's own round trip behind the
-		// queue — doubled.
-		pmtuStarveBound = 5
+		// Measured at 2.2 to 2.3 round trips on Linux on 2026-10-18 —
+		// the confirmation, then the probe's own round trip behind the
+		// queue — and at 6.1 on a loaded macOS CI runner (2026-10-28),
+		// whose timers and scheduling stretch every step; the bound of 5
+		// that doubled the Linux figure failed there by chance. What the
+		// test guards against is a probe starved by the flight, which is
+		// acknowledged at the end of the transfer, 40 to 60 round trips in
+		// (0.8 s here, 1.2 s on that runner): 10 stays four times short.
+		pmtuStarveBound = 10
 	)
 	var reached atomic.Int64
 	link := &netemLink{prof: netemProfile{owd: rtt / 2, rate: 50_000_000 / 8, queue: 5 * time.Millisecond}}

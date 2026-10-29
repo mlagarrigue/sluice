@@ -348,7 +348,7 @@
       "transfercorruption": "succeeded",
       "ipv6": "succeeded",
       "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "succeeded",
+      "rebind-port": "random: the runner fails a case with any PATH_CHALLENGE left unanswered, and at the rebind the simulator, its 25-packet queue full with the transfer, sometimes drops the challenges sluice sends on the new path (2026-10-28: packets 355 to 362 never reached quiche); quiche answers every challenge it receives, sluice sends a fresh one about a second later, and the path is validated — no fault on either side",
       "rebind-addr": "succeeded",
       "connectionmigration": "failed: quiche's client never migrates to the server's preferred address, so the runner sees one path"
     },
