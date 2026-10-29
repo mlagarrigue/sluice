@@ -133,6 +133,59 @@ func TestParkedWriterDropsItsFrameWhenTheStreamIsReset(t *testing.T) {
 	}
 }
 
+// StopSending on a stream with nothing left to stop gives the unread bytes
+// back as well: the peer's FIN arrived whole with them, or its RESET_STREAM,
+// which settles only the bytes never delivered (abandon), came after them.
+// Until 2026-10-29 that StopSending returned before dropping the buffer,
+// and every such stream refused unread took its bytes off the connection
+// window for good: sixteen 64 KiB requests refused that way spent a 1 MiB
+// window, the case the fix of 2026-10-26 left open.
+func TestStopSendingWithNothingLeftToStopGivesBackTheWindow(t *testing.T) {
+	const (
+		streams  = 16
+		perBytes = 1 << 16
+	)
+	for _, ending := range []string{"FIN", "RESET_STREAM"} {
+		c := newConn(&fuzzSink{addr: "qual01:self"}, fakeFuzzAddr("qual01:peer"),
+			[]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8}, false, DefaultParameters())
+		data := bytes.Repeat([]byte("x"), perBytes)
+		for i := range streams {
+			id := uint64(i) * 4
+			b := streamFrameBytes(id, 0, data)
+			if ending == "FIN" {
+				b = varint.Append(nil, FrameStream|streamOFF|streamLEN|streamFIN)
+				b = varint.Append(b, id)
+				b = varint.Append(b, 0)
+				b = varint.Append(b, uint64(len(data)))
+				b = append(b, data...)
+			}
+			if err := c.frames(spaceApplication, b, time.Now()); err != nil {
+				t.Fatalf("%s, stream %d: %v", ending, id, err)
+			}
+			if ending == "RESET_STREAM" {
+				if err := c.frames(spaceApplication, appendFrame(nil, FrameResetStream, id, 0, perBytes), time.Now()); err != nil {
+					t.Fatalf("%s, stream %d: %v", ending, id, err)
+				}
+			}
+			s, err := c.AcceptStream(t.Context())
+			if err != nil {
+				t.Fatalf("%s, stream %d: accept: %v", ending, id, err)
+			}
+			if err := s.StopSending(0); err != nil {
+				t.Fatalf("%s, stream %d: StopSending: %v", ending, id, err)
+			}
+		}
+		c.mu.Lock()
+		highest, consumed := c.connRecv.highest, c.connRecv.consumed
+		c.mu.Unlock()
+		_ = c.Close()
+		if consumed < highest {
+			t.Errorf("after %s: %d bytes received on streams refused unread, %d credited back: the connection window is short by %d for good",
+				ending, highest, consumed, highest-consumed)
+		}
+	}
+}
+
 // A stream whose bytes reached the read buffer, were partly read, then
 // refused with StopSending and settled by the peer's RESET_STREAM.
 //

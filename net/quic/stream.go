@@ -608,10 +608,6 @@ func (s *Stream) StopSending(code uint64) error {
 	s.endTaken = true
 	over := s.readReset || s.recvDone
 	s.mu.Unlock()
-	if over {
-		c.maybeRemoveLocked(s)
-		return nil
-	}
 	// The application has said it will not read the rest, so the bytes
 	// already in the read buffer are forfeit — and the connection window
 	// gets them back. Nothing else ever would: bytes delivered into the
@@ -623,9 +619,17 @@ func (s *Stream) StopSending(code uint64) error {
 	// exhausted a 1 MiB window — 1 MiB received, 256 bytes given back —
 	// and the peer was left with no credit on a connection that was still
 	// answering. Batch mode (CreditOnDelivery) credits on delivery and was
-	// never affected.
+	// never affected. A stream with nothing left to stop owes the same: its
+	// FIN arrived whole with bytes nobody read, or the peer's RESET_STREAM,
+	// which settles only the bytes never delivered (abandon), left some in
+	// the buffer.
 	if n := s.dropUnreadLocked(); n > 0 && c.connRecv.consume(n) {
 		c.grants = appendFrame(c.grants, frameMaxData, c.connRecv.nextMax())
+	}
+	if over {
+		c.maybeRemoveLocked(s)
+		c.flushControlLocked()
+		return nil
 	}
 	frame := appendFrame(nil, FrameStopSending, s.id, code)
 	err := c.sendPacketLocked(spaceApplication, frame, sendOpts{}) // ungated: see sendOpts.waitCwnd
