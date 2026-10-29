@@ -4,13 +4,16 @@
 #
 #   scripts/interop-runner.sh [peer]      # default peer: quic-go
 #   scripts/interop-runner.sh --matrix [peer|all]
+#   scripts/interop-runner.sh --unpullable
 #
 # SIDE=server or SIDE=client runs one direction only, sluice in that role;
 # the default runs both. --matrix prints, as JSON, the {peer, side} pairs a
 # full pass crosses: every implementation in the runner's list at
 # RUNNER_REF, on each side its role allows (a server-only peer meets
 # sluice as a client, a client-only one meets it as a server). It reads the
-# list over HTTPS and needs only curl and jq.
+# list over HTTPS and needs only curl and jq. --unpullable tries to pull the
+# image of every peer UNPULLABLE names, and fails naming those the registry
+# serves again: they belong back in the matrix. It needs curl, jq and docker.
 #
 # Needs docker (with compose), python3, tshark 4.5 or newer, jq and git.
 # The runner is cloned into RUNNER_DIR (default: a directory under the
@@ -70,6 +73,25 @@ if [ "${1:-}" = "--matrix" ]; then
         | (if $role != "server" then {peer: $peer, side: "server"} else empty end),
           (if $role != "client" then {peer: $peer, side: "client"} else empty end) ]
       | if length == 0 then error("no implementation named \($want) in the runner list, or its image is not served (UNPULLABLE)") else . end'
+  exit
+fi
+
+# The reader of UNPULLABLE's promise: without it a peer whose image is
+# served again would stay out of the matrix with nothing to say so.
+if [ "${1:-}" = "--unpullable" ]; then
+  list=$(curl -fsSL "https://raw.githubusercontent.com/quic-interop/quic-interop-runner/$RUNNER_REF/implementations_quic.json")
+  served=''
+  for peer in $UNPULLABLE; do
+    peer_image=$(echo "$list" | jq -r --arg p "$peer" '.[$p].image // empty')
+    [ -n "$peer_image" ] || fail "UNPULLABLE names $peer, which the runner list at $RUNNER_REF does not hold; take it out of the list"
+    if docker pull -q "$peer_image" >/dev/null 2>&1; then
+      echo "$peer: $peer_image is served again"
+      served="$served $peer"
+    else
+      echo "$peer: $peer_image is still not served"
+    fi
+  done
+  [ -z "$served" ] || fail "served again:$served; take each out of UNPULLABLE in scripts/interop-runner.sh, run a pass against it and write its record in interop/expected-results.json"
   exit
 fi
 

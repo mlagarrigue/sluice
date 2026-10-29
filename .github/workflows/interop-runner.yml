@@ -57,6 +57,18 @@ jobs:
           echo "include=$include" >> "$GITHUB_OUTPUT"
           echo "$include" | jq -r '.[] | "\(.peer) \(.side)"'
 
+  # The peers left out of the matrix because their registry stopped serving
+  # their image (UNPULLABLE in the script) are tried again on every pass; a
+  # red here names the one served again and what to do. A job of its own, so
+  # that the pairs run either way.
+  unpullable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: scripts/interop-runner.sh --unpullable
+
   interop:
     needs: pairs
     name: ${{ matrix.peer }} (sluice ${{ matrix.side }})
