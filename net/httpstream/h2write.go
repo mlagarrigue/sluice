@@ -184,17 +184,20 @@ type h2Writer struct {
 	// reader still remembers; evicted is the streams the reader forgot
 	// while their answer was still being written. See responded and evict.
 	//
-	// The set costs 5 to 7% of consume on BenchmarkH2ConsumeLongConn (a
+	// The set costs 5% of consume on BenchmarkH2ConsumeLongConn (a
 	// connection past MaxConcurrentStreams requests, each answered; paired
-	// A/B, ab.sh) against a ring of the last 256 answers, which is cheaper
-	// because it forgets. Neither of the two obvious suspects is that cost:
-	// handing the reader's evictions over once per frame batch instead of
-	// once per stream measures as noise, and so does replacing the map with
-	// a sliding bitmap of the recent identifiers, h2Conn.opened's shape,
-	// exact with a map for the identifiers left behind (7 wins in 15 paired
-	// rounds) — the insert and delete per stream are not what the ring
-	// saved. The map stays, the simplest exact set. BenchmarkH2Consume,
-	// whose rounds never fill the reader's memory, sees no difference.
+	// A/B, ab.sh, SLOWER +4.9% in 2 wins of 19) against a ring of the last
+	// 256 answers, which is cheaper because it forgets. The CPU profile
+	// says where: three hash operations per stream — the insert when its
+	// answer ends (1.7% of the run), the lookup and the delete when the
+	// reader forgets it (2.5%) — and evict's lock (under 1%). That is the price
+	// of an exact set, spread over pieces each under 2%, which is why no
+	// single one can be taken back measurably: one hash instead of two in
+	// evict, the evictions handed over once per frame batch instead of
+	// once per stream, and a sliding bitmap of the recent identifiers
+	// (h2Conn.opened's shape) all measure as noise. The map stays, the
+	// simplest exact set. BenchmarkH2Consume, whose rounds never fill the
+	// reader's memory, sees no difference.
 	ended   map[uint32]struct{}
 	evicted map[uint32]struct{}
 	initial int32
