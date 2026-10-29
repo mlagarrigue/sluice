@@ -21,13 +21,10 @@ and two of the Go project's own modules, explained below.
 > is tested and measured; but function names may still change before
 > version 1. See [Status and limits](#status-and-limits).
 
-The guides describe the `main` branch, which carries the changes grouped
-for the next minor release; the last one published, v0.3.0, differs from it
-by the breaking changes [Migrating to main](docs/migration.md#since-v030)
-lists. Until that release, install `main`:
+The guides describe the latest release, v0.4.0:
 
 ```sh
-go get github.com/mlagarrigue/sluice@main
+go get github.com/mlagarrigue/sluice
 ```
 
 ```go

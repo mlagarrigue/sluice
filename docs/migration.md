@@ -1,14 +1,14 @@
-# Migrating to `main`
+# Migrating between versions
 
 In v0, a minor version may break what the previous one offered; `main`
-groups the breaking changes for the next one. Code written against v0.3.0
-reads the first section; code written against v0.2.2 reads both, the
+groups the breaking changes for the next one, in a "Since v0.4.0" section
+once there are any. Code written against v0.3.0 reads the first section; code written against v0.2.2 reads both, the
 second first. Each entry names the commit that made the change, says what
 changed, and what to write instead. The packages come in the order a reader
 meets them; within a package, the changes of behavior that keep the
 signatures — a value now refused — come last.
 
-## Since v0.3.0
+## From v0.3.0 to v0.4.0
 
 ### Fan-out: `parallel`
 
