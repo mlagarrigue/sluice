@@ -372,7 +372,7 @@ whichever way the conditions go:
   signal put there for a watcher to time the round trip.
 - **`net/quic` TLS**: the handshake is `crypto/tls`'s, from the Go release
   `go.mod` names as the floor, run through `tls.QUICClient` and
-  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Three of its
+  `tls.QUICServer`; what it refuses leaves as CRYPTO_ERROR. Eleven of its
   positions depart from RFC 9846, none visible to a conformant peer, and
   the compatibility mode is neither asked for nor policed; they are
   inherited as they are, listed in [TLS, in detail](#tls-in-detail).
@@ -629,15 +629,41 @@ for key shares generated independently, and RFC 9954 §3.2, which RFC 10024
 builds on, relaxes that for the same algorithm reused within one
 ClientHello: the repetition is the shape both texts allow, not a departure.
 
-Three of its positions depart from RFC 9846 and are
-inherited as they are, none of them visible to a conformant peer: a
-`pre_shared_key` extension out of last place
-or a version never offered end the handshake with decode_error or
-protocol_version rather than illegal_parameter (§4.3.11, §4.3.1); an
-extension known but forbidden in the message carrying it is ignored
-rather than refused (§4.3, §4.4.1); a `pre_shared_key` without
-`psk_key_exchange_modes` continues without the PSK rather than aborting
-(§4.3.9).
+Eleven of its positions depart from RFC 9846 and are inherited as they
+are; none is visible to a conformant peer, which never sends what they
+judge.
+
+Refused, but under another alert than the text's — the handshake stops,
+and only the CRYPTO_ERROR code the peer sees differs:
+
+- a ServerHello whose `legacy_version` is not 0x0303: illegal_parameter
+  rather than protocol_version (§4.2.3, Appendix E.5);
+- a ServerHello whose `legacy_compression_method` is not 0: decode_error
+  rather than illegal_parameter (§4.2.3);
+- a `pre_shared_key` extension out of last place, or a version never
+  offered: decode_error or protocol_version rather than illegal_parameter
+  (§4.3.11, §4.3.1);
+- a ClientHello with neither `supported_groups` nor a PSK:
+  handshake_failure rather than missing_extension (§9.2).
+
+Accepted where the text asks for a refusal:
+
+- a ClientHello whose `legacy_version` is not 0x0303, when
+  `supported_versions` is present: the field is not read (§4.2.2,
+  Appendix E.5);
+- a `legacy_session_id` of 33 to 255 bytes, which the server echoes at
+  the same length, past the bound of 32 (§3.4);
+- an extension known but forbidden in the message carrying it: ignored
+  (§4.3, §4.4.1);
+- an empty SNI acknowledgement in EncryptedExtensions when no SNI was
+  sent: not refused (§4.3);
+- `early_data` in EncryptedExtensions with no PSK selected: not refused,
+  and the client takes its 0-RTT as accepted — only the faulty server
+  suffers for it (§4.3.11);
+- `supported_groups` without `key_share`, or the reverse: the ClientHello
+  is accepted (§9.2);
+- a `pre_shared_key` without `psk_key_exchange_modes`: the handshake
+  continues without the PSK (§4.3.9).
 
 The TLS 1.3 compatibility mode is neither asked for by this
 client nor policed by this server: `crypto/tls` sends no
