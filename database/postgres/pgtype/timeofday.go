@@ -6,16 +6,6 @@ import (
 	"time"
 )
 
-// Type OIDs for the types this file encodes.
-const (
-	OIDTime     uint32 = 1083
-	OIDTimeTZ   uint32 = 1266
-	OIDMacaddr  uint32 = 829
-	OIDMacaddr8 uint32 = 774
-	OIDBit      uint32 = 1560
-	OIDVarbit   uint32 = 1562
-)
-
 // TimeOfDay is a clock reading with no date and no zone: PostgreSQL's `time`.
 //
 // It is not a [time.Duration] and not a [time.Time], because it is neither. A

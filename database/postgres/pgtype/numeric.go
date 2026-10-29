@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// OIDNumeric is PostgreSQL's arbitrary-precision decimal.
-const OIDNumeric uint32 = 1700
-
 // NumericSign says what kind of value a [Numeric] holds.
 type NumericSign uint16
 

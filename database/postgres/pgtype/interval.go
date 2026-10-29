@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// OIDInterval is PostgreSQL's interval.
-const OIDInterval uint32 = 1186
-
 // intervalSize is microseconds, days, months — in that order on the wire.
 const intervalSize = 16
 
@@ -123,8 +120,10 @@ func (iv Interval) Duration() (d time.Duration, ok bool) {
 	return time.Duration(sum), true
 }
 
-// String renders the interval the way PostgreSQL's default IntervalStyle does,
-// which is what makes a failing test readable.
+// String renders the interval's three fields as they are stored — months,
+// days, microseconds, as in "14mon 3d 14706789000us" — which is what makes a
+// failing test readable. It is not PostgreSQL's IntervalStyle output
+// ("1 year 2 mons 3 days 04:05:06.789") for the same value.
 func (iv Interval) String() string {
 	return fmt.Sprintf("%dmon %dd %dus", iv.Months, iv.Days, iv.Micros)
 }

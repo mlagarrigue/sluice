@@ -8,31 +8,6 @@ import (
 	"time"
 )
 
-// Type OIDs of the types this package encodes. They are the numbers a Parse
-// message carries and a RowDescription reports, and naming them is what keeps
-// a switch on 1184 from being unreadable.
-const (
-	OIDBool        uint32 = 16
-	OIDBytea       uint32 = 17
-	OIDName        uint32 = 19
-	OIDInt8        uint32 = 20
-	OIDInt2        uint32 = 21
-	OIDInt4        uint32 = 23
-	OIDText        uint32 = 25
-	OIDFloat4      uint32 = 700
-	OIDFloat8      uint32 = 701
-	OIDBPChar      uint32 = 1042 // char(n): text, blank-padded to n
-	OIDVarchar     uint32 = 1043
-	OIDDate        uint32 = 1082
-	OIDTimestamp   uint32 = 1114
-	OIDTimestampTZ uint32 = 1184
-	OIDUUID        uint32 = 2950
-	OIDUUIDArray   uint32 = 2951
-	OIDInt4Array   uint32 = 1007
-	OIDInt8Array   uint32 = 1016
-	OIDTextArray   uint32 = 1009
-)
-
 // ErrCodec reports a value whose bytes do not match the type they were read
 // as: the wrong width, a truncated array header, a boolean that is neither.
 //
