@@ -170,11 +170,11 @@ func EnablePacketInfo(c *net.UDPConn) error {
 
 // PacketDestination finds, in the out-of-band bytes of one datagram read
 // from a socket [EnablePacketInfo] was applied to, the local address the
-// datagram reached and the index of the interface it arrived on. An
-// AF_INET socket reports an IPv4 address; an AF_INET6 one reports IPv4
-// traffic as IPv4-mapped on Linux and macOS, and as plain IPv4 on Windows,
-// whose dual-stack socket hands it over under IP_PKTINFO: compare through
-// [netip.Addr.Unmap]. ok is false when oob carries no such message.
+// datagram reached and the index of the interface it arrived on. IPv4
+// traffic is reported as plain IPv4 on every system and every socket,
+// AF_INET or dual-stack AF_INET6 — where Linux and macOS hand it over
+// IPv4-mapped and Windows does not — and [AppendPacketSource] takes that
+// form back on either socket. ok is false when oob carries no such message.
 // It does not allocate.
 func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 	return packetDestination(oob)
@@ -184,8 +184,9 @@ func PacketDestination(oob []byte) (dst netip.Addr, ifindex int, ok bool) {
 // datagram sent with [net.UDPConn.WriteMsgUDP] leave from src. ifindex
 // pins the outgoing interface and is only needed for a link-local src;
 // zero leaves the choice to routing. src should be what
-// [PacketDestination] reported on the same socket: an IPv4 address for an
-// AF_INET socket, an IPv6 or IPv4-mapped one for an AF_INET6 socket. Where
+// [PacketDestination] reported on the same socket: an IPv4 address for IPv4
+// traffic, on an AF_INET socket or a dual-stack one, and an IPv6 address
+// otherwise; an IPv4-mapped one is taken too. Where
 // [EnablePacketInfo] is unsupported, oob is returned unchanged.
 func AppendPacketSource(oob []byte, src netip.Addr, ifindex int) []byte {
 	return appendPacketSource(oob, src, ifindex)

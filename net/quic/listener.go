@@ -830,7 +830,7 @@ func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn
 	if !ok || dst.IsMulticast() || dst.IsUnspecified() {
 		return n, from, s.uc, ecn, nil
 	}
-	if !dst.Is6() || dst.Is4In6() || !dst.IsLinkLocalUnicast() {
+	if !dst.Is6() || !dst.IsLinkLocalUnicast() {
 		ifindex = 0 // let routing pick the interface, as it would anyway
 	}
 	k := localKey{dst, ifindex}
@@ -842,7 +842,7 @@ func (s *sourcedVias) read(buf []byte) (n int, from net.Addr, via net.PacketConn
 		v = &sourcedConn{
 			UDPConn: s.uc,
 			oob:     udp.AppendPacketSource(nil, dst, ifindex),
-			local:   net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst.Unmap(), uint16(s.uc.LocalAddr().(*net.UDPAddr).Port))), //nolint:gosec // G115: a UDP port fits 16 bits
+			local:   net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst, uint16(s.uc.LocalAddr().(*net.UDPAddr).Port))), //nolint:gosec // G115: a UDP port fits 16 bits
 		}
 		s.byLocal[k] = v
 	}
