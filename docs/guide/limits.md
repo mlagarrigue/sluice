@@ -525,10 +525,13 @@ images pushed by hand, and `latest` never moves back to them). The
 table of its latest complete pass is on the
 [`interop-results` branch](https://github.com/mlagarrigue/sluice/tree/interop-results);
 a failed case, or a direction that wrote no results, is run once more.
+
 `interop/expected-results.json` records
 every case of every implementation the workflow crosses, with the cause
 of every failure, and a pass that departs from it fails the job. Green
-means every case passed against at least two peers.
+means every case of every peer went as the record says; a case the
+record marks `random`, whose outcome follows the losses the simulator
+draws, is accepted succeeded or failed, its cause written beside it.
 
 What the record holds against quic-go and ngtcp2. As a server, sluice
 passes handshake, transfer, longrtt, chacha20, multiplexing, retry,

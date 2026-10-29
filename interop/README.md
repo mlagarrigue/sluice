@@ -12,7 +12,10 @@ cd interop
 go test ./...
 ```
 
-What runs here, and in the CI job `interop-quic` on every push:
+What runs here, and in the CI job `interop-quic` on every push, starts
+from these three tests; the others — 0-RTT, resumption, ECN, the preferred
+address, HTTP/3 methods and cancellation, the guard on the expected
+results — build on the same peers:
 
 | Test | Peer | What it proves |
 |---|---|---|
