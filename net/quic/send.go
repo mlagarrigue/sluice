@@ -1254,12 +1254,12 @@ func (c *Conn) retransmitLocked() {
 // the rest (nil when it all fits). A payload sent under a larger datagram
 // size — before a black hole or a new path brought it back to 1200
 // (pmtu.go) — would otherwise be resent whole into the path that just lost
-// it. The frames of a stream reset since leave the payload first
-// (pruneResetLocked); a payload with nothing left comes back empty, and
-// the caller owes nothing for it. Callers hold mu.
+// it. The frames the connection's state has made stale since leave the
+// payload first (pruneStaleLocked); a payload with nothing left comes back
+// empty, and the caller owes nothing for it. Callers hold mu.
 func (c *Conn) fitLocked(space int, payload []byte) (now, rest []byte) {
-	if space == spaceApplication && len(c.resetIDs) > 0 {
-		if payload = c.pruneResetLocked(payload); len(payload) == 0 {
+	if space == spaceApplication {
+		if payload = c.pruneStaleLocked(payload); len(payload) == 0 {
 			return nil, nil
 		}
 	}
@@ -1335,17 +1335,32 @@ func (c *Conn) noteResetLocked(id uint64) {
 		c.resetIDs = make(map[uint64]uint64)
 	}
 	c.resetIDs[id] = c.spaces[spaceApplication].nextPN
-	c.control = c.pruneResetLocked(c.control)
+	c.control = c.pruneStaleLocked(c.control)
 }
 
-// pruneResetLocked drops from payload — a lost packet's frames, about to go
-// again — the STREAM and STREAM_DATA_BLOCKED frames of the streams this end
-// has reset since: after RESET_STREAM an endpoint ceases transmission and
-// retransmission of both (RFC 9000 §3.3, §19.4). Every other frame goes as
-// it was, the RESET_STREAM above all when that is what was lost. The
-// payload comes back untouched, without a copy, when nothing is dropped;
-// a payload that does not parse, which cannot happen, goes whole.
-func (c *Conn) pruneResetLocked(payload []byte) []byte {
+// pruneStaleLocked drops from payload — a lost packet's frames, about to go
+// again, or the control queue — the frames the connection's state has made
+// stale since they were written. Every other frame goes as it was, the
+// RESET_STREAM above all when that is what was lost. The payload comes back
+// untouched, without a copy, when nothing is dropped; a payload that does
+// not parse, which cannot happen, goes whole. Callers hold mu.
+//
+// What is stale (RFC 9000 §3.3, §13.3):
+//   - STREAM and STREAM_DATA_BLOCKED of a stream this end has reset: after
+//     RESET_STREAM an endpoint ceases transmission and retransmission of
+//     both (§3.3, §19.4);
+//   - STREAM_DATA_BLOCKED, DATA_BLOCKED and STREAMS_BLOCKED whose limit is
+//     no longer the one blocking: they "always include the limit that is
+//     causing blocking at the time that they are transmitted" (§13.3), and
+//     a stream whose sending part is closed or gone — "Data Sent", "Data
+//     Recvd", which §3.3 forbids the frame from — blocks on nothing;
+//   - MAX_STREAM_DATA once the receiving part is in "Size Known" or "Reset
+//     Recvd", or gone (§13.3 SHOULD stop; §3.3: the receiver sends it in
+//     "Recv" only);
+//   - STOP_SENDING once the receiving part is in "Data Recvd" or "Reset
+//     Recvd", or gone (§13.3: sent until then; §3.3: not after a
+//     RESET_STREAM was received).
+func (c *Conn) pruneStaleLocked(payload []byte) []byte {
 	var kept []byte
 	n := 0
 	for n < len(payload) {
@@ -1354,10 +1369,7 @@ func (c *Conn) pruneResetLocked(payload []byte) []byte {
 			return payload
 		}
 		l := len(payload) - n - len(tail)
-		drop := f.IsStream() || f.Type == frameStreamDataBlocked
-		if drop {
-			_, drop = c.resetIDs[f.StreamID]
-		}
+		drop := c.staleLocked(&f)
 		switch {
 		case drop && kept == nil:
 			kept = append(make([]byte, 0, len(payload)), payload[:n]...)
@@ -1370,6 +1382,43 @@ func (c *Conn) pruneResetLocked(payload []byte) []byte {
 		return payload
 	}
 	return kept
+}
+
+// staleLocked is pruneStaleLocked's verdict on one frame. Callers hold mu.
+func (c *Conn) staleLocked(f *Frame) bool {
+	switch {
+	case f.IsStream():
+		_, reset := c.resetIDs[f.StreamID]
+		return reset
+	case f.Type == frameStreamDataBlocked:
+		if _, reset := c.resetIDs[f.StreamID]; reset {
+			return true
+		}
+		s := c.streams[f.StreamID]
+		return s == nil || s.sendClosed || s.sendQ.avail() != 0 || s.sendQ.max != f.value
+	case f.Type == frameDataBlocked:
+		return c.connSend.avail() != 0 || c.connSend.max != f.value
+	case f.Type == frameStreamsBlocked, f.Type == frameStreamsBlocked|1:
+		opened, limit := c.localStreamCountersLocked(f.Type&1 != 0)
+		return *opened < *limit || *limit != f.value
+	case f.Type == frameMaxStreamData:
+		s := c.streams[f.StreamID]
+		if s == nil {
+			return true
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.fin || s.readReset
+	case f.Type == FrameStopSending:
+		s := c.streams[f.StreamID]
+		if s == nil {
+			return true
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.recvDone || s.readReset
+	}
+	return false
 }
 
 // pruneResetIDsLocked forgets the reset streams nothing in flight predates:

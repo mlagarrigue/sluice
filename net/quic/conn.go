@@ -347,7 +347,7 @@ type Conn struct {
 	// resetIDs holds the streams this end has reset and whose STREAM frames
 	// may still be in flight, by the application packet number the reset
 	// left at: a lost payload replayed after the reset drops their STREAM
-	// and STREAM_DATA_BLOCKED frames (RFC 9000 §3.3, pruneResetLocked). The
+	// and STREAM_DATA_BLOCKED frames (RFC 9000 §3.3, pruneStaleLocked). The
 	// stream itself may have left streams by then — it is retired as soon
 	// as its receiving side ends, an HTTP/3 cancellation's usual order — so
 	// the record is this map, pruned once nothing sent before the mark is
