@@ -39,6 +39,18 @@ const listenerCIDLen = 8
 // table without bound.
 const defaultMaxPendingConns = 1024
 
+// The bounds above which [ListenerConfig.Validate] refuses a size the
+// listener allocates up front: MaxPendingConns slots of the accept queue
+// (8 MiB of pointers at the bound), ConnQueueLen slots of each
+// connection's datagram queue, and the hint StatelessResetsPerSecond gives
+// the per-address reset table. Each is far past any figure the fields'
+// documentation leads to, and well under what make can build.
+const (
+	maxPendingConnsLimit = 1 << 20
+	maxConnQueueLen      = 1 << 16
+	maxResetsPerSecond   = 1 << 20
+)
+
 // ListenerConfig governs how a [Listener] treats a new connection attempt
 // before it has any reason to trust it.
 type ListenerConfig struct {
@@ -68,9 +80,9 @@ type ListenerConfig struct {
 	// new handshakes rather than let peers park unbounded connections on
 	// it. Beyond the bound, a new Initial is refused (CONNECTION_REFUSED)
 	// — the client retries, the same as it must under any transient
-	// overload. Zero means 1024; a negative value is refused by
-	// [NewListener]. Accepted connections are not counted here: MaxConns
-	// bounds the total.
+	// overload. Zero means 1024; a negative value, or one past 1,048,576,
+	// is refused by [NewListener]. Accepted connections are not counted
+	// here: MaxConns bounds the total.
 	MaxPendingConns int
 
 	// HandshakeTimeout bounds how long one handshake may hold a pending
@@ -162,7 +174,7 @@ type ListenerConfig struct {
 	// connection whose reader is stalled holds up to ConnQueueLen ×
 	// max(MaxUDPPayloadSize, 2048) bytes, 128 KiB at the defaults —
 	// the figure to multiply by MaxConns when sizing memory. A negative
-	// value is refused by [NewListener].
+	// value, or one past 65,536, is refused by [NewListener].
 	ConnQueueLen int
 
 	// RetryTokenTTL is how long a Retry token stays acceptable: generous
@@ -190,8 +202,8 @@ type ListenerConfig struct {
 	// listener would generate traffic toward whatever source address a
 	// sender claims; RFC 9000 §10.3.3 has an endpoint stop once a limit is
 	// reached. A server restarting in front of thousands of clients tells
-	// them at this rate. Zero means 16; a negative value is refused by
-	// [NewListener].
+	// them at this rate. Zero means 16; a negative value, or one past
+	// 1,048,576, is refused by [NewListener].
 	StatelessResetsPerSecond int
 
 	// StatelessResetsPerAddress is one source address's share of that
@@ -430,6 +442,22 @@ func (c ListenerConfig) resolve() (ListenerConfig, error) {
 	err = errors.Join(err, ipkey.Check("quic: ListenerConfig.", &c.IPv4PrefixBits, &c.IPv6PrefixBits))
 	if c.ConnQueueLen < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.ConnQueueLen %d is negative — zero means %d", c.ConnQueueLen, defaultConnQueueLen))
+	}
+	// The three sizes allocated from these fields up front — the accept
+	// queue, each connection's datagram queue, the reset table's hint — are
+	// bounded here: past what make can build, NewListener or the first
+	// connection would panic instead of answering with an error.
+	for _, f := range [...]struct {
+		name     string
+		v, limit int
+	}{
+		{"MaxPendingConns", c.MaxPendingConns, maxPendingConnsLimit},
+		{"ConnQueueLen", c.ConnQueueLen, maxConnQueueLen},
+		{"StatelessResetsPerSecond", c.StatelessResetsPerSecond, maxResetsPerSecond},
+	} {
+		if f.v > f.limit {
+			err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.%s %d is past %d, the most the listener allocates for it", f.name, f.v, f.limit))
+		}
 	}
 	if c.RetryTokenTTL < 0 {
 		err = errors.Join(err, fmt.Errorf("quic: ListenerConfig.RetryTokenTTL %v is negative — zero means %v", c.RetryTokenTTL, defaultRetryTokenTTL))

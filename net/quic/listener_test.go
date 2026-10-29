@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"testing"
@@ -607,6 +608,12 @@ func TestValidateIsNewListenersCheck(t *testing.T) {
 	}{
 		{name: "zero parameters", params: quic.TransportParameters{}, got: quic.TransportParameters{}.Validate()},
 		{name: "a negative bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{MaxConns: -1}, got: quic.ListenerConfig{MaxConns: -1}.Validate()},
+		// Past what the listener allocates up front: until 2026-10-29
+		// Validate accepted these and NewListener, or the first
+		// connection, panicked in make.
+		{name: "MaxPendingConns past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{MaxPendingConns: math.MaxInt}, got: quic.ListenerConfig{MaxPendingConns: math.MaxInt}.Validate()},
+		{name: "ConnQueueLen past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}, got: quic.ListenerConfig{ConnQueueLen: 1<<16 + 1}.Validate()},
+		{name: "StatelessResetsPerSecond past its bound", params: quic.DefaultParameters(), lcfg: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}, got: quic.ListenerConfig{StatelessResetsPerSecond: math.MaxInt}.Validate()},
 	} {
 		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 		if err != nil {
