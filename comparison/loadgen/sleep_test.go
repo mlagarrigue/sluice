@@ -468,11 +468,11 @@ func TestCheck(t *testing.T) {
 		{"unit truncated", unitRequest(0, 42, false), `{"id":42,"tot`, false},
 		{"unit full ok", unitRequest(0, 42, true), `{"label":"order-42","total":294,"id":42}`, true},
 		{"unit full wrong total", unitRequest(0, 42, true), `{"id":42,"total":293,"label":"order-42"}`, false},
-		{"list ok", listRequest(0, 10, false), `{"from":10,"limit":1000,"items":[{"id":11},{"id":12}]}`, true},
+		{"list ok", listRequest(0, 10, false), string(listPage(10, listLimit)), true},
 		{"list not increasing", listRequest(0, 10, false), `{"from":10,"items":[{"id":11},{"id":11}]}`, false},
 		{"list at bound", listRequest(0, 10, false), `{"from":10,"items":[{"id":10}]}`, false},
 		{"list empty", listRequest(0, 10, false), `{"from":10,"items":[]}`, false},
-		{"list full ok", listRequest(0, 10, true), `{"from":10,"items":[{"id":11,"total":77,"label":"order-11"}]}`, true},
+		{"list full ok", listRequest(0, 10, true), string(listPage(10, listLimit)), true},
 		{"list full wrong row", listRequest(0, 10, true), `{"from":10,"items":[{"id":11,"total":77,"label":"order-12"}]}`, false},
 		{"write ok", writeRequest(0, 5, true), `{"key":5}`, true},
 		{"write other key", writeRequest(0, 5, false), `{"key":6}`, false},
@@ -489,10 +489,12 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// CMP-01: a list drawn on the table's last key asks for ids above the
-// highest one, and its page is rightly empty — it used to be counted a
-// wrong key. Empty anywhere else is still a wrong answer.
-func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
+// CMP-01: the list case is "N lignes par requête" (§2.2), and the table runs
+// one page past the keyspace so that a list drawn on any key, the last one
+// included, is a full page. A page short of listLimit rows, or empty, is a
+// wrong answer wherever it comes from: until 2026-10-29 the last key's
+// empty page was accepted, and a short page anywhere else.
+func TestEveryListIsAFullPage(t *testing.T) {
 	const keyspace = 50
 	draw := scenarios["list"].draw(10, keyspace)
 	var last, other request
@@ -506,12 +508,18 @@ func TestAListFromTheLastKeyIsEmpty(t *testing.T) {
 	if last.key != keyspace || other.key == 0 {
 		t.Fatalf("the draw gave no list from the last key (%d) or from another (%d)", last.key, other.key)
 	}
-	empty := func(from int64) []byte { return fmt.Appendf(nil, `{"from":%d,"items":[]}`, from) }
-	if err := check(last, empty(keyspace)); err != nil {
-		t.Errorf("the empty page from the last key was refused: %v", err)
-	}
-	if err := check(other, empty(other.key)); err == nil {
-		t.Errorf("an empty page from key %d was accepted", other.key)
+	for _, rq := range []request{last, other} {
+		for _, full := range []bool{false, true} {
+			rq.full = full
+			if err := check(rq, listPage(rq.key, listLimit)); err != nil {
+				t.Errorf("from %d, full validation %v: the full page was refused: %v", rq.key, full, err)
+			}
+			for _, n := range []int{0, 1, listLimit - 1} {
+				if err := check(rq, listPage(rq.key, n)); err == nil {
+					t.Errorf("from %d, full validation %v: a page of %d rows was accepted", rq.key, full, n)
+				}
+			}
+		}
 	}
 }
 
@@ -539,7 +547,7 @@ func TestCheckListRefusesWhatItMust(t *testing.T) {
 		ok   bool
 	}{
 		{"a full page", string(listPage(10, 1000)), true},
-		{"spaces after the colons", `{"from": 10, "items": [{"id": 11}, {"id": 12}]}`, true},
+		{"spaces after the colons", strings.ReplaceAll(string(listPage(10, listLimit)), `":`, `": `), true},
 		{"another bound", string(listPage(11, 3)), false},
 		{"ids that go back", `{"from":10,"items":[{"id":12},{"id":11}]}`, false},
 		{"an id at the bound", `{"from":10,"items":[{"id":10}]}`, false},
@@ -547,7 +555,7 @@ func TestCheckListRefusesWhatItMust(t *testing.T) {
 		{"no items", `{"from":10}`, false},
 		{"no bound", `{"items":[{"id":11}]}`, false},
 		{"cut short", string(listPage(10, 3)[:40]), false},
-		{"an id inside a label is not an id", `{"from":10,"items":[{"id":12,"label":"x\"id\":5"}]}`, true},
+		{"an id inside a label is not an id", strings.Replace(string(listPage(10, listLimit)), `"label":"order-11"`, `"label":"x\"id\":5"`, 1), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := check(rq, []byte(tc.body)); (err == nil) != tc.ok {

@@ -9,7 +9,13 @@ import (
 	"strconv"
 )
 
-// listLimit is the list scenario's page: 1 000 rows (§2.2).
+// listLimit is the list scenario's page: 1 000 rows (§2.2). The plan's
+// list case is "N lignes par requête" — N rows per request, the
+// serialisation of N rows being what the case isolates — so every list is a
+// full page: the table holds keyspace + listLimit rows (chain.sh, the
+// trivial server), and a list drawn on any key of 1..keyspace, the last one
+// included, has listLimit rows above it. One rule for every competitor, the
+// dataset being shared; check refuses any other length.
 const listLimit = 1000
 
 type kind int
@@ -31,9 +37,6 @@ type request struct {
 	keyField string
 	key      int64
 	full     bool
-	// atEnd marks a list drawn from the last key of the table: the one
-	// list whose page is rightly empty, since no id lies above it.
-	atEnd bool
 }
 
 // scenario draws the i-th request of a stage from one seed: the keys form
@@ -53,9 +56,7 @@ func (sc scenario) draw(seed uint64, keyspace int) func(i int) request {
 		// The 1 % is a function of (seed, i), not of the calls before it:
 		// the i-th request is the same whoever asks for it.
 		full := rand.New(rand.NewPCG(seed, uint64(i))).IntN(100) == 0 //nolint:gosec // G404: same
-		rq := sc(i, int64(perm[i%keyspace]+1), full)
-		rq.atEnd = rq.kind == list && rq.key == int64(keyspace)
-		return rq
+		return sc(i, int64(perm[i%keyspace]+1), full)
 	}
 }
 
@@ -141,11 +142,8 @@ func check(rq request, body []byte) error {
 			}
 			prev = it.ID
 		}
-		// Empty at the end of the table and nowhere else. Rows from the
-		// last key are not refused: the trivial server's table runs a page
-		// past the keyspace on purpose, so that every list it serves is full.
-		if len(items) == 0 && !rq.atEnd {
-			return fmt.Errorf("list from %d: empty", rq.key)
+		if len(items) != listLimit {
+			return fmt.Errorf("list from %d: %d rows, want a full page of %d (see listLimit)", rq.key, len(items), listLimit)
 		}
 		if rq.full {
 			return validateList(rq.key, items)
@@ -251,9 +249,8 @@ func checkList(rq request, body []byte) error {
 		}
 		rest, prev, n = after, id, n+1
 	}
-	// Empty at the end of the table and nowhere else (see check).
-	if n == 0 && !rq.atEnd {
-		return fmt.Errorf("list from %d: empty", rq.key)
+	if n != listLimit {
+		return fmt.Errorf("list from %d: %d rows, want a full page of %d (see listLimit)", rq.key, n, listLimit)
 	}
 	return nil
 }

@@ -46,7 +46,7 @@ DURATION=${DURATION:-10s}
 WARMUP=${WARMUP:-3s}
 SEED=${SEED:-1}     # the draw, the same for every contender of a round (§2.1)
 CONNS=${CONNS:-0}   # the budget C; 0 is 2 R (RTT + X) at the stage's rate (§3.5), a ramp's
-ROWS=${ROWS:-100000}
+ROWS=${ROWS:-100000} # the keyspace; the table holds a list page more (below)
 DB_POOL=${DB_POOL:-8}
 MAX_CONNECTIONS=${MAX_CONNECTIONS:-400}
 NOFILE=${NOFILE:-65536}
@@ -197,12 +197,15 @@ up() {
   # The table is loaded once, frozen and never written: autovacuum has
   # nothing to do on it, but the load's insert counts can reach the
   # statistics after the VACUUM and fire it a minute later, mid-stage.
+  # It runs one list page (1 000 rows, loadgen's listLimit) past the
+  # keyspace, so that a list drawn on any key, the last one included, is a
+  # full page: the rule the generator checks, the trivial server's table.
   psql <<SQL
 CREATE TABLE bench_orders (id bigint PRIMARY KEY, total bigint NOT NULL,
   label text NOT NULL, created timestamptz NOT NULL DEFAULT now())
   WITH (autovacuum_enabled = off);
 INSERT INTO bench_orders (id, total, label)
-  SELECT g, g * 7, 'order-' || g FROM generate_series(1, $ROWS) g;
+  SELECT g, g * 7, 'order-' || g FROM generate_series(1, $ROWS + 1000) g;
 VACUUM (FREEZE, ANALYZE) bench_orders;
 SQL
   if on "$DB_RTT"; then
