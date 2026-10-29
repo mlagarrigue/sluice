@@ -279,6 +279,13 @@ type ListenerConfig struct {
 	// handed to [Listener.Accept] before its handshake ends, and whatever
 	// it receives before [Conn.HandshakeComplete] is closed may be a
 	// replay whose handshake never completes.
+	//
+	// 0-RTT is sent under the parameters the client remembers from the
+	// connection that gave it the ticket (RFC 9000 §7.4.1), which are the
+	// listener's: [NewListener] refuses EarlyData with parameters that let
+	// a client send no stream byte in 0-RTT — InitialMaxData at zero, or no
+	// stream it may open with a window — since the ticket would then
+	// promise a round trip saved that no request could use.
 	EarlyData bool
 
 	// EarlyDataWindow is how long after its issue a ticket may still carry
@@ -526,6 +533,11 @@ func NewListener(pc net.PacketConn, cfg *tls.Config, params TransportParameters,
 	if (lcfg.SessionTickets || lcfg.EarlyData) && cfg.SessionTicketsDisabled {
 		return nil, fmt.Errorf("%w: ListenerConfig.SessionTickets or EarlyData is set and tls.Config.SessionTicketsDisabled too — "+
 			"crypto/tls would send no ticket", ErrQUIC)
+	}
+	if lcfg.EarlyData {
+		if err := params.earlyCredit(); err != nil {
+			return nil, err
+		}
 	}
 	var preferredV4, preferredV6 *net.UDPAddr
 	if lcfg.PreferredAddress != nil {

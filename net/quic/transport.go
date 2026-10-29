@@ -391,6 +391,25 @@ var ErrZeroParameters = errors.New("quic: zero TransportParameters announce no c
 // opened; the three run the same check.
 func (p TransportParameters) Validate() error { return p.check() }
 
+// earlyCredit refuses, for a listener with EarlyData, parameters under
+// which a client can send no stream byte in 0-RTT: the connection's credit
+// at zero, or no stream the client may open — bidirectional or
+// unidirectional — with a window of its own (RFC 9000 §7.4.1: 0-RTT is
+// sent under the remembered values, and these are what the client
+// remembers). The error names the field.
+func (p TransportParameters) earlyCredit() error {
+	if p.InitialMaxData == 0 {
+		return fmt.Errorf("%w: ListenerConfig.EarlyData with TransportParameters.InitialMaxData at zero — a client could send no byte in 0-RTT", ErrQUIC)
+	}
+	bidi := p.InitialMaxStreamsBidi > 0 && p.InitialMaxStreamDataBidiRemote > 0
+	uni := p.InitialMaxStreamsUni > 0 && p.InitialMaxStreamDataUni > 0
+	if !bidi && !uni {
+		return fmt.Errorf("%w: ListenerConfig.EarlyData with no stream a client may open and send on — "+
+			"TransportParameters.InitialMaxStreamsBidi and InitialMaxStreamDataBidiRemote, or InitialMaxStreamsUni and InitialMaxStreamDataUni, at zero", ErrQUIC)
+	}
+	return nil
+}
+
 // check refuses the zero value, which would announce a connection that
 // cannot move, and a MaxDatagramSize no path can carry.
 func (p TransportParameters) check() error {
