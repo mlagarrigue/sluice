@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // The comments of the code are read by people who have the tree and nothing
@@ -183,6 +185,64 @@ func TestDocCommentsAreNotGlued(t *testing.T) {
 	}
 }
 
+// A declaration's doc comment does not open on the name of another
+// declaration of its file: that is a comment a later insertion separated
+// from its own declaration, which go doc then shows on the wrong name while
+// the right one goes bare. TestDocCommentsAreNotGlued finds the comment
+// glued on top of another; this finds the one left on the wrong side.
+//
+// Only a first word in lower case is read as a name: an unexported
+// identifier is not an English word, where "Frame types" or "Error codes"
+// opening a block's comment are both a sentence and the name of a type or a
+// method.
+func TestDocCommentsStayOnTheirDeclaration(t *testing.T) {
+	for _, src := range goSources(t) {
+		if src.test || src.generated {
+			continue
+		}
+		decls := src.file.Decls
+		declared := map[string]bool{}
+		names := make([][]string, len(decls))
+		docs := make([]*ast.CommentGroup, len(decls))
+		for i, decl := range decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				names[i], docs[i] = []string{d.Name.Name}, d.Doc
+			case *ast.GenDecl:
+				docs[i] = d.Doc
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						names[i] = append(names[i], s.Name.Name)
+					case *ast.ValueSpec:
+						for _, n := range s.Names {
+							names[i] = append(names[i], n.Name)
+						}
+					}
+				}
+			}
+			for _, n := range names[i] {
+				declared[n] = true
+			}
+		}
+		for i, doc := range docs {
+			if doc == nil {
+				continue
+			}
+			words := strings.Fields(doc.Text())
+			if len(words) == 0 {
+				continue
+			}
+			first := strings.TrimRight(words[0], ".,:;")
+			if first == "" || !unicode.IsLower(rune(first[0])) || !declared[first] || slices.Contains(names[i], first) {
+				continue
+			}
+			t.Errorf("%s: the doc of %s opens on %s, another declaration of this file: put it back on its own",
+				src.fset.Position(doc.Pos()), strings.Join(names[i], ", "), first)
+		}
+	}
+}
+
 // processMarker is a working document named in a comment — the task
 // description a change was made from, the list of work left, a review's
 // report, the design notes, a user's report. None of them is in the
@@ -220,6 +280,14 @@ func TestCommentMarkers(t *testing.T) {
 			continue
 		}
 		for _, group := range src.file.Comments {
+			// Read over the whole group: "until" and its date are as often
+			// on two lines as on one.
+			if !src.test && !src.nested {
+				if m := datedHistory.FindString(group.Text()); m != "" {
+					t.Errorf("%s: the comment dates the code's history (%q); state the rule it holds",
+						src.fset.Position(group.Pos()), strings.Join(strings.Fields(m), " "))
+				}
+			}
 			for _, c := range group.List {
 				pos := src.fset.Position(c.Pos())
 				marker := processMarker
@@ -234,9 +302,6 @@ func TestCommentMarkers(t *testing.T) {
 				}
 				if historyMarker.MatchString(c.Text) && !usedToOtherSense.MatchString(c.Text) {
 					t.Errorf("%s: the comment tells the code's history; state the rule it holds: %s", pos, strings.TrimSpace(c.Text))
-				}
-				if m := datedHistory.FindString(c.Text); m != "" {
-					t.Errorf("%s: the comment dates the code's history (%q); state the rule it holds", pos, m)
 				}
 			}
 		}

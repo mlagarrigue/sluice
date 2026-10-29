@@ -1240,11 +1240,10 @@ func (c *Conn) Rebind(pc net.PacketConn) error {
 	}
 	// §9.5: a new local address sends under an identifier never used on
 	// another one. Decided before anything moves, so a refusal leaves the
-	// socket, the path state and the probe exactly as they were. Until
-	// 2026-10-21 the switch's result was ignored, and a pool with nothing
-	// fresh — before the server's NEW_CONNECTION_ID, or one Rebind past
-	// what it issued — sent from the new socket under an identifier the
-	// old path had already used.
+	// socket, the path state and the probe exactly as they were. A pool
+	// with nothing fresh — before the server's NEW_CONNECTION_ID, or one
+	// Rebind past what it issued — is refused rather than sending from the
+	// new socket under an identifier the old path has already used.
 	fresh := c.pickPeerCIDLocked(true)
 	if fresh < 0 {
 		return ErrNoFreshConnectionID
@@ -1316,9 +1315,9 @@ func (c *Conn) sendPathChallengeLocked() {
 		// data in every PATH_CHALLENGE frame, and §13.3 "a different
 		// payload each time". The response is matched against the latest
 		// data only (handlePathResponse): a late answer to an earlier
-		// challenge is ignored, and the next resend covers it. Until
-		// 2026-10-21 the data was renewed only when the amplification
-		// budget let the probe grow to full size.
+		// challenge is ignored, and the next resend covers it. Renewed on
+		// every resend, whether or not the amplification budget lets the
+		// probe grow to full size.
 		if data, err := randomID(8); err == nil {
 			copy(c.pathProbe.data[:], data)
 		}

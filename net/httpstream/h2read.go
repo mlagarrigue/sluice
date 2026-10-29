@@ -248,9 +248,6 @@ func (s *h2Conn) remember(id uint32, state h2State) {
 	}
 }
 
-// lookup returns what this end knows of a stream the client opened: the
-// stream itself while it is open, late standing in for it once it is
-// retired, nil once it is forgotten.
 // h2OpenedWindow is how many of the most recent odd identifiers h2Conn
 // remembers as opened or skipped (h2OpenedWords words of 64 bits). Past it,
 // an identifier is taken as opened: the tolerant answer, which costs the
@@ -285,6 +282,9 @@ func (s *h2Conn) wasOpened(id uint32) bool {
 	return s.opened[(id>>1)%h2OpenedWindow/64]&(1<<((id>>1)%64)) != 0
 }
 
+// lookup returns what this end knows of a stream the client opened: the
+// stream itself while it is open, late standing in for it once it is
+// retired, nil once it is forgotten.
 func (s *h2Conn) lookup(id uint32) *h2Stream {
 	if st := s.streams[id]; st != nil {
 		return st

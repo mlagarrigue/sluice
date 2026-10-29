@@ -351,9 +351,10 @@ func buildRequest(fields []Header, protocolErr error) (req Request, declared int
 		// RFC 9113 §8.5, RFC 9114 §4.4: a CONNECT carries :method and
 		// :authority and omits :scheme and :path; one that does not is
 		// malformed. Well formed, it is a request for a tunnel, which is
-		// answered 501 like the router answers it (see errConnect) — until
-		// 2026-10-20 the rule below reset it as a request without :path,
-		// and a CONNECT with :path and :scheme reached the handler.
+		// answered 501 like the router answers it (see errConnect). The
+		// check comes before the rule below, which would reset it as a
+		// request without :path, and it keeps a CONNECT with :path and
+		// :scheme from reaching the handler.
 		if scheme != nil || path != nil {
 			return req, 0, fmt.Errorf("%w: a CONNECT with :scheme or :path", protocolErr)
 		}

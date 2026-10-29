@@ -455,7 +455,6 @@ func initialPaddingAfter(before, headerLen, pnLen, payloadLen int) (pad, lengthW
 	return pad, lengthWidth
 }
 
-// pendingPacket is a packet built but not yet sealed: everything
 // takePNLocked consumes the next packet number of sp. In the application
 // space it leaves a number unused about once per congestion window (RFC
 // 9000 §21.4), so that a peer acknowledging numbers it never received
@@ -476,6 +475,7 @@ func (c *Conn) takePNLocked(sp *space, space int) uint64 {
 	return pn
 }
 
+// pendingPacket is a packet built but not yet sealed: everything
 // writePacketLocked decided — header up to the Length field, payload,
 // packet number, destination — waiting for the one thing it cannot know
 // alone, how much §14.1 padding it carries. When Initial and Handshake
