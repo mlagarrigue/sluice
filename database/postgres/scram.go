@@ -488,7 +488,7 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 			// RFC 5802: a mandatory extension the client does not recognise
 			// must abort the exchange. Skipping it would be agreeing to a
 			// term this client did not read.
-			return "", nil, 0, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, val)
+			return "", nil, 0, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, scramShort(val))
 		default:
 			// Optional attributes are reserved by the RFC for extension, and
 			// refusing an unknown one would turn a server upgrade into an
@@ -511,6 +511,25 @@ func parseServerFirst(msg, clientNonce string, b scramBounds) (nonce string, sal
 		return "", nil, 0, fmt.Errorf("%w: the server sent a %d-byte salt, below the %d this client accepts (Config.MinSCRAMSaltLen)", ErrAuth, len(salt), b.minSalt)
 	}
 	return nonce, salt, iter, nil
+}
+
+// scramServerErrors are the server-error-value reasons RFC 5802 §7 lists,
+// the only ones an error repeats.
+var scramServerErrors = []string{
+	"invalid-encoding", "extensions-not-supported", "invalid-proof",
+	"channel-bindings-dont-match", "server-does-support-channel-binding",
+	"channel-binding-not-supported", "unsupported-channel-binding-type",
+	"unknown-user", "invalid-username-encoding", "no-resources", "other-error",
+}
+
+// scramShort quotes an attribute value from a server not yet authenticated,
+// cut to 32 bytes: enough to name an extension, not enough for the server to
+// write what it likes into the caller's logs.
+func scramShort(val string) string {
+	if len(val) > 32 {
+		return strconv.Quote(val[:32]) + "…"
+	}
+	return strconv.Quote(val)
 }
 
 // parseServerFinal reads the server's signature, or the error it sent instead.
@@ -536,10 +555,15 @@ func parseServerFinal(msg string) ([]byte, error) {
 		case 'e':
 			// The server-error attribute: the exchange failed on its side and
 			// it said why, which is more useful than the generic refusal that
-			// would otherwise follow.
+			// would otherwise follow. Only a reason RFC 5802 §7 lists is
+			// repeated: the server is not yet authenticated here, and §7
+			// treats an unrecognised one as "other-error".
+			if !slices.Contains(scramServerErrors, val) {
+				val = "other-error"
+			}
 			return nil, fmt.Errorf("%w: the server rejected the exchange: %s", ErrAuth, val)
 		case 'm':
-			return nil, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, val)
+			return nil, fmt.Errorf("%w: the server requires an extension this package does not implement (m=%s)", ErrAuth, scramShort(val))
 		}
 	}
 	if sig == nil {

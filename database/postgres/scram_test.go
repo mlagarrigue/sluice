@@ -158,6 +158,23 @@ func TestParseServerFinal(t *testing.T) {
 		t.Errorf("parseServerFinal(e=...) = %v, want the server's reason carried through", err)
 	}
 
+	// The server is not authenticated yet: a reason outside RFC 5802 §7's
+	// list is repeated as the "other-error" §7 says it means, and an
+	// extension's name is cut short, so that neither puts the server's own
+	// text in the caller's error.
+	long := strings.Repeat("Z", 200)
+	_, err = parseServerFinal("e=" + long)
+	if err == nil || strings.Contains(err.Error(), "ZZZ") || !strings.Contains(err.Error(), "other-error") {
+		t.Errorf("parseServerFinal(e=<200 bytes>) = %v, want other-error and none of the server's text", err)
+	}
+	_, errFinal := parseServerFinal("m=" + long)
+	_, _, _, errFirst := parseServerFirst("m="+long, "nonce", Config{}.scramBounds())
+	for _, err := range []error{errFinal, errFirst} {
+		if err == nil || strings.Count(err.Error(), "Z") > 32 {
+			t.Errorf("an m= of 200 bytes: %v, want at most 32 of them repeated", err)
+		}
+	}
+
 	// A final message with neither is not a success with a missing field.
 	if _, err := parseServerFinal("x=1"); err == nil {
 		t.Error("parseServerFinal accepted a final message with no signature")
