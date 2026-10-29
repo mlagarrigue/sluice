@@ -3165,6 +3165,43 @@ func newConnectionIDFrame(seq, retire uint64, cid string, tok byte) []byte {
 	return b
 }
 
+// §19.15 again, for a sequence a Retire Prior To retired: each copy of its
+// NEW_CONNECTION_ID is answered with RETIRE_CONNECTION_ID (§19.16), and a
+// retirement still waiting in the control queue — a shut congestion window
+// holds it there — is not queued twice. Until 2026-10-29 every copy queued
+// one more, against the bound queueRetireLocked keeps on retirements, and
+// twenty copies in one datagram ended the connection with
+// CONNECTION_ID_LIMIT_ERROR.
+func TestCopiesOfARetiredNewConnectionIDQueueOneRetirement(t *testing.T) {
+	c := newConn(&fuzzSink{addr: "ncidcopies:self"}, fakeFuzzAddr("ncidcopies:peer"),
+		[]byte("initial0"), []byte("selfcid0"), true, DefaultParameters())
+	defer c.Close()
+	c.pinPeerSCID([]byte("srv-cid0"))
+	tok := make([]byte, 16)
+	one := ncidFrame(1, 0, []byte("srv-cid1"), tok)
+	if err := c.frames(spaceApplication, one, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.frames(spaceApplication, ncidFrame(2, 2, []byte("srv-cid2"), tok), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	queued := c.controlRetires
+	c.mu.Unlock()
+	var packet []byte
+	for range 20 {
+		packet = append(packet, one...)
+	}
+	if err := c.frames(spaceApplication, packet, time.Now()); err != nil {
+		t.Fatalf("twenty copies of one NEW_CONNECTION_ID ended the connection: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.controlRetires != queued {
+		t.Errorf("%d retirements queued after twenty copies, %d before: the one waiting answers them all", c.controlRetires, queued)
+	}
+}
+
 // RFC 9000 §19.15: "Receipt of the same frame multiple times MUST NOT be
 // treated as a connection error", and §13.3 retransmits a lost
 // NEW_CONNECTION_ID under the same sequence number with no exemption for a

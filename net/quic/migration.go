@@ -460,7 +460,7 @@ func (c *Conn) handleNewConnectionID(f Frame) error {
 		// advertised, which closes the connection on a conformant peer.
 		// Answering with RETIRE_CONNECTION_ID again is what §19.16 asks of
 		// an identifier this end will not use, and queueRetireLocked drops
-		// a duplicate.
+		// a duplicate still waiting in the queue.
 		return c.queueRetireLocked(seq)
 	}
 	c.peerCIDs = append(c.peerCIDs, peerCID{seq: seq, cid: append([]byte(nil), cid...), token: token})
@@ -566,8 +566,18 @@ func (c *Conn) pooledPeerCIDLocked(cid []byte) bool {
 // queue never drains, and it grows by one frame per frame received.
 // §5.1.2 lets an endpoint bound the retirements it tracks — it should
 // allow at least twice active_connection_id_limit — and treat exceeding
-// the bound as CONNECTION_ID_LIMIT_ERROR. Callers hold mu.
+// the bound as CONNECTION_ID_LIMIT_ERROR. A retirement still waiting in
+// the queue is not queued twice: copies of one NEW_CONNECTION_ID for a
+// sequence already retired each ask for it again (§19.16), and §19.15 says
+// "receipt of the same frame multiple times MUST NOT be treated as a
+// connection error" — without the check, twenty copies in one datagram
+// fill the bound with the same frame and end the connection. Callers hold
+// mu.
 func (c *Conn) queueRetireLocked(seq uint64) error {
+	frame := appendFrame(nil, frameRetireConnectionID, seq)
+	if c.controlHoldsLocked(frame) {
+		return nil
+	}
 	limit := max(2*min(c.params.ActiveConnIDLimit, 1<<10), 8)
 	if uint64(c.controlRetires) >= limit { //nolint:gosec // G115: a count, never negative
 		return &transportError{
@@ -576,7 +586,7 @@ func (c *Conn) queueRetireLocked(seq uint64) error {
 				ErrQUIC, c.controlRetires),
 		}
 	}
-	c.control = appendFrame(c.control, frameRetireConnectionID, seq)
+	c.control = append(c.control, frame...)
 	c.controlRetires++
 	return nil
 }
