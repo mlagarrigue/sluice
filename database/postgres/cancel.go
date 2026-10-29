@@ -241,7 +241,7 @@ func (w *cancelWatch) run(c *Conn, ctx context.Context) {
 	select {
 	case <-w.over:
 	case <-t.C:
-		w.err = fmt.Errorf("the server confirmed the cancellation, and the statement had not ended Config.CancelTimeout (%v) later", timeout)
+		w.err = fmt.Errorf("%w Config.CancelTimeout (%v) later", errCancelNoEffect, timeout)
 		_ = c.rw.Close()
 	}
 }
@@ -376,12 +376,21 @@ func (c *Conn) settleCancel(ctx context.Context, w *cancelWatch, err error) erro
 	return err
 }
 
+// errCancelNoEffect is the watch's error for a cancellation the server
+// confirmed and the statement outlived; any other error of the watch says
+// the cancellation was not confirmed.
+var errCancelNoEffect = errors.New("the server confirmed the cancellation, and the statement had not ended")
+
 // cancelUnconfirmed breaks the connection a cancellation did not settle —
 // not confirmed, or confirmed without the statement ending; the watch has
-// closed it — and logs one warning saying why.
+// closed it — and logs one warning saying which.
 func (c *Conn) cancelUnconfirmed(ctx context.Context, cerr error, completed bool) {
-	c.broken = fmt.Errorf("%w: the cancellation did not end the statement, so the connection was closed: %w", ErrConnBroken, cerr)
-	c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: cancellation did not end the statement, connection closed",
+	what := "the cancellation was not confirmed"
+	if errors.Is(cerr, errCancelNoEffect) {
+		what = "the cancellation did not end the statement"
+	}
+	c.broken = fmt.Errorf("%w: %s, so the connection was closed: %w", ErrConnBroken, what, cerr)
+	c.log().LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "postgres: "+what+", connection closed",
 		slog.Uint64("pid", uint64(c.cancelKey.PID)),
 		slog.Bool("statement_completed", completed),
 		slog.String("error", cerr.Error()))

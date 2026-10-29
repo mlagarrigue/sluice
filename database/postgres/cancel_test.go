@@ -720,6 +720,9 @@ func TestAnUnconfirmedCancellationBreaksTheConnection(t *testing.T) {
 			t.Errorf("conn.Err() = %v, want ErrConnBroken", conn.Err())
 		}
 		attrs := logs.warning(t, testSecret)
+		if msg := logs.recs[0].Message; !strings.Contains(msg, "not confirmed") {
+			t.Errorf("the warning says %q, want it to say the cancellation was not confirmed", msg)
+		}
 		if done := attrs["statement_completed"]; done.Kind() != slog.KindBool || done.Bool() {
 			t.Errorf("statement_completed = %v, want false", done)
 		}
@@ -1206,6 +1209,8 @@ func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
 		packets := make(chan []byte, 1)
 		conn.cancelDial = cancelHolding(0, packets) // confirms at once
 		conn.cancelTimeout = 2 * time.Second
+		logs := &recordHandler{}
+		conn.logger = slog.New(logs)
 		go func() { <-srv.read; <-packets }() // and never answers the statement
 
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
@@ -1226,6 +1231,10 @@ func TestAConfirmedCancellationThenSilenceStillEndsTheStatement(t *testing.T) {
 		}
 		if took := time.Since(start); took < 2*time.Second || took > 3*time.Second {
 			t.Errorf("Exec returned %v after it began, want CancelTimeout after the confirmation", took)
+		}
+		logs.warning(t, testSecret)
+		if msg := logs.recs[0].Message; !strings.Contains(msg, "did not end the statement") || strings.Contains(msg, "not confirmed") {
+			t.Errorf("the warning says %q, want it to say the confirmed cancellation did not end the statement", msg)
 		}
 	})
 }
