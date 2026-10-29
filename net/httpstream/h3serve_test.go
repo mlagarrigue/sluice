@@ -582,8 +582,14 @@ func TestH3AControlStreamWithoutCreditDoesNotOutliveTheGrace(t *testing.T) {
 	clientParams.InitialMaxStreamDataUni = 8
 	conn, cancel, served := startH3With(t, cfg, mustTransportParameters(cfg), clientParams, h3OKHandler)
 
-	// Let the server reach the write, then stop it: the grace runs from here.
-	time.Sleep(200 * time.Millisecond)
+	// The control stream arriving is the sign the server is inside the write:
+	// its first eight bytes are out and the rest waits for credit. Stopped
+	// from there, the grace runs while the write is parked.
+	ctx, stop := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stop()
+	if _, err := conn.AcceptStream(ctx); err != nil {
+		t.Fatalf("waiting for the server's control stream: %v", err)
+	}
 	cancel()
 	waitServedUnder(t, conn, served, 10*grace,
 		"the SETTINGS write waits for credit the client withholds, and nothing closes the connection at the forced stop")
