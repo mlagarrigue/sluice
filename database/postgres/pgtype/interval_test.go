@@ -48,8 +48,18 @@ func TestIntervalAgainstServerVectors(t *testing.T) {
 	}
 }
 
-// The arithmetic a Duration cannot do. These are the cases that make the three
-// fields worth keeping apart.
+// AddTo computes as the server does. The expected values are the server's
+// own answers (PostgreSQL 17.11, 2026-10-28): a month added to the 31st cuts
+// to the last day of the month reached, and the days move from there.
+//
+//	SELECT '2024-01-31'::timestamp + '1 month'::interval;                 -- 2024-02-29 00:00:00
+//	SELECT '2023-01-31'::timestamp + '1 month'::interval;                 -- 2023-02-28 00:00:00
+//	SELECT '2024-03-31'::timestamp + '1 month'::interval;                 -- 2024-04-30 00:00:00
+//	SELECT '2024-01-31 10:00'::timestamp + '1 month 1 day'::interval;     -- 2024-03-01 10:00:00
+//
+// Until 2026-10-29 the months went through time.Time.AddDate, which carries
+// 31 February into March: 2 March, 3 March, 1 May and 3 March, without an
+// error. TestIntegrationIntervalAddToMatchesTheServer asks a server the same.
 func TestIntervalAddTo(t *testing.T) {
 	tests := []struct {
 		name string
@@ -58,10 +68,28 @@ func TestIntervalAddTo(t *testing.T) {
 		want time.Time
 	}{
 		{
-			"a month from the 31st lands on the end of a shorter month",
+			"31 January plus one month, leap year",
 			time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC),
 			Interval{Months: 1},
-			time.Date(2024, 3, 2, 0, 0, 0, 0, time.UTC), // Go normalises 31 Feb
+			time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			"31 January plus one month, common year",
+			time.Date(2023, 1, 31, 0, 0, 0, 0, time.UTC),
+			Interval{Months: 1},
+			time.Date(2023, 2, 28, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			"31 March plus one month",
+			time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC),
+			Interval{Months: 1},
+			time.Date(2024, 4, 30, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			"months cut before the days are added",
+			time.Date(2024, 1, 31, 10, 0, 0, 0, time.UTC),
+			Interval{Months: 1, Days: 1},
+			time.Date(2024, 3, 1, 10, 0, 0, 0, time.UTC),
 		},
 		{
 			"a year of months, which is what the server sends",
@@ -73,7 +101,13 @@ func TestIntervalAddTo(t *testing.T) {
 			"months, then days, then microseconds — in that order",
 			time.Date(2024, 1, 31, 10, 0, 0, 0, time.UTC),
 			Interval{Months: 1, Days: 1, Micros: 3_600_000_000},
-			time.Date(2024, 3, 3, 11, 0, 0, 0, time.UTC),
+			time.Date(2024, 3, 1, 11, 0, 0, 0, time.UTC),
+		},
+		{
+			"negative months across a year",
+			time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC),
+			Interval{Months: -13},
+			time.Date(2023, 2, 28, 0, 0, 0, 0, time.UTC),
 		},
 	}
 	for _, tc := range tests {

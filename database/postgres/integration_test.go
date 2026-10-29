@@ -893,6 +893,77 @@ func TestIntegrationTimestampRangeDecodesBack(t *testing.T) {
 	}
 }
 
+// pgtype.Interval.AddTo computes timestamp + interval as the server does:
+// the months cut to the last day of the month reached, then the days on the
+// calendar, then the microseconds. Each case is asked of the server and
+// compared with AddTo on the same values; the timestamptz cases run in a
+// zone with a daylight-saving change, where a day is not 24 hours. Until
+// 2026-10-29 AddTo carried 31 February into March as time.Time.AddDate
+// does, and every month-end case here disagreed with the server.
+func TestIntegrationIntervalAddToMatchesTheServer(t *testing.T) {
+	conn := dial(t)
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Skipf("no time zone database: %v", err)
+	}
+	if err := exec(t, conn, "SET TimeZone = 'Europe/Paris'"); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		ts, iv string // SQL literals
+		from   time.Time
+		add    pgtype.Interval
+	}{
+		{"'2024-01-31'::timestamp", "'1 month'", time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: 1}},
+		{"'2023-01-31'::timestamp", "'1 month'", time.Date(2023, 1, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: 1}},
+		{"'2024-03-31'::timestamp", "'1 month'", time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: 1}},
+		{"'2024-01-31 10:00'::timestamp", "'1 month 1 day'", time.Date(2024, 1, 31, 10, 0, 0, 0, time.UTC), pgtype.Interval{Months: 1, Days: 1}},
+		{"'2024-03-31'::timestamp", "'-13 months'", time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: -13}},
+		{"'2024-03-31'::timestamp", "'-1 month'", time.Date(2024, 3, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: -1}},
+		{"'2024-02-29'::timestamp", "'1 year'", time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: 12}},
+		{"'2023-12-31 23:59:59.5'::timestamp", "'2 months -3 days 00:00:00.75'", time.Date(2023, 12, 31, 23, 59, 59, 500_000_000, time.UTC), pgtype.Interval{Months: 2, Days: -3, Micros: 750_000}},
+		{"'2024-05-31'::timestamp", "'-1 mon -1 day'", time.Date(2024, 5, 31, 0, 0, 0, 0, time.UTC), pgtype.Interval{Months: -1, Days: -1}},
+		{"'2024-03-30 12:00+01'::timestamptz", "'1 day'", time.Date(2024, 3, 30, 12, 0, 0, 0, paris), pgtype.Interval{Days: 1}},
+		{"'2024-03-30 12:00+01'::timestamptz", "'24 hours'", time.Date(2024, 3, 30, 12, 0, 0, 0, paris), pgtype.Interval{Micros: 24 * 3600 * 1_000_000}},
+		{"'2024-02-29 02:30+01'::timestamptz", "'1 month'", time.Date(2024, 2, 29, 2, 30, 0, 0, paris), pgtype.Interval{Months: 1}},
+	}
+	cols := make([]string, len(cases))
+	for i, c := range cases {
+		cols[i] = c.ts + " + " + c.iv + "::interval"
+	}
+	src := conn.Query(t.Context(), "SELECT "+strings.Join(cols, ", "), nil, postgres.QueryConfig{})
+	var seen bool
+	src.Stream()(func(b sluice.Batch[postgres.Row]) bool {
+		for _, row := range b.Items {
+			seen = true
+			for i, c := range cases {
+				v, _ := row.Value(i)
+				var server time.Time
+				var err error
+				if strings.HasSuffix(c.ts, "timestamptz") {
+					server, err = pgtype.DecodeTimestampTZ(v)
+				} else {
+					server, err = pgtype.DecodeTimestamp(v)
+				}
+				if err != nil {
+					t.Errorf("%s + %s: %v", c.ts, c.iv, err)
+					continue
+				}
+				if got := c.add.AddTo(c.from); !got.Equal(server) {
+					t.Errorf("%s + %s: AddTo = %v, the server says %v", c.ts, c.iv, got, server.In(c.from.Location()))
+				}
+			}
+		}
+		return true
+	})
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if !seen {
+		t.Fatal("no row came back")
+	}
+}
+
 // The two network spellings the server keeps apart, and the array numbering it
 // allows — both read back from the server rather than asserted here.
 func TestIntegrationInetAndArrayEdgeCases(t *testing.T) {
