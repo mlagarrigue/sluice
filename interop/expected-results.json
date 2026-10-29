@@ -527,56 +527,6 @@
       "connectionmigration": "unsupported: aioquic's image does not implement the case"
     }
   },
-  "mvfst": {
-    "server": {
-      "handshake": "succeeded",
-      "transfer": "succeeded",
-      "longrtt": "succeeded",
-      "chacha20": "unsupported: mvfst's image does not implement the case",
-      "multiplexing": "succeeded",
-      "retry": "unsupported: mvfst's image does not implement the case",
-      "resumption": "unsupported: the server issues no session ticket",
-      "zerortt": "failed: mvfst's client writes no key log in this case, so the runner decrypts nothing and counts zero handshakes where it wants two — the case ends before anything of this server is judged",
-      "http3": "succeeded",
-      "blackhole": "succeeded",
-      "keyupdate": "unsupported: mvfst's image does not implement the case",
-      "ecn": "unsupported: mvfst's image does not implement the case",
-      "amplificationlimit": "succeeded",
-      "handshakeloss": "failed: mvfst's client fetches the 50 files over one connection, and the runner counts one handshake",
-      "transferloss": "succeeded",
-      "handshakecorruption": "failed: mvfst's client fetches the 50 files over one connection, and the runner counts one handshake",
-      "transfercorruption": "succeeded",
-      "ipv6": "succeeded",
-      "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "succeeded",
-      "rebind-addr": "succeeded",
-      "connectionmigration": "failed: mvfst's client never migrates to the server's preferred address, so the runner sees one path"
-    },
-    "client": {
-      "handshake": "succeeded",
-      "transfer": "succeeded",
-      "longrtt": "succeeded",
-      "chacha20": "unsupported: the endpoint's client does not implement the case",
-      "multiplexing": "random: mvfst's server sometimes sends STOP_SENDING (code 0x3fffffffffffffff) on a request stream the client is still writing, and the endpoint's client fails the case on the refused write",
-      "retry": "unsupported: mvfst's image does not implement the case",
-      "resumption": "succeeded",
-      "zerortt": "succeeded: the case refuses a client that sends more than 0.5 x FILENAMELEN x NUM_FILES (5000) of 1-RTT data. It failed against every peer until the pass of 2026-10-26, and for nothing a peer did: a burst of small writes cost one datagram per write and another per end of stream - 138 datagrams of 214 bytes for a 10 KB request - which overran the path's queue of 25, and the 0-RTT data of the 23 dropped datagrams went again in 1-RTT (RFC 9001 section 4.6.1), 7795 bytes of it. 0-RTT packets now coalesce while another writer is queued (writePacketLocked)",
-      "http3": "unsupported: the endpoint's client does not implement the case",
-      "blackhole": "succeeded",
-      "keyupdate": "unsupported: the endpoint's client does not implement the case",
-      "ecn": "unsupported: mvfst's image does not implement the case",
-      "amplificationlimit": "failed: the runner finds mvfst's server over the amplification limit",
-      "handshakeloss": "succeeded",
-      "transferloss": "succeeded",
-      "handshakecorruption": "succeeded",
-      "transfercorruption": "succeeded",
-      "ipv6": "succeeded",
-      "v2": "unsupported: QUIC version 2 is not implemented",
-      "rebind-port": "succeeded",
-      "rebind-addr": "random: mvfst sometimes sends no PATH_CHALLENGE on a new path, which the runner refuses",
-      "connectionmigration": "unsupported: mvfst's image does not implement the case"
-    }
-  },
   "kwik": {
     "server": {
       "handshake": "succeeded",

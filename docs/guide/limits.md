@@ -513,7 +513,12 @@ before anything is sent.
 
 The `Interop runner` workflow (the runner at revision `ab039a4`) crosses
 every implementation in its list every Sunday, on each side its role
-allows — 31 peer-directions — with the image the `Interop image` workflow
+allows — 29 peer-directions — except those whose image the registry no
+longer serves: mvfst since October 2026 (the registry answers 403). Every
+case against such a peer would fail before reaching sluice;
+`scripts/interop-runner.sh` keeps them in `UNPULLABLE`, leaves them out of
+the matrix, and a run started against one says so. It runs
+with the image the `Interop image` workflow
 builds from each release tag from v0.3.0 on
 (`ghcr.io/mlagarrigue/sluice-interop`; the three tags before it carry
 images pushed by hand, and `latest` never moves back to them). The

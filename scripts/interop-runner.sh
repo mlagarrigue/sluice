@@ -45,6 +45,13 @@ RUNNER_REF=${RUNNER_REF:-ab039a4a4b43ae2e21bb5704c9fad1f8fe6257d6}
 TESTS=${TESTS:-handshake,transfer,longrtt,chacha20,multiplexing,retry,resumption,zerortt,http3,blackhole,keyupdate,ecn,amplificationlimit,handshakeloss,transferloss,handshakecorruption,transfercorruption,ipv6,v2,rebind-port,rebind-addr,connectionmigration}
 image=${IMAGE:-sluice-interop:local}
 SIDE=${SIDE:-both}
+# Peers of the runner's list whose image its registry no longer serves:
+# every case against them fails before reaching sluice, so --matrix leaves
+# them out and a run names them. mvfst: ghcr.io answers 403 for
+# mvfst-interop:latest since October 2026 (run 40779702220), where an image
+# beside it answers 200. Space separated; a peer leaves the list when its
+# image is served again, with its record written back.
+UNPULLABLE=${UNPULLABLE-mvfst}
 
 fail() {
   echo "interop-runner: $*" >&2
@@ -54,13 +61,15 @@ fail() {
 if [ "${1:-}" = "--matrix" ]; then
   want=${2:-all}
   curl -fsSL "https://raw.githubusercontent.com/quic-interop/quic-interop-runner/$RUNNER_REF/implementations_quic.json" |
-    jq -c --arg want "$want" '
-      [ to_entries[]
+    jq -c --arg want "$want" --arg unpullable "$UNPULLABLE" '
+      ($unpullable | split(" ") | map(select(. != ""))) as $gone
+      | [ to_entries[]
         | select(.key != "sluice" and ($want == "all" or .key == $want))
+        | select(.key as $k | $gone | index($k) | not)
         | .key as $peer | .value.role as $role
         | (if $role != "server" then {peer: $peer, side: "server"} else empty end),
           (if $role != "client" then {peer: $peer, side: "client"} else empty end) ]
-      | if length == 0 then error("no implementation named \($want) in the runner list") else . end'
+      | if length == 0 then error("no implementation named \($want) in the runner list, or its image is not served (UNPULLABLE)") else . end'
   exit
 fi
 
@@ -100,6 +109,16 @@ fi
 impls="$RUNNER_DIR/implementations_quic.json"
 jq --arg image "$image" '. + {sluice: {image: $image, url: "https://github.com/mlagarrigue/sluice", role: "both"}}' \
   "$impls" >"$impls.tmp" && mv "$impls.tmp" "$impls"
+
+# The peer's image, pulled before any case: one the registry no longer
+# serves would fail every case before reaching sluice, and the runner's own
+# output says so only in a compose error per case.
+peer_image=$(jq -r --arg p "$peer" '.[$p].image // empty' "$impls")
+[ -n "$peer_image" ] || fail "no implementation named $peer in the runner list at $RUNNER_REF"
+case " $UNPULLABLE " in
+*" $peer "*) fail "the image of $peer ($peer_image) is listed as not served (UNPULLABLE); its cases cannot run" ;;
+esac
+docker pull -q "$peer_image" >/dev/null || fail "the image of $peer ($peer_image) cannot be pulled: the registry does not serve it, and every case would fail before reaching sluice; list it in UNPULLABLE"
 
 # run <server> <client>: one direction, with the runner's debug output,
 # which is the only place each container's own output and the compliance
