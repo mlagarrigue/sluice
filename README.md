@@ -155,12 +155,12 @@ group's, which are experimental.
 | `sluice/database/postgres/pgtype` | the binary codecs: a Go value to PostgreSQL's representation and back, no connection needed |
 | `cmd/sluicegen` | generates the code that turns rows into structs |
 | `sluice/net/httpstream` | HTTP/1.1, /2, /3 as stream stages |
+| `sluice/web/stream` | the request path for the native transport |
 
 #### Experimental
 
 | Package | Role |
 |---|---|
-| `sluice/web/stream` | the request path for the native transport |
 | `sluice/net/quic` · `net/quic/udp` | QUIC version 1 (RFC 9000/9001/9002) and its UDP socket |
 
 > **In plain words: "experimental".** The code exists, is tested and
@@ -308,7 +308,7 @@ sluice/                 the core: Stream, Batch, Source, stateless operators
 ├── join/ window/       operators grouped by what they keep in memory
 │   parallel/ distinct/
 ├── diagnostics/        diagnostics carried by the stream
-├── web/                request path over net/http · web/stream: native (experimental)
+├── web/                request path over net/http · web/stream: native
 ├── gateway/            simultaneous calls grouped
 ├── database/postgres/  PostgreSQL connector
 ├── net/httpstream/     native HTTP/1.1, /2, /3

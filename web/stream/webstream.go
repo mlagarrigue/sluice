@@ -1,4 +1,4 @@
-// Package stream is experimental: the middle of the architecture's request
+// Package stream is the middle of the architecture's request
 // table for the native transport — routing, authentication, authorization,
 // decoding and rendering as batch-shaped stages over [httpstream]'s requests.
 //
@@ -14,9 +14,9 @@
 // spellings of the same boundary would drift apart.
 //
 // It lives outside the core by the library's own test: nothing in the core
-// stops compiling if this package is removed. Nothing here is on the
-// supported path yet: a first real consumer has met the exit condition
-// (docs/guide/limits.md), and the label goes in a commit of its own.
+// stops compiling if this package is removed. It is on the supported path
+// since 0.4.0, which it reached through a first real consumer
+// (docs/guide/httpstream.md).
 //
 // # The element is the exchange
 //

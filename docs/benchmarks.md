@@ -432,8 +432,8 @@ batches. A bigger batch still divides the cost by as much.
 
 ## Web pipeline, from a real client
 
-These are the third-party figures `docs/guide/limits.md` cites for
-`web/stream`, whose label leaves with a first real consumer. A client that shares no
+These are the third-party figures `docs/guide/httpstream.md` cites for
+`web/stream`, which left its label with a first real consumer. A client that shares no
 code with sluice — `net/http` over HTTP/1.1 and HTTP/2, quic-go over
 HTTP/3 — requests one order (`GET /orders/42`, with a bearer token) from two
 handlers that answer the same bytes:
@@ -496,9 +496,10 @@ the shortest round trip measured here (162 µs), that is 0.17%. Nothing to
 optimise at this point: the cost of a request is the transport's, not the
 stages'.
 
-**What remains for the exit from experimental.** This measurement was one of
-the two conditions; the other, a first real consumer building its request
-path on these stages, is met since 0.3.0 (`docs/guide/limits.md`).
+**The exit from experimental.** This measurement was one of the two
+conditions; the other, a first real consumer building its request path on
+these stages, was met on 0.3.0, and the label left in 0.4.0
+(`docs/guide/httpstream.md`).
 
 ## Request bodies, whole or streamed
 

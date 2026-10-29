@@ -161,8 +161,7 @@ security review. Its HTTP/3 runs on `net/quic`, which is still experimental.
 [example/vertical](../../example/vertical) runs this transport end to end:
 every arrow is a batch-shaped stage — the transport from `net/httpstream`,
 whose one Handler serves HTTP/1.1, /2 and /3 (the example's own tests drive
-/1.1), and the routing and middle stages from `web/stream`, still
-experimental, which are functions over the batch's `[]Exchange` inside that
+/1.1), and the routing and middle stages from `web/stream`, which are functions over the batch's `[]Exchange` inside that
 one Handler call — meeting the same credential and grant vocabulary as `web`'s pipeline. It
 shows that the table is realisable, that building it can be measured, and
 that the claimed batch semantics hold end-to-end.

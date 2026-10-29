@@ -1,10 +1,9 @@
 # Experimental
 
-Three packages carry the **experimental** label, in the first sentence of
-their documentation: `net/quic` and its helper `net/quic/udp`, and
-`web/stream`. This page first says what the word means here, then what
-each one does and what not to expect from it. The two packages that left
-the label have [their own guide](httpstream.md); the deployments have
+Two packages carry the **experimental** label, in the first sentence of
+their documentation: `net/quic` and its helper `net/quic/udp`. This page
+first says what the word means here, then what each one does and what not
+to expect from it. The packages that left the label have [their own guide](httpstream.md); the deployments have
 [theirs](deployments.md).
 
 ## What "experimental" means
@@ -200,50 +199,3 @@ Which deployments the network packages are written for — HTTP/1.1 exposed
 directly, behind nginx or Envoy, TLS in front, QUIC behind a mobile NAT,
 0-RTT — and what to set for each is on a page of its own:
 [Deployments](deployments.md).
-
-## `web/stream` — the same middle, for the other transport
-
-`web` provides the middle of the supported path (route, authenticate,
-authorize, decode, answer) for `net/http`. `web/stream` provides the **same
-middle**, as batch stages, for `net/httpstream`'s requests, with the same
-vocabulary (`web.Verifier`, `web.Authorizer`, `web.Report`) — so that the
-two paths do not drift apart. What the stages learn (the route, the
-principal, a refusal) travels in the element itself, an `Exchange` that
-wraps the request. Why these stages ship beside the core rather than in
-it is [ADR 0011](../design/adr/0011-web-stream-beside-core.md). It keeps
-the label alone: its transport has left, and
-its exit condition, a first real consumer, is met
-([the exit conditions](limits.md#experimental-the-exit-conditions)); the
-label goes in a commit of its own, which brings the package under the
-compatibility promise.
-
-```go
-rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
-handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
-    ex := stream.Exchanges(nil, b)              // one envelope per request
-    rt.Route(ex)                                // which route for each
-    stream.Authenticate(ex, verifier, "orders") // who is calling; a 401 names the realm "orders"
-    stream.Authorize(ex, authorizer)            // what they may do
-    for i := range ex {
-        order, _ := stream.PathInt64(&ex[i], 0, "order") // the route's first wildcard
-        // the business stage, one batch at a time
-    }
-    return stream.Render(ex, func(i int) (int, any) { return 200, results[i] })
-}
-```
-
-The router is a table compiled once: first match wins in table order,
-`{name}` matches one segment, and nothing is percent-decoded
-([ADR 0010](../design/adr/0010-routing-table.md)).
-
-## The end-to-end example
-
-[`example/vertical`](../../example/vertical) runs the whole architecture on
-this path: an HTTP request authenticated, authorized, batched by principal,
-decided by one business rule, read from PostgreSQL under row-level
-security, and answered with its problems and their remedies. Every arrow
-of the journey is a stream stage, and the example counts its round trips.
-`go test ./example/vertical -run TestVerticalEndToEnd -v` runs it, against the
-PostgreSQL the `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and
-`SLUICE_PG_PASSWORD` variables name; without them it skips. Its twin on the
-supported path is `example/orders`.

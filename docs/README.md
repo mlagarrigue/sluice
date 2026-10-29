@@ -23,10 +23,11 @@ place.
 - [Web](guide/web.md) — the supported path over `net/http`, the gateway,
   diagnostics and remedies.
 - [Native HTTP](guide/httpstream.md) — `net/httpstream`, HTTP/1.1, 2 and 3
-  read as batches of requests, and `pushdown`, a reader telling its source
-  what it no longer needs. Both supported.
-- [Experimental](guide/experimental.md) — QUIC and the request stages of
-  `web/stream`: what is promised, and what is not.
+  read as batches of requests, the request stages of `web/stream`, and
+  `pushdown`, a reader telling its source what it no longer needs. All
+  supported.
+- [Experimental](guide/experimental.md) — QUIC: what is promised, and what
+  is not.
 
 ## I want to…
 

@@ -1,12 +1,11 @@
-# Native HTTP: `net/httpstream` and `pushdown`
+# Native HTTP: `net/httpstream`, `web/stream` and `pushdown`
 
-Two packages that left the experimental label, and what each is held to:
+Three packages that left the experimental label, and what each is held to:
 `net/httpstream`, the native request path — HTTP/1.1, HTTP/2 and HTTP/3
-read as a stream of batches of requests — and `pushdown`, through which a
-reader tells its source what it no longer needs. The deployments they
-serve have [their own page](deployments.md); the stages that route,
-authenticate and decode their requests, `web/stream`, are still
-[experimental](experimental.md#webstream--the-same-middle-for-the-other-transport).
+read as a stream of batches of requests —; `web/stream`, the stages that
+route, authenticate and decode its requests; and `pushdown`, through which
+a reader tells its source what it no longer needs. The deployments they
+serve have [their own page](deployments.md).
 
 ## `net/httpstream` — supported
 
@@ -175,6 +174,48 @@ if err := srv.Shutdown(ctx); err != nil { // nothing new accepted, requests in f
 > is the only bound on that wait; `ShutdownGrace` is for `Serve`,
 > `ServeH2Conn` and `ServeH3Conn` alone.
 
+## `web/stream` — supported
+
+`web` provides the middle of the supported path (route, authenticate,
+authorize, decode, answer) for `net/http`. `web/stream` provides the **same
+middle**, as batch stages, for `net/httpstream`'s requests, with the same
+vocabulary (`web.Verifier`, `web.Authorizer`, `web.Report`) — so that the
+two paths do not drift apart. What the stages learn (the route, the
+principal, a refusal) travels in the element itself, an `Exchange` that
+wraps the request. Why these stages ship beside the core rather than in
+it is [ADR 0011](../design/adr/0011-web-stream-beside-core.md).
+
+What it is held to: a first real consumer, an application outside this
+repository, has served its requests through these stages since 0.3.0
+(2026-10-25), and what it asked for landed before the label left:
+`fb899a8` (a streamed body reaches `DecodeJSON`), `86a1325` (a late
+element in a window meets a policy, not a panic), `473d1ce` (two dead
+ends signposted). Its figures against third-party clients — HTTP/1.1,
+HTTP/2, HTTP/3 — are in [the benchmarks](../benchmarks.md). It is under
+the compatibility promise ([ADR 0020](../design/adr/0020-compatibility.md)):
+until v1 a break is
+announced with `!` as everywhere; from v1 `scripts/check-api.sh` refuses
+it, `!` or not.
+
+```go
+rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
+handle := func(ctx context.Context, b sluice.Batch[httpstream.Request]) sluice.Batch[httpstream.Response] {
+    ex := stream.Exchanges(nil, b)              // one envelope per request
+    rt.Route(ex)                                // which route for each
+    stream.Authenticate(ex, verifier, "orders") // who is calling; a 401 names the realm "orders"
+    stream.Authorize(ex, authorizer)            // what they may do
+    for i := range ex {
+        order, _ := stream.PathInt64(&ex[i], 0, "order") // the route's first wildcard
+        // the business stage, one batch at a time
+    }
+    return stream.Render(ex, func(i int) (int, any) { return 200, results[i] })
+}
+```
+
+The router is a table compiled once: first match wins in table order,
+`{name}` matches one segment, and nothing is percent-decoded
+([ADR 0010](../design/adr/0010-routing-table.md)).
+
 ## `pushdown` — supported
 
 A reader that knows where it is can help its source: "skip to key X", "I
@@ -207,3 +248,14 @@ source skipping whole pages — ×6.9.
 > the column set is published but not acted on, because the SQL is yours
 > and the connector does not rewrite it.
 
+## The end-to-end example
+
+[`example/vertical`](../../example/vertical) runs the whole architecture on
+this path: an HTTP request authenticated, authorized, batched by principal,
+decided by one business rule, read from PostgreSQL under row-level
+security, and answered with its problems and their remedies. Every arrow
+of the journey is a stream stage, and the example counts its round trips.
+`go test ./example/vertical -run TestVerticalEndToEnd -v` runs it, against the
+PostgreSQL the `SLUICE_PG`, `SLUICE_PG_USER`, `SLUICE_PG_DB` and
+`SLUICE_PG_PASSWORD` variables name; without them it skips. Its twin on the
+supported path is `example/orders`.

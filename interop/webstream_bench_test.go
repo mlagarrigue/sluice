@@ -15,8 +15,8 @@ import (
 	"github.com/mlagarrigue/sluice/web/stream"
 )
 
-// BenchmarkWebStream is the measurement docs/guide/limits.md names as one of the two
-// exit conditions of web/stream's experimental label: a third-party client
+// BenchmarkWebStream is the measurement web/stream left its experimental
+// label on, one of two conditions (docs/guide/httpstream.md): a third-party client
 // — net/http over HTTP/1.1 and HTTP/2, quic-go over HTTP/3 — requests one
 // order through a handler built from web/stream's stages (routing,
 // authentication, authorization, a path parameter, a JSON render), and

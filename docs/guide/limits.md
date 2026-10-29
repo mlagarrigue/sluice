@@ -277,17 +277,6 @@ These packages leave the label only by meeting these conditions; they stay
 in the module ([ADR 0021](../design/adr/0021-net-quic-stays.md)). One
 bullet per package, each condition in it checkable:
 
-- **`web/stream`**: a first real consumer, an application outside this
-  repository, serves its requests through these stages, and what it
-  needed changed has been changed. The figures against third-party
-  clients are already in [the benchmarks](../benchmarks.md). Checked by:
-  the sluice version the consumer runs, and each change it asked for
-  named by its commit. **Met**: a consumer outside this repository has
-  run on these stages since 0.3.0 (2026-10-25); what it asked for landed
-  after 0.3.0: `fb899a8` (a streamed body reaches `DecodeJSON`),
-  `86a1325` (a late window element meets a policy, not a panic),
-  `473d1ce` (two dead ends signposted). The label goes in a commit of its
-  own, which brings the package under the compatibility promise.
 - **`net/quic/udp`**: it leaves with `net/quic`, not before. Its options
   are the socket half of the transport and are judged by the same passes;
   the `test-udp` job already runs it on Windows, macOS and Linux ARM.

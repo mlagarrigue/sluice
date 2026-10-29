@@ -131,7 +131,7 @@ func token(t *testing.T, tenant string) string {
 	return signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// build starts the whole experimental path: the service over the real
+// build starts the whole native path: the service over the real
 // connector, the stream handler over the service, and httpstream over a
 // loopback socket. What the tests dial is the same protocol stack a client
 // would.
