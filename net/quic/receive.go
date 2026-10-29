@@ -1856,6 +1856,16 @@ func (c *Conn) streamFor(id uint64, space int, sendSide bool) (*Stream, bool, er
 	// however long ago the closure was. §19.8 and §19.10 reserve
 	// STREAM_STATE_ERROR for a locally initiated stream that "has not yet
 	// been created": one past what this end opened.
+	//
+	// A tolerated frame is not checked against the stream's final size,
+	// so data past it on a closed stream is ignored rather than answered
+	// with FINAL_SIZE_ERROR. §4.5 asks for the error "even after a stream
+	// is closed" with a SHOULD, and says why it is not mandatory: "the
+	// endpoint needs to maintain the final size state for closed streams,
+	// which could mean a significant state commitment". This end keeps none — a count per kind of stream, nothing per stream —
+	// so that a peer cycling through streams costs it no memory; the
+	// check is given up with the state, and a frame past the final size of
+	// a closed stream is the peer's error that changes nothing here.
 	count := id/4 + 1
 	uni := id&0x02 != 0
 	peerInitiated := (id&1 == 0) != c.isClient

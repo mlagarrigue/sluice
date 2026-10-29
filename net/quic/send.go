@@ -626,6 +626,23 @@ func (c *Conn) writePacketLocked(sp *space, space int, payload, retransPart []by
 	// CONNECTION_CLOSE, which must leave now. Anything else first flushes
 	// what gathered, so order on the wire is the order of sending.
 	//
+	// Two packets of one level may share the datagram: each call here is a
+	// packet of its own, its acknowledgement in front, and a level's next
+	// send during the same pump — sendCrypto's next chunk cut to the room
+	// left, a Finished after the ACK of the server's flight — joins the
+	// datagram as a second packet, not as frames of the first. §12.2 has
+	// it the other way with a SHOULD: "An endpoint SHOULD include multiple
+	// frames in a single packet if they are to be sent at the same
+	// encryption level, instead of coalescing multiple packets at the same
+	// encryption level." Not applied here, during the handshake only (the
+	// 0-RTT case is ADR 0019's): merging would reopen the pending packet —
+	// its payload, the part loss recovery resends, the acknowledgement it
+	// carries — to save one header and one AEAD tag, some forty bytes,
+	// in two or three datagrams per handshake. TestHandshakeFlightsCoalesce
+	// logs what a loopback handshake sends: two Initial packets in the
+	// server's second datagram, two Handshake packets beside the client's
+	// Initial in its fourth.
+	//
 	// 0-RTT packets coalesce too, and for a reason of their own: they carry
 	// a long header, so they have a Length field and may precede another
 	// packet in the same datagram, which a short-header 1-RTT packet never

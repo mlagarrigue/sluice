@@ -39,6 +39,11 @@ import (
 // connections together — and the ticket the server issues on the resumed
 // connection refills it. A cache that ignores Put(key, nil) reuses its
 // tickets anyway; that is the caller's choice to make, not the default.
+// Without a ClientSessionCache, crypto/tls drops every NewSessionTicket
+// unread, before any of its checks: one whose early_data is not 0xffffffff,
+// which RFC 9001 §4.6.1 has a client treat as PROTOCOL_VIOLATION, closes
+// nothing here. The ticket is never kept, so nothing is ever sent under it;
+// the check is the cache's, applied when there is one to keep it in.
 //
 // crypto/tls files tickets under cfg.ServerName alone — the empty string
 // when it is unset, since a QUIC handshake has no net.Conn whose address
