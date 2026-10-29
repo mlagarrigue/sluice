@@ -724,12 +724,15 @@ func serveH2Conn(ctx context.Context, c net.Conn, st *connState, cfg Config, han
 	}
 	s.w.stop()
 	<-s.w.done
-	if err != nil {
+	if err != nil || errors.Is(src.Err(), errIdleTimeout) {
 		// The peer may still be writing — the frames behind the one that
-		// failed, or a flood. Closing a socket with unread bytes in it makes
-		// TCP answer the next segment with a reset, which can erase the
-		// GOAWAY the peer had not read yet: the two-stage close HTTP/1.1
-		// uses (RFC 9112 §9.6, tearDown) applies here too.
+		// failed, a flood, or the PINGs of a peer the idle clock has just
+		// closed on. Closing a socket with unread bytes in it makes TCP
+		// answer the next segment with a reset, which can erase the GOAWAY
+		// the peer had not read yet — on Windows the reset discards it
+		// outright: the two-stage close HTTP/1.1 uses (RFC 9112 §9.6,
+		// tearDown) applies here too. A peer that closed first has nothing
+		// left to send, and is not waited for.
 		linger(c, cfg)
 	}
 	return errors.Join(err, s.w.failure())
