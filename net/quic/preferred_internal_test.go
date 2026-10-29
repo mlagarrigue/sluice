@@ -1047,6 +1047,74 @@ func TestAbandonedPreferredProbeDoesNotStrandAnUnvalidatedMigration(t *testing.T
 	}
 }
 
+// The server's side of the next test: its probe from the preferred socket
+// (§9.6.2) holds an identifier of its own, and a Retire Prior To that
+// takes it with no fresh one left in the pool must stop the probe (§5.1.2)
+// the way its timer stops it — abandoned, and an unvalidated migration
+// reverted to the last validated path (§9.3.2). Clearing only the pending
+// flag left the probe's socket armed and the server held on B, under the
+// amplification limit, with nothing left to validate B.
+func TestRetirePriorToAbandonsTheServerProbeWithNoFreshIdentifier(t *testing.T) {
+	c, _ := newMigratableServer(t, "rpt-via")
+	pref := &recordingPC{addr: fakeFuzzAddr("rpt-via:preferred")}
+	tok := make([]byte, 16)
+	// A runs under sequence 5, so that the Retire Prior To below can take
+	// the probe's identifier and leave the validated path's: the probe is
+	// then given up and the revert has an identifier to return under.
+	for _, f := range []struct {
+		seq uint64
+		cid string
+	}{{5, "cli-cid5"}, {1, "cli-cid1"}, {2, "cli-cid2"}} {
+		if err := c.frames(spaceApplication, ncidFrame(f.seq, 1, []byte(f.cid), tok), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := fakeFuzzAddr("rpt-via:peerA"), fakeFuzzAddr("rpt-via:peerB")
+	c.mu.Lock()
+	onA := string(c.dcid)
+	c.mu.Unlock()
+	if onA != "cli-cid5" {
+		t.Fatalf("A runs under %q; want cli-cid5, the state under test cannot be reached", onA)
+	}
+
+	// The client moves to B, then challenges the preferred socket from B:
+	// the migration takes one fresh identifier, the server's probe from
+	// pref the other.
+	now := time.Now()
+	rxFromNewAddress(c, b, 1200, true)
+	c.maybeMigrate([]Frame{{Type: framePing}}, now)
+	c.mu.Lock()
+	c.rxFrom, c.rxVia, c.rxDatagramLen, c.rxHighest = b, pref, 1200, true
+	c.mu.Unlock()
+	challenge := append(varint.Append(nil, framePathChallenge), 1, 2, 3, 4, 5, 6, 7, 8)
+	if err := c.frames(spaceApplication, challenge, now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	via, probeCID, unvalidated := c.pathProbe.via, string(c.pathProbe.targetCID), c.amplActive
+	c.mu.Unlock()
+	if via != net.PacketConn(pref) || probeCID == "" || !unvalidated {
+		t.Fatalf("probe from pref %v under %q, unvalidated %v; the state under test cannot be reached", via == net.PacketConn(pref), probeCID, unvalidated)
+	}
+
+	// Sequences 1 and 2 retired: the migration's identifier is replaced by
+	// the one this frame brings, and the probe has no fresh one to move to;
+	// A's sequence 5 stays.
+	if err := c.frames(spaceApplication, ncidFrame(6, 3, []byte("cli-cid6"), tok), now); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pathProbe.via != nil || c.pathProbe.pending || len(c.pathProbe.targetCID) > 0 {
+		t.Errorf("after Retire Prior To 3: probe from pref %v, pending %v, under %q; want the probe abandoned",
+			c.pathProbe.via != nil, c.pathProbe.pending, c.pathProbe.targetCID)
+	}
+	if !sameAddr(c.peer, a) || c.amplActive || string(c.dcid) != "cli-cid5" {
+		t.Errorf("after the probe was given up: on %v under %q, under the amplification limit %v; want the validated path %v under cli-cid5",
+			c.peer, c.dcid, c.amplActive, a)
+	}
+}
+
 // RFC 9000 §5.1.2: "Upon receipt of an increased Retire Prior To field, the
 // peer MUST stop using the corresponding connection IDs." A probe of the
 // server's preferred address holds an identifier of its own, beside the one
