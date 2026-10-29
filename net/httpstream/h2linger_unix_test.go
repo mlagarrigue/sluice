@@ -74,3 +74,73 @@ func TestH2ErrorGoAwayOutlivesUnreadFrames(t *testing.T) {
 		t.Errorf("%d PINGs acknowledged before the GOAWAY, want %d", c.pings, pings)
 	}
 }
+
+// The idle clock closing a connection whose peer is still writing is the
+// same case as a connection error: PINGs do not restart that clock (see
+// Config.IdleTimeout), so they can sit unread in the socket when it fires,
+// and a close over them resets the connection and drops the GOAWAY(NO_ERROR)
+// still queued behind the acknowledgements the client has not read. The
+// client here writes bursts of PINGs past the idle deadline and reads nothing
+// until ServeH2Conn has returned.
+func TestH2IdleGoAwayOutlivesUnreadPings(t *testing.T) {
+	const (
+		idle     = 200 * time.Millisecond
+		writeFor = 600 * time.Millisecond // well past the idle close, well inside the linger
+	)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	served := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			served <- err
+			return
+		}
+		cfg := Config{Logger: discardLogger(), ReadTimeout: idle, IdleTimeout: idle, LingerTimeout: 1500 * time.Millisecond}
+		served <- ServeH2Conn(t.Context(), c, cfg, echoTarget)
+	}()
+
+	d := net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		var err error
+		if cerr := rc.Control(func(fd uintptr) {
+			err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4<<10)
+		}); cerr != nil {
+			return cerr
+		}
+		return err
+	}}
+	conn, err := d.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	c := h2clientOn(t, conn)
+	var burst []byte
+	for range 10 {
+		burst, _ = appendH2Frame(burst, h2Frame{Type: framePing, Payload: make([]byte, 8)})
+	}
+	pings := 0
+	for start := time.Now(); time.Since(start) < writeFor; time.Sleep(time.Millisecond) {
+		if _, err := conn.Write(burst); err != nil {
+			break // the connection was reset under the writes
+		}
+		pings += 10
+	}
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ServeH2Conn did not return after the idle close")
+	}
+	if code := goAwayCode(c.waitGoAway()); code != 0x0 {
+		t.Fatalf("GOAWAY code = %#x, want 0x0 NO_ERROR", code)
+	}
+	if c.pings == 0 || c.pings >= pings {
+		t.Errorf("%d PINGs acknowledged before the GOAWAY, want some of the %d sent but not all", c.pings, pings)
+	}
+}
