@@ -255,7 +255,7 @@ type refusingWritesPC struct{ *scriptedPC }
 
 func (p refusingWritesPC) WriteTo(b []byte, addr net.Addr) (int, error) {
 	_, _ = p.scriptedPC.WriteTo(b, addr)
-	return 0, &net.OpError{Op: "write", Net: "udp", Err: syscall.ECONNREFUSED}
+	return 0, &net.OpError{Op: "write", Net: "udp", Err: platformRefusal}
 }
 
 // Send-side refusals count toward handshakeRefusalLimit as read-side ones
@@ -264,6 +264,9 @@ func (p refusingWritesPC) WriteTo(b []byte, addr net.Addr) (int, error) {
 // Each refusal wakes the read so the count is re-taken at once; the wake is
 // not the deadline, and is read past while the context is alive.
 func TestSendRefusalsEndTheHandshakeWithTheRefusal(t *testing.T) {
+	if !isRefusal(platformRefusal) {
+		t.Skip("no send refusal is recognised on this platform")
+	}
 	pc := refusingWritesPC{newScriptedPC()}
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	done := make(chan error, 1)
@@ -276,7 +279,7 @@ func TestSendRefusalsEndTheHandshakeWithTheRefusal(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if !errors.Is(err, syscall.ECONNREFUSED) {
+		if !errors.Is(err, platformRefusal) {
 			t.Errorf("Dial = %v, want the send refusal", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -329,7 +332,7 @@ type refuseFirstWritePC struct {
 func (p *refuseFirstWritePC) WriteTo(b []byte, addr net.Addr) (int, error) {
 	_, _ = p.scriptedPC.WriteTo(b, addr)
 	if p.refused.CompareAndSwap(false, true) {
-		return 0, &net.OpError{Op: "write", Net: "udp", Err: syscall.ECONNREFUSED}
+		return 0, &net.OpError{Op: "write", Net: "udp", Err: platformRefusal}
 	}
 	return len(b), nil
 }
@@ -338,6 +341,9 @@ func (p *refuseFirstWritePC) WriteTo(b []byte, addr net.Addr) (int, error) {
 // the context alive and the deadline ahead, the read is taken again, and
 // the handshake ends at its context's deadline, not at the wake.
 func TestASendRefusalWakeIsNotTheDeadline(t *testing.T) {
+	if !isRefusal(platformRefusal) {
+		t.Skip("no send refusal is recognised on this platform")
+	}
 	pc := &refuseFirstWritePC{scriptedPC: newScriptedPC()}
 	peer := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
