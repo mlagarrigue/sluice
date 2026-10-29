@@ -211,9 +211,11 @@ two paths do not drift apart. What the stages learn (the route, the
 principal, a refusal) travels in the element itself, an `Exchange` that
 wraps the request. Why these stages ship beside the core rather than in
 it is [ADR 0011](../design/adr/0011-web-stream-beside-core.md). It keeps
-the label alone: its transport has left, but
-no real consumer has yet built its request path on these stages. That
-confrontation is what it lacks, not a measurement.
+the label alone: its transport has left, and
+its exit condition, a first real consumer, is met
+([the exit conditions](limits.md#experimental-the-exit-conditions)); the
+label goes in a commit of its own, which brings the package under the
+compatibility promise.
 
 ```go
 rt := stream.NewRouter(stream.Route{Method: "GET", Pattern: "/orders/{order}"})
